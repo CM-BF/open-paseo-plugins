@@ -23,7 +23,8 @@ export function phaseSummaries(record: RunRecord): PhaseSummary[] {
       title,
       detail: details.get(title) ?? null,
       total: calls.length,
-      running: calls.filter((call) => isRunning(call)).length,
+      running: calls.filter(isRunning).length,
+      queued: calls.filter((call) => call.status === "queued").length,
       done: calls.filter((call) => call.status === "completed" || call.status === "cached").length,
       failed: calls.filter((call) => call.status === "failed").length,
       skipped: calls.filter((call) => call.status === "skipped").length,
@@ -32,13 +33,14 @@ export function phaseSummaries(record: RunRecord): PhaseSummary[] {
 }
 
 function isRunning(call: AgentCall): boolean {
-  return call.status === "starting" || call.status === "running" || call.status === "permission" || call.status === "queued";
+  return call.status === "starting" || call.status === "running" || call.status === "permission";
 }
 
 function counts(record: RunRecord): RunSummary["agents"] {
   return {
     total: record.calls.length,
     running: record.calls.filter(isRunning).length,
+    queued: record.calls.filter((call) => call.status === "queued").length,
     done: record.calls.filter((call) => call.status === "completed").length,
     failed: record.calls.filter((call) => call.status === "failed").length,
     skipped: record.calls.filter((call) => call.status === "skipped").length,
@@ -69,6 +71,7 @@ export function runDetail(record: RunRecord, state: StatePaths): RunDetail {
     cwd: record.cwd,
     scriptPath: record.scriptPath,
     runDir: paths.dir,
+    journalPath: paths.journal,
     resumedFrom: record.resumedFrom,
     phases: phaseSummaries(record),
     calls: record.calls,
@@ -77,6 +80,15 @@ export function runDetail(record: RunRecord, state: StatePaths): RunDetail {
     resultPath: record.status === "completed" ? paths.result : null,
     usage: record.usage,
     budget: { total: record.budgetTotal, spent: record.usage.outputTokens },
+  };
+}
+
+/** Polling payload: full call results and errors belong to the expanded row only. */
+export function compactRunDetail(detail: RunDetail): RunDetail {
+  return {
+    ...detail,
+    calls: detail.calls.map((call) => ({ ...call, resultPreview: null, error: null })),
+    logs: detail.logs.slice(-20).map((line) => ({ ...line, message: truncate(line.message, 240) })),
   };
 }
 
@@ -119,14 +131,14 @@ export function statusText(record: RunRecord, state: StatePaths): string {
   const agents = counts(record);
   const lines = [
     `Workflow "${record.meta.name}" (run ${record.runId}): ${record.status}, ${elapsed}`,
-    `Agents: ${agents.total} total, ${agents.running} running, ${agents.done} done, ${agents.cached} cached, ${agents.failed} failed, ${agents.skipped} skipped`,
+    `Agents: ${agents.total} total, ${agents.running} running, ${agents.queued} queued, ${agents.done} done, ${agents.cached} cached, ${agents.failed} failed, ${agents.skipped} skipped`,
     `Output tokens: ${record.usage.outputTokens}${record.budgetTotal !== null ? ` of a ${record.budgetTotal} budget` : ""}`,
   ];
   const phases = phaseSummaries(record);
   if (phases.length > 0) {
     lines.push("Phases:");
     for (const phase of phases) {
-      lines.push(`- ${phase.title}: ${phase.done}/${phase.total} done${phase.running ? `, ${phase.running} running` : ""}${phase.failed ? `, ${phase.failed} failed` : ""}${phase.skipped ? `, ${phase.skipped} skipped` : ""}`);
+      lines.push(`- ${phase.title}: ${phase.done}/${phase.total} done${phase.running ? `, ${phase.running} running` : ""}${phase.queued ? `, ${phase.queued} queued` : ""}${phase.failed ? `, ${phase.failed} failed` : ""}${phase.skipped ? `, ${phase.skipped} skipped` : ""}`);
     }
   }
   const running = record.calls.filter(isRunning).slice(0, 10);
@@ -149,7 +161,8 @@ export function statusText(record: RunRecord, state: StatePaths): string {
     lines.push(`Result (${paths.result}):`);
     lines.push(truncate(record.resultPreview ?? "null", 8000));
   }
-  lines.push(`Transcript dir: ${paths.dir}`);
+  lines.push(`Run dir: ${paths.dir}`);
+  lines.push(`Per-agent results and failures: ${paths.journal}`);
   lines.push(`Script file: ${record.scriptPath}`);
   return lines.join("\n");
 }
@@ -179,8 +192,15 @@ export function notificationText(record: RunRecord, state: StatePaths): string {
     parts.push(`<result>${record.resultPreview ?? "null"}${(record.resultPreview ?? "").includes("more characters]") ? `\n(full result in ${paths.result})` : ""}</result>`);
   } else {
     if (record.error) parts.push(`<error>${truncate(record.error, 4000)}</error>`);
-    parts.push(`<recovery>Journal: ${paths.journal}. Resume with workflow({scriptPath: "${record.scriptPath}", resumeFromRunId: "${record.runId}"}): completed agent() calls return their cached results.</recovery>`);
+    parts.push(`<recovery>Resume with ${resumeHint(record)}: completed agent() calls return their cached results.</recovery>`);
   }
+  const failed = record.calls.filter((call) => call.status === "failed");
+  if (failed.length > 0) {
+    const shown = failed.slice(0, 20).map((call) => `${truncate(call.label, 120)}: ${truncate(call.error ?? "failed", 500)}`);
+    if (failed.length > shown.length) shown.push(`${failed.length - shown.length} more failures in the journal.`);
+    parts.push(`<failures>\n${shown.join("\n")}\n</failures>`);
+  }
+  parts.push(`<diagnostics>Per-agent results and errors: ${paths.journal}. Read this journal if the result is empty or unexpected. Run snapshot: ${paths.run}. ${record.status === "completed" ? `After editing the script, resume with ${resumeHint(record)}.` : ""}</diagnostics>`);
   const worktrees = record.calls.filter((call) => call.worktree?.changed);
   if (worktrees.length > 0) {
     parts.push("<worktrees>");
@@ -196,4 +216,9 @@ export function notificationText(record: RunRecord, state: StatePaths): string {
 
 function firstLine(text: string): string {
   return text.split("\n")[0] ?? text;
+}
+
+function resumeHint(record: RunRecord): string {
+  const args = record.args;
+  return `workflow(${JSON.stringify({ scriptPath: record.scriptPath, resumeFromRunId: record.runId, ...(args === undefined ? {} : { args }) })})`;
 }

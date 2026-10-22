@@ -26,7 +26,7 @@ export function NoticeRow({ agentId, item, theme, layout }: PluginTimelineItemPr
       <View style={styles.between}>
         <View style={[styles.row, styles.grow]}>
           <Text style={[styles.status, { color: toneColor(theme, look.tone) }]}>{look.glyph}</Text>
-          <Text style={styles.text} numberOfLines={1}>
+          <Text style={[styles.text, styles.shrink]} numberOfLines={1}>
             {data.summary}
           </Text>
         </View>

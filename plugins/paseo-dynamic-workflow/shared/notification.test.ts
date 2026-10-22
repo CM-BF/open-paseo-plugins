@@ -15,7 +15,7 @@ describe("parseNotice", () => {
 });
 
 describe("CardDataSchema", () => {
-  it("accepts cards written before the skipped count existed", async () => {
+  it("accepts cards written before queued and skipped counters existed", async () => {
     const { CardDataSchema } = await import("./run-types");
     const parsed = CardDataSchema.parse({
       runId: "wf_x",
@@ -34,5 +34,7 @@ describe("CardDataSchema", () => {
     });
     expect(parsed.agents.skipped).toBe(0);
     expect(parsed.phases[0]?.skipped).toBe(0);
+    expect(parsed.agents.queued).toBe(0);
+    expect(parsed.phases[0]?.queued).toBe(0);
   });
 });

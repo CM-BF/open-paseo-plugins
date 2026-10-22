@@ -54,6 +54,7 @@ export const PhaseSummarySchema = z.object({
   detail: z.string().nullable(),
   total: z.number(),
   running: z.number(),
+  queued: z.number().default(0),
   done: z.number(),
   failed: z.number(),
   /** Added after 0.1.0 shipped cards; old rows lack it. */
@@ -74,6 +75,7 @@ export const RunSummarySchema = z.object({
   agents: z.object({
     total: z.number(),
     running: z.number(),
+    queued: z.number().default(0),
     done: z.number(),
     failed: z.number(),
     skipped: z.number().default(0),
@@ -89,6 +91,7 @@ export const RunDetailSchema = RunSummarySchema.extend({
   cwd: z.string(),
   scriptPath: z.string(),
   runDir: z.string(),
+  journalPath: z.string(),
   resumedFrom: z.string().nullable(),
   phases: z.array(PhaseSummarySchema),
   calls: z.array(AgentCallSchema),

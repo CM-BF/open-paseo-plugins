@@ -85,10 +85,11 @@ export function RunCard({ agentId, item, theme, layout }: PluginTimelineItemProp
             );
           })}
           {data.agents.running > data.active.length ? (
-            <Text style={styles.muted}>+{data.agents.running - data.active.length} more queued or running</Text>
+            <Text style={styles.muted}>+{data.agents.running - data.active.length} more running</Text>
           ) : null}
         </View>
       ) : null}
+      {data.agents.queued > 0 ? <Text style={styles.muted}>{data.agents.queued} queued</Text> : null}
       {data.logs.length > 0 && live ? (
         <Text style={styles.log} numberOfLines={2}>
           › {data.logs[data.logs.length - 1]}
@@ -119,7 +120,7 @@ export function RunCard({ agentId, item, theme, layout }: PluginTimelineItemProp
             </Pressable>
           ) : null}
         </View>
-        <Text style={styles.muted} numberOfLines={1}>
+        <Text style={[styles.muted, styles.shrink]} numberOfLines={1}>
           {summaryLine(data)}
         </Text>
       </View>
@@ -142,7 +143,7 @@ function PhaseBar({ phase, styles }: { phase: PhaseSummary; styles: Styles }) {
   const count =
     phase.total === 0
       ? "waiting"
-      : `${phase.done}/${phase.total}${phase.running ? ` · ${phase.running} active` : ""}${phase.failed ? ` · ${phase.failed} failed` : ""}${phase.skipped ? ` · ${phase.skipped} skipped` : ""}`;
+      : `${phase.done}/${phase.total}${phase.running ? ` · ${phase.running} running` : ""}${phase.queued ? ` · ${phase.queued} queued` : ""}${phase.failed ? ` · ${phase.failed} failed` : ""}${phase.skipped ? ` · ${phase.skipped} skipped` : ""}`;
   return (
     <View style={styles.phaseRow} accessibilityLabel={`Phase ${phase.title}: ${count}`}>
       <Text style={styles.phaseTitle} numberOfLines={1}>

@@ -1,6 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
-import { RunDetailSchema, RunSummarySchema } from "./run-types";
+import { AgentCallSchema, RunDetailSchema, RunSummarySchema } from "./run-types";
 
 export const listRunsRpc = defineRpc({
   name: "runs.list",
@@ -10,8 +10,15 @@ export const listRunsRpc = defineRpc({
 
 export const getRunRpc = defineRpc({
   name: "runs.get",
-  input: z.object({ runId: z.string() }),
+  input: z.object({ runId: z.string(), compact: z.boolean().optional() }),
   output: z.object({ run: RunDetailSchema.nullable() }),
+});
+
+/** Expanded call details are fetched on demand instead of included in live run polling. */
+export const getCallRpc = defineRpc({
+  name: "runs.get-call",
+  input: z.object({ runId: z.string(), callId: z.string() }),
+  output: z.object({ call: AgentCallSchema.nullable() }),
 });
 
 export const stopRunRpc = defineRpc({

@@ -2,9 +2,9 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { type PluginAgentPanelProps, useAgent, useRpc } from "@getpaseo/plugin/client";
 import { copyText, ScrollView, useToast } from "@getpaseo/plugin/client/react-native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { getRunRpc, listRunsRpc, skipCallRpc, stopRunRpc, transcriptRpc } from "../shared/contracts";
+import { getCallRpc, getRunRpc, listRunsRpc, skipCallRpc, stopRunRpc, transcriptRpc } from "../shared/contracts";
 import { PLUGIN_ID } from "../shared/ids";
 import type { TranscriptEntry } from "../shared/contracts";
 import type { AgentCall, RunDetail, RunSummary } from "../shared/run-types";
@@ -22,8 +22,9 @@ import {
 } from "./format";
 import { onRunRequested, takeRequestedRun, useNow } from "./hooks";
 import { createStyles, type Styles } from "./styles";
+import { callsByAttention } from "./call-order";
 
-const CALLS_PER_PHASE = 120;
+const CALLS_PER_PAGE = 50;
 const UNGROUPED = "Agents";
 
 type Navigation = PluginAgentPanelProps["navigation"];
@@ -76,7 +77,7 @@ export function RunsPanel({ theme, layout, agentId, navigation }: PluginAgentPan
         </View>
       ) : null}
       {runs.length > 1 ? <RunList runs={runs} selected={runId} onSelect={setSelected} styles={styles} theme={theme} /> : null}
-      {runId ? <RunView runId={runId} styles={styles} theme={theme} navigation={navigation} /> : null}
+      {runId ? <RunView key={runId} runId={runId} styles={styles} theme={theme} navigation={navigation} /> : null}
     </ScrollView>
   );
 }
@@ -138,16 +139,14 @@ function RunView({ runId, styles, theme, navigation }: { runId: string; styles: 
   const [stopping, setStopping] = useState(false);
   const query = useQuery({
     queryKey: [PLUGIN_ID, "run", runId],
-    queryFn: () => getRun({ runId }),
+    queryFn: () => getRun({ runId, compact: true }),
     refetchInterval: (state) => (state.state.data?.run && isLiveRun(state.state.data.run.status) ? 1500 : false),
   });
   const run = query.data?.run ?? null;
-  const now = useNow(run !== null && isLiveRun(run.status));
   if (query.isPending) return <Text style={styles.mutedText}>Loading run…</Text>;
   if (query.isError) return <Text style={styles.danger}>Could not load the run: {errorMessage(query.error)}</Text>;
   if (!run) return <Text style={styles.mutedText}>Run {runId} is not on this host.</Text>;
 
-  const look = RUN_LOOK[run.status];
   const stop = async () => {
     setStopping(true);
     try {
@@ -168,9 +167,7 @@ function RunView({ runId, styles, theme, navigation }: { runId: string; styles: 
           <Text style={styles.heading} numberOfLines={1}>
             {run.name}
           </Text>
-          <Text style={[styles.status, { color: toneColor(theme, look.tone), fontSize: 13 }]}>
-            {look.glyph} {look.label} · {elapsed(run.startedAt, run.endedAt, now)}
-          </Text>
+          <RunStatus run={run} styles={styles} theme={theme} />
         </View>
         <Text style={styles.text}>{run.description}</Text>
         <Text style={styles.muted}>
@@ -200,7 +197,7 @@ function RunView({ runId, styles, theme, navigation }: { runId: string; styles: 
         ) : null}
       </View>
 
-      <Phases run={run} styles={styles} theme={theme} now={now} navigation={navigation} />
+      <Phases run={run} styles={styles} theme={theme} navigation={navigation} />
 
       {run.status === "completed" && run.resultPreview !== null ? (
         <View style={{ gap: 6 }}>
@@ -236,6 +233,7 @@ function RunView({ runId, styles, theme, navigation }: { runId: string; styles: 
           <PathRow label="Run id" value={run.runId} styles={styles} />
           <PathRow label="Script" value={run.scriptPath} styles={styles} />
           <PathRow label="Run dir" value={run.runDir} styles={styles} />
+          <PathRow label="Journal" value={run.journalPath} styles={styles} />
           {run.resultPath ? <PathRow label="Result" value={run.resultPath} styles={styles} /> : null}
         </View>
       </View>
@@ -243,17 +241,26 @@ function RunView({ runId, styles, theme, navigation }: { runId: string; styles: 
   );
 }
 
-function Phases({
+/** Its clock updates without re-rendering the call list. */
+function RunStatus({ run, styles, theme }: { run: RunSummary; styles: Styles; theme: PluginTheme }) {
+  const now = useNow(isLiveRun(run.status));
+  const look = RUN_LOOK[run.status];
+  return (
+    <Text style={[styles.status, { color: toneColor(theme, look.tone), fontSize: 13 }]}>
+      {look.glyph} {look.label} · {elapsed(run.startedAt, run.endedAt, now)}
+    </Text>
+  );
+}
+
+const Phases = memo(function Phases({
   run,
   styles,
   theme,
-  now,
   navigation,
 }: {
   run: RunDetail;
   styles: Styles;
   theme: PluginTheme;
-  now: number;
   navigation: Navigation;
 }) {
   const groups = useMemo(() => {
@@ -264,7 +271,7 @@ function Phases({
       list.push(call);
       byPhase.set(title, list);
     }
-    return run.phases.map((phase) => ({ phase, calls: byPhase.get(phase.title) ?? [] }));
+    return run.phases.map((phase) => ({ phase, calls: callsByAttention(byPhase.get(phase.title) ?? []) }));
   }, [run.calls, run.phases]);
   if (groups.length === 0) return <Text style={styles.mutedText}>No agents yet.</Text>;
   return (
@@ -275,57 +282,74 @@ function Phases({
             <Text style={styles.sectionTitle}>{phase.title}</Text>
             <Text style={styles.muted}>
               {phase.total === 0 ? "not started" : `${phase.done}/${phase.total} done`}
-              {phase.running ? ` · ${phase.running} active` : ""}
+              {phase.running ? ` · ${phase.running} running` : ""}
+              {phase.queued ? ` · ${phase.queued} queued` : ""}
               {phase.failed ? ` · ${phase.failed} failed` : ""}
               {phase.skipped ? ` · ${phase.skipped} skipped` : ""}
             </Text>
           </View>
           {phase.detail ? <Text style={styles.muted}>{phase.detail}</Text> : null}
-          {calls.length > 0 ? (
-            <View style={styles.panelCard}>
-              {calls.slice(0, CALLS_PER_PHASE).map((call) => (
-                <CallRow key={call.callId} runId={run.runId} call={call} styles={styles} theme={theme} now={now} navigation={navigation} />
-              ))}
-              {calls.length > CALLS_PER_PHASE ? (
-                <Text style={styles.muted}>+{calls.length - CALLS_PER_PHASE} more agents in this phase</Text>
-              ) : null}
-            </View>
-          ) : null}
+          {calls.length > 0 ? <PhaseCalls runId={run.runId} calls={calls} styles={styles} theme={theme} navigation={navigation} /> : null}
         </View>
       ))}
     </View>
   );
+});
+
+function PhaseCalls({ runId, calls, styles, theme, navigation }: {
+  runId: string;
+  calls: AgentCall[];
+  styles: Styles;
+  theme: PluginTheme;
+  navigation: Navigation;
+}) {
+  const [visible, setVisible] = useState(CALLS_PER_PAGE);
+  return (
+    <View style={styles.panelCard}>
+      {calls.slice(0, visible).map((call) => (
+        <CallRow key={call.callId} runId={runId} call={call} styles={styles} theme={theme} navigation={navigation} />
+      ))}
+      {calls.length > visible ? (
+        <Pressable onPress={() => setVisible((count) => count + CALLS_PER_PAGE)} accessibilityRole="button" style={styles.button}>
+          <Text style={styles.buttonText}>Show {Math.min(CALLS_PER_PAGE, calls.length - visible)} more · {calls.length - visible} remaining</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
 }
 
-function CallRow({
+const CallRow = memo(function CallRow({
   runId,
   call,
   styles,
   theme,
-  now,
   navigation,
 }: {
   runId: string;
   call: AgentCall;
   styles: Styles;
   theme: PluginTheme;
-  now: number;
   navigation: Navigation;
 }) {
   const [open, setOpen] = useState(false);
-  const [showTranscript, setShowTranscript] = useState(false);
-  // Archived children are not in the client cache and cannot be opened as tabs.
-  const openable = useAgent(call.agentId ?? "", (snapshot) => ({ id: snapshot.id })) !== null;
+  const [skipping, setSkipping] = useState(false);
+  const queryClient = useQueryClient();
   const skipCall = useRpc(skipCallRpc);
   const toast = useToast();
   const look = CALL_LOOK[call.status];
   const live = isLiveCall(call.status);
+  const now = useNow(live && call.startedAt !== null);
   const time = elapsed(call.startedAt, call.endedAt, now);
+  useEffect(() => { if (!live) setSkipping(false); }, [live]);
   const skip = async () => {
+    setSkipping(true);
     try {
       const result = await skipCall({ runId, callId: call.callId });
       toast.show(result.message);
+      if (!result.skipped) setSkipping(false);
+      await queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, "run", runId] });
     } catch (error) {
+      setSkipping(false);
       toast.error(`Could not skip the agent: ${errorMessage(error)}`);
     }
   };
@@ -347,7 +371,33 @@ function CallRow({
           {call.usage.outputTokens ? ` · ${formatTokens(call.usage.outputTokens)} tok` : ""}
         </Text>
       </Pressable>
-      {open ? (
+      {open ? <CallDetails runId={runId} call={call} styles={styles} theme={theme} navigation={navigation} skipping={skipping} onSkip={skip} /> : null}
+
+    </View>
+  );
+});
+
+function CallDetails({ runId, call, styles, theme, navigation, skipping, onSkip }: {
+  runId: string;
+  call: AgentCall;
+  styles: Styles;
+  theme: PluginTheme;
+  navigation: Navigation;
+  skipping: boolean;
+  onSkip: () => Promise<void>;
+}) {
+  const [showTranscript, setShowTranscript] = useState(false);
+  const live = isLiveCall(call.status);
+  // Only expanded rows need client-cache subscriptions or full result/error queries.
+  const openable = useAgent(call.agentId ?? "", (snapshot) => ({ id: snapshot.id })) !== null;
+  const getCall = useRpc(getCallRpc);
+  const details = useQuery({
+    queryKey: [PLUGIN_ID, "call", runId, call.callId, call.status],
+    queryFn: () => getCall({ runId, callId: call.callId }),
+    refetchInterval: live ? 3000 : false,
+  });
+  const detail = details.data?.call ?? call;
+  return (
         <View style={styles.callDetail}>
           <Text style={styles.muted} selectable>
             {[call.provider && call.model ? `${call.provider}/${call.model}` : call.provider, call.agentId ? `agent ${call.agentId}` : null, call.repairs ? `${plural(call.repairs, "schema correction")}` : null]
@@ -361,14 +411,16 @@ function CallRow({
               {call.worktree.changed === true ? " · has changes" : call.worktree.changed === false ? " · unchanged, removed" : ""}
             </Text>
           ) : null}
-          {call.error ? (
+          {details.isPending ? <Text style={styles.muted}>Loading details…</Text> : null}
+          {details.isError ? <Text style={styles.danger}>Could not load details: {errorMessage(details.error)}</Text> : null}
+          {detail.error ? (
             <Text style={styles.danger} selectable>
-              {call.error}
+              {detail.error}
             </Text>
           ) : null}
-          {call.resultPreview !== null ? (
+          {detail.resultPreview !== null ? (
             <Text style={styles.resultText} selectable>
-              {prettyJson(call.resultPreview)}
+              {prettyJson(detail.resultPreview)}
             </Text>
           ) : null}
           <View style={styles.row}>
@@ -393,15 +445,13 @@ function CallRow({
               </Pressable>
             ) : null}
             {live ? (
-              <Pressable onPress={() => void skip()} style={styles.button} accessibilityRole="button" accessibilityLabel={`Skip ${call.label}`}>
-                <Text style={styles.buttonDangerText}>Skip</Text>
+              <Pressable onPress={() => void onSkip()} disabled={skipping} style={styles.button} accessibilityRole="button" accessibilityLabel={`Skip ${call.label}`}>
+                <Text style={styles.buttonDangerText}>{skipping ? "Skipping…" : "Skip"}</Text>
               </Pressable>
             ) : null}
           </View>
           {showTranscript && call.agentId ? <Transcript agentId={call.agentId} live={live} styles={styles} theme={theme} /> : null}
         </View>
-      ) : null}
-    </View>
   );
 }
 
@@ -419,10 +469,18 @@ function Transcript({ agentId, live, styles, theme }: { agentId: string; live: b
     queryFn: () => readTranscript({ agentId }),
     refetchInterval: live ? 3000 : false,
   });
+  const wasLive = useRef(live);
+  const { refetch } = query;
+  useEffect(() => {
+    if (wasLive.current && !live) void refetch();
+    wasLive.current = live;
+  }, [live, refetch]);
   if (query.isPending) return <Text style={styles.muted}>Loading transcript…</Text>;
   if (query.isError) return <Text style={styles.danger}>Could not load the transcript: {errorMessage(query.error)}</Text>;
   return (
     <View style={{ gap: 4 }}>
+      <Pressable onPress={() => void refetch()} accessibilityRole="button"><Text style={styles.link}>Refresh transcript</Text></Pressable>
+      {query.data.entries.length === 0 ? <Text style={styles.muted}>No transcript entries available yet.</Text> : null}
       {query.data.truncated ? <Text style={styles.muted}>Showing the last {query.data.entries.length} entries</Text> : null}
       {query.data.entries.map((entry, index) => {
         const look = ENTRY_LOOK[entry.kind];
