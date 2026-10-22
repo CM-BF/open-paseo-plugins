@@ -27,7 +27,8 @@
 4. 每个验收场景保存截图，存到插件仓库的 `docs/verification/` 或 `$HOME` 下的持久路径，并记录 daemon 版本、插件路径和 commit、fixture ID、场景、结果，以及没有验证到的部分。截图里不能有凭据或无关的私人对话。不得用生成的图片、伪造的页面或 mock 结果冒充真实运行截图；环境阻止 UI 验证时如实说明，不宣称已通过。
 5. typecheck、单测和 `plugin ls` 的 `running` 都只是前置检查，不能代替 Web UI 验证。
 6. 截图流程：`browser_new_tab` 打开 `https://app.paseo.sh` → `browser_snapshot` 找到入口 → 操作 → `browser_screenshot` 保存。截图前用 `browser_resize` 切换桌面宽度（如 1440×900）和窄宽度（如 420×860）各截一张。截图文件名写清场景，如 `docs/verification/2026-10-22-card-running-desktop.png`，并在 `PROGRESS.md` 的验证记录里引用。
-7. 会给 agent 加工具或往 agent 时间线写内容的插件（MCP 注入、timeline row、通知回投），要用插件安装之后新建的测试 agent 走一遍真实流程：让 agent 调用工具，在 Web UI 里看到工具调用、插件卡片和回投的消息。插件安装之前就存在的 agent 拿不到新注入的工具。
+7. Paseo 内置浏览器的标签页在后台打开，可能一直不绘制（`browser_screenshot` 报 `screenshot_no_frame`）。这时用本机 headless Chrome 截图：按 `scripts/cdp.mjs` 文件头的参数启动（必须带 `--disable-features=LocalNetworkAccessChecks`，否则 `https://app.paseo.sh` 连不上 `localhost:6767`，WebSocket 报 1006），第一次在欢迎页选 Direct connection，Host 填 `localhost`。用 `node scripts/cdp.mjs window 1440 900` / `window 420 860` 切换桌面和窄宽度（`size` 的设备模拟只在一次调用里有效），`goto`、`click-text`、`shot` 操作和保存截图。用完关掉 Chrome，删除它的 `--user-data-dir`。
+8. 会给 agent 加工具或往 agent 时间线写内容的插件（MCP 注入、timeline row、通知回投），要用插件安装之后新建的测试 agent 走一遍真实流程：让 agent 调用工具，在 Web UI 里看到工具调用、插件卡片和回投的消息。插件安装之前就存在的 agent 拿不到新注入的工具。
 
 ## 测试数据与资源
 
