@@ -117,3 +117,8 @@
 - `server/recovery.test.ts`：按 label 找回未保存 create 响应的子 agent（含分页），排除无关 agent，保护父 workspace/目录；使用真实临时 git 仓库和 worktree，验证只有未改动的子 worktree 会移除，未提交/已提交成果均保留，失败 teardown 标成 `changed:null`。
 - 额外发现并修复：archive 返回成功但目录仍存在时，恢复逻辑之前误标为“已移除”。新增用例先出现 `changed:false` 的红灯结果；主 agent 增加实际目录检查后转绿，保留路径并标为 `changed:null`。
 - 验证：`npx vitest run server/contribute.test.ts server/recovery.test.ts`，2 个文件、11 个测试全部通过；`npm run typecheck` 通过。本组为本地回归测试，不代替 daemon/Web UI 验收；没有操作主 daemon。
+
+## Review 修复：停止时的最终用量（2026-10-22）
+
+- 第二轮交叉检查发现：engine 在触发子 agent 的 abort 前就屏蔽所有用量回调，使 runner 刚补上的 partial usage 被丢弃。现将状态冻结与用量冻结分开：收尾的 1 秒窗口内计入最终用量，窗口结束后保持快照/通知不再变化。
+- 验证：两个 engine 测试文件共 41 项通过；覆盖清理期间用量计入但不恢复 running 状态，以及超过清理截止时间后的用量回调不再更新已结束运行。完整 `npx tsc --noEmit` 通过。尚未做本轮 daemon/Web UI 验证。

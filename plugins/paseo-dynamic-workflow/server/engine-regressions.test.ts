@@ -157,7 +157,7 @@ describe("runtime regression contracts", () => {
     expect(entries.filter(entry => entry.type === "log").every(entry => entry.message.length <= 2000)).toBe(true);
   });
 
-  it("ignores late usage and progress while waiting for child cleanup", async () => {
+  it("counts final partial usage during child cleanup without reviving its status", async () => {
     const runner = new FakeRunner((task, progress) => new Promise(resolve => {
       task.signal.addEventListener("abort", () => setTimeout(() => {
         progress.status("running");
@@ -170,7 +170,23 @@ describe("runtime regression contracts", () => {
     });
     expect(record.status).toBe("stopped");
     expect(record.calls[0]?.status).toBe("skipped");
+    expect(record.usage.outputTokens).toBe(7);
+    expect(record.calls[0]?.usage.outputTokens).toBe(7);
+  });
+
+  it("freezes usage when child cleanup exceeds the deadline and the run finishes", async () => {
+    let reportLateUsage: (() => void) | undefined;
+    const runner = new FakeRunner((_task, progress) => {
+      reportLateUsage = () => progress.usage({ inputTokens: 5, outputTokens: 7, costUsd: 1 });
+      return new Promise(() => undefined);
+    });
+    const { record } = await run("await agent('slow')", runner, {
+      onChange: engine => { if (engine.record.calls[0]?.status === "running") queueMicrotask(() => void engine.stop("late usage")); },
+    });
+    expect(record.status).toBe("stopped");
+    reportLateUsage?.();
     expect(record.usage.outputTokens).toBe(0);
+    expect(record.calls[0]?.usage.outputTokens).toBe(0);
   });
 
   it("caps forgot-await request floods before they can swamp the host", async () => {

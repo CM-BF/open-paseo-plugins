@@ -65,6 +65,7 @@ export class RunEngine {
   private lastPong = Date.now();
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private settled = false;
+  private usageFinalized = false;
   /** Set by stop(): the script's own failure (its agent() calls throw) still ends the run as stopped. */
   private stopReason: string | null = null;
   private readonly done: Promise<void>;
@@ -402,7 +403,7 @@ export class RunEngine {
   }
 
   private addUsage(call: AgentCall, usage: Usage): void {
-    if (this.settled) return;
+    if (this.usageFinalized) return;
     call.usage = sumUsage(call.usage, usage);
     this.record.usage = sumUsage(this.record.usage, usage);
     try {
@@ -480,6 +481,7 @@ export class RunEngine {
     } finally {
       cancelWait?.();
     }
+    this.usageFinalized = true;
     await this.files.journal({ type: "run_finished", at: this.record.endedAt, status, error });
     this.options.onChange(this);
     try {
