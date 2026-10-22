@@ -1,6 +1,6 @@
 /**
  * The workflow authoring reference returned by the workflow_reference tool and written to
- * <state>/REFERENCE.md. Keep it in step with the runtime in engine.ts and worker-source.ts.
+ * <state>/REFERENCE.md. Generated from docs/REFERENCE.md by scripts/build-reference.mjs; edit that file.
  */
 export const REFERENCE = `# Paseo dynamic workflows: authoring reference
 
@@ -63,7 +63,7 @@ return { fixes: fixes.filter(Boolean) }
 | \`effort\` | \`'low'\`, \`'medium'\`, \`'high'\`, \`'xhigh'\` or \`'max'\`, used when the model offers that thinking option. \`'low'\` for cheap mechanical stages; higher only for the hardest judge or verify stages. |
 | \`agentType\` | A Paseo agent profile by name or id (the \`list_profiles\` tool shows them with notes on what each is for), or a built-in role: \`general-purpose\` (default), \`explore\` and \`plan\` (read-only), \`verification\` (adversarial, read-only). |
 | \`provider\` | Run on another provider with its default model (\`'codex'\`, \`'claude'\`, \`'opencode'\`). |
-| \`isolation\` | \`'worktree'\`: the agent works in a new git worktree on branch \`workflow/<run>/<label>-<n>\` in a background workspace. Costs a checkout per agent: use it only when agents edit files in parallel and would conflict. Unchanged worktrees are removed; changed ones are listed in the notification for you to merge. |
+| \`isolation\` | \`'worktree'\`: the agent works in a new git worktree on a new branch, in a background workspace, and commits there. Costs a checkout per agent: use it only when agents edit files in parallel and would conflict. Unchanged worktrees are removed; changed ones (path and actual branch) are listed in the notification for you to merge. |
 | \`cwd\` | Absolute working directory for this agent (default: yours). |
 
 Children are ordinary Paseo agents. They appear in your Subagents track while they run (the user can watch them and answer their permission prompts), read the same project instruction files you do, and are archived when their result is recorded. They have no workflow tools of their own. Each child is told its final message is data for the script, so it answers with the result only.

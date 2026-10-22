@@ -249,6 +249,8 @@ export class AgentRunner {
   }
 
   private async settleWorktree(worktree: WorktreeInfo, base: string | null): Promise<WorktreeInfo> {
+    // Paseo may rename a new worktree's branch after its first prompt: report the real one.
+    const branch = (await currentBranch(worktree.path)) ?? worktree.branch;
     const changed = await worktreeChanged(worktree.path, base);
     if (changed === false && worktree.workspaceId) {
       try {
@@ -257,7 +259,7 @@ export class AgentRunner {
         log(`could not remove the unchanged worktree ${worktree.path}: ${describeError(error)}`);
       }
     }
-    return { ...worktree, changed };
+    return { ...worktree, branch, changed };
   }
 
   private async resolveConfig(task: AgentTask): Promise<ResolvedConfig> {
@@ -382,7 +384,7 @@ function buildPrompt(task: AgentTask, branch: string | null): string {
   }
   if (branch) {
     notes.push(
-      `You work in an isolated git worktree on branch ${branch}; other agents edit their own copies in parallel. Commit your changes on this branch before you finish. Leave the branch in place: the orchestrator merges it.`,
+      "You work in an isolated git worktree; other agents edit their own copies in parallel. Commit your changes on the current branch before you finish and leave the branch in place: the orchestrator merges it.",
     );
   }
   return `${header}\n\n${task.prompt}\n\n---\n${notes.join("\n")}`;
@@ -408,6 +410,16 @@ async function gitHead(cwd: string): Promise<string | null> {
     if (name && name !== "HEAD") return name;
     const sha = await run("git", ["-C", cwd, "rev-parse", "HEAD"], { timeout: 10_000 });
     return sha.stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function currentBranch(path: string): Promise<string | null> {
+  try {
+    const { stdout } = await run("git", ["-C", path, "rev-parse", "--abbrev-ref", "HEAD"], { timeout: 10_000 });
+    const name = stdout.trim();
+    return name && name !== "HEAD" ? name : null;
   } catch {
     return null;
   }

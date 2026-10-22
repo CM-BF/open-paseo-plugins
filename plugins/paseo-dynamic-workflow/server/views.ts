@@ -1,3 +1,4 @@
+import { NOTIFICATION_MARKER } from "../shared/notification";
 import type { AgentCall, CardData, PhaseSummary, RunDetail, RunSummary } from "../shared/run-types";
 import { runPaths, type StatePaths } from "./paths";
 import type { RunRecord } from "./run-store";
@@ -163,7 +164,7 @@ export function notificationText(record: RunRecord, state: StatePaths): string {
           ? "was interrupted"
           : `failed: ${firstLine(record.error ?? "unknown error")}`;
   const parts = [
-    "[paseo-dynamic-workflow] A background workflow you launched has ended. This message comes from the plugin, not from the user.",
+    `${NOTIFICATION_MARKER} A background workflow you launched has ended. This message comes from the plugin, not from the user.`,
     "<task-notification>",
     `<task-id>${record.runId}</task-id>`,
     `<status>${record.status}</status>`,

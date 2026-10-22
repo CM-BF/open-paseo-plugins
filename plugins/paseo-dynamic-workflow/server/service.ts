@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { CARD_KIND, CARD_VERSION, LABEL_RUN, RUN_ID_PATTERN } from "../shared/ids";
+import { NOTIFICATION_MARKER } from "../shared/notification";
 import type { RunDetail, RunSummary } from "../shared/run-types";
 import type { Preferences } from "../shared/settings";
 import { AgentRunner, type ParentContext } from "./agent-runner";
@@ -371,7 +372,7 @@ export class WorkflowService {
       for (let index = entries.length - 1; index >= 0; index--) {
         const item = entries[index]?.item;
         if (item?.type === "user_message" && typeof item.text === "string") {
-          if (item.text.startsWith("[paseo-dynamic-workflow]")) continue;
+          if (item.text.startsWith(NOTIFICATION_MARKER)) continue;
           return parseBudgetDirective(stripReminders(item.text));
         }
       }

@@ -208,7 +208,7 @@ function RunView({ runId, styles, theme, navigation }: { runId: string; styles: 
           </View>
           <View style={styles.panelCard}>
             <Text style={styles.resultText} selectable>
-              {run.resultPreview}
+              {prettyJson(run.resultPreview)}
             </Text>
           </View>
         </View>
@@ -338,7 +338,7 @@ function CallRow({
         <Text style={styles.callMeta} numberOfLines={1}>
           {look.label}
           {time ? ` · ${time}` : ""}
-          {call.usage.outputTokens ? ` · ${formatTokens(call.usage.outputTokens)}` : ""}
+          {call.usage.outputTokens ? ` · ${formatTokens(call.usage.outputTokens)} tok` : ""}
         </Text>
       </Pressable>
       {open ? (
@@ -362,7 +362,7 @@ function CallRow({
           ) : null}
           {call.resultPreview !== null ? (
             <Text style={styles.resultText} selectable>
-              {call.resultPreview}
+              {prettyJson(call.resultPreview)}
             </Text>
           ) : null}
           <View style={styles.row}>
@@ -417,4 +417,15 @@ function CopyButton({ text, label, styles }: { text: string; label: string; styl
       <Text style={styles.link}>Copy</Text>
     </Pressable>
   );
+}
+
+/** Indented JSON when the text is complete JSON; the text as it is otherwise (strings, truncated values). */
+function prettyJson(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return text;
+  try {
+    return JSON.stringify(JSON.parse(trimmed), null, 2);
+  } catch {
+    return text;
+  }
 }
