@@ -64,7 +64,8 @@ export function formatDuration(ms: number): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-export function unref<T extends { unref?: () => unknown }>(timer: T): T {
-  timer.unref?.();
+/** Lets the process exit with the timer pending (React Native's typings make timers numbers). */
+export function unref<T>(timer: T): T {
+  (timer as { unref?: () => unknown }).unref?.();
   return timer;
 }

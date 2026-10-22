@@ -1,0 +1,100 @@
+import type { PluginTheme } from "@getpaseo/plugin";
+import { Platform, StyleSheet } from "react-native";
+
+const MONO = Platform.select({ ios: "Menlo", android: "monospace", default: "ui-monospace, Menlo, Consolas, monospace" });
+
+export function createStyles(theme: PluginTheme, compact: boolean) {
+  const { colors } = theme;
+  return StyleSheet.create({
+    card: {
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 10,
+      backgroundColor: colors.surface1,
+      paddingHorizontal: compact ? 10 : 12,
+      paddingVertical: compact ? 8 : 10,
+      gap: compact ? 5 : 7,
+    },
+    row: { flexDirection: "row", alignItems: "center", gap: 6 },
+    between: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+    grow: { flex: 1, minWidth: 0 },
+    kicker: { color: colors.foregroundMuted, fontSize: 13 },
+    title: { color: colors.foreground, fontSize: 14, fontWeight: "600", flexShrink: 1 },
+    text: { color: colors.foreground, fontSize: 13 },
+    muted: { color: colors.foregroundMuted, fontSize: 12 },
+    mutedText: { color: colors.foregroundMuted, fontSize: 13 },
+    mono: { color: colors.foreground, fontSize: 12, fontFamily: MONO },
+    danger: { color: colors.statusDanger, fontSize: 12 },
+    link: { color: colors.accent, fontSize: 13, fontWeight: "600" },
+    linkDanger: { color: colors.statusDanger, fontSize: 13, fontWeight: "600" },
+    status: { fontSize: 12, fontWeight: "600" },
+    glyph: { width: 14, fontSize: 12, textAlign: "center" },
+    phaseRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+    phaseTitle: { color: colors.foreground, fontSize: 13, fontWeight: "500", width: compact ? 88 : 120 },
+    bar: { flex: 1, height: 6, borderRadius: 3, backgroundColor: colors.surface2, overflow: "hidden", flexDirection: "row" },
+    barDone: { backgroundColor: colors.statusSuccess },
+    barRunning: { backgroundColor: colors.accent },
+    barFailed: { backgroundColor: colors.statusDanger },
+    phaseCount: { color: colors.foregroundMuted, fontSize: 12, minWidth: compact ? 70 : 110, textAlign: "right" },
+    agents: { gap: 2, paddingLeft: 2 },
+    agentRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+    agentLabel: { color: colors.foreground, fontSize: 12, flex: 1 },
+    log: { color: colors.foregroundMuted, fontSize: 12 },
+    result: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.border,
+      paddingTop: compact ? 5 : 7,
+      gap: 2,
+    },
+    resultText: { color: colors.foreground, fontSize: 12, fontFamily: MONO },
+    footer: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, paddingTop: 2 },
+    actions: { flexDirection: "row", alignItems: "center", gap: 14 },
+    // Panel
+    screen: { flex: 1, backgroundColor: colors.surface0 },
+    screenContent: { padding: compact ? 12 : 20, gap: compact ? 12 : 16 },
+    heading: { color: colors.foreground, fontSize: compact ? 18 : 20, fontWeight: "600" },
+    sectionTitle: { color: colors.foregroundMuted, fontSize: 12, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.4 },
+    list: {
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 10,
+      backgroundColor: colors.surface1,
+      overflow: "hidden",
+    },
+    listRow: { paddingHorizontal: compact ? 10 : 12, paddingVertical: compact ? 8 : 10, gap: 2 },
+    listRowSelected: { backgroundColor: colors.surface2 },
+    divider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border },
+    panelCard: {
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 10,
+      backgroundColor: colors.surface1,
+      padding: compact ? 10 : 14,
+      gap: compact ? 8 : 10,
+    },
+    callRow: { paddingVertical: compact ? 4 : 5, gap: 4 },
+    callMeta: { color: colors.foregroundMuted, fontSize: 12 },
+    callDetail: {
+      marginLeft: 20,
+      paddingLeft: 10,
+      borderLeftWidth: 2,
+      borderLeftColor: colors.border,
+      gap: 4,
+    },
+    pathRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+    pathLabel: { color: colors.foregroundMuted, fontSize: 12, width: 72 },
+    pathValue: { color: colors.foreground, fontSize: 12, flex: 1, fontFamily: MONO },
+    button: {
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 8,
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      backgroundColor: colors.surface2,
+    },
+    buttonText: { color: colors.foreground, fontSize: 12, fontWeight: "600" },
+    buttonDangerText: { color: colors.statusDanger, fontSize: 12, fontWeight: "600" },
+  });
+}
+
+export type Styles = ReturnType<typeof createStyles>;
