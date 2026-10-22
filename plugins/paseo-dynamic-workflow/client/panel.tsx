@@ -4,8 +4,9 @@ import { copyText, ScrollView, useToast } from "@getpaseo/plugin/client/react-na
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { getRunRpc, listRunsRpc, skipCallRpc, stopRunRpc } from "../shared/contracts";
+import { getRunRpc, listRunsRpc, skipCallRpc, stopRunRpc, transcriptRpc } from "../shared/contracts";
 import { PLUGIN_ID } from "../shared/ids";
+import type { TranscriptEntry } from "../shared/contracts";
 import type { AgentCall, RunDetail, RunSummary } from "../shared/run-types";
 import {
   CALL_LOOK,
@@ -312,6 +313,9 @@ function CallRow({
   navigation: Navigation;
 }) {
   const [open, setOpen] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(false);
+  // Archived children are not in the client cache and cannot be opened as tabs.
+  const openable = useAgent(call.agentId ?? "", (snapshot) => ({ id: snapshot.id })) !== null;
   const skipCall = useRpc(skipCallRpc);
   const toast = useToast();
   const look = CALL_LOOK[call.status];
@@ -368,7 +372,17 @@ function CallRow({
             </Text>
           ) : null}
           <View style={styles.row}>
-            {call.agentId && navigation ? (
+            {call.agentId ? (
+              <Pressable
+                onPress={() => setShowTranscript((value) => !value)}
+                style={styles.button}
+                accessibilityRole="button"
+                accessibilityLabel={`${showTranscript ? "Hide" : "Show"} the transcript of ${call.label}`}
+              >
+                <Text style={styles.buttonText}>{showTranscript ? "Hide transcript" : "Transcript"}</Text>
+              </Pressable>
+            ) : null}
+            {call.agentId && navigation && openable ? (
               <Pressable
                 onPress={() => navigation.openAgent({ agentId: call.agentId ?? "" })}
                 style={styles.button}
@@ -384,8 +398,44 @@ function CallRow({
               </Pressable>
             ) : null}
           </View>
+          {showTranscript && call.agentId ? <Transcript agentId={call.agentId} live={live} styles={styles} theme={theme} /> : null}
         </View>
       ) : null}
+    </View>
+  );
+}
+
+const ENTRY_LOOK: Record<TranscriptEntry["kind"], { prefix: string; tone: "muted" | "accent" | "danger" | "success" }> = {
+  user: { prefix: "prompt", tone: "muted" },
+  assistant: { prefix: "reply", tone: "success" },
+  tool: { prefix: "tool", tone: "accent" },
+  error: { prefix: "error", tone: "danger" },
+};
+
+function Transcript({ agentId, live, styles, theme }: { agentId: string; live: boolean; styles: Styles; theme: PluginTheme }) {
+  const readTranscript = useRpc(transcriptRpc);
+  const query = useQuery({
+    queryKey: [PLUGIN_ID, "transcript", agentId],
+    queryFn: () => readTranscript({ agentId }),
+    refetchInterval: live ? 3000 : false,
+  });
+  if (query.isPending) return <Text style={styles.muted}>Loading transcript…</Text>;
+  if (query.isError) return <Text style={styles.danger}>Could not load the transcript: {errorMessage(query.error)}</Text>;
+  return (
+    <View style={{ gap: 4 }}>
+      {query.data.truncated ? <Text style={styles.muted}>Showing the last {query.data.entries.length} entries</Text> : null}
+      {query.data.entries.map((entry, index) => {
+        const look = ENTRY_LOOK[entry.kind];
+        return (
+          <Text key={index} style={styles.text} selectable numberOfLines={entry.kind === "user" ? 4 : undefined}>
+            <Text style={[styles.muted, { color: toneColor(theme, look.tone) }]}>
+              {look.prefix}
+              {entry.status && entry.status !== "completed" ? ` (${entry.status})` : ""}{" "}
+            </Text>
+            {entry.text}
+          </Text>
+        );
+      })}
     </View>
   );
 }

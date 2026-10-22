@@ -79,7 +79,7 @@ export function SettingsScreen({ theme }: PluginSurfaceProps) {
           />
           <SettingsSwitch
             label="Archive finished child agents"
-            hint="Keeps the Subagents track short. Archived agents still open from the workflow panel."
+            hint="Keeps the Subagents track short. Their transcripts stay readable in the workflow panel."
             value={values.archiveFinishedAgents}
             onValueChange={(archiveFinishedAgents) => save({ archiveFinishedAgents })}
           />

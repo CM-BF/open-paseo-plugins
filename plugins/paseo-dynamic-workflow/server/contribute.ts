@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { getRunRpc, listRunsRpc, serviceStatusRpc, skipCallRpc, stopRunRpc } from "../shared/contracts";
-import { CHILD_ENV, PLUGIN_VERSION } from "../shared/ids";
+import { getRunRpc, listRunsRpc, serviceStatusRpc, skipCallRpc, stopRunRpc, transcriptRpc } from "../shared/contracts";
+import { CHILD_ENV, LABEL_RUN, PLUGIN_VERSION } from "../shared/ids";
 import { DEFAULT_PREFERENCES, type Preferences, preferences } from "../shared/settings";
 import { ProviderFamilies, transformCreate, transformSessionOpen } from "./agent-setup";
 import { BindingStore } from "./bindings";
@@ -9,6 +9,7 @@ import { Bridge } from "./bridge";
 import { Gate, type PaseoApi } from "./gate";
 import { defaultStateDir, statePaths } from "./paths";
 import { writeScripts } from "./scripts";
+import { transcriptEntries } from "./transcript";
 import { WorkflowService } from "./service";
 import { describeError, log } from "./util";
 
@@ -121,6 +122,16 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     capture(context);
     const skipped = service.skip(input.runId, input.callId);
     return { skipped, message: skipped ? "Skipping the agent; its agent() call returns null." : "That agent is not running." };
+  });
+  server.handle(transcriptRpc, async (input, context) => {
+    capture(context);
+    const handle = context.paseo.agents.ref(input.agentId);
+    const fresh = await handle.refresh();
+    // Only workflow children: the panel has no business reading other agents' timelines.
+    if (!fresh || !fresh.agent.labels?.[LABEL_RUN]) throw new Error("Not a workflow agent on this host");
+    const page = await handle.timeline.refetch({ direction: "tail", limit: 400, projection: "canonical" });
+    const items = (page as { entries?: Array<{ item: Parameters<typeof transcriptEntries>[0][number] }> }).entries ?? [];
+    return transcriptEntries(items.map((entry) => entry.item));
   });
   server.handle(serviceStatusRpc, async (_input, context) => {
     capture(context);

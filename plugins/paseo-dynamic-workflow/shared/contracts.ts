@@ -40,3 +40,16 @@ export const serviceStatusRpc = defineRpc({
     mcpPath: z.string(),
   }),
 });
+
+export const TranscriptEntrySchema = z.object({
+  kind: z.enum(["user", "assistant", "tool", "error"]),
+  text: z.string(),
+  status: z.string().nullable(),
+});
+export type TranscriptEntry = z.infer<typeof TranscriptEntrySchema>;
+
+export const transcriptRpc = defineRpc({
+  name: "calls.transcript",
+  input: z.object({ agentId: z.string() }),
+  output: z.object({ entries: z.array(TranscriptEntrySchema), truncated: z.boolean() }),
+});
