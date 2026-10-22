@@ -80,3 +80,13 @@
 - 插件安装之前就存在的 agent 拿不到工具（Paseo 只在 agent.create 时注入）。
 - Paseo 内置浏览器的后台标签页不绘制，截图要用本机 headless Chrome（见上面的环境说明和 `/tmp/dwf-build/tools/cdp.mjs` 的做法）。
 - 未做：组合 pill（每个 agent 的运行中 workflow 计数）、暂停/继续。
+
+## Review 修复：客户端和运行视图（2026-10-22）
+
+- 已修复（commit `38108a8`）：每阶段先显示运行中、需权限和失败的调用，按 50 行展开更多，超过第 120 个的调用仍可操作；运行详情按 `runId` 重置局部状态。
+- 实时轮询使用精简视图：只保留调用元数据，结果与错误在展开调用时单独读取；只传最近 20 条、每条截短的日志。运行时钟独立刷新，调用行 memo，只有展开行订阅子 agent 缓存和完整详情。
+- 设置改为本地草稿与显式 Save settings，一次写入完整文档和当前 revision；空数字与越界值显示校验错误，保存失败可 Reload 存储值。
+- Transcript 在调用从 live 变为结束时补刷，并提供 Refresh；Skip 显示 pending 且请求后刷新运行；计数区分 running 和 queued，旧卡片的新计数默认 0。
+- 原生布局补充文本收缩约束。通知包括失败原因和真实的 journal/run snapshot 位置，恢复提示保留 args；运行目录不再标为 transcript 目录。
+- 验证：`npx vitest run server/views.test.ts client/settings-input.test.ts shared/notification.test.ts client/format.test.ts`，4 个文件、11 个测试通过；代表性 200 调用的精简 JSON 小于完整视图的 1/3，仍保留全部调用 ID 和元数据；`git diff --check` 通过。
+- Typecheck 当时仅报告并行修改中的 agent-runner 测试和 engine timer 类型错误，客户端/共享契约/views 无错误。尚未在本轮 daemon/Web UI/iOS/Android 上验证；未操作 daemon。`server/contribute.ts` 新详情 RPC 注册由主 agent 和其余服务修改一并提交。
