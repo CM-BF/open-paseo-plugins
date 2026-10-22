@@ -46,7 +46,7 @@
 - [x] 停止（卡片 Stop、面板 Stop run）、resume、插件重载时 interrupted、CLI 路径（pi）、保存的 workflow（`--name` 和 MCP `name`）、agent 自己写脚本
 - [x] 窄屏截图、设置页截图、面板里展开 agent、子 agent transcript
 - [x] OVERVIEW.md、README、manifest 名称和描述
-- [ ] 清理测试 fixture（workspace、agent、worktree、测试 run），交付说明
+- [x] 清理测试 fixture（workspace、agent、worktree、测试 run），交付说明
 ## 验证记录
 
 环境：主 daemon `srv_BSheQn5lzdEE`，Paseo 0.12.0，home `~/.paseo`，listen 127.0.0.1:6767；插件以目录源安装，路径 `open-paseo-plugins/plugins/paseo-dynamic-workflow`（worktree `sw/dynamic-workflow`）。Fixture：`~/plugin-test-2026-10-22-dwf`（git 仓库），workspace `wks_917a0fc65ab64be8`。截图用本机 headless Chrome（`--disable-features=LocalNetworkAccessChecks`）打开 `https://app.paseo.sh`、Direct connection 到 `localhost:6767`；Paseo 内置浏览器的后台标签页不绘制，`browser_screenshot` 报 `screenshot_no_frame`。
@@ -60,11 +60,17 @@
 | 2026-10-22 | 355b472 | pi 父 agent `30e4aee3`（不支持 MCP）按系统提示用 `paseo-workflow run --name stop-resume` 启动保存的 workflow（run `wf_ff97f20e6579`）；在卡片上点 Stop | 子 agent 被关闭并 archive；但运行记成 failed（WorkflowStopped），见下一行修复 | `docs/verification/2026-10-22-pi-cli-parent-card-running-desktop.png` |
 | 2026-10-22 | 37c5c14 | 修复后：Haiku 父 agent 用 MCP `name: "stop-resume"` 启动（run `wf_19ce09414287`），在面板点 Stop run | Stopped，“stopped by the user” | `docs/verification/2026-10-22-panel-running-desktop.png`、`…-panel-stopped-by-user-desktop.png`、`…-panel-stopped-compact.png` |
 | 2026-10-22 | 37c5c14 | pi 父 agent 用 `--resume wf_ff97f20e6579 --args-json '{"fast":true}'` 恢复（run `wf_6c72dcb615ea`） | quick 两个 agent 命中缓存（cached），slow 两个改了 prompt 的重新跑；completed | `docs/verification/2026-10-22-pi-resume-cached-desktop.png` |
-| 2026-10-22 | b0dd649 | pi 父 agent 启动 `wf_30d50c309861`，slow 阶段运行中 `paseo plugin reload` | 记为 interrupted；两个运行中的子 agent closed + archived；重启后通知投递，父 agent 回复 | （无截图，`get_agent_status` / `get_agent_activity` 核对） |
+| 2026-10-22 | b0dd649 | pi 父 agent 启动 `wf_30d50c309861`，slow 阶段运行中 `paseo plugin reload` | 记为 interrupted；关停时 archive 子 agent 失败（插件日志：`Daemon client closed`），重启后的恢复逻辑把它们 archive 了；通知投递，父 agent 回复 | （无截图，`get_agent_status` / `get_agent_activity` 核对） |
 | 2026-10-22 | 87ef8b1 | 面板展开已 archive 的子 agent，看 transcript | prompt、工具调用、回复都在；archive 的子 agent 不能开成标签页，所以 Open agent 只在未 archive 时显示 | `docs/verification/2026-10-22-panel-call-expanded-desktop.png`、`…-panel-transcript-archived-child-desktop.png` |
 | 2026-10-22 | 37c5c14 | 设置页（Settings → Plugins → paseo-dynamic-workflow → Dynamic workflows） | 读写正常，Service 显示 bridge listening | `docs/verification/2026-10-22-settings-desktop.png`、`…-settings-service-desktop.png` |
 | 2026-10-22 | 4ad7a47 | 新建 Haiku agent `95fa9403`，只说“Use a workflow to audit src/ …”，不给脚本（run `wf_85af947c1999`） | agent 自己写出合法脚本（纯字面量 meta、schema、`agentType: 'verification'`、0 个 bug 时提前退出），7 个子 agent，completed | `docs/verification/2026-10-22-haiku-self-authored-workflow-desktop.png` |
 | 2026-10-22 | 4ad7a47 | 窄屏（500 宽）卡片和通知行 | 正常 | `docs/verification/2026-10-22-codex-card-and-notice-compact.png` |
+
+## 交付状态（2026-10-22）
+
+- 主 daemon 上装的是目录源 `/Users/citrine/Projects/flowly-kanban/usage-cecf/open-paseo-plugins/plugins/paseo-dynamic-workflow`（synthetic workspace 的 worktree，分支 `sw/dynamic-workflow`），状态 running。这个 worktree 删除之前要先换源：合并到 main 后 `paseo plugin remove paseo-dynamic-workflow`，再从 main 的 checkout（`/Users/citrine/Projects/flowly-kanban/open-paseo-plugins/plugins/paseo-dynamic-workflow`，先 `npm ci`）或 Git 源重新安装。安装前 daemon 上没有这个插件，没有要恢复的旧来源。
+- 默认对所有新建 agent 注入工具和系统提示（设置里可关）。状态目录 `~/.paseo/paseo-dynamic-workflow/`；测试 run 已删除，`bindings.json` 里留有测试 agent 的 nonce（无害）。
+- 已清理：测试 workspace `wks_917a0fc65ab64be8`、两个 worktree workspace、4 个父 agent 和全部子 agent（archive），fixture 目录 `~/plugin-test-2026-10-22-dwf`，headless Chrome 和它的 profile，Paseo 浏览器标签页。
 
 ## 已知问题 / 下一步
 
