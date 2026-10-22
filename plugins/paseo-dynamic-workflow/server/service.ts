@@ -92,7 +92,17 @@ export class WorkflowService {
     await this.notifier.load();
     for (const runId of await listRunIds(this.paths)) {
       const record = await readRecord(this.paths, runId);
-      if (!record || (record.status !== "running" && record.status !== "stopping")) continue;
+      if (!record) continue;
+      // A clean shutdown records the run as interrupted but cannot wait for its children to be
+      // archived; archive any that are still open.
+      if (record.status === "interrupted" && record.endedAt && Date.now() - Date.parse(record.endedAt) < 24 * 60 * 60_000) {
+        void this.gate.wait(10 * 60_000).then(
+          (paseo) => this.archiveLeftovers(paseo, record),
+          () => undefined,
+        );
+        continue;
+      }
+      if (record.status !== "running" && record.status !== "stopping") continue;
       record.status = "interrupted";
       record.endedAt = record.endedAt ?? nowIso();
       record.error = record.error ?? "The plugin stopped (reload, disable or daemon shutdown) while the run was active. Resume it with resumeFromRunId.";
