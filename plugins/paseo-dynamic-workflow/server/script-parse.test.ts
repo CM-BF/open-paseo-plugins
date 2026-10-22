@@ -1,0 +1,46 @@
+import { describe, expect, it } from "vitest";
+import { parseWorkflowScript, ScriptError } from "./script-parse";
+
+describe("parseWorkflowScript", () => {
+  it("reads a pure literal meta and keeps line numbers of the body", () => {
+    const parsed = parseWorkflowScript(
+      "export const meta = {\n  name: 'x',\n  description: `d`,\n  phases: [{ title: 'A', detail: 'a' }, 'B'],\n}\nreturn 1\n",
+    );
+    expect(parsed.meta).toEqual({ name: "x", description: "d", phases: [{ title: "A", detail: "a" }, { title: "B" }] });
+    expect(parsed.body.split("\n")[5]).toBe("return 1");
+  });
+
+  it.each([
+    ["missing meta", "const x = 1"],
+    ["meta not first", "const a = 1\nexport const meta = { name: 'x', description: 'd' }"],
+    ["computed value", "const n = 'x'\nexport const meta = { name: n, description: 'd' }"],
+    ["interpolation", "export const meta = { name: `a${1}`, description: 'd' }"],
+    ["call in meta", "export const meta = { name: String(1), description: 'd' }"],
+    ["spread in meta", "export const meta = { ...{}, name: 'x', description: 'd' }"],
+    ["no description", "export const meta = { name: 'x' }"],
+  ])("rejects %s", (_label, source) => {
+    expect(() => parseWorkflowScript(source)).toThrow(ScriptError);
+  });
+
+  it.each([["Date.now()"], ["Math.random()"], ["new Date()"], ["Date()"]])("rejects %s", (expression) => {
+    expect(() => parseWorkflowScript(`export const meta = { name: 'x', description: 'd' }\nconst t = ${expression}`)).toThrow(/deterministic/);
+  });
+
+  it("allows new Date(value)", () => {
+    expect(() => parseWorkflowScript("export const meta = { name: 'x', description: 'd' }\nconst t = new Date(0)")).not.toThrow();
+  });
+
+  it("rejects imports and extra exports", () => {
+    expect(() => parseWorkflowScript("export const meta = { name: 'x', description: 'd' }\nimport fs from 'fs'")).toThrow(/import/);
+    expect(() => parseWorkflowScript("export const meta = { name: 'x', description: 'd' }\nexport const y = 1")).toThrow(/exported/);
+    expect(() => parseWorkflowScript("export const meta = { name: 'x', description: 'd' }\nawait import('fs')")).toThrow(/import/);
+  });
+
+  it("explains TypeScript syntax", () => {
+    expect(() => parseWorkflowScript("export const meta = { name: 'x', description: 'd' }\nconst a: string[] = []")).toThrow(/not TypeScript/);
+  });
+
+  it("accepts top-level await and return", () => {
+    expect(() => parseWorkflowScript("export const meta = { name: 'x', description: 'd' }\nconst r = await agent('x')\nreturn r")).not.toThrow();
+  });
+});
