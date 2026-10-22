@@ -13,3 +13,26 @@ describe("parseNotice", () => {
     expect(parseNotice("[paseo-dynamic-workflow] hello")).toBeNull();
   });
 });
+
+describe("CardDataSchema", () => {
+  it("accepts cards written before the skipped count existed", async () => {
+    const { CardDataSchema } = await import("./run-types");
+    const parsed = CardDataSchema.parse({
+      runId: "wf_x",
+      name: "n",
+      description: "d",
+      status: "completed",
+      startedAt: "2026-10-22T00:00:00Z",
+      endedAt: null,
+      phases: [{ title: "A", detail: null, total: 1, running: 0, done: 1, failed: 0 }],
+      active: [],
+      agents: { total: 1, running: 0, done: 1, failed: 0, cached: 0 },
+      logs: [],
+      resultPreview: null,
+      error: null,
+      usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+    });
+    expect(parsed.agents.skipped).toBe(0);
+    expect(parsed.phases[0]?.skipped).toBe(0);
+  });
+});

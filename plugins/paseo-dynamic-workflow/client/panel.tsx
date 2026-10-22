@@ -117,7 +117,8 @@ function RunList({
                   </Text>
                 </View>
                 <Text style={styles.muted} numberOfLines={1}>
-                  {formatClock(run.startedAt)} · {plural(run.agents.total, "agent")} · {run.runId}
+                  {formatClock(run.startedAt)} · {plural(run.agents.total, "agent")}
+                  {run.agents.failed ? ` · ${run.agents.failed} failed` : ""} · {run.runId}
                 </Text>
               </Pressable>
             </View>
@@ -275,6 +276,7 @@ function Phases({
               {phase.total === 0 ? "not started" : `${phase.done}/${phase.total} done`}
               {phase.running ? ` · ${phase.running} active` : ""}
               {phase.failed ? ` · ${phase.failed} failed` : ""}
+              {phase.skipped ? ` · ${phase.skipped} skipped` : ""}
             </Text>
           </View>
           {phase.detail ? <Text style={styles.muted}>{phase.detail}</Text> : null}

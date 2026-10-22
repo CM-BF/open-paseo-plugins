@@ -63,6 +63,8 @@ export class RunEngine {
   private lastPong = Date.now();
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private settled = false;
+  /** Set by stop(): the script's own failure (its agent() calls throw) still ends the run as stopped. */
+  private stopReason: string | null = null;
   private readonly done: Promise<void>;
   private resolveDone: () => void = () => undefined;
 
@@ -127,6 +129,7 @@ export class RunEngine {
   /** Stops the run: queued calls fail, running children are archived, the worker ends. */
   async stop(reason: string): Promise<boolean> {
     if (this.settled || this.record.status !== "running") return false;
+    this.stopReason = reason;
     this.record.status = "stopping";
     this.changed();
     this.runAbort.abort(reason);
@@ -400,9 +403,12 @@ export class RunEngine {
     await this.finish("completed", null);
   }
 
-  private async finish(status: RunRecord["status"], error: string | null): Promise<void> {
+  private async finish(requested: RunRecord["status"], requestedError: string | null): Promise<void> {
     if (this.settled) return;
     this.settled = true;
+    const stopped = this.stopReason !== null && requested !== "interrupted";
+    const status = stopped ? "stopped" : requested;
+    const error = stopped ? this.stopReason : requestedError;
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.runAbort.abort(error ?? status);
     for (const controller of this.callAborts.values()) controller.abort(error ?? status);

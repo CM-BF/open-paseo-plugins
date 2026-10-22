@@ -131,6 +131,7 @@ function summaryLine(data: CardData): string {
   const parts = [plural(data.agents.total, "agent")];
   if (data.agents.cached > 0) parts.push(`${data.agents.cached} cached`);
   if (data.agents.failed > 0) parts.push(`${data.agents.failed} failed`);
+  if (data.agents.skipped > 0) parts.push(`${data.agents.skipped} skipped`);
   if (data.usage.outputTokens > 0) parts.push(`${formatTokens(data.usage.outputTokens)} out`);
   return parts.join(" · ");
 }
@@ -141,7 +142,7 @@ function PhaseBar({ phase, styles }: { phase: PhaseSummary; styles: Styles }) {
   const count =
     phase.total === 0
       ? "waiting"
-      : `${phase.done}/${phase.total}${phase.running ? ` · ${phase.running} active` : ""}${phase.failed ? ` · ${phase.failed} failed` : ""}`;
+      : `${phase.done}/${phase.total}${phase.running ? ` · ${phase.running} active` : ""}${phase.failed ? ` · ${phase.failed} failed` : ""}${phase.skipped ? ` · ${phase.skipped} skipped` : ""}`;
   return (
     <View style={styles.phaseRow} accessibilityLabel={`Phase ${phase.title}: ${count}`}>
       <Text style={styles.phaseTitle} numberOfLines={1}>
@@ -150,6 +151,7 @@ function PhaseBar({ phase, styles }: { phase: PhaseSummary; styles: Styles }) {
       <View style={styles.bar}>
         <View style={[styles.barDone, { width: pct(phase.done) }]} />
         <View style={[styles.barFailed, { width: pct(phase.failed) }]} />
+        <View style={[styles.barSkipped, { width: pct(phase.skipped) }]} />
         <View style={[styles.barRunning, { width: pct(phase.running), opacity: 0.55 }]} />
       </View>
       <Text style={styles.phaseCount} numberOfLines={1}>

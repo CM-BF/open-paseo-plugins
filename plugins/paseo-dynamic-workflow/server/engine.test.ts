@@ -210,6 +210,7 @@ return seen`,
       },
     });
     expect(record.status).toBe("stopped");
+    expect(record.error).toBe("stopped by test");
     expect(record.calls.every((call) => call.status === "skipped")).toBe(true);
   });
 

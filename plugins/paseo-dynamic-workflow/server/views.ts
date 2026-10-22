@@ -25,7 +25,8 @@ export function phaseSummaries(record: RunRecord): PhaseSummary[] {
       total: calls.length,
       running: calls.filter((call) => isRunning(call)).length,
       done: calls.filter((call) => call.status === "completed" || call.status === "cached").length,
-      failed: calls.filter((call) => call.status === "failed" || call.status === "skipped").length,
+      failed: calls.filter((call) => call.status === "failed").length,
+      skipped: calls.filter((call) => call.status === "skipped").length,
     };
   });
 }
@@ -39,7 +40,8 @@ function counts(record: RunRecord): RunSummary["agents"] {
     total: record.calls.length,
     running: record.calls.filter(isRunning).length,
     done: record.calls.filter((call) => call.status === "completed").length,
-    failed: record.calls.filter((call) => call.status === "failed" || call.status === "skipped").length,
+    failed: record.calls.filter((call) => call.status === "failed").length,
+    skipped: record.calls.filter((call) => call.status === "skipped").length,
     cached: record.calls.filter((call) => call.status === "cached").length,
   };
 }
@@ -115,14 +117,14 @@ export function statusText(record: RunRecord, state: StatePaths): string {
   const agents = counts(record);
   const lines = [
     `Workflow "${record.meta.name}" (run ${record.runId}): ${record.status}, ${elapsed}`,
-    `Agents: ${agents.total} total, ${agents.running} running, ${agents.done} done, ${agents.cached} cached, ${agents.failed} failed or skipped`,
+    `Agents: ${agents.total} total, ${agents.running} running, ${agents.done} done, ${agents.cached} cached, ${agents.failed} failed, ${agents.skipped} skipped`,
     `Output tokens: ${record.usage.outputTokens}${record.budgetTotal !== null ? ` of a ${record.budgetTotal} budget` : ""}`,
   ];
   const phases = phaseSummaries(record);
   if (phases.length > 0) {
     lines.push("Phases:");
     for (const phase of phases) {
-      lines.push(`- ${phase.title}: ${phase.done}/${phase.total} done${phase.running ? `, ${phase.running} running` : ""}${phase.failed ? `, ${phase.failed} failed` : ""}`);
+      lines.push(`- ${phase.title}: ${phase.done}/${phase.total} done${phase.running ? `, ${phase.running} running` : ""}${phase.failed ? `, ${phase.failed} failed` : ""}${phase.skipped ? `, ${phase.skipped} skipped` : ""}`);
     }
   }
   const running = record.calls.filter(isRunning).slice(0, 10);
@@ -184,7 +186,7 @@ export function notificationText(record: RunRecord, state: StatePaths): string {
     parts.push("</worktrees>");
   }
   parts.push(
-    `<usage><agent_count>${agents.total}</agent_count><cached>${agents.cached}</cached><failed>${agents.failed}</failed><output_tokens>${record.usage.outputTokens}</output_tokens><input_tokens>${record.usage.inputTokens}</input_tokens><duration_ms>${duration}</duration_ms></usage>`,
+    `<usage><agent_count>${agents.total}</agent_count><cached>${agents.cached}</cached><failed>${agents.failed}</failed><skipped>${agents.skipped}</skipped><output_tokens>${record.usage.outputTokens}</output_tokens><input_tokens>${record.usage.inputTokens}</input_tokens><duration_ms>${duration}</duration_ms></usage>`,
   );
   parts.push("</task-notification>");
   return parts.join("\n");

@@ -35,6 +35,7 @@ export function createStyles(theme: PluginTheme, compact: boolean) {
     barDone: { backgroundColor: colors.statusSuccess },
     barRunning: { backgroundColor: colors.accent },
     barFailed: { backgroundColor: colors.statusDanger },
+    barSkipped: { backgroundColor: colors.foregroundMuted, opacity: 0.5 },
     phaseCount: { color: colors.foregroundMuted, fontSize: 12, minWidth: compact ? 70 : 110, textAlign: "right" },
     agents: { gap: 2, paddingLeft: 2 },
     agentRow: { flexDirection: "row", alignItems: "center", gap: 6 },

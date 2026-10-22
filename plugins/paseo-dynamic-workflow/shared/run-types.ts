@@ -56,6 +56,8 @@ export const PhaseSummarySchema = z.object({
   running: z.number(),
   done: z.number(),
   failed: z.number(),
+  /** Added after 0.1.0 shipped cards; old rows lack it. */
+  skipped: z.number().default(0),
 });
 export type PhaseSummary = z.infer<typeof PhaseSummarySchema>;
 
@@ -74,6 +76,7 @@ export const RunSummarySchema = z.object({
     running: z.number(),
     done: z.number(),
     failed: z.number(),
+    skipped: z.number().default(0),
     cached: z.number(),
   }),
   error: z.string().nullable(),
