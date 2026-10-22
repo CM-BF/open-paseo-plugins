@@ -98,3 +98,22 @@
 - 已修复：严格模式的脚本函数允许局部声明覆盖 API 名称；启动前编译检查；pipeline 遇到 null 后跳过余下阶段；嵌套 workflow 使用独立上下文，无法经 globalThis 绕过一层限制；提供 run 范围的 setTimeout/clearTimeout；封堵 Date constructor 与 Intl 无日期格式化的确定性漏洞；combinator 上限为 4096。
 - 已修复：resume 缓存按原始 callId 调用顺序重放相同 key，保留 worktree 元数据；run.json 可保存 args/sourcePath（服务层写入和提示另行验证）；预算简写仅在消息首尾识别，避免中间 diff 统计被当成预算。
 - 验证：`npx vitest run server/engine.test.ts server/engine-regressions.test.ts server/script-parse.test.ts server/budget.test.ts`，4 files / 70 tests 通过；包含预算排队、立即 Skip、日志/phase/请求死循环、严格模式、嵌套全局、timer、恢复顺序与 worktree、配置失败抛出及异步收尾。`npx tsc --noEmit` 与 `git diff --check` 通过。尚未在 daemon/Web UI 验证这些变更，插件保持原状态；全量测试由整合阶段执行。
+
+## Review 修复：服务与传输（2026-10-22）
+
+- 复用 Claude review `wf_c0e2e361-09e` 的已有输出；恢复后得到 84 条保留意见、4 条反驳及 79 项建议，含重复条目。不是 84 个独立问题；部分仅一位 verifier 确认。
+- 修复 outbox 临时 refresh 错误丢通知、模糊 receipt 阻塞后续通知、关闭时投递竞态；模糊项保留 `uncertain:true` 供检查。
+- 命名脚本返回独立 run 副本；保存 args/sourcePath，resume 继承 args；补终态未通知结果恢复、延迟 launch 对 dispose 的检查、即时 Stop 确认、保存/卡片重试/计时器清理。
+- 历史列表使用摘要索引，完整记录 LRU 最多 100 条，避免每轮读全盘和无限保留结果正文。
+- 限制 bridge caller 读取/停止/resume 自己的运行，拒绝子 workflow 递归启动；2MiB 请求明确 413；只重试连接前错误，避免重复 launch；CLI 拒绝未知参数；OpenCode 默认走 CLI 以共享服务。
+- 新增 label sweep 恢复丢失 create 响应的子 agent；新隔离 agent 的 base SHA 用于判断未修改 worktree；旧运行缺少 base 信息时保留现场。
+- 第二轮独立复核发现并修复：dispose 后延迟 launch、终态未排队通知漏恢复、startup 在 cleanup 后继续启动。
+- 验证：目前全套 128 测试通过、typecheck 通过；之后增加了两个 service 关闭/恢复用例，局部 5 项通过。daemon 暂未启用，无 UI 验收声明。
+- 当前限制：Paseo0.12 的 server entry 没有 PaseoApi；中途 reload 后需等 hook/RPC，错误提示明确要求打开面板一次。运行历史保留，不自动删除。预算依赖 provider 上报，内置角色是提示而非强制只读；文档已更正。
+
+## Review 修复：启动、关闭和恢复回归验证（2026-10-22）
+
+- `server/contribute.test.ts`：使用临时状态目录和最小 host 注册桩，验证 cleanup 先于异步 startup 完成时不会事后打开 bridge；正常启动后的关闭也使真实 Unix socket 不可连接。两条路径均检查零残留 timer，启动抢跑路径检查 rejection listener 已释放。
+- `server/recovery.test.ts`：按 label 找回未保存 create 响应的子 agent（含分页），排除无关 agent，保护父 workspace/目录；使用真实临时 git 仓库和 worktree，验证只有未改动的子 worktree 会移除，未提交/已提交成果均保留，失败 teardown 标成 `changed:null`。
+- 额外发现并修复：archive 返回成功但目录仍存在时，恢复逻辑之前误标为“已移除”。新增用例先出现 `changed:false` 的红灯结果；主 agent 增加实际目录检查后转绿，保留路径并标为 `changed:null`。
+- 验证：`npx vitest run server/contribute.test.ts server/recovery.test.ts`，2 个文件、11 个测试全部通过；`npm run typecheck` 通过。本组为本地回归测试，不代替 daemon/Web UI 验收；没有操作主 daemon。
