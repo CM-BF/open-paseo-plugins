@@ -17,9 +17,10 @@ export function parseBudgetDirective(text: string | null | undefined): number | 
         return 1;
     }
   };
-  const plus = /(?:^|[\s(])\+(\d+(?:\.\d+)?)\s*([kmb])\b/i.exec(text);
+  const plus = /^\s*\+(\d+(?:\.\d+)?)\s*([kmb])\b/i.exec(text)
+    ?? /\s\+(\d+(?:\.\d+)?)\s*([kmb])[.!?。！？]?\s*$/i.exec(text);
   if (plus) return Math.round(Number(plus[1]) * unit(plus[2]));
-  const verbal = /\b(?:spend|use|budget(?:\s+of)?)\s+(?:up\s+to\s+)?(\d+(?:\.\d+)?)\s*([kmb])?\s*tokens?\b/i.exec(text);
+  const verbal = /\b(?:spend|use|budget(?:\s+of)?)\s+(?:up\s+to\s+)?(\d+(?:\.\d+)?)\s*([kmb])\s*tokens?\b/i.exec(text);
   if (verbal) {
     const value = Math.round(Number(verbal[1]) * unit(verbal[2]));
     return value >= 1000 ? value : null;

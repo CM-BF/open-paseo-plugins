@@ -101,7 +101,7 @@ log('done')`,
 
   it("has no Node.js API", async () => {
     const { result } = await run(`${meta()}return [typeof require, typeof process, typeof setTimeout, typeof fetch]`, echo());
-    expect(result).toEqual(["undefined", "undefined", "undefined", "undefined"]);
+    expect(result).toEqual(["undefined", "undefined", "function", "undefined"]);
   });
 
   it("validates agent() options and schemas before starting an agent", async () => {

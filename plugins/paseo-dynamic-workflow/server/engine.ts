@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import { clearTimeout, setTimeout } from "node:timers";
 import type { AgentCall, Usage } from "../shared/run-types";
 import { EFFORTS, type AgentOptions, type AgentOutcome, type AgentProgress, type AgentTask, type ParentContext } from "./agent-runner";
 import { compileSchema, SchemaError } from "./json-schema";
@@ -6,12 +7,13 @@ import { callKey, type ResumeCache, type RunFiles, type RunRecord } from "./run-
 import { PRELUDE, WORKER_SOURCE } from "./worker-source";
 import { describeError, log, nowIso, preview, truncate, unref } from "./util";
 
-export const MAX_ITEMS = 1000;
+export const MAX_ITEMS = 4096;
 const RESULT_PREVIEW_CHARS = 20_000;
 const CALL_PREVIEW_CHARS = 2_000;
 const MAX_LOGS = 300;
 const HEARTBEAT_MS = 10_000;
 const STUCK_MS = 120_000;
+const CLEANUP_WAIT_MS = 1000;
 
 /** What the engine needs from the agent runner (tests pass a fake). */
 export interface Runner {
@@ -32,7 +34,7 @@ export interface EngineOptions {
   archiveWhenDone: boolean;
   resolveWorkflow(ref: unknown, record: RunRecord): Promise<{ name: string; body: string; filename: string }>;
   onChange(engine: RunEngine): void;
-  onFinished(engine: RunEngine): void;
+  onFinished(engine: RunEngine): Promise<void> | void;
   /** Tests shorten the stuck-script watchdog. */
   watchdog?: { heartbeatMs: number; stuckMs: number };
 }
@@ -56,7 +58,7 @@ export class RunEngine {
   private readonly runAbort = new AbortController();
   private readonly callAborts = new Map<string, AbortController>();
   private readonly inFlight = new Set<Promise<unknown>>();
-  private readonly queue: Array<() => void> = [];
+  private readonly queue: Array<{ start(): void; cancel(): void }> = [];
   private active = 0;
   private callSeq = 0;
   private liveAgents = 0;
@@ -99,6 +101,7 @@ export class RunEngine {
         argsJson: this.options.args === undefined ? null : JSON.stringify(this.options.args),
         budgetTotal: this.record.budgetTotal,
         maxItems: MAX_ITEMS,
+        maxRequests: Math.max(MAX_ITEMS, this.options.maxAgents),
       },
       resourceLimits: { maxOldGenerationSizeMb: 512 },
       stdout: true,
@@ -132,11 +135,6 @@ export class RunEngine {
     this.stopReason = reason;
     this.record.status = "stopping";
     this.changed();
-    this.runAbort.abort(reason);
-    this.worker?.postMessage({ t: "stop" });
-    for (const controller of this.callAborts.values()) controller.abort(reason);
-    for (const resume of this.queue.splice(0)) resume();
-    await Promise.race([Promise.allSettled([...this.inFlight]), new Promise((resolve) => setTimeout(resolve, 30_000))]);
     await this.finish("stopped", reason);
     return true;
   }
@@ -158,12 +156,12 @@ export class RunEngine {
   }
 
   private onMessage(message: { t: string; id?: number; op?: string; json?: string; ok?: boolean; error?: ErrorReply & { stack?: string | null } }): void {
+    if (this.settled) return;
     if (message.t === "pong") {
       this.lastPong = Date.now();
       return;
     }
     if (message.t === "event") {
-      this.lastPong = Date.now();
       const payload = safeParse(message.json) as Record<string, unknown> | null;
       if (!payload) return;
       if (message.op === "phase" && typeof payload.title === "string") this.addPhase(payload.title, true);
@@ -173,7 +171,6 @@ export class RunEngine {
       return;
     }
     if (message.t === "request" && typeof message.id === "number") {
-      this.lastPong = Date.now();
       const id = message.id;
       const work =
         message.op === "agent"
@@ -225,8 +222,9 @@ export class RunEngine {
       call.startedAt = call.queuedAt;
       call.endedAt = call.queuedAt;
       call.resultPreview = preview(cached.value, CALL_PREVIEW_CHARS);
+      call.worktree = cached.worktree;
       this.record.calls.push(call);
-      void this.files.journal({ type: "agent_completed", at: nowIso(), callId, key, label, result: cached.value, cached: true });
+      void this.files.journal({ type: "agent_completed", at: nowIso(), callId, key, label, result: cached.value, cached: true, worktree: cached.worktree });
       this.changed();
       return cached.value;
     }
@@ -234,10 +232,7 @@ export class RunEngine {
     if (this.liveAgents >= this.options.maxAgents) {
       throw new Error(`The run reached its agent cap (${this.options.maxAgents} agents); no more agent() calls can start`);
     }
-    const total = this.record.budgetTotal;
-    if (total !== null && this.record.usage.outputTokens >= total) {
-      throw new Error(`The token budget is spent (${this.record.usage.outputTokens} of ${total} output tokens); agent() calls throw from here on`);
-    }
+    this.checkBudget();
     this.liveAgents++;
 
     const call = this.newCall(callId, label, phase, "queued");
@@ -246,10 +241,12 @@ export class RunEngine {
     const controller = new AbortController();
     this.callAborts.set(callId, controller);
     const work = (async () => {
-      await this.acquire();
+      const acquired = await this.acquire(controller.signal);
+      if (!acquired) return { ok: false as const, error: "skipped by the user", skipped: true, worktree: null };
       try {
         if (this.runAbort.signal.aborted) throw new HardStop("The workflow was stopped");
         if (controller.signal.aborted) return { ok: false as const, error: "skipped by the user", skipped: true, worktree: null };
+        this.checkBudget();
         call.status = "starting";
         call.startedAt = nowIso();
         this.changed();
@@ -268,7 +265,13 @@ export class RunEngine {
             archiveWhenDone: this.options.archiveWhenDone,
           },
           {
+            creating: async (info) => {
+              call.agentId = info.agentId;
+              this.changed();
+              await this.files.saveRecord(this.record);
+            },
             started: (info) => {
+              if (this.settled) return;
               call.status = "running";
               call.agentId = info.agentId;
               call.provider = info.provider;
@@ -277,11 +280,13 @@ export class RunEngine {
               this.changed();
             },
             status: (status) => {
+              if (this.settled) return;
               call.status = status;
               this.changed();
             },
             usage: (usage) => this.addUsage(call, usage),
             repaired: () => {
+              if (this.settled) return;
               call.repairs++;
               this.changed();
             },
@@ -295,18 +300,29 @@ export class RunEngine {
     let outcome: Awaited<typeof work>;
     try {
       outcome = await work;
+    } catch (error) {
+      if (!this.settled) {
+        call.endedAt = nowIso();
+        call.status = this.runAbort.signal.aborted ? "skipped" : "failed";
+        call.error = describeError(error);
+        void this.files.journal({ type: "agent_failed", at: call.endedAt, callId, key, label, error: call.error });
+        this.changed();
+      }
+      throw error;
     } finally {
       this.inFlight.delete(work);
       this.callAborts.delete(callId);
     }
+    if (this.settled) throw new HardStop("The workflow was stopped");
     call.endedAt = nowIso();
     call.worktree = outcome.worktree ?? call.worktree;
     if (outcome.ok) {
       call.status = "completed";
       call.resultPreview = preview(outcome.value, CALL_PREVIEW_CHARS);
-      void this.files.journal({ type: "agent_completed", at: call.endedAt, callId, key, label, result: outcome.value, cached: false });
-      if (outcome.worktree?.changed) {
-        this.addLog(`Agent "${label}" left changes on branch ${outcome.worktree.branch} (${outcome.worktree.path})`);
+      void this.files.journal({ type: "agent_completed", at: call.endedAt, callId, key, label, result: outcome.value, cached: false, worktree: call.worktree });
+      if (outcome.worktree && outcome.worktree.changed !== false) {
+        const description = outcome.worktree.changed ? "left changes" : "kept a worktree whose changes could not be inspected";
+        this.addLog(`Agent "${label}" ${description} on branch ${outcome.worktree.branch} (${outcome.worktree.path})`);
       }
       this.changed();
       return outcome.value;
@@ -317,6 +333,10 @@ export class RunEngine {
     if (this.runAbort.signal.aborted) {
       this.changed();
       throw new HardStop("The workflow was stopped");
+    }
+    if ("throws" in outcome && outcome.throws) {
+      this.changed();
+      throw new Error(outcome.error);
     }
     this.addLog(`Agent "${label}" ${outcome.skipped ? "was skipped" : `failed: ${outcome.error}`}; agent() returned null`);
     this.changed();
@@ -343,26 +363,46 @@ export class RunEngine {
     };
   }
 
-  private acquire(): Promise<void> {
+  private checkBudget(): void {
+    const total = this.record.budgetTotal;
+    if (total !== null && this.record.usage.outputTokens >= total) {
+      throw new Error(`The token budget is spent (${this.record.usage.outputTokens} of ${total} output tokens); agent() calls throw from here on`);
+    }
+  }
+
+  private acquire(signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) return Promise.resolve(false);
     if (this.active < this.options.concurrency) {
       this.active++;
-      return Promise.resolve();
+      return Promise.resolve(true);
     }
     return new Promise((resolve) => {
-      this.queue.push(() => {
-        this.active++;
-        resolve();
-      });
+      const entry = {
+        start: () => {
+          signal.removeEventListener("abort", entry.cancel);
+          this.active++;
+          resolve(true);
+        },
+        cancel: () => {
+          signal.removeEventListener("abort", entry.cancel);
+          const index = this.queue.indexOf(entry);
+          if (index >= 0) this.queue.splice(index, 1);
+          resolve(false);
+        },
+      };
+      this.queue.push(entry);
+      signal.addEventListener("abort", entry.cancel, { once: true });
     });
   }
 
   private release(): void {
     this.active--;
     const next = this.queue.shift();
-    if (next) next();
+    if (next) next.start();
   }
 
   private addUsage(call: AgentCall, usage: Usage): void {
+    if (this.settled) return;
     call.usage = sumUsage(call.usage, usage);
     this.record.usage = sumUsage(this.record.usage, usage);
     try {
@@ -383,7 +423,7 @@ export class RunEngine {
     const at = nowIso();
     this.record.logs.push({ at, message: truncate(message, 2000) });
     if (this.record.logs.length > MAX_LOGS) this.record.logs.splice(0, this.record.logs.length - MAX_LOGS);
-    void this.files.journal({ type: "log", at, message });
+    void this.files.journal({ type: "log", at, message: truncate(message, 2000) });
     this.changed();
   }
 
@@ -394,6 +434,7 @@ export class RunEngine {
   private async complete(json: string): Promise<void> {
     if (this.settled) return;
     await this.files.writeResult(json).catch((error) => log(`could not write the result of ${this.runId}: ${describeError(error)}`));
+    if (this.settled) return;
     this.record.resultPreview = truncate(json, RESULT_PREVIEW_CHARS);
     const leftover = [...this.callAborts.values()];
     if (leftover.length > 0) {
@@ -412,10 +453,10 @@ export class RunEngine {
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.runAbort.abort(error ?? status);
     for (const controller of this.callAborts.values()) controller.abort(error ?? status);
-    for (const resume of this.queue.splice(0)) resume();
+    for (const entry of this.queue.splice(0)) entry.cancel();
     const worker = this.worker;
     this.worker = null;
-    if (worker) void worker.terminate().catch(() => undefined);
+    const terminated = worker?.terminate().catch(() => undefined);
     for (const call of this.record.calls) {
       if (!isTerminalCall(call.status)) {
         call.status = "skipped";
@@ -426,10 +467,28 @@ export class RunEngine {
     this.record.status = status;
     this.record.error = error;
     this.record.endedAt = nowIso();
+    // Give cooperative child cleanup a short window; an unavailable provider must not hold Stop open.
+    let cancelWait: (() => void) | undefined;
+    try {
+      await Promise.race([
+        Promise.allSettled([...this.inFlight, ...(terminated ? [terminated] : [])]),
+        new Promise((resolve) => {
+          const timer = unref(setTimeout(resolve, CLEANUP_WAIT_MS));
+          cancelWait = () => clearTimeout(timer);
+        }),
+      ]);
+    } finally {
+      cancelWait?.();
+    }
     await this.files.journal({ type: "run_finished", at: this.record.endedAt, status, error });
     this.options.onChange(this);
-    this.options.onFinished(this);
-    this.resolveDone();
+    try {
+      await this.options.onFinished(this);
+    } catch (error) {
+      log(`could not finish ${this.runId}: ${describeError(error)}`);
+    } finally {
+      this.resolveDone();
+    }
   }
 }
 

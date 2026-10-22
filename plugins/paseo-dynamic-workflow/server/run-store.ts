@@ -28,6 +28,8 @@ export const RunRecordSchema = z.object({
   workspaceId: z.string().nullable(),
   cwd: z.string(),
   scriptPath: z.string(),
+  sourcePath: z.string().nullable().optional(),
+  args: z.unknown().optional(),
   source: z.enum(["script", "scriptPath", "name"]),
   resumedFrom: z.string().nullable(),
   startedAt: z.string(),
@@ -45,7 +47,7 @@ export type RunRecord = z.infer<typeof RunRecordSchema>;
 
 export type JournalEntry =
   | { type: "run_started"; at: string; runId: string; resumedFrom: string | null }
-  | { type: "agent_completed"; at: string; callId: string; key: string; label: string; result: unknown; cached: boolean }
+  | { type: "agent_completed"; at: string; callId: string; key: string; label: string; result: unknown; cached: boolean; worktree?: AgentCall["worktree"] }
   | { type: "agent_failed"; at: string; callId: string; key: string; label: string; error: string }
   | { type: "phase"; at: string; title: string }
   | { type: "log"; at: string; message: string }
@@ -86,31 +88,34 @@ function stableStringify(value: unknown): string {
 }
 
 /**
- * Completed results of an earlier run, by key in completion order. The n-th call with a key in
- * the resumed run takes the n-th cached result with that key, so scheduling order does not matter.
+ * Completed results of an earlier run, by key in invocation order. The n-th call with a key in
+ * the resumed run takes the n-th cached result with that key, independent of completion timing.
  */
 export class ResumeCache {
-  private readonly byKey = new Map<string, unknown[]>();
+  private readonly byKey = new Map<string, Array<{ value: unknown; worktree: AgentCall["worktree"] }>>();
   private readonly used = new Map<string, number>();
 
   static async load(paths: RunPaths): Promise<ResumeCache> {
     const cache = new ResumeCache();
     const text = await readFile(paths.journal, "utf8").catch(() => "");
+    const completed: Array<Extract<JournalEntry, { type: "agent_completed" }>> = [];
     for (const line of text.split("\n")) {
       if (!line.trim()) continue;
       try {
         const entry = JSON.parse(line) as JournalEntry;
-        if (entry.type === "agent_completed") cache.add(entry.key, entry.result);
+        if (entry.type === "agent_completed") completed.push(entry);
       } catch {
         // A torn last line from a crash; the rest is still usable.
       }
     }
+    completed.sort((a, b) => Number(a.callId.slice(1)) - Number(b.callId.slice(1)));
+    for (const entry of completed) cache.add(entry.key, entry.result, entry.worktree ?? null);
     return cache;
   }
 
-  add(key: string, result: unknown): void {
+  add(key: string, result: unknown, worktree: AgentCall["worktree"] = null): void {
     const list = this.byKey.get(key) ?? [];
-    list.push(result);
+    list.push({ value: result, worktree });
     this.byKey.set(key, list);
   }
 
@@ -120,12 +125,12 @@ export class ResumeCache {
     return total;
   }
 
-  take(key: string): { hit: true; value: unknown } | { hit: false } {
+  take(key: string): { hit: true; value: unknown; worktree: AgentCall["worktree"] } | { hit: false } {
     const list = this.byKey.get(key);
     const index = this.used.get(key) ?? 0;
     if (!list || index >= list.length) return { hit: false };
     this.used.set(key, index + 1);
-    return { hit: true, value: list[index] };
+    return { hit: true, ...list[index]! };
   }
 }
 
@@ -134,6 +139,8 @@ export class RunFiles {
   readonly paths: RunPaths;
   private readonly writer: SerialWriter;
   private journalChain: Promise<void> = Promise.resolve();
+  private readonly journalLines: string[] = [];
+  private journalScheduled = false;
 
   constructor(state: StatePaths, runId: string) {
     this.paths = runPaths(state, runId);
@@ -151,12 +158,16 @@ export class RunFiles {
   }
 
   journal(entry: JournalEntry): Promise<void> {
-    const line = `${JSON.stringify(entry)}\n`;
-    this.journalChain = this.journalChain.then(() =>
-      appendFile(this.paths.journal, line, { mode: 0o600 }).catch((error) =>
+    this.journalLines.push(`${JSON.stringify(entry)}\n`);
+    if (this.journalScheduled) return this.journalChain;
+    this.journalScheduled = true;
+    this.journalChain = this.journalChain.then(() => {
+      const batch = this.journalLines.splice(0).join("");
+      this.journalScheduled = false;
+      return appendFile(this.paths.journal, batch, { mode: 0o600 }).catch((error) =>
         log(`could not append to ${this.paths.journal}: ${describeError(error)}`),
-      ),
-    );
+      );
+    });
     return this.journalChain;
   }
 

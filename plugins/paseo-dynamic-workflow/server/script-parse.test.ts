@@ -43,4 +43,14 @@ describe("parseWorkflowScript", () => {
   it("accepts top-level await and return", () => {
     expect(() => parseWorkflowScript("export const meta = { name: 'x', description: 'd' }\nconst r = await agent('x')\nreturn r")).not.toThrow();
   });
+
+  it("rejects module-only syntax and invalid strict bodies before launch", () => {
+    const prefix = "export const meta = { name: 'x', description: 'd' }\n";
+    expect(() => parseWorkflowScript(prefix + "return import.meta.url")).toThrow(/compile/);
+    expect(() => parseWorkflowScript(prefix + "with ({}) {}")).toThrow(/parse|compile/);
+  });
+
+  it("allows local declarations to shadow workflow globals", () => {
+    expect(() => parseWorkflowScript("export const meta = { name: 'x', description: 'd' }\nconst log = []; let args = 1; return { log, args }")).not.toThrow();
+  });
 });

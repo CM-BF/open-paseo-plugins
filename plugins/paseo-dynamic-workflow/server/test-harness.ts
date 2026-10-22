@@ -54,6 +54,8 @@ export interface RunOptions {
   state?: StatePaths;
   nested?: Record<string, string>;
   onEngine?: (engine: RunEngine) => void;
+  onChange?: (engine: RunEngine) => void;
+  onFinished?: (engine: RunEngine) => Promise<void> | void;
   watchdog?: { heartbeatMs: number; stuckMs: number };
 }
 
@@ -86,6 +88,7 @@ export async function runScript(script: string, runner: Runner, options: RunOpti
     workspaceId: PARENT.workspaceId,
     cwd: PARENT.cwd,
     scriptPath: files.paths.script,
+    ...(options.args !== undefined ? { args: options.args } : {}),
     source: "script",
     resumedFrom: null,
     startedAt: new Date().toISOString(),
@@ -118,8 +121,8 @@ export async function runScript(script: string, runner: Runner, options: RunOpti
       const child = parseWorkflowScript(source);
       return { name: child.meta.name, body: child.body, filename: `${child.meta.name}.nested.workflow.js` };
     },
-    onChange: () => undefined,
-    onFinished: () => undefined,
+    onChange: (engine) => options.onChange?.(engine),
+    onFinished: (engine) => options.onFinished?.(engine),
     ...(options.watchdog ? { watchdog: options.watchdog } : {}),
   });
   options.onEngine?.(engine);

@@ -1,4 +1,5 @@
 import { parse, type Node } from "acorn";
+import { Script } from "node:vm";
 
 export const MAX_SCRIPT_CHARS = 512 * 1024;
 
@@ -77,7 +78,13 @@ export function parseWorkflowScript(source: string): ParsedScript {
   });
 
   const blank = source.slice(first.start, first.end).replace(/[^\n]/g, " ");
-  return { meta, body: source.slice(0, first.start) + blank + source.slice(first.end) };
+  const body = source.slice(0, first.start) + blank + source.slice(first.end);
+  try {
+    new Script(`(async function () {\n'use strict';\n${body}\n})`, { filename: `${meta.name}.workflow.js`, lineOffset: -2 });
+  } catch (error) {
+    throw new ScriptError(`Script compile error: ${error instanceof Error ? error.message : String(error)}.`);
+  }
+  return { meta, body };
 }
 
 function metaInitializer(first: AnyNode | undefined): AnyNode {

@@ -26,8 +26,23 @@ export const PRELUDE = String.raw`(function (host) {
   SafeDate.parse = RealDate.parse;
   SafeDate.UTC = RealDate.UTC;
   SafeDate.now = function () { unavailable('Date.now()'); };
+  Object.defineProperty(RealDate.prototype, 'constructor', { value: SafeDate, writable: false, configurable: false });
   globalThis.Date = SafeDate;
   Math.random = function () { unavailable('Math.random()'); };
+  var dateTimePrototype = Intl.DateTimeFormat.prototype;
+  var formatGetter = Object.getOwnPropertyDescriptor(dateTimePrototype, 'format').get;
+  Object.defineProperty(dateTimePrototype, 'format', { get: function () {
+    var format = formatGetter.call(this);
+    return function (value) {
+      if (value === undefined) unavailable('Intl.DateTimeFormat().format() without a date');
+      return format(value);
+    };
+  } });
+  var formatParts = dateTimePrototype.formatToParts;
+  dateTimePrototype.formatToParts = function (value) {
+    if (value === undefined) unavailable('Intl.DateTimeFormat().formatToParts() without a date');
+    return formatParts.call(this, value);
+  };
 
   function fromJson(text) {
     return text === undefined || text === null ? undefined : J.parse(text);
@@ -66,7 +81,7 @@ export const PRELUDE = String.raw`(function (host) {
   }
   function note(where, index, error, stage) {
     var label = where + ' item ' + index + (stage === undefined ? '' : ' (stage ' + (stage + 1) + ')');
-    host.emit('log', J.stringify({ message: label + ' failed: ' + text(error), group: null }));
+    host.emit('log', J.stringify({ message: (label + ' failed: ' + text(error)).slice(0, 2000), group: null }));
   }
 
   function makeApi(scope) {
@@ -76,11 +91,11 @@ export const PRELUDE = String.raw`(function (host) {
     }
     function phase(title) {
       if (typeof title !== 'string' || !title.trim()) throw new TypeError('phase() expects a non-empty title string');
-      currentPhase = scoped(title.trim());
+      currentPhase = scoped(title.trim().slice(0, 200));
       host.emit('phase', J.stringify({ title: currentPhase }));
     }
     function log(message) {
-      host.emit('log', J.stringify({ message: text(message), group: scope.group }));
+      host.emit('log', J.stringify({ message: text(message).slice(0, 2000), group: scope.group }));
     }
     function agent(prompt, opts) {
       if (typeof prompt !== 'string' || !prompt.trim()) {
@@ -114,9 +129,12 @@ export const PRELUDE = String.raw`(function (host) {
         return Promise.reject(new TypeError('workflow() args must be JSON-serializable: ' + e.message));
       }
       return call('workflow', request).then(function (source) {
-        var fn = host.compile(source.body, source.filename);
-        var child = makeApi({ group: source.name, depth: 1 });
-        return fn(childArgs === undefined ? undefined : fromJson(J.stringify(childArgs)), child.agent, child.phase, child.log, child.workflow);
+        return new Promise(function (resolve, reject) {
+          host.runNested(source, childArgs === undefined ? null : J.stringify(childArgs)).then(
+            function (json) { resolve(fromJson(json)); },
+            function (error) { reject(toError(error)); }
+          );
+        });
       });
     }
     return { agent: agent, phase: phase, log: log, workflow: workflow };
@@ -166,7 +184,7 @@ export const PRELUDE = String.raw`(function (host) {
       var failed = false;
       stages.forEach(function (stage, stageIndex) {
         chain = chain.then(function (previous) {
-          if (failed) return null;
+          if (failed || previous === null) return null;
           return stage(previous, item, index);
         }).then(undefined, function (e) {
           if (isHard(e)) throw e;
@@ -187,7 +205,7 @@ export const PRELUDE = String.raw`(function (host) {
     },
   });
 
-  var root = makeApi({ group: null, depth: 0 });
+  var root = makeApi({ group: typeof host.group === 'string' ? host.group.slice(0, 200) : null, depth: host.depth });
   var globals = {
     agent: root.agent,
     phase: root.phase,
@@ -196,6 +214,11 @@ export const PRELUDE = String.raw`(function (host) {
     parallel: parallel,
     pipeline: pipeline,
     budget: budget,
+    setTimeout: function (callback, delay) {
+      if (typeof callback !== 'function') throw new TypeError('setTimeout() expects a function');
+      return host.setTimer(callback, delay);
+    },
+    clearTimeout: function (id) { host.clearTimer(id); },
     console: Object.freeze({ log: root.log, info: root.log, warn: root.log, error: root.log, debug: root.log }),
   };
   Object.keys(globals).forEach(function (name) {
@@ -206,7 +229,7 @@ export const PRELUDE = String.raw`(function (host) {
     var args = fromJson(argsJson);
     Object.defineProperty(globalThis, 'args', { value: args, writable: false, configurable: false, enumerable: false });
     return Promise.resolve().then(function () {
-      return fn(args, root.agent, root.phase, root.log, root.workflow);
+      return fn(args, root.agent, root.phase, root.log, root.workflow)();
     }).then(function (value) {
       if (value && typeof value.then === 'function') throw new TypeError('The script returned a promise: await it before returning');
       var json;
@@ -229,6 +252,13 @@ let spent = 0;
 let nextId = 0;
 let stopped = false;
 const pending = new Map();
+const timers = new Map();
+let nextTimer = 0;
+let requestCount = 0;
+let pendingBytes = 0;
+let eventWindow = Date.now();
+let eventCount = 0;
+let droppedEvents = 0;
 
 function post(message) {
   parentPort.postMessage(message);
@@ -242,34 +272,94 @@ function describe(error) {
 function stopError() {
   return { name: 'WorkflowStopped', message: 'The workflow was stopped', hard: true };
 }
-
-const context = vm.createContext({}, { name: 'workflow', codeGeneration: { strings: false, wasm: false } });
-const host = {
+function clearTimers() {
+  for (const timer of timers.values()) clearTimeout(timer);
+  timers.clear();
+}
+function flushDropped() {
+  if (!droppedEvents) return;
+  post({ t: 'event', op: 'log', json: JSON.stringify({ message: 'Suppressed ' + droppedEvents + ' log/phase events: scripts may emit at most 100 events per second', group: null }) });
+  droppedEvents = 0;
+}
+function failRequests(message) {
+  stopped = true;
+  clearTimers();
+  post({ t: 'done', ok: false, error: { name: 'RangeError', message } });
+  return Promise.reject(stopError());
+}
+const sharedHost = {
   maxItems: data.maxItems,
   budgetTotal: data.budgetTotal,
   request(op, json) {
     if (stopped) return Promise.reject(stopError());
+    if (++requestCount > data.maxRequests) return failRequests('The script exceeded its request limit (' + data.maxRequests + '); await every agent()/workflow() call and split large runs into batches');
+    const bytes = Buffer.byteLength(json);
+    if (bytes > 2 * 1024 * 1024 || pendingBytes + bytes > 16 * 1024 * 1024) {
+      return failRequests('The script queued too much request data; await calls or use smaller prompts and batches');
+    }
     const id = ++nextId;
     return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
+      pendingBytes += bytes;
+      pending.set(id, { resolve, reject, bytes });
       post({ t: 'request', id, op, json });
     });
   },
   emit(op, json) {
+    if (stopped) return;
+    if (json.length > 16384) { droppedEvents++; return; }
+    if (Date.now() - eventWindow >= 1000) {
+      flushDropped();
+      eventWindow = Date.now();
+      eventCount = 0;
+    }
+    if (++eventCount > 100) { droppedEvents++; return; }
     post({ t: 'event', op, json });
   },
   spent() {
     return spent;
   },
-  compile(body, filename) {
-    const source = '(async function (args, agent, phase, log, workflow) {\n' + body + '\n})';
-    return new vm.Script(source, { filename, lineOffset: -1 }).runInContext(context);
+  setTimer(callback, delay) {
+    if (stopped) return 0;
+    const id = ++nextTimer;
+    const milliseconds = typeof delay === 'number' || typeof delay === 'string' ? Number(delay) || 0 : 0;
+    const timer = setTimeout(() => {
+      timers.delete(id);
+      if (stopped) return;
+      try {
+        Promise.resolve(callback()).catch((error) => sharedHost.emit('log', JSON.stringify({ message: ('Timer callback failed: ' + describe(error).message).slice(0, 2000), group: null })));
+      } catch (error) {
+        sharedHost.emit('log', JSON.stringify({ message: ('Timer callback failed: ' + describe(error).message).slice(0, 2000), group: null }));
+      }
+    }, milliseconds);
+    timers.set(id, timer);
+    return id;
+  },
+  clearTimer(id) {
+    const key = Number(id);
+    const timer = timers.get(key);
+    if (timer) clearTimeout(timer);
+    timers.delete(key);
   },
 };
 
+function run(body, filename, argsJson, group, depth) {
+  const context = vm.createContext({}, { name: 'workflow', codeGeneration: { strings: false, wasm: false } });
+  const host = Object.assign({}, sharedHost, {
+    group, depth,
+    runNested(source, childArgsJson) {
+      if (depth > 0) return Promise.reject({ name: 'Error', message: 'workflow() nesting is one level only' });
+      return run(source.body, source.filename, childArgsJson, source.name, 1).catch((error) => { throw describe(error); });
+    },
+  });
+  const start = new vm.Script(data.prelude, { filename: 'workflow-runtime.js' }).runInContext(context)(host);
+  const source = '(function (args, agent, phase, log, workflow) { return async function () {\n\'use strict\';\n' + body + '\n}; })';
+  const main = new vm.Script(source, { filename, lineOffset: -2 }).runInContext(context);
+  return start(main, argsJson);
+}
+
 process.on('unhandledRejection', (reason) => {
   const text = reason && reason.message ? reason.message : String(reason);
-  post({ t: 'event', op: 'log', json: JSON.stringify({ message: 'Swallowed an unhandled rejection (a promise from agent(), parallel(), pipeline() or workflow() was never awaited): ' + text, group: null }) });
+  sharedHost.emit('log', JSON.stringify({ message: ('Swallowed an unhandled rejection (a promise from agent(), parallel(), pipeline() or workflow() was never awaited): ' + text).slice(0, 2000), group: null }));
 });
 
 parentPort.on('message', (message) => {
@@ -277,6 +367,7 @@ parentPort.on('message', (message) => {
     const entry = pending.get(message.id);
     if (!entry) return;
     pending.delete(message.id);
+    pendingBytes -= entry.bytes;
     if (message.ok) entry.resolve(message.json);
     else entry.reject(message.error);
   } else if (message.t === 'spent') {
@@ -285,23 +376,25 @@ parentPort.on('message', (message) => {
     post({ t: 'pong' });
   } else if (message.t === 'stop') {
     stopped = true;
+    clearTimers();
     for (const entry of pending.values()) entry.reject(stopError());
     pending.clear();
+    pendingBytes = 0;
   }
 });
 
-let start;
-let main;
-try {
-  start = new vm.Script(data.prelude, { filename: 'workflow-runtime.js' }).runInContext(context)(host);
-  main = host.compile(data.body, data.filename);
-} catch (error) {
-  post({ t: 'done', ok: false, error: describe(error) });
+function done(payload) {
+  clearTimers();
+  flushDropped();
+  stopped = true;
+  post(Object.assign({ t: 'done' }, payload));
 }
-if (main) {
-  start(main, data.argsJson).then(
-    (json) => post({ t: 'done', ok: true, json }),
-    (error) => post({ t: 'done', ok: false, error: describe(error) }),
+try {
+  run(data.body, data.filename, data.argsJson, null, 0).then(
+    (json) => done({ ok: true, json }),
+    (error) => done({ ok: false, error: describe(error) }),
   );
+} catch (error) {
+  done({ ok: false, error: describe(error) });
 }
 `;

@@ -90,3 +90,11 @@
 - 原生布局补充文本收缩约束。通知包括失败原因和真实的 journal/run snapshot 位置，恢复提示保留 args；运行目录不再标为 transcript 目录。
 - 验证：`npx vitest run server/views.test.ts client/settings-input.test.ts shared/notification.test.ts client/format.test.ts`，4 个文件、11 个测试通过；代表性 200 调用的精简 JSON 小于完整视图的 1/3，仍保留全部调用 ID 和元数据；`git diff --check` 通过。
 - Typecheck 当时仅报告并行修改中的 agent-runner 测试和 engine timer 类型错误，客户端/共享契约/views 无错误。尚未在本轮 daemon/Web UI/iOS/Android 上验证；未操作 daemon。`server/contribute.ts` 新详情 RPC 注册由主 agent 和其余服务修改一并提交。
+
+## Review follow-up: runtime (2026-10-22)
+
+- 已修复：watchdog 仅接受 ping/pong；worker 日志/phase 每秒最多 100 条（日志 2000 字符，丢弃数量有汇总），请求总数和待处理 JSON 大小有上限，journal 合并同批写入，避免忘记 await 的循环淹没插件进程。
+- 已修复：排队 agent 获得并发槽后再次检查 token 预算；排队 Skip 立即返回 null；Stop/interrupt 先终止 worker 并最多等待子 agent 清理 1 秒，清除等待 timer，忽略结束后的状态/用量回调；创建前 await 持久化预分配的子 agent ID，`finished` 等待异步收尾。
+- 已修复：严格模式的脚本函数允许局部声明覆盖 API 名称；启动前编译检查；pipeline 遇到 null 后跳过余下阶段；嵌套 workflow 使用独立上下文，无法经 globalThis 绕过一层限制；提供 run 范围的 setTimeout/clearTimeout；封堵 Date constructor 与 Intl 无日期格式化的确定性漏洞；combinator 上限为 4096。
+- 已修复：resume 缓存按原始 callId 调用顺序重放相同 key，保留 worktree 元数据；run.json 可保存 args/sourcePath（服务层写入和提示另行验证）；预算简写仅在消息首尾识别，避免中间 diff 统计被当成预算。
+- 验证：`npx vitest run server/engine.test.ts server/engine-regressions.test.ts server/script-parse.test.ts server/budget.test.ts`，4 files / 70 tests 通过；包含预算排队、立即 Skip、日志/phase/请求死循环、严格模式、嵌套全局、timer、恢复顺序与 worktree、配置失败抛出及异步收尾。`npx tsc --noEmit` 与 `git diff --check` 通过。尚未在 daemon/Web UI 验证这些变更，插件保持原状态；全量测试由整合阶段执行。
