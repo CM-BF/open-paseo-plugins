@@ -123,23 +123,27 @@ export function transformCreate(
 }
 
 /**
- * On create, maps the nonce the create hook put in the env to the new agent id and removes it
- * from the agent's env: any extra launch env makes Paseo start a separate OpenCode server.
+ * On create, maps the nonce the create hook put in the env to the new agent id. Removes it and
+ * the child marker from the agent's env: any extra launch env makes Paseo start a separate
+ * OpenCode server.
  */
 export async function transformSessionOpen(
   request: PluginSessionOpenRequest,
   bindings: BindingStore,
 ): Promise<PluginSessionOpenRequest | undefined> {
   const nonce = request.env[BINDING_ENV];
-  if (typeof nonce !== "string") return undefined;
-  if (nonce && request.reason === "create") {
+  const child = request.env[CHILD_ENV];
+  if (typeof nonce !== "string" && typeof child !== "string") return undefined;
+  if (typeof nonce === "string" && nonce && request.reason === "create") {
     try {
       await bindings.bind(nonce, request.agentId);
     } catch (error) {
       log(`could not save the MCP binding for ${request.agentId}: ${describeError(error)}`);
     }
   }
+  // The child marker only matters to the create hook.
   const env: Record<string, string> = { ...request.env };
   delete env[BINDING_ENV];
+  delete env[CHILD_ENV];
   return { ...request, env };
 }
