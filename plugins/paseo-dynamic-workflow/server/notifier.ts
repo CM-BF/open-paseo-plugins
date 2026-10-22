@@ -9,6 +9,8 @@ export interface OutboxEntry {
   createdAt: string;
   attempts: number;
   lastError: string | null;
+  retryAfter?: number;
+  uncertain?: boolean;
 }
 
 const MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
@@ -24,6 +26,8 @@ export class Notifier {
   private readonly busy = new Set<string>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private loaded = false;
+  private paused = false;
+  private readonly deliveries = new Set<Promise<void>>();
 
   constructor(
     private readonly file: string,
@@ -47,10 +51,24 @@ export class Notifier {
   }
 
   add(entry: Omit<OutboxEntry, "attempts" | "lastError" | "createdAt">): void {
-    if (this.entries.some((existing) => existing.id === entry.id)) return;
+    const existing = this.entries.find((candidate) => candidate.id === entry.id);
+    if (existing) {
+      if (existing.attempts === 0 && existing.text !== entry.text) {
+        existing.text = entry.text;
+        this.persist();
+      }
+      return;
+    }
     this.entries.push({ ...entry, createdAt: new Date().toISOString(), attempts: 0, lastError: null });
     this.persist();
     this.kick(entry.agentId);
+  }
+
+  updatePending(id: string, text: string): void {
+    const entry = this.entries.find((candidate) => candidate.id === id);
+    if (!entry || entry.attempts !== 0 || entry.text === text) return;
+    entry.text = text;
+    this.persist();
   }
 
   pendingFor(agentId: string): number {
@@ -62,12 +80,13 @@ export class Notifier {
   }
 
   kick(agentId: string): void {
-    if (!this.loaded || this.busy.has(agentId)) return;
+    if (!this.loaded || this.paused || this.busy.has(agentId)) return;
     if (!this.entries.some((entry) => entry.agentId === agentId)) return;
     this.busy.add(agentId);
-    void this.deliver(agentId)
+    const delivery = this.deliver(agentId)
       .catch((error) => log(`notification delivery to ${agentId} failed: ${describeError(error)}`))
-      .finally(() => this.busy.delete(agentId));
+      .finally(() => { this.busy.delete(agentId); this.deliveries.delete(delivery); });
+    this.deliveries.add(delivery);
   }
 
   dropFor(agentId: string): void {
@@ -86,7 +105,9 @@ export class Notifier {
       this.persist();
     }
     const handle = paseo.agents.ref(agentId);
-    const fresh = await handle.refresh().catch(() => null);
+    // A transport failure says nothing about whether the agent still exists.
+    const fresh = await handle.refresh();
+    if (this.paused) return;
     if (!fresh || fresh.agent.archivedAt) {
       this.dropFor(agentId);
       return;
@@ -94,16 +115,21 @@ export class Notifier {
     const status = fresh.agent.status;
     if (status === "running" || status === "initializing") return;
     if (fresh.agent.activeTurn) return;
-    const next = this.entries.find((entry) => entry.agentId === agentId);
+    const next = this.entries.find((entry) => entry.agentId === agentId && !entry.uncertain && (entry.retryAfter ?? 0) <= now);
     if (!next) return;
     next.attempts++;
     try {
-      await handle.send(next.text, { messageId: next.id });
+      await handle.send(next.text, { messageId: next.id, activeTurnBehavior: "steer" });
       this.entries = this.entries.filter((entry) => entry !== next);
       this.persist();
       this.onDelivered(next);
     } catch (error) {
       next.lastError = describeError(error);
+      // Paseo retains pending receipts after an ambiguous send. Replaying that key can
+      // never succeed; retain it for inspection without blocking later results.
+      next.uncertain = /agent_request_(outcome_unknown|key_conflict)/.test(next.lastError);
+      next.retryAfter = Date.now() + Math.min(300_000, RECONCILE_MS * 2 ** Math.min(next.attempts - 1, 4));
+      if (next.uncertain) log(`notification ${next.id} has an uncertain delivery receipt; retained in ${this.file}`);
       this.persist();
     }
   }
@@ -112,8 +138,14 @@ export class Notifier {
     void this.writer.write(`${JSON.stringify({ version: 1, entries: this.entries }, null, 1)}\n`);
   }
 
-  async dispose(): Promise<void> {
+  pause(): void {
+    this.paused = true;
     if (this.timer) clearInterval(this.timer);
+  }
+
+  async dispose(): Promise<void> {
+    this.pause();
+    await Promise.allSettled([...this.deliveries]);
     await this.writer.idle();
   }
 }

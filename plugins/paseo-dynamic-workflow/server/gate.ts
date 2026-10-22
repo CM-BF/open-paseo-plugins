@@ -9,12 +9,14 @@ export type PaseoApi = PluginHookContext["paseo"];
  */
 export class Gate {
   private api: PaseoApi | null = null;
-  private readonly waiters: Array<(api: PaseoApi) => void> = [];
+  private readonly waiters = new Map<(api: PaseoApi) => void, () => void>();
+  private closed = false;
 
   capture(api: PaseoApi | undefined): void {
-    if (this.api || !api) return;
+    if (this.closed || !api) return;
     this.api = api;
-    for (const resolve of this.waiters.splice(0)) resolve(api);
+    for (const resolve of this.waiters.keys()) resolve(api);
+    this.waiters.clear();
   }
 
   get ready(): boolean {
@@ -25,19 +27,27 @@ export class Gate {
     return this.api;
   }
 
-  wait(timeoutMs: number): Promise<PaseoApi> {
+  wait(timeoutMs?: number): Promise<PaseoApi> {
+    if (this.closed) return Promise.reject(new Error("The workflow plugin is stopping."));
     if (this.api) return Promise.resolve(this.api);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        const index = this.waiters.indexOf(done);
-        if (index >= 0) this.waiters.splice(index, 1);
-        reject(new Error("The plugin has just started and has no connection to Paseo yet; try again in a few seconds."));
+      const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
+        this.waiters.delete(done);
+        reject(new Error("After a plugin reload, open the Dynamic workflows panel once to reconnect the workflow bridge to Paseo, then retry."));
       }, timeoutMs);
+      (timer as unknown as { unref?: () => void } | undefined)?.unref?.();
       const done = (api: PaseoApi) => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         resolve(api);
       };
-      this.waiters.push(done);
+      this.waiters.set(done, () => { if (timer) clearTimeout(timer); reject(new Error("The workflow plugin stopped.")); });
     });
+  }
+
+  dispose(): void {
+    this.closed = true;
+    for (const reject of this.waiters.values()) reject();
+    this.waiters.clear();
+    this.api = null;
   }
 }

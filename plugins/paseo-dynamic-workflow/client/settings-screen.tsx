@@ -76,7 +76,7 @@ function SettingsEditor({ settings }: { settings: ReadySettings }) {
         <SettingsCard>
           <SettingsSwitch
             label="Add workflow tools to new agents"
-            hint="Claude, Codex and OpenCode get the workflow MCP tools; Pi and OMP get instructions for the paseo-workflow command. Existing agents are not changed."
+            hint="Claude and Codex get the workflow MCP tools; OpenCode, Pi and OMP get instructions for the paseo-workflow command. Existing agents are not changed."
             value={values.injectIntoNewAgents}
             disabled={settings.saving}
             onValueChange={(injectIntoNewAgents) => setValues((current) => ({ ...current, injectIntoNewAgents }))}

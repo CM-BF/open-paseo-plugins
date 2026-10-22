@@ -2,7 +2,7 @@ Dynamic workflows let any Paseo agent orchestrate other Paseo agents with a shor
 
 ## How it works
 
-New Claude, Codex and OpenCode agents get four MCP tools (`workflow`, `workflow_status`, `workflow_stop`, `workflow_reference`) and a short note in their system prompt. Pi and OMP agents get the same features through a `paseo-workflow` command described in their system prompt. Agents launch a workflow only when you ask for one in your own words, such as "use a workflow".
+New Claude and Codex agents get four MCP tools (`workflow`, `workflow_status`, `workflow_stop`, `workflow_reference`) and a short note in their system prompt. OpenCode, Pi and OMP agents get the same features through a `paseo-workflow` command described in their system prompt. Agents launch a workflow only when you ask for one in your own words, such as "use a workflow".
 
 Each `agent()` call creates a Paseo agent that is a subagent of the launching agent. By default it uses the launcher's provider, model, mode and thinking setting. A script can pick another model, another provider, an effort level, one of your agent profiles (`agentType`), or an isolated git worktree. With a JSON Schema, the plugin checks the agent's answer and asks it to correct a mismatch. Children appear in the Subagents track while they run, so you can watch them and answer their permission prompts. They are archived once their result is recorded.
 

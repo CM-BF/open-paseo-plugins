@@ -138,3 +138,10 @@
 
 - 独立交叉复核发现：缓存只收集成功调用时，同 key 的第一次失败、第二次成功会在恢复时把第二个结果错配给第一个调用。现在 journal 恢复保留失败/跳过调用的空槽；空槽消耗原调用位置并触发重跑，后续成功结果仍命中原位置。可复用缓存数量只统计成功结果。
 - 验证：两个 engine 测试文件共 42 项通过；新增 `[null, 'a2']` 同 prompt 运行恢复后只重跑 `a1`、保留 `a2` 结果的契约用例。完整 `npx tsc --noEmit` 通过；本项未操作 daemon。
+
+### 服务修复最终补充（2026-10-22）
+
+- 第二轮修复停止后延迟 launch、终态未通知补恢复、异步 startup 与 cleanup 竞态；关闭时 PaseoApi 保留到子 agent 清理完成，之后才 dispose Gate（真实 disable 测试确认子 agent 已 archive）。
+- 新建隔离调用在创建前保存 pendingBranch，终止通知保留未完成创建/清理信息；worktree.changed:null 不再从通知隐藏。archiveFinishedAgents=false 的未修改隔离工作区以 retained:true 保留。
+- 恢复按 id+label 查找子 agent，base SHA 判断工作区内容，archive 后核对实际目录是否移除；未知删除结果保留现场。
+- 全套最终检查：18 个测试文件、159 项通过；typecheck 与 diff --check 通过。逐项原始 review 处理见 docs/REVIEW.md，平台限制与未实机验证项单列。

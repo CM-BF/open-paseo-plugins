@@ -13,7 +13,7 @@ export function systemPromptCli(cli: string): string {
   return `${PROMPT_MARKER}
 The \`${cli}\` command runs a JavaScript orchestration script in the background: \`agent()\`, \`parallel()\`, \`pipeline()\`, \`phase()\` and \`log()\` start and coordinate Paseo agents (any provider) and return their results to the script. ${OPT_IN}
 - Before writing a script, run \`${cli} reference\` once for the script API, patterns and resume.
-- Launch with \`${cli} run --file script.js [--args-json '{...}'] [--resume <runId>]\`. It returns at once; a \`<task-notification>\` message from the plugin arrives when the run ends, so end your turn instead of waiting. \`${cli} status [runId]\` reports progress; \`${cli} stop <runId>\` stops a run.`;
+- Launch with \`${cli} run --file script.js [--args-json '{...}'] [--resume <runId>]\`, \`run --script-path <path>\` to iterate, or \`run --name <saved-workflow>\`. Resume inherits saved args unless overridden. It returns at once; a \`<task-notification>\` message from the plugin arrives when the run ends, so end your turn instead of waiting. \`${cli} status [runId]\` reports progress; \`${cli} stop <runId>\` stops a run.`;
 }
 
 export function appendPrompt(existing: string | undefined, block: string): string {

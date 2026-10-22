@@ -28,7 +28,7 @@ Other tools: `workflow_status({ runId?, waitSeconds? })` reports progress (no ru
 export const meta = {
   name: 'find-flaky-tests',
   description: 'Find flaky tests and propose fixes',   // one line, shown in the run card
-  whenToUse: 'optional, shown for saved workflows',
+  whenToUse: 'optional description retained in the run metadata',
   phases: [                                            // one entry per phase() title
     { title: 'Scan', detail: 'grep test logs for retries' },
     { title: 'Fix', detail: 'one agent per flaky test' },
@@ -57,22 +57,24 @@ return { fixes: fixes.filter(Boolean) }
 | `schema` | JSON Schema of the result (see above). |
 | `model` | Model override: an id or alias of the inherited provider (`'opus'`, `'sonnet'`, `'gpt-5.5'`), or `'provider/model'` (`'codex/gpt-6.1-sol'`). Omit it: children inherit your provider, model, mode and thinking setting, which is almost always right. |
 | `effort` | `'low'`, `'medium'`, `'high'`, `'xhigh'` or `'max'`, used when the model offers that thinking option. `'low'` for cheap mechanical stages; higher only for the hardest judge or verify stages. |
-| `agentType` | A Paseo agent profile by name or id (the `list_profiles` tool shows them with notes on what each is for), or a built-in role: `general-purpose` (default), `explore` and `plan` (read-only), `verification` (adversarial, read-only). |
+| `agentType` | A Paseo agent profile by name or id (the `list_profiles` tool shows them with notes on what each is for), or a built-in role: `general-purpose` (default), `explore` and `plan` (read-only instructions), `verification` (adversarial instructions). Built-in roles are prompts; they do not enforce a filesystem sandbox or change permission mode. |
 | `provider` | Run on another provider with its default model (`'codex'`, `'claude'`, `'opencode'`). |
 | `isolation` | `'worktree'`: the agent works in a new git worktree on a new branch, in a background workspace, and commits there. Costs a checkout per agent: use it only when agents edit files in parallel and would conflict. Unchanged worktrees are removed; changed ones (path and actual branch) are listed in the notification for you to merge. |
-| `cwd` | Absolute working directory for this agent (default: yours). |
+| `cwd` | Absolute working directory (default: yours). For non-isolated children it must resolve to a workspace root; unsupported subdirectory overrides throw. Worktree children use it as their git source. |
 
 Children are ordinary Paseo agents. They appear in your Subagents track while they run (the user can watch them and answer their permission prompts), read the same project instruction files you do, and are archived when their result is recorded. They have no workflow tools of their own. Each child is told its final message is data for the script, so it answers with the result only.
 
-**`pipeline(items, stage1, stage2, ...)`** runs every item through all stages independently, with no barrier between stages: item A can be in stage 3 while item B is still in stage 1. Every stage receives `(previousResult, originalItem, index)`. A stage that throws turns that item into `null` and skips its remaining stages. This is the default for multi-stage work: wall-clock time is the slowest single chain, not the sum of the slowest per stage.
+**`pipeline(items, stage1, stage2, ...)`** runs every item through all stages independently, with no barrier between stages: item A can be in stage 3 while item B is still in stage 1. Every stage receives `(previousResult, originalItem, index)`. A stage that throws or returns `null` turns that item into `null` and skips its remaining stages. This is the default for multi-stage work: wall-clock time is the slowest single chain, not the sum of the slowest per stage.
 
 **`parallel(thunks)`** runs functions concurrently and waits for all of them (a barrier). Pass functions, not promises: `parallel(items.map(x => () => agent(...)))`. A thunk that throws gives `null` at its position; `parallel()` itself does not reject. Use it only when the next step needs all results together.
 
-**`phase(title)`** starts a progress group; later `agent()` calls without `opts.phase` join it. **`log(message)`** writes a line to the run's log, shown in the card and the panel. **`args`** is the tool's `args` input verbatim (`undefined` when not given). **`budget`** is `{ total, spent(), remaining() }`: `total` is the token target from the user's message ("+500k", "+2m", "spend 1M tokens"), or `null`; `spent()` counts the output tokens of this run's agents; once it reaches `total`, `agent()` throws. With no target `remaining()` is `Infinity`, so guard loops on `budget.total`.
+**`phase(title)`** starts a progress group; later `agent()` calls without `opts.phase` join it. **`log(message)`** writes a line to the run's log, shown in the card and the panel. **`args`** is the tool's `args` input verbatim (`undefined` when not given). **`budget`** is `{ total, spent(), remaining() }`: `total` is the token target from the user's message ("+500k", "+2m", "spend 1M tokens"), or `null`; `spent()` counts the output tokens of this run's agents; once it reaches `total`, new agents stop starting, including queued calls. Budget enforcement depends on reported usage: missing or underreported provider tokens make the count incomplete, and already running agents may exceed the target. Shorthand `+500k` is recognized only at the start or end of the user message. With no target `remaining()` is `Infinity`, so guard loops on `budget.total`.
+
+`setTimeout()` and `clearTimeout()` are available; pending timers are cleared when the run ends.
 
 **`workflow(nameOrRef, args?)`** runs another workflow inline and returns its result: a saved workflow name or `{ scriptPath }`. It shares this run's concurrency, agent cap and budget; its phases appear under its name. Nesting is one level: `workflow()` inside a nested workflow throws.
 
-Limits: at most min(8, CPUs - 2) agents run at once by default (configurable up to 16); extra calls queue. A run starts at most 1000 agents. One `parallel()` or `pipeline()` call takes at most 1000 items. A script that blocks without awaiting for two minutes is stopped.
+Limits: at most min(8, CPUs - 2) agents run at once by default (configurable up to 16); extra calls queue. A run starts at most 1000 agents. One `parallel()` or `pipeline()` call takes at most 4096 items. A run allows at most 4096 runtime requests and 16 MiB of pending request data. Log/phase events are limited to 100 per second and log lines to 2000 characters; excess events are coalesced into a dropped-events summary. A script that blocks without awaiting for two minutes is stopped.
 
 ## pipeline() or a barrier
 
@@ -144,3 +146,13 @@ Each child starts fresh: put everything it needs in the prompt (paths, the exact
 Every run saves its script and a journal of each agent's actual result. To continue after a stop, a failure or a script edit, launch again with `workflow({ scriptPath, resumeFromRunId })`: each `agent()` call whose prompt and options (except `label` and `phase`) match a completed call of that run returns the cached result at once, and only new or edited calls start agents. Same script and same args reuse everything. Before you debug an empty or surprising result, read `journal.jsonl` in the run directory: it holds what each agent really returned.
 
 Runs that were active when the plugin stopped (reload or daemon restart) end as `interrupted`; resume them the same way.
+
+## Operational limits
+
+Resume inherits the previous run's saved `args` unless you pass a new value. A named workflow is copied to the run directory for editing; its library definition stays untouched.
+
+After reloading the plugin during an existing turn, Paseo 0.12 does not expose the daemon API to the plugin entrypoint until a lifecycle event or RPC arrives. Open the Dynamic workflows panel once if the bridge asks you to reconnect.
+
+Run history is retained on disk for resume; there is no automatic retention policy. The panel fetches compact call metadata and loads result details only when expanded. Child transcripts are available from the panel, not as transcript files in the run directory.
+
+If Paseo reports an uncertain notification receipt, the outbox retains that entry with `uncertain: true` for inspection; it does not resend under a new key or block newer notifications. The run result remains available through status and the panel.

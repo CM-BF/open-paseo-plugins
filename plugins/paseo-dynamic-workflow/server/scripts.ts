@@ -123,7 +123,8 @@ export function toolDefinitions(): Array<{ name: McpToolName; description: strin
 const CLIENT_SOURCE = String.raw`
 const env = process.env;
 const socketPath = path.join(env.DYNAMIC_WORKFLOW_HOME || '', 'bridge.sock');
-const TRANSPORT = new Set(['ENOENT', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE']);
+// Only failures before a connection are safe to retry for a non-idempotent launch.
+const TRANSPORT = new Set(['ENOENT', 'ECONNREFUSED']);
 
 function requestOnce(urlPath, body, timeoutMs) {
   return new Promise((resolve, reject) => {
@@ -155,6 +156,9 @@ function requestOnce(urlPath, body, timeoutMs) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function callTool(name, args) {
+  if (Buffer.byteLength(JSON.stringify({ arguments: args || {} })) > 2 * 1024 * 1024) {
+    return { error: 'too_large: Request body is larger than 2 MB; use scriptPath instead of an inline script.' };
+  }
   const deadline = Date.now() + 20000;
   let delay = 250;
   for (;;) {
@@ -267,12 +271,21 @@ const USAGE = [
   'The calling agent is identified by PASEO_AGENT_ID, which Paseo sets for agent processes.',
 ].join('\n');
 
-function option(argv, name) {
-  const index = argv.indexOf(name);
-  if (index < 0) return undefined;
-  const value = argv[index + 1];
-  if (value === undefined || value.startsWith('--')) fail('missing value for ' + name);
-  return value;
+function parse(argv, allowed, maxPositionals) {
+  const flags = {};
+  const positional = [];
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i];
+    if (token.startsWith('-')) {
+      if (!allowed.includes(token)) fail('unknown option ' + token);
+      if (Object.hasOwn(flags, token)) fail('duplicate option ' + token);
+      const value = argv[++i];
+      if (value === undefined || value.startsWith('--')) fail('missing value for ' + token);
+      flags[token] = value;
+    } else positional.push(token);
+  }
+  if (positional.length > maxPositionals) fail('unexpected argument ' + positional[maxPositionals]);
+  return { flags, positional };
 }
 
 function fail(message) {
@@ -290,11 +303,13 @@ async function main() {
   }
   if (command === 'run') {
     const args = {};
-    const file = option(argv, '--file');
-    const scriptPath = option(argv, '--script-path');
-    const name = option(argv, '--name');
-    const json = option(argv, '--args-json');
-    const resume = option(argv, '--resume');
+    const { flags } = parse(argv.slice(1), ['--file', '--script-path', '--name', '--args-json', '--resume'], 0);
+    const file = flags['--file'];
+    const scriptPath = flags['--script-path'];
+    const name = flags['--name'];
+    const json = flags['--args-json'];
+    const resume = flags['--resume'];
+    if ([file, scriptPath, name].filter(Boolean).length !== 1) fail('give exactly one of --file, --script-path or --name');
     if (file) args.script = fs.readFileSync(path.resolve(file), 'utf8');
     if (scriptPath) args.scriptPath = path.resolve(scriptPath);
     if (name) args.name = name;
@@ -305,13 +320,17 @@ async function main() {
     if (resume) args.resumeFromRunId = resume;
     outcome = await callTool('workflow', args);
   } else if (command === 'status') {
-    const runId = argv[1] && !argv[1].startsWith('--') ? argv[1] : undefined;
-    const wait = option(argv, '--wait');
+    const { flags, positional } = parse(argv.slice(1), ['--wait'], 1);
+    const runId = positional[0];
+    const wait = flags['--wait'];
+    if (wait !== undefined && (!Number.isFinite(Number(wait)) || Number(wait) < 0 || Number(wait) > 50)) fail('--wait must be a number from 0 to 50');
     outcome = await callTool('workflow_status', { runId, waitSeconds: wait ? Number(wait) : 0 });
   } else if (command === 'stop') {
-    if (!argv[1]) fail('stop needs a run id');
-    outcome = await callTool('workflow_stop', { runId: argv[1] });
+    const { positional } = parse(argv.slice(1), [], 1);
+    if (!positional[0] || !/^wf_[a-z0-9-]{6,}$/.test(positional[0])) fail('stop needs a run id (wf_...)');
+    outcome = await callTool('workflow_stop', { runId: positional[0] });
   } else if (command === 'reference') {
+    parse(argv.slice(1), [], 0);
     outcome = await callTool('workflow_reference', {});
   } else {
     fail('unknown command ' + command);

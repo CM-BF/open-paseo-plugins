@@ -27,6 +27,7 @@ export const WorktreeSchema = z.object({
   branch: z.string().nullable(),
   workspaceId: z.string().nullable(),
   changed: z.boolean().nullable(),
+  retained: z.boolean().optional(),
 });
 
 export const AgentCallSchema = z.object({
@@ -44,6 +45,7 @@ export const AgentCallSchema = z.object({
   error: z.string().nullable(),
   usage: UsageSchema,
   worktree: WorktreeSchema.nullable(),
+  pendingBranch: z.string().optional(),
   /** Follow-up prompts sent because the reply did not match the schema. */
   repairs: z.number(),
 });

@@ -14,6 +14,7 @@ import type { Gate, PaseoApi } from "./gate";
 import { Notifier } from "./notifier";
 import { paseoHome, runPaths, type StatePaths } from "./paths";
 import { REFERENCE } from "./reference";
+import { recoverChildren } from "./recovery";
 import {
   emptyUsage,
   listRunIds,
@@ -55,6 +56,7 @@ export interface ServiceOptions {
 
 const CARD_THROTTLE_MS = 1200;
 const SAVE_THROTTLE_MS = 1000;
+const MAX_CACHED_RECORDS = 100;
 
 export class WorkflowService {
   private readonly paths: StatePaths;
@@ -63,11 +65,14 @@ export class WorkflowService {
   private readonly runner: AgentRunner;
   readonly notifier: Notifier;
   private readonly engines = new Map<string, RunEngine>();
-  /** Runs whose end the launching agent learned from workflow_stop: no notification for them. */
-  private readonly quietStops = new Set<string>();
   private readonly cardTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private cardWarned = false;
+  private readonly cardFailures = new Map<string, number>();
+  private readonly records = new Map<string, RunRecord>();
+  private readonly summaries = new Map<string, RunSummary>();
+  private runOrder: string[] = [];
+  private readonly finalizers = new Set<Promise<void>>();
+  private disposed = false;
 
   constructor(options: ServiceOptions) {
     this.paths = options.paths;
@@ -90,13 +95,25 @@ export class WorkflowService {
   /** Startup: runs that were active when the plugin stopped end as interrupted; their children are archived. */
   async recover(): Promise<void> {
     await this.notifier.load();
-    for (const runId of await listRunIds(this.paths)) {
+    this.runOrder = await listRunIds(this.paths);
+    for (const runId of this.runOrder) {
       const record = await readRecord(this.paths, runId);
       if (!record) continue;
+      this.rememberRecord(record, this.records.size < MAX_CACHED_RECORDS);
+      if (record.status !== "running" && record.status !== "stopping" && !record.notified) {
+        this.notifier.add({ id: `notify-${runId}`, agentId: record.parentAgentId, text: notificationText(record, this.paths) });
+        record.notified = true;
+        await new RunFiles(this.paths, runId).saveRecord(record);
+      }
       // A clean shutdown records the run as interrupted but cannot wait for its children to be
       // archived; archive any that are still open.
       if (record.status === "interrupted" && record.endedAt && Date.now() - Date.parse(record.endedAt) < 24 * 60 * 60_000) {
-        void this.gate.wait(10 * 60_000).then(
+        if (!record.notified) {
+          this.notifier.add({ id: `notify-${runId}`, agentId: record.parentAgentId, text: notificationText(record, this.paths) });
+          record.notified = true;
+          await new RunFiles(this.paths, runId).saveRecord(record);
+        }
+        void this.gate.wait().then(
           (paseo) => this.archiveLeftovers(paseo, record),
           () => undefined,
         );
@@ -121,7 +138,8 @@ export class WorkflowService {
         await files.saveRecord(record);
         this.notifier.add({ id: `notify-${runId}`, agentId: record.parentAgentId, text: notificationText(record, this.paths) });
       }
-      void this.gate.wait(10 * 60_000).then(
+      this.rememberRecord(record, this.records.has(runId));
+      void this.gate.wait().then(
         (paseo) => this.archiveLeftovers(paseo, record),
         () => undefined,
       );
@@ -129,25 +147,20 @@ export class WorkflowService {
   }
 
   private async archiveLeftovers(paseo: PaseoApi, record: RunRecord): Promise<void> {
-    for (const call of record.calls) {
-      if (!call.agentId) continue;
-      try {
-        const fresh = await paseo.agents.ref(call.agentId).refresh();
-        if (fresh && !fresh.agent.archivedAt && fresh.agent.labels?.[LABEL_RUN] === record.runId) {
-          await paseo.agents.ref(call.agentId).archive();
-        }
-      } catch {
-        // Already gone.
-      }
-    }
-    void this.publishCard(record);
+    await recoverChildren(paseo, record);
+    await new RunFiles(this.paths, record.runId).saveRecord(record);
+    this.rememberRecord(record, this.records.has(record.runId));
+    this.notifier.updatePending(`notify-${record.runId}`, notificationText(record, this.paths));
+    await this.publishCard(record);
   }
 
   async launch(callerId: string, input: LaunchInput): Promise<string> {
+    if (this.disposed) throw new ServiceError("not_ready", "The workflow plugin is stopping.");
     const paseo = await this.gate.wait(20_000);
     const caller = await paseo.agents.ref(callerId).refresh();
     if (!caller || caller.agent.archivedAt) throw new ServiceError("unknown_agent", `Agent ${callerId} was not found on this host.`);
     const agent = caller.agent;
+    if (agent.labels?.[LABEL_RUN]) throw new ServiceError("recursive_workflow", "Workflow children cannot launch more workflow runs; use workflow() in the orchestration script.");
     const parent: ParentContext = {
       agentId: agent.id,
       provider: agent.provider,
@@ -170,6 +183,7 @@ export class WorkflowService {
 
     let cache: ResumeCache | null = null;
     let resumedFrom: string | null = null;
+    let args = input.args;
     if (input.resumeFromRunId) {
       const previous = input.resumeFromRunId.trim();
       if (!RUN_ID_PATTERN.test(previous)) throw new ServiceError("invalid_request", `resumeFromRunId "${previous}" is not a run id (wf_...).`);
@@ -178,11 +192,14 @@ export class WorkflowService {
       }
       const record = await readRecord(this.paths, previous);
       if (!record) throw new ServiceError("unknown_run", `No workflow run ${previous} on this host.`);
+      this.requireOwner(record, callerId);
+      if (!Object.prototype.hasOwnProperty.call(input, "args")) args = record.args;
       cache = await ResumeCache.load(runPaths(this.paths, previous));
       resumedFrom = previous;
     }
 
     const budgetTotal = await this.budgetFor(paseo, callerId);
+    if (this.disposed) throw new ServiceError("not_ready", "The workflow plugin stopped before this launch could start.");
     const runId = newRunId();
     const files = new RunFiles(this.paths, runId);
     const record: RunRecord = {
@@ -193,7 +210,9 @@ export class WorkflowService {
       parentAgentId: callerId,
       workspaceId: parent.workspaceId,
       cwd: parent.cwd,
-      scriptPath: source.path ?? files.paths.script,
+      scriptPath: source.kind === "name" ? files.paths.script : (source.path ?? files.paths.script),
+      sourcePath: source.path ?? undefined,
+      args,
       source: source.kind,
       resumedFrom,
       startedAt: nowIso(),
@@ -208,6 +227,13 @@ export class WorkflowService {
       notified: false,
     };
     await files.create(source.script, record);
+    if (this.disposed) {
+      record.status = "interrupted";
+      record.endedAt = nowIso();
+      record.error = "The plugin stopped while the workflow launch was being persisted.";
+      await files.saveRecord(record);
+      throw new ServiceError("not_ready", record.error);
+    }
     if (resumedFrom && cache) {
       record.logs.push({ at: nowIso(), message: `Resuming from ${resumedFrom}: ${cache.size} cached agent result(s) available` });
     }
@@ -217,7 +243,7 @@ export class WorkflowService {
       record,
       files,
       body: parsed.body,
-      args: input.args,
+      args,
       parent,
       cache,
       runner: this.runner,
@@ -227,9 +253,16 @@ export class WorkflowService {
       archiveWhenDone: settings.archiveFinishedAgents,
       resolveWorkflow: (ref, current) => this.resolveNested(ref, current),
       onChange: (changed) => this.onChange(changed),
-      onFinished: (finished) => void this.onFinished(finished),
+      onFinished: (finished) => {
+        const work = this.onFinished(finished);
+        this.finalizers.add(work);
+        void work.finally(() => this.finalizers.delete(work)).catch((error) => log(`could not finalize ${finished.runId}: ${describeError(error)}`));
+        return work;
+      },
     });
     this.engines.set(runId, engine);
+    this.rememberRecord(record);
+    this.runOrder.unshift(runId);
     engine.start();
     void this.publishCard(record);
 
@@ -237,11 +270,11 @@ export class WorkflowService {
       `Workflow launched in background. Run ID: ${runId}`,
       `Summary: ${parsed.meta.description}`,
       `Script file: ${record.scriptPath}`,
-      `Transcript dir: ${files.paths.dir}`,
+      `Run files: ${files.paths.dir} (script.js, run.json, journal.jsonl, result.json)`,
     ];
     if (resumedFrom && cache) lines.push(`Resuming from ${resumedFrom} with ${cache.size} cached agent result(s).`);
     if (budgetTotal !== null) lines.push(`Token budget from the user's message: ${budgetTotal} output tokens.`);
-    lines.push(`To iterate: edit the script file, then workflow({ scriptPath: "${record.scriptPath}", resumeFromRunId: "${runId}" }).`);
+    lines.push(`To iterate: edit the script file, then workflow({ scriptPath: ${JSON.stringify(record.scriptPath)}, resumeFromRunId: "${runId}" }) or paseo-workflow run --script-path ${JSON.stringify(record.scriptPath)} --resume ${runId}. Resume inherits saved args unless you override them.`);
     lines.push("A <task-notification> message arrives when the run ends; end your turn now unless other work does not depend on it. workflow_status reports progress.");
     return lines.join("\n");
   }
@@ -249,12 +282,16 @@ export class WorkflowService {
   async stop(runId: string, by: { agentId?: string }): Promise<string> {
     const engine = this.engines.get(runId);
     if (!engine) {
-      const record = await readRecord(this.paths, runId);
+      const record = await this.recordFor(runId);
       if (!record) throw new ServiceError("unknown_run", `No workflow run ${runId} on this host.`);
+      if (by.agentId) this.requireOwner(record, by.agentId);
       return `Workflow ${runId} is not running (${record.status}).`;
     }
-    if (by.agentId && by.agentId === engine.record.parentAgentId) this.quietStops.add(runId);
-    await engine.stop(by.agentId ? "stopped by the launching agent" : "stopped by the user");
+    if (by.agentId) this.requireOwner(engine.record, by.agentId);
+    if (engine.record.status !== "running") return statusText(engine.record, this.paths);
+    // Acknowledge the request before child cleanup, which can outlast the host RPC.
+    void engine.stop(by.agentId ? "stopped by the launching agent" : "stopped by the user")
+      .catch((error) => log(`could not stop ${runId}: ${describeError(error)}`));
     return statusText(engine.record, this.paths);
   }
 
@@ -263,6 +300,7 @@ export class WorkflowService {
   }
 
   async status(callerId: string | null, runId: string | undefined, waitSeconds: number): Promise<string> {
+    if (!callerId) throw new ServiceError("unknown_agent", "The calling agent must be identified.");
     if (!runId) {
       const runs = await this.list(callerId ?? undefined, 5);
       if (runs.length === 0) return "You have no workflow runs on this host.";
@@ -272,10 +310,11 @@ export class WorkflowService {
     }
     const engine = this.engines.get(runId);
     if (engine && waitSeconds > 0) {
-      await Promise.race([engine.finished, new Promise((resolveWait) => setTimeout(resolveWait, waitSeconds * 1000))]);
+      await waitUpTo(engine.finished, waitSeconds * 1000);
     }
-    const record = engine?.record ?? (await readRecord(this.paths, runId));
+    const record = engine?.record ?? (await this.recordFor(runId));
     if (!record) throw new ServiceError("unknown_run", `No workflow run ${runId} on this host.`);
+    this.requireOwner(record, callerId);
     return statusText(record, this.paths);
   }
 
@@ -285,19 +324,36 @@ export class WorkflowService {
 
   async list(agentId: string | undefined, limit: number): Promise<RunSummary[]> {
     const out: RunSummary[] = [];
-    for (const runId of await listRunIds(this.paths)) {
-      const record = this.engines.get(runId)?.record ?? (await readRecord(this.paths, runId));
-      if (!record) continue;
-      if (agentId && record.parentAgentId !== agentId) continue;
-      out.push(runSummary(record));
+    for (const runId of this.runOrder) {
+      const live = this.engines.get(runId)?.record;
+      const summary = live ? runSummary(live) : this.summaries.get(runId);
+      if (!summary || (agentId && summary.parentAgentId !== agentId)) continue;
+      out.push(summary);
       if (out.length >= limit) break;
     }
     return out;
   }
 
   async detail(runId: string): Promise<RunDetail | null> {
-    const record = this.engines.get(runId)?.record ?? (await readRecord(this.paths, runId));
+    const record = await this.recordFor(runId);
     return record ? runDetail(record, this.paths) : null;
+  }
+
+  /** History lists retain small summaries; full result previews have a bounded LRU. */
+  private rememberRecord(record: RunRecord, cache = true): void {
+    this.summaries.set(record.runId, runSummary(record));
+    if (!cache) return;
+    this.records.delete(record.runId);
+    this.records.set(record.runId, record);
+    while (this.records.size > MAX_CACHED_RECORDS) this.records.delete(this.records.keys().next().value!);
+  }
+
+  private async recordFor(runId: string): Promise<RunRecord | null> {
+    const live = this.engines.get(runId)?.record;
+    if (live) return live;
+    const record = this.records.get(runId) ?? (await readRecord(this.paths, runId));
+    if (record) this.rememberRecord(record);
+    return record;
   }
 
   onAgentArchived(agentId: string): void {
@@ -308,13 +364,20 @@ export class WorkflowService {
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true;
+    this.notifier.pause();
+    const engines = [...this.engines.values()];
     for (const timer of [...this.cardTimers.values(), ...this.saveTimers.values()]) clearTimeout(timer);
-    await Promise.all([...this.engines.values()].map((engine) => engine.interrupt().catch(() => undefined)));
-    await Promise.all([...this.engines.values()].map((engine) => engine.files.idle()));
+    this.cardTimers.clear();
+    this.saveTimers.clear();
+    await Promise.all(engines.map((engine) => engine.interrupt().catch((error) => log(`interrupt ${engine.runId}: ${describeError(error)}`))));
+    await Promise.allSettled([...this.finalizers]);
+    await Promise.all(engines.map((engine) => engine.files.idle()));
     await this.notifier.dispose();
   }
 
   private onChange(engine: RunEngine): void {
+    if (this.disposed) return;
     const runId = engine.runId;
     if (!this.saveTimers.has(runId)) {
       this.saveTimers.set(
@@ -342,16 +405,14 @@ export class WorkflowService {
 
   private async onFinished(engine: RunEngine): Promise<void> {
     const record = engine.record;
+    this.rememberRecord(record);
     this.engines.delete(record.runId);
     for (const timers of [this.saveTimers, this.cardTimers]) {
       const timer = timers.get(record.runId);
       if (timer) clearTimeout(timer);
       timers.delete(record.runId);
     }
-    const quiet = this.quietStops.delete(record.runId);
-    if (!quiet) {
-      this.notifier.add({ id: `notify-${record.runId}`, agentId: record.parentAgentId, text: notificationText(record, this.paths) });
-    }
+    this.notifier.add({ id: `notify-${record.runId}`, agentId: record.parentAgentId, text: notificationText(record, this.paths) });
     record.notified = true;
     await engine.files.saveRecord(record);
     await this.publishCard(record);
@@ -359,6 +420,7 @@ export class WorkflowService {
   }
 
   private async publishCard(record: RunRecord): Promise<void> {
+    if (this.disposed) return;
     const paseo = this.gate.paseo;
     if (!paseo) return;
     try {
@@ -369,22 +431,39 @@ export class WorkflowService {
         version: CARD_VERSION,
         data: cardData(record),
       });
+      this.cardFailures.delete(record.runId);
     } catch (error) {
-      if (!this.cardWarned) log(`could not update the run card of ${record.runId}: ${describeError(error)}`);
-      this.cardWarned = true;
+      const failures = (this.cardFailures.get(record.runId) ?? 0) + 1;
+      this.cardFailures.set(record.runId, failures);
+      if (failures === 1) log(`could not update the run card of ${record.runId}: ${describeError(error)}`);
+      if (failures <= 3 && !this.cardTimers.has(record.runId)) this.cardTimers.set(record.runId, unref(setTimeout(() => {
+        this.cardTimers.delete(record.runId);
+        void this.publishCard(record);
+      }, failures * 2000)));
     }
+  }
+
+  private requireOwner(record: RunRecord, agentId: string): void {
+    if (record.parentAgentId !== agentId) throw new ServiceError("forbidden", "This workflow belongs to another agent.");
   }
 
   private async budgetFor(paseo: PaseoApi, agentId: string): Promise<number | null> {
     try {
-      const page = await paseo.agents.ref(agentId).timeline.refetch({ direction: "tail", limit: 200, projection: "canonical" });
-      const entries = (page as { entries?: Array<{ item: { type: string; text?: string } }> }).entries ?? [];
-      for (let index = entries.length - 1; index >= 0; index--) {
-        const item = entries[index]?.item;
-        if (item?.type === "user_message" && typeof item.text === "string") {
-          if (item.text.startsWith(NOTIFICATION_MARKER)) continue;
-          return parseBudgetDirective(stripReminders(item.text));
+      const timeline = paseo.agents.ref(agentId).timeline;
+      let page = await timeline.refetch({ direction: "tail", limit: 200, projection: "canonical" });
+      for (;;) {
+        const entries = page.entries;
+        for (let index = entries.length - 1; index >= 0; index--) {
+          const item = entries[index]?.item;
+          if (item?.type === "user_message" && typeof item.text === "string") {
+            if (item.text.startsWith(NOTIFICATION_MARKER)) continue;
+            return parseBudgetDirective(stripReminders(item.text));
+          }
         }
+        if (!page.hasOlder || !page.startCursor) break;
+        const cursor = page.startCursor;
+        page = await timeline.refetch({ direction: "before", cursor, limit: 200, projection: "canonical" });
+        if (page.startCursor?.seq === cursor.seq && page.startCursor.epoch === cursor.epoch) break;
       }
     } catch (error) {
       log(`could not read the token budget of ${agentId}: ${describeError(error)}`);
@@ -468,6 +547,15 @@ function stripReminders(text: string): string {
   return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, " ");
 }
 
+async function waitUpTo(done: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([done, new Promise<void>((resolveWait) => { timer = unref(setTimeout(resolveWait, ms)); })]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function workflowDirs(cwd: string): Promise<string[]> {
   const roots = [cwd];
   try {
@@ -494,4 +582,3 @@ async function availableWorkflows(dirs: string[]): Promise<string[]> {
   }
   return [...names].sort();
 }
-

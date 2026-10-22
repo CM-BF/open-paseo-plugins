@@ -46,6 +46,7 @@ export class Bridge {
       (error) => {
         this.error = describeError(error);
         log(`bridge could not listen on ${socketPath}: ${this.error}`);
+        throw error;
       },
     );
   }
@@ -80,7 +81,14 @@ export class Bridge {
       send(response, 404, { error: { code: "not_found", message: `No route ${request.method} ${url.pathname}` } });
       return;
     }
-    const body = await readJson(request);
+    let body: unknown;
+    try {
+      body = await readJson(request);
+    } catch (error) {
+      send(response, error instanceof ServiceError && error.code === "too_large" ? 413 : 400,
+        { error: { code: error instanceof ServiceError ? error.code : "invalid_request", message: describeError(error) } });
+      return;
+    }
     const args = (body && typeof body === "object" ? (body as { arguments?: unknown }).arguments : undefined) ?? {};
     const input = args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
     const agentId = await this.callerId(request);
@@ -115,7 +123,7 @@ export class Bridge {
         });
       case "workflow_status": {
         const wait = typeof input.waitSeconds === "number" && Number.isFinite(input.waitSeconds) ? Math.min(50, Math.max(0, input.waitSeconds)) : 0;
-        return service.status(agentId, typeof input.runId === "string" && input.runId ? input.runId : undefined, wait);
+        return service.status(requireAgent(), typeof input.runId === "string" && input.runId ? input.runId : undefined, wait);
       }
       case "workflow_stop": {
         if (typeof input.runId !== "string" || !input.runId) throw new ServiceError("invalid_request", "runId is required");
@@ -143,10 +151,11 @@ function readJson(request: IncomingMessage): Promise<unknown> {
       size += chunk.length;
       if (size > MAX_BODY) {
         reject(new ServiceError("too_large", "Request body is larger than 2 MB"));
-        request.destroy();
+        chunks.length = 0;
+        request.resume();
         return;
       }
-      chunks.push(chunk);
+      if (size <= MAX_BODY) chunks.push(chunk);
     });
     request.on("end", () => {
       if (chunks.length === 0) return resolve(null);

@@ -1,7 +1,7 @@
 import { Worker } from "node:worker_threads";
 import { clearTimeout, setTimeout } from "node:timers";
 import type { AgentCall, Usage } from "../shared/run-types";
-import { EFFORTS, type AgentOptions, type AgentOutcome, type AgentProgress, type AgentTask, type ParentContext } from "./agent-runner";
+import { branchName, EFFORTS, type AgentOptions, type AgentOutcome, type AgentProgress, type AgentTask, type ParentContext } from "./agent-runner";
 import { compileSchema, SchemaError } from "./json-schema";
 import { callKey, type ResumeCache, type RunFiles, type RunRecord } from "./run-store";
 import { PRELUDE, WORKER_SOURCE } from "./worker-source";
@@ -268,6 +268,7 @@ export class RunEngine {
           {
             creating: async (info) => {
               call.agentId = info.agentId;
+              if (opts.isolation === "worktree") call.pendingBranch = branchName({ runId: this.runId, callId, label });
               this.changed();
               await this.files.saveRecord(this.record);
             },
@@ -278,6 +279,7 @@ export class RunEngine {
               call.provider = info.provider;
               call.model = info.model;
               call.worktree = info.worktree;
+              delete call.pendingBranch;
               this.changed();
             },
             status: (status) => {

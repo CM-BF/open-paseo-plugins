@@ -27,6 +27,13 @@ describe("transformCreate", () => {
     expect(out?.config.systemPrompt).toContain(paths.cli);
   });
 
+  it("uses CLI for OpenCode to preserve its shared server", () => {
+    const out = transformCreate(request("opencode"), "opencode", DEFAULT_PREFERENCES, paths);
+    expect(out?.config.mcpServers).toBeUndefined();
+    expect(out?.env).toBeUndefined();
+    expect(out?.config.systemPrompt).toContain(paths.cli);
+  });
+
   it("leaves workflow children and unknown providers alone", () => {
     expect(transformCreate(request("claude", { [CHILD_ENV]: "wf_1" }), "claude", DEFAULT_PREFERENCES, paths)).toBeUndefined();
     expect(transformCreate(request("acme"), null, DEFAULT_PREFERENCES, paths)).toBeUndefined();

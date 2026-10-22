@@ -21,8 +21,8 @@ paseo plugin install 'git:https://github.com/CM-BF/open-paseo-plugins.git:plugin
 
 对 agent 说“用 workflow 做……”（必须是用户明确要求，工具描述里写了这条规则）。agent 会先调 `workflow_reference` 读参考，再调 `workflow` 启动；工具立即返回 run id、脚本路径和运行目录，agent 结束这一轮，等通知到来。
 
-- Claude / Codex / OpenCode：MCP 工具 `workflow`、`workflow_status`、`workflow_stop`、`workflow_reference`（Claude 里显示为 `mcp__dynamic_workflow__*`）。
-- Pi / OMP（不支持 MCP，读系统提示）：`~/.paseo/paseo-dynamic-workflow/bin/paseo-workflow run --file x.js | --name <saved> [--args-json ...] [--resume <runId>]`、`status`、`stop`、`reference`。调用者由 Paseo 设给 agent 进程的 `PASEO_AGENT_ID` 识别。
+- Claude / Codex：MCP 工具 `workflow`、`workflow_status`、`workflow_stop`、`workflow_reference`（Claude 里显示为 `mcp__dynamic_workflow__*`）。
+- OpenCode / Pi / OMP（使用 CLI，读系统提示；OpenCode 因每 agent 的 MCP 配置会单独起服务而使用此路径）：`~/.paseo/paseo-dynamic-workflow/bin/paseo-workflow run --file x.js | --name <saved> [--args-json ...] [--resume <runId>]`、`status`、`stop`、`reference`。调用者由 Paseo 设给 agent 进程的 `PASEO_AGENT_ID` 识别。
 - 保存的 workflow：项目里的 `.paseo/workflows/<name>.js` 或 `.claude/workflows/<name>.js`（Claude Code 的保存 workflow 可以直接用），以及 `~/.paseo/workflows/`、`~/.claude/workflows/`。
 
 界面：发起 agent 的聊天里有运行卡片（阶段进度、运行中的 agent、最新日志、结果、Stop/Details）；Dynamic workflows 面板（卡片 Details、`/dynamic-workflows`、Command Center 的 Show dynamic workflow runs）列出运行和每个子 agent 的状态、用时、token、结果、transcript，可以跳过单个 agent 或停止运行；通知消息显示为一行。设置在 Settings → Plugins → paseo-dynamic-workflow → Dynamic workflows。
@@ -38,6 +38,8 @@ paseo plugin install 'git:https://github.com/CM-BF/open-paseo-plugins.git:plugin
 | `opts.schema` | StructuredOutput 工具 | 最终消息里的 JSON，Ajv 校验，不符合时追问最多 3 次 |
 | `budget` | 本轮主循环 + 所有 workflow 的 output token | 本次运行子 agent 的 output token（取自 provider 上报，Codex/Pi 偏低） |
 | resume | 未改动的最长前缀命中缓存 | 按 (prompt, 影响结果的 opts) 内容匹配，和调度顺序无关；label/phase 不参与 |
+| 单次组合器条目上限 | 4096 | 4096；整次运行最多 4096 个运行时请求，最多启动 1000 个真实子 agent |
+| 内置角色 | 子 agent 类型定义 | explore/plan/verification 是提示词，不强制只读；子 agent 保留父会话的权限约束，无法保守映射时拒绝创建 |
 | 并发 | min(16, CPU-2) | 默认 min(8, CPU-2)，可设到 16（每个子 agent 是一个完整的 CLI 进程） |
 
 ## 结构
@@ -72,3 +74,5 @@ paseo plugin reload paseo-dynamic-workflow
 ```
 
 验证方式和记录见 [PROGRESS.md](PROGRESS.md)，截图在 `docs/verification/`。
+
+预算以 provider 上报的 token 为准，不能保证实际花费的硬上限；已运行的 agent 也可能超出目标。resume 默认继承原 args，按名称启动会返回可独立编辑的脚本副本。Paseo 0.12 在中途 reload 后，若 bridge 提示未连接，打开一次 Dynamic workflows 面板即可恢复。历史运行保留用于 resume，没有自动清理策略。

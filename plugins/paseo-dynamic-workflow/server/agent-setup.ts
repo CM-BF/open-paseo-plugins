@@ -12,7 +12,9 @@ type McpServers = NonNullable<CreateRequest["config"]["mcpServers"]>;
 
 const KNOWN = new Set(["claude", "codex", "opencode", "pi", "omp"]);
 /** Providers that take MCP servers and exact tool preapprovals. */
-export const MCP_FAMILIES: ReadonlySet<string> = new Set(["claude", "codex", "opencode"]);
+// Per-agent MCP config forces OpenCode into a dedicated server process; its CLI
+// route shares the normal server and provides the same workflow operations.
+export const MCP_FAMILIES: ReadonlySet<string> = new Set(["claude", "codex"]);
 /** Providers that read config.systemPrompt; ACP providers do not. */
 export const PROMPT_FAMILIES: ReadonlySet<string> = new Set(["claude", "codex", "opencode", "pi", "omp"]);
 

@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { getRunRpc, listRunsRpc, serviceStatusRpc, skipCallRpc, stopRunRpc, transcriptRpc } from "../shared/contracts";
+import { getCallRpc, getRunRpc, listRunsRpc, serviceStatusRpc, skipCallRpc, stopRunRpc, transcriptRpc } from "../shared/contracts";
 import { CHILD_ENV, LABEL_RUN, PLUGIN_VERSION } from "../shared/ids";
 import { DEFAULT_PREFERENCES, type Preferences, preferences } from "../shared/settings";
 import { ProviderFamilies, transformCreate, transformSessionOpen } from "./agent-setup";
@@ -11,7 +11,8 @@ import { defaultStateDir, statePaths } from "./paths";
 import { writeScripts } from "./scripts";
 import { transcriptEntries } from "./transcript";
 import { WorkflowService } from "./service";
-import { describeError, log } from "./util";
+import { describeError, log, unref } from "./util";
+import { compactRunDetail } from "./views";
 
 export interface ContributeOptions {
   stateDir?: string;
@@ -45,15 +46,19 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   process.on("unhandledRejection", onRejection);
 
   let startup: "starting" | "ready" | "failed" = "starting";
+  let stopping = false;
   const started = (async () => {
     await mkdir(paths.root, { recursive: true, mode: 0o700 });
     await mkdir(paths.runs, { recursive: true, mode: 0o700 });
     await writeScripts(paths);
     await bindings.load();
+    if (stopping) return;
     await service.recover();
+    if (stopping) return;
     await bridge.start(paths.socket);
   })().then(
     () => {
+      if (stopping) return;
       startup = "ready";
       log(`ready (state ${paths.root})`);
     },
@@ -110,7 +115,14 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   server.handle(getRunRpc, async (input, context) => {
     capture(context);
     await started;
-    return { run: await service.detail(input.runId) };
+    const run = await service.detail(input.runId);
+    return { run: run && input.compact ? compactRunDetail(run) : run };
+  });
+  server.handle(getCallRpc, async (input, context) => {
+    capture(context);
+    await started;
+    const run = await service.detail(input.runId);
+    return { call: run?.calls.find((call) => call.callId === input.callId) ?? null };
   });
   server.handle(stopRunRpc, async (input, context) => {
     capture(context);
@@ -149,15 +161,22 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   });
 
   return async () => {
+    stopping = true;
+    service.notifier.pause();
     process.off("unhandledRejection", onRejection);
     removeSettingsListener();
-    await Promise.race([
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([
       (async () => {
+        await started;
         await bridge.close();
         await service.dispose();
         await bindings.idle();
       })(),
-      new Promise((resolve) => setTimeout(resolve, 5000)),
-    ]);
+      new Promise((resolve) => { timer = unref(setTimeout(resolve, 5000)) as unknown as ReturnType<typeof setTimeout>; }),
+    ]); } finally {
+      gate.dispose();
+      if (timer) clearTimeout(timer);
+    }
   };
 }

@@ -201,10 +201,12 @@ export function notificationText(record: RunRecord, state: StatePaths): string {
     parts.push(`<failures>\n${shown.join("\n")}\n</failures>`);
   }
   parts.push(`<diagnostics>Per-agent results and errors: ${paths.journal}. Read this journal if the result is empty or unexpected. Run snapshot: ${paths.run}. ${record.status === "completed" ? `After editing the script, resume with ${resumeHint(record)}.` : ""}</diagnostics>`);
-  const worktrees = record.calls.filter((call) => call.worktree?.changed);
+  const worktrees = record.calls.filter((call) => call.pendingBranch || (call.worktree && (call.worktree.changed !== false || call.worktree.retained)));
   if (worktrees.length > 0) {
     parts.push("<worktrees>");
-    for (const call of worktrees) parts.push(`${call.label}: branch ${call.worktree?.branch} at ${call.worktree?.path}`);
+    for (const call of worktrees) parts.push(call.pendingBranch
+      ? `${call.label}: branch ${call.pendingBranch}; child creation/cleanup is unresolved (agent ${call.agentId ?? "unknown"}); inspect the run snapshot before merging or deleting it.`
+      : `${call.label}: branch ${call.worktree?.branch} at ${call.worktree?.path}${call.worktree?.changed === null ? " (cleanup/change status unknown; inspect before merging or deleting)" : ""}`);
     parts.push("</worktrees>");
   }
   parts.push(
@@ -220,5 +222,6 @@ function firstLine(text: string): string {
 
 function resumeHint(record: RunRecord): string {
   const args = record.args;
-  return `workflow(${JSON.stringify({ scriptPath: record.scriptPath, resumeFromRunId: record.runId, ...(args === undefined ? {} : { args }) })})`;
+  const path = `'${record.scriptPath.replaceAll("'", "'\\''")}'`;
+  return `workflow(${JSON.stringify({ scriptPath: record.scriptPath, resumeFromRunId: record.runId, ...(args === undefined ? {} : { args }) })}) or paseo-workflow run --script-path ${path} --resume ${record.runId} (inherits saved args)`;
 }
