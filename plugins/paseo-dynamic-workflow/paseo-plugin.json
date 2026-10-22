@@ -1,8 +1,7 @@
 {
   "id": "paseo-dynamic-workflow",
-  "$comment": "Add \"name\": \"My plugin\" to set a display name. Add \"icon\": \"assets/icon.png\" for a PNG inside the package. Add image or video paths (relative to this manifest) or HTTPS URLs to media. Include local assets in package.json files.",
-  "media": [],
-  "requirements": {
-    "paseo": ">=0.12.0"
-  }
+  "name": "Dynamic workflows",
+  "description": "Claude Code style dynamic workflows for any agent: a script fans out, verifies and synthesizes across Paseo agents of any provider, with a live run card and panel",
+  "requirements": { "paseo": ">=0.12.0" },
+  "build": [["npm", "ci", "--omit=dev", "--no-audit", "--no-fund"]]
 }

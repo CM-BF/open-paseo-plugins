@@ -1,26 +1,36 @@
-<!--
-OVERVIEW.md is required to list your plugin in the registry. Keep it beside
-paseo-plugin.json in your repository at the pinned commit and in your npm package.
-Replace this comment with useful facts before publishing.
+Dynamic workflows let any Paseo agent orchestrate other Paseo agents with a short JavaScript script, the way Claude Code's `Workflow` tool does. The agent writes a script that calls `agent()`, `parallel()` and `pipeline()`; the plugin runs it in the background, starts a real Paseo agent for every `agent()` call, and hands the script's result back to the agent as a message when the run ends. Typical uses are reviews that verify every finding with independent skeptics, research that fans out over many sources, and migrations or fixes that run one agent per file in its own git worktree.
 
-This overview is for people choosing a plugin in Paseo, on the plugin page under
-its install command. README assumes a GitHub audience and includes technical
-details, installation instructions, and badges. Long, AI-generated READMEs leave
-people reading past that material to understand what the plugin does.
+## How it works
 
-Write these parts in order, including only what helps someone decide to install:
+New Claude, Codex and OpenCode agents get four MCP tools (`workflow`, `workflow_status`, `workflow_stop`, `workflow_reference`) and a short note in their system prompt. Pi and OMP agents get the same features through a `paseo-workflow` command described in their system prompt. Agents launch a workflow only when you ask for one in your own words, such as "use a workflow".
 
-1. Describe what your plugin is and does in plain terms first.
-2. Explain how it works only when it is not obvious.
-3. Explain setup when needed: settings, accounts, tokens, providers, tools, or
-   other plugins. Include applicable daemon version and operating system
-   requirements. Setup guidance is allowed; installation instructions are not.
-4. Explain capabilities and settings worth understanding, what each option does,
-   what the plugin reads or sends and where, permissions, and known limits.
+Each `agent()` call creates a Paseo agent that is a subagent of the launching agent. By default it uses the launcher's provider, model, mode and thinking setting. A script can pick another model, another provider, an effort level, one of your agent profiles (`agentType`), or an isolated git worktree. With a JSON Schema, the plugin checks the agent's answer and asks it to correct a mismatch. Children appear in the Subagents track while they run, so you can watch them and answer their permission prompts. They are archived once their result is recorded.
 
-Length follows complexity; a theme needs one paragraph. Choose headings only
-when they help. Use sentence case and plain factual language, with no em dashes.
-Omit installation commands, badges, changelog, contributing or license sections,
-marketing, and unsupported claims. Avoid implementation filler such as empty
-cleanup functions, theme-token field lists, or lists of absent features.
--->
+## What you see
+
+- A run card in the launching agent's chat shows phases with progress bars, the agents that are running, the latest log line, the result, and Stop and Details buttons.
+- The Dynamic workflows panel (Details, `/dynamic-workflows`, or Show dynamic workflow runs in the Command Center) lists the agent's runs. For each run it shows every agent with its status, time, tokens, result or error, and transcript. From there you can skip a running agent or stop the run.
+- When a run ends, a one-line row replaces the notification message, and the agent reads the full result.
+
+## Resume and saved workflows
+
+Every run keeps its script and a journal of each agent's result under `~/.paseo/paseo-dynamic-workflow/runs/`. An agent can edit the script and relaunch with `resumeFromRunId`. Calls whose prompt and options did not change return their saved results at once. Saved workflows are read from `.paseo/workflows/<name>.js` or `.claude/workflows/<name>.js` in the project, and from `~/.paseo/workflows/` and `~/.claude/workflows/`.
+
+## Settings
+
+Under Settings, Plugins, Dynamic workflows:
+
+- Add workflow tools to new agents, and preapprove them so they run without a permission prompt.
+- Concurrent agents per run. The default is min(8, CPUs minus 2), and the maximum is 16.
+- Agents per run, at most 1000.
+- An optional time limit per agent.
+- Whether to archive finished children.
+
+## Requirements and limits
+
+- Paseo 0.12 or later on the daemon and the app.
+- Only agents created after the plugin is installed get the tools.
+- Scripts run in a separate thread without file, network or Node.js access. This sandbox prevents mistakes; it is not a security boundary. The plugin's daemon code runs with your user's permissions, like every plugin.
+- Workflows can start many agents and spend many tokens. Each child is billed by its provider as usual.
+- Token counts come from what each provider reports. Codex and Pi report less than they use, so `budget` limits are approximate for them.
+- Runs that are active when the plugin reloads or the daemon restarts end as interrupted. Their running children are archived, and the run can be resumed.

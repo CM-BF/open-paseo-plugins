@@ -99,7 +99,9 @@ export function cardData(record: RunRecord): CardData {
     status: record.status,
     startedAt: record.startedAt,
     endedAt: record.endedAt,
-    phases: phaseSummaries(record).slice(0, 30),
+    phases: phaseSummaries(record)
+      .slice(0, 30)
+      .map((phase) => ({ ...phase, title: truncate(phase.title, 120), detail: phase.detail === null ? null : truncate(phase.detail, 200) })),
     active,
     agents: counts(record),
     logs: record.logs.slice(-3).map((line) => truncate(line.message, 240)),

@@ -5,13 +5,13 @@
   "files": [
     "paseo-plugin.json",
     "OVERVIEW.md",
-    "index.client.ts",
+    "README.md",
     "index.client.tsx",
     "index.server.ts",
-    "index.server.tsx",
     "client/",
     "server/",
-    "shared/"
+    "shared/",
+    "docs/REFERENCE.md"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
