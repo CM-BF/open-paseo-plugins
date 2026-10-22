@@ -1,4 +1,5 @@
 import Ajv2020 from "ajv/dist/2020";
+import Ajv from "ajv";
 import type { ValidateFunction } from "ajv";
 
 export class SchemaError extends Error {
@@ -6,6 +7,7 @@ export class SchemaError extends Error {
 }
 
 const ajv = new Ajv2020({ allErrors: true, strict: false, validateFormats: false });
+const ajv07 = new Ajv({ allErrors: true, strict: false, validateFormats: false });
 const cache = new Map<string, ValidateFunction>();
 
 export interface CompiledSchema {
@@ -15,8 +17,8 @@ export interface CompiledSchema {
 
 /**
  * Validates an agent() schema up front: a JSON Schema object with `type: "object"` and
- * `properties` at the root, and `required` naming only declared properties. Unsatisfiable schemas
- * throw here, at the agent() call, rather than after an agent has run.
+ * `properties` at the root, and `required` naming only declared properties. Common impossible
+ * requirements fail here, before an agent runs; this is not a general schema satisfiability solver.
  */
 export function compileSchema(schema: unknown): CompiledSchema {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
@@ -35,11 +37,16 @@ export function compileSchema(schema: unknown): CompiledSchema {
       throw new SchemaError(`agent() opts.schema.required names properties that are not declared: ${missing.join(", ")}`);
     }
   }
+  checkRequiredConstraints(root);
   const key = JSON.stringify(root);
   let validate = cache.get(key);
   if (!validate) {
     try {
-      validate = ajv.compile(root);
+      const dialect = schemaDialect(root);
+      const normalized = typeof root.$schema === "string"
+        ? { ...root, $schema: dialect === "draft-07" ? "http://json-schema.org/draft-07/schema#" : "https://json-schema.org/draft/2020-12/schema" }
+        : root;
+      validate = (dialect === "draft-07" ? ajv07 : ajv).compile(normalized);
     } catch (error) {
       throw new SchemaError(`agent() opts.schema is not a valid JSON Schema: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -63,6 +70,60 @@ export function compileSchema(schema: unknown): CompiledSchema {
       });
     },
   };
+}
+
+function checkRequiredConstraints(schema: Record<string, unknown>, path = "(root)"): void {
+  const bounds: Record<string, [string, string]> = {
+    string: ["minLength", "maxLength"], array: ["minItems", "maxItems"], object: ["minProperties", "maxProperties"],
+  };
+  const pair = typeof schema.type === "string" ? bounds[schema.type] : undefined;
+  if (pair) {
+    const minimum = schema[pair[0]], maximum = schema[pair[1]];
+    if (typeof minimum === "number" && typeof maximum === "number" && minimum > maximum) throw new SchemaError(`${path}: ${pair[0]} exceeds ${pair[1]}`);
+  }
+  if (schema.type === "number" || schema.type === "integer") {
+    const minima = [schema.minimum, schema.exclusiveMinimum].filter((value): value is number => typeof value === "number");
+    const maxima = [schema.maximum, schema.exclusiveMaximum].filter((value): value is number => typeof value === "number");
+    const minimum = Math.max(...minima), maximum = Math.min(...maxima);
+    if (minimum > maximum || (minimum === maximum && (schema.exclusiveMinimum === minimum || schema.exclusiveMaximum === maximum))) {
+      throw new SchemaError(`${path}: numeric bounds cannot be satisfied`);
+    }
+  }
+  if (schema.type !== "object" || !Array.isArray(schema.required)) return;
+  const properties = schema.properties as Record<string, unknown> | undefined;
+  for (const name of schema.required) {
+    const property = properties?.[String(name)];
+    if (property === false) throw new SchemaError(`${path}: required property ${JSON.stringify(name)} has the false schema`);
+    if (property && typeof property === "object" && !Array.isArray(property)) checkRequiredConstraints(property as Record<string, unknown>, `${path}.${String(name)}`);
+  }
+}
+
+function schemaDialect(root: Record<string, unknown>): "draft-07" | "2020-12" {
+  if (root.$schema !== undefined) {
+    if (typeof root.$schema !== "string") throw new SchemaError("$schema must be a string");
+    const uri = root.$schema.trim().replace(/^http:/, "https:").replace(/#$/, "");
+    if (uri === "https://json-schema.org/draft-07/schema") return "draft-07";
+    if (uri === "https://json-schema.org/draft/2020-12/schema") return "2020-12";
+    throw new SchemaError(`Unsupported JSON Schema dialect ${JSON.stringify(root.$schema)}; use draft-07 or 2020-12`);
+  }
+  return usesLegacyTuple(root) ? "draft-07" : "2020-12";
+}
+
+function usesLegacyTuple(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const object = value as Record<string, unknown>;
+  if (Array.isArray(object.items) || "additionalItems" in object) return true;
+  const maps = ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"];
+  for (const key of maps) {
+    const map = object[key];
+    if (map && typeof map === "object" && Object.values(map).some(usesLegacyTuple)) return true;
+  }
+  const single = ["items", "contains", "additionalProperties", "propertyNames", "not", "if", "then", "else"];
+  if (single.some((key) => usesLegacyTuple(object[key]))) return true;
+  return ["allOf", "anyOf", "oneOf", "prefixItems"].some((key) => {
+    const array = object[key];
+    return Array.isArray(array) && array.some(usesLegacyTuple);
+  });
 }
 
 /**

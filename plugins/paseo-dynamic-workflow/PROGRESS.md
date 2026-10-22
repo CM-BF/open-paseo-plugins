@@ -118,6 +118,17 @@
 - 额外发现并修复：archive 返回成功但目录仍存在时，恢复逻辑之前误标为“已移除”。新增用例先出现 `changed:false` 的红灯结果；主 agent 增加实际目录检查后转绿，保留路径并标为 `changed:null`。
 - 验证：`npx vitest run server/contribute.test.ts server/recovery.test.ts`，2 个文件、11 个测试全部通过；`npm run typecheck` 通过。本组为本地回归测试，不代替 daemon/Web UI 验收；没有操作主 daemon。
 
+### 2026-10-22 review：子 agent 执行器与 schema 回归修复
+
+- 模型：无模型的父 agent、provider 覆盖、无模型 profile 优先解析 catalog 的默认模型；catalog 不可用时使用 daemon `normalizeConfig` 支持的 `/default` 哨兵。完整 upstream/model id 优先匹配本 provider 的模型，只有已注册的 Paseo provider 前缀才切换 provider；限定 provider 后仍解析别名。模型缓存按 provider + cwd 隔离。
+- 权限：每次调用读取父 agent 当前模式，按 catalog 元数据同时约束启动时和当前模式；不从缺少 `colorTier` 的 runtime `availableModes` 推测权限。跨 provider 无等价权限模式时报明确错误；Codex 限制使用已公布的 `auto` 模式加原生 `sandbox_mode: read-only` / `approval_policy: on-request`（规划时加 plan_mode），不传 catalog 拒绝的隐藏 `read-only` 模式。profile 也受父权限上限约束，陈旧的 auto_accept 授权与父 agent 当前值取交集。内置角色的禁止写入仍是提示约定，不能作为文件系统隔离保证。
+- 生命周期：先持久化 caller-selected agentId，再以稳定 idempotencyKey 创建；先订阅真实 turn_canceled 事件，再发送初始提示，防止短 turn 的 Stop 被当作完成。archive/closed 结果返回 skipped，schema 纠正前再次 refresh，避免复活已归档 agent。连接中断重试 wait/refresh/send/archive，send 使用稳定 messageId；用户取消能中断重试等待。创建/配置失败和 schema 纠正耗尽抛给 workflow；已开始的 provider 运行失败保留 null 结果语义。失败时补计 provider 新暴露的未完成 usage，不重复计入上一纠正 turn 的旧快照。
+- cwd：不同目录通过显式 workspace 的 agents.create 并保留 parent 链接；workspace 将目录折叠到别处时明确拒绝，提示使用 worktree。目录比较识别符号链接。
+- worktree：唯一部分在前、最多 50 字符的分支名；预建分支固定到不可变 HEAD SHA，再用 checkout-branch 创建，避免 daemon 自动改名的竞态；base SHA 写入子 agent label 供重启恢复。仅当干净 worktree 已确认从磁盘移除、当前分支仍是本调用创建的分支且 SHA 等于 base，才删除该分支。用户已有分支、脏目录、有提交的 worktree 均保留；workspace archive 返回 error 或目录仍存在时报告并保留。关闭 Archive finished agents 时，成功的干净 worktree 和子 agent 也保留，并返回 retained:true；失败/取消仍执行清理。
+- JSON Schema：支持显式 draft-07、2020-12 和旧式 tuple items；draft-04/未知 dialect 返回可操作的错误。提前拒绝明显不可能的 required:false 属性和必需值的矛盾边界；不把可选的禁止属性或条件分支当作全局不可能，也不宣称能判定任意 schema 的可满足性。
+- 本地验证：13 个 runner 回归测试在旧实现上全部为红；最终 `npm run typecheck` 与 runner/schema 共 47 个测试通过。测试使用 fake SDK（含真实 createPaseoApi 转换）和真实临时 git 仓库，覆盖默认模型、slash id、模式收紧、取消/归档、断连、延迟创建、usage、1000 个分支名的唯一性、干净/脏/有提交目录、已有分支保护和清理失败。本项未操作 daemon；真实 daemon/Web UI 验证由主 agent 记录。
+- 保留限制：provider 不上报的中止 turn tokens 无法由插件恢复；原生 providerOptions 未出现在公共父 agent snapshot 时，插件无法逐项继承/比较任意原生配置。停止期间尚未返回的创建由提前持久化的 ID 和 LABEL_RUN 恢复扫描兜底；硬终止在预建分支与发出 create 之间的极短窗口可能留下空分支。
+
 ## Review 修复：停止时的最终用量（2026-10-22）
 
 - 第二轮交叉检查发现：engine 在触发子 agent 的 abort 前就屏蔽所有用量回调，使 runner 刚补上的 partial usage 被丢弃。现将状态冻结与用量冻结分开：收尾的 1 秒窗口内计入最终用量，窗口结束后保持快照/通知不再变化。
