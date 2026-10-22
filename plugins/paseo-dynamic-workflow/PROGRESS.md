@@ -145,3 +145,32 @@
 - 新建隔离调用在创建前保存 pendingBranch，终止通知保留未完成创建/清理信息；worktree.changed:null 不再从通知隐藏。archiveFinishedAgents=false 的未修改隔离工作区以 retained:true 保留。
 - 恢复按 id+label 查找子 agent，base SHA 判断工作区内容，archive 后核对实际目录是否移除；未知删除结果保留现场。
 - 全套最终检查：18 个测试文件、159 项通过；typecheck 与 diff --check 通过。逐项原始 review 处理见 docs/REVIEW.md，平台限制与未实机验证项单列。
+
+## Review 最终验收与交付（2026-10-22）
+
+主 daemon：`srv_BSheQn5lzdEE`，Paseo `0.12.0`，home `~/.paseo`，listen `127.0.0.1:6767`。测试代码对应 `971c7e9`（含此前 runner/runtime/client 修复）。没有重启 daemon。
+
+Fixture：`~/plugin-test-2026-10-22-dwf-review`，project `prj_8474b59633637446`，workspace `wks_4a08cd7602017f38`，父 agent `82cbff08-6c42-4ebc-9eac-026cedc5385c`，Codex/gpt-6-luna/low。Paseo 内置浏览器能 snapshot 但仍未绘制，截图改用真实 headless Chrome 打开 `app.paseo.sh`，目标 host 与 daemon serverId 一致；侧栏隐藏以避开无关会话。420×860 截图使用 CDP 原生设备尺寸并在 resize 后重新选择 fixture 运行，不是模拟页面。
+
+| 场景 | 运行/结果 | 截图（docs/verification/） |
+| --- | --- | --- |
+| 新 agent MCP 注入、真实 pipeline/schema、完成通知回投 | `wf_3b180430cea9`，两个真实子 agent 均 completed，父 agent 收到通知；result 为 marker + verified1/2 | `2026-10-22-review-panel-desktop.png`、`…-panel-compact.png` |
+| 已 archive 子 agent transcript | 在面板展开 fixture:2，看到完整最终 JSON reply | `2026-10-22-review-panel-compact.png` |
+| CLI resume、继承 args 与缓存 | `wf_43140542a329`，两项 cached，无新子 agent，marker 原值保留 | `2026-10-22-review-resume-desktop.png` |
+| 大运行分页、错误详情、compact 换行 | `wf_f16741d48c68`，129 个真实 agent() 配置校验失败（cwd 不存在；零模型调用），分页到129并展开错误，桌面和420px均可见 | `2026-10-22-review-scale-row129-desktop.png`、`…-scale-row129-compact.png` |
+| 数字设置显式保存与持久化 | time limit 输入17，Save 后刷新仍17；随后恢复原值0，刷新核对0。并发0、总数1000均保持原值 | `2026-10-22-review-settings-desktop.png`、`…-settings-compact.png` |
+| 面板 Stop | `wf_e4d9cf17a1aa`，Timer fixture 立即转 Stopped，通知正常 | `2026-10-22-review-stop-desktop.png` |
+| 运行中 reload | `wf_d7336340ff0d`，timer 正在运行时 reload，变 Interrupted，卡片/面板同步更新 | `2026-10-22-review-interrupted-desktop.png` |
+| 真实 worktree 创建与清理 | `wf_1910a6176ef4`，一个真实 Codex 子 agent schema 通过；未修改 worktree 已移除，git branch 只剩 main、worktree list 只剩 fixture 原目录 | API、run.json 与 git 核对，无单独截图 |
+| reload 后恢复归档运行中子 agent | `wf_37862375682e`，sleep 子 agent 在 reload 后归档 | agent inspect：Archived=true；无单独截图 |
+| disable 时直接归档运行中子 agent | `wf_2dc445d0dd17`，修复 Gate 关闭顺序后 disable；子 agent `d2311337` 在同次 cleanup 已 archive，未依赖重新 enable | agent inspect：Archived=true；插件停止记录无新的归档失败 |
+
+最终检查：18 个测试文件、159 项通过，`npm run typecheck` 与 `git diff --check` 通过。原生 iOS/Android、真实跨 provider 受限模式、provider 额度限制/网络中断未作本轮实机测试；相应状态/权限/重试有行为回归，不能当作实机验收。
+
+清理与当前状态：
+
+- 插件恢复到任务开始时的 **disabled**，来源没有变化：`/Users/citrine/Projects/flowly-kanban/usage-cecf/open-paseo-plugins/plugins/paseo-dynamic-workflow`。该源仍是 `sw/dynamic-workflow` 的 workspace worktree；删除此 worktree 前应换到稳定 checkout/Git 源。
+- 新建测试父 agent 和5个子 agent均 archive；fixture workspace archive、project delete；工作目录已删除。8个测试run、相应outbox和binding条目已从插件状态移除。native Web UI 确认为 Workspace unavailable，CLI workspace list 不含fixture，插件状态扫描为0个fixture run/outbox。
+- 本次state备份和运行证据保留在 `~/.paseo/verification/dwf-review-2026-10-22/`，未用备份覆盖用户运行期间的其他数据。
+- Headless Chrome、其profile、Paseo浏览器标签已关闭/清理。只操作本次插件和fixture，没有更改其他插件。
+- 历史“交付状态”中的 running 描述属于前次交付，**以此处 disabled 为最终状态**。
