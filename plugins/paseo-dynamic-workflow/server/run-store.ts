@@ -88,28 +88,35 @@ function stableStringify(value: unknown): string {
 }
 
 /**
- * Completed results of an earlier run, by key in invocation order. The n-th call with a key in
- * the resumed run takes the n-th cached result with that key, independent of completion timing.
+ * Results of an earlier run, by key in invocation order. Failed calls occupy cache misses so
+ * later same-key successes keep their positions, independent of completion timing.
  */
 export class ResumeCache {
-  private readonly byKey = new Map<string, Array<{ value: unknown; worktree: AgentCall["worktree"] }>>();
+  private readonly byKey = new Map<string, Array<{ value: unknown; worktree: AgentCall["worktree"] } | null>>();
   private readonly used = new Map<string, number>();
 
   static async load(paths: RunPaths): Promise<ResumeCache> {
     const cache = new ResumeCache();
     const text = await readFile(paths.journal, "utf8").catch(() => "");
-    const completed: Array<Extract<JournalEntry, { type: "agent_completed" }>> = [];
+    const calls: Array<Extract<JournalEntry, { type: "agent_completed" | "agent_failed" }>> = [];
     for (const line of text.split("\n")) {
       if (!line.trim()) continue;
       try {
         const entry = JSON.parse(line) as JournalEntry;
-        if (entry.type === "agent_completed") completed.push(entry);
+        if (entry.type === "agent_completed" || entry.type === "agent_failed") calls.push(entry);
       } catch {
         // A torn last line from a crash; the rest is still usable.
       }
     }
-    completed.sort((a, b) => Number(a.callId.slice(1)) - Number(b.callId.slice(1)));
-    for (const entry of completed) cache.add(entry.key, entry.result, entry.worktree ?? null);
+    calls.sort((a, b) => Number(a.callId.slice(1)) - Number(b.callId.slice(1)));
+    for (const entry of calls) {
+      if (entry.type === "agent_completed") cache.add(entry.key, entry.result, entry.worktree ?? null);
+      else {
+        const list = cache.byKey.get(entry.key) ?? [];
+        list.push(null);
+        cache.byKey.set(entry.key, list);
+      }
+    }
     return cache;
   }
 
@@ -121,7 +128,7 @@ export class ResumeCache {
 
   get size(): number {
     let total = 0;
-    for (const list of this.byKey.values()) total += list.length;
+    for (const list of this.byKey.values()) total += list.filter((entry) => entry !== null).length;
     return total;
   }
 
@@ -130,7 +137,8 @@ export class ResumeCache {
     const index = this.used.get(key) ?? 0;
     if (!list || index >= list.length) return { hit: false };
     this.used.set(key, index + 1);
-    return { hit: true, ...list[index]! };
+    const entry = list[index];
+    return entry ? { hit: true, ...entry } : { hit: false };
   }
 }
 
