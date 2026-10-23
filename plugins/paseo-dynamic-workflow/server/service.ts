@@ -4,8 +4,8 @@ import { isAbsolute, join, resolve } from "node:path";
 import { CARD_KIND, CARD_VERSION, LABEL_RUN, RUN_ID_PATTERN } from "../shared/ids";
 import { NOTIFICATION_MARKER } from "../shared/notification";
 import type { RunDetail, RunSummary } from "../shared/run-types";
-import { sizeLabel, type ToolGuidance } from "../shared/guidance";
-import { guidanceReminder } from "./prompts";
+import type { ToolGuidance } from "../shared/guidance";
+import { guidanceReminder, referenceStatus } from "./prompts";
 import type { Preferences } from "../shared/settings";
 import { AgentRunner, type ParentContext } from "./agent-runner";
 import { parseBudgetDirective } from "./budget";
@@ -337,7 +337,9 @@ export class WorkflowService {
       // Without the daemon the saved project workflows are unknown; built-ins still apply.
     }
     const dirs = cwd ? await workflowDirs(cwd) : [];
-    return [guidanceStatus(guidance), REFERENCE.trimEnd(), catalogText(await listWorkflows(dirs))].join("\n\n") + "\n";
+    const settings = this.settings();
+    const limits = `> Your limits: ${concurrency(settings)} agents at once per run, at most ${settings.maxAgentsPerRun} agents per run.`;
+    return [`${referenceStatus(guidance)}\n${limits}`, REFERENCE.trimEnd(), catalogText(await listWorkflows(dirs))].join("\n\n") + "\n";
   }
 
   async list(agentId: string | undefined, limit: number): Promise<RunSummary[]> {
@@ -540,12 +542,6 @@ export class WorkflowService {
       throw error;
     }
   }
-}
-
-function guidanceStatus(guidance: ToolGuidance): string {
-  return guidance.ultracode
-    ? "> Ultracode is ON for you: the user's opt-in to workflows is standing and thoroughness wins over cost. Follow the Ultracode section below."
-    : `> Ultracode is off for you. Workflow size guideline: ${sizeLabel(guidance.size)}. See "When you may launch one" and "Scale" below.`;
 }
 
 function concurrency(settings: Preferences): number {

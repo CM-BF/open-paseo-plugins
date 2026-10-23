@@ -6,7 +6,7 @@ export const BUILTIN_WORKFLOWS: Readonly<Record<string, string>> = {
   "deep-research": `export const meta = {
   name: 'deep-research',
   description: 'Multi-source research: split the question into search angles, read and extract checkable claims from each new source, verify the important claims with independent skeptics, fill gaps, and synthesize a cited report.',
-  whenToUse: 'The user wants a deep, fact-checked, multi-source answer on any topic (web, docs or code). If the question is underspecified (no budget, region, version or use case), ask two or three clarifying questions first and fold the answers into the question. args: the question as a string, or { question, angles?, sources?, claims?, votes?, gapRound? }.',
+  whenToUse: 'The user wants a deep, fact-checked, multi-source answer from web pages and documents (local files too when the question names them; to map a codebase, write an Understand workflow instead). If the question is underspecified (no budget, region, version or use case), ask two or three clarifying questions first and fold the answers into the question. args: the question as a string, or { question, angles?, sources?, claims?, votes?, gapRound? }.',
   phases: [
     { title: 'Scope', detail: 'split the question into complementary angles' },
     { title: 'Search', detail: 'one searcher per angle; new sources only' },

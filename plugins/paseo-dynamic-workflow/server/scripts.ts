@@ -2,7 +2,7 @@ import { chmod, mkdir, readFile } from "node:fs/promises";
 import { BINDING_ENV, MCP_SERVER, MCP_TOOL_NAMES, PLUGIN_VERSION, type McpToolName } from "../shared/ids";
 import type { StatePaths } from "./paths";
 import { DEFAULT_WORKFLOW_SIZE, type ToolGuidance, WORKFLOW_SIZES } from "../shared/guidance";
-import { guidanceText, REFERENCE_TOOL_DESCRIPTION, sizeGuidelineText, STATUS_TOOL_DESCRIPTION, STOP_TOOL_DESCRIPTION, ULTRACODE_NOTICE, WORKFLOW_TOOL_DESCRIPTION } from "./prompts";
+import { guidanceText, mcpInstructions, REFERENCE_TOOL_DESCRIPTION, sizeGuidelineText, STATUS_TOOL_DESCRIPTION, STOP_TOOL_DESCRIPTION, ULTRACODE_NOTICE, WORKFLOW_TOOL_DESCRIPTION } from "./prompts";
 import { REFERENCE } from "./reference";
 import { writeAtomically } from "./util";
 
@@ -58,14 +58,24 @@ exec "$node" "$DYNAMIC_WORKFLOW_HOME/lib/${script}" "$@"
 }
 
 /**
+ * Claude Code defers MCP tool descriptions behind tool search unless a tool asks to load: an
+ * enabled agent must see the opt-in rule and its Ultracode notice when it decides how to work.
+ */
+export const WORKFLOW_TOOL_META = {
+  "anthropic/alwaysLoad": true,
+  "anthropic/searchHint": "workflow multi-agent orchestration fan out subagents parallel verify ultracode",
+};
+
+/**
  * The tools one enabled agent sees. Without guidance this is the base catalog the MCP shim
  * embeds; the shim appends the same guidance text itself (see MCP_SOURCE).
  */
-export function toolDefinitions(guidance?: ToolGuidance): Array<{ name: McpToolName; description: string; inputSchema: unknown }> {
+export function toolDefinitions(guidance?: ToolGuidance): Array<{ name: McpToolName; description: string; inputSchema: unknown; _meta?: unknown }> {
   const workflowDescription = guidance ? `${WORKFLOW_TOOL_DESCRIPTION}\n\n${guidanceText(guidance)}` : WORKFLOW_TOOL_DESCRIPTION;
-  const schemas: Record<McpToolName, { description: string; inputSchema: unknown }> = {
+  const schemas: Record<McpToolName, { description: string; inputSchema: unknown; _meta?: unknown }> = {
     workflow: {
       description: workflowDescription,
+      ...(guidance ? { _meta: WORKFLOW_TOOL_META } : {}),
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -199,6 +209,8 @@ const TOOLS = __TOOLS_JSON__;
 const ULTRACODE_TEXT = __ULTRACODE_JSON__;
 const SIZE_TEXT = __SIZE_TEXT_JSON__;
 const DEFAULT_SIZE = '__DEFAULT_SIZE__';
+const TOOL_META = __TOOL_META_JSON__;
+const INSTRUCTIONS = __INSTRUCTIONS_JSON__;
 const PROTOCOL_VERSIONS = ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'];
 __CLIENT_SOURCE__
 function write(message) {
@@ -237,7 +249,7 @@ async function accessForAgent() {
 function toolsFor(access) {
   if (!access) return [];
   const text = access.ultracode ? ULTRACODE_TEXT : SIZE_TEXT[access.size];
-  return TOOLS.map((tool) => (tool.name === 'workflow' ? { ...tool, description: tool.description + '\n\n' + text } : tool));
+  return TOOLS.map((tool) => (tool.name === 'workflow' ? { ...tool, description: tool.description + '\n\n' + text, _meta: TOOL_META } : tool));
 }
 const fingerprint = (access) => (access ? (access.ultracode ? 'ultracode' : 'size:' + access.size) : 'off');
 
@@ -275,10 +287,13 @@ async function handle(message) {
   switch (message.method) {
     case 'initialize': {
       const requested = message.params && message.params.protocolVersion;
+      // Instructions only for an enabled agent; they are read once per connection (a reload refreshes them).
+      const access = await accessForAgent();
       return reply({
         protocolVersion: PROTOCOL_VERSIONS.includes(requested) ? requested : '2025-06-18',
         capabilities: { tools: { listChanged: true } },
         serverInfo: { name: SERVER_NAME, version: VERSION },
+        ...(access ? { instructions: INSTRUCTIONS + (access.ultracode ? '\n' + ULTRACODE_TEXT : '') } : {}),
       });
     }
     case 'notifications/initialized':
@@ -444,7 +459,9 @@ function fill(source: string): string {
     .replace("__TOOLS_JSON__", () => JSON.stringify(toolDefinitions()))
     .replace("__ULTRACODE_JSON__", () => JSON.stringify(ULTRACODE_NOTICE))
     .replace("__SIZE_TEXT_JSON__", () => JSON.stringify(Object.fromEntries(WORKFLOW_SIZES.map((size) => [size, sizeGuidelineText(size)]))))
-    .replace("__DEFAULT_SIZE__", () => DEFAULT_WORKFLOW_SIZE);
+    .replace("__DEFAULT_SIZE__", () => DEFAULT_WORKFLOW_SIZE)
+    .replace("__TOOL_META_JSON__", () => JSON.stringify(WORKFLOW_TOOL_META))
+    .replace("__INSTRUCTIONS_JSON__", () => JSON.stringify(mcpInstructions({ ultracode: false, size: DEFAULT_WORKFLOW_SIZE })));
 }
 
 export function renderMcp(): string {
@@ -461,6 +478,8 @@ async function writeIfChanged(file: string, text: string, mode: number): Promise
   await chmod(file, mode);
 }
 
+const STATIC_REFERENCE_NOTE = "> This file is a static copy without your per-agent status. `workflow_reference` (or `paseo-workflow reference`) returns it with your current Ultracode mode, your limits and the named workflows you can launch.";
+
 /** Writes the shims, the two programs and REFERENCE.md. */
 export async function writeScripts(paths: StatePaths, node: NodeRuntime = currentNode()): Promise<void> {
   await mkdir(paths.bin, { recursive: true, mode: 0o700 });
@@ -469,5 +488,5 @@ export async function writeScripts(paths: StatePaths, node: NodeRuntime = curren
   await writeIfChanged(paths.cliScript, renderCli(), 0o600);
   await writeIfChanged(paths.mcp, renderShim(paths.root, "mcp.mjs", node), 0o700);
   await writeIfChanged(paths.cli, renderShim(paths.root, "cli.mjs", node), 0o700);
-  await writeIfChanged(paths.reference, REFERENCE, 0o600);
+  await writeIfChanged(paths.reference, `${STATIC_REFERENCE_NOTE}\n\n${REFERENCE}`, 0o600);
 }

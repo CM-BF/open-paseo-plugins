@@ -2,7 +2,7 @@ import type { ToolGuidance } from "../shared/guidance";
 import { NOTIFICATION_MARKER } from "../shared/notification";
 import type { AgentCall, CardData, PhaseSummary, RunDetail, RunSummary } from "../shared/run-types";
 import { runPaths, type StatePaths } from "./paths";
-import { guidanceReminder } from "./prompts";
+import { guidanceReminder, ULTRACODE_NEXT_PHASE } from "./prompts";
 import type { RunRecord } from "./run-store";
 import { formatDuration, truncate } from "./util";
 
@@ -197,10 +197,16 @@ export function notificationText(record: RunRecord, state: StatePaths, guidance:
     parts.push(`<recovery>Resume with ${resumeHint(record)}: completed agent() calls return their cached results.</recovery>`);
     const cut = record.calls.filter((call) => ["skipped", "running", "permission", "queued"].includes(call.status));
     if (record.status === "interrupted" && cut.length > 0) {
-      const done = record.calls.some((call) => call.status === "completed" || call.status === "cached");
+      const reused = record.calls.filter((call) => call.status === "completed" || call.status === "cached").length;
       const shown = cut.slice(0, 30).map((call) => `${truncate(call.label, 120)}: ${call.agentId ? `agent ${call.agentId}` : "not started"}`);
       if (cut.length > shown.length) shown.push(`${cut.length - shown.length} more in the run snapshot.`);
-      parts.push(`<interrupted-agents>${done ? "" : "No agent() call had completed, so a resume reruns every call. "}These agents were cut off; they are archived, not deleted. Read what they found with Paseo's get_agent_activity tool (or the run's panel) and put it into the prompts of a continuation script. Keep verification and synthesis as independent agents; do not fold them into your own turn.\n${shown.join("\n")}\n</interrupted-agents>`);
+      parts.push([
+        "<interrupted-agents>",
+        `${reused} completed result(s) will be reused; ${cut.length} agent(s) were cut off and their partial work is not cached, so resuming restarts them.`,
+        "The cause was a plugin stop, not your script: relaunch the same plan, keeping its verification and synthesis stages. The cut-off agents are archived, not deleted: read what they found with Paseo's get_agent_activity tool and give it to the relaunched agents as leads to re-check. If interruptions repeat, tell the user instead of shrinking the run.",
+        ...shown,
+        "</interrupted-agents>",
+      ].join("\n"));
     }
   }
   const failed = record.calls.filter((call) => call.status === "failed");
@@ -221,7 +227,10 @@ export function notificationText(record: RunRecord, state: StatePaths, guidance:
   parts.push(
     `<usage><agent_count>${agents.total}</agent_count><cached>${agents.cached}</cached><failed>${agents.failed}</failed><skipped>${agents.skipped}</skipped><output_tokens>${record.usage.outputTokens}</output_tokens><input_tokens>${record.usage.inputTokens}</input_tokens><duration_ms>${duration}</duration_ms></usage>`,
   );
-  if (guidance) parts.push(`<guidance>${guidanceReminder(guidance)}</guidance>`);
+  if (guidance) {
+    const next = guidance.ultracode && record.status === "completed" ? ` ${ULTRACODE_NEXT_PHASE}` : "";
+    parts.push(`<guidance>${guidanceReminder(guidance)}${next}</guidance>`);
+  }
   parts.push("</task-notification>");
   return parts.join("\n");
 }
