@@ -1,0 +1,9 @@
+{
+  "id": "paseo-rate-fallback",
+  "name": "自动模型切换",
+  "description": "Claude 限流后 fork 给 GPT-6.1 Ultra，额度恢复后把进展交回原会话",
+  "media": [],
+  "requirements": {
+    "paseo": ">=0.12.0 <0.13.0"
+  }
+}

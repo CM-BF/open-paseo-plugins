@@ -1,0 +1,38 @@
+{
+  "name": "paseo-rate-fallback",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Fork rate-limited Claude tasks to GPT-6.1 Ultra, return progress after reset, and restore Codex model settings",
+  "files": [
+    "paseo-plugin.json",
+    "OVERVIEW.md",
+    "index.client.ts",
+    "index.client.tsx",
+    "index.server.ts",
+    "index.server.tsx",
+    "client/",
+    "server/",
+    "shared/"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@getpaseo/client": "0.12.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "0.12.0",
+    "@types/node": "^22.15.0",
+    "@types/ws": "^8.5.14",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/react": "~19.2.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "zod": "^4.4.3"
+  }
+}
