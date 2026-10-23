@@ -1,9 +1,10 @@
 import { type PluginSurfaceProps, type SettingsState, useRpc, useSettings } from "@getpaseo/plugin/client";
-import { SettingsAction, SettingsCard, SettingsInput, SettingsRow, SettingsSection, SettingsSwitch } from "@getpaseo/plugin/client/ui";
+import { SettingsAction, SettingsCard, SettingsInput, SettingsRow, SettingsSection, SettingsSelect, SettingsSwitch } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import { serviceStatusRpc } from "../shared/contracts";
+import { sizeLabel, WORKFLOW_SIZES } from "../shared/guidance";
 import { PLUGIN_ID } from "../shared/ids";
 import { preferences, PreferencesSchema } from "../shared/settings";
 import { errorMessage } from "./format";
@@ -89,6 +90,14 @@ function SettingsEditor({ settings }: { settings: ReadySettings }) {
       </SettingsSection>
       <SettingsSection title="Runs">
         <SettingsCard>
+          <SettingsSelect
+            label="Workflow size guideline"
+            hint="What the workflow tool tells agents without Ultracode. A guideline, not a limit: agents follow it unless the request calls for another scale. Ultracode agents ignore it. Enabled agents see a change on their next tool refresh (Codex: after Reload)."
+            value={values.workflowSize}
+            options={WORKFLOW_SIZES.map((size) => ({ value: size, label: sizeLabel(size) }))}
+            disabled={settings.saving}
+            onValueChange={(workflowSize) => setValues((current) => ({ ...current, workflowSize }))}
+          />
           <SettingsInput
             label="Concurrent agents per run"
             hint="0 means min(8, CPUs - 2). At most 16."

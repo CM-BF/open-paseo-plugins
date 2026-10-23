@@ -17,7 +17,7 @@ export function AgentAccess({ agentId, styles }: { agentId: string; styles: Styl
   const queryKey = [PLUGIN_ID, "agent-access", agentId];
   const access = useQuery({ queryKey, queryFn: () => getAccess({ agentId }) });
   const update = useMutation({
-    mutationFn: (enabled: boolean) => setAccess({ agentId, enabled }),
+    mutationFn: (change: { enabled?: boolean; ultracode?: boolean }) => setAccess({ agentId, ...change }),
     onMutate: () => queryClient.cancelQueries({ queryKey }),
     onSuccess: (value) => queryClient.setQueryData(queryKey, value),
   });
@@ -36,8 +36,17 @@ export function AgentAccess({ agentId, styles }: { agentId: string; styles: Styl
             : "Off by default. Enable only for conversations that need workflows."}
           value={value?.enabled ?? false}
           disabled={!value || value.isWorkflowChild || access.isError || update.isPending}
-          onValueChange={(enabled) => update.mutate(enabled)}
+          onValueChange={(enabled) => update.mutate({ enabled })}
           error={update.isError ? `Could not save: ${errorMessage(update.error)}` : null}
+        />
+        <SettingsSwitch
+          label="Ultracode for this agent"
+          hint={value?.ultracode
+            ? "On: workflows are a standing opt-in for this agent, and it orchestrates every substantive task exhaustively (parallel coverage, adversarial verification, completeness checks). Uses many more agents and tokens."
+            : "Off: the agent runs workflows only when asked, within the size guideline. Turn on for Claude Code style exhaustive multi-agent work."}
+          value={value?.ultracode ?? false}
+          disabled={!value || value.isWorkflowChild || access.isError || update.isPending}
+          onValueChange={(ultracode) => update.mutate({ ultracode })}
         />
       </SettingsCard>
       {access.isPending ? <Text style={styles.mutedText}>Loading this agent's tool access…</Text> : null}
@@ -50,7 +59,9 @@ export function AgentAccess({ agentId, styles }: { agentId: string; styles: Styl
       {value && !value.isWorkflowChild ? (
         <Text style={styles.mutedText}>
           {mcp
-            ? "Reload this agent after changing the switch to refresh its tool list. Use Reload from the agent menu."
+            ? value.providerFamily === "claude"
+              ? "Claude picks up switch changes on its next tool refresh; if the tools or Ultracode notice do not change, use Reload from the agent menu."
+              : "Reload this agent after changing a switch to refresh its tool list and Ultracode notice. Use Reload from the agent menu."
             : value.enabled
               ? mcpFamily
                 ? "This agent predates workflow tool setup; use the command below, or create a new agent for MCP tools."

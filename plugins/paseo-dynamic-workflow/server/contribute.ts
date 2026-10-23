@@ -139,7 +139,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     if (!fresh || fresh.agent.archivedAt) throw new ServiceError("unknown_agent", `Agent ${agentId} was not found on this host.`);
     const providerFamily = await families.family(context.paseo, fresh.agent.provider);
     return {
-      enabled: access.enabled(agentId), cliPath: paths.cli, providerFamily,
+      enabled: access.enabled(agentId), ultracode: access.ultracode(agentId), cliPath: paths.cli, providerFamily,
       isWorkflowChild: Boolean(fresh.agent.labels?.[LABEL_RUN]),
       hasMcpBinding: providerFamily !== null && MCP_FAMILIES.has(providerFamily) && bindings.hasAgent(agentId),
     };
@@ -147,10 +147,14 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   server.handle(getAgentAccessRpc, async (input, context) => agentAccess(input.agentId, context));
   server.handle(setAgentAccessRpc, async (input, context) => {
     const current = await agentAccess(input.agentId, context);
-    if (input.enabled && current.isWorkflowChild) throw new ServiceError("recursive_workflow", "Workflow children cannot enable workflow tools; use workflow() in the orchestration script.");
+    if (input.enabled === undefined && input.ultracode === undefined) throw new ServiceError("invalid_request", "Set enabled, ultracode or both.");
+    if ((input.enabled || input.ultracode) && current.isWorkflowChild) throw new ServiceError("recursive_workflow", "Workflow children cannot enable workflow tools; use workflow() in the orchestration script.");
     if (stopping || startup !== "ready") throw new ServiceError("not_ready", "The workflow plugin is stopping.");
-    await access.set(input.agentId, input.enabled);
-    return { ...current, enabled: access.enabled(input.agentId) };
+    await access.update(input.agentId, {
+      ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+      ...(input.ultracode !== undefined ? { ultracode: input.ultracode } : {}),
+    });
+    return { ...current, enabled: access.enabled(input.agentId), ultracode: access.ultracode(input.agentId) };
   });
 
   server.handle(listRunsRpc, async (input, context) => {

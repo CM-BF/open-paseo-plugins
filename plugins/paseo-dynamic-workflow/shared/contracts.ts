@@ -4,6 +4,8 @@ import { AgentCallSchema, RunDetailSchema, RunSummarySchema } from "./run-types"
 
 export const AgentAccessSchema = z.object({
   enabled: z.boolean(),
+  /** Standing opt-in to exhaustive orchestration for this agent; implies enabled. */
+  ultracode: z.boolean().default(false),
   cliPath: z.string(),
   providerFamily: z.string().nullable(),
   isWorkflowChild: z.boolean(),
@@ -19,7 +21,7 @@ export const getAgentAccessRpc = defineRpc({
 
 export const setAgentAccessRpc = defineRpc({
   name: "agent-access.set",
-  input: z.object({ agentId: z.string().min(1), enabled: z.boolean() }),
+  input: z.object({ agentId: z.string().min(1), enabled: z.boolean().optional(), ultracode: z.boolean().optional() }),
   output: AgentAccessSchema,
 });
 
