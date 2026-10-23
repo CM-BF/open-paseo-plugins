@@ -57,6 +57,11 @@ Rules
 - If you cannot call the tool, end with only a JSON object: {"notify": false, "summary": "...", "items": [{"key": "...", "title": "...", "detail": "...", "urgency": "normal"}]}.`;
 }
 
+/** Paseo work is watched only while the watch list mentions Paseo; the list is the one source of truth. */
+export function watchesPaseo(watchlist: string | null): boolean {
+  return /\bpaseo\b/i.test(watchlist ?? "");
+}
+
 export interface CheckinContext {
   now: number;
   config: Config;
@@ -101,12 +106,14 @@ export function checkinPrompt(context: CheckinContext): string {
     `Check-in for ${context.config.name} at ${formatLocal(now, schedule.timezone)} (${schedule.timezone}).${context.reason === "manual" ? " The user asked for this check now." : ""}`,
   ];
   if (context.focus) sections.push(`## Focus of this check\n${context.focus}`);
-  sections.push(`## What the user asked to watch (${WATCHLIST_FILE})\n${context.watchlist?.trim() ? truncate(context.watchlist.trim(), 6000) : "(empty: check only the Paseo work below and the focus, if any)"}`);
+  sections.push(`## What the user asked to watch (${WATCHLIST_FILE})\n${context.watchlist?.trim() ? truncate(context.watchlist.trim(), 6000) : "(empty: check only the focus of this check, if any)"}`);
   if (context.memory?.trim()) sections.push(`## What you know about the user (${MEMORY_FILE}, excerpt)\n${truncate(context.memory.trim(), 3000)}`);
   sections.push(`## Alerts already raised\n${relevant.length > 0 ? relevant.map((alert) => alertLine(alert, { now, schedule })).join("\n") : "None."}`);
   const active = context.followups.filter((followup) => followup.status === "active");
   if (active.length > 0) sections.push(`## Follow-ups already scheduled\n${active.slice(0, 20).map((followup) => followupLine(followup, schedule.timezone, now)).join("\n")}`);
-  sections.push(`## Paseo work waiting on the user\n${context.waiting === null ? "(Paseo could not be read this time.)" : waitingLines(context.waiting, schedule.timezone, now)}\nRaise one of these only when it has waited long enough to matter (about 30 minutes or more) and was not raised before.`);
+  if (watchesPaseo(context.watchlist)) {
+    sections.push(`## Paseo work waiting on the user\n${context.waiting === null ? "(Paseo could not be read this time.)" : waitingLines(context.waiting, schedule.timezone, now)}\nRaise one of these only when it has waited long enough to matter (about 30 minutes or more) and was not raised before.`);
+  }
   if (context.conversation.length > 0) {
     sections.push(`## Recent conversation with the user (newest last)\n${context.conversation.map((entry) => `${entry.role === "user" ? "User" : context.config.name}: ${truncate(entry.text.replace(/\s+/g, " "), 400)}`).join("\n")}`);
   }
@@ -129,7 +136,8 @@ export interface BriefContext {
   config: Config;
   schedule: ScheduleConfig;
   alerts: readonly Alert[];
-  waiting: readonly WaitingAgent[] | null;
+  /** null: unreadable; undefined: the watch list does not include Paseo. */
+  waiting: readonly WaitingAgent[] | null | undefined;
   today: readonly Followup[];
 }
 
@@ -142,7 +150,7 @@ export function briefBody(context: BriefContext): string {
 
 Cover:
 1. Today: calendar events and deadlines, and important new mail, if you have calendar or mail tools (skip silently if not).
-2. What needs the user: the open alerts and Paseo work below.
+2. What needs the user: the open alerts${context.waiting === undefined ? "" : " and Paseo work"} below.
 3. Follow-ups planned for today.
 4. Anything from ${WATCHLIST_FILE} worth knowing today.
 End with at most one question.
@@ -150,10 +158,7 @@ End with at most one question.
 Open alerts:
 ${alertLines}
 
-Paseo work waiting on the user:
-${context.waiting === null ? "(could not be read)" : waitingLines(context.waiting, schedule.timezone, now)}
-
-Planned for today:
+${context.waiting === undefined ? "" : `Paseo work waiting on the user:\n${context.waiting === null ? "(could not be read)" : waitingLines(context.waiting, schedule.timezone, now)}\n\n`}Planned for today:
 ${planned}`;
 }
 

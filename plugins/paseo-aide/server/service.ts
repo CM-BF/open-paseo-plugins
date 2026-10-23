@@ -15,7 +15,7 @@ import { McpRelay, type McpCaller } from "./mcp";
 import { resolveHome, type StatePaths } from "./paths";
 import { decideCheckinPermission } from "./policy";
 import { DEFAULT_MEMORY, DEFAULT_WATCHLIST, MEMORY_FILE, WATCHLIST_FILE } from "../shared/defaults";
-import { alertBody, assistantSystemPrompt, briefBody, checkinPrompt, checkinSystemPrompt, mcpInstructions, reminderBody, welcomeBody } from "./prompts";
+import { alertBody, assistantSystemPrompt, briefBody, checkinPrompt, checkinSystemPrompt, mcpInstructions, reminderBody, watchesPaseo, welcomeBody } from "./prompts";
 import { archiveQuietly, runCheckinAgent, supportsToolGrants } from "./runner";
 import { ActivityLog, Store, type InFlight, type OutboxEntry } from "./store";
 import { buildTools } from "./tools";
@@ -400,8 +400,12 @@ export class AideService {
     }
     const id = day ? `brief-${day}` : shortId("brief");
     if (this.outbox.pending.some((entry) => entry.kind === "brief")) return { queued: false, message: "A brief is already waiting for the chat to be free." };
-    const paseo = await this.access.get().catch(() => null);
-    const waiting = paseo ? await waitingAgents(paseo).catch(() => null) : null;
+    const watchlist = await readFile(join(state.assistant!.home, WATCHLIST_FILE), "utf8").catch(() => null);
+    let waiting: WaitingAgent[] | null | undefined;
+    if (watchesPaseo(watchlist)) {
+      const paseo = await this.access.get().catch(() => null);
+      waiting = paseo ? await waitingAgents(paseo).catch(() => null) : null;
+    }
     const timezone = this.timezone();
     const todayKey = dateKey(now, timezone);
     const today = state.followups.filter((followup) => followup.status === "active" && dateKey(Date.parse(followup.dueAt), timezone) === todayKey);
