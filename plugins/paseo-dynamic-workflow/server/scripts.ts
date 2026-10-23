@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { BINDING_ENV, MCP_SERVER, MCP_TOOL_NAMES, PLUGIN_VERSION, type McpToolName } from "../shared/ids";
 import type { StatePaths } from "./paths";
 import { DEFAULT_WORKFLOW_SIZE, type ToolGuidance, WORKFLOW_SIZES } from "../shared/guidance";
-import { guidanceText, mcpInstructions, REFERENCE_TOOL_DESCRIPTION, sizeGuidelineText, STATUS_TOOL_DESCRIPTION, STOP_TOOL_DESCRIPTION, ULTRACODE_NOTICE, WORKFLOW_TOOL_DESCRIPTION } from "./prompts";
+import { GUIDANCE_SLOT, guidanceText, mcpInstructions, REFERENCE_TOOL_DESCRIPTION, sizeGuidelineText, STATUS_TOOL_DESCRIPTION, STOP_TOOL_DESCRIPTION, ULTRACODE_SHORT, WORKFLOW_TOOL_DESCRIPTION } from "./prompts";
 import { BUILTIN_WORKFLOWS } from "./builtin-workflows";
 import { REFERENCE } from "./reference";
 import { writeAtomically } from "./util";
@@ -73,7 +73,8 @@ export const WORKFLOW_TOOL_META = {
  * embeds; the shim appends the same guidance text itself (see MCP_SOURCE).
  */
 export function toolDefinitions(guidance?: ToolGuidance): Array<{ name: McpToolName; description: string; inputSchema: unknown; _meta?: unknown }> {
-  const workflowDescription = guidance ? `${WORKFLOW_TOOL_DESCRIPTION}\n\n${guidanceText(guidance)}` : WORKFLOW_TOOL_DESCRIPTION;
+  // Without guidance the slot stays in place for the shim, which fills it per agent.
+  const workflowDescription = guidance ? WORKFLOW_TOOL_DESCRIPTION.replace(GUIDANCE_SLOT, () => guidanceText(guidance)) : WORKFLOW_TOOL_DESCRIPTION;
   const schemas: Record<McpToolName, { description: string; inputSchema: unknown; _meta?: unknown }> = {
     workflow: {
       description: workflowDescription,
@@ -212,6 +213,7 @@ const ULTRACODE_TEXT = __ULTRACODE_JSON__;
 const SIZE_TEXT = __SIZE_TEXT_JSON__;
 const DEFAULT_SIZE = '__DEFAULT_SIZE__';
 const TOOL_META = __TOOL_META_JSON__;
+const GUIDANCE_SLOT = __GUIDANCE_SLOT_JSON__;
 const INSTRUCTIONS = __INSTRUCTIONS_JSON__;
 const PROTOCOL_VERSIONS = ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'];
 __CLIENT_SOURCE__
@@ -254,7 +256,7 @@ function processSize() {
 function toolsFor(access) {
   if (!access) return [];
   const text = access.ultracode ? ULTRACODE_TEXT : SIZE_TEXT[access.size];
-  return TOOLS.map((tool) => (tool.name === 'workflow' ? { ...tool, description: tool.description + '\n\n' + text, _meta: TOOL_META } : tool));
+  return TOOLS.map((tool) => (tool.name === 'workflow' ? { ...tool, description: tool.description.replace(GUIDANCE_SLOT, () => text), _meta: TOOL_META } : tool));
 }
 const fingerprint = (access) => (access ? (access.ultracode ? 'ultracode' : 'on') : 'off');
 
@@ -462,10 +464,11 @@ function fill(source: string): string {
     .replace("__PLUGIN_VERSION__", () => PLUGIN_VERSION)
     .replace("__SERVER_NAME__", () => MCP_SERVER)
     .replace("__TOOLS_JSON__", () => JSON.stringify(toolDefinitions()))
-    .replace("__ULTRACODE_JSON__", () => JSON.stringify(ULTRACODE_NOTICE))
+    .replace("__ULTRACODE_JSON__", () => JSON.stringify(ULTRACODE_SHORT))
     .replace("__SIZE_TEXT_JSON__", () => JSON.stringify(Object.fromEntries(WORKFLOW_SIZES.map((size) => [size, sizeGuidelineText(size)]))))
     .replace("__DEFAULT_SIZE__", () => DEFAULT_WORKFLOW_SIZE)
     .replace("__TOOL_META_JSON__", () => JSON.stringify(WORKFLOW_TOOL_META))
+    .replace("__GUIDANCE_SLOT_JSON__", () => JSON.stringify(GUIDANCE_SLOT))
     .replace("__INSTRUCTIONS_JSON__", () => JSON.stringify(mcpInstructions({ ultracode: false, size: DEFAULT_WORKFLOW_SIZE })));
 }
 

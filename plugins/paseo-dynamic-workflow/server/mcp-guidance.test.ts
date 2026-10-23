@@ -87,3 +87,19 @@ it("asks Claude Code to load the workflow description instead of deferring it, a
     expect(JSON.stringify(workflow).length).toBeLessThan(8000);
   }
 });
+
+it("keeps the opt-in rule and the per-agent guidance inside Claude Code's 2048-character cut", () => {
+  const CLAUDE_CUT = 2048;
+  for (const guidance of [
+    { ultracode: true, size: "unrestricted" as const },
+    ...(["unrestricted", "small", "medium", "large"] as const).map((size) => ({ ultracode: false, size })),
+  ]) {
+    const head = toolDefinitions(guidance).find((tool) => tool.name === "workflow")!.description.slice(0, CLAUDE_CUT);
+    expect(head, JSON.stringify(guidance)).toContain(guidance.ultracode ? "Ultracode is ON for this agent" : "Size guideline");
+    for (const part of ["Launch one only after the user opted in", "Never turn workflows or Ultracode on for yourself", "call workflow_reference", "verify-claims"]) {
+      expect(head, `${JSON.stringify(guidance)}: ${part}`).toContain(part);
+    }
+    expect(mcpInstructions(guidance).length).toBeLessThanOrEqual(CLAUDE_CUT);
+  }
+  expect(mcpInstructions({ ultracode: true, size: "unrestricted" })).toContain("Stay solo for conversation");
+});

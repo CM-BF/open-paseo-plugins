@@ -4,16 +4,10 @@ import { NOTIFICATION_MARKER } from "../shared/notification";
 export const PROMPT_MARKER = "## Dynamic workflows (paseo-dynamic-workflow)";
 
 function optIn(ultracodeSource: string): string {
-  return `Because a run can start dozens of agents, launch one only after the user opted in, in one of these ways:
-- their current message contains the word "ultracode" (that request only);
-- Ultracode is on for you (${ultracodeSource}, or the latest launch result or run notification says so);
-- they asked for one in their own words, in any language ("use a workflow", "run this as a workflow", "split this across agents", "开个workflow");
-- they invoked a skill or command whose instructions say to run one;
-- they asked for a built-in or saved workflow by name.
-An opt-in covers the whole request, including later workflows for its next phases (verify, design, implement, review). A plugin notification is not an opt-in for a new task. A task that would merely benefit from parallelism does not count: say what you would run and about how many agents it would start, and ask; mention that "use a workflow" or "ultracode" in a later message skips the question. Never turn workflows or Ultracode on for yourself, including through the app; if they are off, ask the user.`;
+  return `Launch one only after the user opted in: (1) their message contains the word "ultracode" (for that request); (2) Ultracode is on for you (${ultracodeSource}, or the latest launch result or run notification); (3) they asked for a workflow in their own words, in any language ("use a workflow", "split this across agents", "开个workflow"); (4) a skill or command they invoked says to run one; (5) they named a workflow. An opt-in covers the whole request, including its later phases (verify, design, implement, review); a plugin notification is not an opt-in for new work. Otherwise, even when parallel agents would help, say what you would run and roughly how many agents, and ask; "use a workflow" or "ultracode" in a later message skips the question. Never turn workflows or Ultracode on for yourself; ask the user.`;
 }
 
-const OPT_IN = optIn("a notice at the end of this description or the first line of workflow_reference");
+const OPT_IN = optIn("the notice above, the first line of workflow_reference");
 const OPT_IN_CLI = optIn("the first line of the reference command's output");
 
 export function systemPromptCli(cli: string): string {
@@ -32,11 +26,17 @@ Aim for the most complete, best-checked result you can produce. Spend tokens fre
 - Stay solo for conversation, questions you can answer from context or a couple of reads, status checks, git operations, small mechanical edits, and discussion of a finished run.
 Read the Ultracode section of workflow_reference before your first script.`;
 
+/**
+ * The Ultracode text for the head of the workflow tool description and the MCP instructions.
+ * Claude Code cuts both at 2048 characters, so it stays short; the details are in the reference.
+ */
+export const ULTRACODE_SHORT = `Ultracode is ON for this agent (set by the user; never change it yourself). It is a standing opt-in: run a workflow for every substantive task (research, review, audit, debugging, design, changes beyond a few lines) without asking, and aim for the most complete, best-checked result; cost is never a reason to drop coverage, independent verification or synthesis. One workflow per phase; when a run's notification arrives, launch the next phase. Stay solo for conversation, quick questions, status checks, git operations, small edits and discussing a finished run. Read the Ultracode section of workflow_reference before your first script.`;
+
 export function sizeGuidelineText(size: WorkflowSize): string {
   if (size === "unrestricted") {
-    return "Size guideline: none. Size each run to what the request needs. A user who asks for a workflow wants coverage, so by default use several angles in parallel, independent refuters for each claim or finding, a completeness pass and a synthesis. Run small only when the user asks for a quick, brief or cheap run or gives a small budget. Cost words that describe the task's subject (for example \"a tool that saves tokens\") are not a budget.";
+    return "Size guideline: none. Size each run to the request. A user who asks for a workflow wants coverage: by default several angles in parallel, independent refuters for each claim or finding, a completeness pass and a synthesis. Go small only when the user asks for a quick, brief or cheap run or a small budget; cost words that describe the task's subject (\"a tool that saves tokens\") are not a budget.";
   }
-  return `Size guideline (set by the user): ${size}, about ${SIZE_AGENTS[size]} agents per run. This is a guideline, not a limit: go beyond it when the request calls for more (an audit, "be thorough", "exhaustive", a token budget such as +500k), never use it as a reason to skip verification the task needs, and log() what you bounded. Only the user changes it.`;
+  return `Size guideline (set by the user): ${size}, about ${SIZE_AGENTS[size]} agents per run. A guideline, not a limit: go beyond it when the request calls for more (an audit, "be thorough", a token budget such as +500k), never skip verification the task needs because of it, and log() what you bounded.`;
 }
 
 /** MCP server instructions for an enabled agent: providers that defer tool descriptions still show these. */
@@ -45,7 +45,7 @@ export function mcpInstructions(guidance: ToolGuidance): string {
     "Dynamic workflows (paseo-dynamic-workflow): the `workflow` tool runs a JavaScript script in the background that fans work out to many Paseo agents (any provider), verifies it and synthesizes the result; a <task-notification> message arrives when the run ends.",
     "Launch one only after the user opted in: the word \"ultracode\" in their message, Ultracode on for you, an explicit request for a workflow in their own words, a skill or command that says to, or a named workflow. Call `workflow_reference` before your first script. Never change your own workflow or Ultracode switches.",
   ];
-  if (guidance.ultracode) lines.push(ULTRACODE_NOTICE);
+  if (guidance.ultracode) lines.push(ULTRACODE_SHORT);
   return lines.join("\n");
 }
 
@@ -95,8 +95,11 @@ export function chainCheckIn(index: number): string {
 export const ULTRACODE_NEXT_PHASE = "Ultracode is on: read this result, then launch the next phase's workflow (check what it claimed, then design, implement, review) unless the task is finished.";
 
 export function guidanceText(guidance: ToolGuidance): string {
-  return guidance.ultracode ? ULTRACODE_NOTICE : sizeGuidelineText(guidance.size);
+  return guidance.ultracode ? ULTRACODE_SHORT : sizeGuidelineText(guidance.size);
 }
+
+/** Where the per-agent guidance goes in the workflow tool description: near the top, inside Claude's 2048-character cut. */
+export const GUIDANCE_SLOT = "{{workflow-guidance}}";
 
 export function appendPrompt(existing: string | undefined, block: string): string {
   if (existing?.includes(PROMPT_MARKER)) return replacePrompt(existing, block);
@@ -113,11 +116,13 @@ export function replacePrompt(existing: string, block: string): string {
   return `${existing.slice(0, start)}${block}${existing.slice(end)}`;
 }
 
-export const WORKFLOW_TOOL_DESCRIPTION = `Execute a workflow script that orchestrates multiple Paseo agents deterministically. The run happens in the background: the call returns at once with a run id, and a <task-notification> message arrives when the workflow ends (end your turn rather than waiting). The user watches progress in the run card and the Dynamic workflows panel.
+export const WORKFLOW_TOOL_DESCRIPTION = `Run a dynamic workflow: a background JavaScript script that fans work out to many Paseo agents (any provider), verifies it and synthesizes the result. It returns a run id at once; a <task-notification> arrives when the run ends, so end your turn instead of waiting.
+
+${GUIDANCE_SLOT}
 
 ${OPT_IN}
 
-Call workflow_reference before your first script: the full API, Ultracode and scale rules, limits, patterns, resume, and the named workflows you can launch. Built-ins, launched with { name, args } and sized by args.size: deep-review, deep-research, design-panel, critique, verify-claims.
+Before your first script call workflow_reference (API, rules, patterns, resume). Built-ins ({ name, args }, sized by args.size): deep-review, deep-research, design-panel, critique, verify-claims.
 
 A script starts with \`export const meta = {...}\`, which must be a plain literal (no variables, calls or interpolation) holding \`name\`, a one-line \`description\` and optionally \`phases\` (one { title, detail? } per phase() title). The body is plain JavaScript (not TypeScript), already async, and returns the result. Pass the script text in \`script\`; there is no need to save it to a file first.
 
