@@ -73,8 +73,8 @@ export function RunsPanel({ theme, layout, agentId, navigation }: PluginAgentPan
         <View style={styles.panelCard}>
           <Text style={styles.text}>No workflow runs yet.</Text>
           <Text style={styles.mutedText}>
-            Enable workflow tools above, then ask this agent to "use a workflow" for a task. It writes a script with agent(), parallel() and pipeline(), and the
-            run shows up here and as a card in the chat.
+            Enable workflow tools above and ask this agent to "use a workflow" (or put "ultracode" in a message); with Ultracode on it starts workflows for
+            substantive tasks by itself. It writes a script with agent(), parallel() and pipeline(), and the run shows up here and as a card in the chat.
           </Text>
         </View>
       ) : null}
