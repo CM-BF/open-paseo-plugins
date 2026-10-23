@@ -1,7 +1,7 @@
 export const meta = {
   name: 'deep-review',
   description: 'Exhaustive code review: scope the change, review it per dimension, verify every finding from independent lenses, chase gaps until a round finds nothing new, and return a ranked fix plan.',
-  whenToUse: 'The user wants a thorough review or audit of a change, branch, pull request or set of files, with findings that survive independent verification; also to re-check earlier findings after fixes (recheck). args: a string saying what to review, or { target, focus?, size?, dimensions?, votes?, rounds?, recheck? }. Size small is about 5-10 agents, medium 10-30, large 30-80, unrestricted 80-300 (the default under Ultracode).',
+  whenToUse: 'The user wants a thorough review or audit of a change, branch, pull request or set of files, with findings that survive independent verification; also to re-check earlier findings after fixes (recheck). args: a string saying what to review, or { target, focus?, size?, dimensions?, votes?, rounds?, recheck? }. Roughly: small 10-25 agents, medium 30-80, large 60-180, unrestricted 100-500 (the default under Ultracode); verification is capped at 10/20/40/120 findings by size. Built-in sizes are depth levels, not the agent counts of the size guideline.',
   phases: [
     { title: 'Scope', detail: 'map the change and pick review dimensions' },
     { title: 'Recheck', detail: 'earlier findings: fixed or still present' },
@@ -22,10 +22,10 @@ export const meta = {
 const input = readArgs('target')
 const SIZE = runSize(input)
 const KNOBS = {
-  small: { dims: 4, votes: 2, rounds: 0, extra: 0, dry: 1 },
-  medium: { dims: 6, votes: 3, rounds: 1, extra: 1, dry: 1 },
-  large: { dims: 9, votes: 3, rounds: 2, extra: 3, dry: 1 },
-  unrestricted: { dims: 9, votes: 4, rounds: 6, extra: 3, dry: 2 },
+  small: { dims: 4, votes: 2, rounds: 0, extra: 0, dry: 1, verify: 10 },
+  medium: { dims: 6, votes: 3, rounds: 1, extra: 1, dry: 1, verify: 20 },
+  large: { dims: 9, votes: 3, rounds: 2, extra: 3, dry: 1, verify: 40 },
+  unrestricted: { dims: 9, votes: 4, rounds: 6, extra: 3, dry: 2, verify: 120 },
 }[SIZE]
 const TARGET = typeof input.target === 'string' && input.target.trim() ? input.target.trim()
   : 'the uncommitted changes in the working tree and the commits on the current branch that are not on its upstream or main branch'
@@ -70,7 +70,7 @@ const GAPS = { type: 'object', required: ['tasks'], properties: { tasks: { type:
 const PLAN = { type: 'object', required: ['summary', 'fixes'], properties: {
   summary: { type: 'string' },
   fixes: { type: 'array', items: { type: 'object', required: ['title', 'severity', 'findings', 'files', 'change', 'test'], properties: {
-    title: { type: 'string' }, severity: SEVERITY, findings: { type: 'array', items: { type: 'string' }, description: 'Finding ids (F1, F2, ...).' },
+    title: { type: 'string' }, severity: SEVERITY, findings: { type: 'array', items: { type: 'string' }, description: 'Finding ids (F1, R1, ...).' },
     files: { type: 'array', items: { type: 'string' } }, change: { type: 'string' }, test: { type: 'string', description: 'The regression test that fails before the fix.' },
   } } },
   notes: { type: 'array', items: { type: 'string' } },
@@ -106,22 +106,25 @@ if (Array.isArray(input.dimensions) && input.dimensions.length) {
     : { key: clean(d && d.key, 40), prompt: clean(d && d.prompt || DEFAULT_DIMENSIONS[d && d.key] || (d && d.key), 1500) })
 } else {
   const picked = (scope ? scope.dimensions : []).map((d) => d.key).filter((key, i, all) => DEFAULT_DIMENSIONS[key] && all.indexOf(key) === i)
-  const keys = (picked.length >= Math.min(4, KNOBS.dims) ? picked : Object.keys(DEFAULT_DIMENSIONS)).slice(0, KNOBS.dims)
+  // The scope agent's picks first, then the remaining defaults, so a short pick list is topped up, not replaced.
+  const keys = picked.concat(Object.keys(DEFAULT_DIMENSIONS).filter((key) => !picked.includes(key))).slice(0, KNOBS.dims)
   dimensions = keys.map((key) => ({ key, prompt: DEFAULT_DIMENSIONS[key] }))
     .concat((scope && scope.extra || []).slice(0, KNOBS.extra).map((d) => ({ key: clean(d.key, 40), prompt: clean(d.prompt, 1500) })))
   const skipped = Object.keys(DEFAULT_DIMENSIONS).filter((key) => !keys.includes(key))
   if (skipped.length) log('Dimensions not reviewed at size ' + SIZE + ': ' + skipped.join(', '))
 }
 const CONTEXT = scope
-  ? data('Change under review (from the scope agent)', { what: TARGET, summary: scope.summary, files: scope.files.slice(0, 300) })
+  ? data('Change under review (from the scope agent)', { what: TARGET, ...(FOCUS ? { focus: FOCUS } : {}), summary: scope.summary, files: scope.files.slice(0, 300) })
     + (scope.files.length > 300 ? '\n(' + (scope.files.length - 300) + ' more files; list them with the same git commands)' : '')
-  : 'What to review: ' + TARGET + '. Find the change set yourself with git status, git log and git diff.'
+  : 'What to review: ' + TARGET + (FOCUS ? '. User focus: ' + FOCUS : '') + '. Find the change set yourself with git status, git log and git diff.'
 
 let nextId = 1
+let verifiedCount = 0
 const findings = []
 const duplicates = []
 const seen = new Map()
-const words = (title) => String(title || '').toLowerCase().replace(/[^\p{L}\p{N} ]+/gu, ' ').split(/\s+/).filter(Boolean).slice(0, 4).join(' ')
+// Same file, nearby line and the same words in the title: one defect reported twice. Distinct titles stay distinct.
+const words = (title) => String(title || '').toLowerCase().replace(/[^\p{L}\p{N} ]+/gu, ' ').split(/\s+/).filter(Boolean).sort().join(' ')
 const keyOf = (f) => String(f.file || '').toLowerCase().replace(/^\.\//, '') + '#' + (Number.isFinite(f.line) ? Math.floor(f.line / 15) : '-') + '#' + words(f.title)
 
 async function verify(batch) {
@@ -161,7 +164,14 @@ async function round(tasks, phaseTitle) {
   })
   const failed = reviews.filter((r) => !r).length
   if (failed) log(failed + ' reviewer(s) failed in ' + phaseTitle + '; see coverage')
-  await verify(fresh)
+  // Verification is the expensive part: the most severe findings first, up to the size's cap.
+  const ranked = stableSort(fresh, (f) => [order[f.severity] ?? 9, f.id])
+  const room = Math.max(0, KNOBS.verify - verifiedCount)
+  const skipped = ranked.slice(room)
+  skipped.forEach((f) => { f.why = 'not verified: cap of ' + KNOBS.verify + ' at size ' + SIZE })
+  if (skipped.length) log(skipped.length + ' finding(s) left unverified by the cap of ' + KNOBS.verify + ' at size ' + SIZE + '; rerun with a larger size to check them')
+  verifiedCount += Math.min(room, ranked.length)
+  await verify(ranked.slice(0, room))
   return fresh.length
 }
 
@@ -175,7 +185,12 @@ if (RECHECK.length) {
     'Answer fixed, still_present, or cannot_check when you could not examine it.', CONTEXT,
     data('Earlier finding R' + (i + 1), { title: f.title, file: f.file, line: f.line, scenario: f.scenario }), READ_ONLY,
   ].join('\n\n'), { label: 'recheck:R' + (i + 1) + ':' + lens, phase: 'Recheck', schema: RECHECKED, agentType: 'verification', timeoutMinutes: 40 })))
-    .then((votes) => ({ id: 'R' + (i + 1), title: clean(f.title, 300), file: clean(f.file, 300), ...tally(votes, 2, 'fixed', 'still_present') }))))
+    .then((votes) => {
+      // Recheck has its own words: 'fixed' and 'still_present' (both lenses agree), else 'unverified'.
+      const t = tally(votes, 2, 'fixed', 'still_present')
+      const status = t.status === 'confirmed' ? 'fixed' : t.status === 'refuted' ? 'still_present' : 'unverified'
+      return { id: 'R' + (i + 1), title: clean(f.title, 300), file: clean(f.file, 300), line: f.line, scenario: clean(f.scenario, 600), status, votes: t.votes, ...(t.why ? { why: t.why } : {}) }
+    })))
 }
 
 phase('Review')
@@ -205,18 +220,20 @@ for (let r = 1; r <= ROUNDS && dry < KNOBS.dry; r++) {
 phase('Plan')
 const confirmed = stableSort(findings.filter((f) => f.status === 'confirmed'), (f) => [order[f.severity] ?? 9, f.id])
 const brief = (f) => ({ id: f.id, title: f.title, file: f.file, line: f.line, severity: f.severity, scenario: clean(f.scenario, 600), votes: f.votes, source: f.source, ...(f.why ? { why: f.why } : {}) })
+const stillPresent = recheck.filter((r) => r.status === 'still_present')
 let plan = null
-if (confirmed.length) {
+if (confirmed.length || stillPresent.length) {
   plan = await safe([
     'Turn verified code review findings into a fix plan. Merge findings that describe the same defect, group fixes that touch the same code, and order them by severity and dependency. For each fix give the concrete change and the regression test that would fail before it.',
     CONTEXT,
     data('Confirmed findings', confirmed.map(brief)),
+    stillPresent.length ? data('Earlier findings that are still present after the last fix (ids R1, R2, ...)', stillPresent) : '',
     READ_ONLY,
-  ].join('\n\n'), { label: 'plan', phase: 'Plan', schema: PLAN })
+  ].filter(Boolean).join('\n\n'), { label: 'plan', phase: 'Plan', schema: PLAN })
   if (!plan) coverage.push({ key: 'plan', status: 'failed' })
 }
 const unverified = findings.filter((f) => f.status === 'unverified')
-const partial = coverage.some((c) => c.status === 'failed') || unverified.some((f) => f.why === 'missing votes')
+const partial = coverage.some((c) => c.status === 'failed') || unverified.some((f) => f.why === 'missing votes' || String(f.why).startsWith('not verified')) || recheck.some((r) => r.status === 'unverified')
 
 return {
   schemaVersion: 1,
@@ -230,5 +247,5 @@ return {
   recheck,
   coverage,
   duplicates,
-  stats: { size: SIZE, findings: findings.length, confirmed: confirmed.length, unverified: unverified.length, votesPerFinding: VOTES, gapRounds: ROUNDS, files: scope ? scope.files.length : null },
+  stats: { size: SIZE, findings: findings.length, confirmed: confirmed.length, unverified: unverified.length, verified: verifiedCount, verifyCap: KNOBS.verify, votesPerFinding: VOTES, gapRounds: ROUNDS, files: scope ? scope.files.length : null },
 }

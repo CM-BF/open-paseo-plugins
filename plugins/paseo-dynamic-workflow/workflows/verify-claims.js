@@ -41,9 +41,11 @@ const results = await parallel(items.map((c) => () => parallel(Array.from({ leng
   .then((verdicts) => ({ ...c, ...tally(verdicts, VOTES, 'holds', 'refuted'), reasons: verdicts.filter(Boolean).map((x) => ({ verdict: x.verdict, method: x.method, reason: clean(x.reason, 500) })) }))))
 const done = results.filter(Boolean)
 const by = (status) => done.filter((r) => r.status === status)
+const coverage = done.filter((r) => r.missing > 0).map((r) => ({ key: 'verify:' + r.id, status: 'failed', missingVotes: r.missing }))
 return {
   schemaVersion: 1,
-  status: done.length === items.length && !done.some((r) => r.why === 'missing votes') ? 'complete' : 'partial',
+  status: done.length === items.length && !coverage.length ? 'complete' : 'partial',
+  coverage,
   confirmed: by('confirmed'), refuted: by('refuted'), unverified: by('unverified'),
   stats: { size: SIZE, claims: items.length, votesPerClaim: VOTES, confirmed: by('confirmed').length, refuted: by('refuted').length, unverified: by('unverified').length },
 }

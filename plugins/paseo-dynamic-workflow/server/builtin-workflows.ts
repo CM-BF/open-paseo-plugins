@@ -149,7 +149,7 @@ const critiques = await parallel(LENSES.map((lens, i) => () => agent([
 ].filter(Boolean).join('\\n\\n'), { label: 'critic:' + (i + 1), phase: 'Critique', schema: CRITIQUE })))
 const coverage = critiques.map((c, i) => ({ lens: clean(LENSES[i], 80), status: c ? 'ok' : 'failed' }))
 const items = []
-critiques.forEach((c, i) => { if (c) c.mustChange.forEach((m) => items.push({ id: 'M' + (items.length + 1), lens: i + 1, ...m })) })
+critiques.forEach((c, i) => { if (c) c.mustChange.forEach((m) => items.push({ item: m.item, why: m.why, proposal: m.proposal, evidence: m.evidence, id: 'M' + (items.length + 1), lens: i + 1 })) })
 log(items.length + ' must-change item(s) from ' + critiques.filter(Boolean).length + ' critic(s)')
 
 phase('Verify')
@@ -161,6 +161,7 @@ const checked = await parallel(items.map((m) => () => parallel(Array.from({ leng
 ].join('\\n\\n'), { label: 'check:' + m.id + ':' + (v + 1), phase: 'Verify', schema: CHECK, agentType: 'verification', timeoutMinutes: 40 })))
   .then((votes) => ({ ...m, ...tally(votes, VOTES, 'holds', 'refuted'), reasons: votes.filter(Boolean).map((x) => clean(x.reason, 400)) }))))
 const verified = checked.filter(Boolean)
+verified.filter((m) => m.missing > 0).forEach((m) => coverage.push({ lens: 'check:' + m.id, status: 'failed', missingVotes: m.missing }))
 
 phase('Revise')
 const revision = await safe([
@@ -185,7 +186,7 @@ return {
   "deep-research": `export const meta = {
   name: 'deep-research',
   description: 'Multi-source research: probe the available search tools, split the question into angles, read and extract checkable claims from each new source, verify the important claims with independent skeptics, fill gaps, and synthesize a cited report.',
-  whenToUse: 'The user wants a deep, fact-checked, multi-source answer from web pages, documents or named local files and repositories (to map a codebase, write an Understand workflow instead). If the question is underspecified (no budget, region, version or use case), ask two or three clarifying questions first and fold the answers into the question. args: the question as a string, or { question, sources?: [urls or absolute paths], size?, angles?, maxSources?, claims?, votes?, gapRounds? }. Size small is about 15 agents, medium 40, large 90, unrestricted 150+ (the default under Ultracode). Claude children may ask permission for web search.',
+  whenToUse: 'The user wants a deep, fact-checked, multi-source answer from web pages, documents or named local files and repositories (to map a codebase, write an Understand workflow instead). If the question is underspecified (no budget, region, version or use case), ask two or three clarifying questions first and fold the answers into the question. args: the question as a string, or { question, sources?: [urls or absolute paths], size?, angles?, maxSources?, claims?, votes?, gapRounds? }. Roughly: small 25 agents, medium 70, large 110, unrestricted 200+ (the default under Ultracode); built-in sizes are depth levels, not the agent counts of the size guideline. Claude children may ask permission for web search and fetch.',
   phases: [
     { title: 'Scope', detail: 'probe search and fetch, split the question into angles' },
     { title: 'Search', detail: 'one searcher per angle' },
@@ -340,7 +341,12 @@ const REPORT = { type: 'object', required: ['answer', 'findings', 'caveats'], pr
 } }
 const NO_WRITES = 'Do not modify files, commit or install anything. Scratch files go in a fresh \`mktemp -d\` directory that you delete before you answer.'
 const rank = { high: 0, medium: 1, low: 2, central: 0, supporting: 1, side: 2, primary: 0, secondary: 1, opinion: 2, forum: 3, unusable: 4 }
-const urlKey = (url) => String(url).trim().toLowerCase().replace(/^[a-z]+:\\/\\//, '').replace(/^www\\./, '').replace(/[?#].*$/, '').replace(/\\/+$/, '')
+// The same page once, but distinct pages that differ only in their query (?id=1, ?v=abc) stay distinct.
+const urlKey = (url) => {
+  const [base, query = ''] = String(url).trim().toLowerCase().replace(/^[a-z]+:\\/\\//, '').replace(/^www\\./, '').replace(/#.*$/, '').split('?')
+  const kept = query.split('&').filter((pair) => pair && !/^(utm_[a-z]+|ref|fbclid|gclid|source)=/.test(pair)).sort().join('&')
+  return base.replace(/\\/+$/, '') + (kept ? '?' + kept : '')
+}
 const hostOf = (url) => { const m = String(url).match(/^[a-z]+:\\/\\/([a-z0-9.-]+)(?::\\d+)?(?:[/?#]|$)/i); return m ? m[1].toLowerCase().slice(0, 40) : 'local' }
 const claimKey = (claim) => String(claim).toLowerCase().replace(/[^\\p{L}\\p{N} ]+/gu, ' ').split(/\\s+/).filter(Boolean).slice(0, 12).join(' ')
 const coverage = []
@@ -353,15 +359,17 @@ const scope = await safe([
   NO_WRITES,
 ].join('\\n\\n'), { label: 'scope', phase: 'Scope', schema: SCOPE })
 if (!scope) throw new Error('The scope agent failed, so the run has no angles; retry or pass a narrower question.')
-const webOk = scope.tools.search === 'works'
+// Web angles need both: a search whose results cannot be opened yields no claims.
+const webOk = scope.tools.search === 'works' && scope.tools.fetch === 'works'
+const webState = scope.tools.search !== 'works' ? 'search is ' + scope.tools.search : 'fetch is ' + scope.tools.fetch
 let angles = scope.angles.slice(0, ANGLES).map((a, i) => ({ id: 'A' + (i + 1), label: clean(a.label, 60), query: clean(a.query, 400), kind: a.kind, why: clean(a.why, 300) }))
 if (!webOk) {
   const dropped = angles.filter((a) => a.kind === 'web').length
   angles = angles.filter((a) => a.kind === 'local')
-  if (dropped) log('Web search is ' + scope.tools.search + ': ' + dropped + ' web angle(s) dropped. ' + clean(scope.tools.note, 300))
+  if (dropped) log('Web ' + webState + ': ' + dropped + ' web angle(s) dropped. ' + clean(scope.tools.note, 300))
   if (!angles.length && !GIVEN.length) {
     return { schemaVersion: 1, status: 'blocked', question: QUESTION, answer: null,
-      remediation: 'Child agents cannot search the web (' + scope.tools.search + '). Allow web search for the provider (Claude: approve WebSearch; Codex: enable web_search), or pass local paths or URLs as args.sources, then rerun.',
+      remediation: 'Child agents cannot use the web (' + webState + '). Allow web search and fetch for the provider (Claude: approve WebSearch and WebFetch; Codex: enable web_search), or pass local paths as args.sources, then rerun.',
       tools: scope.tools }
   }
 }
@@ -435,7 +443,7 @@ await explore(angles, 0)
 let nextClaim = 1
 const claims = []
 const seenClaims = new Set()
-async function verifyNew() {
+async function verifyNew(round) {
   const pool = []
   for (const s of stableSort(sources, (x) => [x.id.length, x.id])) {
     for (const c of s.claims || []) {
@@ -447,8 +455,10 @@ async function verifyNew() {
   }
   // Rank every new claim together, in a fixed order, before paying for the votes.
   const ranked = stableSort(pool, (c) => [rank[c.weight] ?? 3, rank[c.quality] ?? 5, c.url, c.claim])
-  const room = Math.max(0, MAX_CLAIMS - claims.length)
-  if (ranked.length > room) log((ranked.length - room) + ' lower-ranked claim(s) not verified (cap ' + MAX_CLAIMS + ')')
+  // Round 0 may use most of the cap; each gap round keeps an equal share, so gap sources get checked.
+  const reserve = GAP_ROUNDS ? Math.floor(MAX_CLAIMS / (GAP_ROUNDS + 2)) : 0
+  const room = Math.max(0, (round === 0 ? MAX_CLAIMS - reserve * GAP_ROUNDS : MAX_CLAIMS - reserve * (GAP_ROUNDS - round)) - claims.length)
+  if (ranked.length > room) log((ranked.length - room) + ' lower-ranked claim(s) not verified (round ' + round + ' budget; cap ' + MAX_CLAIMS + ')')
   const batch = ranked.slice(0, room).map((c) => ({ id: 'C' + nextClaim++, ...c }))
   await parallel(batch.map((c) => () => parallel(Array.from({ length: VOTES }, (_, v) => () => agent([
     'You are skeptic ' + (v + 1) + ' of ' + VOTES + '. Try to show that this claim does not hold: check that the quoted passage really supports it, look for contradicting or more recent evidence, and judge whether the source is strong enough for a claim this strong.',
@@ -462,7 +472,7 @@ async function verifyNew() {
 }
 
 phase('Verify')
-await verifyNew()
+await verifyNew(0)
 const count = (status) => claims.filter((c) => c.status === status).length
 log('Verified: ' + count('confirmed') + ' confirmed, ' + count('refuted') + ' refuted, ' + count('unverified') + ' unverified')
 
@@ -484,7 +494,7 @@ for (let r = 1; r <= GAP_ROUNDS; r++) {
   const verifiedBefore = claims.length
   angles = angles.concat(more)
   await explore(more, r)
-  await verifyNew()
+  await verifyNew(r)
   log('Gap round ' + r + ': ' + more.length + ' angle(s), ' + (sources.length - before) + ' source(s), ' + (claims.length - verifiedBefore) + ' claim(s) verified')
   if (sources.length === before) break
 }
@@ -500,9 +510,15 @@ const tail = {
   stats: { size: SIZE, angles: angles.length, sources: sources.length, claimsVerified: claims.length, confirmed: confirmed.length, refuted: count('refuted'), unverified: count('unverified') },
 }
 if (!confirmed.length) {
-  const infra = count('unverified') > 0 && count('refuted') === 0
-  return { schemaVersion: 1, status: infra ? 'inconclusive' : 'complete', question: QUESTION,
-    answer: infra ? 'No claim could be verified (verifiers failed or could not check). This is a tooling problem, not a finding; see coverage and tools, then retry.' : 'No claim survived verification; the question stays open.',
+  // "Nothing survived" is a finding only when claims were actually refuted on the merits and
+  // nothing failed along the way; otherwise the run could not answer.
+  const refutedOnly = claims.length > 0 && count('refuted') === claims.length && !partial
+  return { schemaVersion: 1, status: refutedOnly ? 'complete' : 'inconclusive', question: QUESTION,
+    answer: refutedOnly
+      ? 'Every checked claim was refuted; the question stays open.'
+      : claims.length === 0
+        ? 'No claim was extracted (' + (sources.length ? 'the sources yielded none' : 'no source could be searched or read') + '). This is a tooling or coverage problem, not a finding; see coverage and tools, then retry.'
+        : 'No claim could be confirmed, and some could not be checked (verifiers failed or were blocked). This is not a finding; see coverage and tools, then retry.',
     ...tail }
 }
 const report = await safe([
@@ -522,7 +538,7 @@ return {
   "deep-review": `export const meta = {
   name: 'deep-review',
   description: 'Exhaustive code review: scope the change, review it per dimension, verify every finding from independent lenses, chase gaps until a round finds nothing new, and return a ranked fix plan.',
-  whenToUse: 'The user wants a thorough review or audit of a change, branch, pull request or set of files, with findings that survive independent verification; also to re-check earlier findings after fixes (recheck). args: a string saying what to review, or { target, focus?, size?, dimensions?, votes?, rounds?, recheck? }. Size small is about 5-10 agents, medium 10-30, large 30-80, unrestricted 80-300 (the default under Ultracode).',
+  whenToUse: 'The user wants a thorough review or audit of a change, branch, pull request or set of files, with findings that survive independent verification; also to re-check earlier findings after fixes (recheck). args: a string saying what to review, or { target, focus?, size?, dimensions?, votes?, rounds?, recheck? }. Roughly: small 10-25 agents, medium 30-80, large 60-180, unrestricted 100-500 (the default under Ultracode); verification is capped at 10/20/40/120 findings by size. Built-in sizes are depth levels, not the agent counts of the size guideline.',
   phases: [
     { title: 'Scope', detail: 'map the change and pick review dimensions' },
     { title: 'Recheck', detail: 'earlier findings: fixed or still present' },
@@ -631,10 +647,10 @@ const READ_ONLY = 'Do not modify the repository, commit, push, install packages 
 const input = readArgs('target')
 const SIZE = runSize(input)
 const KNOBS = {
-  small: { dims: 4, votes: 2, rounds: 0, extra: 0, dry: 1 },
-  medium: { dims: 6, votes: 3, rounds: 1, extra: 1, dry: 1 },
-  large: { dims: 9, votes: 3, rounds: 2, extra: 3, dry: 1 },
-  unrestricted: { dims: 9, votes: 4, rounds: 6, extra: 3, dry: 2 },
+  small: { dims: 4, votes: 2, rounds: 0, extra: 0, dry: 1, verify: 10 },
+  medium: { dims: 6, votes: 3, rounds: 1, extra: 1, dry: 1, verify: 20 },
+  large: { dims: 9, votes: 3, rounds: 2, extra: 3, dry: 1, verify: 40 },
+  unrestricted: { dims: 9, votes: 4, rounds: 6, extra: 3, dry: 2, verify: 120 },
 }[SIZE]
 const TARGET = typeof input.target === 'string' && input.target.trim() ? input.target.trim()
   : 'the uncommitted changes in the working tree and the commits on the current branch that are not on its upstream or main branch'
@@ -679,7 +695,7 @@ const GAPS = { type: 'object', required: ['tasks'], properties: { tasks: { type:
 const PLAN = { type: 'object', required: ['summary', 'fixes'], properties: {
   summary: { type: 'string' },
   fixes: { type: 'array', items: { type: 'object', required: ['title', 'severity', 'findings', 'files', 'change', 'test'], properties: {
-    title: { type: 'string' }, severity: SEVERITY, findings: { type: 'array', items: { type: 'string' }, description: 'Finding ids (F1, F2, ...).' },
+    title: { type: 'string' }, severity: SEVERITY, findings: { type: 'array', items: { type: 'string' }, description: 'Finding ids (F1, R1, ...).' },
     files: { type: 'array', items: { type: 'string' } }, change: { type: 'string' }, test: { type: 'string', description: 'The regression test that fails before the fix.' },
   } } },
   notes: { type: 'array', items: { type: 'string' } },
@@ -715,22 +731,25 @@ if (Array.isArray(input.dimensions) && input.dimensions.length) {
     : { key: clean(d && d.key, 40), prompt: clean(d && d.prompt || DEFAULT_DIMENSIONS[d && d.key] || (d && d.key), 1500) })
 } else {
   const picked = (scope ? scope.dimensions : []).map((d) => d.key).filter((key, i, all) => DEFAULT_DIMENSIONS[key] && all.indexOf(key) === i)
-  const keys = (picked.length >= Math.min(4, KNOBS.dims) ? picked : Object.keys(DEFAULT_DIMENSIONS)).slice(0, KNOBS.dims)
+  // The scope agent's picks first, then the remaining defaults, so a short pick list is topped up, not replaced.
+  const keys = picked.concat(Object.keys(DEFAULT_DIMENSIONS).filter((key) => !picked.includes(key))).slice(0, KNOBS.dims)
   dimensions = keys.map((key) => ({ key, prompt: DEFAULT_DIMENSIONS[key] }))
     .concat((scope && scope.extra || []).slice(0, KNOBS.extra).map((d) => ({ key: clean(d.key, 40), prompt: clean(d.prompt, 1500) })))
   const skipped = Object.keys(DEFAULT_DIMENSIONS).filter((key) => !keys.includes(key))
   if (skipped.length) log('Dimensions not reviewed at size ' + SIZE + ': ' + skipped.join(', '))
 }
 const CONTEXT = scope
-  ? data('Change under review (from the scope agent)', { what: TARGET, summary: scope.summary, files: scope.files.slice(0, 300) })
+  ? data('Change under review (from the scope agent)', { what: TARGET, ...(FOCUS ? { focus: FOCUS } : {}), summary: scope.summary, files: scope.files.slice(0, 300) })
     + (scope.files.length > 300 ? '\\n(' + (scope.files.length - 300) + ' more files; list them with the same git commands)' : '')
-  : 'What to review: ' + TARGET + '. Find the change set yourself with git status, git log and git diff.'
+  : 'What to review: ' + TARGET + (FOCUS ? '. User focus: ' + FOCUS : '') + '. Find the change set yourself with git status, git log and git diff.'
 
 let nextId = 1
+let verifiedCount = 0
 const findings = []
 const duplicates = []
 const seen = new Map()
-const words = (title) => String(title || '').toLowerCase().replace(/[^\\p{L}\\p{N} ]+/gu, ' ').split(/\\s+/).filter(Boolean).slice(0, 4).join(' ')
+// Same file, nearby line and the same words in the title: one defect reported twice. Distinct titles stay distinct.
+const words = (title) => String(title || '').toLowerCase().replace(/[^\\p{L}\\p{N} ]+/gu, ' ').split(/\\s+/).filter(Boolean).sort().join(' ')
 const keyOf = (f) => String(f.file || '').toLowerCase().replace(/^\\.\\//, '') + '#' + (Number.isFinite(f.line) ? Math.floor(f.line / 15) : '-') + '#' + words(f.title)
 
 async function verify(batch) {
@@ -770,7 +789,14 @@ async function round(tasks, phaseTitle) {
   })
   const failed = reviews.filter((r) => !r).length
   if (failed) log(failed + ' reviewer(s) failed in ' + phaseTitle + '; see coverage')
-  await verify(fresh)
+  // Verification is the expensive part: the most severe findings first, up to the size's cap.
+  const ranked = stableSort(fresh, (f) => [order[f.severity] ?? 9, f.id])
+  const room = Math.max(0, KNOBS.verify - verifiedCount)
+  const skipped = ranked.slice(room)
+  skipped.forEach((f) => { f.why = 'not verified: cap of ' + KNOBS.verify + ' at size ' + SIZE })
+  if (skipped.length) log(skipped.length + ' finding(s) left unverified by the cap of ' + KNOBS.verify + ' at size ' + SIZE + '; rerun with a larger size to check them')
+  verifiedCount += Math.min(room, ranked.length)
+  await verify(ranked.slice(0, room))
   return fresh.length
 }
 
@@ -784,7 +810,12 @@ if (RECHECK.length) {
     'Answer fixed, still_present, or cannot_check when you could not examine it.', CONTEXT,
     data('Earlier finding R' + (i + 1), { title: f.title, file: f.file, line: f.line, scenario: f.scenario }), READ_ONLY,
   ].join('\\n\\n'), { label: 'recheck:R' + (i + 1) + ':' + lens, phase: 'Recheck', schema: RECHECKED, agentType: 'verification', timeoutMinutes: 40 })))
-    .then((votes) => ({ id: 'R' + (i + 1), title: clean(f.title, 300), file: clean(f.file, 300), ...tally(votes, 2, 'fixed', 'still_present') }))))
+    .then((votes) => {
+      // Recheck has its own words: 'fixed' and 'still_present' (both lenses agree), else 'unverified'.
+      const t = tally(votes, 2, 'fixed', 'still_present')
+      const status = t.status === 'confirmed' ? 'fixed' : t.status === 'refuted' ? 'still_present' : 'unverified'
+      return { id: 'R' + (i + 1), title: clean(f.title, 300), file: clean(f.file, 300), line: f.line, scenario: clean(f.scenario, 600), status, votes: t.votes, ...(t.why ? { why: t.why } : {}) }
+    })))
 }
 
 phase('Review')
@@ -814,18 +845,20 @@ for (let r = 1; r <= ROUNDS && dry < KNOBS.dry; r++) {
 phase('Plan')
 const confirmed = stableSort(findings.filter((f) => f.status === 'confirmed'), (f) => [order[f.severity] ?? 9, f.id])
 const brief = (f) => ({ id: f.id, title: f.title, file: f.file, line: f.line, severity: f.severity, scenario: clean(f.scenario, 600), votes: f.votes, source: f.source, ...(f.why ? { why: f.why } : {}) })
+const stillPresent = recheck.filter((r) => r.status === 'still_present')
 let plan = null
-if (confirmed.length) {
+if (confirmed.length || stillPresent.length) {
   plan = await safe([
     'Turn verified code review findings into a fix plan. Merge findings that describe the same defect, group fixes that touch the same code, and order them by severity and dependency. For each fix give the concrete change and the regression test that would fail before it.',
     CONTEXT,
     data('Confirmed findings', confirmed.map(brief)),
+    stillPresent.length ? data('Earlier findings that are still present after the last fix (ids R1, R2, ...)', stillPresent) : '',
     READ_ONLY,
-  ].join('\\n\\n'), { label: 'plan', phase: 'Plan', schema: PLAN })
+  ].filter(Boolean).join('\\n\\n'), { label: 'plan', phase: 'Plan', schema: PLAN })
   if (!plan) coverage.push({ key: 'plan', status: 'failed' })
 }
 const unverified = findings.filter((f) => f.status === 'unverified')
-const partial = coverage.some((c) => c.status === 'failed') || unverified.some((f) => f.why === 'missing votes')
+const partial = coverage.some((c) => c.status === 'failed') || unverified.some((f) => f.why === 'missing votes' || String(f.why).startsWith('not verified')) || recheck.some((r) => r.status === 'unverified')
 
 return {
   schemaVersion: 1,
@@ -839,13 +872,13 @@ return {
   recheck,
   coverage,
   duplicates,
-  stats: { size: SIZE, findings: findings.length, confirmed: confirmed.length, unverified: unverified.length, votesPerFinding: VOTES, gapRounds: ROUNDS, files: scope ? scope.files.length : null },
+  stats: { size: SIZE, findings: findings.length, confirmed: confirmed.length, unverified: unverified.length, verified: verifiedCount, verifyCap: KNOBS.verify, votesPerFinding: VOTES, gapRounds: ROUNDS, files: scope ? scope.files.length : null },
 }
 `,
   "design-panel": `export const meta = {
   name: 'design-panel',
   description: 'Judge panel for a design or plan: independent designs from different angles, scored by judges who see them anonymized and in rotated order, then one synthesis built on the winner with the best ideas of the others grafted in.',
-  whenToUse: 'The user wants a design, architecture, migration plan or approach chosen carefully when several reasonable solutions exist. Scout the relevant code first and pass what you found as context. To review an existing draft instead, use critique. args: the problem as a string, or { problem, context?, angles?, criteria?, judges?, size? }. Size small is about 5 agents, medium 7, large 10, unrestricted 13.',
+  whenToUse: 'The user wants a design, architecture, migration plan or approach chosen carefully when several reasonable solutions exist. Scout the relevant code first and pass what you found as context. To review an existing draft instead, use critique. args: the problem as a string, or { problem, context?, angles?, criteria?, judges?, size? }. Roughly: small 5 agents, medium 7, large 11, unrestricted 14.',
   phases: [
     { title: 'Draft', detail: 'one independent design per angle' },
     { title: 'Judge', detail: 'each judge scores every design' },
@@ -986,6 +1019,7 @@ const drafts = (await parallel(ANGLES.map((angle, i) => () => agent([
   .map((d, i) => (d ? { ...d, angle: ANGLES[i] } : null)).filter(Boolean)
   .map((d, i) => ({ ...d, id: LETTERS[i] }))
 if (!drafts.length) throw new Error('Every designer failed; retry with a narrower problem or more context.')
+const coverage = ANGLES.map((angle, i) => ({ key: 'draft:' + (i + 1), status: drafts.some((d) => d.angle === angle) ? 'ok' : 'failed' }))
 if (drafts.length < ANGLES.length) log((ANGLES.length - drafts.length) + ' designer(s) failed')
 
 phase('Judge')
@@ -998,7 +1032,7 @@ const SCORES = { type: 'object', required: ['scores'], properties: { scores: { t
   } } } } }
 // Barrier on purpose: each judge compares every design. Anonymous ids and a rotated order per
 // judge keep position and angle names from steering the scores.
-const panels = (await parallel(Array.from({ length: JUDGES }, (_, j) => () => {
+const judged = await parallel(Array.from({ length: JUDGES }, (_, j) => () => {
   const rotated = drafts.map((_, i) => drafts[(i + j) % drafts.length])
   return safe([
     'You are judge ' + (j + 1) + ' of ' + JUDGES + '. Score every design from 0 to 10 overall and on each criterion. Check claims against the code where a score depends on them, and be specific about flaws. Score each design on its own merits; their order means nothing.',
@@ -1007,8 +1041,10 @@ const panels = (await parallel(Array.from({ length: JUDGES }, (_, j) => () => {
     data('Designs', rotated.map((d) => ({ design: d.id, title: d.title, summary: d.summary, design_text: d.design, risks: d.risks, steps: d.steps }))),
     READ_CODE,
   ].join('\\n\\n'), { label: 'judge:' + (j + 1), phase: 'Judge', schema: SCORES, agentType: 'plan' })
-}))).filter(Boolean)
-if (!panels.length) return { schemaVersion: 1, status: 'partial', problem: PROBLEM, final: null, designs: drafts.map((d) => ({ id: d.id, title: d.title, angle: d.angle, summary: d.summary })), error: 'Every judge failed; designs are returned unscored.' }
+}))
+judged.forEach((p, j) => coverage.push({ key: 'judge:' + (j + 1), status: p ? 'ok' : 'failed' }))
+const panels = judged.filter(Boolean)
+if (!panels.length) return { schemaVersion: 1, status: 'partial', problem: PROBLEM, final: null, coverage, designs: drafts.map((d) => ({ id: d.id, title: d.title, angle: d.angle, summary: d.summary })), error: 'Every judge failed; designs are returned unscored.' }
 
 const totals = stableSort(drafts.map((d) => {
   const scores = panels.map((p) => p.scores.find((s) => s.design === d.id)).filter(Boolean)
@@ -1033,10 +1069,12 @@ let redTeam = []
 if (final && K.red) {
   phase('Red team')
   const LENSES = ['failure modes, concurrency and data loss', 'fit with the existing code, migrations and compatibility']
-  redTeam = (await parallel(LENSES.slice(0, K.red).map((lens, i) => () => safe([
+  const attacks = await parallel(LENSES.slice(0, K.red).map((lens, i) => () => safe([
     'Attack this final design through one lens: ' + lens + '. Check each flaw against the code and give evidence; return an empty list if it holds up.',
     BRIEF, data('Final design', final), READ_CODE,
-  ].join('\\n\\n'), { label: 'red-team:' + (i + 1), phase: 'Red team', schema: ATTACK, agentType: 'verification' })))).filter(Boolean).flatMap((r) => r.flaws)
+  ].join('\\n\\n'), { label: 'red-team:' + (i + 1), phase: 'Red team', schema: ATTACK, agentType: 'verification' })))
+  attacks.forEach((a, i) => coverage.push({ key: 'red-team:' + (i + 1), status: a ? 'ok' : 'failed' }))
+  redTeam = attacks.filter(Boolean).flatMap((r) => r.flaws)
   if (redTeam.some((f) => f.severity === 'critical' || f.severity === 'high')) {
     const revised = await safe([
       'Revise the final design to address the serious flaws the red team found; keep everything that was not challenged.',
@@ -1046,13 +1084,15 @@ if (final && K.red) {
   }
 }
 
+if (!final) coverage.push({ key: 'synthesize', status: 'failed' })
 return {
   schemaVersion: 1,
-  status: final ? 'complete' : 'partial',
+  status: final && coverage.every((c) => c.status === 'ok') ? 'complete' : 'partial',
   problem: PROBLEM,
   final,
   ranking: totals.map((t) => ({ id: t.id, title: t.title, mean: t.mean, judged: t.judged })),
   redTeam,
+  coverage,
   designs: drafts.map((d) => ({ id: d.id, title: d.title, angle: d.angle, summary: d.summary })),
   stats: { size: SIZE, designers: ANGLES.length, designs: drafts.length, judges: panels.length },
 }
@@ -1188,9 +1228,11 @@ const results = await parallel(items.map((c) => () => parallel(Array.from({ leng
   .then((verdicts) => ({ ...c, ...tally(verdicts, VOTES, 'holds', 'refuted'), reasons: verdicts.filter(Boolean).map((x) => ({ verdict: x.verdict, method: x.method, reason: clean(x.reason, 500) })) }))))
 const done = results.filter(Boolean)
 const by = (status) => done.filter((r) => r.status === status)
+const coverage = done.filter((r) => r.missing > 0).map((r) => ({ key: 'verify:' + r.id, status: 'failed', missingVotes: r.missing }))
 return {
   schemaVersion: 1,
-  status: done.length === items.length && !done.some((r) => r.why === 'missing votes') ? 'complete' : 'partial',
+  status: done.length === items.length && !coverage.length ? 'complete' : 'partial',
+  coverage,
   confirmed: by('confirmed'), refuted: by('refuted'), unverified: by('unverified'),
   stats: { size: SIZE, claims: items.length, votesPerClaim: VOTES, confirmed: by('confirmed').length, refuted: by('refuted').length, unverified: by('unverified').length },
 }

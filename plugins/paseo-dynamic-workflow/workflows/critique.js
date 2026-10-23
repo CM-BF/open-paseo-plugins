@@ -56,7 +56,7 @@ const critiques = await parallel(LENSES.map((lens, i) => () => agent([
 ].filter(Boolean).join('\n\n'), { label: 'critic:' + (i + 1), phase: 'Critique', schema: CRITIQUE })))
 const coverage = critiques.map((c, i) => ({ lens: clean(LENSES[i], 80), status: c ? 'ok' : 'failed' }))
 const items = []
-critiques.forEach((c, i) => { if (c) c.mustChange.forEach((m) => items.push({ id: 'M' + (items.length + 1), lens: i + 1, ...m })) })
+critiques.forEach((c, i) => { if (c) c.mustChange.forEach((m) => items.push({ item: m.item, why: m.why, proposal: m.proposal, evidence: m.evidence, id: 'M' + (items.length + 1), lens: i + 1 })) })
 log(items.length + ' must-change item(s) from ' + critiques.filter(Boolean).length + ' critic(s)')
 
 phase('Verify')
@@ -68,6 +68,7 @@ const checked = await parallel(items.map((m) => () => parallel(Array.from({ leng
 ].join('\n\n'), { label: 'check:' + m.id + ':' + (v + 1), phase: 'Verify', schema: CHECK, agentType: 'verification', timeoutMinutes: 40 })))
   .then((votes) => ({ ...m, ...tally(votes, VOTES, 'holds', 'refuted'), reasons: votes.filter(Boolean).map((x) => clean(x.reason, 400)) }))))
 const verified = checked.filter(Boolean)
+verified.filter((m) => m.missing > 0).forEach((m) => coverage.push({ lens: 'check:' + m.id, status: 'failed', missingVotes: m.missing }))
 
 phase('Revise')
 const revision = await safe([

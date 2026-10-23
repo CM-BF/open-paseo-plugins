@@ -1,7 +1,7 @@
 export const meta = {
   name: 'design-panel',
   description: 'Judge panel for a design or plan: independent designs from different angles, scored by judges who see them anonymized and in rotated order, then one synthesis built on the winner with the best ideas of the others grafted in.',
-  whenToUse: 'The user wants a design, architecture, migration plan or approach chosen carefully when several reasonable solutions exist. Scout the relevant code first and pass what you found as context. To review an existing draft instead, use critique. args: the problem as a string, or { problem, context?, angles?, criteria?, judges?, size? }. Size small is about 5 agents, medium 7, large 10, unrestricted 13.',
+  whenToUse: 'The user wants a design, architecture, migration plan or approach chosen carefully when several reasonable solutions exist. Scout the relevant code first and pass what you found as context. To review an existing draft instead, use critique. args: the problem as a string, or { problem, context?, angles?, criteria?, judges?, size? }. Roughly: small 5 agents, medium 7, large 11, unrestricted 14.',
   phases: [
     { title: 'Draft', detail: 'one independent design per angle' },
     { title: 'Judge', detail: 'each judge scores every design' },
@@ -54,6 +54,7 @@ const drafts = (await parallel(ANGLES.map((angle, i) => () => agent([
   .map((d, i) => (d ? { ...d, angle: ANGLES[i] } : null)).filter(Boolean)
   .map((d, i) => ({ ...d, id: LETTERS[i] }))
 if (!drafts.length) throw new Error('Every designer failed; retry with a narrower problem or more context.')
+const coverage = ANGLES.map((angle, i) => ({ key: 'draft:' + (i + 1), status: drafts.some((d) => d.angle === angle) ? 'ok' : 'failed' }))
 if (drafts.length < ANGLES.length) log((ANGLES.length - drafts.length) + ' designer(s) failed')
 
 phase('Judge')
@@ -66,7 +67,7 @@ const SCORES = { type: 'object', required: ['scores'], properties: { scores: { t
   } } } } }
 // Barrier on purpose: each judge compares every design. Anonymous ids and a rotated order per
 // judge keep position and angle names from steering the scores.
-const panels = (await parallel(Array.from({ length: JUDGES }, (_, j) => () => {
+const judged = await parallel(Array.from({ length: JUDGES }, (_, j) => () => {
   const rotated = drafts.map((_, i) => drafts[(i + j) % drafts.length])
   return safe([
     'You are judge ' + (j + 1) + ' of ' + JUDGES + '. Score every design from 0 to 10 overall and on each criterion. Check claims against the code where a score depends on them, and be specific about flaws. Score each design on its own merits; their order means nothing.',
@@ -75,8 +76,10 @@ const panels = (await parallel(Array.from({ length: JUDGES }, (_, j) => () => {
     data('Designs', rotated.map((d) => ({ design: d.id, title: d.title, summary: d.summary, design_text: d.design, risks: d.risks, steps: d.steps }))),
     READ_CODE,
   ].join('\n\n'), { label: 'judge:' + (j + 1), phase: 'Judge', schema: SCORES, agentType: 'plan' })
-}))).filter(Boolean)
-if (!panels.length) return { schemaVersion: 1, status: 'partial', problem: PROBLEM, final: null, designs: drafts.map((d) => ({ id: d.id, title: d.title, angle: d.angle, summary: d.summary })), error: 'Every judge failed; designs are returned unscored.' }
+}))
+judged.forEach((p, j) => coverage.push({ key: 'judge:' + (j + 1), status: p ? 'ok' : 'failed' }))
+const panels = judged.filter(Boolean)
+if (!panels.length) return { schemaVersion: 1, status: 'partial', problem: PROBLEM, final: null, coverage, designs: drafts.map((d) => ({ id: d.id, title: d.title, angle: d.angle, summary: d.summary })), error: 'Every judge failed; designs are returned unscored.' }
 
 const totals = stableSort(drafts.map((d) => {
   const scores = panels.map((p) => p.scores.find((s) => s.design === d.id)).filter(Boolean)
@@ -101,10 +104,12 @@ let redTeam = []
 if (final && K.red) {
   phase('Red team')
   const LENSES = ['failure modes, concurrency and data loss', 'fit with the existing code, migrations and compatibility']
-  redTeam = (await parallel(LENSES.slice(0, K.red).map((lens, i) => () => safe([
+  const attacks = await parallel(LENSES.slice(0, K.red).map((lens, i) => () => safe([
     'Attack this final design through one lens: ' + lens + '. Check each flaw against the code and give evidence; return an empty list if it holds up.',
     BRIEF, data('Final design', final), READ_CODE,
-  ].join('\n\n'), { label: 'red-team:' + (i + 1), phase: 'Red team', schema: ATTACK, agentType: 'verification' })))).filter(Boolean).flatMap((r) => r.flaws)
+  ].join('\n\n'), { label: 'red-team:' + (i + 1), phase: 'Red team', schema: ATTACK, agentType: 'verification' })))
+  attacks.forEach((a, i) => coverage.push({ key: 'red-team:' + (i + 1), status: a ? 'ok' : 'failed' }))
+  redTeam = attacks.filter(Boolean).flatMap((r) => r.flaws)
   if (redTeam.some((f) => f.severity === 'critical' || f.severity === 'high')) {
     const revised = await safe([
       'Revise the final design to address the serious flaws the red team found; keep everything that was not challenged.',
@@ -114,13 +119,15 @@ if (final && K.red) {
   }
 }
 
+if (!final) coverage.push({ key: 'synthesize', status: 'failed' })
 return {
   schemaVersion: 1,
-  status: final ? 'complete' : 'partial',
+  status: final && coverage.every((c) => c.status === 'ok') ? 'complete' : 'partial',
   problem: PROBLEM,
   final,
   ranking: totals.map((t) => ({ id: t.id, title: t.title, mean: t.mean, judged: t.judged })),
   redTeam,
+  coverage,
   designs: drafts.map((d) => ({ id: d.id, title: d.title, angle: d.angle, summary: d.summary })),
   stats: { size: SIZE, designers: ANGLES.length, designs: drafts.length, judges: panels.length },
 }

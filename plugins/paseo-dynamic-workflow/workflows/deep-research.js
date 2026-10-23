@@ -1,7 +1,7 @@
 export const meta = {
   name: 'deep-research',
   description: 'Multi-source research: probe the available search tools, split the question into angles, read and extract checkable claims from each new source, verify the important claims with independent skeptics, fill gaps, and synthesize a cited report.',
-  whenToUse: 'The user wants a deep, fact-checked, multi-source answer from web pages, documents or named local files and repositories (to map a codebase, write an Understand workflow instead). If the question is underspecified (no budget, region, version or use case), ask two or three clarifying questions first and fold the answers into the question. args: the question as a string, or { question, sources?: [urls or absolute paths], size?, angles?, maxSources?, claims?, votes?, gapRounds? }. Size small is about 15 agents, medium 40, large 90, unrestricted 150+ (the default under Ultracode). Claude children may ask permission for web search.',
+  whenToUse: 'The user wants a deep, fact-checked, multi-source answer from web pages, documents or named local files and repositories (to map a codebase, write an Understand workflow instead). If the question is underspecified (no budget, region, version or use case), ask two or three clarifying questions first and fold the answers into the question. args: the question as a string, or { question, sources?: [urls or absolute paths], size?, angles?, maxSources?, claims?, votes?, gapRounds? }. Roughly: small 25 agents, medium 70, large 110, unrestricted 200+ (the default under Ultracode); built-in sizes are depth levels, not the agent counts of the size guideline. Claude children may ask permission for web search and fetch.',
   phases: [
     { title: 'Scope', detail: 'probe search and fetch, split the question into angles' },
     { title: 'Search', detail: 'one searcher per angle' },
@@ -68,7 +68,12 @@ const REPORT = { type: 'object', required: ['answer', 'findings', 'caveats'], pr
 } }
 const NO_WRITES = 'Do not modify files, commit or install anything. Scratch files go in a fresh `mktemp -d` directory that you delete before you answer.'
 const rank = { high: 0, medium: 1, low: 2, central: 0, supporting: 1, side: 2, primary: 0, secondary: 1, opinion: 2, forum: 3, unusable: 4 }
-const urlKey = (url) => String(url).trim().toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/^www\./, '').replace(/[?#].*$/, '').replace(/\/+$/, '')
+// The same page once, but distinct pages that differ only in their query (?id=1, ?v=abc) stay distinct.
+const urlKey = (url) => {
+  const [base, query = ''] = String(url).trim().toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/^www\./, '').replace(/#.*$/, '').split('?')
+  const kept = query.split('&').filter((pair) => pair && !/^(utm_[a-z]+|ref|fbclid|gclid|source)=/.test(pair)).sort().join('&')
+  return base.replace(/\/+$/, '') + (kept ? '?' + kept : '')
+}
 const hostOf = (url) => { const m = String(url).match(/^[a-z]+:\/\/([a-z0-9.-]+)(?::\d+)?(?:[/?#]|$)/i); return m ? m[1].toLowerCase().slice(0, 40) : 'local' }
 const claimKey = (claim) => String(claim).toLowerCase().replace(/[^\p{L}\p{N} ]+/gu, ' ').split(/\s+/).filter(Boolean).slice(0, 12).join(' ')
 const coverage = []
@@ -81,15 +86,17 @@ const scope = await safe([
   NO_WRITES,
 ].join('\n\n'), { label: 'scope', phase: 'Scope', schema: SCOPE })
 if (!scope) throw new Error('The scope agent failed, so the run has no angles; retry or pass a narrower question.')
-const webOk = scope.tools.search === 'works'
+// Web angles need both: a search whose results cannot be opened yields no claims.
+const webOk = scope.tools.search === 'works' && scope.tools.fetch === 'works'
+const webState = scope.tools.search !== 'works' ? 'search is ' + scope.tools.search : 'fetch is ' + scope.tools.fetch
 let angles = scope.angles.slice(0, ANGLES).map((a, i) => ({ id: 'A' + (i + 1), label: clean(a.label, 60), query: clean(a.query, 400), kind: a.kind, why: clean(a.why, 300) }))
 if (!webOk) {
   const dropped = angles.filter((a) => a.kind === 'web').length
   angles = angles.filter((a) => a.kind === 'local')
-  if (dropped) log('Web search is ' + scope.tools.search + ': ' + dropped + ' web angle(s) dropped. ' + clean(scope.tools.note, 300))
+  if (dropped) log('Web ' + webState + ': ' + dropped + ' web angle(s) dropped. ' + clean(scope.tools.note, 300))
   if (!angles.length && !GIVEN.length) {
     return { schemaVersion: 1, status: 'blocked', question: QUESTION, answer: null,
-      remediation: 'Child agents cannot search the web (' + scope.tools.search + '). Allow web search for the provider (Claude: approve WebSearch; Codex: enable web_search), or pass local paths or URLs as args.sources, then rerun.',
+      remediation: 'Child agents cannot use the web (' + webState + '). Allow web search and fetch for the provider (Claude: approve WebSearch and WebFetch; Codex: enable web_search), or pass local paths as args.sources, then rerun.',
       tools: scope.tools }
   }
 }
@@ -163,7 +170,7 @@ await explore(angles, 0)
 let nextClaim = 1
 const claims = []
 const seenClaims = new Set()
-async function verifyNew() {
+async function verifyNew(round) {
   const pool = []
   for (const s of stableSort(sources, (x) => [x.id.length, x.id])) {
     for (const c of s.claims || []) {
@@ -175,8 +182,10 @@ async function verifyNew() {
   }
   // Rank every new claim together, in a fixed order, before paying for the votes.
   const ranked = stableSort(pool, (c) => [rank[c.weight] ?? 3, rank[c.quality] ?? 5, c.url, c.claim])
-  const room = Math.max(0, MAX_CLAIMS - claims.length)
-  if (ranked.length > room) log((ranked.length - room) + ' lower-ranked claim(s) not verified (cap ' + MAX_CLAIMS + ')')
+  // Round 0 may use most of the cap; each gap round keeps an equal share, so gap sources get checked.
+  const reserve = GAP_ROUNDS ? Math.floor(MAX_CLAIMS / (GAP_ROUNDS + 2)) : 0
+  const room = Math.max(0, (round === 0 ? MAX_CLAIMS - reserve * GAP_ROUNDS : MAX_CLAIMS - reserve * (GAP_ROUNDS - round)) - claims.length)
+  if (ranked.length > room) log((ranked.length - room) + ' lower-ranked claim(s) not verified (round ' + round + ' budget; cap ' + MAX_CLAIMS + ')')
   const batch = ranked.slice(0, room).map((c) => ({ id: 'C' + nextClaim++, ...c }))
   await parallel(batch.map((c) => () => parallel(Array.from({ length: VOTES }, (_, v) => () => agent([
     'You are skeptic ' + (v + 1) + ' of ' + VOTES + '. Try to show that this claim does not hold: check that the quoted passage really supports it, look for contradicting or more recent evidence, and judge whether the source is strong enough for a claim this strong.',
@@ -190,7 +199,7 @@ async function verifyNew() {
 }
 
 phase('Verify')
-await verifyNew()
+await verifyNew(0)
 const count = (status) => claims.filter((c) => c.status === status).length
 log('Verified: ' + count('confirmed') + ' confirmed, ' + count('refuted') + ' refuted, ' + count('unverified') + ' unverified')
 
@@ -212,7 +221,7 @@ for (let r = 1; r <= GAP_ROUNDS; r++) {
   const verifiedBefore = claims.length
   angles = angles.concat(more)
   await explore(more, r)
-  await verifyNew()
+  await verifyNew(r)
   log('Gap round ' + r + ': ' + more.length + ' angle(s), ' + (sources.length - before) + ' source(s), ' + (claims.length - verifiedBefore) + ' claim(s) verified')
   if (sources.length === before) break
 }
@@ -228,9 +237,15 @@ const tail = {
   stats: { size: SIZE, angles: angles.length, sources: sources.length, claimsVerified: claims.length, confirmed: confirmed.length, refuted: count('refuted'), unverified: count('unverified') },
 }
 if (!confirmed.length) {
-  const infra = count('unverified') > 0 && count('refuted') === 0
-  return { schemaVersion: 1, status: infra ? 'inconclusive' : 'complete', question: QUESTION,
-    answer: infra ? 'No claim could be verified (verifiers failed or could not check). This is a tooling problem, not a finding; see coverage and tools, then retry.' : 'No claim survived verification; the question stays open.',
+  // "Nothing survived" is a finding only when claims were actually refuted on the merits and
+  // nothing failed along the way; otherwise the run could not answer.
+  const refutedOnly = claims.length > 0 && count('refuted') === claims.length && !partial
+  return { schemaVersion: 1, status: refutedOnly ? 'complete' : 'inconclusive', question: QUESTION,
+    answer: refutedOnly
+      ? 'Every checked claim was refuted; the question stays open.'
+      : claims.length === 0
+        ? 'No claim was extracted (' + (sources.length ? 'the sources yielded none' : 'no source could be searched or read') + '). This is a tooling or coverage problem, not a finding; see coverage and tools, then retry.'
+        : 'No claim could be confirmed, and some could not be checked (verifiers failed or were blocked). This is not a finding; see coverage and tools, then retry.',
     ...tail }
 }
 const report = await safe([

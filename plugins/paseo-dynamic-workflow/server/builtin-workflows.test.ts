@@ -14,16 +14,36 @@ afterEach(async () => {
   for (const state of states.splice(0)) await cleanup(state);
 });
 
-type Answer = (task: AgentTask) => AgentOutcome;
+type Answer = (task: AgentTask) => AgentOutcome | Promise<AgentOutcome>;
 const failed: AgentOutcome = { ok: false, error: "provider error", skipped: false, worktree: null };
 const thrown: AgentOutcome = { ok: false, error: "schema repair exhausted", skipped: false, throws: true, worktree: null };
 
-/** Every fake answer must match the schema its agent was given, like a real child's. */
+/**
+ * Every fake answer must match the schema its agent was given, like a real child's. The engine
+ * turns a throwing agent into a failed call, so problems are collected and asserted after the run.
+ */
+const problems: string[] = [];
+afterEach(() => {
+  const found = problems.splice(0);
+  expect(found).toEqual([]);
+});
 function checked(answer: Answer): Answer {
   return (task) => {
-    const outcome = answer(task);
-    if (outcome.ok && task.opts.schema) expect(task.opts.schema.validate(outcome.value), task.label).toEqual([]);
-    return outcome;
+    let outcome: AgentOutcome | Promise<AgentOutcome>;
+    try {
+      outcome = answer(task);
+    } catch (error) {
+      problems.push(`${task.label}: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+    const check = (value: AgentOutcome) => {
+      if (value.ok && task.opts.schema) {
+        const errors = task.opts.schema.validate(value.value);
+        if (errors.length) problems.push(`${task.label}: answer does not match its schema: ${errors.join("; ")}`);
+      }
+      return value;
+    };
+    return outcome instanceof Promise ? (outcome as Promise<AgentOutcome>).then(check) : check(outcome);
   };
 }
 
@@ -120,29 +140,42 @@ describe("deep-review", () => {
     expect(out.plan).toBeNull();
   });
 
-  it("rechecks earlier findings first and reports fixed, still present or unverified", async () => {
+  it("rechecks earlier findings first, reports fixed, still present or unverified, and plans what is still present", async () => {
     const { result } = await run(builtin("deep-review"), (task) => {
       if (task.label === "scope") return scope;
       if (task.label.startsWith("recheck:R1")) return ok({ verdict: "fixed", reason: "guarded now" });
       if (task.label.startsWith("recheck:R2")) return ok({ verdict: "still_present", reason: "same path" });
       if (task.label.startsWith("recheck:R3")) return ok({ verdict: task.label.endsWith(":fixed") ? "fixed" : "cannot_check", reason: "?" });
       if (task.label.startsWith("review:")) return ok({ findings: [] });
+      if (task.label === "plan") return ok({ summary: "redo R2", fixes: [] });
       throw new Error(`unexpected agent ${task.label}`);
     }, { target: "x", size: "small", recheck: [1, 2, 3].map((n) => ({ title: `old ${n}`, file: "a.ts", scenario: "s" })) });
-    expect((result as any).recheck.map((r: any) => [r.id, r.status])).toEqual([["R1", "confirmed"], ["R2", "refuted"], ["R3", "unverified"]]);
+    expect((result as any).recheck.map((r: any) => [r.id, r.status])).toEqual([["R1", "fixed"], ["R2", "still_present"], ["R3", "unverified"]]);
+    expect((result as any).plan).toEqual({ summary: "redo R2", fixes: [] });
+    expect((result as any).status).toBe("partial");
   });
 
-  it("is deterministic under resume even when agents finish in another order", async () => {
-    const answer: Answer = (task) => {
+  it("builds the same prompts and result whichever reviewer finishes first, and resumes fully cached", async () => {
+    const answer = (slow: string) => async (task: AgentTask) => {
+      if (task.label === slow) await new Promise((resolve) => setTimeout(resolve, 40));
       if (task.label === "scope") return scope;
       if (task.label === "review:correctness") return ok({ findings: [{ title: "A bug", file: "a.ts", line: 3, severity: "high", scenario: "s" }] });
-      if (task.label === "review:tests") return ok({ findings: [{ title: "A bug", file: "a.ts", line: 4, severity: "high", scenario: "dup" }] });
+      if (task.label === "review:tests") return ok({ findings: [{ title: "bug a", file: "a.ts", line: 4, severity: "high", scenario: "dup" }] });
       if (task.label.startsWith("review:")) return ok({ findings: [] });
       if (task.label.startsWith("verify:")) return verdict("real");
       if (task.label === "plan") return ok({ summary: "s", fixes: [] });
       return ok({ tasks: [] });
     };
-    const first = await run(builtin("deep-review"), answer, { target: "x", size: "medium" });
+    const runOrdered = async (slow: string, options: RunOptions = {}) => {
+      const runner = new FakeRunner(checked(answer(slow)));
+      const outcome = await runScript(builtin("deep-review"), runner, { args: { target: "x", size: "medium" }, concurrency: 4, ...options });
+      states.push(outcome.state);
+      return { ...outcome, prompts: runner.tasks.filter((t) => !t.label.startsWith("review:") && t.label !== "scope").map((t) => [t.label, t.prompt]).sort() };
+    };
+    const first = await runOrdered("review:correctness");
+    const second = await runOrdered("review:tests");
+    expect(second.prompts).toEqual(first.prompts);
+    expect(second.result).toEqual(first.result);
     const cache = await ResumeCache.load(runPaths(first.state, first.record.runId));
     const again = await run(builtin("deep-review"), () => failed, { target: "x", size: "medium" }, { cache, state: first.state });
     expect(again.runner.tasks).toHaveLength(0);
@@ -206,7 +239,7 @@ describe("deep-research", () => {
       if (task.label.startsWith("gaps:")) return ok({ angles: [] });
       return failed;
     }, "question");
-    expect(result).toMatchObject({ status: "inconclusive", answer: expect.stringMatching(/tooling problem/) });
+    expect(result).toMatchObject({ status: "inconclusive", answer: expect.stringMatching(/not a finding/) });
   });
 });
 
