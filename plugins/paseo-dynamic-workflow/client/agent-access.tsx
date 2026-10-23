@@ -69,7 +69,7 @@ export function AgentAccess({ agentId, styles }: { agentId: string; styles: Styl
       {value && !value.isWorkflowChild ? (
         <Text style={styles.mutedText}>
           {mcp
-            ? "An Ultracode change reaches the agent at once as a short message. Reload the agent from its menu when convenient so its tool list and instructions match too."
+            ? "After enabling workflow tools, use Reload agent now while the agent is idle; Codex needs it to discover the tools. An Ultracode change also reaches the agent as a short message. Reload updates the tool list and instructions."
             : value.enabled
               ? mcpFamily
                 ? "This agent predates workflow tool setup; use the command below, or create a new agent for MCP tools."

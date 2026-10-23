@@ -23,7 +23,7 @@ Each of these is one workflow. Large tasks chain several across turns: read each
 Only after the user opted in to multi-agent work, in one of these ways:
 
 - the user's message contains the keyword `ultracode` (for that request, including the later phases it needs);
-- Ultracode is on for you: the workflow tool description, the first line of this reference, a launch result or a run notification says so (see Ultracode);
+- Ultracode is on for you: the plugin's mode-change message, workflow tool description, first line of this reference, launch result or run notification says so (see Ultracode);
 - the user asked for it directly, in any language: "use a workflow", "run this as a workflow", "split this across agents", "开个workflow";
 - a skill or command the user ran tells you to run one;
 - the user asked for a named workflow.
@@ -130,7 +130,7 @@ Children are ordinary Paseo agents. They appear in your Subagents track while th
 
 **`budget`** is `{ total, spent(), remaining() }`. `total` is the token target from the user's message ("+500k", "+2m", "spend 1M tokens"), or `null`; the shorthand `+500k` is recognized only at the start or end of the message. `spent()` counts the output tokens of this run's agents; once it reaches `total`, new agents stop starting, including queued calls. The target is per run: every launch reads it again from the user's latest message, your own turn's tokens are not counted, and several runs in a row each get the full target. Enforcement depends on reported usage: missing or underreported provider tokens make the count incomplete, and agents already running may exceed the target. With no target `remaining()` is `Infinity`, so guard budget loops on `budget.total`.
 
-**`guidance`** is `{ ultracode, size }`, frozen for the run: your Ultracode mode and the size guideline when the run was launched (a resume keeps the first run's values, unless the user has since turned Ultracode off). `size` is the guideline even while Ultracode is on. Scale a script with it instead of hard-coding counts; the built-ins treat `ultracode: true` as size `unrestricted`.
+**`guidance`** is `{ ultracode, size }`, frozen for the run: your Ultracode mode and the size guideline when the run was launched (a resume keeps the first run's values, unless the user has since turned Ultracode off). `size` is the guideline even while Ultracode is on. Scale a script with it instead of hard-coding counts; built-ins without an explicit `args.size` use `unrestricted` under Ultracode. Leave `size` unset unless the user asked for a lighter run.
 
 `setTimeout()` and `clearTimeout()` are available; pending timers are cleared when the run ends.
 

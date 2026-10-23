@@ -292,3 +292,12 @@ Fixture：`~/plugin-test-2026-10-22-dwf-optin`，project `prj_36afb70a124afaaa`�
 - Claude 是否在 list_changed 后刷新已加载的工具描述、instructions 是否经 Paseo 传给 Claude：未实测。
 - 子 agent 拿到哪些 MCP 服务器（REFERENCE 的描述是推断）：未实测。
 - shim 首次读取 guidance.json 失败时会在该进程内一直用默认值（unrestricted）。
+
+### 接续：审查收敛与完成验收（2026-10-22）
+
+Claude 额度耗尽后从已完成的记录接续，没有重跑原审查和 fixture。接续基线 `e55ca19`：typecheck、28 文件 / 225 测试通过。原实现审查的最终任务输出 `w3634wt08.output` 已完成核实和完整性检查，198 次 agent 调用（171 done、27 额度失败），只有最后汇总失败；零票项不当作已核实结论。遗留项分成通知/模式、内置脚本、reload 安全三组，用针对性回归重现后修复。
+
+- Reload CLI：采用 daemon 提供的 `PASEO_CLI`，保留 `PASEO_BIN` 兼容；20 秒 deadline 比 30 秒 RPC 短，超时强制结束子进程并报告结果未知，失败显示 CLI stderr 的原因。三条针对性测试先红后绿（包括隔离的假 CLI 超时）。
+- 面板明确启用工具后需 idle Reload，Codex 依赖它发现新工具；REFERENCE 补模式消息来源和显式 `args.size` 优先级。
+- 完成态 Web UI 已核实，桌面与 420px 窄屏截图：`docs/verification/2026-10-22-ultracode-completed-{desktop,compact}.png`。
+- 待完成：其余审查修复、最终部署/回归、fixture 清理、完整记录更新。
