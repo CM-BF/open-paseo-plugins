@@ -301,3 +301,10 @@ Claude 额度耗尽后从已完成的记录接续，没有重跑原审查和 fix
 - 面板明确启用工具后需 idle Reload，Codex 依赖它发现新工具；REFERENCE 补模式消息来源和显式 `args.size` 优先级。
 - 完成态 Web UI 已核实，桌面与 420px 窄屏截图：`docs/verification/2026-10-22-ultracode-completed-{desktop,compact}.png`。
 - 待完成：其余审查修复、最终部署/回归、fixture 清理、完整记录更新。
+
+### 接续子任务：safe-reload 的目标与失败关闭（2026-10-22）
+
+- 严格解析 `--allow`；`--allow --dry-run` 等缺少 ID 的输入在调用 CLI 前退出，防止把 dry-run 选项吞成 ID 后真的 reload。
+- 优先使用 daemon 提供的 `PASEO_CLI`，兼容 `PASEO_BIN`，仅未指定时使用平台默认 CLI；指定的 CLI 无法执行时不回退。脚本仅支持本机 home，拒绝 `PASEO_HOST`。按已安装 CLI 的规则展开 `~`、默认值和相对 home；先读取 daemon status，要求 home 与所选目录实际相同、running/reachable、listen/serverId 存在，再扫描该 home。所有 CLI 调用显式传递同一 `--home`，实际 reload 前复核 home/listen/serverId，并把最终 run 扫描放在 mutation 前。
+- 缺少 runs 目录、缺少/损坏 run.json、未知版本/状态、run ID 与目录不符、缺少 owner 均阻止 reload，不再静默跳过。仍存在扫描与 reload 之间新建 run 的短窗口，不能宣称原子安全。
+- 验证：新建 `server/safe-reload.test.ts`，原实现 26 项中 21 项为红；修复后扩展为 30 项全部通过，`npm run typecheck`、目标文件 `git diff --check` 通过。测试仅执行临时假 CLI，覆盖精确 argv、带空格和 shell 字符的 home、CLI 优先级、tilde/default/relative home、远程环境目标、daemon 更换与无效状态、活动阻塞、dry-run、损坏/缺失记录。未 reload 或修改真实 daemon。
