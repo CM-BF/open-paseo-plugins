@@ -51,3 +51,26 @@ it("rejects state mutations after shutdown begins", async () => {
   expect(store.enabled("a")).toBe(false);
   await store.idle();
 });
+
+it("keeps ultracode inside the version 1 format, implies access, and clears it with access", async () => {
+  const { file, store } = await fixture();
+  await store.load();
+  await store.update("a", { ultracode: true });
+  expect([store.enabled("a"), store.ultracode("a")]).toEqual([true, true]);
+  await store.set("b", true);
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ version: 1, enabledAgentIds: ["a", "b"], ultracodeAgentIds: ["a"] });
+  await store.update("a", { ultracode: false });
+  expect([store.enabled("a"), store.ultracode("a")]).toEqual([true, false]);
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ version: 1, enabledAgentIds: ["a", "b"] });
+  await store.update("b", { ultracode: true });
+  await store.set("b", false);
+  expect([store.enabled("b"), store.ultracode("b")]).toEqual([false, false]);
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ version: 1, enabledAgentIds: ["a"] });
+});
+
+it("ignores ultracode entries for agents that are not enabled", async () => {
+  const { file, store } = await fixture();
+  await writeFile(file, JSON.stringify({ version: 1, enabledAgentIds: ["a"], ultracodeAgentIds: ["a", "ghost"] }));
+  await store.load();
+  expect([store.ultracode("a"), store.ultracode("ghost"), store.enabled("ghost")]).toEqual([true, false, false]);
+});

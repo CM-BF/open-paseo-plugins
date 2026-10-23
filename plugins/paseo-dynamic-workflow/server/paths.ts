@@ -18,6 +18,8 @@ export interface StatePaths {
   socket: string;
   bindings: string;
   agentAccess: string;
+  /** Scale guidance for the MCP shim: { version: 1, workflowSize }. */
+  guidance: string;
   outbox: string;
   runs: string;
   bin: string;
@@ -37,6 +39,7 @@ export function statePaths(root: string): StatePaths {
     socket: join(root, "bridge.sock"),
     bindings: join(root, "bindings.json"),
     agentAccess: join(root, "agent-access.json"),
+    guidance: join(root, "guidance.json"),
     outbox: join(root, "outbox.json"),
     runs: join(root, "runs"),
     bin,

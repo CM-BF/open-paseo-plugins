@@ -26,7 +26,7 @@ async function fixture() {
   const access = new AgentAccessStore(accessFile);
   await access.load();
   const bindings = new BindingStore(join(dir, "bindings.json"));
-  const bridge = new Bridge({ service: { status, launch, stop, reference } as unknown as WorkflowService, bindings, access });
+  const bridge = new Bridge({ service: { status, launch, stop, reference } as unknown as WorkflowService, bindings, access, workflowSize: () => "medium" });
   const socketPath = join(dir, "bridge.sock");
   await bridge.start(socketPath);
   disposals.push(() => bridge.close());
@@ -70,7 +70,7 @@ it("parses status flags in either order and rejects unknown or misplaced argumen
 
 it("fails startup when its socket cannot listen", async () => {
   const f = await fixture();
-  const broken = new Bridge({ service: {} as WorkflowService, bindings: new BindingStore("unused"), access: f.access });
+  const broken = new Bridge({ service: {} as WorkflowService, bindings: new BindingStore("unused"), access: f.access, workflowSize: () => "medium" });
   await expect(broken.start(join(f.socketPath, "missing", "bridge.sock"))).rejects.toThrow();
   expect(broken.listening).toBe(false);
 });
@@ -127,7 +127,7 @@ it("keeps the caller's opt-in after the bridge and access store restart", async 
   await f.bridge.close();
   const access = new AgentAccessStore(f.accessFile);
   await access.load();
-  const restarted = new Bridge({ service: {} as WorkflowService, bindings: f.bindings, access });
+  const restarted = new Bridge({ service: {} as WorkflowService, bindings: f.bindings, access, workflowSize: () => "medium" });
   disposals.push(() => restarted.close());
   await restarted.start(f.socketPath);
   expect(JSON.parse((await post(f.socketPath, "{}", "list", { "x-dynamic-workflow-agent": "agent-a" })).body).tools).toHaveLength(4);

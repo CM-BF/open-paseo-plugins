@@ -12,7 +12,7 @@ import { defaultStateDir, statePaths } from "./paths";
 import { writeScripts } from "./scripts";
 import { transcriptEntries } from "./transcript";
 import { ServiceError, WorkflowService } from "./service";
-import { describeError, log, unref } from "./util";
+import { describeError, log, unref, writeAtomically } from "./util";
 import { compactRunDetail } from "./views";
 
 export interface ContributeOptions {
@@ -27,16 +27,33 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   const access = new AgentAccessStore(paths.agentAccess);
 
   let settings: Preferences = DEFAULT_PREFERENCES;
+  let stopping = false;
   const settingsHandle = server.registerSettings(preferences);
   const applySettings = (state: Awaited<ReturnType<typeof settingsHandle.read>>) => {
     settings = state.status === "ready" ? { ...DEFAULT_PREFERENCES, ...state.values } : DEFAULT_PREFERENCES;
     if (state.status !== "ready") log(`settings are invalid (${state.error}); using defaults`);
   };
-  const removeSettingsListener = settingsHandle.subscribe(applySettings);
-  void settingsHandle.read().then(applySettings, (error) => log(`could not read settings: ${describeError(error)}`));
+  // The MCP shim reads the size guideline from disk, so it also works while the bridge restarts.
+  let guidanceWritten: string | null = null;
+  let guidanceWrites: Promise<void> = Promise.resolve();
+  const writeGuidance = () => {
+    const size = settings.workflowSize;
+    guidanceWrites = guidanceWrites.then(async () => {
+      if (stopping || guidanceWritten === size) return;
+      await mkdir(paths.root, { recursive: true, mode: 0o700 });
+      await writeAtomically(paths.guidance, `${JSON.stringify({ version: 1, workflowSize: size })}\n`, 0o600);
+      guidanceWritten = size;
+    }).catch((error) => log(`could not write workflow guidance: ${describeError(error)}`));
+  };
+  const onSettings = (state: Awaited<ReturnType<typeof settingsHandle.read>>) => {
+    applySettings(state);
+    writeGuidance();
+  };
+  const removeSettingsListener = settingsHandle.subscribe(onSettings);
+  void settingsHandle.read().then(onSettings, (error) => log(`could not read settings: ${describeError(error)}`));
 
   const service = new WorkflowService({ paths, gate, settings: () => settings });
-  const bridge = new Bridge({ service, bindings, access });
+  const bridge = new Bridge({ service, bindings, access, workflowSize: () => settings.workflowSize });
   const capture = (context: { paseo: PaseoApi }) => {
     const wasReady = gate.ready;
     gate.capture(context.paseo);
@@ -48,7 +65,6 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   process.on("unhandledRejection", onRejection);
 
   let startup: "starting" | "ready" | "failed" = "starting";
-  let stopping = false;
   const started = (async () => {
     await mkdir(paths.root, { recursive: true, mode: 0o700 });
     await mkdir(paths.runs, { recursive: true, mode: 0o700 });
@@ -204,6 +220,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
         await service.dispose();
         await bindings.idle();
         await access.idle();
+        await guidanceWrites;
       })(),
       new Promise((resolve) => { timer = unref(setTimeout(resolve, 5000)) as unknown as ReturnType<typeof setTimeout>; }),
     ]); } finally {

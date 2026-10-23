@@ -1,18 +1,17 @@
-import { readdir, readFile, stat } from "node:fs/promises";
-import { cpus, homedir } from "node:os";
+import { readFile } from "node:fs/promises";
+import { cpus } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { CARD_KIND, CARD_VERSION, LABEL_RUN, RUN_ID_PATTERN } from "../shared/ids";
 import { NOTIFICATION_MARKER } from "../shared/notification";
 import type { RunDetail, RunSummary } from "../shared/run-types";
+import { sizeLabel, type ToolGuidance } from "../shared/guidance";
 import type { Preferences } from "../shared/settings";
 import { AgentRunner, type ParentContext } from "./agent-runner";
 import { parseBudgetDirective } from "./budget";
 import { RunEngine } from "./engine";
 import type { Gate, PaseoApi } from "./gate";
 import { Notifier } from "./notifier";
-import { paseoHome, runPaths, type StatePaths } from "./paths";
+import { runPaths, type StatePaths } from "./paths";
 import { REFERENCE } from "./reference";
 import { recoverChildren } from "./recovery";
 import {
@@ -27,9 +26,8 @@ import {
 } from "./run-store";
 import { parseWorkflowScript, ScriptError } from "./script-parse";
 import { describeError, log, nowIso, unref } from "./util";
+import { catalogText, findNamedWorkflow, isWorkflowName, listWorkflows, type NamedWorkflow, UnknownWorkflowError, workflowDirs } from "./workflow-catalog";
 import { cardData, notificationText, runDetail, runSummary, statusText } from "./views";
-
-const execFileAsync = promisify(execFile);
 
 export class ServiceError extends Error {
   constructor(
@@ -318,8 +316,17 @@ export class WorkflowService {
     return statusText(record, this.paths);
   }
 
-  reference(): string {
-    return REFERENCE;
+  /** The reference for one caller: its current guidance, the shared text, and the workflows it can name. */
+  async reference(callerId: string, guidance: ToolGuidance): Promise<string> {
+    let cwd: string | null = null;
+    try {
+      const caller = await (await this.gate.wait(5_000)).agents.ref(callerId).refresh();
+      cwd = caller?.agent.cwd ?? null;
+    } catch {
+      // Without the daemon the saved project workflows are unknown; built-ins still apply.
+    }
+    const dirs = cwd ? await workflowDirs(cwd) : [];
+    return [guidanceStatus(guidance), REFERENCE.trimEnd(), catalogText(await listWorkflows(dirs))].join("\n\n") + "\n";
   }
 
   async list(agentId: string | undefined, limit: number): Promise<RunSummary[]> {
@@ -511,22 +518,23 @@ export class WorkflowService {
     }
   }
 
-  private async findNamed(name: string, cwd: string): Promise<{ script: string; path: string }> {
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+  private async findNamed(name: string, cwd: string): Promise<NamedWorkflow> {
+    if (!isWorkflowName(name)) {
       throw new ServiceError("invalid_request", `"${name}" is not a workflow name (letters, digits, dot, dash and underscore).`);
     }
-    const dirs = await workflowDirs(cwd);
-    for (const dir of dirs) {
-      const path = join(dir, `${name}.js`);
-      const script = await readFile(path, "utf8").catch(() => null);
-      if (script !== null) return { script, path };
+    try {
+      return await findNamedWorkflow(name, await workflowDirs(cwd));
+    } catch (error) {
+      if (error instanceof UnknownWorkflowError) throw new ServiceError("unknown_workflow", error.message);
+      throw error;
     }
-    const available = await availableWorkflows(dirs);
-    throw new ServiceError(
-      "unknown_workflow",
-      `Workflow "${name}" not found. Looked in ${dirs.join(", ")}. Available: ${available.length ? available.join(", ") : "(none)"}`,
-    );
   }
+}
+
+function guidanceStatus(guidance: ToolGuidance): string {
+  return guidance.ultracode
+    ? "> Ultracode is ON for you: the user's opt-in to workflows is standing and thoroughness wins over cost. Follow the Ultracode section below."
+    : `> Ultracode is off for you. Workflow size guideline: ${sizeLabel(guidance.size)}. See "When you may launch one" and "Scale" below.`;
 }
 
 function concurrency(settings: Preferences): number {
@@ -554,31 +562,4 @@ async function waitUpTo(done: Promise<void>, ms: number): Promise<void> {
   } finally {
     if (timer) clearTimeout(timer);
   }
-}
-
-async function workflowDirs(cwd: string): Promise<string[]> {
-  const roots = [cwd];
-  try {
-    const { stdout } = await execFileAsync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { timeout: 5000 });
-    const top = stdout.trim();
-    if (top && top !== cwd) roots.push(top);
-  } catch {
-    // Not a git checkout.
-  }
-  const dirs: string[] = [];
-  for (const root of roots) dirs.push(join(root, ".paseo", "workflows"), join(root, ".claude", "workflows"));
-  dirs.push(join(paseoHome(), "workflows"), join(homedir(), ".claude", "workflows"));
-  return [...new Set(dirs)];
-}
-
-async function availableWorkflows(dirs: string[]): Promise<string[]> {
-  const names = new Set<string>();
-  for (const dir of dirs) {
-    const isDir = await stat(dir).then((entry) => entry.isDirectory(), () => false);
-    if (!isDir) continue;
-    for (const file of await readdir(dir).catch(() => [] as string[])) {
-      if (file.endsWith(".js")) names.add(file.slice(0, -3));
-    }
-  }
-  return [...names].sort();
 }

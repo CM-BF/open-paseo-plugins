@@ -1,5 +1,6 @@
 import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
+import { DEFAULT_WORKFLOW_SIZE, WORKFLOW_SIZES } from "./guidance";
 
 export const PreferencesSchema = z.object({
   /** Preapprove the workflow MCP tools (Claude, Codex; never OpenCode). */
@@ -12,6 +13,8 @@ export const PreferencesSchema = z.object({
   archiveFinishedAgents: z.boolean().default(true),
   /** Stop a child agent that runs longer than this. 0 means no limit. */
   agentTimeoutMinutes: z.number().int().min(0).max(24 * 60).default(0),
+  /** Size guideline the workflow tool states to agents without Ultracode (small 5, medium 10, large 50 agents). */
+  workflowSize: z.enum(WORKFLOW_SIZES).default(DEFAULT_WORKFLOW_SIZE),
 });
 export type Preferences = z.infer<typeof PreferencesSchema>;
 

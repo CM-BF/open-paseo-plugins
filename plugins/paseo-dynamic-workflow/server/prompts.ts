@@ -1,6 +1,8 @@
+import { SIZE_AGENTS, type ToolGuidance, type WorkflowSize } from "../shared/guidance";
+
 export const PROMPT_MARKER = "## Dynamic workflows (paseo-dynamic-workflow)";
 
-const OPT_IN = `Only launch one when the user explicitly opted into multi-agent orchestration: they asked in their own words ("use a workflow", "fan out agents", "orchestrate this with subagents"), invoked a skill or command that says to run one, or asked for a named workflow. A task that would merely benefit from parallelism does not count: describe what a workflow would do and roughly what it costs, and ask.`;
+const OPT_IN = `Launch one only when the user opted into multi-agent orchestration. Opt-in means one of: the user's message contains the keyword "ultracode" (that turn only); Ultracode is on for you (this tool's description or \`workflow_reference\` says so); the user asked in their own words ("use a workflow", "fan out agents", "orchestrate this with subagents"); the user invoked a skill or command that says to run one; or the user asked for a named workflow. A task that would merely benefit from parallelism does not count: describe what a workflow would do and roughly what it costs, and ask; mention that "use a workflow" or "ultracode" in a later message skips the ask.`;
 
 export function systemPromptMcp(): string {
   return `${PROMPT_MARKER}
@@ -14,6 +16,18 @@ export function systemPromptCli(cli: string): string {
 The \`${cli}\` command runs a JavaScript orchestration script in the background: \`agent()\`, \`parallel()\`, \`pipeline()\`, \`phase()\` and \`log()\` start and coordinate Paseo agents (any provider) and return their results to the script. ${OPT_IN}
 - Before writing a script, run \`${cli} reference\` once for the script API, patterns and resume.
 - Launch with \`${cli} run --file script.js [--args-json '{...}'] [--resume <runId>]\`, \`run --script-path <path>\` to iterate, or \`run --name <saved-workflow>\`. Resume inherits saved args unless overridden. It returns at once; a \`<task-notification>\` message from the plugin arrives when the run ends, so end your turn instead of waiting. \`${cli} status [runId]\` reports progress; \`${cli} stop <runId>\` stops a run.`;
+}
+
+/** Appended to the workflow tool description for an agent with Ultracode on. */
+export const ULTRACODE_NOTICE = `Ultracode is on for this agent: the user's opt-in is standing. Optimize for the most exhaustive, correct answer, not the fastest or cheapest; token cost is not a constraint and no size guideline applies. Run a workflow for every substantive task (solo only on conversational or trivial turns): decompose and cover in parallel, verify every finding or claim with several independent skeptics, add a completeness critic, loop until a round finds nothing new, then synthesize. For multi-phase work run one workflow per phase (understand, design, implement, review) and read each result before the next. See the Ultracode section of workflow_reference.`;
+
+export function sizeGuidelineText(size: WorkflowSize): string {
+  if (size === "unrestricted") return "Workflow size: unrestricted; no size guideline applies. Scale to the request, and when unsure lean toward thoroughness for research, review and audit work.";
+  return `Workflow size guideline: ${size}, keep workflows under ${SIZE_AGENTS[size]} agents. This is a guideline, not a hard limit: follow it unless the user's request calls for a different scale (an audit, a "be thorough", a token budget such as "+500k"). The user can change it in the plugin settings or turn on Ultracode for this agent.`;
+}
+
+export function guidanceText(guidance: ToolGuidance): string {
+  return guidance.ultracode ? ULTRACODE_NOTICE : sizeGuidelineText(guidance.size);
 }
 
 export function appendPrompt(existing: string | undefined, block: string): string {

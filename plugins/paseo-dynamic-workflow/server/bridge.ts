@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { unlink } from "node:fs/promises";
+import type { ToolGuidance, WorkflowSize } from "../shared/guidance";
 import { PLUGIN_VERSION } from "../shared/ids";
 import type { BindingStore } from "./bindings";
 import type { AgentAccessStore } from "./agent-access";
@@ -13,6 +14,8 @@ export interface BridgeOptions {
   service: WorkflowService;
   bindings: BindingStore;
   access: AgentAccessStore;
+  /** The size guideline from the plugin settings. */
+  workflowSize: () => WorkflowSize;
 }
 
 /**
@@ -63,6 +66,10 @@ export class Bridge {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
+  private guidance(agentId: string): ToolGuidance {
+    return { ultracode: this.options.access.ultracode(agentId), size: this.options.workflowSize() };
+  }
+
   private async callerId(request: IncomingMessage): Promise<string | null> {
     const nonce = header(request, "x-dynamic-workflow-binding");
     if (nonce) {
@@ -97,7 +104,7 @@ export class Bridge {
     const agentId = await this.callerId(request);
     try {
       if (match[1] === "list") {
-        send(response, 200, { tools: agentId && this.options.access.enabled(agentId) ? toolDefinitions() : [] });
+        send(response, 200, { tools: agentId && this.options.access.enabled(agentId) ? toolDefinitions(this.guidance(agentId)) : [] });
         return;
       }
       const text = await this.dispatch(match[1] ?? "", input, agentId);
@@ -143,9 +150,10 @@ export class Bridge {
         if (typeof input.runId !== "string" || !input.runId) throw new ServiceError("invalid_request", "runId is required");
         return service.stop(input.runId, { agentId: requireAgent() });
       }
-      case "workflow_reference":
-        requireEnabledAgent();
-        return service.reference();
+      case "workflow_reference": {
+        const id = requireEnabledAgent();
+        return service.reference(id, this.guidance(id));
+      }
       default:
         throw new ServiceError("not_found", `Unknown tool ${tool}`);
     }

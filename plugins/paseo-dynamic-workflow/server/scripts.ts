@@ -1,7 +1,8 @@
 import { chmod, mkdir, readFile } from "node:fs/promises";
 import { BINDING_ENV, MCP_SERVER, MCP_TOOL_NAMES, PLUGIN_VERSION, type McpToolName } from "../shared/ids";
 import type { StatePaths } from "./paths";
-import { REFERENCE_TOOL_DESCRIPTION, STATUS_TOOL_DESCRIPTION, STOP_TOOL_DESCRIPTION, WORKFLOW_TOOL_DESCRIPTION } from "./prompts";
+import { DEFAULT_WORKFLOW_SIZE, type ToolGuidance, WORKFLOW_SIZES } from "../shared/guidance";
+import { guidanceText, REFERENCE_TOOL_DESCRIPTION, sizeGuidelineText, STATUS_TOOL_DESCRIPTION, STOP_TOOL_DESCRIPTION, ULTRACODE_NOTICE, WORKFLOW_TOOL_DESCRIPTION } from "./prompts";
 import { REFERENCE } from "./reference";
 import { writeAtomically } from "./util";
 
@@ -56,10 +57,15 @@ exec "$node" "$DYNAMIC_WORKFLOW_HOME/lib/${script}" "$@"
 `;
 }
 
-export function toolDefinitions(): Array<{ name: McpToolName; description: string; inputSchema: unknown }> {
+/**
+ * The tools one enabled agent sees. Without guidance this is the base catalog the MCP shim
+ * embeds; the shim appends the same guidance text itself (see MCP_SOURCE).
+ */
+export function toolDefinitions(guidance?: ToolGuidance): Array<{ name: McpToolName; description: string; inputSchema: unknown }> {
+  const workflowDescription = guidance ? `${WORKFLOW_TOOL_DESCRIPTION}\n\n${guidanceText(guidance)}` : WORKFLOW_TOOL_DESCRIPTION;
   const schemas: Record<McpToolName, { description: string; inputSchema: unknown }> = {
     workflow: {
-      description: WORKFLOW_TOOL_DESCRIPTION,
+      description: workflowDescription,
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -76,7 +82,7 @@ export function toolDefinitions(): Array<{ name: McpToolName; description: strin
           },
           name: {
             type: "string",
-            description: "Name of a saved workflow (.paseo/workflows/<name>.js or .claude/workflows/<name>.js in the project, or under ~/.paseo or ~/.claude).",
+            description: "Name of a built-in workflow (deep-research, deep-review, design-panel) or a saved one (.paseo/workflows/<name>.js or .claude/workflows/<name>.js in the project, or under ~/.paseo or ~/.claude); workflow_reference lists them with their args.",
           },
           args: {
             description:
@@ -190,6 +196,9 @@ import { readFile } from 'node:fs/promises';
 const VERSION = '__PLUGIN_VERSION__';
 const SERVER_NAME = '__SERVER_NAME__';
 const TOOLS = __TOOLS_JSON__;
+const ULTRACODE_TEXT = __ULTRACODE_JSON__;
+const SIZE_TEXT = __SIZE_TEXT_JSON__;
+const DEFAULT_SIZE = '__DEFAULT_SIZE__';
 const PROTOCOL_VERSIONS = ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'];
 __CLIENT_SOURCE__
 function write(message) {
@@ -199,24 +208,41 @@ function write(message) {
 // Only an explicitly enabled agent gets descriptions. Reading the durable state also works
 // while the bridge restarts; missing/invalid state fails closed. Watch the directory because
 // the plugin replaces its JSON files atomically.
-async function enabledForAgent() {
+async function readJson(name) {
+  return JSON.parse(await readFile(path.join(env.DYNAMIC_WORKFLOW_HOME, name), 'utf8'));
+}
+async function accessForAgent() {
   try {
     let agentId = env.PASEO_AGENT_ID;
     const nonce = env.__BINDING_ENV__;
     if (nonce) {
-      const bindings = JSON.parse(await readFile(path.join(env.DYNAMIC_WORKFLOW_HOME, 'bindings.json'), 'utf8'));
+      const bindings = await readJson('bindings.json');
       agentId = bindings.bindings && bindings.bindings[nonce] && bindings.bindings[nonce].agentId;
     }
-    if (!agentId) return false;
-    const access = JSON.parse(await readFile(path.join(env.DYNAMIC_WORKFLOW_HOME, 'agent-access.json'), 'utf8'));
-    return access.version === 1 && Array.isArray(access.enabledAgentIds)
-      && access.enabledAgentIds.every((id) => typeof id === 'string' && id.length > 0)
-      && access.enabledAgentIds.includes(agentId);
-  } catch { return false; }
+    if (!agentId) return null;
+    const access = await readJson('agent-access.json');
+    const ids = (list) => Array.isArray(list) && list.every((id) => typeof id === 'string' && id.length > 0);
+    if (access.version !== 1 || !ids(access.enabledAgentIds) || !access.enabledAgentIds.includes(agentId)) return null;
+    const ultracode = ids(access.ultracodeAgentIds) && access.ultracodeAgentIds.includes(agentId);
+    let size = DEFAULT_SIZE;
+    if (!ultracode) {
+      try {
+        const guidance = await readJson('guidance.json');
+        if (guidance.version === 1 && Object.hasOwn(SIZE_TEXT, guidance.workflowSize)) size = guidance.workflowSize;
+      } catch { /* Missing guidance keeps the default size. */ }
+    }
+    return { ultracode, size };
+  } catch { return null; }
 }
+function toolsFor(access) {
+  if (!access) return [];
+  const text = access.ultracode ? ULTRACODE_TEXT : SIZE_TEXT[access.size];
+  return TOOLS.map((tool) => (tool.name === 'workflow' ? { ...tool, description: tool.description + '\n\n' + text } : tool));
+}
+const fingerprint = (access) => (access ? (access.ultracode ? 'ultracode' : 'size:' + access.size) : 'off');
 
 let initialized = false;
-let lastEnabled = false;
+let lastListed = 'off';
 let closed = false;
 let check = Promise.resolve();
 function serializeAvailability(operation) {
@@ -226,9 +252,9 @@ function serializeAvailability(operation) {
 }
 function checkAvailability() {
   return serializeAvailability(async () => {
-    const enabled = await enabledForAgent();
-    if (!closed && initialized && enabled !== lastEnabled) {
-      lastEnabled = enabled;
+    const listed = fingerprint(await accessForAgent());
+    if (!closed && initialized && listed !== lastListed) {
+      lastListed = listed;
       write({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
     }
   });
@@ -236,7 +262,7 @@ function checkAvailability() {
 let watcher;
 try {
   watcher = watch(env.DYNAMIC_WORKFLOW_HOME, (_event, name) => {
-    if (!name || name === 'agent-access.json' || name === 'bindings.json') checkAvailability();
+    if (!name || name === 'agent-access.json' || name === 'bindings.json' || name === 'guidance.json') checkAvailability();
   });
   watcher.on('error', () => { watcher.close(); });
 } catch { /* Missing state remains disabled. A new process can attach after installation. */ }
@@ -262,9 +288,9 @@ async function handle(message) {
     case 'ping':
       return reply({});
     case 'tools/list': {
-      const enabled = await enabledForAgent();
-      lastEnabled = enabled;
-      return reply({ tools: enabled ? TOOLS : [] });
+      const access = await accessForAgent();
+      lastListed = fingerprint(access);
+      return reply({ tools: toolsFor(access) });
     }
     case 'tools/call': {
       const params = message.params || {};
@@ -415,7 +441,10 @@ function fill(source: string): string {
     .replaceAll("__BINDING_ENV__", BINDING_ENV)
     .replace("__PLUGIN_VERSION__", () => PLUGIN_VERSION)
     .replace("__SERVER_NAME__", () => MCP_SERVER)
-    .replace("__TOOLS_JSON__", () => JSON.stringify(toolDefinitions()));
+    .replace("__TOOLS_JSON__", () => JSON.stringify(toolDefinitions()))
+    .replace("__ULTRACODE_JSON__", () => JSON.stringify(ULTRACODE_NOTICE))
+    .replace("__SIZE_TEXT_JSON__", () => JSON.stringify(Object.fromEntries(WORKFLOW_SIZES.map((size) => [size, sizeGuidelineText(size)]))))
+    .replace("__DEFAULT_SIZE__", () => DEFAULT_WORKFLOW_SIZE);
 }
 
 export function renderMcp(): string {
