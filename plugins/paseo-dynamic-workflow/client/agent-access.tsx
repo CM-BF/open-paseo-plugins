@@ -38,16 +38,19 @@ export function AgentAccess({ agentId, styles }: { agentId: string; styles: Styl
           value={value?.enabled ?? false}
           disabled={!value || value.isWorkflowChild || access.isError || update.isPending}
           onValueChange={(enabled) => update.mutate({ enabled })}
-          error={update.isError ? `Could not save: ${errorMessage(update.error)}` : null}
+          error={update.isError && update.variables?.enabled !== undefined ? `Could not save: ${errorMessage(update.error)}` : null}
         />
         <SettingsSwitch
           label="Ultracode for this agent"
           hint={value?.ultracode
-            ? "On: workflows are a standing opt-in for this agent, and it orchestrates every substantive task exhaustively (parallel coverage, adversarial verification, completeness checks). Uses many more agents and tokens."
-            : "Off: the agent runs workflows only when asked, within the size guideline. Turn on for Claude Code style exhaustive multi-agent work."}
+            ? "On: workflows are a standing opt-in for this agent, and it orchestrates every substantive task exhaustively (parallel coverage, adversarial verification, completeness checks). Uses many more agents and tokens. The agent gets a short message about the change."
+            : value?.enabled
+              ? "Off: the agent runs workflows only when asked, within the size guideline. Turn on for Claude Code style exhaustive multi-agent work."
+              : "Off. Turning it on also enables workflow tools for this agent."}
           value={value?.ultracode ?? false}
           disabled={!value || value.isWorkflowChild || access.isError || update.isPending}
           onValueChange={(ultracode) => update.mutate({ ultracode })}
+          error={update.isError && update.variables?.ultracode !== undefined ? `Could not save: ${errorMessage(update.error)}` : null}
         />
       </SettingsCard>
       {access.isPending ? <Text style={styles.mutedText}>Loading this agent's tool access…</Text> : null}
