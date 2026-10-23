@@ -201,3 +201,9 @@ Fixture：`~/plugin-test-2026-10-22-dwf-review`，project `prj_8474b59633637446`
 - 独立复核确认：插件未安装或禁用时创建的 Claude/Codex agent 没有 workflow MCP 配置，Reload 不能补加。客户端现在同时检查 provider family 和服务端 `hasMcpBinding`，仅已配置 MCP 的 agent 显示 Reload 提示。
 - 未配置 MCP 的旧 agent 开启后显示 CLI reference 命令，并说明也可创建新 agent 使用 MCP 工具；不把 Reload 描述为补装工具的方式，不自动发送消息。
 - 验证：`npm run typecheck` 与 `git diff --check` 通过；主 daemon/Web UI 场景由整合阶段验收。
+
+### 2026-10-22：默认空 MCP 目录与配置清理
+
+- MCP shim 默认返回空工具列表，只有调用者 agent ID 在持久化开启列表中才返回四个工具描述；监听原子替换的状态文件，发送 `tools/list_changed`。缺失/损坏状态与未知绑定均关闭。
+- 新建会话不再默认注入 workflow 系统提示；复制配置时清理旧提示并重新绑定 nonce，workflow 子 agent 清理继承的端点、预授权和显式开启标记。CLI provider 仅在创建时显式传 `PASEO_DYNAMIC_WORKFLOW_ENABLED=1` 才注入提示。
+- 本地配置与真实 MCP 子进程回归已通过：默认空目录、A/B隔离、启停通知、迟到的绑定、失效状态、stdin关闭后退出；设置迁移保留其他参数。主 daemon 两个新建 Codex agent 均回复 workflowTools=[]；开关实机验证尚在进行。

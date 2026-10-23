@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
 import type { PluginBeforeRequests, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
-import { BINDING_ENV, CHILD_ENV, MCP_SERVER, MCP_TOOL_NAMES } from "../shared/ids";
+import { BINDING_ENV, CHILD_ENV, ENABLE_ENV, MCP_SERVER, MCP_TOOL_NAMES } from "../shared/ids";
 import type { Preferences } from "../shared/settings";
 import type { BindingStore } from "./bindings";
 import type { PaseoApi } from "./gate";
-import { appendPrompt, PROMPT_MARKER, replacePrompt, systemPromptCli, systemPromptMcp } from "./prompts";
+import { appendPrompt, PROMPT_MARKER, replacePrompt, systemPromptCli } from "./prompts";
 import { describeError, log } from "./util";
 
 export type CreateRequest = PluginBeforeRequests["agent.create"];
@@ -66,9 +66,9 @@ function withoutOwnGrants(policy: CreateRequest["config"]["toolPolicy"]): Create
 }
 
 /**
- * Adds the dynamic_workflow MCP server (MCP families) and the instructions (every family that
- * reads a system prompt) to a new agent. Workflow children (CHILD_ENV) get nothing. An entry of
- * ours copied from another agent's stored config always gets a fresh nonce.
+ * Installs an empty MCP endpoint; the agent-specific opt-in controls tools/list.
+ * No workflow prompt is added by default. Copied configs lose our old prompt, grants and binding;
+ * children also lose the endpoint. An enabled parent never silently opts its children in.
  */
 export function transformCreate(
   request: CreateRequest,
@@ -77,26 +77,35 @@ export function transformCreate(
   paths: { mcp: string; cli: string },
   nonce: () => string = () => randomBytes(16).toString("hex"),
 ): CreateRequest | undefined {
-  if (request.env?.[CHILD_ENV] !== undefined) return undefined;
+  const child = request.env?.[CHILD_ENV] !== undefined;
   const config = { ...request.config };
   const servers: McpServers = { ...(config.mcpServers ?? {}) };
   const existing = servers[MCP_SERVER];
   const inherited = isOwnServer(existing, paths.mcp);
-  const mcpFamily = family !== null && MCP_FAMILIES.has(family);
+  const mcpFamily = !child && family !== null && MCP_FAMILIES.has(family);
   let env = request.env;
   let changed = false;
-  if (inherited && !mcpFamily) {
+  if (config.systemPrompt?.includes(PROMPT_MARKER)) {
+    config.systemPrompt = replacePrompt(config.systemPrompt, "").trim() || undefined;
+    changed = true;
+  }
+  if (inherited) {
     delete servers[MCP_SERVER];
     config.mcpServers = Object.keys(servers).length > 0 ? servers : undefined;
     config.toolPolicy = withoutOwnGrants(config.toolPolicy);
-    if (config.systemPrompt?.includes(PROMPT_MARKER)) config.systemPrompt = replacePrompt(config.systemPrompt, systemPromptCli(paths.cli));
     changed = true;
   }
-  const addServer = mcpFamily && (inherited || (settings.injectIntoNewAgents && existing === undefined));
+  if (env && (BINDING_ENV in env || (child && ENABLE_ENV in env))) {
+    env = { ...env };
+    delete env[BINDING_ENV];
+    if (child) delete env[ENABLE_ENV];
+    changed = true;
+  }
+  const addServer = mcpFamily && (inherited || existing === undefined);
   if (addServer) {
     const binding = nonce();
     config.mcpServers = { ...servers, [MCP_SERVER]: { type: "stdio", command: paths.mcp, env: { [BINDING_ENV]: binding } } };
-    env = { ...request.env, [BINDING_ENV]: binding };
+    env = { ...env, [BINDING_ENV]: binding };
     config.toolPolicy = withoutOwnGrants(config.toolPolicy);
     // On OpenCode any toolPolicy turns auto-accept off for every tool, so never add one there.
     if (settings.preapproveTools && family !== "opencode") {
@@ -109,10 +118,8 @@ export function transformCreate(
     }
     changed = true;
   }
-  if (settings.injectIntoNewAgents && family !== null && PROMPT_FAMILIES.has(family)) {
-    const hasServer = config.mcpServers !== undefined && MCP_SERVER in config.mcpServers;
-    const block = mcpFamily && hasServer ? systemPromptMcp() : systemPromptCli(paths.cli);
-    const prompt = appendPrompt(config.systemPrompt, block);
+  if (!child && !mcpFamily && request.env?.[ENABLE_ENV] === "1" && family !== null && PROMPT_FAMILIES.has(family)) {
+    const prompt = appendPrompt(config.systemPrompt, systemPromptCli(paths.cli));
     if (prompt !== config.systemPrompt) {
       config.systemPrompt = prompt;
       changed = true;
@@ -121,6 +128,7 @@ export function transformCreate(
   if (!changed) return undefined;
   if (config.toolPolicy === undefined) delete config.toolPolicy;
   if (config.mcpServers === undefined) delete config.mcpServers;
+  if (config.systemPrompt === undefined) delete config.systemPrompt;
   return env === undefined ? { ...request, config } : { ...request, config, env };
 }
 
@@ -135,7 +143,8 @@ export async function transformSessionOpen(
 ): Promise<PluginSessionOpenRequest | undefined> {
   const nonce = request.env[BINDING_ENV];
   const child = request.env[CHILD_ENV];
-  if (typeof nonce !== "string" && typeof child !== "string") return undefined;
+  const enabled = request.env[ENABLE_ENV];
+  if (typeof nonce !== "string" && typeof child !== "string" && typeof enabled !== "string") return undefined;
   if (typeof nonce === "string" && nonce && request.reason === "create") {
     try {
       await bindings.bind(nonce, request.agentId);
@@ -147,5 +156,6 @@ export async function transformSessionOpen(
   const env: Record<string, string> = { ...request.env };
   delete env[BINDING_ENV];
   delete env[CHILD_ENV];
+  delete env[ENABLE_ENV];
   return { ...request, env };
 }

@@ -11,6 +11,8 @@ export const MCP_SHIM_NAME = "paseo-workflow-mcp";
 
 /** Env var that carries the MCP binding nonce from agent.create to agent.session_open. */
 export const BINDING_ENV = "PASEO_DYNAMIC_WORKFLOW_BINDING";
+/** Explicit opt-in for agents created programmatically; never inherited by workflow children. */
+export const ENABLE_ENV = "PASEO_DYNAMIC_WORKFLOW_ENABLED";
 /** Set on every workflow child agent: children get no workflow tools (no recursion). */
 export const CHILD_ENV = "PASEO_DYNAMIC_WORKFLOW_CHILD";
 
