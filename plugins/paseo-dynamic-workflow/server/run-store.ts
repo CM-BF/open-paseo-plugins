@@ -43,6 +43,8 @@ export const RunRecordSchema = z.object({
   budgetTotal: z.number().nullable(),
   /** The launching agent's Ultracode mode and size guideline at launch, exposed to the script as `guidance`. */
   guidance: z.object({ ultracode: z.boolean(), size: z.string() }).optional(),
+  /** This run's position among the caller's launches since its latest user message. */
+  chain: z.number().int().min(1).optional(),
   notified: z.boolean(),
 });
 export type RunRecord = z.infer<typeof RunRecordSchema>;

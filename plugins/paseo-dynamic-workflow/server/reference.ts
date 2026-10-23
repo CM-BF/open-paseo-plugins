@@ -28,7 +28,7 @@ Only when the user opted into multi-agent orchestration. Opt-in means one of:
 
 - the user's message contains the keyword \`ultracode\` (that turn only);
 - Ultracode is on for you: the workflow tool description, the first line of this reference, a launch result or a run notification says so (see Ultracode);
-- the user asked in their own words: "use a workflow", "fan out agents", "orchestrate this with subagents";
+- the user asked in their own words: "use a workflow", "run this as a workflow", "split this across agents", "开个workflow";
 - the user invoked a skill or command whose instructions say to run one;
 - the user asked for a named workflow.
 
@@ -60,7 +60,7 @@ Without Ultracode, scale to the request. "Find any bugs" means a few finders wit
 - Cost words that describe the task's subject (research a tool that saves tokens, design a cheaper pipeline) are not a budget for your run.
 - Do not cap children's answer length or the number of claims, sources or findings to save tokens. When results are too large to pass in prompts, have children write them to files and pass the paths (see Prompts for children for the resume caveat).
 
-The plugin settings can set a size guideline: \`small\` (under 5 agents), \`medium\` (under 10), \`large\` (under 50) or \`unrestricted\` (the default). It is a guideline, not a limit: follow it unless the user's request calls for another scale. The first line of this reference shows the current value. Ultracode ignores it.
+The plugin settings can set a size guideline: \`small\` (about 5 agents per run), \`medium\` (about 10), \`large\` (about 50) or \`unrestricted\` (the default). It is a guideline, not a limit: follow it unless the user's request calls for another scale. Your tool description keeps the value from when your session started; the first line of this reference, launch results and notifications show the current one. Ultracode ignores it.
 
 **No silent caps.** When your script bounds coverage (top N, sampling, no retry, a source cap), \`log()\` what it dropped. A silently truncated run reads as if it covered everything.
 
@@ -82,20 +82,21 @@ Other tools: \`workflow_status({ runId?, waitSeconds? })\` reports progress (wit
 
 \`\`\`js
 export const meta = {
-  name: 'find-flaky-tests',
-  description: 'Find flaky tests and propose fixes',   // one line, shown in the run card
+  name: 'todo-triage',
+  description: 'Sort the TODO comments of a package into fix-now, ticket and delete', // one line, shown in the run card
   whenToUse: 'optional; listed with saved workflows',
   phases: [                                            // one entry per phase() title
-    { title: 'Scan', detail: 'grep test logs for retries' },
-    { title: 'Fix', detail: 'one agent per flaky test' },
+    { title: 'Collect', detail: 'one reader lists every TODO' },
+    { title: 'Triage', detail: 'one agent per TODO' },
   ],
 }
 
-phase('Scan')
-const flaky = await agent('List the tests that were retried in the last 20 CI logs.', { schema: FLAKY_SCHEMA })
-phase('Fix')
-const fixes = await parallel(flaky.tests.map(t => () => agent('Propose a fix for ' + t.name, { label: 'fix:' + t.name })))
-return { fixes: fixes.filter(Boolean) }
+phase('Collect')
+const found = await agent('List every TODO comment under packages/api with its file and line.', { schema: TODOS })
+phase('Triage')
+const verdicts = await parallel(found.todos.map((t, i) => () =>
+  agent('Decide fix-now, ticket or delete for this TODO and say why: ' + JSON.stringify(t), { label: 'todo:' + (i + 1), schema: TRIAGE })))
+return { triaged: verdicts.filter(Boolean) }
 \`\`\`
 
 - \`meta\` is the first statement and a pure literal: no variables, calls, spreads or template interpolation. \`name\` and \`description\` are required. Use the same titles in \`meta.phases\` as in \`phase()\` calls; a title with no entry gets its own group. A per-phase \`model\` is accepted and ignored: set \`model\` on the \`agent()\` calls instead.
@@ -125,7 +126,7 @@ return { fixes: fixes.filter(Boolean) }
 
 Children are ordinary Paseo agents. They appear in your Subagents track while they run (the user can watch them and answer their permission prompts), read the project instruction files in their working directory, and are archived when their result is recorded. They get the tools any new agent of their provider gets from its configuration and the installed plugins; MCP servers configured only on your session are not copied, and children never get workflow tools. Each child is told its final message is data for the script, so it answers with the result only. Nobody answers a child's questions during the run.
 
-**\`pipeline(items, stage1, stage2, ...)\`** runs every item through all stages independently, with no barrier between stages: item A can be in stage 3 while item B is still in stage 1. Every stage receives \`(previousResult, originalItem, index)\`. A stage that throws or returns \`null\` turns that item into \`null\` and skips its remaining stages. This is the default for multi-stage work: wall-clock time is the slowest single chain, not the sum of the slowest item of each stage.
+**\`pipeline(items, stage1, stage2, ...)\`** sends each item through the stages on its own, so one item can reach its third stage while another is still in its first; no stage waits for the others. Stages get \`(previousResult, originalItem, index)\`. When a stage throws or returns \`null\`, that item becomes \`null\` and its later stages are skipped. Make it your default for multi-stage work: the run takes as long as its slowest item's chain, not the sum of each stage's slowest item.
 
 **\`parallel(thunks)\`** runs functions concurrently and waits for all of them (a barrier). Pass functions, not promises: \`parallel(items.map(x => () => agent(...)))\`. A thunk that throws gives \`null\` at its position; \`parallel()\` itself does not reject. Use it only when the next step needs all results together.
 
@@ -145,7 +146,7 @@ Children are ordinary Paseo agents. They appear in your Subagents track while th
 
 Default to \`pipeline()\`. A barrier (\`parallel()\` between stages) is right only when the next stage needs results from all items of the previous one:
 
-- dedupe or merge across the full result set before expensive downstream work;
+- deduplicate or merge the results of every item before an expensive next stage;
 - exit early when the total is zero ("no findings: skip verification");
 - a prompt that compares one item with "all the other findings".
 
@@ -183,7 +184,16 @@ export const meta = {
 const FINDINGS = { type: 'object', required: ['findings'], properties: { findings: { type: 'array', items: {
   type: 'object', required: ['file', 'title', 'scenario'], properties: {
     file: { type: 'string' }, line: { type: 'number' }, title: { type: 'string' }, scenario: { type: 'string' } } } } } }
-const VERDICT = { type: 'object', required: ['refuted', 'reason'], properties: { refuted: { type: 'boolean' }, reason: { type: 'string' } } }
+// One vote rule for every example in this reference: a failed agent or a 'cannot_check' answer is
+// no vote, and a claim needs a majority of the votes you asked for to be confirmed or refuted.
+const VERDICT = { type: 'object', required: ['verdict', 'evidence'], properties: {
+  verdict: { enum: ['holds', 'refuted', 'cannot_check'] }, evidence: { type: 'string' } } }
+const tally = (votes, asked) => {
+  const valid = votes.filter(Boolean), need = Math.floor(asked / 2) + 1
+  if (valid.filter(v => v.verdict === 'holds').length >= need) return 'confirmed'
+  return valid.filter(v => v.verdict === 'refuted').length >= need ? 'refuted' : 'unverified'
+}
+const CHECK = 'verdict=refuted when the evidence you examined does not support it, holds when it does, cannot_check only when you could not examine it at all.'
 const DIMENSIONS = [
   { key: 'correctness', prompt: 'Review the uncommitted changes (git diff) for correctness bugs.' },
   { key: 'security', prompt: 'Review the uncommitted changes (git diff) for security problems.' },
@@ -192,49 +202,47 @@ const DIMENSIONS = [
 const results = await pipeline(
   DIMENSIONS,
   d => agent(d.prompt, { label: 'review:' + d.key, phase: 'Review', schema: FINDINGS }),
-  review => parallel(review.findings.map(f => () =>
-    parallel([0, 1, 2].map(i => () => agent(
-      'Skeptic ' + (i + 1) + ' of 3: try to refute this finding. Read the code and reproduce it before deciding; refuted=true if you cannot confirm it.\\n' + JSON.stringify(f),
-      { label: 'verify' + (i + 1) + ':' + f.file, phase: 'Verify', schema: VERDICT, agentType: 'verification' })))
-      .then(votes => {
-        const valid = votes.filter(Boolean)
-        return { ...f, survives: valid.length >= 2 && valid.filter(v => v.refuted).length < 2 }
-      }))),
+  review => parallel(review.findings.map((f, n) => () =>
+    parallel([1, 2, 3].map(i => () => agent(
+      'Skeptic ' + i + ' of 3: try to refute this finding; read the code and reproduce it. ' + CHECK + '\\n' + JSON.stringify(f),
+      { label: 'verify:' + n + ':' + i, phase: 'Verify', schema: VERDICT, agentType: 'verification', timeoutMinutes: 30 })))
+      .then(votes => ({ ...f, status: tally(votes, 3) })))),
 )
-return { confirmed: results.flat().filter(Boolean).filter(f => f.survives) }
+const all = results.flat().filter(Boolean)
+return { confirmed: all.filter(f => f.status === 'confirmed'), unverified: all.filter(f => f.status === 'unverified') }
 \`\`\`
 
-The correctness findings are being verified while the lifecycle review is still running.
+The correctness findings are being verified while the lifecycle review is still running. Unverified findings are returned, not dropped: they are the ones a verifier could not settle.
 
 ## Patterns
 
 Pick what fits and compose freely.
 
-- **Adversarial verify.** N independent skeptics per claim, each told to refute it; drop the claim when a majority refutes. Stops plausible but wrong findings. Count a missing vote (a failed agent) as no vote, not as a refutation, and report claims with too few valid votes as unverified.
-- **Perspective-diverse verify.** When a claim can fail in several ways, give each verifier a different lens (reproduction, intent and history, impact, existing guards, counterexample) instead of N identical refuters. Diversity catches failure modes that repetition misses.
+- **Adversarial verify.** Several independent skeptics per claim, each trying to refute it; a majority decides. This is what stops plausible but wrong findings. Use the one vote rule above: a failed or blocked verifier is no vote, and claims without a majority either way are reported as unverified.
+- **Perspective-diverse verify.** When a claim can fail in several ways, give each verifier a different lens (reproduction, intent and history, impact, existing guards, counterexample) rather than repeating one check N times; different lenses catch different failures.
 - **Judge panel.** N attempts from different angles (minimal change, most robust, best user experience), scored by parallel judges; synthesize from the winner and graft in the best ideas of the others.
 - **Loop until dry.** For discovery of unknown size (bugs, edge cases, sources), keep running finders until K rounds in a row add nothing new. Dedupe against everything seen, not only what was confirmed, or rejected findings come back every round and the loop never ends.
-- **Multi-modal sweep.** Parallel searches that look in different ways (by file, by content, by entity, by time); each is blind to what the others find.
+- **Several search methods.** Run searches that differ in method (by path, by text, by symbol or entity, by history) side by side; none of them sees what the others turned up, so together they miss less.
 - **Completeness critic.** A last agent asks what is missing: a modality not run, a claim unverified, a file or source unread. Its answer is the next round of work.
 
 These are not the only shapes. Tournament brackets, self-repair loops (attempt, test, feed the failure back), staged escalation (cheap model first, a stronger one for what it could not settle) and other harnesses are equally valid when the task calls for them.
 
 \`\`\`js
-// k-of-n adversarial vote for one claim.
-const votes = await parallel([0, 1, 2].map(i => () =>
-  agent('Skeptic ' + (i + 1) + ': try to refute ' + JSON.stringify(claim) + '. refuted=true if uncertain.',
-    { schema: VERDICT, agentType: 'verification' })))
-const valid = votes.filter(Boolean)
-const status = valid.length < 2 ? 'unverified' : valid.filter(v => v.refuted).length >= 2 ? 'refuted' : 'confirmed'
+// Three skeptics for one claim, with the vote rule from the canonical example.
+const votes = await parallel([1, 2, 3].map(i => () =>
+  agent('Skeptic ' + i + ': try to refute ' + JSON.stringify(claim) + '. ' + CHECK,
+    { label: 'skeptic:' + i, schema: VERDICT, agentType: 'verification', timeoutMinutes: 30 })))
+const status = tally(votes, 3)   // 'confirmed' | 'refuted' | 'unverified'
 \`\`\`
 
 \`\`\`js
-// Lens-diverse verification for one finding.
-const LENSES = ['Reproduce it: trace the path and run a scratch test.', 'Is it intended? Read the tests, docs and git history.',
-  'Does it matter on realistic inputs?']
-const verdicts = (await parallel(LENSES.map(lens => () =>
-  agent(lens + '\\nFinding: ' + JSON.stringify(finding), { schema: VERDICT, agentType: 'verification' })))).filter(Boolean)
-const real = verdicts.length >= 2 && verdicts.filter(v => !v.refuted).length * 2 > verdicts.length
+// One finding, three different lenses instead of three identical skeptics.
+const LENSES = ['Reproduce it: trace the path and run a scratch test.',
+  'Is it deliberate? Refute it only by citing a test, doc or commit that shows the behaviour is intended.',
+  'Is it already prevented elsewhere: a caller, a validation layer, a retry?']
+const verdicts = await parallel(LENSES.map((lens, i) => () =>
+  agent(lens + ' ' + CHECK + '\\nFinding: ' + JSON.stringify(finding), { label: 'lens:' + i, schema: VERDICT, agentType: 'verification' })))
+const status = tally(verdicts, LENSES.length)
 \`\`\`
 
 \`\`\`js
@@ -260,26 +268,24 @@ while (budget.total && budget.remaining() > 50000) {
 \`\`\`
 
 \`\`\`js
-// Composed: finders -> dedupe against everything seen -> three lenses per new finding -> until two dry rounds.
-const seen = new Set()
-const confirmed = []
-let dry = 0
-for (let round = 1; dry < 2 && round <= 6; round++) {
-  const found = (await parallel(FINDERS.map(f => () =>
-    agent(f.prompt + '\\nAlready known: ' + JSON.stringify([...seen]), { label: f.key + ':' + round, phase: 'Find', schema: BUGS }))))
-    .filter(Boolean).flatMap(r => r.bugs)
-  const fresh = found.filter(b => !seen.has(b.file + ':' + b.title))
-  if (fresh.length === 0) { dry++; continue }
-  dry = 0
-  fresh.forEach(b => seen.add(b.file + ':' + b.title))
-  const judged = await parallel(fresh.map(b => () =>
+// Find, keep only what is new, judge it from three lenses, repeat until two rounds add nothing.
+const known = new Map()               // key -> 'confirmed' | 'refuted' | 'unverified', for everything ever found
+let quiet = 0
+for (let r = 1; quiet < 2 && r <= 6; r++) {
+  const reports = await parallel(FINDERS.map(f => () =>
+    agent(f.prompt + '\\nSkip these, already known: ' + JSON.stringify([...known.keys()]), { label: f.key + ':' + r, phase: 'Find', schema: BUGS })))
+  const candidates = reports.filter(Boolean).flatMap(x => x.bugs).filter(b => !known.has(b.file + ':' + b.title))
+  if (!candidates.length) { quiet++; continue }
+  quiet = 0
+  candidates.forEach(b => known.set(b.file + ':' + b.title, 'unverified'))   // judged or not, never re-found
+  await parallel(candidates.map((b, n) => () =>
     parallel(['correctness', 'security', 'reproduction'].map(lens => () =>
-      agent('Judge through the ' + lens + ' lens; is this real? ' + JSON.stringify(b), { phase: 'Verify', schema: VERDICT, agentType: 'verification' })))
-      .then(vs => ({ b, real: vs.filter(Boolean).filter(v => !v.refuted).length >= 2 }))))
-  confirmed.push(...judged.filter(j => j.real).map(j => j.b))
-  log('round ' + round + ': ' + fresh.length + ' new, ' + confirmed.length + ' confirmed so far')
+      agent('Check this bug through the ' + lens + ' lens. ' + CHECK + '\\n' + JSON.stringify(b),
+        { label: 'judge:' + r + '.' + n + ':' + lens, phase: 'Verify', schema: VERDICT, agentType: 'verification' })))
+      .then(votes => known.set(b.file + ':' + b.title, tally(votes, 3)))))
+  log('round ' + r + ': ' + candidates.length + ' new; ' + [...known.values()].filter(s => s === 'confirmed').length + ' confirmed so far')
 }
-return { confirmed }
+return Object.fromEntries(known)
 \`\`\`
 
 ## Mistakes that make a workflow too small
@@ -291,7 +297,7 @@ Observed in real runs; each one costs the confidence a workflow exists to provid
 - **No completeness critic.** Without one, nobody asks which file, source or failure mode was never looked at.
 - **Shrinking the plan after an interruption.** Resume or write a continuation script with the same stages (see Interrupted runs); cutting stages trades away the quality the user asked for.
 - **Reading the topic as a budget.** "Research a tool that saves tokens" does not ask you to save tokens on the research.
-- **Read-only roles asked to judge.** \`explore\` agents gather; give judging to \`verification\` agents with a refute-by-default instruction.
+- **Read-only roles asked to judge.** \`explore\` agents gather; give judging to \`verification\` agents with the vote rule above (refute what the evidence does not support, report what could not be checked).
 
 ## Prompts for children
 

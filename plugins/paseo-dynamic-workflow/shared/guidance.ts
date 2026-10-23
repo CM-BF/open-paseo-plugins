@@ -16,5 +16,5 @@ export function isWorkflowSize(value: unknown): value is WorkflowSize {
 }
 
 export function sizeLabel(size: WorkflowSize): string {
-  return size === "unrestricted" ? "unrestricted" : `${size} (under ${SIZE_AGENTS[size]} agents)`;
+  return size === "unrestricted" ? "unrestricted" : `${size} (about ${SIZE_AGENTS[size]} agents per run)`;
 }

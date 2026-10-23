@@ -11,7 +11,7 @@ import { meta, tempState } from "./test-harness";
 const disposals: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const dispose of disposals.splice(0).reverse()) await dispose(); });
 
-async function fixture() {
+async function fixture(guidance?: { current: { ultracode: boolean; size: "unrestricted" | "small" | "medium" | "large" } }) {
   const paths = await tempState();
   disposals.push(() => rm(paths.root, { recursive: true, force: true }));
   const gate = new Gate();
@@ -24,12 +24,15 @@ async function fixture() {
     status: "running", activeTurn: {}, labels: {}, archivedAt: null, currentModeId: "auto",
   } }));
   gate.capture({ agents: { ref: () => ({ refresh, timeline }) } } as unknown as PaseoApi);
-  const service = new WorkflowService({ paths, gate, settings: () => DEFAULT_PREFERENCES });
+  const service = new WorkflowService({ paths, gate, settings: () => DEFAULT_PREFERENCES, ...(guidance ? { guidance: () => guidance.current } : {}) });
   await mkdir(paths.runs, { recursive: true });
   await service.recover();
   disposals.push(() => service.dispose());
   return { paths, gate, service, refresh, timeline };
 }
+
+const userMessage = (text: string, seq: number) => ({ entries: [{ item: { type: "user_message", text }, timestamp: `t${seq}`, seqStart: seq }], hasOlder: false, startCursor: null });
+const runId = (text: string) => text.match(/Run ID: (wf_[a-z0-9]+)/)![1]!;
 
 it("copies named source for editing and persists args across resume without altering the library", async () => {
   const f = await fixture();
@@ -101,4 +104,30 @@ it("recovers a completed result that had not yet been queued for notification", 
   await recovered.recover();
   expect(recovered.notifier.pendingFor("parent")).toBe(1);
   expect((await readRecord(f.paths, id))?.notified).toBe(true);
+});
+
+it("states the caller's guidance, keeps the first run's guidance on resume, and asks for a check-in on long chains", async () => {
+  const guidance: { current: { ultracode: boolean; size: "unrestricted" | "small" | "medium" | "large" } } = { current: { ultracode: true, size: "unrestricted" } };
+  const f = await fixture(guidance);
+  f.timeline.refetch.mockResolvedValue(userMessage("review this", 1) as never);
+  const first = await f.service.launch("parent", { script: meta() + "return guidance" });
+  expect(first).toContain("Ultracode is on for you");
+  const id = runId(first);
+  await vi.waitFor(async () => expect((await readRecord(f.paths, id))?.status).toBe("completed"));
+  expect(JSON.parse(await readFile(join(f.paths.runs, id, "result.json"), "utf8"))).toEqual({ ultracode: true, size: "unrestricted" });
+
+  guidance.current = { ultracode: false, size: "small" };
+  const resumed = await f.service.launch("parent", { script: meta() + "return guidance", resumeFromRunId: id });
+  expect(resumed).toContain("Ultracode is off for you");
+  expect(resumed).toContain(`This resume keeps the guidance of ${id} (Ultracode on, size unrestricted)`);
+  const resumedId = runId(resumed);
+  await vi.waitFor(async () => expect((await readRecord(f.paths, resumedId))?.status).toBe("completed"));
+  expect(JSON.parse(await readFile(join(f.paths.runs, resumedId, "result.json"), "utf8"))).toEqual({ ultracode: true, size: "unrestricted" });
+
+  const third = await f.service.launch("parent", { script: meta() + "return 3" });
+  expect(third).not.toContain("you launched since the user's last message");
+  const fourth = await f.service.launch("parent", { script: meta() + "return 4" });
+  expect(fourth).toContain("This is run 4 you launched since the user's last message");
+  f.timeline.refetch.mockResolvedValue(userMessage("go on", 2) as never);
+  expect(await f.service.launch("parent", { script: meta() + "return 5" })).not.toContain("you launched since");
 });

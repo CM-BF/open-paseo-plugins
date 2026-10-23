@@ -92,7 +92,7 @@ function SettingsEditor({ settings }: { settings: ReadySettings }) {
         <SettingsCard>
           <SettingsSelect
             label="Workflow size guideline"
-            hint="What the workflow tool tells agents without Ultracode. A guideline, not a limit: agents follow it unless the request calls for another scale. Ultracode agents ignore it. Enabled agents see a change on their next tool refresh (Codex: after Reload)."
+            hint="What the workflow tool tells agents without Ultracode. A guideline, not a limit: agents follow it unless the request calls for another scale. Ultracode agents ignore it. Agents read it when they start or are reloaded; running agents see a new value in their next launch result, run notification or reference."
             value={values.workflowSize}
             options={WORKFLOW_SIZES.map((size) => ({ value: size, label: sizeLabel(size) }))}
             disabled={settings.saving}

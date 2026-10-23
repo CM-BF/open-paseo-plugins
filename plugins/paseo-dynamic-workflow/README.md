@@ -19,11 +19,17 @@ paseo plugin install 'git:https://github.com/CM-BF/open-paseo-plugins.git:plugin
 
 ## 用法
 
-先在目标 agent 中输入 `/dynamic-workflows`，打开 **Enable workflow tools for this agent**。选择保存在 daemon 上，刷新界面后仍有效。Claude 支持工具列表变更通知；当前 Codex 需要从 agent 菜单 **Reload** 才会刷新工具列表，面板也会提示。然后对 agent 说“用 workflow 做……”（必须是用户明确要求，工具描述里写了这条规则）。agent 会先调 `workflow_reference` 读参考，再调 `workflow` 启动；工具立即返回 run id、脚本路径和运行目录，agent 结束这一轮，等通知到来。
+先在目标 agent 中输入 `/dynamic-workflows`，打开 **Enable workflow tools for this agent**。选择保存在 daemon 上，刷新界面后仍有效。改动开关后从 agent 菜单 **Reload**，工具列表和 MCP instructions 才会刷新（Codex 0.154 不处理工具列表变更通知；Claude 的刷新未实测）。然后对 agent 说“用 workflow 做……”或在消息里写 `ultracode`（这些就是 opt-in，工具描述里写了规则）。agent 会先调 `workflow_reference` 读参考，再调 `workflow` 启动；工具立即返回 run id、脚本路径和运行目录，agent 结束这一轮，等通知到来。
+
+**Ultracode**：同一面板的第二个开关，按 agent 保存。开启后 workflow 成为常驻 opt-in，agent 以最完整、最可靠的结果为目标而不是成本：每个实质任务都开 workflow，每个阶段一个 workflow，每条发现由独立 agent 多票核实，跑完整性检查和独立汇总。Paseo 无法像 Claude Code 那样每轮注入提醒，所以模式写在 MCP instructions 和工具描述里（Reload 后生效），并在 reference 第一行、每次启动结果和每条完成通知里重申。Claude 的 MCP 工具默认被 tool search 延迟加载，`workflow` 工具带 `anthropic/alwaysLoad`，开启的 agent 才会一直看到它的描述。
+
+**规模建议**（设置里的 Workflow size guideline）：unrestricted（默认）/ small（约 5 个 agent）/ medium（约 10）/ large（约 50），对应 Claude Code 的 Dynamic workflow size；Ultracode agent 不受它约束。已在运行的 shim 保持启动时读到的值，避免改设置时让所有会话的 prompt cache 失效；启动结果和通知里是当前值。
+
+**内置 workflow**：`deep-review`、`deep-research`、`design-panel`、`critique`、`verify-claims`，用 `workflow({ name, args })` 启动，都接受 `size`，不传时 Ultracode 下用 `unrestricted`。源码在 `workflows/`（共用部分 `workflows/_shared.js` 在构建时插入），运行时副本写在状态目录的 `workflows/` 下供 agent 读取 args。同名的保存文件会覆盖内置版本，`builtin.<name>` 总是运行内置版本。
 
 - Claude / Codex：MCP 工具 `workflow`、`workflow_status`、`workflow_stop`、`workflow_reference`（Claude 里显示为 `mcp__dynamic_workflow__*`）。
 - OpenCode / Pi / OMP，以及安装前没有 MCP 绑定的旧 Claude/Codex agent：开启后，面板提供 `paseo-workflow reference` 命令，把它加入下一条消息即可让 agent 读取用法。支持 `run --file x.js | --name <saved> [--args-json ...] [--resume <runId>]`、`status`、`stop`、`reference`。调用者由 Paseo 的 `PASEO_AGENT_ID` 识别。程序化创建可显式传 env `PASEO_DYNAMIC_WORKFLOW_ENABLED=1` 开启该 agent；CLI provider 此时会同时收到说明。
-- 保存的 workflow：项目里的 `.paseo/workflows/<name>.js` 或 `.claude/workflows/<name>.js`（Claude Code 的保存 workflow 可以直接用），以及 `~/.paseo/workflows/`、`~/.claude/workflows/`。
+- 保存的 workflow：项目里的 `.paseo/workflows/<name>.js` 或 `.claude/workflows/<name>.js`（Claude Code 的保存 workflow 大多可以直接用；用了 Claude 自定义 agentType 的会报 Unknown agentType），以及 `~/.paseo/workflows/`、`~/.claude/workflows/`，最后是内置 workflow。
 
 界面：发起 agent 的聊天里有运行卡片（阶段进度、运行中的 agent、最新日志、结果、Stop/Details）；Dynamic workflows 面板（卡片 Details、`/dynamic-workflows`、Command Center 的 Dynamic workflow tools and runs）提供本 agent 的开关，并列出运行和每个子 agent 的状态、用时、token、结果、transcript，可以跳过单个 agent 或停止运行；通知消息显示为一行。通用设置在 Settings → Plugins → paseo-dynamic-workflow → Dynamic workflows。
 
@@ -43,13 +49,19 @@ paseo plugin install 'git:https://github.com/CM-BF/open-paseo-plugins.git:plugin
 | 单次组合器条目上限 | 4096 | 4096；整次运行最多 4096 个运行时请求，最多启动 1000 个真实子 agent |
 | 内置角色 | 子 agent 类型定义 | explore/plan/verification 是提示词，不强制只读；子 agent 保留父会话的权限约束，无法保守映射时拒绝创建 |
 | 并发 | min(16, CPU-2) | 默认 min(8, CPU-2)，可设到 16（每个子 agent 是一个完整的 CLI 进程） |
+| Ultracode | effort 档位，每轮 system reminder | 每个 agent 一个开关；写在 MCP instructions/工具描述，并在 reference、启动结果、通知里重申 |
+| 规模建议 | /config 里的 Dynamic workflow size（默认 medium） | 插件设置，默认 unrestricted |
+| 内置 workflow | deep-research | deep-review、deep-research、design-panel、critique、verify-claims（自己实现，未复制 Claude Code 的脚本） |
+| 脚本全局量 | | 额外的 `guidance`（`{ ultracode, size }`）和 `agent()` 的 `timeoutMinutes` |
 
 ## 结构
 
 ```text
 index.server.ts / server/contribute.ts   挂 hook、RPC、启动 bridge
 server/agent-setup.ts                    agent.create 注入默认空 MCP 端点；清理继承配置；session_open 绑定 nonce→agent
-server/agent-access.ts                   持久化每个 agent 的开启状态
+server/agent-access.ts                   持久化每个 agent 的开启和 Ultracode 状态（agent-access.json 仍是 version 1）
+server/workflow-catalog.ts               保存的和内置的命名 workflow：查找、列表、reference 末尾的目录
+workflows/                               内置 workflow 源码；_shared.js 由 scripts/inject-shared.mjs 插入每个脚本
 server/scripts.ts                        写 bin/ 下的 shell shim 和 lib/ 下的 mcp.mjs、cli.mjs（只用 Node 内置模块）
 server/bridge.ts                         unix socket 上的 HTTP：/v1/tools/<name>
 server/service.ts                        launch/stop/status/list、保存的 workflow、预算、卡片、通知、启动恢复
@@ -64,7 +76,7 @@ shared/                                  RPC 契约、运行快照 schema、设�
 docs/REFERENCE.md                        编写参考（scripts/build-reference.mjs 生成 server/reference.ts）
 ```
 
-状态目录 `~/.paseo/paseo-dynamic-workflow/`（随 `PASEO_HOME`）：`bin/`、`lib/`、`bridge.sock`、`bindings.json`、`agent-access.json`、`outbox.json`、`runs/`、`REFERENCE.md`。
+状态目录 `~/.paseo/paseo-dynamic-workflow/`（随 `PASEO_HOME`）：`bin/`、`lib/`、`bridge.sock`、`bindings.json`、`agent-access.json`、`guidance.json`、`outbox.json`、`runs/`、`workflows/`（内置 workflow 副本）、`REFERENCE.md`。
 
 ## 开发
 
@@ -72,7 +84,7 @@ docs/REFERENCE.md                        编写参考（scripts/build-reference.
 npm ci
 npm run typecheck
 npm test
-npm run build:reference   # 改了 docs/REFERENCE.md 之后
+npm run build:reference   # 改了 docs/REFERENCE.md 或 workflows/*.js 之后
 paseo plugin reload paseo-dynamic-workflow
 ```
 

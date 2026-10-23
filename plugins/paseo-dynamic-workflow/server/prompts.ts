@@ -6,7 +6,7 @@ function optIn(ultracodeSource: string): string {
   return `Because a run can start dozens of agents, launch one only after the user opted in, in one of these ways:
 - their current message contains the word "ultracode" (that request only);
 - Ultracode is on for you (${ultracodeSource}, or the latest launch result or run notification says so);
-- they asked for one in their own words, in any language ("use a workflow", "fan out agents", "orchestrate this with subagents", "开个workflow");
+- they asked for one in their own words, in any language ("use a workflow", "run this as a workflow", "split this across agents", "开个workflow");
 - they invoked a skill or command whose instructions say to run one;
 - they asked for a built-in or saved workflow by name.
 An opt-in covers the whole request, including later workflows for its next phases (verify, design, implement, review). A plugin notification is not an opt-in for a new task. A task that would merely benefit from parallelism does not count: say what you would run and about how many agents it would start, and ask; mention that "use a workflow" or "ultracode" in a later message skips the question. Never turn workflows or Ultracode on for yourself, including through the app; if they are off, ask the user.`;
@@ -70,6 +70,13 @@ export function referenceStatus(guidance: ToolGuidance): string {
   return `> Status for you: Ultracode off. Launch only on an opt-in ("When you may launch one"). ${size}`;
 }
 
+/** From this many launches since the user's last message, ask the agent to check in before the next. */
+export const CHAIN_CHECK_IN = 4;
+
+export function chainCheckIn(index: number): string {
+  return `This is run ${index} you launched since the user's last message. Before launching another, summarize progress for the user and ask whether to continue, unless the plan they approved already covers the next phase.`;
+}
+
 /** Added to a completed run's notification for an Ultracode agent. */
 export const ULTRACODE_NEXT_PHASE = "Ultracode is on: read this result, then launch the next phase's workflow (check what it claimed, then design, implement, review) unless the task is finished.";
 
@@ -92,26 +99,28 @@ export function replacePrompt(existing: string, block: string): string {
   return `${existing.slice(0, start)}${block}${existing.slice(end)}`;
 }
 
-export const WORKFLOW_TOOL_DESCRIPTION = `Execute a workflow script that orchestrates multiple Paseo agents deterministically. The run happens in the background: this tool returns immediately with a run id, and a <task-notification> message arrives when the workflow ends (end your turn rather than waiting). The user watches progress in the run card and the Dynamic workflows panel.
+export const WORKFLOW_TOOL_DESCRIPTION = `Execute a workflow script that orchestrates multiple Paseo agents deterministically. The run happens in the background: the call returns at once with a run id, and a <task-notification> message arrives when the workflow ends (end your turn rather than waiting). The user watches progress in the run card and the Dynamic workflows panel.
 
 ${OPT_IN}
 
-Call workflow_reference before writing your first script: it documents the full API, the Ultracode and scale rules, limits, patterns, resume, and the named workflows you can launch. Built-ins (launch with { name, args }; each scales with args.size and follows Ultracode): deep-review (verified multi-dimension code review with a fix plan and recheck), deep-research (multi-source research with claims verified by skeptics), design-panel (independent designs scored by judges), critique (lens critics on an existing draft, verified, then revised), verify-claims (independent verification of a list of claims).
+Call workflow_reference before your first script: the full API, Ultracode and scale rules, limits, patterns, resume, and the named workflows you can launch. Built-ins, launched with { name, args } and sized by args.size: deep-review, deep-research, design-panel, critique, verify-claims.
 
-Every script must begin with \`export const meta = {...}\`, a PURE LITERAL (no variables, calls or interpolation) with \`name\`, a one-line \`description\` and optionally \`phases\` (one { title, detail? } per phase() title). The body is plain JavaScript (not TypeScript), already async, and returns the result. Pass it inline via \`script\`; do not write it to a file first.
+A script starts with \`export const meta = {...}\`, which must be a plain literal (no variables, calls or interpolation) holding \`name\`, a one-line \`description\` and optionally \`phases\` (one { title, detail? } per phase() title). The body is plain JavaScript (not TypeScript), already async, and returns the result. Pass the script text in \`script\`; there is no need to save it to a file first.
 
-Globals: agent(prompt, {label, phase, schema, model, effort, agentType, provider, isolation: 'worktree', cwd}) starts one Paseo agent and resolves with its final text, or with a validated object when \`schema\` (JSON Schema, object at the root) is given, or null when the agent fails or is skipped. pipeline(items, ...stages) runs each item through the stages with no barrier; each stage gets (prev, original, index); a throwing stage makes that item null. parallel(thunks) is a barrier over functions (not promises); a throwing thunk gives null. phase(title), log(message), args, budget {total, spent(), remaining()}, workflow(nameOrRef, args). Date.now(), Math.random() and argless new Date() throw; there is no filesystem or network access.
+Globals: agent(prompt, {label, phase, schema, model, effort, agentType, provider, isolation: 'worktree', cwd, timeoutMinutes}) starts one Paseo agent and resolves with its final text, the validated object for a \`schema\`, or null when it fails or is skipped. pipeline(items, ...stages): no barrier, each stage gets (prev, original, index). parallel(thunks): a barrier over functions. Also phase(), log(), args, budget, guidance {ultracode, size}, workflow(nameOrRef, args). Date.now(), Math.random() and argless new Date() throw; no filesystem or network.
 
-Canonical pattern (pipeline by default; each dimension's findings are verified as soon as its review finishes, by three independent skeptics each):
-  export const meta = { name: 'review-changes', description: 'Review changes across dimensions, verify each finding', phases: [{ title: 'Review' }, { title: 'Verify' }] }
+Canonical pattern (pipeline by default: each dimension's findings are verified by three independent skeptics as soon as its review finishes; a failed or cannot_check vote is no vote, and only a majority of the three confirms or refutes):
+  export const meta = { name: 'review-changes', description: 'Review the diff per dimension and verify each finding', phases: [{ title: 'Review' }, { title: 'Verify' }] }
+  const VERDICT = { type: 'object', required: ['verdict'], properties: { verdict: { enum: ['holds', 'refuted', 'cannot_check'] }, evidence: { type: 'string' } } }
+  const count = (votes, v) => votes.filter(x => x && x.verdict === v).length
   const results = await pipeline(
     DIMENSIONS,
     d => agent(d.prompt, { label: 'review:' + d.key, phase: 'Review', schema: FINDINGS_SCHEMA }),
-    review => parallel(review.findings.map(f => () =>
-      parallel([0, 1, 2].map(i => () => agent('Skeptic ' + (i + 1) + ': try to refute ' + JSON.stringify(f), { label: 'verify:' + f.file, phase: 'Verify', schema: VERDICT_SCHEMA, agentType: 'verification' })))
-        .then(votes => ({ ...f, survives: votes.filter(Boolean).filter(v => !v.refuted).length >= 2 })))),
+    review => parallel(review.findings.map((f, n) => () =>
+      parallel([1, 2, 3].map(i => () => agent('Skeptic ' + i + ': try to refute ' + JSON.stringify(f) + '; refuted if the evidence does not support it, cannot_check if you could not examine it', { label: 'verify:' + n + ':' + i, phase: 'Verify', schema: VERDICT, agentType: 'verification' })))
+        .then(votes => ({ ...f, status: count(votes, 'holds') >= 2 ? 'confirmed' : count(votes, 'refuted') >= 2 ? 'refuted' : 'unverified' })))),
   )
-  return { confirmed: results.flat().filter(Boolean).filter(f => f.survives) }
+  return { findings: results.flat().filter(Boolean) }
 
 To iterate, edit the script file named in the result and launch again with {scriptPath}; add resumeFromRunId to reuse completed agent() results.`;
 

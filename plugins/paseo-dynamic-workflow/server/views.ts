@@ -2,7 +2,7 @@ import type { ToolGuidance } from "../shared/guidance";
 import { NOTIFICATION_MARKER } from "../shared/notification";
 import type { AgentCall, CardData, PhaseSummary, RunDetail, RunSummary } from "../shared/run-types";
 import { runPaths, type StatePaths } from "./paths";
-import { guidanceReminder, ULTRACODE_NEXT_PHASE } from "./prompts";
+import { CHAIN_CHECK_IN, chainCheckIn, guidanceReminder, ULTRACODE_NEXT_PHASE } from "./prompts";
 import type { RunRecord } from "./run-store";
 import { formatDuration, truncate } from "./util";
 
@@ -151,12 +151,12 @@ export function statusText(record: RunRecord, state: StatePaths): string {
   const failed = record.calls.filter((call) => call.status === "failed").slice(-5);
   if (failed.length > 0) {
     lines.push("Recent failures:");
-    for (const call of failed) lines.push(`- ${call.label}: ${truncate(call.error ?? "failed", 300)}`);
+    for (const call of failed) lines.push(`- ${call.label}: ${escapeTags(truncate(call.error ?? "failed", 300))}`);
   }
   const logs = record.logs.slice(-8);
   if (logs.length > 0) {
     lines.push("Recent log:");
-    for (const line of logs) lines.push(`- ${truncate(line.message, 400)}`);
+    for (const line of logs) lines.push(`- ${escapeTags(truncate(line.message, 400))}`);
   }
   if (record.error) lines.push(`Error: ${record.error}`);
   if (record.status === "completed") {
@@ -187,13 +187,13 @@ export function notificationText(record: RunRecord, state: StatePaths, guidance:
     "<task-notification>",
     `<task-id>${record.runId}</task-id>`,
     `<status>${record.status}</status>`,
-    `<summary>Dynamic workflow "${record.meta.name}" ${verb}</summary>`,
+    `<summary>Dynamic workflow "${escapeTags(record.meta.name)}" ${escapeTags(verb)}</summary>`,
   ];
   if (record.status === "completed") {
     parts.push(`<output-file>${paths.result}</output-file>`);
-    parts.push(`<result>${record.resultPreview ?? "null"}${(record.resultPreview ?? "").includes("more characters]") ? `\n(full result in ${paths.result})` : ""}</result>`);
+    parts.push(`<result>${escapeJsonTags(record.resultPreview ?? "null")}${(record.resultPreview ?? "").includes("more characters]") ? `\n(full result in ${paths.result})` : ""}</result>`);
   } else {
-    if (record.error) parts.push(`<error>${truncate(record.error, 4000)}</error>`);
+    if (record.error) parts.push(`<error>${escapeTags(truncate(record.error, 4000))}</error>`);
     parts.push(`<recovery>Resume with ${resumeHint(record)}: completed agent() calls return their cached results.</recovery>`);
     const cut = record.calls.filter((call) => ["skipped", "running", "permission", "queued"].includes(call.status));
     if (record.status === "interrupted" && cut.length > 0) {
@@ -211,7 +211,7 @@ export function notificationText(record: RunRecord, state: StatePaths, guidance:
   }
   const failed = record.calls.filter((call) => call.status === "failed");
   if (failed.length > 0) {
-    const shown = failed.slice(0, 20).map((call) => `${truncate(call.label, 120)}: ${truncate(call.error ?? "failed", 500)}`);
+    const shown = failed.slice(0, 20).map((call) => `${escapeTags(truncate(call.label, 120))}: ${escapeTags(truncate(call.error ?? "failed", 500))}`);
     if (failed.length > shown.length) shown.push(`${failed.length - shown.length} more failures in the journal.`);
     parts.push(`<failures>\n${shown.join("\n")}\n</failures>`);
   }
@@ -228,11 +228,25 @@ export function notificationText(record: RunRecord, state: StatePaths, guidance:
     `<usage><agent_count>${agents.total}</agent_count><cached>${agents.cached}</cached><failed>${agents.failed}</failed><skipped>${agents.skipped}</skipped><output_tokens>${record.usage.outputTokens}</output_tokens><input_tokens>${record.usage.inputTokens}</input_tokens><duration_ms>${duration}</duration_ms></usage>`,
   );
   if (guidance) {
-    const next = guidance.ultracode && record.status === "completed" ? ` ${ULTRACODE_NEXT_PHASE}` : "";
+    const chained = (record.chain ?? 1) >= CHAIN_CHECK_IN;
+    const next = chained ? ` ${chainCheckIn(record.chain ?? 1)}` : guidance.ultracode && record.status === "completed" ? ` ${ULTRACODE_NEXT_PHASE}` : "";
     parts.push(`<guidance>${guidanceReminder(guidance)}${next}</guidance>`);
   }
   parts.push("</task-notification>");
   return parts.join("\n");
+}
+
+/**
+ * The notification is read by a model as markup. Child results, errors and labels can contain
+ * text from code or web pages, so they must not be able to close a tag or open a new one.
+ */
+function escapeTags(text: string): string {
+  return text.replace(/</g, "‹").replace(/>/g, "›");
+}
+
+/** Inside JSON, `<` and `>` can only occur in strings, where \\u003c and \\u003e keep the JSON valid. */
+function escapeJsonTags(json: string): string {
+  return json.replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
 }
 
 function firstLine(text: string): string {

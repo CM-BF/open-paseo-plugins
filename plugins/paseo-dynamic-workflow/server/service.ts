@@ -4,8 +4,8 @@ import { isAbsolute, join, resolve } from "node:path";
 import { CARD_KIND, CARD_VERSION, LABEL_RUN, RUN_ID_PATTERN } from "../shared/ids";
 import { NOTIFICATION_MARKER } from "../shared/notification";
 import type { RunDetail, RunSummary } from "../shared/run-types";
-import type { ToolGuidance } from "../shared/guidance";
-import { guidanceReminder, referenceStatus } from "./prompts";
+import { isWorkflowSize, type ToolGuidance } from "../shared/guidance";
+import { CHAIN_CHECK_IN, chainCheckIn, guidanceReminder, referenceStatus } from "./prompts";
 import type { Preferences } from "../shared/settings";
 import { AgentRunner, type ParentContext } from "./agent-runner";
 import { parseBudgetDirective } from "./budget";
@@ -74,6 +74,8 @@ export class WorkflowService {
   private readonly summaries = new Map<string, RunSummary>();
   private runOrder: string[] = [];
   private readonly finalizers = new Set<Promise<void>>();
+  /** Runs launched per agent since its latest user message; resets with the plugin. */
+  private readonly chains = new Map<string, { key: string; count: number }>();
   private disposed = false;
 
   constructor(options: ServiceOptions) {
@@ -187,6 +189,8 @@ export class WorkflowService {
     let cache: ResumeCache | null = null;
     let resumedFrom: string | null = null;
     let args = input.args;
+    let guidance = this.guidance(callerId);
+    let inheritedGuidance = false;
     if (input.resumeFromRunId) {
       const previous = input.resumeFromRunId.trim();
       if (!RUN_ID_PATTERN.test(previous)) throw new ServiceError("invalid_request", `resumeFromRunId "${previous}" is not a run id (wf_...).`);
@@ -197,11 +201,17 @@ export class WorkflowService {
       if (!record) throw new ServiceError("unknown_run", `No workflow run ${previous} on this host.`);
       this.requireOwner(record, callerId);
       if (!Object.prototype.hasOwnProperty.call(input, "args")) args = record.args;
+      // Resume means the same plan: scripts that scale with `guidance` must see what the first run saw.
+      if (record.guidance) {
+        inheritedGuidance = guidance === null || guidance.ultracode !== record.guidance.ultracode || guidance.size !== record.guidance.size;
+        guidance = { ultracode: record.guidance.ultracode, size: isWorkflowSize(record.guidance.size) ? record.guidance.size : "unrestricted" };
+      }
       cache = await ResumeCache.load(runPaths(this.paths, previous));
       resumedFrom = previous;
     }
 
-    const budgetTotal = await this.budgetFor(paseo, callerId);
+    const message = await this.latestUserMessage(paseo, callerId);
+    const budgetTotal = message ? parseBudgetDirective(stripReminders(message.text)) : null;
     if (this.disposed) throw new ServiceError("not_ready", "The workflow plugin stopped before this launch could start.");
     const runId = newRunId();
     const files = new RunFiles(this.paths, runId);
@@ -227,7 +237,8 @@ export class WorkflowService {
       resultPreview: null,
       usage: emptyUsage(),
       budgetTotal,
-      ...(this.guidance(callerId) ? { guidance: this.guidance(callerId)! } : {}),
+      ...(guidance ? { guidance } : {}),
+      chain: this.chainIndex(callerId, message?.key ?? null),
       notified: false,
     };
     await files.create(source.script, record);
@@ -280,8 +291,10 @@ export class WorkflowService {
     if (budgetTotal !== null) lines.push(`Token budget from the user's message: ${budgetTotal} output tokens.`);
     lines.push(`To iterate: edit the script file, then workflow({ scriptPath: ${JSON.stringify(record.scriptPath)}, resumeFromRunId: "${runId}" }) or paseo-workflow run --script-path ${JSON.stringify(record.scriptPath)} --resume ${runId}. Resume inherits saved args unless you override them.`);
     lines.push("A <task-notification> message arrives when the run ends; end your turn now unless other work does not depend on it. workflow_status reports progress.");
-    const guidance = this.guidance(callerId);
-    if (guidance) lines.push(guidanceReminder(guidance));
+    const current = this.guidance(callerId);
+    if (current) lines.push(guidanceReminder(current));
+    if (inheritedGuidance && guidance) lines.push(`This resume keeps the guidance of ${resumedFrom} (Ultracode ${guidance.ultracode ? "on" : "off"}, size ${guidance.size}) so its cached results stay valid; launch without resumeFromRunId to use the current setting.`);
+    if ((record.chain ?? 1) >= CHAIN_CHECK_IN) lines.push(chainCheckIn(record.chain ?? 1));
     return lines.join("\n");
   }
 
@@ -468,17 +481,19 @@ export class WorkflowService {
     if (record.parentAgentId !== agentId) throw new ServiceError("forbidden", "This workflow belongs to another agent.");
   }
 
-  private async budgetFor(paseo: PaseoApi, agentId: string): Promise<number | null> {
+  /** The caller's latest message from the user (plugin notifications skipped), or null. */
+  private async latestUserMessage(paseo: PaseoApi, agentId: string): Promise<{ text: string; key: string } | null> {
     try {
       const timeline = paseo.agents.ref(agentId).timeline;
       let page = await timeline.refetch({ direction: "tail", limit: 200, projection: "canonical" });
       for (;;) {
         const entries = page.entries;
         for (let index = entries.length - 1; index >= 0; index--) {
-          const item = entries[index]?.item;
+          const entry = entries[index];
+          const item = entry?.item;
           if (item?.type === "user_message" && typeof item.text === "string") {
             if (item.text.startsWith(NOTIFICATION_MARKER)) continue;
-            return parseBudgetDirective(stripReminders(item.text));
+            return { text: item.text, key: `${entry.timestamp}:${entry.seqStart}` };
           }
         }
         if (!page.hasOlder || !page.startCursor) break;
@@ -487,9 +502,18 @@ export class WorkflowService {
         if (page.startCursor?.seq === cursor.seq && page.startCursor.epoch === cursor.epoch) break;
       }
     } catch (error) {
-      log(`could not read the token budget of ${agentId}: ${describeError(error)}`);
+      log(`could not read the latest user message of ${agentId}: ${describeError(error)}`);
     }
     return null;
+  }
+
+  /** How many runs this agent has launched since the user's message `key`, this one included. */
+  private chainIndex(agentId: string, key: string | null): number {
+    if (!key) return 1;
+    const previous = this.chains.get(agentId);
+    const index = previous && previous.key === key ? previous.count + 1 : 1;
+    this.chains.set(agentId, { key, count: index });
+    return index;
   }
 
   private async resolveSource(
