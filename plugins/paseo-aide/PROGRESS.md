@@ -67,22 +67,22 @@
 
 | 日期 | commit | 场景 | 结果 | 截图 |
 | --- | --- | --- | --- | --- |
-| 2026-10-23 | cb3679b | 侧栏 Aide → 设置向导 | 列出本机 Claude/Codex/OpenCode 模型和 Claude 权限模式；默认 Sonnet 5.5 / Auto mode / Haiku 4.5 | `docs/verification/2026-10-23-setup-desktop.png` |
-| 2026-10-23 | cb3679b | 填名字、中文、fixture 目录、Haiku，提交 | 建出项目、workspace 和助手（系统提示、aide MCP、预批准工具都在）；欢迎提示渲染成 Setup 卡片；助手用中文自我介绍。建 agent 用了约 25 秒（本机其他插件的 agent.create 钩子） | `…-welcome-chat-desktop.png` |
-| 2026-10-23 | cb3679b | Check now | 失败：另一个插件 next-workspace 的 before agent.create 钩子超时（30 秒）。据此加了重试，见下一行 | 活动记录 |
-| 2026-10-23 | e8a54c7 | 在 `inbox/urgent.txt` 写牙医改约，Check now | 子 agent（Haiku，default 模式，带 `paseo.parent-agent-id`）读文件、用 `aide_checkin_report` 报 1 条 high；子 agent `requiresAttention: false`；提醒投递，助手写出中文提醒；卡片带 Done / Later / Don't remind me；侧栏角标 1 | `…-checkin-alert-chat-desktop.png` |
-| 2026-10-23 | e8a54c7 → c4e3ae3 | 推送 | 发现：欢迎消息一直未读，所以提醒那一轮没有新的 attention（Paseo 对已在 attention 的 agent 不再推送）。修复后复测：投递前清掉未读标记，助手 `attentionTimestamp` 从 17:53:51 变为 18:00:31。手机推送本身没有观察到：headless 浏览器算在场客户端，Paseo 改发应用内通知（daemon 日志 18:00 无 push） | 无 |
-| 2026-10-23 | c4e3ae3 | 聊天卡片上点 Done | 提醒变 done，卡片按钮换成 Done | 无 |
-| 2026-10-23 | c4e3ae3 | Aide 主屏（桌面） | 需要你、Paseo 里等你的（已完成的折叠成一行）、计划、活动都正确 | `…-dashboard-desktop.png` |
-| 2026-10-23 | fd68a90 | Aide 主屏（窄屏） | 发现两列堆叠时中间有大块空白，修复后正常 | `…-dashboard-compact.png` |
-| 2026-10-23 | 1aa8696 | 在聊天里说“牙医那条已处理，5 分钟后提醒我喝水” | 助手调 `aide_alert_update` 和 `aide_followup_create`，回复 11:06；中间插件 reload 过一次；11:06:59 提醒投递，Reminder 卡片 + “时间到了，喝杯水吧 💧” | `…-followup-reminder-chat-desktop.png` |
-| 2026-10-23 | fd68a90 | 内容没变时 Check now | outcome quiet，聊天里没有任何新消息，助手 attention 时间戳不变 | 活动记录 |
-| 2026-10-23 | fd68a90 | Brief me | Brief 卡片 + 中文早报（窄屏） | `…-brief-chat-compact.png` |
-| 2026-10-23 | fd68a90 | 设置页改每日上限 6、早报 08:45，保存 | 生效，刷新后仍在；名字和暂停状态没被覆盖 | `…-settings-desktop.png` |
-| 2026-10-23 | fd68a90 | 主屏 Pause / Resume | 状态 Paused，计划区提示提醒照常；Resume 后恢复 | `…-dashboard-paused-desktop.png` |
-| 2026-10-23 | fd68a90 | 聊天里说“以后每3小时检查一次，早报改到9点” | 助手调 `aide_schedule_update`，配置变为 180 分钟、09:00 | 活动记录 |
-| 2026-10-23 | fd68a90 | 聊天里说“2分钟后在后台看一下 urgent.txt，有新消息再告诉我” | 助手排了 check 模式跟进；到点子 agent 发现新增的一行，提醒投递：“牙医提醒：下午 5:15 的约诊要带保险卡。” | `…-followup-check-chat-desktop.png` |
-| 2026-10-23 | 9bb964b | 清理时 archive 测试 workspace | 插件经钩子记为“Stopped: the chat was archived”；主屏显示 Set up again | `…-detached-setup-again-desktop.png` |
+| 2026-10-23 | b26ccb9 | 侧栏 Aide → 设置向导 | 列出本机 Claude/Codex/OpenCode 模型和 Claude 权限模式；默认 Sonnet 5.5 / Auto mode / Haiku 4.5 | `docs/verification/2026-10-23-setup-desktop.png` |
+| 2026-10-23 | b26ccb9 | 填名字、中文、fixture 目录、Haiku，提交 | 建出项目、workspace 和助手（系统提示、aide MCP、预批准工具都在）；欢迎提示渲染成 Setup 卡片；助手用中文自我介绍。建 agent 用了约 25 秒（本机其他插件的 agent.create 钩子） | `…-welcome-chat-desktop.png` |
+| 2026-10-23 | b26ccb9 | Check now | 失败：另一个插件 next-workspace 的 before agent.create 钩子超时（30 秒）。据此加了重试，见下一行 | 活动记录 |
+| 2026-10-23 | 372afde | 在 `inbox/urgent.txt` 写牙医改约，Check now | 子 agent（Haiku，default 模式，带 `paseo.parent-agent-id`）读文件、用 `aide_checkin_report` 报 1 条 high；子 agent `requiresAttention: false`；提醒投递，助手写出中文提醒；卡片带 Done / Later / Don't remind me；侧栏角标 1 | `…-checkin-alert-chat-desktop.png` |
+| 2026-10-23 | 372afde → 0b6160e | 推送 | 发现：欢迎消息一直未读，所以提醒那一轮没有新的 attention（Paseo 对已在 attention 的 agent 不再推送）。修复后复测：投递前清掉未读标记，助手 `attentionTimestamp` 从 17:53:51 变为 18:00:31。手机推送本身没有观察到：headless 浏览器算在场客户端，Paseo 改发应用内通知（daemon 日志 18:00 无 push） | 无 |
+| 2026-10-23 | 0b6160e | 聊天卡片上点 Done | 提醒变 done，卡片按钮换成 Done | 无 |
+| 2026-10-23 | 0b6160e | Aide 主屏（桌面） | 需要你、Paseo 里等你的（已完成的折叠成一行）、计划、活动都正确 | `…-dashboard-desktop.png` |
+| 2026-10-23 | c1021cc | Aide 主屏（窄屏） | 发现两列堆叠时中间有大块空白，修复后正常 | `…-dashboard-compact.png` |
+| 2026-10-23 | 5d186dc | 在聊天里说“牙医那条已处理，5 分钟后提醒我喝水” | 助手调 `aide_alert_update` 和 `aide_followup_create`，回复 11:06；中间插件 reload 过一次；11:06:59 提醒投递，Reminder 卡片 + “时间到了，喝杯水吧 💧” | `…-followup-reminder-chat-desktop.png` |
+| 2026-10-23 | c1021cc | 内容没变时 Check now | outcome quiet，聊天里没有任何新消息，助手 attention 时间戳不变 | 活动记录 |
+| 2026-10-23 | c1021cc | Brief me | Brief 卡片 + 中文早报（窄屏） | `…-brief-chat-compact.png` |
+| 2026-10-23 | c1021cc | 设置页改每日上限 6、早报 08:45，保存 | 生效，刷新后仍在；名字和暂停状态没被覆盖 | `…-settings-desktop.png` |
+| 2026-10-23 | c1021cc | 主屏 Pause / Resume | 状态 Paused，计划区提示提醒照常；Resume 后恢复 | `…-dashboard-paused-desktop.png` |
+| 2026-10-23 | c1021cc | 聊天里说“以后每3小时检查一次，早报改到9点” | 助手调 `aide_schedule_update`，配置变为 180 分钟、09:00 | 活动记录 |
+| 2026-10-23 | c1021cc | 聊天里说“2分钟后在后台看一下 urgent.txt，有新消息再告诉我” | 助手排了 check 模式跟进；到点子 agent 发现新增的一行，提醒投递：“牙医提醒：下午 5:15 的约诊要带保险卡。” | `…-followup-check-chat-desktop.png` |
+| 2026-10-23 | 9bd0596 | 清理时 archive 测试 workspace | 插件经钩子记为“Stopped: the chat was archived”；主屏显示 Set up again | `…-detached-setup-again-desktop.png` |
 
 没有验证到的：
 
