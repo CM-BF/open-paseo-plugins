@@ -24,9 +24,9 @@ export default function contribute(client: PluginClientContext) {
     client.addWorkspacePanel({ id: PANEL_ID, title: "Dynamic workflows", icon: "Workflow", context: "agent", Component: RunsPanel }),
     client.addCommandCenterItem({
       id: "show-dynamic-workflows",
-      title: "Show dynamic workflow runs",
+      title: "Dynamic workflow tools and runs",
       icon: "Workflow",
-      keywords: ["workflow", "workflows", "dynamic", "orchestration", "agents", "fan out"],
+      keywords: ["workflow", "workflows", "dynamic", "tools", "enable", "settings", "orchestration", "agents", "fan out"],
       context: "agent",
       onSelect({ openPanel }) {
         openPanel(PANEL_ID);
@@ -34,7 +34,7 @@ export default function contribute(client: PluginClientContext) {
     }),
     client.addSlashCommand({
       name: "dynamic-workflows",
-      description: "Show this agent's dynamic workflow runs",
+      description: "Enable workflow tools for this agent and view its runs",
       argumentHint: "",
       context: "agent",
       onSubmit({ openPanel }) {

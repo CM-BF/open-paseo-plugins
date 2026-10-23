@@ -72,18 +72,15 @@ function SettingsEditor({ settings }: { settings: ReadySettings }) {
   };
   return (
     <View style={{ gap: 20 }}>
-      <SettingsSection title="New agents">
+      <SettingsSection title="Tool access">
         <SettingsCard>
-          <SettingsSwitch
-            label="Add workflow tools to new agents"
-            hint="Claude and Codex get the workflow MCP tools; OpenCode, Pi and OMP get instructions for the paseo-workflow command. Existing agents are not changed."
-            value={values.injectIntoNewAgents}
-            disabled={settings.saving}
-            onValueChange={(injectIntoNewAgents) => setValues((current) => ({ ...current, injectIntoNewAgents }))}
+          <SettingsRow
+            label="Enabled separately for each agent"
+            hint="New agents start with workflow tools off. Open /dynamic-workflows in a conversation, or Dynamic workflow tools and runs in Command Center, to enable them for that agent."
           />
           <SettingsSwitch
             label="Preapprove the workflow tools"
-            hint="Agents call workflow, workflow_status, workflow_stop and workflow_reference without a permission prompt (never on OpenCode)."
+            hint="Enabled Claude and Codex agents call workflow, workflow_status, workflow_stop and workflow_reference without a permission prompt."
             value={values.preapproveTools}
             disabled={settings.saving}
             onValueChange={(preapproveTools) => setValues((current) => ({ ...current, preapproveTools }))}

@@ -23,6 +23,7 @@ import {
 import { onRunRequested, takeRequestedRun, useNow } from "./hooks";
 import { createStyles, type Styles } from "./styles";
 import { callsByAttention } from "./call-order";
+import { AgentAccess } from "./agent-access";
 
 const CALLS_PER_PAGE = 50;
 const UNGROUPED = "Agents";
@@ -61,6 +62,7 @@ export function RunsPanel({ theme, layout, agentId, navigation }: PluginAgentPan
           Runs launched by {agent?.title ?? "this agent"}
         </Text>
       </View>
+      <AgentAccess key={agentId} agentId={agentId} styles={styles} />
       {list.isPending ? <Text style={styles.mutedText}>Loading runs…</Text> : null}
       {list.isError ? (
         <Pressable onPress={() => void list.refetch()} accessibilityRole="button">
@@ -71,7 +73,7 @@ export function RunsPanel({ theme, layout, agentId, navigation }: PluginAgentPan
         <View style={styles.panelCard}>
           <Text style={styles.text}>No workflow runs yet.</Text>
           <Text style={styles.mutedText}>
-            Ask this agent to "use a workflow" for a task. It writes a script with agent(), parallel() and pipeline(), and the
+            Enable workflow tools above, then ask this agent to "use a workflow" for a task. It writes a script with agent(), parallel() and pipeline(), and the
             run shows up here and as a card in the chat.
           </Text>
         </View>

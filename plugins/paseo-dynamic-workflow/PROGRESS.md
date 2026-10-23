@@ -180,3 +180,10 @@ Fixture：`~/plugin-test-2026-10-22-dwf-review`，project `prj_8474b59633637446`
 - 用户明确要求发布到 `origin/main`，插件保持在 `plugins/paseo-dynamic-workflow/`。仓库 `AGENTS.md` 新增强制目录规范：所有插件必须位于 `plugins/<id>/`，禁止放在仓库根目录或其他顶级目录；`CLAUDE.md` 通过 `@AGENTS.md` 引用同一规则。
 - 发布范围为完整插件、仓库开发规则/README 和验收辅助脚本，没有其他插件改动。远程 main 的初始提交是当前分支祖先，可常规快进，不覆盖已有历史。
 - 发布前检查：全部被跟踪 manifest 均符合 `plugins/<id>/paseo-plugin.json`；Git 安装路径与 build 已配置；`git diff --check` 通过。上一轮159项测试、typecheck与主daemon验收已完成，本次只改目录规则和发布文案。
+
+## 按 agent 开启 workflow：客户端（2026-10-22）
+
+- Dynamic workflows 面板顶部新增独立 agent 开关，无运行时也可见；只在面板打开时读取该 agent 的状态，不增加全局 agent 轮询。保存期间禁用开关，成功后更新对应缓存，读取与保存失败就地显示。
+- `/dynamic-workflows` 和 Command Center 的 “Dynamic workflow tools and runs” 均可进入。workflow 子 agent 不允许开启；Claude/Codex 提示从 agent 菜单 Reload 刷新工具列表（不承诺 Codex 自动刷新）；其他 provider 开启后显示可复制的 CLI reference 命令，用户可放入下一条提示，不自动发送消息。
+- 全局设置移除 “Add workflow tools to new agents”，改为按 agent 开启的入口说明；保留工具预批准与运行设置。preferences v2 迁移丢弃旧的全局注入开关，其余字段按新 schema 保留。
+- 局部检查：`git diff --check` 通过；typecheck 仅剩并行后端修改中的两个 bridge.test.ts 缺少 access fixture 错误，客户端与设置 schema 无类型错误。尚未进行本次主 daemon/Web UI 验收，由整合阶段记录。

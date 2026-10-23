@@ -2,8 +2,6 @@ import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
 
 export const PreferencesSchema = z.object({
-  /** Add the workflow tools and instructions to agents created from now on. */
-  injectIntoNewAgents: z.boolean().default(true),
   /** Preapprove the workflow MCP tools (Claude, Codex; never OpenCode). */
   preapproveTools: z.boolean().default(true),
   /** Concurrent child agents per run. 0 means min(8, CPUs - 2). */
@@ -22,6 +20,8 @@ export const DEFAULT_PREFERENCES: Preferences = PreferencesSchema.parse({});
 export const preferences = defineSettings({
   id: "preferences",
   scope: "host",
-  version: 1,
+  version: 2,
   schema: PreferencesSchema,
+  // The former global injection flag is intentionally discarded; agent access starts disabled.
+  migrate: (values) => PreferencesSchema.parse(values),
 });
