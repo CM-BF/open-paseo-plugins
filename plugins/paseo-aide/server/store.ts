@@ -48,6 +48,8 @@ const StateSchema = z.object({
   /** Local date the daily counters belong to. */
   day: z.string().nullable().default(null),
   checkinsToday: z.number().int().default(0),
+  /** Scheduled check-ins today, the ones the daily limit counts; Check now does not use it up. */
+  scheduledToday: z.number().int().default(0),
   messagesToday: z.number().int().default(0),
   /** Proactive messages since the user last wrote to the assistant. */
   unanswered: z.number().int().default(0),

@@ -241,7 +241,7 @@ describe("check-ins", () => {
     await tick();
     await settle();
     expect(service.activity.recent(1)[0]).toMatchObject({ outcome: "failed", detail: expect.stringMatching(/Trying again in 15 minutes/) });
-    expect(service.store.state.checkinsToday).toBe(0);
+    expect(service.store.state).toMatchObject({ checkinsToday: 0, scheduledToday: 0 });
     clock += 14 * 60_000;
     await tick();
     await settle();
@@ -250,6 +250,21 @@ describe("check-ins", () => {
     await tick();
     await settle();
     expect(service.activity.recent(1)[0]).toMatchObject({ outcome: "quiet" });
+  });
+
+  it("does not let Check now use up the scheduled check-ins", async () => {
+    service.saveConfig({ ...service.config(), checkins: { ...service.config().checkins, maxPerDay: 1 } });
+    expect(service.checkNow()).toMatchObject({ started: true });
+    await settle();
+    expect(service.store.state).toMatchObject({ checkinsToday: 1, scheduledToday: 0 });
+    clock += 3 * 60 * 60_000;
+    await tick();
+    await settle();
+    expect(service.store.state).toMatchObject({ checkinsToday: 2, scheduledToday: 1 });
+    clock += 3 * 60 * 60_000;
+    await tick();
+    await settle();
+    expect(service.store.state.scheduledToday).toBe(1);
   });
 
   it("records a failed check-in without a report", async () => {

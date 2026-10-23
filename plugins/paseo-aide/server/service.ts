@@ -301,6 +301,7 @@ export class AideService {
     if (state.day === day) return;
     state.day = day;
     state.checkinsToday = 0;
+    state.scheduledToday = 0;
     state.messagesToday = 0;
     this.store.save();
   }
@@ -425,7 +426,7 @@ export class AideService {
     const schedule = this.schedule();
     const next = nextCheckinAt({ config: schedule, lastStartedAt: state.lastCheckinAt ? Date.parse(state.lastCheckinAt) : null, setupAt: Date.parse(assistant.createdAt), quietStreak: state.quietStreak });
     if (next === null || next > now || !isActiveTime(now, schedule)) return;
-    if (state.checkinsToday >= schedule.checkins.maxPerDay) return;
+    if (state.scheduledToday >= schedule.checkins.maxPerDay) return;
     this.startCheckin({ reason: "scheduled" });
   }
 
@@ -448,7 +449,9 @@ export class AideService {
     state.inFlight = inFlight;
     if (options.reason !== "followup") {
       state.lastCheckinAt = inFlight.startedAt;
+      this.rollDay(now);
       state.checkinsToday++;
+      if (options.reason === "scheduled") state.scheduledToday++;
     }
     this.store.save();
     this.running = this.executeCheckin(inFlight, options.focus ?? null, options.followup ?? null)
@@ -510,6 +513,7 @@ export class AideService {
         const interval = effectiveIntervalMinutes(this.schedule(), state.quietStreak);
         state.lastCheckinAt = new Date(this.now() - Math.max(0, interval - FAILURE_RETRY_MINUTES) * 60_000).toISOString();
         state.checkinsToday = Math.max(0, state.checkinsToday - 1);
+        state.scheduledToday = Math.max(0, state.scheduledToday - 1);
         retry = ` Trying again in ${FAILURE_RETRY_MINUTES} minutes.`;
       }
       this.store.save();
@@ -570,6 +574,7 @@ export class AideService {
   private onDelivered(entry: OutboxEntry): void {
     const state = this.store.state;
     if (entry.counts) {
+      this.rollDay(this.now());
       state.messagesToday++;
       state.unanswered++;
     }
@@ -793,7 +798,7 @@ export class AideService {
     if (!paused) {
       const next = nextCheckinAt({ config: schedule, lastStartedAt: state.lastCheckinAt ? Date.parse(state.lastCheckinAt) : null, setupAt: Date.parse(assistant.createdAt), quietStreak: state.quietStreak });
       if (next !== null) {
-        const capped = state.checkinsToday >= schedule.checkins.maxPerDay;
+        const capped = state.scheduledToday >= schedule.checkins.maxPerDay;
         planned.push({ kind: "checkin", at: new Date(Math.max(next, now)).toISOString(), title: capped ? "Check-in (daily limit reached; resumes tomorrow)" : "Background check-in", detail: state.quietStreak >= 3 ? `Slowed down after ${state.quietStreak} quiet check-ins.` : null, followupId: null });
       }
       const brief = nextBriefAt(now, schedule, state.lastBriefDay);
