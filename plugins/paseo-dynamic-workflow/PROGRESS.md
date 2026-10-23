@@ -232,3 +232,63 @@ Fixture：`~/plugin-test-2026-10-22-dwf-optin`，project `prj_36afb70a124afaaa`�
 清理：两 agent 已 archive，workspace archive、project delete；fixture 目录、完成的 fixture run 已删除，开启列表和 outbox 中没有 fixture。Web UI 访问原 workspace 显示 Workspace unavailable。证据/安装前备份位于 `~/.paseo/verification/dwf-agent-optin-2026-10-22/`。归档 agent 的 nonce 映射保留，避免直接改写活跃插件的内存/持久化 binding；不能再借此启动 workflow，因为对应开关已关闭。历史摘要缓存可能在本进程保留已删除测试运行，归档 workspace 的面板已不可访问；未为清缓存再 reload。
 
 操作失误记录：reload 没有可靠地受非 fixture 活动运行检查约束，误中断另一任务的两次运行：`wf_72355de8655f`（01:25:52 UTC）和其后续 `wf_5119f3a9d9e6`（01:28:14 UTC），各有3个子 agent。最后一次命令虽已打印活动运行，仍无条件执行 reload。已向用户说明；两份原脚本/journal/run.json 保留，均 `notified:true`，确认插件已向原 agent 投递中断通知，可由原 agent 使用 resumeFromRunId 恢复。没有自动重启，也未删除其记录。已把“每次 reload 都必须重新检查，检测到非 fixture 活动运行即中止，不能只打印后无条件继续”写入实机测试技能。
+
+## Claude Code workflow 用法与 Ultracode（2026-10-22，进行中）
+
+### 起因与诊断
+
+用户对比了 Codex agent `f66ffa4a`（gpt-6-astra，thinking ultra）跑的 workflow 和 Claude 会话跑的 workflow：前者只有 3 路调研 → 1 个质疑者 → 1 个汇总（5 个 agent），两次被插件 reload 中断后又缩成 3 个 agent、单阶段；后者每次上百个 agent（按维度审查 → 每条发现多票核实 → 完整性检查 → 汇总 → 修复）。
+
+核实后的原因（设计审查 workflow `wf_bbcdf98d-234` 的四个视角与完整性检查确认）：
+1. 插件没有 Ultracode。Claude 会话的大规模来自每轮注入的 “Ultracode is on…token cost is not a constraint” 提醒和 authoring reference 的 Ultracode 一节，不来自 API 本身。没有它时模型按“请求的规模”办事；Claude 自己非 Ultracode 时默认规模建议也是 medium（约 10 个 agent）。
+2. 旧 REFERENCE 缺：Ultracode、“研究/审查/审计拿不准时偏向彻底”、五种可串联形态、多票核实代码、barrier 判别示例、组合式 loop-until-dry 示例。Codex 照抄代码示例：旧示例只有“每条发现一个 refuter”和只在有 budget 时才跑的循环。
+3. 工具描述缺 “ultracode” 关键字和 Ultracode 两种 opt-in，没有内置命名 workflow，`workflow_disabled` 错误还教 agent 自己去 UI 打开开关（f66 照做了）。
+4. 中断后缩水：两次中断都没有已完成的调用（cached 0），resume 不省钱；通知没说清楚丢了什么、怎么回收。中断本身由本插件的验收 reload 造成（见上一节的操作失误记录）。
+5. 另外发现：Paseo 里启动的 Claude Code 2.1.291 默认把 MCP 工具藏在 tool search 后面，工具描述在模型决定是否 orchestrate 时根本不可见。
+
+### 关键决定
+
+| 决定 | 原因 |
+| --- | --- |
+| 每个 agent 一个 Ultracode 开关，打开即同时开启 workflow；关闭 workflow 时清掉 Ultracode | 一次操作；`agent-access.json` 仍是 version 1，只加可选的 `ultracodeAgentIds`，旧 shim 进程照常工作 |
+| 模式通过多个通道送达：MCP initialize instructions（仅开启的 agent）、`workflow` 工具描述（带 `anthropic/alwaysLoad`）、reference 第一行、每次启动结果、每条通知的 `<guidance>` | Paseo 不能每轮注入提醒；Codex 0.154 不处理 list_changed；Claude 默认延迟加载 MCP 工具描述。没有实测证据前不去掉任何通道 |
+| 规模建议设置 small/medium/large/unrestricted，默认 **unrestricted** | 用户的问题是规模太小；建议是上限，medium 只会更小。Ultracode 不受约束 |
+| shim 每个进程只读一次规模建议，改设置不发 list_changed | 否则所有开启的 Claude 会话 prompt cache 失效；当前值由启动结果/通知/reference 带到 |
+| 统一三态计票（holds / refuted / cannot_check）：失败或无法检查不算票，多数才确认或驳回，否则 unverified 并返回 | 原来六处示例和脚本计票不一致，基础设施失败会被当成驳回 |
+| 内置命名 workflow：deep-review、deep-research、design-panel、critique、verify-claims（原创脚本，共用 `workflows/_shared.js`，构建时注入） | 让任何 provider 直接用上 Claude 会话常用的审查 → 核实 → 完整性检查 → 汇总流程；同名保存文件覆盖内置，`builtin.<name>` 总是内置版本 |
+| 脚本新增只读全局 `guidance {ultracode, size}`、`agent()` 新增 `timeoutMinutes`，标签清除控制/格式/bidi 字符和尖括号 | 内置 workflow 按模式自动缩放；卡在权限提示的子 agent 不会永远挡住 barrier；标签会进入通知 |
+| resume 继承原 run 的 guidance | resume 是“同一个计划”，否则按 guidance 缩放的脚本缓存全部失效 |
+| 同一条用户消息之后第 4 次启动起，启动结果和通知要求先向用户汇报再继续 | Ultracode 的“下一阶段”提示会让 agent 自动串联，需要软性检查点 |
+| 通知里子 agent 的结果、错误、标签和 run 名不能闭合或伪造标签（结果 JSON 用 `<` 转义，保持合法） | 结果里可能有网页或代码文本 |
+| 不复制 Claude Code 的专有文本和脚本 | 8 词 shingle 重合度检查（工具在 `/tmp/dwf-review/critique-scratch/completeness/overlap.mjs`，Claude 材料不进仓库）：REFERENCE 0.1%、prompts 0.0%、deep-research 0.1%、其他 0% |
+| `scripts/safe-reload.mjs`：有其他 agent 的活动 run 时拒绝 reload | 中断别人的 run 是这次退化的直接诱因 |
+
+### 子任务
+
+- [x] 服务端：per-agent Ultracode、规模建议、guidance.json、shim 的 per-agent 描述和 instructions、alwaysLoad、命名 workflow 目录（0f2cf62, 1d4d3b6, 98fa102）
+- [x] 客户端：面板 Ultracode 开关、设置页规模选择、Reload 提示（eaa8e1a, 98fa102）
+- [x] REFERENCE 重写和工具描述（1d4d3b6, 4ae9f04）
+- [x] 启动结果/通知重申模式、中断通知列出被切断的 agent（fad8468, 1d4d3b6）
+- [x] 引擎：guidance 全局量、标签清理、timeoutMinutes（87fdd63）
+- [x] 内置 workflow 五个及其测试（0c976f1, a288d9c）
+- [x] 兼容性测试：冻结的旧 shim（`server/fixtures/mcp-fa7e41f.mjs`）对新状态文件、store/shim 一致性、RPC 和设置版本错位（98fa102）
+- [x] 统一计票、resume 继承 guidance、串联检查点、通知转义、原创性改写（4ae9f04）
+- [ ] 实现审查 workflow `wf_3f1eca24-b2d` 的修复（核实阶段第一次因 Claude Workflow 不支持 `agentType: 'verification'` 全部失败，已改脚本，待 resume）
+- [ ] 主 daemon 实机验收（Web UI、Codex 和 Claude fixture、内置 workflow、截图）
+
+### 哪些 agent 能看到什么（发布后）
+
+- 本插件版本之前启动的 agent 保持原 shim 进程，直到用户 Reload：fa7e41f 之前的 shim 不看开关就列出工具（bridge 仍拒绝未开启 agent 的启动）；fa7e41f 的 shim 按开关列工具，但不显示 Ultracode 文本。两者都能从启动结果、通知和 reference 第一行得到当前模式。`f66ffa4a` 属于前者。
+- 新 shim：Ultracode 切换实时发 list_changed（Codex 仍需 Reload）；规模建议按进程固定；instructions 每次连接读取一次。
+- CLI 型 agent（OpenCode、Pi、OMP、无 MCP 绑定的旧 agent）：只能从 `paseo-workflow reference` 输出和启动结果得知模式。
+
+### 回滚
+
+恢复上一版本源码前：在面板关掉各 agent 的 Ultracode（或插件停止时手动编辑 `agent-access.json` 去掉 `ultracodeAgentIds`），删除 `~/.paseo/paseo-dynamic-workflow/guidance.json` 和 `workflows/`，再 Reload 受影响的 agent。旧服务端会拒绝只含 `ultracode` 的 RPC（版本错位时报错而不是悄悄关掉 agent）。
+
+### 已知问题 / 未验证
+
+- Codex 0.154 是否接受工具上的 `_meta` 和 initialize 的 `instructions`、是否把 MCP 工具藏在 tool_search 后面：未实测。
+- Claude 是否在 list_changed 后刷新已加载的工具描述、instructions 是否经 Paseo 传给 Claude：未实测。
+- 子 agent 拿到哪些 MCP 服务器（REFERENCE 的描述是推断）：未实测。
+- shim 首次读取 guidance.json 失败时会在该进程内一直用默认值（unrestricted）。
