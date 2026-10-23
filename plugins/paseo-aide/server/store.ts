@@ -10,12 +10,13 @@ const AssistantSchema = z.object({
   workspaceId: z.string().nullable(),
   home: z.string(),
   createdAt: z.string(),
+  /** Set when the user archived the chat; proactive work stops until Aide is set up again. */
+  archivedAt: z.string().nullable().default(null),
 });
 export type AssistantRecord = z.infer<typeof AssistantSchema>;
 
-/** Background work started and not yet settled; survives a plugin restart so it can be cleaned up. */
+/** A check-in started and not yet settled; survives a plugin restart so its agent can be cleaned up. */
 const InFlightSchema = z.object({
-  kind: z.enum(["checkin", "brief"]),
   runId: z.string(),
   agentId: z.string().nullable(),
   startedAt: z.string(),
@@ -26,7 +27,7 @@ export type InFlight = z.infer<typeof InFlightSchema>;
 
 const OutboxEntrySchema = z.object({
   id: z.string(),
-  kind: z.enum(["checkin", "brief", "reminder"]),
+  kind: z.enum(["checkin", "brief", "reminder", "welcome"]),
   text: z.string(),
   createdAt: z.string(),
   attempts: z.number().int().nonnegative(),

@@ -12,6 +12,7 @@ export const setupRpc = defineRpc({
   name: "aide.setup",
   input: z.object({
     name: z.string().trim().min(1).max(40),
+    language: z.string().trim().max(40),
     home: z.string().trim().min(1),
     chatModel: z.string().min(1),
     chatMode: z.string(),

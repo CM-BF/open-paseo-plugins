@@ -6,6 +6,8 @@ const Clock = z.string().refine(isClock, "Use HH:MM");
 export const ConfigSchema = z.object({
   /** What the assistant calls itself, and its chat's title. */
   name: z.string().trim().min(1).max(40).default("Aide"),
+  /** Language for messages the assistant starts; empty follows the user's own language. */
+  language: z.string().trim().max(40).default(""),
   /** The chat agent: "provider/model". */
   chatModel: z.string().min(1).default("claude/claude-sonnet-5-5"),
   /** The chat agent's permission mode; empty uses the provider default. */
@@ -135,7 +137,8 @@ export const OverviewSchema = z.object({
     archived: z.boolean(),
   }).nullable(),
   state: z.enum(["not_set_up", "active", "paused", "quiet_hours", "detached"]),
-  busy: z.object({ kind: z.enum(["checkin", "brief"]), since: z.string(), agentId: z.string().nullable() }).nullable(),
+  /** A background check-in running now. */
+  busy: z.object({ since: z.string(), agentId: z.string().nullable(), reason: z.enum(["scheduled", "manual", "followup"]) }).nullable(),
   today: z.object({ checkins: z.number(), messages: z.number(), unanswered: z.number() }),
   alerts: z.array(AlertSchema),
   waiting: z.array(WaitingAgentSchema),

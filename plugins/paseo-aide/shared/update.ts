@@ -10,7 +10,7 @@ export const UpdateItemSchema = z.object({ id: z.string(), title: z.string(), ur
 
 export const UpdateDataSchema = z.object({
   v: z.literal(1),
-  kind: z.enum(["checkin", "brief", "reminder"]),
+  kind: z.enum(["checkin", "brief", "reminder", "welcome"]),
   title: z.string(),
   at: z.string(),
   runId: z.string().nullable().default(null),
