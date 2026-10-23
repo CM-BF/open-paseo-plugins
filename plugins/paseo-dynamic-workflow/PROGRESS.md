@@ -207,3 +207,28 @@ Fixture：`~/plugin-test-2026-10-22-dwf-review`，project `prj_8474b59633637446`
 - MCP shim 默认返回空工具列表，只有调用者 agent ID 在持久化开启列表中才返回四个工具描述；监听原子替换的状态文件，发送 `tools/list_changed`。缺失/损坏状态与未知绑定均关闭。
 - 新建会话不再默认注入 workflow 系统提示；复制配置时清理旧提示并重新绑定 nonce，workflow 子 agent 清理继承的端点、预授权和显式开启标记。CLI provider 仅在创建时显式传 `PASEO_DYNAMIC_WORKFLOW_ENABLED=1` 才注入提示。
 - 本地配置与真实 MCP 子进程回归已通过：默认空目录、A/B隔离、启停通知、迟到的绑定、失效状态、stdin关闭后退出；设置迁移保留其他参数。主 daemon 两个新建 Codex agent 均回复 workflowTools=[]；开关实机验证尚在进行。
+
+## 按 agent 开启：最终验证与交付（2026-10-22）
+
+- 默认每个 agent 关闭；`/dynamic-workflows` 或 Command Center 的 Dynamic workflow tools and runs 打开该 agent 的开关。状态文件 `agent-access.json` 与 host 通用设置分开；旧全局注入设置迁移时移除，其他设置保留。
+- 关闭时 MCP `tools/list` 返回空数组，不向新 agent 注入 workflow 系统提示。开启后只给该 agent 公布四个工具。Bridge 同步拒绝关闭 agent 的新 launch/reference，既有运行仍可查/停/接收通知。
+- 独立复核修复：工具列表响应（含 batch）与状态通知按输出顺序串行，防止陈旧列表覆盖新的开关；shim 和服务端都拒绝混合类型/未知版本状态；未知 nonce 不回退到另一 agent header；旧会话缺少 MCP 绑定时显示 CLI 路径，不误导用户 Reload 可以安装 MCP。
+- 当前 Codex 0.154.0 需要 Reload agent 刷新工具列表；Claude 的 installed 2.1.291 有变更通知处理代码，但本轮未实机验证 Claude 动态刷新。Paseo 0.12 不能通过公共插件 API 改写已有 session 的 systemPrompt/MCP 配置，所以旧提示和历史消息保留。原生手机未验证；窄宽度为真实 Web UI 420×860。
+
+本地检查：22 个文件、179 项测试通过；`npm run typecheck`、`git diff --check` 通过。新增实际 MCP 子进程、实际 Unix socket、状态重启、配置继承/子 agent 排除、RPC 生命周期与设置迁移测试。通知顺序的两个确定性回归在修复前均失败，修复后通过。
+
+实机：主 daemon `srv_BSheQn5lzdEE`，Paseo 0.12.0，127.0.0.1:6767。代码为 `fa7e41f` 加本节同提交的 nonce 校验；本轮开始时插件已被启用，结束时保持 **running/enabled**。来源仍为 `/Users/citrine/Projects/flowly-kanban/usage-cecf/open-paseo-plugins/plugins/paseo-dynamic-workflow`（当前 worktree 目录源）；删除 worktree 前需切换到稳定 checkout/Git 源。没有重启 daemon。
+
+Fixture：`~/plugin-test-2026-10-22-dwf-optin`，project `prj_36afb70a124afaaa`，workspace `wks_573e79b877a9f82c`；Codex/gpt-6-luna/low agents A=`6494c217-b1c6-4af2-91cd-0f15d448add0`、B=`6b557e5a-7ccc-47ec-be08-8020f5421119`。
+
+| 场景 | 实测结果 | 截图（docs/verification/） |
+| --- | --- | --- |
+| 两个新 agent 默认关闭 | A/B 均报告实际工具列表中 workflowTools=[] | `2026-10-22-optin-off-desktop.png` |
+| UI 只开启 A，刷新浏览器 | A 的开关仍 true；B 仍 false | `2026-10-22-optin-on-desktop.png`、`…-agent-b-off-desktop.png` |
+| Reload A 后真实 MCP 调用 | A 调用 workflow_reference，运行无子 agent 的脚本；`wf_f1dff4c8a7c6` completed，结果 `{optIn:true}`；B 再次确认 [] | `2026-10-22-optin-run-desktop.png`、`…-on-compact.png` |
+| UI 关闭 A | CLI reference 立即返回 workflow_disabled；Reload 后 A 报告 [] | 同 fixture 的消息和本地证据 |
+| 通用设置迁移 | 显示按 agent 开启说明；原并发0、总数1000、超时0保留 | `2026-10-22-optin-settings-desktop.png` |
+
+清理：两 agent 已 archive，workspace archive、project delete；fixture 目录、完成的 fixture run 已删除，开启列表和 outbox 中没有 fixture。Web UI 访问原 workspace 显示 Workspace unavailable。证据/安装前备份位于 `~/.paseo/verification/dwf-agent-optin-2026-10-22/`。归档 agent 的 nonce 映射保留，避免直接改写活跃插件的内存/持久化 binding；不能再借此启动 workflow，因为对应开关已关闭。历史摘要缓存可能在本进程保留已删除测试运行，归档 workspace 的面板已不可访问；未为清缓存再 reload。
+
+操作失误记录：reload 没有可靠地受非 fixture 活动运行检查约束，误中断另一任务的两次运行：`wf_72355de8655f`（01:25:52 UTC）和其后续 `wf_5119f3a9d9e6`（01:28:14 UTC），各有3个子 agent。最后一次命令虽已打印活动运行，仍无条件执行 reload。已向用户说明；两份原脚本/journal/run.json 保留，均 `notified:true`，确认插件已向原 agent 投递中断通知，可由原 agent 使用 resumeFromRunId 恢复。没有自动重启，也未删除其记录。已把“每次 reload 都必须重新检查，检测到非 fixture 活动运行即中止，不能只打印后无条件继续”写入实机测试技能。

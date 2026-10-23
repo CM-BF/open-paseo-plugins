@@ -87,6 +87,10 @@ it("lists tool descriptions only for the opted-in caller and updates the same MC
   expect(tools.every((tool: { description?: string }) => Boolean(tool.description))).toBe(true);
   expect(JSON.parse((await post(f.socketPath, "{}", "list", b)).body)).toEqual({ tools: [] });
   expect(JSON.parse((await post(f.socketPath, "{}", "list")).body)).toEqual({ tools: [] });
+  const unknownBinding = { "x-dynamic-workflow-binding": "missing", "x-dynamic-workflow-agent": "agent-a" };
+  expect(JSON.parse((await post(f.socketPath, "{}", "list", unknownBinding)).body)).toEqual({ tools: [] });
+  expect((await post(f.socketPath, '{"arguments":{"script":"return 1"}}', "workflow", unknownBinding)).status).toBe(400);
+  expect(f.launch).not.toHaveBeenCalled();
   await f.access.set("agent-a", false);
   expect(JSON.parse((await post(f.socketPath, "{}", "list", a)).body)).toEqual({ tools: [] });
 });

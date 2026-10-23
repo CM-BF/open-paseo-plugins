@@ -68,7 +68,7 @@ export class Bridge {
     if (nonce) {
       await this.options.bindings.load();
       const binding = this.options.bindings.get(nonce);
-      if (binding) return binding.agentId;
+      return binding?.agentId ?? null;
     }
     return header(request, "x-dynamic-workflow-agent");
   }
