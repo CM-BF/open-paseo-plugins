@@ -1,95 +1,126 @@
 export const meta = {
   name: 'design-panel',
-  description: 'Judge panel for a design or plan: independent designs from different angles, scored by parallel judges against shared criteria, then one synthesis built on the winner with the best ideas of the others grafted in.',
-  whenToUse: 'The user wants a design, architecture, migration plan or approach chosen carefully when several reasonable solutions exist. Scout the relevant code first and pass what you found as context. args: the problem as a string, or { problem, context?, angles?, criteria?, judges? }.',
+  description: 'Judge panel for a design or plan: independent designs from different angles, scored by judges who see them anonymized and in rotated order, then one synthesis built on the winner with the best ideas of the others grafted in.',
+  whenToUse: 'The user wants a design, architecture, migration plan or approach chosen carefully when several reasonable solutions exist. Scout the relevant code first and pass what you found as context. To review an existing draft instead, use critique. args: the problem as a string, or { problem, context?, angles?, criteria?, judges?, size? }. Size small is about 5 agents, medium 7, large 10, unrestricted 13.',
   phases: [
     { title: 'Draft', detail: 'one independent design per angle' },
     { title: 'Judge', detail: 'each judge scores every design' },
     { title: 'Synthesize', detail: 'build on the winner, graft the best of the rest' },
+    { title: 'Red team', detail: 'large and unrestricted: attack the final design, then revise' },
   ],
 }
 
 // design-panel (paseo-dynamic-workflow built-in)
 // args: "design X"  or
-//       { problem, context?: 'paths, constraints, what you found while scouting',
-//         angles?: ['minimal change first', ...], criteria?: ['correctness', ...], judges?: 3 (2-5) }
+//   { problem, context?: 'paths, constraints, what you found while scouting', angles?: ['smallest change', ...],
+//     criteria?: ['correctness', ...], judges?: 2-5, size?: 'small'|'medium'|'large'|'unrestricted' }
 
-const input = typeof args === 'string' ? { problem: args } : (args && typeof args === 'object' ? args : {})
+const input = readArgs('problem')
 const PROBLEM = typeof input.problem === 'string' ? input.problem.trim() : ''
-if (!PROBLEM) return { error: "No problem statement. Launch with workflow({ name: 'design-panel', args: { problem, context } })." }
-const CONTEXT = typeof input.context === 'string' && input.context.trim() ? input.context.trim() : ''
-const ANGLES = Array.isArray(input.angles) && input.angles.length
-  ? input.angles.slice(0, 6).map(String)
-  : ['smallest change that fully solves it', 'most robust under failure, concurrency and future change', 'best experience for the user and for operators', 'reuse of what already exists in the codebase and ecosystem']
-const CRITERIA = Array.isArray(input.criteria) && input.criteria.length
-  ? input.criteria.slice(0, 8).map(String)
-  : ['correctness and completeness', 'risk and failure handling', 'fit with the existing code and constraints', 'cost to build and maintain', 'user-visible quality']
-const JUDGES = Math.min(5, Math.max(2, Number.isInteger(input.judges) ? input.judges : 3))
+if (!PROBLEM) throw new Error("design-panel needs a problem: workflow({ name: 'design-panel', args: { problem, context } })")
+const SIZE = runSize(input)
+const K = { small: { angles: 2, judges: 2, red: 0 }, medium: { angles: 3, judges: 3, red: 0 }, large: { angles: 4, judges: 3, red: 2 }, unrestricted: { angles: 5, judges: 5, red: 2 } }[SIZE]
+const CONTEXT = typeof input.context === 'string' ? input.context.trim() : ''
+const ALL_ANGLES = ['smallest change that fully solves it', 'most robust under failure, concurrency and future change', 'best experience for the user and for operators', 'reuse of what already exists in the codebase and ecosystem', 'simplest design to explain, test and delete later']
+const ANGLES = (Array.isArray(input.angles) && input.angles.length ? input.angles.map((a) => clean(a, 200)) : ALL_ANGLES.slice(0, K.angles)).slice(0, 6)
+const CRITERIA = (Array.isArray(input.criteria) && input.criteria.length ? input.criteria.map((c) => clean(c, 120))
+  : ['correctness and completeness', 'risk and failure handling', 'fit with the existing code and constraints', 'cost to build and maintain', 'user-visible quality']).slice(0, 8)
+const JUDGES = int(input.judges, 2, 5, K.judges)
+const LETTERS = 'ABCDEF'.split('')
 
 const DESIGN = { type: 'object', required: ['title', 'summary', 'design', 'risks', 'steps'], properties: {
   title: { type: 'string' }, summary: { type: 'string' }, design: { type: 'string' },
   risks: { type: 'array', items: { type: 'string' } }, steps: { type: 'array', items: { type: 'string' } },
   evidence: { type: 'array', items: { type: 'string' }, description: 'Files, docs or facts you checked.' },
 } }
-const SCORES = { type: 'object', required: ['scores'], properties: { scores: { type: 'array', items: {
-  type: 'object', required: ['design', 'total', 'perCriterion', 'strengths', 'flaws'], properties: {
-    design: { type: 'number', description: 'Index of the design.' }, total: { type: 'number', description: '0-10' },
-    perCriterion: { type: 'array', items: { type: 'object', required: ['criterion', 'score'], properties: { criterion: { type: 'string' }, score: { type: 'number' } } } },
-    strengths: { type: 'array', items: { type: 'string' } }, flaws: { type: 'array', items: { type: 'string' } },
-  } } } } }
 const FINAL = { type: 'object', required: ['title', 'design', 'steps', 'risks', 'grafted', 'rejected'], properties: {
-  title: { type: 'string' }, design: { type: 'string' }, steps: { type: 'array', items: { type: 'string' } },
-  risks: { type: 'array', items: { type: 'string' } },
+  title: { type: 'string' }, design: { type: 'string' }, steps: { type: 'array', items: { type: 'string' } }, risks: { type: 'array', items: { type: 'string' } },
   grafted: { type: 'array', items: { type: 'string' }, description: 'Ideas taken from runner-up designs.' },
   rejected: { type: 'array', items: { type: 'string' }, description: 'Ideas deliberately left out, with why.' },
   openQuestions: { type: 'array', items: { type: 'string' } },
 } }
-const BRIEF = 'Problem: ' + PROBLEM + (CONTEXT ? '\n\nContext from the orchestrator:\n' + CONTEXT : '')
-const READ_ONLY = 'Read code and docs as needed but do not modify files.'
+const ATTACK = { type: 'object', required: ['flaws'], properties: { flaws: { type: 'array', items: {
+  type: 'object', required: ['flaw', 'severity', 'evidence'], properties: { flaw: { type: 'string' }, severity: { enum: ['critical', 'high', 'medium', 'low'] }, evidence: { type: 'string' } } } } } }
+const BRIEF = data('Problem', PROBLEM) + (CONTEXT ? '\n\n' + data('Context from the orchestrator', CONTEXT) : '')
+const READ_CODE = 'Read code and docs as needed; do not modify files, commit or install anything.'
 
 phase('Draft')
 const drafts = (await parallel(ANGLES.map((angle, i) => () => agent([
   'Design a solution independently. Your angle: ' + angle + '. Other designers work from other angles; do not hedge toward a compromise, make the strongest case for your angle.',
   BRIEF,
   'Check the real code and constraints before you commit to a design, and list what you checked as evidence.',
-  READ_ONLY,
-].join('\n\n'), { label: 'draft:' + (i + 1), phase: 'Draft', schema: DESIGN, agentType: 'plan' })))).map((d, i) => (d ? { ...d, angle: ANGLES[i] } : null)).filter(Boolean)
-if (drafts.length === 0) return { problem: PROBLEM, error: 'Every designer failed.' }
-log(drafts.length + ' design(s): ' + drafts.map((d) => d.title).join(' | '))
+  READ_CODE,
+].join('\n\n'), { label: 'draft:' + (i + 1), phase: 'Draft', schema: DESIGN, agentType: 'plan' }))))
+  .map((d, i) => (d ? { ...d, angle: ANGLES[i] } : null)).filter(Boolean)
+  .map((d, i) => ({ ...d, id: LETTERS[i] }))
+if (!drafts.length) throw new Error('Every designer failed; retry with a narrower problem or more context.')
+if (drafts.length < ANGLES.length) log((ANGLES.length - drafts.length) + ' designer(s) failed')
 
 phase('Judge')
-// Barrier on purpose: judges compare every design with the others.
-const listing = drafts.map((d, i) => '### Design ' + i + ': ' + d.title + ' (angle: ' + d.angle + ')\n' + d.summary + '\n\n' + d.design + '\nRisks: ' + d.risks.join('; ') + '\nSteps: ' + d.steps.join('; ')).join('\n\n')
-const panels = (await parallel(Array.from({ length: JUDGES }, (_, j) => () => agent([
-  'You are judge ' + (j + 1) + ' of ' + JUDGES + '. Score every design from 0 to 10 on each criterion and overall. Check claims against the code where a score depends on them. Be specific about flaws.',
-  'Criteria: ' + CRITERIA.join('; '),
-  BRIEF,
-  listing,
-  READ_ONLY,
-].join('\n\n'), { label: 'judge:' + (j + 1), phase: 'Judge', schema: SCORES, agentType: 'verification' })))).filter(Boolean)
-if (panels.length === 0) return { problem: PROBLEM, designs: drafts, error: 'Every judge failed; designs are returned unscored.' }
+const ids = drafts.map((d) => d.id)
+const SCORES = { type: 'object', required: ['scores'], properties: { scores: { type: 'array', items: {
+  type: 'object', required: ['design', 'total', 'strengths', 'flaws'], properties: {
+    design: { enum: ids }, total: { type: 'number', description: '0 to 10' },
+    perCriterion: { type: 'array', items: { type: 'object', required: ['criterion', 'score'], properties: { criterion: { type: 'string' }, score: { type: 'number' } } } },
+    strengths: { type: 'array', items: { type: 'string' } }, flaws: { type: 'array', items: { type: 'string' } },
+  } } } } }
+// Barrier on purpose: each judge compares every design. Anonymous ids and a rotated order per
+// judge keep position and angle names from steering the scores.
+const panels = (await parallel(Array.from({ length: JUDGES }, (_, j) => () => {
+  const rotated = drafts.map((_, i) => drafts[(i + j) % drafts.length])
+  return safe([
+    'You are judge ' + (j + 1) + ' of ' + JUDGES + '. Score every design from 0 to 10 overall and on each criterion. Check claims against the code where a score depends on them, and be specific about flaws. Score each design on its own merits; their order means nothing.',
+    'Criteria: ' + CRITERIA.join('; '),
+    BRIEF,
+    data('Designs', rotated.map((d) => ({ design: d.id, title: d.title, summary: d.summary, design_text: d.design, risks: d.risks, steps: d.steps }))),
+    READ_CODE,
+  ].join('\n\n'), { label: 'judge:' + (j + 1), phase: 'Judge', schema: SCORES, agentType: 'plan' })
+}))).filter(Boolean)
+if (!panels.length) return { schemaVersion: 1, status: 'partial', problem: PROBLEM, final: null, designs: drafts.map((d) => ({ id: d.id, title: d.title, angle: d.angle, summary: d.summary })), error: 'Every judge failed; designs are returned unscored.' }
 
-const totals = drafts.map((d, i) => {
-  const scores = panels.map((p) => p.scores.find((s) => s.design === i)).filter(Boolean)
-  const mean = scores.length ? scores.reduce((sum, s) => sum + s.total, 0) / scores.length : 0
-  return { index: i, title: d.title, mean: Math.round(mean * 10) / 10, judged: scores.length, strengths: scores.flatMap((s) => s.strengths), flaws: scores.flatMap((s) => s.flaws) }
-}).sort((a, b) => b.mean - a.mean)
-log('Ranking: ' + totals.map((t) => t.title + ' ' + t.mean).join(', '))
-const winner = drafts[totals[0].index]
+const totals = stableSort(drafts.map((d) => {
+  const scores = panels.map((p) => p.scores.find((s) => s.design === d.id)).filter(Boolean)
+  const mean = scores.length ? Math.round(scores.reduce((sum, s) => sum + s.total, 0) / scores.length * 10) / 10 : null
+  return { id: d.id, title: d.title, mean, judged: scores.length, strengths: scores.flatMap((s) => s.strengths), flaws: scores.flatMap((s) => s.flaws) }
+}), (t) => [t.judged >= 2 || panels.length < 2 ? 0 : 1, -(t.mean ?? -1), t.id])
+const unscored = totals.filter((t) => t.mean === null || (panels.length >= 2 && t.judged < 2))
+if (unscored.length) log('Too few judges scored: ' + unscored.map((t) => t.id).join(', ') + ' (ranked last, not zero)')
+log('Ranking: ' + totals.map((t) => t.id + ' ' + (t.mean ?? '?')).join(', '))
+const winner = drafts.find((d) => d.id === totals[0].id)
 
 phase('Synthesize')
-const final = await agent([
+let final = await safe([
   'Produce the final design. Start from the winning design, fix the flaws the judges found, and graft in the strongest ideas from the runner-ups where they fit. Say what you grafted and what you rejected and why.',
   BRIEF,
-  '## Winner: ' + winner.title + '\n' + winner.design + '\nJudge flaws: ' + totals[0].flaws.join('; '),
-  '## Runner-ups\n' + totals.slice(1).map((t) => '- ' + t.title + ' (' + t.mean + '): strengths ' + t.strengths.join('; ') + '\n' + drafts[t.index].design).join('\n\n'),
-  READ_ONLY,
+  data('Winner', { id: winner.id, title: winner.title, design: winner.design, judgeFlaws: totals[0].flaws }),
+  data('Runner-ups', totals.slice(1).map((t) => ({ id: t.id, title: t.title, mean: t.mean, strengths: t.strengths, design: drafts.find((d) => d.id === t.id).design }))),
+  READ_CODE,
 ].join('\n\n'), { label: 'synthesize', phase: 'Synthesize', schema: FINAL })
 
+let redTeam = []
+if (final && K.red) {
+  phase('Red team')
+  const LENSES = ['failure modes, concurrency and data loss', 'fit with the existing code, migrations and compatibility']
+  redTeam = (await parallel(LENSES.slice(0, K.red).map((lens, i) => () => safe([
+    'Attack this final design through one lens: ' + lens + '. Check each flaw against the code and give evidence; return an empty list if it holds up.',
+    BRIEF, data('Final design', final), READ_CODE,
+  ].join('\n\n'), { label: 'red-team:' + (i + 1), phase: 'Red team', schema: ATTACK, agentType: 'verification' })))).filter(Boolean).flatMap((r) => r.flaws)
+  if (redTeam.some((f) => f.severity === 'critical' || f.severity === 'high')) {
+    const revised = await safe([
+      'Revise the final design to address the serious flaws the red team found; keep everything that was not challenged.',
+      BRIEF, data('Final design', final), data('Red-team flaws', redTeam), READ_CODE,
+    ].join('\n\n'), { label: 'revise', phase: 'Red team', schema: FINAL })
+    if (revised) final = revised
+  }
+}
+
 return {
+  schemaVersion: 1,
+  status: final ? 'complete' : 'partial',
   problem: PROBLEM,
-  final: final || null,
-  ranking: totals.map((t) => ({ title: t.title, mean: t.mean, judged: t.judged })),
-  designs: drafts.map((d) => ({ title: d.title, angle: d.angle, summary: d.summary })),
-  stats: { designers: ANGLES.length, designs: drafts.length, judges: panels.length },
+  final,
+  ranking: totals.map((t) => ({ id: t.id, title: t.title, mean: t.mean, judged: t.judged })),
+  redTeam,
+  designs: drafts.map((d) => ({ id: d.id, title: d.title, angle: d.angle, summary: d.summary })),
+  stats: { size: SIZE, designers: ANGLES.length, designs: drafts.length, judges: panels.length },
 }

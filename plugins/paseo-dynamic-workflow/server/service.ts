@@ -340,7 +340,7 @@ export class WorkflowService {
     const dirs = cwd ? await workflowDirs(cwd) : [];
     const settings = this.settings();
     const limits = `> Your limits: ${concurrency(settings)} agents at once per run, at most ${settings.maxAgentsPerRun} agents per run.`;
-    return [`${referenceStatus(guidance)}\n${limits}`, REFERENCE.trimEnd(), catalogText(await listWorkflows(dirs))].join("\n\n") + "\n";
+    return [`${referenceStatus(guidance)}\n${limits}`, REFERENCE.trimEnd(), catalogText(await listWorkflows(dirs), this.paths.builtins)].join("\n\n") + "\n";
   }
 
   async list(agentId: string | undefined, limit: number): Promise<RunSummary[]> {

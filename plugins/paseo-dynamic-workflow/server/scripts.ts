@@ -1,8 +1,10 @@
 import { chmod, mkdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { BINDING_ENV, MCP_SERVER, MCP_TOOL_NAMES, PLUGIN_VERSION, type McpToolName } from "../shared/ids";
 import type { StatePaths } from "./paths";
 import { DEFAULT_WORKFLOW_SIZE, type ToolGuidance, WORKFLOW_SIZES } from "../shared/guidance";
 import { guidanceText, mcpInstructions, REFERENCE_TOOL_DESCRIPTION, sizeGuidelineText, STATUS_TOOL_DESCRIPTION, STOP_TOOL_DESCRIPTION, ULTRACODE_NOTICE, WORKFLOW_TOOL_DESCRIPTION } from "./prompts";
+import { BUILTIN_WORKFLOWS } from "./builtin-workflows";
 import { REFERENCE } from "./reference";
 import { writeAtomically } from "./util";
 
@@ -92,7 +94,7 @@ export function toolDefinitions(guidance?: ToolGuidance): Array<{ name: McpToolN
           },
           name: {
             type: "string",
-            description: "Name of a built-in workflow (deep-research, deep-review, design-panel) or a saved one (.paseo/workflows/<name>.js or .claude/workflows/<name>.js in the project, or under ~/.paseo or ~/.claude); workflow_reference lists them with their args.",
+            description: "Name of a built-in workflow (deep-review, deep-research, design-panel, critique, verify-claims; `builtin.<name>` skips a saved file of the same name) or a saved one (.paseo/workflows/<name>.js or .claude/workflows/<name>.js in the project, or under ~/.paseo or ~/.claude); workflow_reference lists them with their args.",
           },
           args: {
             description:
@@ -492,4 +494,6 @@ export async function writeScripts(paths: StatePaths, node: NodeRuntime = curren
   await writeIfChanged(paths.mcp, renderShim(paths.root, "mcp.mjs", node), 0o700);
   await writeIfChanged(paths.cli, renderShim(paths.root, "cli.mjs", node), 0o700);
   await writeIfChanged(paths.reference, `${STATIC_REFERENCE_NOTE}\n\n${REFERENCE}`, 0o600);
+  await mkdir(paths.builtins, { recursive: true, mode: 0o700 });
+  for (const [name, script] of Object.entries(BUILTIN_WORKFLOWS)) await writeIfChanged(join(paths.builtins, `${name}.js`), script, 0o600);
 }

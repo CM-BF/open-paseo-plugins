@@ -96,7 +96,7 @@ export const WORKFLOW_TOOL_DESCRIPTION = `Execute a workflow script that orchest
 
 ${OPT_IN}
 
-Call workflow_reference before writing your first script: it documents the full API, the Ultracode and scale rules, limits, patterns, resume, and the named workflows you can launch. Built-ins: deep-review (verified multi-dimension code review with a fix plan), deep-research (multi-source research with claims verified by skeptics), design-panel (independent designs scored by judges); launch one with { name, args }.
+Call workflow_reference before writing your first script: it documents the full API, the Ultracode and scale rules, limits, patterns, resume, and the named workflows you can launch. Built-ins (launch with { name, args }; each scales with args.size and follows Ultracode): deep-review (verified multi-dimension code review with a fix plan and recheck), deep-research (multi-source research with claims verified by skeptics), design-panel (independent designs scored by judges), critique (lens critics on an existing draft, verified, then revised), verify-claims (independent verification of a list of claims).
 
 Every script must begin with \`export const meta = {...}\`, a PURE LITERAL (no variables, calls or interpolation) with \`name\`, a one-line \`description\` and optionally \`phases\` (one { title, detail? } per phase() title). The body is plain JavaScript (not TypeScript), already async, and returns the result. Pass it inline via \`script\`; do not write it to a file first.
 

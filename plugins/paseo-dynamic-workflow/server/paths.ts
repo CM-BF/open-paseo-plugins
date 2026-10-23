@@ -29,6 +29,8 @@ export interface StatePaths {
   cliScript: string;
   mcpScript: string;
   reference: string;
+  /** Read-only copies of the built-in workflows, so agents can read their args and users can copy them. */
+  builtins: string;
 }
 
 export function statePaths(root: string): StatePaths {
@@ -49,6 +51,7 @@ export function statePaths(root: string): StatePaths {
     cliScript: join(lib, "cli.mjs"),
     mcpScript: join(lib, "mcp.mjs"),
     reference: join(root, "REFERENCE.md"),
+    builtins: join(root, "workflows"),
   };
 }
 

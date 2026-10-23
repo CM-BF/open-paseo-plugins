@@ -9,6 +9,7 @@ import { parseWorkflowScript } from "./script-parse";
 
 const execFileAsync = promisify(execFile);
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const BUILTIN_PREFIX = "builtin.";
 
 export interface NamedWorkflow {
   script: string;
@@ -46,8 +47,13 @@ export async function workflowDirs(cwd: string): Promise<string[]> {
   return [...new Set(dirs)];
 }
 
-/** Saved files win over built-ins of the same name, so a user can replace a built-in. */
+/** Saved files win over built-ins of the same name, so a user can replace a built-in; `builtin.<name>` skips them. */
 export async function findNamedWorkflow(name: string, dirs: string[]): Promise<NamedWorkflow> {
+  if (name.startsWith(BUILTIN_PREFIX)) {
+    const bare = name.slice(BUILTIN_PREFIX.length);
+    if (Object.hasOwn(BUILTIN_WORKFLOWS, bare)) return { script: BUILTIN_WORKFLOWS[bare]!, path: null };
+    throw new UnknownWorkflowError(`There is no built-in workflow "${bare}". Built-ins: ${Object.keys(BUILTIN_WORKFLOWS).sort().join(", ")}`);
+  }
   for (const dir of dirs) {
     const path = join(dir, `${name}.js`);
     const script = await readFile(path, "utf8").catch(() => null);
@@ -90,18 +96,18 @@ function describe(name: string, script: string, source: string): CatalogEntry {
   }
 }
 
-/** Markdown appended to the reference for one caller. */
-export function catalogText(entries: CatalogEntry[]): string {
+/** Markdown appended to the reference for one caller; `builtinDir` holds readable copies of the built-ins. */
+export function catalogText(entries: CatalogEntry[], builtinDir?: string): string {
   if (entries.length === 0) return "## Named workflows available to you\n\nNone.";
   const lines = entries.map((entry) => {
-    const where = entry.source === "built-in" ? "built-in" : entry.source;
+    const where = entry.source === "built-in" ? (builtinDir ? `built-in, source ${join(builtinDir, `${entry.name}.js`)}` : "built-in") : entry.source;
     const when = entry.whenToUse ? ` When to use: ${entry.whenToUse}` : "";
     return `- \`${entry.name}\` (${where}): ${entry.description}${when}`;
   });
   return [
     "## Named workflows available to you",
     "",
-    "Launch one with `workflow({ name, args })` or `paseo-workflow run --name <name> --args-json '...'`; a saved file of the same name replaces a built-in. Read a built-in's header comment for its `args`.",
+    "Launch one with `workflow({ name, args })` or `paseo-workflow run --name <name> --args-json '...'`. A saved file of the same name replaces a built-in; `builtin.<name>` always runs the shipped one. Each built-in's header comment documents its `args`; read its source file below before the first launch.",
     "",
     ...lines,
   ].join("\n");
