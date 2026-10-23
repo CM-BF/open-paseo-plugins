@@ -66,7 +66,8 @@ export function createStyles(theme: PluginTheme, compact: boolean) {
     choiceActive: { borderColor: colors.accent, backgroundColor: colors.surface2 },
     choiceText: { color: colors.foreground, fontSize: 12 },
     grid: { flexDirection: compact ? "column" : "row", gap: compact ? 16 : 20, alignItems: "flex-start" },
-    column: { flex: 1, minWidth: 0, gap: compact ? 16 : 20, width: compact ? "100%" : undefined },
+    // Side by side on wide layouts; stacked on compact ones, where flex: 1 would stretch each column to fill the screen.
+    column: compact ? { width: "100%", gap: 16 } : { flex: 1, minWidth: 0, gap: 20 },
   });
 }
 
