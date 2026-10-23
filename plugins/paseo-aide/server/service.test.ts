@@ -302,6 +302,23 @@ describe("follow-ups and the brief", () => {
     expect(service.store.state.followups[0]).toMatchObject({ status: "active", fired: 1, dueAt: "2026-10-26T23:00:00.000Z" });
   });
 
+  it("runs a check follow-up in the background and speaks up only with news", async () => {
+    service.createFollowup({ title: "Package", prompt: "Has the parcel shipped?", when: "in 30m", mode: "check" }, "assistant");
+    clock += 31 * 60_000;
+    reportWith({ notify: true, summary: "Shipped.", items: [{ key: "parcel:shipped", title: "Your parcel shipped", detail: "Arrives Monday", urgency: "normal" }] });
+    await tick();
+    await settle();
+    const child = children().find((agent) => agent.prompt?.includes('Follow-up "Package": Has the parcel shipped?'));
+    expect(child).toBeDefined();
+    expect(service.store.state.followups[0]).toMatchObject({ status: "done", fired: 1 });
+    // A follow-up the user asked for is not a scheduled check: it does not use up the day.
+    expect(service.store.state).toMatchObject({ scheduledToday: 0, checkinsToday: 0 });
+    await tick();
+    await settle();
+    expect(assistant().sent.map((text) => decodeUpdate(text)).find((update) => update?.kind === "checkin")?.items[0]?.title).toBe("Your parcel shipped");
+    expect(service.store.state.messagesToday).toBe(0);
+  });
+
   it("refuses times that passed and repeats that are too frequent", () => {
     expect(() => service.createFollowup({ title: "x", prompt: "y", when: "2026-10-01 09:00", mode: "remind" }, "user")).toThrow(/already passed/);
     expect(() => service.createFollowup({ title: "x", prompt: "y", when: "in 1h", repeat: "every 10m", mode: "check" }, "user")).toThrow(/30 minutes/);
