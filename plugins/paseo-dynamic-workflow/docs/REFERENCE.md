@@ -1,12 +1,12 @@
 # Paseo dynamic workflows: authoring reference
 
-A workflow is a short JavaScript program that orchestrates many Paseo agents. You encode the structure once (what fans out, what verifies, what synthesizes) and the plugin runs it in the background while you keep working or end your turn. Control flow lives in code, so loops, conditions and fan-out happen exactly as written instead of being re-decided by a model at every step. Reach for a workflow for three reasons:
+A workflow is a short JavaScript program that orchestrates many Paseo agents. You write down the plan once: which work is split up, which results get checked, and how they are combined. The plugin runs it in the background while you keep working or end your turn. Control flow lives in code, so loops, conditions and fan-out happen exactly as written instead of being re-decided by a model at every step. Reach for a workflow for three reasons:
 
 - **Coverage.** Split the work and cover every part in parallel.
 - **Confidence.** Get independent attempts and adversarial checks before you commit to an answer.
 - **Scale.** Take on more than one context can hold: migrations, audits, broad sweeps.
 
-The usual shape is hybrid. Scout inline first (list the files, scope the diff, find the units of work), then launch a workflow that pipelines over the list you found. You need to know the shape of the orchestration step before you launch it, not the shape of the whole task.
+Most runs combine both modes of work. Do the cheap discovery yourself first (which files changed, which units exist, what the question really is), then hand the list you found to a workflow that processes every item. Only the orchestration step has to be planned up front; the rest of the task can stay open.
 
 ## Shapes you can chain
 
@@ -20,15 +20,15 @@ Each of these is one workflow. Large tasks chain several across turns: read each
 
 ## When you may launch one
 
-Only when the user opted into multi-agent orchestration. Opt-in means one of:
+Only after the user opted in to multi-agent work, in one of these ways:
 
-- the user's message contains the keyword `ultracode` (that turn only);
+- the user's message contains the keyword `ultracode` (for that request, including the later phases it needs);
 - Ultracode is on for you: the workflow tool description, the first line of this reference, a launch result or a run notification says so (see Ultracode);
-- the user asked in their own words: "use a workflow", "run this as a workflow", "split this across agents", "开个workflow";
-- the user invoked a skill or command whose instructions say to run one;
+- the user asked for it directly, in any language: "use a workflow", "run this as a workflow", "split this across agents", "开个workflow";
+- a skill or command the user ran tells you to run one;
 - the user asked for a named workflow.
 
-A task that would merely benefit from parallelism does not count, even when it would clearly benefit. Describe what a workflow would do and roughly how many agents it would use, and ask; mention that "use a workflow" or "ultracode" in a later message skips the question. For a single helper agent, use Paseo's `create_agent` tool if you have it.
+Work that parallel agents would help with is not an opt-in by itself, however much it would help. Describe what a workflow would do and roughly how many agents it would use, and ask; mention that "use a workflow" or "ultracode" in a later message skips the question. For a single helper agent, use Paseo's `create_agent` tool if you have it.
 
 The workflow and Ultracode switches belong to the user. Never change your own switches, through the UI or any RPC; if workflows are disabled for you, ask the user to turn them on.
 
@@ -36,40 +36,40 @@ The workflow and Ultracode switches belong to the user. Never change your own sw
 
 Ultracode is a per-agent mode the user turns on in the agent's Dynamic workflows panel. While it is on, the opt-in is standing and the goal changes:
 
-- **Optimize for the most exhaustive, correct answer, not the fastest or cheapest.** Token cost is not a constraint, and no size guideline applies.
-- **Run a workflow for every substantive task.** Work solo only on conversational turns and trivial mechanical edits.
-- **Use one workflow per phase** of multi-phase work (understand, design, implement, review) and read each result before you write the next, so you stay in the loop between phases.
-- **Verify adversarially by default.** Every finding or claim gets several independent skeptics or lens-diverse verifiers. Run a completeness critic and loop until a round finds nothing new. Hand the synthesis to an independent agent. Skip a stage only when the work is trivial or already verified.
+- **Aim for the most complete and best-checked result.** Speed and token spend are secondary; no size guideline applies.
+- **Hand every substantive task to a workflow**: research, review, audit, debugging, design, any change beyond a few lines. Stay solo for conversation, questions you can answer from context or a couple of reads, status checks, git operations, small mechanical edits, and discussing a finished run.
+- **Give each phase its own workflow** when a task has several (map the code, pick a design, change it, check the change), reading each result before you write the next, so the plan can still change between phases.
+- **Verify adversarially by default.** Every finding or claim gets several independent skeptics or lens-diverse verifiers. Run a completeness critic and loop until a round finds nothing new. Hand the synthesis to an independent agent. Leave a stage out only for trivial work or results that were already checked.
 - **Never shrink the harness to save tokens**, including after an interruption: do not fold verification or synthesis into your own turn.
 - **Bound loops by dry rounds when there is no token budget**, not by `budget.remaining()`, which is `Infinity` then. `maxAgentsPerRun` remains the backstop.
 - **Split a token budget across phases.** A target such as "+500k" applies to each run separately, so divide it by the number of phases you plan.
 
-Paseo cannot add a reminder to every turn, and providers often keep MCP tool descriptions out of view until you search for them. So the mode reaches you in several places: a one-time message from the plugin when the user turns Ultracode on or off, the MCP server instructions and the workflow tool description (both refreshed when the agent reloads), the first line of this reference, the result of every launch, and the `<guidance>` line of every run notification. The latest of these wins. If your workflow tools are not listed directly, find them with your tool search (server `dynamic_workflow`). When a completed run's notification says Ultracode is on, read the result and launch the next phase's workflow unless the task is finished.
+Paseo cannot add a reminder to every turn, and providers often keep MCP tool descriptions out of view until you search for them. So the mode reaches you in several places: a one-time message from the plugin when the user turns Ultracode on or off, the MCP server instructions and the workflow tool description (both refreshed when the agent reloads), the first line of this reference, the result of every launch, and the `<guidance>` line of every run notification. The latest of these wins. If your workflow tools are not listed directly, find them with your tool search (server `dynamic_workflow`). When a completed run's notification says Ultracode is on, read the result and launch the next phase's workflow unless the task is finished. From the fourth run you launch after one user message, launch results and notifications ask you to summarize progress and check with the user before launching more, unless the plan they approved covers it; follow that.
 
 If you also have Claude Code's own Workflow tool, use this one when the children should be Paseo agents (another provider, or visible in Paseo); otherwise either works. Do not run both for the same task.
 
 ## Scale
 
-Without Ultracode, scale to the request. "Find any bugs" means a few finders with one vote each. "Audit this thoroughly" means a larger pool of finders, three to five votes per finding, a completeness critic and a synthesis stage. When you are unsure, lean toward thoroughness for research, review and audit work, and toward brevity for quick checks.
+Without Ultracode, match the run to what was asked. A request to "find any bugs" gets a few finders with one vote each; "audit this thoroughly" gets more finders, three to five votes per finding, a completeness critic and a separate synthesis. If the request leaves the depth open, research, review and audit work gets the thorough version and a quick check gets the light one.
 
 - An explicit request for a workflow is a request for coverage, not a quick look. Go small only when the user says quick, brief or cheap, or sets a small budget.
 - Cost words that describe the task's subject (research a tool that saves tokens, design a cheaper pipeline) are not a budget for your run.
 - Do not cap children's answer length or the number of claims, sources or findings to save tokens. When results are too large to pass in prompts, have children write them to files and pass the paths (see Prompts for children for the resume caveat).
 
-The plugin settings can set a size guideline: `small` (about 5 agents per run), `medium` (about 10), `large` (about 50) or `unrestricted` (the default). It is a guideline, not a limit: follow it unless the user's request calls for another scale. Your tool description keeps the value from when your session started; the first line of this reference, launch results and notifications show the current one. Ultracode ignores it.
+The plugin settings can set a size guideline: `small` (about 5 agents per run), `medium` (about 10), `large` (about 50) or `unrestricted` (the default). It is a guideline, not a limit: keep to it unless the request asks for a different scale. Your tool description keeps the value from when your session started; the first line of this reference, launch results and notifications show the current one. Ultracode ignores it.
 
 **No silent caps.** When your script bounds coverage (top N, sampling, no retry, a source cap), `log()` what it dropped. A silently truncated run reads as if it covered everything.
 
 ## Calling the tool
 
-MCP agents: `workflow({ script })` launches a script you pass inline; do not write it to a file first. CLI agents (`paseo-workflow`): write the script to a temporary file once and launch it with `run --file`, then iterate on the saved copy with `--script-path`. A launch returns at once with a run id, the saved script path and the run directory. A `<task-notification>` message arrives when the run ends: finish what does not depend on it and end your turn.
+MCP agents: `workflow({ script })` launches a script you pass inline; there is no need to save it to a file. CLI agents (`paseo-workflow`): write the script to a temporary file once and launch it with `run --file`, then iterate on the saved copy with `--script-path`. A launch returns at once with a run id, the saved script path and the run directory. A `<task-notification>` message arrives when the run ends: finish what does not depend on it and end your turn.
 
 | Input | Meaning |
 | --- | --- |
 | `script` | The script text. |
 | `scriptPath` | A script file on disk; wins over `script` and `name`. To iterate, edit the saved script and launch again with its path. |
 | `name` | A named workflow: a saved `.paseo/workflows/<name>.js` or `.claude/workflows/<name>.js` in your working directory or its git root, then `~/.paseo/workflows/` and `~/.claude/workflows/`, then the built-ins. The end of this reference lists the names you can use. |
-| `args` | Any JSON value, exposed to the script as the global `args`. Pass arrays and objects as real JSON, not as a JSON-encoded string. Parameterize named workflows with it. |
+| `args` | Any JSON value, exposed to the script as the global `args`. Pass arrays and objects as JSON values; a string containing JSON stays a string. Parameterize named workflows with it. |
 | `resumeFromRunId` | Reuse the completed `agent()` results of an earlier run (see Resume). |
 
 Other tools: `workflow_status({ runId?, waitSeconds? })` reports progress (without `runId`, your recent runs); `workflow_stop({ runId })` stops a run and its agents; `workflow_reference()` returns this text. The CLI has `status`, `stop` and `reference` commands with the same meaning. The user watches progress in the run card in your chat and in the Dynamic workflows panel.
@@ -95,9 +95,9 @@ const verdicts = await parallel(found.todos.map((t, i) => () =>
 return { triaged: verdicts.filter(Boolean) }
 ```
 
-- `meta` is the first statement and a pure literal: no variables, calls, spreads or template interpolation. `name` and `description` are required. Use the same titles in `meta.phases` as in `phase()` calls; a title with no entry gets its own group. A per-phase `model` is accepted and ignored: set `model` on the `agent()` calls instead.
+- `meta` is the first statement and a pure literal: no variables, calls, spreads or template interpolation. `name` and `description` are required. Every title passed to `phase()` should appear in `meta.phases`; a title missing there still gets a group of its own. A per-phase `model` is accepted and ignored: set `model` on the `agent()` calls instead.
 - The body is plain JavaScript (not TypeScript) and already async: use `await` and `return` at the top level. The returned value (JSON) is the run's result.
-- No `import`, `require`, filesystem, network or Node.js API. JSON, Math, Array, Map, Set, Promise and the other standard built-ins work, except `Date.now()`, `Math.random()` and argless `new Date()`, which throw because they would break resume. Pass timestamps in through `args`; vary prompts or labels by index instead of randomness. `console.log()` and friends write to the run log.
+- No `import`, `require`, filesystem, network or Node.js API. JSON, Math, Array, Map, Set, Promise and the other standard built-ins work, except `Date.now()`, `Math.random()` and argless `new Date()`, which throw: a resumed run must replay the same way. Hand timestamps over in `args`; vary prompts or labels by index instead of randomness. `console.log()` and friends write to the run log.
 
 ## Globals
 
@@ -130,7 +130,7 @@ Children are ordinary Paseo agents. They appear in your Subagents track while th
 
 **`budget`** is `{ total, spent(), remaining() }`. `total` is the token target from the user's message ("+500k", "+2m", "spend 1M tokens"), or `null`; the shorthand `+500k` is recognized only at the start or end of the message. `spent()` counts the output tokens of this run's agents; once it reaches `total`, new agents stop starting, including queued calls. The target is per run: every launch reads it again from the user's latest message, your own turn's tokens are not counted, and several runs in a row each get the full target. Enforcement depends on reported usage: missing or underreported provider tokens make the count incomplete, and agents already running may exceed the target. With no target `remaining()` is `Infinity`, so guard budget loops on `budget.total`.
 
-**`guidance`** is `{ ultracode, size }`, frozen: your Ultracode mode and the size guideline when the run was launched. Scale a script with it instead of hard-coding counts, as the built-ins do (`guidance.ultracode` means size `unrestricted`).
+**`guidance`** is `{ ultracode, size }`, frozen for the run: your Ultracode mode and the size guideline when the run was launched (a resume keeps the first run's values, unless the user has since turned Ultracode off). `size` is the guideline even while Ultracode is on. Scale a script with it instead of hard-coding counts; the built-ins treat `ultracode: true` as size `unrestricted`.
 
 `setTimeout()` and `clearTimeout()` are available; pending timers are cleared when the run ends.
 
@@ -216,7 +216,7 @@ Pick what fits and compose freely.
 
 - **Adversarial verify.** Several independent skeptics per claim, each trying to refute it; a majority decides. This is what stops plausible but wrong findings. Use the one vote rule above: a failed or blocked verifier is no vote, and claims without a majority either way are reported as unverified.
 - **Perspective-diverse verify.** When a claim can fail in several ways, give each verifier a different lens (reproduction, intent and history, impact, existing guards, counterexample) rather than repeating one check N times; different lenses catch different failures.
-- **Judge panel.** N attempts from different angles (minimal change, most robust, best user experience), scored by parallel judges; synthesize from the winner and graft in the best ideas of the others.
+- **Judge panel.** N attempts from different angles (minimal change, most robust, best user experience), scored side by side by several judges; build the result on the best-scored one and borrow the strongest ideas of the rest.
 - **Loop until dry.** For discovery of unknown size (bugs, edge cases, sources), keep running finders until K rounds in a row add nothing new. Dedupe against everything seen, not only what was confirmed, or rejected findings come back every round and the loop never ends.
 - **Several search methods.** Run searches that differ in method (by path, by text, by symbol or entity, by history) side by side; none of them sees what the others turned up, so together they miss less.
 - **Completeness critic.** A last agent asks what is missing: a modality not run, a claim unverified, a file or source unread. Its answer is the next round of work.
@@ -304,7 +304,7 @@ Each child starts fresh: put everything it needs in the prompt (paths, the exact
 The plugin ships five workflows. Launch them by name with `args`; a saved file with the same name replaces a built-in, and `builtin.<name>` always runs the shipped one. Each takes `size` (`small`, `medium`, `large`, `unrestricted`); without it they use `unrestricted` under Ultracode, otherwise the size guideline, or `large` when there is none. Each returns `status` (`complete`, `partial`, `blocked` or `inconclusive`) and a `coverage` list naming the stages that failed, so a failed reviewer or source never reads as a clean result. Verifiers answer in three states (holds, refuted, could not check): a failed or blocked verifier is no vote, and too few votes make a claim `unverified`, never `refuted`.
 
 - **`deep-review`**: scope the change, one reviewer per dimension, every new finding judged by independent lenses (reproduction, intent, existing guards, counterexample, impact), completeness-critic rounds until they come back dry, and a ranked fix plan with a regression test per fix. `recheck` takes the findings of an earlier review and checks each one first (fixed, still present). `args`: a string saying what to review, or `{ target, focus?, size?, dimensions?, votes?, rounds?, recheck? }`.
-- **`deep-research`**: probes whether children can search and fetch, then search angles (web or local), deep reads of each new source, the important claims verified by skeptics, gap rounds, and a cited report. It stops with `blocked` before spending agents when children cannot search and no local sources were given. If the question is underspecified, ask the user two or three clarifying questions first. `args`: the question, or `{ question, sources?, size?, angles?, maxSources?, claims?, votes?, gapRounds? }`.
+- **`deep-research`**: probes whether children can search and fetch, then search angles (web or local), deep reads of each new source, the important claims verified by skeptics, gap rounds, and an answer with citations. It stops with `blocked` before spending agents when children cannot search and no local sources were given. If the question is underspecified, ask the user two or three clarifying questions first. `args`: the question, or `{ question, sources?, size?, angles?, maxSources?, claims?, votes?, gapRounds? }`.
 - **`design-panel`**: independent designs from different angles, judges that score anonymized designs in a rotated order, a synthesis built on the winner, and for large sizes a red team and a revision. Scout the code first and pass what you found as `context`. `args`: `{ problem, context?, angles?, criteria?, judges?, size? }`.
 - **`critique`**: lens critics on an existing draft (a design doc, plan or report), each must-change checked against its evidence, then decisions and a revised draft. `args`: `{ draft: path or text, goal?, lenses?, votes?, size? }`.
 - **`verify-claims`**: the verification kernel on its own: independent verifiers per claim with the three-state tally. Use it on your own conclusions, a report, or another run's output before acting on them. `args`: `{ claims: [...], context?, lenses?, votes?, size? }`.

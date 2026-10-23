@@ -1,6 +1,6 @@
 export const meta = {
   name: 'deep-research',
-  description: 'Multi-source research: probe the available search tools, split the question into angles, read and extract checkable claims from each new source, verify the important claims with independent skeptics, fill gaps, and synthesize a cited report.',
+  description: 'Multi-source research: probe the available search tools, split the question into angles, read and extract checkable claims from each new source, verify the important claims with independent skeptics, fill gaps, and write up the answer with citations.',
   whenToUse: 'The user wants a deep, fact-checked, multi-source answer from web pages, documents or named local files and repositories (to map a codebase, write an Understand workflow instead). If the question is underspecified (no budget, region, version or use case), ask two or three clarifying questions first and fold the answers into the question. args: the question as a string, or { question, sources?: [urls or absolute paths], size?, angles?, maxSources?, claims?, votes?, gapRounds? }. Roughly: small 25 agents, medium 70, large 110, unrestricted 200+ (the default under Ultracode); built-in sizes are depth levels, not the agent counts of the size guideline. Claude children may ask permission for web search and fetch.',
   phases: [
     { title: 'Scope', detail: 'probe search and fetch, split the question into angles' },
@@ -249,7 +249,7 @@ if (!confirmed.length) {
     ...tail }
 }
 const report = await safe([
-  'Write the research report from claims that survived independent verification. Merge claims that say the same thing, group them into findings that answer the question, and grade each finding: high (several strong sources, clear votes), medium (secondary sources or split votes), low (one source). Cite claim ids. Name what is uncertain or time-sensitive in caveats.',
+  'Answer the question from the confirmed claims below; every one of them survived independent checks. Combine claims that overlap into one finding, organize the findings around the question, and rate how much each can be trusted: high when strong sources agree and the votes were clear, medium when the support is indirect or the votes were divided, low when it rests on a single source. Cite the claim ids behind each finding, and put what is uncertain or may change soon into caveats.',
   data('Question', QUESTION),
   data('Confirmed claims', confirmed.map(brief)),
   data('Refuted claims (context only; do not assert them)', claims.filter((c) => c.status === 'refuted').map((c) => c.claim)),
