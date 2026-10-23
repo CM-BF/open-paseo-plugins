@@ -27,12 +27,14 @@ Each of these is one workflow. Large tasks chain several across turns: read each
 Only after the user opted in to multi-agent work, in one of these ways:
 
 - the user's message contains the keyword \`ultracode\` (for that request, including the later phases it needs);
-- Ultracode is on for you: the workflow tool description, the first line of this reference, a launch result or a run notification says so (see Ultracode);
+- Ultracode is on for you: the plugin's mode-change message, workflow tool description, first line of this reference, launch result or run notification says so (see Ultracode);
 - the user asked for it directly, in any language: "use a workflow", "run this as a workflow", "split this across agents", "开个workflow";
 - a skill or command the user ran tells you to run one;
 - the user asked for a named workflow.
 
 Work that parallel agents would help with is not an opt-in by itself, however much it would help. Describe what a workflow would do and roughly how many agents it would use, and ask; mention that "use a workflow" or "ultracode" in a later message skips the question. For a single helper agent, use Paseo's \`create_agent\` tool if you have it.
+
+A run notification does not authorize a new task. A mode-change message reports the user's current Ultracode setting and is one way to learn that standing opt-in.
 
 The workflow and Ultracode switches belong to the user. Never change your own switches, through the UI or any RPC; if workflows are disabled for you, ask the user to turn them on.
 
@@ -134,7 +136,7 @@ Children are ordinary Paseo agents. They appear in your Subagents track while th
 
 **\`budget\`** is \`{ total, spent(), remaining() }\`. \`total\` is the token target from the user's message ("+500k", "+2m", "spend 1M tokens"), or \`null\`; the shorthand \`+500k\` is recognized only at the start or end of the message. \`spent()\` counts the output tokens of this run's agents; once it reaches \`total\`, new agents stop starting, including queued calls. The target is per run: every launch reads it again from the user's latest message, your own turn's tokens are not counted, and several runs in a row each get the full target. Enforcement depends on reported usage: missing or underreported provider tokens make the count incomplete, and agents already running may exceed the target. With no target \`remaining()\` is \`Infinity\`, so guard budget loops on \`budget.total\`.
 
-**\`guidance\`** is \`{ ultracode, size }\`, frozen for the run: your Ultracode mode and the size guideline when the run was launched (a resume keeps the first run's values, unless the user has since turned Ultracode off). \`size\` is the guideline even while Ultracode is on. Scale a script with it instead of hard-coding counts; the built-ins treat \`ultracode: true\` as size \`unrestricted\`.
+**\`guidance\`** is \`{ ultracode, size }\`, frozen for the run: your Ultracode mode and the size guideline when the run was launched (a resume keeps the first run's values, unless the user has since turned Ultracode off). \`size\` is the guideline even while Ultracode is on. Scale a script with it instead of hard-coding counts; built-ins without an explicit \`args.size\` use \`unrestricted\` under Ultracode. Leave \`size\` unset unless the user asked for a lighter run.
 
 \`setTimeout()\` and \`clearTimeout()\` are available; pending timers are cleared when the run ends.
 
@@ -305,7 +307,9 @@ Each child starts fresh: put everything it needs in the prompt (paths, the exact
 
 ## Built-in workflows
 
-The plugin ships five workflows. Launch them by name with \`args\`; a saved file with the same name replaces a built-in, and \`builtin.<name>\` always runs the shipped one. Each takes \`size\` (\`small\`, \`medium\`, \`large\`, \`unrestricted\`); without it they use \`unrestricted\` under Ultracode, otherwise the size guideline, or \`large\` when there is none. Under Ultracode, leave \`size\` unset unless the user asked for a light run: a small target is not a reason to shrink the harness. Each returns \`status\` (\`complete\`, \`partial\`, \`blocked\` or \`inconclusive\`) and a \`coverage\` list naming the stages that failed, so a failed reviewer or source never reads as a clean result. Verifiers answer in three states (holds, refuted, could not check): a failed or blocked verifier is no vote, and too few votes make a claim \`unverified\`, never \`refuted\`.
+The plugin ships five workflows. Launch them by name with \`args\`; a saved file with the same name replaces a built-in, and \`builtin.<name>\` always runs the shipped one. Each takes \`size\` (\`small\`, \`medium\`, \`large\`, \`unrestricted\`); without it they use \`unrestricted\` under Ultracode, otherwise the size guideline, or \`large\` when there is none. Under Ultracode, leave \`size\` unset unless the user asked for a light run: a small target is not a reason to shrink the harness. Each returns \`status\` (\`complete\`, \`partial\`, \`blocked\` or \`inconclusive\`) and a \`coverage\` list naming the stages that failed, so a failed reviewer or source never reads as a clean result. Verifiers answer in three states (holds, refuted, could not check): a failed or blocked verifier is no vote, and too few votes make a claim \`unverified\`, never \`refuted\`. Missing votes or checks that could not run are coverage gaps even when the other votes reach a majority; split votes remain explicit uncertainty.
+
+A built-in's size selects its own depth and verification limits; its actual number of agents can exceed the general size guideline. Results include \`limit\` when a hard agent cap, exhausted token budget or verification reserve cut work short. With an explicit token budget, verification leaves a best-effort reserve for the final stage; variable child output can still exhaust the budget. Read \`coverage\`, \`unverified\` and \`limit\` before treating a result as complete.
 
 - **\`deep-review\`**: scope the change, one reviewer per dimension, every new finding judged by independent lenses (reproduction, intent, existing guards, counterexample, impact), completeness-critic rounds until they come back dry, and a ranked fix plan with a regression test per fix. \`recheck\` takes the findings of an earlier review and checks each one first (fixed, still present). \`args\`: a string saying what to review, or \`{ target, focus?, size?, dimensions?, votes?, rounds?, recheck? }\`.
 - **\`deep-research\`**: probes whether children can search and fetch, then search angles (web or local), deep reads of each new source, the important claims verified by skeptics, gap rounds, and an answer with citations. It stops with \`blocked\` before spending agents when children cannot search and no local sources were given. If the question is underspecified, ask the user two or three clarifying questions first. \`args\`: the question, or \`{ question, sources?, size?, angles?, maxSources?, claims?, votes?, gapRounds? }\`.

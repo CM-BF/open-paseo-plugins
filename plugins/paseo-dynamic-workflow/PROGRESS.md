@@ -329,3 +329,9 @@ Claude 额度耗尽后从已完成的记录接续，没有重跑原审查和 fix
 - 后续交互检查补充：run 通知正在投递时 ON→OFF→ON 会清掉中间 OFF 的待替换内容，不能在一次明确失败后发出过时的 OFF。新增确定性回归先失败后通过。
 - 操作失误：最初新增的两个 Reload RPC 红灯测试尚未 mock `./reload`，以模拟 agent ID `a` 调用了主 daemon CLI；CLI 把它当作前缀，实际刷新了此前的测试 agent B=`af28c02e-08b2-4609-9c72-954a293bb71a` 两次（2026-10-23 06:19:41.486 / 06:19:42.089 UTC）。证据为 `~/.paseo/20261022-2323-01-daemon.log` 第8969、8973行，均为 `Refreshing agent ... from persistence`。这不属于计划内验收；没有作用于用户真实 agent。发现后测试统一 mock Reload helper，之后的回归不接触真实 CLI；未自动重启或变更该 fixture 的其他状态。
 - 补充来源身份检查：不排序查询参数，保留重复参数的顺序（`?a=1&a=2` 与 `?a=2&a=1`）；同一来源回归扩展后仍 30/30 通过。
+
+### 接续整合：文档与完整回归（2026-10-22）
+
+- README / OVERVIEW / authoring reference 对齐最新模式投递，不再声称 ON→OFF 不发送最新 OFF；明确 mode-change 通知可以报告用户的常驻 opt-in，run completion 不能授权新任务。
+- Reference 说明内置 size 是深度、实际数量可超过同名通用建议；显式 args.size 的优先级；missing/cannot_check coverage、limit 和最终阶段尽力预算预留。重建 `server/reference.ts`，与原文一致。
+- 整合 `ccbbda6`、`3460fd3`、`135e6f6`、`a02b73a`、`a5851ab`、`2f80146` 后：typecheck、29 文件 / 287 测试和 diff-check 全部通过。日志保存在 `~/.paseo/verification/dwf-ultracode-2026-10-22/final-tests.log`。
