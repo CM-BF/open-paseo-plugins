@@ -1,7 +1,7 @@
 export const meta = {
   name: 'verify-claims',
   description: 'Verify a list of claims or findings: each one judged by independent verifiers from distinct lenses, with a tri-state result (confirmed, refuted, unverified) where a failed or blocked verifier never counts as a refutation.',
-  whenToUse: 'You already have claims, findings or conclusions (your own, a report, another run) and need each one checked independently before acting on it. args: { claims: [{ id?, claim, evidence?, locator? }] or ["claim", ...], context?, lenses?, votes?, size? }. About votes x claims agents.',
+  whenToUse: 'You already have claims, findings or conclusions (your own, a report, another run) and need each one checked independently before acting on it. args: { claims: [{ id?, claim, evidence?, locator? }] or ["claim", ...], context?, lenses?, votes?, size? }. About votes x claims agents. Leave size unset under Ultracode unless the user asked for a light run.',
   phases: [{ title: 'Verify', detail: 'independent verifiers per claim' }],
 }
 

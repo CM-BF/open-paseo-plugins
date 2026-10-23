@@ -6,7 +6,7 @@ export const BUILTIN_WORKFLOWS: Readonly<Record<string, string>> = {
   "critique": `export const meta = {
   name: 'critique',
   description: 'Critique an existing draft (a design, plan, proposal or document) from independent lenses, verify each must-change against the evidence, and return a revised draft with the decisions made.',
-  whenToUse: 'You or the user have a draft and want it challenged before acting on it: a design doc, implementation plan, migration plan, RFC or report. args: { draft: absolute path or text, goal?, lenses?, votes?, size? }. Size small is about 6 agents, medium 15, large 25, unrestricted 40+.',
+  whenToUse: 'You or the user have a draft and want it challenged before acting on it: a design doc, implementation plan, migration plan, RFC or report. args: { draft: absolute path or text, goal?, lenses?, votes?, size? }. Size small is about 6 agents, medium 15, large 25, unrestricted 40+. Leave size unset under Ultracode unless the user asked for a light run.',
   phases: [
     { title: 'Critique', detail: 'one critic per lens' },
     { title: 'Verify', detail: 'each must-change checked against its evidence' },
@@ -186,7 +186,7 @@ return {
   "deep-research": `export const meta = {
   name: 'deep-research',
   description: 'Multi-source research: probe the available search tools, split the question into angles, read and extract checkable claims from each new source, verify the important claims with independent skeptics, fill gaps, and write up the answer with citations.',
-  whenToUse: 'The user wants a deep, fact-checked, multi-source answer from web pages, documents or named local files and repositories (to map a codebase, write an Understand workflow instead). If the question is underspecified (no budget, region, version or use case), ask two or three clarifying questions first and fold the answers into the question. args: the question as a string, or { question, sources?: [urls or absolute paths], size?, angles?, maxSources?, claims?, votes?, gapRounds? }. Roughly: small 25 agents, medium 70, large 110, unrestricted 200+ (the default under Ultracode); built-in sizes are depth levels, not the agent counts of the size guideline. Claude children may ask permission for web search and fetch.',
+  whenToUse: 'The user wants a deep, fact-checked, multi-source answer from web pages, documents or named local files and repositories (to map a codebase, write an Understand workflow instead). If the question is underspecified (no budget, region, version or use case), ask two or three clarifying questions first and fold the answers into the question. args: the question as a string, or { question, sources?: [urls or absolute paths], size?, angles?, maxSources?, claims?, votes?, gapRounds? }. Roughly: small 25 agents, medium 70, large 110, unrestricted 200+ (the default under Ultracode); built-in sizes are depth levels, not the agent counts of the size guideline. Claude children may ask permission for web search and fetch. Leave size unset under Ultracode unless the user asked for a light run.',
   phases: [
     { title: 'Scope', detail: 'probe search and fetch, split the question into angles' },
     { title: 'Search', detail: 'one searcher per angle' },
@@ -538,7 +538,7 @@ return {
   "deep-review": `export const meta = {
   name: 'deep-review',
   description: 'Exhaustive code review: scope the change, review it per dimension, verify every finding from independent lenses, chase gaps until a round finds nothing new, and return a ranked fix plan.',
-  whenToUse: 'The user wants a thorough review or audit of a change, branch, pull request or set of files, with findings that survive independent verification; also to re-check earlier findings after fixes (recheck). args: a string saying what to review, or { target, focus?, size?, dimensions?, votes?, rounds?, recheck? }. Roughly: small 10-25 agents, medium 30-80, large 60-180, unrestricted 100-500 (the default under Ultracode); verification is capped at 10/20/40/120 findings by size. Built-in sizes are depth levels, not the agent counts of the size guideline.',
+  whenToUse: 'The user wants a thorough review or audit of a change, branch, pull request or set of files, with findings that survive independent verification; also to re-check earlier findings after fixes (recheck). args: a string saying what to review, or { target, focus?, size?, dimensions?, votes?, rounds?, recheck? }. Roughly: small 10-25 agents, medium 30-80, large 60-180, unrestricted 100-500 (the default under Ultracode); verification is capped at 10/20/40/120 findings by size. Built-in sizes are depth levels, not the agent counts of the size guideline. Leave size unset under Ultracode unless the user asked for a light run.',
   phases: [
     { title: 'Scope', detail: 'map the change and pick review dimensions' },
     { title: 'Recheck', detail: 'earlier findings: fixed or still present' },
@@ -878,7 +878,7 @@ return {
   "design-panel": `export const meta = {
   name: 'design-panel',
   description: 'Judge panel for a design or plan: independent designs from different angles, scored by judges who see them anonymized and in rotated order, then one synthesis built on the winner with the best ideas of the others grafted in.',
-  whenToUse: 'The user wants a design, architecture, migration plan or approach chosen carefully when several reasonable solutions exist. Scout the relevant code first and pass what you found as context. To review an existing draft instead, use critique. args: the problem as a string, or { problem, context?, angles?, criteria?, judges?, size? }. Roughly: small 5 agents, medium 7, large 11, unrestricted 14.',
+  whenToUse: 'The user wants a design, architecture, migration plan or approach chosen carefully when several reasonable solutions exist. Scout the relevant code first and pass what you found as context. To review an existing draft instead, use critique. args: the problem as a string, or { problem, context?, angles?, criteria?, judges?, size? }. Roughly: small 5 agents, medium 7, large 11, unrestricted 14. Leave size unset under Ultracode unless the user asked for a light run.',
   phases: [
     { title: 'Draft', detail: 'one independent design per angle' },
     { title: 'Judge', detail: 'each judge scores every design' },
@@ -1100,7 +1100,7 @@ return {
   "verify-claims": `export const meta = {
   name: 'verify-claims',
   description: 'Verify a list of claims or findings: each one judged by independent verifiers from distinct lenses, with a tri-state result (confirmed, refuted, unverified) where a failed or blocked verifier never counts as a refutation.',
-  whenToUse: 'You already have claims, findings or conclusions (your own, a report, another run) and need each one checked independently before acting on it. args: { claims: [{ id?, claim, evidence?, locator? }] or ["claim", ...], context?, lenses?, votes?, size? }. About votes x claims agents.',
+  whenToUse: 'You already have claims, findings or conclusions (your own, a report, another run) and need each one checked independently before acting on it. args: { claims: [{ id?, claim, evidence?, locator? }] or ["claim", ...], context?, lenses?, votes?, size? }. About votes x claims agents. Leave size unset under Ultracode unless the user asked for a light run.',
   phases: [{ title: 'Verify', detail: 'independent verifiers per claim' }],
 }
 

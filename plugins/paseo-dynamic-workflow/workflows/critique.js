@@ -1,7 +1,7 @@
 export const meta = {
   name: 'critique',
   description: 'Critique an existing draft (a design, plan, proposal or document) from independent lenses, verify each must-change against the evidence, and return a revised draft with the decisions made.',
-  whenToUse: 'You or the user have a draft and want it challenged before acting on it: a design doc, implementation plan, migration plan, RFC or report. args: { draft: absolute path or text, goal?, lenses?, votes?, size? }. Size small is about 6 agents, medium 15, large 25, unrestricted 40+.',
+  whenToUse: 'You or the user have a draft and want it challenged before acting on it: a design doc, implementation plan, migration plan, RFC or report. args: { draft: absolute path or text, goal?, lenses?, votes?, size? }. Size small is about 6 agents, medium 15, large 25, unrestricted 40+. Leave size unset under Ultracode unless the user asked for a light run.',
   phases: [
     { title: 'Critique', detail: 'one critic per lens' },
     { title: 'Verify', detail: 'each must-change checked against its evidence' },

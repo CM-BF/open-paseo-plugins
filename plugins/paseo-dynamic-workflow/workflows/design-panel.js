@@ -1,7 +1,7 @@
 export const meta = {
   name: 'design-panel',
   description: 'Judge panel for a design or plan: independent designs from different angles, scored by judges who see them anonymized and in rotated order, then one synthesis built on the winner with the best ideas of the others grafted in.',
-  whenToUse: 'The user wants a design, architecture, migration plan or approach chosen carefully when several reasonable solutions exist. Scout the relevant code first and pass what you found as context. To review an existing draft instead, use critique. args: the problem as a string, or { problem, context?, angles?, criteria?, judges?, size? }. Roughly: small 5 agents, medium 7, large 11, unrestricted 14.',
+  whenToUse: 'The user wants a design, architecture, migration plan or approach chosen carefully when several reasonable solutions exist. Scout the relevant code first and pass what you found as context. To review an existing draft instead, use critique. args: the problem as a string, or { problem, context?, angles?, criteria?, judges?, size? }. Roughly: small 5 agents, medium 7, large 11, unrestricted 14. Leave size unset under Ultracode unless the user asked for a light run.',
   phases: [
     { title: 'Draft', detail: 'one independent design per angle' },
     { title: 'Judge', detail: 'each judge scores every design' },

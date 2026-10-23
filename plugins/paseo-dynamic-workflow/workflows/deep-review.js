@@ -1,7 +1,7 @@
 export const meta = {
   name: 'deep-review',
   description: 'Exhaustive code review: scope the change, review it per dimension, verify every finding from independent lenses, chase gaps until a round finds nothing new, and return a ranked fix plan.',
-  whenToUse: 'The user wants a thorough review or audit of a change, branch, pull request or set of files, with findings that survive independent verification; also to re-check earlier findings after fixes (recheck). args: a string saying what to review, or { target, focus?, size?, dimensions?, votes?, rounds?, recheck? }. Roughly: small 10-25 agents, medium 30-80, large 60-180, unrestricted 100-500 (the default under Ultracode); verification is capped at 10/20/40/120 findings by size. Built-in sizes are depth levels, not the agent counts of the size guideline.',
+  whenToUse: 'The user wants a thorough review or audit of a change, branch, pull request or set of files, with findings that survive independent verification; also to re-check earlier findings after fixes (recheck). args: a string saying what to review, or { target, focus?, size?, dimensions?, votes?, rounds?, recheck? }. Roughly: small 10-25 agents, medium 30-80, large 60-180, unrestricted 100-500 (the default under Ultracode); verification is capped at 10/20/40/120 findings by size. Built-in sizes are depth levels, not the agent counts of the size guideline. Leave size unset under Ultracode unless the user asked for a light run.',
   phases: [
     { title: 'Scope', detail: 'map the change and pick review dimensions' },
     { title: 'Recheck', detail: 'earlier findings: fixed or still present' },
