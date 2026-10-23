@@ -7,6 +7,7 @@ export const AgentAccessSchema = z.object({
   cliPath: z.string(),
   providerFamily: z.string().nullable(),
   isWorkflowChild: z.boolean(),
+  hasMcpBinding: z.boolean(),
 });
 export type AgentAccess = z.infer<typeof AgentAccessSchema>;
 

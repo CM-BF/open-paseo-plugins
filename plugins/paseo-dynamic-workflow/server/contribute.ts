@@ -4,7 +4,7 @@ import { getAgentAccessRpc, getCallRpc, getRunRpc, listRunsRpc, serviceStatusRpc
 import { CHILD_ENV, ENABLE_ENV, LABEL_RUN, PLUGIN_VERSION } from "../shared/ids";
 import { DEFAULT_PREFERENCES, type Preferences, preferences } from "../shared/settings";
 import { AgentAccessStore } from "./agent-access";
-import { ProviderFamilies, transformCreate, transformSessionOpen } from "./agent-setup";
+import { MCP_FAMILIES, ProviderFamilies, transformCreate, transformSessionOpen } from "./agent-setup";
 import { BindingStore } from "./bindings";
 import { Bridge } from "./bridge";
 import { Gate, type PaseoApi } from "./gate";
@@ -125,6 +125,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     return {
       enabled: access.enabled(agentId), cliPath: paths.cli, providerFamily,
       isWorkflowChild: Boolean(fresh.agent.labels?.[LABEL_RUN]),
+      hasMcpBinding: providerFamily !== null && MCP_FAMILIES.has(providerFamily) && bindings.hasAgent(agentId),
     };
   };
   server.handle(getAgentAccessRpc, async (input, context) => agentAccess(input.agentId, context));

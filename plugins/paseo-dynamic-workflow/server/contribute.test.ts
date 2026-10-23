@@ -90,8 +90,8 @@ function apiFixture() {
 it("changes access only for the selected active agent and refuses workflow child opt-in", async () => {
   const { api } = apiFixture();
   const f = await fixture(api);
-  expect(await f.invoke(getAgentAccessRpc.name, { agentId: "a" })).toMatchObject({ enabled: false, providerFamily: "codex", isWorkflowChild: false, cliPath: f.paths.cli });
-  expect(await f.invoke(setAgentAccessRpc.name, { agentId: "a", enabled: true })).toMatchObject({ enabled: true });
+  expect(await f.invoke(getAgentAccessRpc.name, { agentId: "a" })).toMatchObject({ enabled: false, providerFamily: "codex", isWorkflowChild: false, cliPath: f.paths.cli, hasMcpBinding: false });
+  expect(await f.invoke(setAgentAccessRpc.name, { agentId: "a", enabled: true })).toMatchObject({ enabled: true, hasMcpBinding: false });
   expect(await f.invoke(getAgentAccessRpc.name, { agentId: "b" })).toMatchObject({ enabled: false });
   expect(await f.invoke(getAgentAccessRpc.name, { agentId: "child" })).toMatchObject({ enabled: false, isWorkflowChild: true });
   await expect(f.invoke(setAgentAccessRpc.name, { agentId: "child", enabled: true })).rejects.toThrow("children cannot enable");
@@ -110,9 +110,9 @@ it("honors explicit creation opt-in, but never inherited refresh flags or workfl
     env: { [ENABLE_ENV]: "1", [BINDING_ENV]: `nonce-${agentId}`, ...extra },
   });
   expect(await open("a", "create")).toMatchObject({ env: {} });
-  expect(await f.invoke(getAgentAccessRpc.name, { agentId: "a" })).toMatchObject({ enabled: true });
+  expect(await f.invoke(getAgentAccessRpc.name, { agentId: "a" })).toMatchObject({ enabled: true, hasMcpBinding: true });
   expect(await open("b", "refresh")).toMatchObject({ env: {} });
-  expect(await f.invoke(getAgentAccessRpc.name, { agentId: "b" })).toMatchObject({ enabled: false });
+  expect(await f.invoke(getAgentAccessRpc.name, { agentId: "b" })).toMatchObject({ enabled: false, hasMcpBinding: false });
   expect(await open("child", "create", { [CHILD_ENV]: "1" })).toMatchObject({ env: {} });
   expect(await f.invoke(getAgentAccessRpc.name, { agentId: "child" })).toMatchObject({ enabled: false });
 });

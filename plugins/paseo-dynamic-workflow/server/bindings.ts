@@ -35,6 +35,11 @@ export class BindingStore {
     return this.bindings[nonce];
   }
 
+  /** A known binding is evidence that the create hook installed an endpoint for this agent. */
+  hasAgent(agentId: string): boolean {
+    return Object.values(this.bindings).some((binding) => binding.agentId === agentId);
+  }
+
   async bind(nonce: string, agentId: string): Promise<void> {
     await this.load();
     const existing = this.bindings[nonce];

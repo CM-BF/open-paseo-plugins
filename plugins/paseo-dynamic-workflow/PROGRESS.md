@@ -187,6 +187,7 @@ Fixture：`~/plugin-test-2026-10-22-dwf-review`，project `prj_8474b59633637446`
 - 新增 `agent-access.get/set` RPC；核对真实 agent，拒绝不存在或已归档的 agent，以及给 workflow 子 agent 开启权限；关闭期间拒绝延迟完成的修改。创建时显式 `PASEO_DYNAMIC_WORKFLOW_ENABLED=1` 可授权，resume/refresh 和子 agent 不继承此开关。
 - bridge 工具发现按 caller 返回描述，未开启时为空；未开启的 launch/reference 返回操作提示，已有运行仍可查状态或停止；没有通过 MCP 开启权限的工具。
 - 本地验证：`npx vitest run server/agent-access.test.ts server/bridge.test.ts server/contribute.test.ts`，3 文件、18 项通过；覆盖并发保存、写失败、重启、真实 Unix socket、不同 caller、RPC 输入对象状态和 shutdown 竞态。`git diff --check` 通过。全量检查与 daemon/Web UI 验收由整合阶段完成，本项未操作 daemon。
+- 接口补充 `hasMcpBinding`：区分新 agent 的已知 MCP 绑定和历史上未注入端点的 agent；后者即使是 Claude/Codex 也提供 CLI 路径，不能误称 Reload 就能补装。该标记只说明保存过绑定，不保证端点当前可达；RPC 用例覆盖已有/缺少绑定。
 
 ## 按 agent 开启 workflow：客户端（2026-10-22）
 
