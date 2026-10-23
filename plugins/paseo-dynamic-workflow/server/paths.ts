@@ -17,6 +17,7 @@ export interface StatePaths {
   root: string;
   socket: string;
   bindings: string;
+  agentAccess: string;
   outbox: string;
   runs: string;
   bin: string;
@@ -35,6 +36,7 @@ export function statePaths(root: string): StatePaths {
     root,
     socket: join(root, "bridge.sock"),
     bindings: join(root, "bindings.json"),
+    agentAccess: join(root, "agent-access.json"),
     outbox: join(root, "outbox.json"),
     runs: join(root, "runs"),
     bin,

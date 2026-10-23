@@ -1,8 +1,9 @@
 import { mkdir } from "node:fs/promises";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { getCallRpc, getRunRpc, listRunsRpc, serviceStatusRpc, skipCallRpc, stopRunRpc, transcriptRpc } from "../shared/contracts";
-import { CHILD_ENV, LABEL_RUN, PLUGIN_VERSION } from "../shared/ids";
+import { getAgentAccessRpc, getCallRpc, getRunRpc, listRunsRpc, serviceStatusRpc, setAgentAccessRpc, skipCallRpc, stopRunRpc, transcriptRpc } from "../shared/contracts";
+import { CHILD_ENV, ENABLE_ENV, LABEL_RUN, PLUGIN_VERSION } from "../shared/ids";
 import { DEFAULT_PREFERENCES, type Preferences, preferences } from "../shared/settings";
+import { AgentAccessStore } from "./agent-access";
 import { ProviderFamilies, transformCreate, transformSessionOpen } from "./agent-setup";
 import { BindingStore } from "./bindings";
 import { Bridge } from "./bridge";
@@ -10,7 +11,7 @@ import { Gate, type PaseoApi } from "./gate";
 import { defaultStateDir, statePaths } from "./paths";
 import { writeScripts } from "./scripts";
 import { transcriptEntries } from "./transcript";
-import { WorkflowService } from "./service";
+import { ServiceError, WorkflowService } from "./service";
 import { describeError, log, unref } from "./util";
 import { compactRunDetail } from "./views";
 
@@ -23,6 +24,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   const gate = new Gate();
   const families = new ProviderFamilies();
   const bindings = new BindingStore(paths.bindings);
+  const access = new AgentAccessStore(paths.agentAccess);
 
   let settings: Preferences = DEFAULT_PREFERENCES;
   const settingsHandle = server.registerSettings(preferences);
@@ -34,7 +36,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   void settingsHandle.read().then(applySettings, (error) => log(`could not read settings: ${describeError(error)}`));
 
   const service = new WorkflowService({ paths, gate, settings: () => settings });
-  const bridge = new Bridge({ service, bindings });
+  const bridge = new Bridge({ service, bindings, access });
   const capture = (context: { paseo: PaseoApi }) => {
     const wasReady = gate.ready;
     gate.capture(context.paseo);
@@ -52,6 +54,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     await mkdir(paths.runs, { recursive: true, mode: 0o700 });
     await writeScripts(paths);
     await bindings.load();
+    await access.load();
     if (stopping) return;
     await service.recover();
     if (stopping) return;
@@ -71,12 +74,11 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   server.before("agent.create", async ({ request }, context) => {
     try {
       capture(context);
-      if (request.env?.[CHILD_ENV] !== undefined) return undefined;
       await started;
+      if (stopping || startup !== "ready") return undefined;
       const family = await families.family(context.paseo, request.config.provider);
-      // Until the shims exist, new agents get nothing that would point at them.
-      const effective = startup === "ready" ? settings : { ...settings, injectIntoNewAgents: false };
-      return transformCreate(request, family, effective, paths);
+      if (stopping || startup !== "ready") return undefined;
+      return transformCreate(request, family, settings, paths);
     } catch (error) {
       log(`agent.create: left the agent unchanged: ${describeError(error)}`);
       return undefined;
@@ -86,7 +88,13 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   server.before("agent.session_open", async ({ request }, context) => {
     try {
       capture(context);
-      return await transformSessionOpen(request, bindings);
+      await started;
+      const transformed = await transformSessionOpen(request, bindings);
+      if (!stopping && startup === "ready" && request.reason === "create"
+        && request.env[ENABLE_ENV] === "1" && request.env[CHILD_ENV] === undefined) {
+        await access.set(request.agentId, true).catch((error) => log(`could not enable workflows for ${request.agentId}: ${describeError(error)}`));
+      }
+      return transformed;
     } catch (error) {
       log(`agent.session_open: ${describeError(error)}`);
       return undefined;
@@ -105,6 +113,27 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   server.on("agent.archived", (event, context) => {
     capture(context);
     service.onAgentArchived(event.agent.id);
+  });
+
+  const agentAccess = async (agentId: string, context: { paseo: PaseoApi }) => {
+    capture(context);
+    await started;
+    if (stopping || startup !== "ready") throw new ServiceError("not_ready", "The workflow plugin is not ready.");
+    const fresh = await context.paseo.agents.ref(agentId).refresh();
+    if (!fresh || fresh.agent.archivedAt) throw new ServiceError("unknown_agent", `Agent ${agentId} was not found on this host.`);
+    const providerFamily = await families.family(context.paseo, fresh.agent.provider);
+    return {
+      enabled: access.enabled(agentId), cliPath: paths.cli, providerFamily,
+      isWorkflowChild: Boolean(fresh.agent.labels?.[LABEL_RUN]),
+    };
+  };
+  server.handle(getAgentAccessRpc, async (input, context) => agentAccess(input.agentId, context));
+  server.handle(setAgentAccessRpc, async (input, context) => {
+    const current = await agentAccess(input.agentId, context);
+    if (input.enabled && current.isWorkflowChild) throw new ServiceError("recursive_workflow", "Workflow children cannot enable workflow tools; use workflow() in the orchestration script.");
+    if (stopping || startup !== "ready") throw new ServiceError("not_ready", "The workflow plugin is stopping.");
+    await access.set(input.agentId, input.enabled);
+    return { ...current, enabled: access.enabled(input.agentId) };
   });
 
   server.handle(listRunsRpc, async (input, context) => {
@@ -162,6 +191,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
 
   return async () => {
     stopping = true;
+    access.dispose();
     service.notifier.pause();
     process.off("unhandledRejection", onRejection);
     removeSettingsListener();
@@ -172,6 +202,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
         await bridge.close();
         await service.dispose();
         await bindings.idle();
+        await access.idle();
       })(),
       new Promise((resolve) => { timer = unref(setTimeout(resolve, 5000)) as unknown as ReturnType<typeof setTimeout>; }),
     ]); } finally {

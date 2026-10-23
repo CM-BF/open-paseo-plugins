@@ -2,6 +2,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { unlink } from "node:fs/promises";
 import { PLUGIN_VERSION } from "../shared/ids";
 import type { BindingStore } from "./bindings";
+import type { AgentAccessStore } from "./agent-access";
+import { toolDefinitions } from "./scripts";
 import { ServiceError, type WorkflowService } from "./service";
 import { describeError, log } from "./util";
 
@@ -10,6 +12,7 @@ const MAX_BODY = 2 * 1024 * 1024;
 export interface BridgeOptions {
   service: WorkflowService;
   bindings: BindingStore;
+  access: AgentAccessStore;
 }
 
 /**
@@ -93,6 +96,10 @@ export class Bridge {
     const input = args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
     const agentId = await this.callerId(request);
     try {
+      if (match[1] === "list") {
+        send(response, 200, { tools: agentId && this.options.access.enabled(agentId) ? toolDefinitions() : [] });
+        return;
+      }
       const text = await this.dispatch(match[1] ?? "", input, agentId);
       send(response, 200, { text });
     } catch (error) {
@@ -112,9 +119,16 @@ export class Bridge {
       }
       return agentId;
     };
+    const requireEnabledAgent = (): string => {
+      const id = requireAgent();
+      if (!this.options.access.enabled(id)) {
+        throw new ServiceError("workflow_disabled", "Dynamic workflows are disabled for this agent. Open this agent's Dynamic workflows panel and enable workflows for this agent, then retry.");
+      }
+      return id;
+    };
     switch (tool) {
       case "workflow":
-        return service.launch(requireAgent(), {
+        return service.launch(requireEnabledAgent(), {
           ...(typeof input.script === "string" ? { script: input.script } : {}),
           ...(typeof input.scriptPath === "string" ? { scriptPath: input.scriptPath } : {}),
           ...(typeof input.name === "string" ? { name: input.name } : {}),
@@ -130,6 +144,7 @@ export class Bridge {
         return service.stop(input.runId, { agentId: requireAgent() });
       }
       case "workflow_reference":
+        requireEnabledAgent();
         return service.reference();
       default:
         throw new ServiceError("not_found", `Unknown tool ${tool}`);

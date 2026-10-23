@@ -2,6 +2,26 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { AgentCallSchema, RunDetailSchema, RunSummarySchema } from "./run-types";
 
+export const AgentAccessSchema = z.object({
+  enabled: z.boolean(),
+  cliPath: z.string(),
+  providerFamily: z.string().nullable(),
+  isWorkflowChild: z.boolean(),
+});
+export type AgentAccess = z.infer<typeof AgentAccessSchema>;
+
+export const getAgentAccessRpc = defineRpc({
+  name: "agent-access.get",
+  input: z.object({ agentId: z.string().min(1) }),
+  output: AgentAccessSchema,
+});
+
+export const setAgentAccessRpc = defineRpc({
+  name: "agent-access.set",
+  input: z.object({ agentId: z.string().min(1), enabled: z.boolean() }),
+  output: AgentAccessSchema,
+});
+
 export const listRunsRpc = defineRpc({
   name: "runs.list",
   input: z.object({ agentId: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }),

@@ -181,6 +181,13 @@ Fixture：`~/plugin-test-2026-10-22-dwf-review`，project `prj_8474b59633637446`
 - 发布范围为完整插件、仓库开发规则/README 和验收辅助脚本，没有其他插件改动。远程 main 的初始提交是当前分支祖先，可常规快进，不覆盖已有历史。
 - 发布前检查：全部被跟踪 manifest 均符合 `plugins/<id>/paseo-plugin.json`；Git 安装路径与 build 已配置；`git diff --check` 通过。上一轮159项测试、typecheck与主daemon验收已完成，本次只改目录规则和发布文案。
 
+## 按 agent 开启 workflow：服务端（2026-10-22）
+
+- 新增 `agent-access.json`，默认全部关闭，按 agent ID 保存显式授权；读取失败保持关闭。写入串行、原子替换，持久化成功后才公布状态，写失败回报调用方且后续仍可重试。
+- 新增 `agent-access.get/set` RPC；核对真实 agent，拒绝不存在或已归档的 agent，以及给 workflow 子 agent 开启权限；关闭期间拒绝延迟完成的修改。创建时显式 `PASEO_DYNAMIC_WORKFLOW_ENABLED=1` 可授权，resume/refresh 和子 agent 不继承此开关。
+- bridge 工具发现按 caller 返回描述，未开启时为空；未开启的 launch/reference 返回操作提示，已有运行仍可查状态或停止；没有通过 MCP 开启权限的工具。
+- 本地验证：`npx vitest run server/agent-access.test.ts server/bridge.test.ts server/contribute.test.ts`，3 文件、18 项通过；覆盖并发保存、写失败、重启、真实 Unix socket、不同 caller、RPC 输入对象状态和 shutdown 竞态。`git diff --check` 通过。全量检查与 daemon/Web UI 验收由整合阶段完成，本项未操作 daemon。
+
 ## 按 agent 开启 workflow：客户端（2026-10-22）
 
 - Dynamic workflows 面板顶部新增独立 agent 开关，无运行时也可见；只在面板打开时读取该 agent 的状态，不增加全局 agent 轮询。保存期间禁用开关，成功后更新对应缓存，读取与保存失败就地显示。
