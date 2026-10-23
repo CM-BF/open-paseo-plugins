@@ -184,6 +184,8 @@ export const MCP_SOURCE = String.raw`// Written by the paseo-dynamic-workflow Pa
 import http from 'node:http';
 import path from 'node:path';
 import readline from 'node:readline';
+import { watch } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 
 const VERSION = '__PLUGIN_VERSION__';
 const SERVER_NAME = '__SERVER_NAME__';
@@ -193,6 +195,51 @@ __CLIENT_SOURCE__
 function write(message) {
   process.stdout.write(JSON.stringify(message) + '\n');
 }
+
+// Only an explicitly enabled agent gets descriptions. Reading the durable state also works
+// while the bridge restarts; missing/invalid state fails closed. Watch the directory because
+// the plugin replaces its JSON files atomically.
+async function enabledForAgent() {
+  try {
+    let agentId = env.PASEO_AGENT_ID;
+    const nonce = env.__BINDING_ENV__;
+    if (nonce) {
+      const bindings = JSON.parse(await readFile(path.join(env.DYNAMIC_WORKFLOW_HOME, 'bindings.json'), 'utf8'));
+      agentId = bindings.bindings && bindings.bindings[nonce] && bindings.bindings[nonce].agentId;
+    }
+    if (!agentId) return false;
+    const access = JSON.parse(await readFile(path.join(env.DYNAMIC_WORKFLOW_HOME, 'agent-access.json'), 'utf8'));
+    return access.version === 1 && Array.isArray(access.enabledAgentIds)
+      && access.enabledAgentIds.every((id) => typeof id === 'string' && id.length > 0)
+      && access.enabledAgentIds.includes(agentId);
+  } catch { return false; }
+}
+
+let initialized = false;
+let lastEnabled = false;
+let closed = false;
+let check = Promise.resolve();
+function serializeAvailability(operation) {
+  const pending = check.then(operation);
+  check = pending.catch(() => {});
+  return pending;
+}
+function checkAvailability() {
+  return serializeAvailability(async () => {
+    const enabled = await enabledForAgent();
+    if (!closed && initialized && enabled !== lastEnabled) {
+      lastEnabled = enabled;
+      write({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
+    }
+  });
+}
+let watcher;
+try {
+  watcher = watch(env.DYNAMIC_WORKFLOW_HOME, (_event, name) => {
+    if (!name || name === 'agent-access.json' || name === 'bindings.json') checkAvailability();
+  });
+  watcher.on('error', () => { watcher.close(); });
+} catch { /* Missing state remains disabled. A new process can attach after installation. */ }
 
 async function handle(message) {
   if (!message || typeof message !== 'object') return { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid request' } };
@@ -204,14 +251,21 @@ async function handle(message) {
       const requested = message.params && message.params.protocolVersion;
       return reply({
         protocolVersion: PROTOCOL_VERSIONS.includes(requested) ? requested : '2025-06-18',
-        capabilities: { tools: { listChanged: false } },
+        capabilities: { tools: { listChanged: true } },
         serverInfo: { name: SERVER_NAME, version: VERSION },
       });
     }
+    case 'notifications/initialized':
+      initialized = true;
+      checkAvailability();
+      return null;
     case 'ping':
       return reply({});
-    case 'tools/list':
-      return reply({ tools: TOOLS });
+    case 'tools/list': {
+      const enabled = await enabledForAgent();
+      lastEnabled = enabled;
+      return reply({ tools: enabled ? TOOLS : [] });
+    }
     case 'tools/call': {
       const params = message.params || {};
       if (!TOOLS.some((tool) => tool.name === params.name)) {
@@ -228,6 +282,7 @@ async function handle(message) {
 }
 
 const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+lines.on('close', () => { closed = true; watcher?.close(); });
 lines.on('line', (line) => {
   if (!line.trim()) return;
   let message;
@@ -238,7 +293,8 @@ lines.on('line', (line) => {
     return;
   }
   const batch = Array.isArray(message);
-  Promise.all((batch ? message : [message]).map((item) => handle(item).catch((error) => ({
+  const items = batch ? message : [message];
+  const dispatch = () => Promise.all(items.map((item) => handle(item).catch((error) => ({
     jsonrpc: '2.0', id: item && item.id !== undefined ? item.id : null, error: { code: -32603, message: String(error && error.message) },
   })))).then((responses) => {
     const present = responses.filter(Boolean);
@@ -246,6 +302,11 @@ lines.on('line', (line) => {
       if (present.length > 0) write(present);
     } else if (present[0]) write(present[0]);
   });
+  // Keep the response write in the same lane as watcher notifications. Otherwise an old
+  // listing can arrive after its invalidation and become the client's final cached catalog.
+  // Whole batch replies stay atomic; ordinary tools/call messages remain concurrent.
+  if (items.some((item) => item && item.method === 'tools/list')) void serializeAvailability(dispatch);
+  else void dispatch();
 });
 process.stdout.on('error', () => process.exit(0));
 `;
@@ -351,6 +412,7 @@ main().catch((error) => {
 function fill(source: string): string {
   return source
     .replace("__CLIENT_SOURCE__", () => CLIENT_SOURCE.replaceAll("__BINDING_ENV__", BINDING_ENV))
+    .replaceAll("__BINDING_ENV__", BINDING_ENV)
     .replace("__PLUGIN_VERSION__", () => PLUGIN_VERSION)
     .replace("__SERVER_NAME__", () => MCP_SERVER)
     .replace("__TOOLS_JSON__", () => JSON.stringify(toolDefinitions()));
