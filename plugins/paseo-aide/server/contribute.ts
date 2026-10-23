@@ -1,5 +1,7 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
+  alertStatusRpc,
+  badgeRpc,
   briefNowRpc,
   cancelFollowupRpc,
   checkNowRpc,
@@ -101,6 +103,17 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     capture(context);
     await service.ready();
     return service.pause(input.until);
+  });
+  server.handle(alertStatusRpc, async (input, context) => {
+    capture(context);
+    await service.start();
+    const ids = new Set(input.ids);
+    return { alerts: service.alerts(true).filter((alert) => ids.has(alert.id)) };
+  });
+  server.handle(badgeRpc, async (_input, context) => {
+    capture(context);
+    await service.start();
+    return service.badge();
   });
   server.handle(modelsRpc, async (_input, context) => {
     capture(context);

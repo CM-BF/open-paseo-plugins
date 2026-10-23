@@ -105,3 +105,23 @@ export const modelsRpc = defineRpc({
     timezone: z.string(),
   }),
 });
+
+/** What the sidebar row shows: open alerts and the state, without reading the agent directory. */
+export const badgeRpc = defineRpc({
+  name: "aide.badge",
+  input: z.object({}),
+  output: z.object({
+    state: z.enum(["not_set_up", "active", "paused", "quiet_hours", "detached"]),
+    openAlerts: z.number(),
+    busy: z.boolean(),
+  }),
+});
+
+export type ModelCatalog = z.output<typeof modelsRpc.output>;
+
+/** Current state of the alerts a chat note mentions, so its buttons match. */
+export const alertStatusRpc = defineRpc({
+  name: "aide.alerts.get",
+  input: z.object({ ids: z.array(z.string()).max(20) }),
+  output: z.object({ alerts: z.array(AlertSchema) }),
+});

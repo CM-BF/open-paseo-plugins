@@ -14,7 +14,8 @@ import { waitingAgents } from "./digest";
 import { McpRelay, type McpCaller } from "./mcp";
 import { resolveHome, type StatePaths } from "./paths";
 import { decideCheckinPermission } from "./policy";
-import { alertBody, assistantSystemPrompt, briefBody, checkinPrompt, checkinSystemPrompt, DEFAULT_MEMORY, DEFAULT_WATCHLIST, MEMORY_FILE, mcpInstructions, reminderBody, WATCHLIST_FILE, welcomeBody } from "./prompts";
+import { DEFAULT_MEMORY, DEFAULT_WATCHLIST, MEMORY_FILE, WATCHLIST_FILE } from "../shared/defaults";
+import { alertBody, assistantSystemPrompt, briefBody, checkinPrompt, checkinSystemPrompt, mcpInstructions, reminderBody, welcomeBody } from "./prompts";
 import { archiveQuietly, runCheckinAgent, supportsToolGrants } from "./runner";
 import { ActivityLog, Store, type InFlight, type OutboxEntry } from "./store";
 import { buildTools } from "./tools";
@@ -164,8 +165,10 @@ export class AideService {
     return now < Date.parse(until);
   }
 
+  /** From the settings screen: the chat's identity and the pause are not its to change. */
   saveConfig(next: Config): Config {
-    const config = ConfigSchema.parse(next);
+    const current = this.config();
+    const config = ConfigSchema.parse({ ...next, name: current.name, chatModel: current.chatModel, chatMode: current.chatMode, pausedUntil: current.pausedUntil });
     this.store.state.config = config;
     this.store.save();
     this.activity.add({ kind: "schedule", title: "Settings changed", detail: scheduleSummary(config, this.timezone()) });
@@ -785,6 +788,19 @@ export class AideService {
     return planned.sort((a, b) => a.at.localeCompare(b.at));
   }
 
+  private stateOf(now: number): Overview["state"] {
+    const assistant = this.store.state.assistant;
+    if (!assistant) return "not_set_up";
+    if (assistant.archivedAt) return "detached";
+    if (this.paused(now)) return "paused";
+    return isActiveTime(now, this.schedule()) ? "active" : "quiet_hours";
+  }
+
+  badge(): { state: Overview["state"]; openAlerts: number; busy: boolean } {
+    const state = this.store.state;
+    return { state: this.stateOf(this.now()), openAlerts: state.alerts.filter((alert) => alert.status === "open").length, busy: state.inFlight !== null };
+  }
+
   async overview(paseo: PaseoApi): Promise<Overview> {
     await this.start();
     const state = this.store.state;
@@ -792,7 +808,7 @@ export class AideService {
     const assistant = state.assistant;
     let waiting: WaitingAgent[] = [];
     if (assistant && !assistant.archivedAt) waiting = await withTimeout(waitingAgents(paseo), 5000).catch(() => []);
-    const status: Overview["state"] = !assistant ? "not_set_up" : assistant.archivedAt ? "detached" : this.paused(now) ? "paused" : isActiveTime(now, this.schedule()) ? "active" : "quiet_hours";
+    const status = this.stateOf(now);
     const alerts = state.alerts.filter((alert) => alert.status === "open" || alert.status === "snoozed");
     const closed = state.alerts.filter((alert) => alert.status === "done" || alert.status === "muted").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 20);
     return {

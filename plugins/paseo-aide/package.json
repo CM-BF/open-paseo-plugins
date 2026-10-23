@@ -17,7 +17,7 @@
     "!**/*.test.tsx"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.client.json",
     "test": "vitest run"
   },
   "dependencies": {
