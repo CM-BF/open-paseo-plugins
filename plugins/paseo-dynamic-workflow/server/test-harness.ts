@@ -49,7 +49,9 @@ export interface RunOptions {
   args?: unknown;
   cache?: ResumeCache | null;
   budgetTotal?: number | null;
+  guidance?: { ultracode: boolean; size: string };
   maxAgents?: number;
+  agentTimeoutMs?: number;
   concurrency?: number;
   state?: StatePaths;
   nested?: Record<string, string>;
@@ -100,6 +102,7 @@ export async function runScript(script: string, runner: Runner, options: RunOpti
     resultPreview: null,
     usage: emptyUsage(),
     budgetTotal: options.budgetTotal ?? null,
+    ...(options.guidance ? { guidance: options.guidance } : {}),
     notified: false,
   };
   await files.create(script, record);
@@ -113,7 +116,7 @@ export async function runScript(script: string, runner: Runner, options: RunOpti
     runner,
     concurrency: options.concurrency ?? 4,
     maxAgents: options.maxAgents ?? 1000,
-    agentTimeoutMs: 0,
+    agentTimeoutMs: options.agentTimeoutMs ?? 0,
     archiveWhenDone: false,
     resolveWorkflow: async (ref) => {
       const source = options.nested?.[String(ref)];

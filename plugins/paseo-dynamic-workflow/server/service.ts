@@ -227,6 +227,7 @@ export class WorkflowService {
       resultPreview: null,
       usage: emptyUsage(),
       budgetTotal,
+      ...(this.guidance(callerId) ? { guidance: this.guidance(callerId)! } : {}),
       notified: false,
     };
     await files.create(source.script, record);

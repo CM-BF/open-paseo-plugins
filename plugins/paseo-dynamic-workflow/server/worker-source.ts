@@ -214,6 +214,10 @@ export const PRELUDE = String.raw`(function (host) {
     parallel: parallel,
     pipeline: pipeline,
     budget: budget,
+    guidance: Object.freeze({
+      ultracode: Boolean(host.guidance && host.guidance.ultracode),
+      size: host.guidance && typeof host.guidance.size === 'string' ? host.guidance.size : 'unrestricted',
+    }),
     setTimeout: function (callback, delay) {
       if (typeof callback !== 'function') throw new TypeError('setTimeout() expects a function');
       return host.setTimer(callback, delay);
@@ -290,6 +294,7 @@ function failRequests(message) {
 const sharedHost = {
   maxItems: data.maxItems,
   budgetTotal: data.budgetTotal,
+  guidance: data.guidance,
   request(op, json) {
     if (stopped) return Promise.reject(stopError());
     if (++requestCount > data.maxRequests) return failRequests('The script exceeded its request limit (' + data.maxRequests + '); await every agent()/workflow() call and split large runs into batches');

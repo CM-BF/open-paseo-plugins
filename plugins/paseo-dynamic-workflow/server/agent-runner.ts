@@ -24,6 +24,8 @@ export interface AgentOptions {
   isolation?: "worktree";
   agentType?: string;
   cwd?: string;
+  /** Per-call time limit; the smaller of this and the global limit applies. Not part of the cache key. */
+  timeoutMs?: number;
 }
 
 /** What a child inherits: the launching agent's settings. */
@@ -80,7 +82,7 @@ const BUILT_IN_TYPES: Record<string, string | null> = {
     "Role: explorer. Read and search to answer the task. Do not create, modify or delete files, and run only read-only commands.",
   plan: "Role: planner. Investigate and produce a concrete plan. Do not create, modify or delete files.",
   verification:
-    "Role: adversarial verifier. Try to refute the claim with evidence you check yourself: read the code, run the reproduction. When you cannot confirm it, treat it as refuted. Do not modify files.",
+    "Role: adversarial verifier. Try to refute the claim with evidence you check yourself: read the code, run the reproduction. When the evidence you examined does not support it, treat it as refuted. When you could not examine it at all (a missing tool, a denied permission, an unreachable source), say so plainly instead of guessing; if the task's schema has a field for that, use it. Do not modify files.",
 };
 
 /** Same text for every child, so providers that cache the system prompt can share it. */

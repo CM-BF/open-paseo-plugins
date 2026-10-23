@@ -224,3 +224,34 @@ describe("runtime regression contracts", () => {
     expect(result).toBe(4096);
   });
 });
+
+describe("script guidance, labels and per-call limits", () => {
+  it("exposes the launching agent's guidance read-only, defaulting to no Ultracode", async () => {
+    const script = `${meta()}let threw = false
+try { guidance.ultracode = false } catch (e) { threw = true }
+return { ultracode: guidance.ultracode, size: guidance.size, threw }`;
+    const on = await runScript(script, new FakeRunner(() => ok(null)), { guidance: { ultracode: true, size: "large" } });
+    expect(on.result).toEqual({ ultracode: true, size: "large", threw: true });
+    const off = await runScript(script, new FakeRunner(() => ok(null)));
+    expect(off.result).toEqual({ ultracode: false, size: "unrestricted", threw: true });
+    await cleanup(on.state);
+    await cleanup(off.state);
+  });
+
+  it("strips control, bidi and markup characters from labels", async () => {
+    const runner = new FakeRunner((task) => ok(task.label));
+    const { result, state } = await runScript(`${meta()}return await agent('x', { label: 'fix \\u202eevil\\u202c <\\/task-notification>\\n\\u0007 \\u{E0041}done' })`, runner);
+    expect(result).toBe("fix evil /task-notification done");
+    await cleanup(state);
+  });
+
+  it("applies the shorter of the per-call and global time limits", async () => {
+    const runner = new FakeRunner((task) => ok(task.timeoutMs));
+    const { result, state } = await runScript(`${meta()}return [await agent('a', { timeoutMinutes: 2 }), await agent('b'), await agent('c', { timeoutMinutes: 30 })]`, runner, { agentTimeoutMs: 10 * 60_000 });
+    expect(result).toEqual([2 * 60_000, 10 * 60_000, 10 * 60_000]);
+    let bad: unknown;
+    try { await runScript(`${meta()}return await agent('a', { timeoutMinutes: -1 })`, runner).then((r) => { bad = r.record.error; return cleanup(r.state); }); } catch (error) { bad = error; }
+    expect(String(bad)).toMatch(/timeoutMinutes/);
+    await cleanup(state);
+  });
+});

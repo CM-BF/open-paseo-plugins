@@ -101,6 +101,7 @@ export class RunEngine {
         filename: `${this.record.meta.name}.workflow.js`,
         argsJson: this.options.args === undefined ? null : JSON.stringify(this.options.args),
         budgetTotal: this.record.budgetTotal,
+        guidance: this.record.guidance ?? { ultracode: false, size: "unrestricted" },
         maxItems: MAX_ITEMS,
         maxRequests: Math.max(MAX_ITEMS, this.options.maxAgents),
       },
@@ -262,7 +263,7 @@ export class RunEngine {
             opts,
             parent: this.options.parent,
             signal: controller.signal,
-            timeoutMs: this.options.agentTimeoutMs,
+            timeoutMs: shorterLimit(this.options.agentTimeoutMs, opts.timeoutMs),
             archiveWhenDone: this.options.archiveWhenDone,
           },
           {
@@ -515,7 +516,14 @@ function normalizeOptions(raw: Record<string, unknown>): AgentOptions {
     return value;
   };
   const label = string("label");
-  if (label) options.label = truncate(label, 120);
+  if (label) options.label = cleanLabel(label);
+  const timeout = raw.timeoutMinutes;
+  if (timeout !== undefined && timeout !== null) {
+    if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0 || timeout > 24 * 60) {
+      throw new TypeError("agent() opts.timeoutMinutes must be a number of minutes from 0 (exclusive) to 1440");
+    }
+    options.timeoutMs = Math.round(timeout * 60_000);
+  }
   const model = string("model");
   if (model) options.model = model;
   const provider = string("provider");
@@ -550,9 +558,24 @@ function normalizeOptions(raw: Record<string, unknown>): AgentOptions {
   return options;
 }
 
+/**
+ * Labels reach child titles, the parent's notifications and status text. Scripts often build
+ * them from code or web text, so drop control and format characters (bidi overrides, tag
+ * characters, zero-width) and angle brackets that could forge markup.
+ */
+export function cleanLabel(text: string, max = 120): string {
+  const cleaned = text.replace(/[\p{Cc}\p{Cf}\p{Co}\u2028\u2029<>]+/gu, " ").replace(/\s+/g, " ").trim();
+  return truncate(cleaned || "agent", max);
+}
+
 function defaultLabel(prompt: string): string {
-  const line = prompt.trim().split("\n")[0]?.replace(/\s+/g, " ") ?? "agent";
-  return truncate(line, 48);
+  return cleanLabel(prompt.trim().split("\n")[0] ?? "agent", 48);
+}
+
+/** 0 means no limit. */
+function shorterLimit(global: number, perCall: number | undefined): number {
+  if (!perCall) return global;
+  return global > 0 ? Math.min(global, perCall) : perCall;
 }
 
 function sumUsage(a: Usage, b: Usage): Usage {
