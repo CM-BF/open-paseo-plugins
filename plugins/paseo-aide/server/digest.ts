@@ -8,7 +8,9 @@ const ORDER: Record<WaitingAgent["reason"], number> = { permission: 0, error: 1,
  * The user's Paseo agents that are waiting on them: approvals, failures and finished work
  * nobody has looked at. Read from the daemon, so it costs no model call.
  */
-export async function waitingAgents(paseo: PaseoApi, limit = 25): Promise<WaitingAgent[]> {
+export const MAX_FINISHED = 15;
+
+export async function waitingAgents(paseo: PaseoApi): Promise<WaitingAgent[]> {
   const result = await paseo.agents.list({ filter: { requiresAttention: true }, page: { limit: 100 } });
   const waiting: WaitingAgent[] = [];
   for (const { agent, project } of result.entries) {
@@ -26,5 +28,7 @@ export async function waitingAgents(paseo: PaseoApi, limit = 25): Promise<Waitin
     });
   }
   waiting.sort((a, b) => ORDER[a.reason] - ORDER[b.reason] || (a.since ?? "").localeCompare(b.since ?? ""));
-  return waiting.slice(0, limit);
+  // Approvals and failures all count; finished work nobody opened is only a hint.
+  const blocking = waiting.filter((agent) => agent.reason !== "finished").slice(0, 50);
+  return [...blocking, ...waiting.filter((agent) => agent.reason === "finished").slice(0, MAX_FINISHED)];
 }

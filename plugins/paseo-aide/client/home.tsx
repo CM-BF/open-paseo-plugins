@@ -128,9 +128,7 @@ function Dashboard({ data, theme, styles, compact, navigation }: DashboardProps)
           <Section title={`Needs you${open.length > 0 ? ` (${open.length})` : ""}`} styles={styles}>
             {open.length === 0 ? <Text style={styles.empty}>Nothing right now. Background check-ins put things here when they need you.</Text> : open.map((alert, index) => <AlertRow key={alert.id} alert={alert} first={index === 0} theme={theme} styles={styles} now={now} timezone={data.timezone} />)}
           </Section>
-          <Section title={`Waiting in Paseo${data.waiting.length > 0 ? ` (${data.waiting.length})` : ""}`} styles={styles}>
-            {data.waiting.length === 0 ? <Text style={styles.empty}>No agents are waiting on you.</Text> : data.waiting.map((agent, index) => <WaitingRow key={agent.agentId} agent={agent} first={index === 0} theme={theme} styles={styles} now={now} navigation={navigation} />)}
-          </Section>
+          <WaitingSection waiting={data.waiting} theme={theme} styles={styles} now={now} navigation={navigation} />
         </View>
         <View style={styles.column}>
           <Section title="Planned" styles={styles}>
@@ -218,6 +216,35 @@ const WAITING_LOOK: Record<WaitingAgent["reason"], { icon: string; label: string
   error: { icon: "TriangleAlert", label: "failed", tone: "danger" },
   finished: { icon: "CircleCheck", label: "finished", tone: "muted" },
 };
+
+/** Approvals and failures one by one; finished work nobody opened yet folded into one line. */
+function WaitingSection({ waiting, theme, styles, now, navigation }: { waiting: readonly WaitingAgent[]; theme: Theme; styles: Styles; now: number; navigation: PluginScreenProps["navigation"] }) {
+  const [showFinished, setShowFinished] = useState(false);
+  const blocking = waiting.filter((agent) => agent.reason !== "finished");
+  const finished = waiting.filter((agent) => agent.reason === "finished");
+  const rows = [...blocking, ...(showFinished ? finished.slice(0, 10) : [])];
+  return (
+    <Section title={`Waiting in Paseo${blocking.length > 0 ? ` (${blocking.length})` : ""}`} styles={styles}>
+      {blocking.length === 0 && finished.length === 0 ? <Text style={styles.empty}>No agents are waiting on you.</Text> : null}
+      {blocking.length === 0 && finished.length > 0 ? <Text style={styles.empty}>No approvals or failures waiting.</Text> : null}
+      {rows.map((agent, index) => (
+        <WaitingRow key={agent.agentId} agent={agent} first={index === 0 && blocking.length > 0} theme={theme} styles={styles} now={now} navigation={navigation} />
+      ))}
+      {finished.length > 0 ? (
+        <View>
+          <View style={styles.divider} />
+          <Pressable accessibilityRole="button" accessibilityLabel={showFinished ? "Hide finished agents" : "Show finished agents"} onPress={() => setShowFinished((value) => !value)} style={[styles.item, styles.between]}>
+            <Text style={styles.mutedText}>
+              {finished.length}
+              {finished.length >= 15 ? "+" : ""} finished agent{finished.length === 1 ? "" : "s"} you haven't opened
+            </Text>
+            <Text style={styles.link}>{showFinished ? "Hide" : "Show"}</Text>
+          </Pressable>
+        </View>
+      ) : null}
+    </Section>
+  );
+}
 
 function WaitingRow({ agent, first, theme, styles, now, navigation }: { agent: WaitingAgent; first: boolean; theme: Theme; styles: Styles; now: number; navigation: PluginScreenProps["navigation"] }) {
   const look = WAITING_LOOK[agent.reason];

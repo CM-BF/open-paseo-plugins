@@ -32,9 +32,15 @@ interface FakeAgent {
 class FakePaseo {
   agents = new Map<string, FakeAgent>();
   onChildCreated: ((agent: FakeAgent) => void) | null = null;
+  /** Child creations that fail the way a slow before-hook of another plugin does. */
+  failChildCreates = 0;
 
   api(): PaseoApi {
     const create = async (options: Record<string, any>) => {
+      if (options.parent && this.failChildCreates > 0) {
+        this.failChildCreates--;
+        throw new Error("Plugin next-workspace before agent.create failed: Plugin RPC timed out: next-workspace.hook");
+      }
       const agent: FakeAgent = {
         id: options.agentId,
         cwd: options.cwd,
@@ -124,7 +130,7 @@ beforeEach(async () => {
   fake.onChildCreated = (child) => {
     child.lastMessage = "{\"notify\": false, \"summary\": \"quiet\"}";
   };
-  service = new AideService({ paths: statePaths(join(dir, "state")), paseoHome: join(dir, "paseo-home"), now: () => clock });
+  service = new AideService({ paths: statePaths(join(dir, "state")), paseoHome: join(dir, "paseo-home"), now: () => clock, createRetryDelaysMs: [1, 1] });
   await service.start();
   service.access.capture(fake.api());
   service.saveConfig({ ...service.config(), timezone: TZ });
@@ -198,6 +204,33 @@ describe("check-ins", () => {
     expect(service.store.state.unanswered).toBe(0);
     service.onTurnEnded(assistant().id, [{ type: "user_message", text: "<!-- aide:{} -->\nnote" }]);
     expect(service.store.state.unanswered).toBe(0);
+  });
+
+  it("retries starting the agent when another plugin's hook times out", async () => {
+    fake.failChildCreates = 2;
+    clock += 11 * 60_000;
+    reportWith({ notify: false, summary: "Quiet.", items: [] });
+    await tick();
+    await settle();
+    expect(children()).toHaveLength(1);
+    expect(service.activity.recent(1)[0]).toMatchObject({ kind: "checkin", outcome: "quiet" });
+  });
+
+  it("tries a failed scheduled check-in again soon, without using up the day", async () => {
+    fake.failChildCreates = 3;
+    clock += 11 * 60_000;
+    await tick();
+    await settle();
+    expect(service.activity.recent(1)[0]).toMatchObject({ outcome: "failed", detail: expect.stringMatching(/Trying again in 15 minutes/) });
+    expect(service.store.state.checkinsToday).toBe(0);
+    clock += 14 * 60_000;
+    await tick();
+    await settle();
+    expect(service.activity.recent(1)[0]?.outcome).toBe("failed");
+    clock += 2 * 60_000;
+    await tick();
+    await settle();
+    expect(service.activity.recent(1)[0]).toMatchObject({ outcome: "quiet" });
   });
 
   it("records a failed check-in without a report", async () => {

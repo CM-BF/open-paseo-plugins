@@ -44,6 +44,8 @@ export interface CheckinAgentInput {
   mcp: HttpMcpServer;
   grants: { kind: "mcp"; server: string; tool: string }[];
   timeoutMs: number;
+  /** Pauses before the second and third attempt to start the agent. */
+  retryDelaysMs?: readonly number[];
   signal: AbortSignal;
   decide(request: AgentPermissionRequest): Decision;
 }
@@ -61,23 +63,7 @@ export interface CheckinAgentResult {
  * well as by the lifecycle hook, so a missed hook event cannot stall the run.
  */
 export async function runCheckinAgent(input: CheckinAgentInput): Promise<CheckinAgentResult> {
-  const mode = readOnlyMode(input.provider);
-  const handle = await input.paseo.agents.create({
-    agentId: input.agentId,
-    cwd: input.cwd,
-    parent: input.parentId,
-    title: input.title,
-    labels: { [LABEL_ROLE]: "checkin", [LABEL_RUN]: input.runId },
-    config: {
-      provider: input.provider,
-      ...(mode.modeId ? { modeId: mode.modeId } : {}),
-      ...(mode.options ? { options: mode.options } : {}),
-      systemPrompt: input.systemPrompt,
-      mcpServers: { [MCP_SERVER]: input.mcp },
-      ...(supportsToolGrants(input.provider) ? { toolPolicy: { preapproved: input.grants } } : {}),
-    },
-    prompt: input.prompt,
-  });
+  const handle = await createWithRetry(input);
   const startedAt = Date.now();
   const deadline = startedAt + input.timeoutMs;
   for (;;) {
@@ -102,6 +88,41 @@ export async function runCheckinAgent(input: CheckinAgentInput): Promise<Checkin
       lastMessage: result.lastMessage,
       error: result.error ?? result.final?.lastError ?? null,
     };
+  }
+}
+
+/** Failures that say nothing about the check-in itself: another plugin's slow hook, a dropped connection. */
+const TRANSIENT_CREATE = /timed out|before agent\.create failed|DAEMON_CONNECTION_LOST|DAEMON_REQUEST_TIMEOUT|connection (lost|closed)/i;
+
+async function createWithRetry(input: CheckinAgentInput) {
+  const mode = readOnlyMode(input.provider);
+  const options = {
+    agentId: input.agentId,
+    cwd: input.cwd,
+    parent: input.parentId,
+    title: input.title,
+    labels: { [LABEL_ROLE]: "checkin", [LABEL_RUN]: input.runId },
+    config: {
+      provider: input.provider,
+      ...(mode.modeId ? { modeId: mode.modeId } : {}),
+      ...(mode.options ? { options: mode.options } : {}),
+      systemPrompt: input.systemPrompt,
+      mcpServers: { [MCP_SERVER]: input.mcp },
+      ...(supportsToolGrants(input.provider) ? { toolPolicy: { preapproved: input.grants } } : {}),
+    },
+    prompt: input.prompt,
+  };
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await input.paseo.agents.create(options);
+    } catch (error) {
+      const message = describeError(error);
+      // A create that failed late may still have made the agent; it is ours by id.
+      if (/already exists/i.test(message)) return input.paseo.agents.ref(input.agentId);
+      if (attempt >= 3 || input.signal.aborted || !TRANSIENT_CREATE.test(message)) throw error;
+      log(`check-in ${input.runId}: starting the agent failed (${message}); retrying`);
+      await pause(input.retryDelaysMs?.[attempt - 1] ?? (attempt === 1 ? 3000 : 10_000));
+    }
   }
 }
 

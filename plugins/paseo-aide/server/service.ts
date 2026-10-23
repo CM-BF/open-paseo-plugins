@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentPermissionRequest, AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { LABEL_ROLE, MCP_SERVER, PLUGIN_VERSION } from "../shared/ids";
-import { briefSlot, isActiveTime, nextBriefAt, nextCheckinAt, type ScheduleConfig } from "../shared/schedule";
+import { briefSlot, effectiveIntervalMinutes, isActiveTime, nextBriefAt, nextCheckinAt, type ScheduleConfig } from "../shared/schedule";
 import { dateKey, formatLocal, systemTimeZone } from "../shared/time";
 import { ConfigSchema, type Alert, type Config, type Followup, type Overview, type Planned, type WaitingAgent } from "../shared/types";
 import { encodeUpdate, isUpdateText, decodeUpdate } from "../shared/update";
@@ -26,6 +26,7 @@ const TICK_MS = 30_000;
 const CHECKIN_TIMEOUT_MS = 10 * 60_000;
 const MAX_ACTIVE_FOLLOWUPS = 50;
 const DEFAULT_SNOOZE = "in 3h";
+const FAILURE_RETRY_MINUTES = 15;
 
 export class ServiceError extends Error {}
 
@@ -33,6 +34,8 @@ export interface ServiceOptions {
   paths: StatePaths;
   paseoHome: string;
   now?: () => number;
+  /** Tests shorten the pauses between attempts to start a check-in agent. */
+  createRetryDelaysMs?: readonly number[];
 }
 
 export interface SetupInput {
@@ -480,6 +483,7 @@ export class AideService {
         mcp: await this.relay.serverFor({ role: "checkin", agentId: inFlight.agentId!, runId: inFlight.runId }),
         grants: this.relay.grants("checkin"),
         timeoutMs: CHECKIN_TIMEOUT_MS,
+        ...(this.options.createRetryDelaysMs ? { retryDelaysMs: this.options.createRetryDelaysMs } : {}),
         signal: this.abort.signal,
         decide: (request) => decideCheckinPermission(request),
       });
@@ -499,8 +503,16 @@ export class AideService {
       return;
     }
     if (!report) {
+      let retry = "";
+      if (inFlight.reason === "scheduled") {
+        // A failure is not a check: try again in a quarter of an hour, without using up the day's budget.
+        const interval = effectiveIntervalMinutes(this.schedule(), state.quietStreak);
+        state.lastCheckinAt = new Date(this.now() - Math.max(0, interval - FAILURE_RETRY_MINUTES) * 60_000).toISOString();
+        state.checkinsToday = Math.max(0, state.checkinsToday - 1);
+        retry = ` Trying again in ${FAILURE_RETRY_MINUTES} minutes.`;
+      }
       this.store.save();
-      this.activity.add({ kind: "checkin", title: followup ? `Follow-up check failed: ${followup.title}` : "Check-in failed", detail: error ?? `It ended without a report.${lastMessage ? ` Last message: ${truncate(lastMessage, 300)}` : ""}`, outcome: "failed", runId: inFlight.runId, agentId: inFlight.agentId! });
+      this.activity.add({ kind: "checkin", title: followup ? `Follow-up check failed: ${followup.title}` : "Check-in failed", detail: `${error ?? `It ended without a report.${lastMessage ? ` Last message: ${truncate(lastMessage, 300)}` : ""}`}${retry}`, outcome: "failed", runId: inFlight.runId, agentId: inFlight.agentId! });
       return;
     }
     this.applyReport(report, inFlight, followup);
