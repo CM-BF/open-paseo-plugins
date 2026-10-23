@@ -316,3 +316,12 @@ Claude 额度耗尽后从已完成的记录接续，没有重跑原审查和 fix
 - CLI provider 和无 MCP binding 的旧 agent 收到 CLI reference/run 入口，不再误导它们靠 Reload 添加 MCP。关闭 workflow 的通知说明持续到用户再次开启；Ultracode 提示明确内置 workflow 默认不传 args.size，除非用户要求轻量运行，2048 字符截断约束仍通过。
 - Reload RPC 在最后一次 refresh 后重新检查插件 shutdown 和 agent 是否存在/归档，避免清理后启动 CLI；通知的 cut-off 列表排除用户手动停止/归档的子 agent；含尖括号的恢复路径仅给可无损解析的 JSON 工具形式，避免替换字符后指向错误路径。
 - 验证：先运行新增回归，确认旧实现失败；修复后 `npx vitest run server/notifier.test.ts server/contribute.test.ts server/views.test.ts server/service.test.ts server/mcp-guidance.test.ts` 为 5 文件、43 项通过，`npm run typecheck` 和 `git diff --check` 通过。未自行 reload daemon；实机验证由整合阶段完成。
+
+### 2026-10-22：交接后内置 workflow 的核实修复
+
+- 读取实现审查最新结果 `w3634wt08.output`（198 个 agent；171 完成，27 因 Claude 额度失败；critic 已完成，plan 未完成），复用已有发现和核实结果，没有重跑已完成的审查。原始输出及恢复摘要保留在 `/tmp/dwf-review/`。
+- 内置结果新增 `limit: string | null`；首次 agent cap / token budget 拒绝后，共用包装器记录原因并短路后续调用，核实按批发出，避免异常日志淹没阶段日志。deep-review、deep-research、critique 在有显式 output-token budget 时尝试保留 15% 给最后的计划/汇总/修订；核实与 gap critic 到达该余量后停止。输出长度未知，所以这是尽力预留；没有宣称保留未知的 host agent cap，也没有新增 engine API。只有核实阶段的 verify-claims 不扣这份预留。
+- 缺失投票或 cannot_check 都写入失败 coverage，并使结果 partial/inconclusive；已有多数票结论保留，真正分票仍保留 unverified，不改成单票确认。design-panel 的缺失评分、重复角度中的失败设计者和严重攻击后的失败修订均不再报告完整完成；未修订攻击用 `unaddressedRedTeam` 标明。
+- deep-review 为 gap 发现保留一部分核实名额，干轮后释放剩余名额；去重保留标题词序，ID 按数字顺序决定同严重度名额。research 不再把未入批 claim 标成已处理，gap 结束后用完剩余名额，超出上限的 claims 列入 unverified；最终阶段失败写入 coverage，无法下结论时按实际缺口说明原因。
+- 来源去重仅标准化 scheme/host 大小写并去已知 tracking 参数；保留 www、尾斜杠、路径/查询大小写、ref/source 参数和 hash 路由。verify-claims 修复用户 ID 和生成 ID 冲突。测试包装器现在记录异步拒绝，避免未预期的 agent 被静默吞掉。
+- 本地验证：14 个新增测试在旧实现先失败；修复后 `npx vitest run server/builtin-workflows.test.ts` 30/30 通过（含预算保留、cap、最终汇总、跨 gap 严重发现、URL 身份、空/缺失投票等），`npm run typecheck` 和 `git diff --check` 通过。未在本子任务操作 daemon；整合后的实机验收由主任务记录。日志：`/tmp/dwf-review/builtin-regressions-red.log`、`builtin-final-tests.log`、`builtin-final-typecheck.log`。

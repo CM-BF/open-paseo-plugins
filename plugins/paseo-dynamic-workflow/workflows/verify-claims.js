@@ -11,8 +11,15 @@ export const meta = {
 
 const input = readArgs('claims')
 const raw = Array.isArray(input.claims) ? input.claims : []
+const usedIds = new Set()
 const items = raw.map((c, i) => typeof c === 'string' ? { claim: c } : c).filter((c) => c && typeof c.claim === 'string' && c.claim.trim())
-  .map((c, i) => ({ id: clean(c.id || 'C' + (i + 1), 24), claim: clean(c.claim, 1500), evidence: clean(c.evidence, 2000), locator: clean(c.locator, 300) }))
+  .map((c, i) => {
+    const preferred = clean(c.id || 'C' + (i + 1), 24) || 'C' + (i + 1)
+    let id = preferred
+    for (let suffix = 2; usedIds.has(id); suffix++) id = preferred + '-' + suffix
+    usedIds.add(id)
+    return { id, claim: clean(c.claim, 1500), evidence: clean(c.evidence, 2000), locator: clean(c.locator, 300) }
+  })
 if (!items.length) throw new Error("verify-claims needs args.claims: [{ claim, evidence?, locator? }] or a list of strings")
 if (raw.length > items.length) log((raw.length - items.length) + ' entr(ies) without a claim skipped')
 const SIZE = runSize(input)
@@ -31,21 +38,22 @@ const VERDICT = { type: 'object', required: ['verdict', 'method', 'reason'], pro
   reason: { type: 'string' }, blocker: { type: 'string', description: 'What stopped you, when verdict is cannot_check.' } } }
 
 phase('Verify')
-const results = await parallel(items.map((c) => () => parallel(Array.from({ length: VOTES }, (_, v) => () => agent([
+const results = await checkBatches(items, (c) => parallel(Array.from({ length: VOTES }, (_, v) => () => checkAgent([
   'Independently verify one claim. ' + LENSES[v % LENSES.length],
   'verdict=holds when the evidence you examined supports it, refuted when it contradicts or fails to support it, cannot_check only when you could not examine it at all (say what blocked you). Do not guess.',
   CONTEXT,
   data('Claim ' + c.id, c),
   READ_ONLY,
 ].filter(Boolean).join('\n\n'), { label: 'verify:' + c.id + ':' + (v + 1), phase: 'Verify', schema: VERDICT, agentType: 'verification', timeoutMinutes: 40 })))
-  .then((verdicts) => ({ ...c, ...tally(verdicts, VOTES, 'holds', 'refuted'), reasons: verdicts.filter(Boolean).map((x) => ({ verdict: x.verdict, method: x.method, reason: clean(x.reason, 500) })) }))))
+  .then((verdicts) => ({ ...c, ...tally(verdicts, VOTES, 'holds', 'refuted'), reasons: verdicts.filter(Boolean).map((x) => ({ verdict: x.verdict, method: x.method, reason: clean(x.reason, 500) })) })))
 const done = results.filter(Boolean)
 const by = (status) => done.filter((r) => r.status === status)
-const coverage = done.filter((r) => r.missing > 0).map((r) => ({ key: 'verify:' + r.id, status: 'failed', missingVotes: r.missing }))
+const coverage = done.filter((r) => r.missing > 0 || r.cannot > 0).map((r) => voteCoverage('verify:' + r.id, r))
 return {
   schemaVersion: 1,
   status: done.length === items.length && !coverage.length ? 'complete' : 'partial',
   coverage,
+  limit: runLimit(),
   confirmed: by('confirmed'), refuted: by('refuted'), unverified: by('unverified'),
   stats: { size: SIZE, claims: items.length, votesPerClaim: VOTES, confirmed: by('confirmed').length, refuted: by('refuted').length, unverified: by('unverified').length },
 }

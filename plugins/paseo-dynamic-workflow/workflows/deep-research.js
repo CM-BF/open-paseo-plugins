@@ -23,6 +23,7 @@ const input = readArgs('question')
 const QUESTION = typeof input.question === 'string' ? input.question.trim() : ''
 if (!QUESTION) throw new Error("deep-research needs a question: workflow({ name: 'deep-research', args: '<question>' })")
 const SIZE = runSize(input)
+reserveFinalBudget()
 const K = {
   small: { angles: 3, sources: 6, claims: 8, votes: 2, gaps: 0 },
   medium: { angles: 4, sources: 10, claims: 15, votes: 3, gaps: 1 },
@@ -70,9 +71,17 @@ const NO_WRITES = 'Do not modify files, commit or install anything. Scratch file
 const rank = { high: 0, medium: 1, low: 2, central: 0, supporting: 1, side: 2, primary: 0, secondary: 1, opinion: 2, forum: 3, unusable: 4 }
 // The same page once, but distinct pages that differ only in their query (?id=1, ?v=abc) stay distinct.
 const urlKey = (url) => {
-  const [base, query = ''] = String(url).trim().toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/^www\./, '').replace(/#.*$/, '').split('?')
-  const kept = query.split('&').filter((pair) => pair && !/^(utm_[a-z]+|ref|fbclid|gclid|source)=/.test(pair)).sort().join('&')
-  return base.replace(/\/+$/, '') + (kept ? '?' + kept : '')
+  let text = String(url).trim()
+  // Local paths, path/query case and hash routers are meaningful source identities.
+  text = text.replace(/^([a-z]+:\/\/)([^/?#]+)/i, (_, scheme, host) => scheme.toLowerCase() + host.toLowerCase())
+  const hash = text.indexOf('#')
+  const fragment = hash < 0 ? '' : text.slice(hash)
+  if (hash >= 0) text = text.slice(0, hash)
+  const split = text.indexOf('?')
+  const base = split < 0 ? text : text.slice(0, split)
+  const query = split < 0 ? '' : text.slice(split + 1)
+  const kept = query.split('&').filter((pair) => pair && !/^(utm_[^=]+|fbclid|gclid)=/i.test(pair)).sort().join('&')
+  return base + (kept ? '?' + kept : '') + fragment
 }
 const hostOf = (url) => { const m = String(url).match(/^[a-z]+:\/\/([a-z0-9.-]+)(?::\d+)?(?:[/?#]|$)/i); return m ? m[1].toLowerCase().slice(0, 40) : 'local' }
 const claimKey = (claim) => String(claim).toLowerCase().replace(/[^\p{L}\p{N} ]+/gu, ' ').split(/\s+/).filter(Boolean).slice(0, 12).join(' ')
@@ -85,7 +94,7 @@ const scope = await safe([
   data('Question', QUESTION) + (GIVEN.length ? '\n' + data('Sources the user named', GIVEN) : ''),
   NO_WRITES,
 ].join('\n\n'), { label: 'scope', phase: 'Scope', schema: SCOPE })
-if (!scope) throw new Error('The scope agent failed, so the run has no angles; retry or pass a narrower question.')
+if (!scope) throw new Error(runLimit() || 'The scope agent failed, so the run has no angles; retry or pass a narrower question.')
 // Web angles need both: a search whose results cannot be opened yields no claims.
 const webOk = scope.tools.search === 'works' && scope.tools.fetch === 'works'
 const webState = scope.tools.search !== 'works' ? 'search is ' + scope.tools.search : 'fetch is ' + scope.tools.fetch
@@ -132,7 +141,7 @@ function admit(found, round) {
 }
 
 async function readAll(batch) {
-  const reads = await parallel(batch.map((s) => () => agent([
+  const reads = await parallel(batch.map((s) => () => safe([
     'Read one source and extract what it says about a research question. Open it with your fetch or browse tool, or read the file. Grade its quality. Extract two to five concrete, checkable claims that bear on the question, each with the verbatim supporting passage. If it cannot be read or is irrelevant, return quality "unusable" and no claims.',
     data('Question', QUESTION),
     data('Source ' + s.id, { location: s.url, title: s.title, foundBy: [...s.angles].sort() }),
@@ -147,7 +156,7 @@ async function readAll(batch) {
 }
 
 async function explore(list, round) {
-  const searches = await parallel(list.map((a) => () => agent([
+  const searches = await parallel(list.map((a) => () => safe([
     a.kind === 'local'
       ? 'Find local sources for one angle of a research question: files, docs or repositories on this machine (search with your file and shell tools). Return the most relevant absolute paths for the ORIGINAL question.'
       : 'Search the web for one angle of a research question. Return the four to six most relevant results for the ORIGINAL question, skipping spam and content farms. Prefer primary sources.',
@@ -172,12 +181,13 @@ const claims = []
 const seenClaims = new Set()
 async function verifyNew(round) {
   const pool = []
+  const pooled = new Set()
   for (const s of stableSort(sources, (x) => [x.id.length, x.id])) {
     for (const c of s.claims || []) {
       const key = claimKey(c.claim)
-      if (!key || seenClaims.has(key)) continue
-      seenClaims.add(key)
-      pool.push({ claim: clean(c.claim, 600), quote: clean(c.quote, 1500), locator: clean(c.locator, 200), weight: c.weight, source: s.id, url: s.url, quality: s.quality, date: s.date })
+      if (!key || seenClaims.has(key) || pooled.has(key)) continue
+      pooled.add(key)
+      pool.push({ key, claim: clean(c.claim, 600), quote: clean(c.quote, 1500), locator: clean(c.locator, 200), weight: c.weight, source: s.id, url: s.url, quality: s.quality, date: s.date })
     }
   }
   // Rank every new claim together, in a fixed order, before paying for the votes.
@@ -186,15 +196,16 @@ async function verifyNew(round) {
   const reserve = GAP_ROUNDS ? Math.floor(MAX_CLAIMS / (GAP_ROUNDS + 2)) : 0
   const room = Math.max(0, (round === 0 ? MAX_CLAIMS - reserve * GAP_ROUNDS : MAX_CLAIMS - reserve * (GAP_ROUNDS - round)) - claims.length)
   if (ranked.length > room) log((ranked.length - room) + ' lower-ranked claim(s) not verified (round ' + round + ' budget; cap ' + MAX_CLAIMS + ')')
-  const batch = ranked.slice(0, room).map((c) => ({ id: 'C' + nextClaim++, ...c }))
-  await parallel(batch.map((c) => () => parallel(Array.from({ length: VOTES }, (_, v) => () => agent([
+  const batch = ranked.slice(0, room).map((c) => { seenClaims.add(c.key); return { id: 'C' + nextClaim++, ...c } })
+  await checkBatches(batch, (c) => parallel(Array.from({ length: VOTES }, (_, v) => () => checkAgent([
     'You are skeptic ' + (v + 1) + ' of ' + VOTES + '. Try to show that this claim does not hold: check that the quoted passage really supports it, look for contradicting or more recent evidence, and judge whether the source is strong enough for a claim this strong.',
     'verdict=refuted when the evidence you examined contradicts it or does not support it (overreach, outdated, marketing). verdict=holds when it is supported, current and the source fits its strength. verdict=cannot_check only when you could not examine it at all; say what blocked you.',
     data('Question', QUESTION),
     data('Claim ' + c.id, { claim: c.claim, quote: c.quote, locator: c.locator, source: c.url, quality: c.quality, date: c.date }),
     NO_WRITES,
   ].join('\n\n'), { label: 'verify:' + c.id + ':' + (v + 1), phase: 'Verify', schema: VERDICT, agentType: 'verification', timeoutMinutes: 30 })))
-    .then((verdicts) => Object.assign(c, tally(verdicts, VOTES, 'holds', 'refuted'), { evidence: verdicts.filter(Boolean).map((x) => clean(x.evidence, 300)) }))))
+    .then((verdicts) => Object.assign(c, tally(verdicts, VOTES, 'holds', 'refuted'), { evidence: verdicts.filter(Boolean).map((x) => clean(x.evidence, 300)) })))
+  batch.filter((c) => c.missing > 0 || c.cannot > 0).forEach((c) => coverage.push(voteCoverage('verify:' + c.id, c)))
   claims.push(...batch)
 }
 
@@ -205,7 +216,7 @@ log('Verified: ' + count('confirmed') + ' confirmed, ' + count('refuted') + ' re
 
 phase('Gaps')
 for (let r = 1; r <= GAP_ROUNDS; r++) {
-  const gaps = await safe([
+  const gaps = await checkAgent([
     'You are the completeness critic of a research run. Decide which parts of the question are still unanswered or rest on a single weak source, and return new angles that would close those gaps (kind web or local), or an empty list if the answer is complete.',
     data('Question', QUESTION),
     data('Angles searched', angles.map((a) => a.label)),
@@ -226,26 +237,40 @@ for (let r = 1; r <= GAP_ROUNDS; r++) {
   if (sources.length === before) break
 }
 
+// A dry critic must not strand claim slots reserved for another round.
+await verifyNew(GAP_ROUNDS)
+const leftovers = []
+const leftoverKeys = new Set(seenClaims)
+for (const source of sources) for (const c of source.claims || []) {
+  const key = claimKey(c.claim)
+  if (!key || leftoverKeys.has(key)) continue
+  leftoverKeys.add(key)
+  leftovers.push({ claim: clean(c.claim, 600), source: source.id, why: 'not verified: claim cap of ' + MAX_CLAIMS })
+}
+if (leftovers.length) coverage.push({ key: 'claim-cap', status: 'failed', notVerified: leftovers.length })
+
 phase('Synthesize')
 const brief = (c) => ({ id: c.id, claim: c.claim, source: c.url, quality: c.quality, votes: c.votes, ...(c.why ? { why: c.why } : {}) })
 const confirmed = claims.filter((c) => c.status === 'confirmed')
 const partial = coverage.some((c) => c.status === 'failed') || claims.some((c) => c.why === 'missing votes')
 const tail = {
-  confirmed: confirmed.map(brief), unverified: claims.filter((c) => c.status === 'unverified').map(brief), refuted: claims.filter((c) => c.status === 'refuted').map(brief),
+  confirmed: confirmed.map(brief), unverified: claims.filter((c) => c.status === 'unverified').map(brief).concat(leftovers), refuted: claims.filter((c) => c.status === 'refuted').map(brief),
   sources: sources.map((s) => ({ id: s.id, url: s.url, title: s.title, quality: s.quality, foundBy: [...s.angles].sort() })),
-  coverage, tools: scope.tools,
-  stats: { size: SIZE, angles: angles.length, sources: sources.length, claimsVerified: claims.length, confirmed: confirmed.length, refuted: count('refuted'), unverified: count('unverified') },
+  coverage, tools: scope.tools, limit: runLimit(),
+  stats: { size: SIZE, angles: angles.length, sources: sources.length, claimsVerified: claims.length, confirmed: confirmed.length, refuted: count('refuted'), unverified: count('unverified') + leftovers.length },
 }
 if (!confirmed.length) {
   // "Nothing survived" is a finding only when claims were actually refuted on the merits and
   // nothing failed along the way; otherwise the run could not answer.
+  const reasons = [runLimit(), ...coverage.filter((c) => c.status === 'failed').map((c) => c.key + ' incomplete'), ...new Set(claims.filter((c) => c.why).map((c) => c.why))].filter(Boolean)
+  const detail = reasons.length ? ' Reasons: ' + reasons.join('; ') + '.' : ''
   const refutedOnly = claims.length > 0 && count('refuted') === claims.length && !partial
   return { schemaVersion: 1, status: refutedOnly ? 'complete' : 'inconclusive', question: QUESTION,
     answer: refutedOnly
       ? 'Every checked claim was refuted; the question stays open.'
       : claims.length === 0
-        ? 'No claim was extracted (' + (sources.length ? 'the sources yielded none' : 'no source could be searched or read') + '). This is a tooling or coverage problem, not a finding; see coverage and tools, then retry.'
-        : 'No claim could be confirmed, and some could not be checked (verifiers failed or were blocked). This is not a finding; see coverage and tools, then retry.',
+        ? 'No claim was extracted (' + (sources.length ? 'the sources yielded none' : 'no source could be searched or read') + '). This is not a finding.' + detail
+        : 'No claim could be confirmed. This is not a finding.' + detail,
     ...tail }
 }
 const report = await safe([
@@ -254,10 +279,12 @@ const report = await safe([
   data('Confirmed claims', confirmed.map(brief)),
   data('Refuted claims (context only; do not assert them)', claims.filter((c) => c.status === 'refuted').map((c) => c.claim)),
 ].join('\n\n'), { label: 'synthesize', phase: 'Synthesize', schema: REPORT })
+if (!report) coverage.push({ key: 'synthesize', status: 'failed', ...(runLimit() ? { reason: runLimit() } : {}) })
+tail.limit = runLimit()
 return {
   schemaVersion: 1,
   status: report ? (partial ? 'partial' : 'complete') : 'partial',
   question: QUESTION,
-  ...(report || { answer: 'The synthesis failed; the verified claims are listed unmerged.', findings: [], caveats: ['synthesis agent failed'] }),
+  ...(report ? { answer: report.answer, findings: report.findings, caveats: report.caveats, ...(report.openQuestions ? { openQuestions: report.openQuestions } : {}) } : { answer: 'The synthesis did not finish; the verified claims are listed unmerged.', findings: [], caveats: [runLimit() || 'synthesis agent failed'] }),
   ...tail,
 }

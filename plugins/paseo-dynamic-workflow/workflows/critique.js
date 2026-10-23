@@ -17,6 +17,7 @@ const input = readArgs('draft')
 const DRAFT = typeof input.draft === 'string' ? input.draft.trim() : ''
 if (!DRAFT) throw new Error("critique needs args.draft: an absolute path or the draft text")
 const SIZE = runSize(input)
+reserveFinalBudget()
 const K = { small: { lenses: 3, votes: 1 }, medium: { lenses: 4, votes: 2 }, large: { lenses: 5, votes: 2 }, unrestricted: { lenses: 6, votes: 3 } }[SIZE]
 const DEFAULT_LENSES = [
   'correctness: does it actually solve the stated problem; which claims about the current code or system are wrong?',
@@ -48,7 +49,7 @@ const REVISION = { type: 'object', required: ['decisions', 'revised'], propertie
 } }
 
 phase('Critique')
-const critiques = await parallel(LENSES.map((lens, i) => () => agent([
+const critiques = await parallel(LENSES.map((lens, i) => () => safe([
   'Critique a draft from one lens before anyone acts on it. Lens: ' + lens,
   SOURCE, GOAL,
   'Cite evidence for every must-change (file:line, URL, or a command you ran and what it printed). Separate what you verified from what you infer. An empty list is fine when the draft holds up from your lens.',
@@ -60,15 +61,15 @@ critiques.forEach((c, i) => { if (c) c.mustChange.forEach((m) => items.push({ it
 log(items.length + ' must-change item(s) from ' + critiques.filter(Boolean).length + ' critic(s)')
 
 phase('Verify')
-const checked = await parallel(items.map((m) => () => parallel(Array.from({ length: VOTES }, (_, v) => () => agent([
+const checked = await checkBatches(items, (m) => parallel(Array.from({ length: VOTES }, (_, v) => () => checkAgent([
   'A critic says this draft must change. Check the critic\'s evidence and premise yourself. verdict=holds when the problem is real and the evidence supports it, refuted when the evidence is wrong or the problem does not exist, cannot_check only when you could not examine it.',
   SOURCE,
   data('Must-change ' + m.id, { item: m.item, why: m.why, proposal: m.proposal, evidence: m.evidence }),
   NO_WRITES,
 ].join('\n\n'), { label: 'check:' + m.id + ':' + (v + 1), phase: 'Verify', schema: CHECK, agentType: 'verification', timeoutMinutes: 40 })))
-  .then((votes) => ({ ...m, ...tally(votes, VOTES, 'holds', 'refuted'), reasons: votes.filter(Boolean).map((x) => clean(x.reason, 400)) }))))
+  .then((votes) => ({ ...m, ...tally(votes, VOTES, 'holds', 'refuted'), reasons: votes.filter(Boolean).map((x) => clean(x.reason, 400)) })))
 const verified = checked.filter(Boolean)
-verified.filter((m) => m.missing > 0).forEach((m) => coverage.push({ lens: 'check:' + m.id, status: 'failed', missingVotes: m.missing }))
+verified.filter((m) => m.missing > 0 || m.cannot > 0).forEach((m) => coverage.push(voteCoverage('check:' + m.id, m)))
 
 phase('Revise')
 const revision = await safe([
@@ -79,6 +80,7 @@ const revision = await safe([
   NO_WRITES,
 ].join('\n\n'), { label: 'revise', phase: 'Revise', schema: REVISION })
 
+if (!revision) coverage.push({ key: 'revise', status: 'failed', ...(runLimit() ? { reason: runLimit() } : {}) })
 return {
   schemaVersion: 1,
   status: revision && coverage.every((c) => c.status === 'ok') ? 'complete' : 'partial',
@@ -87,5 +89,6 @@ return {
   openQuestions: revision ? revision.openQuestions || [] : [],
   mustChange: verified.map((m) => ({ id: m.id, status: m.status, votes: m.votes, item: clean(m.item, 400), proposal: clean(m.proposal, 800) })),
   coverage,
+  limit: runLimit(),
   stats: { size: SIZE, lenses: LENSES.length, mustChange: items.length, confirmed: verified.filter((m) => m.status === 'confirmed').length },
 }

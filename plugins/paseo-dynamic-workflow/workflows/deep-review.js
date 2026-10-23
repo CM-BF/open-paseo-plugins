@@ -21,6 +21,7 @@ export const meta = {
 
 const input = readArgs('target')
 const SIZE = runSize(input)
+reserveFinalBudget()
 const KNOBS = {
   small: { dims: 4, votes: 2, rounds: 0, extra: 0, dry: 1, verify: 10 },
   medium: { dims: 6, votes: 3, rounds: 1, extra: 1, dry: 1, verify: 20 },
@@ -124,11 +125,11 @@ const findings = []
 const duplicates = []
 const seen = new Map()
 // Same file, nearby line and the same words in the title: one defect reported twice. Distinct titles stay distinct.
-const words = (title) => String(title || '').toLowerCase().replace(/[^\p{L}\p{N} ]+/gu, ' ').split(/\s+/).filter(Boolean).sort().join(' ')
+const words = (title) => String(title || '').toLowerCase().replace(/[^\p{L}\p{N} ]+/gu, ' ').split(/\s+/).filter(Boolean).join(' ')
 const keyOf = (f) => String(f.file || '').toLowerCase().replace(/^\.\//, '') + '#' + (Number.isFinite(f.line) ? Math.floor(f.line / 15) : '-') + '#' + words(f.title)
 
 async function verify(batch) {
-  await parallel(batch.map((f) => () => parallel(LENSES.slice(0, VOTES).map((lens) => () => agent([
+  await checkBatches(batch, (f) => parallel(LENSES.slice(0, VOTES).map((lens) => () => checkAgent([
     'Independently verify one code review finding.', lens.prompt, VERIFY_RULES, CONTEXT,
     data('Finding ' + f.id, { title: f.title, file: f.file, line: f.line, severity: f.severity, scenario: f.scenario, evidence: f.evidence }),
     READ_ONLY,
@@ -136,15 +137,16 @@ async function verify(batch) {
     .then((verdicts) => {
       const t = tally(verdicts, VOTES, 'real', 'not_real')
       const rated = verdicts.filter((v) => v && v.verdict === 'real' && v.severity).map((v) => v.severity)
-      Object.assign(f, { status: t.status, votes: t.votes, why: t.why, reasons: verdicts.filter(Boolean).map((v) => clean(v.reason, 400)) })
+      Object.assign(f, { status: t.status, votes: t.votes, why: t.why, missing: t.missing, cannot: t.cannot, reasons: verdicts.filter(Boolean).map((v) => clean(v.reason, 400)) })
       if (rated.length) f.severity = stableSort(rated, (s) => [order[s]])[Math.floor(rated.length / 2)]
-    })))
+    }))
+  batch.filter((f) => f.missing > 0 || f.cannot > 0).forEach((f) => coverage.push(voteCoverage('verify:' + f.id, f)))
 }
 
 // One round: every reviewer finishes, findings are deduplicated in a fixed order (so a resume
 // builds the same prompts), and each new finding is verified.
-async function round(tasks, phaseTitle) {
-  const reviews = await parallel(tasks.map((task) => () => agent([
+async function round(tasks, phaseTitle, roundIndex) {
+  const reviews = await parallel(tasks.map((task) => () => safe([
     'You are one reviewer in a multi-agent code review. Your dimension: ' + task.key + '. ' + task.prompt,
     CONTEXT,
     'Report only problems you can tie to specific code with a concrete failing scenario. Read the code; do not guess from names. Return an empty list when you find nothing: padding is worse than silence.',
@@ -165,8 +167,10 @@ async function round(tasks, phaseTitle) {
   const failed = reviews.filter((r) => !r).length
   if (failed) log(failed + ' reviewer(s) failed in ' + phaseTitle + '; see coverage')
   // Verification is the expensive part: the most severe findings first, up to the size's cap.
-  const ranked = stableSort(fresh, (f) => [order[f.severity] ?? 9, f.id])
-  const room = Math.max(0, KNOBS.verify - verifiedCount)
+  const ranked = stableSort(fresh, (f) => [order[f.severity] ?? 9, f.id.length, f.id])
+  const reserve = ROUNDS ? Math.floor(KNOBS.verify / (ROUNDS + 2)) : 0
+  const allowance = KNOBS.verify - reserve * Math.max(0, ROUNDS - roundIndex)
+  const room = Math.max(0, allowance - verifiedCount)
   const skipped = ranked.slice(room)
   skipped.forEach((f) => { f.why = 'not verified: cap of ' + KNOBS.verify + ' at size ' + SIZE })
   if (skipped.length) log(skipped.length + ' finding(s) left unverified by the cap of ' + KNOBS.verify + ' at size ' + SIZE + '; rerun with a larger size to check them')
@@ -178,7 +182,7 @@ async function round(tasks, phaseTitle) {
 let recheck = []
 if (RECHECK.length) {
   phase('Recheck')
-  recheck = await parallel(RECHECK.map((f, i) => () => parallel(['fixed', 'regression'].map((lens) => () => agent([
+  recheck = await checkBatches(RECHECK, (f, i) => parallel(['fixed', 'regression'].map((lens) => () => checkAgent([
     lens === 'fixed'
       ? 'An earlier review reported this finding and someone has since changed the code. Check whether the defect is still present: trace the scenario through the current code and rerun its reproduction when feasible.'
       : 'An earlier review reported this finding and someone has since changed the code. Check whether the change fixed it without breaking nearby behaviour; report still_present if the fix is incomplete or regressed a neighbour.',
@@ -190,17 +194,17 @@ if (RECHECK.length) {
       const t = tally(votes, 2, 'fixed', 'still_present')
       const status = t.status === 'confirmed' ? 'fixed' : t.status === 'refuted' ? 'still_present' : 'unverified'
       return { id: 'R' + (i + 1), title: clean(f.title, 300), file: clean(f.file, 300), line: f.line, scenario: clean(f.scenario, 600), status, votes: t.votes, ...(t.why ? { why: t.why } : {}) }
-    })))
+    }))
 }
 
 phase('Review')
-await round(dimensions.map((d) => ({ key: d.key, prompt: d.prompt })), 'Review')
+await round(dimensions.map((d) => ({ key: d.key, prompt: d.prompt })), 'Review', 0)
 log('After review: ' + findings.filter((f) => f.status === 'confirmed').length + ' confirmed of ' + findings.length)
 
 phase('Gaps')
 let dry = 0
 for (let r = 1; r <= ROUNDS && dry < KNOBS.dry; r++) {
-  const gaps = await safe([
+  const gaps = await checkAgent([
     'You are the completeness critic of a multi-agent code review. Decide what has not been covered: a changed file nobody examined closely, an interaction between components, a failure mode no dimension owned, a claim in the change description nobody checked.',
     CONTEXT,
     'Dimensions reviewed so far: ' + coverage.filter((c) => c.status === 'ok').map((c) => c.key).join(', ') + (coverage.some((c) => c.status === 'failed') ? '\nReviewers that failed (cover them again if they matter): ' + coverage.filter((c) => c.status === 'failed').map((c) => c.key).join(', ') : ''),
@@ -212,13 +216,18 @@ for (let r = 1; r <= ROUNDS && dry < KNOBS.dry; r++) {
   const tasks = gaps.tasks.slice(0, 8).map((t, i) => ({ key: 'gap' + r + '.' + (i + 1) + '-' + clean(t.key, 32), prompt: clean(t.prompt, 1500) }))
   if (gaps.tasks.length > tasks.length) log('Round ' + r + ': ' + (gaps.tasks.length - tasks.length) + ' gap task(s) beyond 8 dropped')
   if (!tasks.length) { log('Round ' + r + ': the critic found no gaps'); break }
-  const fresh = await round(tasks, 'Gaps')
+  const fresh = await round(tasks, 'Gaps', r)
   log('Round ' + r + ': ' + tasks.length + ' targeted review(s), ' + fresh + ' new finding(s)')
   dry = fresh === 0 ? dry + 1 : 0
 }
 
+// Release any reserve left unused by a dry gap round, highest severity first.
+const deferred = stableSort(findings.filter((f) => String(f.why).startsWith('not verified')), (f) => [order[f.severity] ?? 9, f.id.length, f.id]).slice(0, Math.max(0, KNOBS.verify - verifiedCount))
+verifiedCount += deferred.length
+await verify(deferred)
+
 phase('Plan')
-const confirmed = stableSort(findings.filter((f) => f.status === 'confirmed'), (f) => [order[f.severity] ?? 9, f.id])
+const confirmed = stableSort(findings.filter((f) => f.status === 'confirmed'), (f) => [order[f.severity] ?? 9, f.id.length, f.id])
 const brief = (f) => ({ id: f.id, title: f.title, file: f.file, line: f.line, severity: f.severity, scenario: clean(f.scenario, 600), votes: f.votes, source: f.source, ...(f.why ? { why: f.why } : {}) })
 const stillPresent = recheck.filter((r) => r.status === 'still_present')
 let plan = null
@@ -246,6 +255,7 @@ return {
   refuted: findings.filter((f) => f.status === 'refuted').map(brief),
   recheck,
   coverage,
+  limit: runLimit(),
   duplicates,
   stats: { size: SIZE, findings: findings.length, confirmed: confirmed.length, unverified: unverified.length, verified: verifiedCount, verifyCap: KNOBS.verify, votesPerFinding: VOTES, gapRounds: ROUNDS, files: scope ? scope.files.length : null },
 }

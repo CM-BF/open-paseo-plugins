@@ -45,16 +45,17 @@ const BRIEF = data('Problem', PROBLEM) + (CONTEXT ? '\n\n' + data('Context from 
 const READ_CODE = 'Read code and docs as needed; do not modify files, commit or install anything.'
 
 phase('Draft')
-const drafts = (await parallel(ANGLES.map((angle, i) => () => agent([
+const draftResults = await parallel(ANGLES.map((angle, i) => () => safe([
   'Design a solution independently. Your angle: ' + angle + '. Other designers work from other angles; do not hedge toward a compromise, make the strongest case for your angle.',
   BRIEF,
   'Check the real code and constraints before you commit to a design, and list what you checked as evidence.',
   READ_CODE,
-].join('\n\n'), { label: 'draft:' + (i + 1), phase: 'Draft', schema: DESIGN, agentType: 'plan' }))))
+].join('\n\n'), { label: 'draft:' + (i + 1), phase: 'Draft', schema: DESIGN, agentType: 'plan' })))
+const drafts = draftResults
   .map((d, i) => (d ? { ...d, angle: ANGLES[i] } : null)).filter(Boolean)
   .map((d, i) => ({ ...d, id: LETTERS[i] }))
-if (!drafts.length) throw new Error('Every designer failed; retry with a narrower problem or more context.')
-const coverage = ANGLES.map((angle, i) => ({ key: 'draft:' + (i + 1), status: drafts.some((d) => d.angle === angle) ? 'ok' : 'failed' }))
+if (!drafts.length) throw new Error(runLimit() || 'Every designer failed; retry with a narrower problem or more context.')
+const coverage = ANGLES.map((angle, i) => ({ key: 'draft:' + (i + 1), status: draftResults[i] ? 'ok' : 'failed' }))
 if (drafts.length < ANGLES.length) log((ANGLES.length - drafts.length) + ' designer(s) failed')
 
 phase('Judge')
@@ -77,9 +78,9 @@ const judged = await parallel(Array.from({ length: JUDGES }, (_, j) => () => {
     READ_CODE,
   ].join('\n\n'), { label: 'judge:' + (j + 1), phase: 'Judge', schema: SCORES, agentType: 'plan' })
 }))
-judged.forEach((p, j) => coverage.push({ key: 'judge:' + (j + 1), status: p ? 'ok' : 'failed' }))
+judged.forEach((p, j) => coverage.push({ key: 'judge:' + (j + 1), status: p && ids.every((id) => p.scores.some((score) => score.design === id)) ? 'ok' : 'failed' }))
 const panels = judged.filter(Boolean)
-if (!panels.length) return { schemaVersion: 1, status: 'partial', problem: PROBLEM, final: null, coverage, designs: drafts.map((d) => ({ id: d.id, title: d.title, angle: d.angle, summary: d.summary })), error: 'Every judge failed; designs are returned unscored.' }
+if (!panels.length) return { schemaVersion: 1, status: 'partial', problem: PROBLEM, final: null, coverage, limit: runLimit(), designs: drafts.map((d) => ({ id: d.id, title: d.title, angle: d.angle, summary: d.summary })), error: 'Every judge failed; designs are returned unscored.' }
 
 const totals = stableSort(drafts.map((d) => {
   const scores = panels.map((p) => p.scores.find((s) => s.design === d.id)).filter(Boolean)
@@ -89,6 +90,7 @@ const totals = stableSort(drafts.map((d) => {
 const unscored = totals.filter((t) => t.mean === null || (panels.length >= 2 && t.judged < 2))
 if (unscored.length) log('Too few judges scored: ' + unscored.map((t) => t.id).join(', ') + ' (ranked last, not zero)')
 log('Ranking: ' + totals.map((t) => t.id + ' ' + (t.mean ?? '?')).join(', '))
+if (totals[0].mean === null) return { schemaVersion: 1, status: 'partial', problem: PROBLEM, final: null, coverage, ranking: totals, limit: runLimit(), error: 'No judge scored a design; no winner was selected.' }
 const winner = drafts.find((d) => d.id === totals[0].id)
 
 phase('Synthesize')
@@ -101,6 +103,7 @@ let final = await safe([
 ].join('\n\n'), { label: 'synthesize', phase: 'Synthesize', schema: FINAL })
 
 let redTeam = []
+let unaddressedRedTeam = false
 if (final && K.red) {
   phase('Red team')
   const LENSES = ['failure modes, concurrency and data loss', 'fit with the existing code, migrations and compatibility']
@@ -116,6 +119,7 @@ if (final && K.red) {
       BRIEF, data('Final design', final), data('Red-team flaws', redTeam), READ_CODE,
     ].join('\n\n'), { label: 'revise', phase: 'Red team', schema: FINAL })
     if (revised) final = revised
+    else { unaddressedRedTeam = true; coverage.push({ key: 'revise', status: 'failed', ...(runLimit() ? { reason: runLimit() } : {}) }) }
   }
 }
 
@@ -127,7 +131,9 @@ return {
   final,
   ranking: totals.map((t) => ({ id: t.id, title: t.title, mean: t.mean, judged: t.judged })),
   redTeam,
+  unaddressedRedTeam,
   coverage,
+  limit: runLimit(),
   designs: drafts.map((d) => ({ id: d.id, title: d.title, angle: d.angle, summary: d.summary })),
   stats: { size: SIZE, designers: ANGLES.length, designs: drafts.length, judges: panels.length },
 }
