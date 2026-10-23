@@ -400,9 +400,9 @@ describe("built-in failure and limit regressions", () => {
   });
 
   it("research keeps case-sensitive locations, meaningful query parameters and hash routes distinct", async () => {
-    const urls = ["https://EXAMPLE.com/Readme", "https://example.com/README", "https://example.com/x?ref=v1", "https://example.com/x?ref=v2", "https://example.com/x?q=what?&page=2", "https://example.com/x?q=what?&page=3", "https://example.com/#/a", "https://example.com/#/b", "https://example.com/Readme?utm_source=test", "https://www.example.com/Readme", "https://example.com/Readme/"];
+    const urls = ["https://EXAMPLE.com/Readme", "https://example.com/README", "https://example.com/x?ref=v1", "https://example.com/x?ref=v2", "https://example.com/x?q=what?&page=2", "https://example.com/x?q=what?&page=3", "https://example.com/#/a", "https://example.com/#/b", "https://example.com/Readme?utm_source=test", "https://www.example.com/Readme", "https://example.com/Readme/", "https://example.com/x?a=1&a=2", "https://example.com/x?a=2&a=1"];
     const { result } = await run(builtin("deep-research"), (task) => task.label.startsWith("search:") ? ok({ sources: [] }) : researchAnswer(task), { question: "q", size: "small", sources: urls, maxSources: 20 });
-    expect((result as any).sources).toHaveLength(10);
+    expect((result as any).sources).toHaveLength(12);
   });
 
   it("verify-claims gives every claim a unique ID even when user IDs collide with generated IDs", async () => {

@@ -430,7 +430,7 @@ const urlKey = (url) => {
   const split = text.indexOf('?')
   const base = split < 0 ? text : text.slice(0, split)
   const query = split < 0 ? '' : text.slice(split + 1)
-  const kept = query.split('&').filter((pair) => pair && !/^(utm_[^=]+|fbclid|gclid)=/i.test(pair)).sort().join('&')
+  const kept = query.split('&').filter((pair) => pair && !/^(utm_[^=]+|fbclid|gclid)=/i.test(pair)).join('&')
   return base + (kept ? '?' + kept : '') + fragment
 }
 const hostOf = (url) => { const m = String(url).match(/^[a-z]+:\\/\\/([a-z0-9.-]+)(?::\\d+)?(?:[/?#]|$)/i); return m ? m[1].toLowerCase().slice(0, 40) : 'local' }

@@ -325,3 +325,7 @@ Claude 额度耗尽后从已完成的记录接续，没有重跑原审查和 fix
 - deep-review 为 gap 发现保留一部分核实名额，干轮后释放剩余名额；去重保留标题词序，ID 按数字顺序决定同严重度名额。research 不再把未入批 claim 标成已处理，gap 结束后用完剩余名额，超出上限的 claims 列入 unverified；最终阶段失败写入 coverage，无法下结论时按实际缺口说明原因。
 - 来源去重仅标准化 scheme/host 大小写并去已知 tracking 参数；保留 www、尾斜杠、路径/查询大小写、ref/source 参数和 hash 路由。verify-claims 修复用户 ID 和生成 ID 冲突。测试包装器现在记录异步拒绝，避免未预期的 agent 被静默吞掉。
 - 本地验证：14 个新增测试在旧实现先失败；修复后 `npx vitest run server/builtin-workflows.test.ts` 30/30 通过（含预算保留、cap、最终汇总、跨 gap 严重发现、URL 身份、空/缺失投票等），`npm run typecheck` 和 `git diff --check` 通过。未在本子任务操作 daemon；整合后的实机验收由主任务记录。日志：`/tmp/dwf-review/builtin-regressions-red.log`、`builtin-final-tests.log`、`builtin-final-typecheck.log`。
+
+- 后续交互检查补充：run 通知正在投递时 ON→OFF→ON 会清掉中间 OFF 的待替换内容，不能在一次明确失败后发出过时的 OFF。新增确定性回归先失败后通过。
+- 操作失误：最初新增的两个 Reload RPC 红灯测试尚未 mock `./reload`，以模拟 agent ID `a` 调用了主 daemon CLI；CLI 把它当作前缀，实际刷新了此前的测试 agent B=`af28c02e-08b2-4609-9c72-954a293bb71a` 两次（2026-10-23 06:19:41.486 / 06:19:42.089 UTC）。证据为 `~/.paseo/20261022-2323-01-daemon.log` 第8969、8973行，均为 `Refreshing agent ... from persistence`。这不属于计划内验收；没有作用于用户真实 agent。发现后测试统一 mock Reload helper，之后的回归不接触真实 CLI；未自动重启或变更该 fixture 的其他状态。
+- 补充来源身份检查：不排序查询参数，保留重复参数的顺序（`?a=1&a=2` 与 `?a=2&a=1`）；同一来源回归扩展后仍 30/30 通过。
