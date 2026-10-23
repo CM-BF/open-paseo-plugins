@@ -99,7 +99,7 @@
 - 主 daemon 上的 `paseo-aide`：Git 源 `file:///Users/citrine/Projects/flowly-kanban/open-paseo-plugins`，路径 `plugins/paseo-aide`，钉在 `542126e`（之后的提交只改文档），Paseo 自己的 checkout 在 `~/.paseo/plugins/paseo-aide/<uuid>/checkout`，构建步骤 `npm ci --omit=dev` 已跑，状态 running。删除这个 synthetic workspace 不影响它。安装之前 daemon 上没有这个插件，没有要恢复的旧来源。
 - 状态目录 `~/.paseo/paseo-aide/` 里的测试数据已删除，插件现在是“未设置”：打开侧栏 Aide 按向导设置即可。
 - 更新：有新提交后 `paseo plugin update paseo-aide --ref <commit>`。卸载：`paseo plugin remove paseo-aide`（状态目录保留，需要时手动删除）。
-- 分支 `sw/paseo-aide` 只在本地，没有 push、没有开 PR。测试中途提交过未裁剪的截图（侧栏里有无关会话标题），已在 push 之前用 filter-branch 从本地历史里去掉，只保留最后一次提交里裁剪后的版本。
+- 分支 `sw/paseo-aide` 已按用户要求快进合并到本地 `main`（没有 PR）；合并时还没有 push 到 GitHub。测试中途提交过未裁剪的截图（侧栏里有无关会话标题），合并前已用 filter-branch 从本地历史里去掉，只保留裁剪后的版本。
 
 ## 已知问题 / 下一步
 
