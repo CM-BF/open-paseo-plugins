@@ -26,6 +26,7 @@ interface FakeAgent {
   status: "idle" | "running";
   archivedAt: string | null;
   lastMessage: string | null;
+  requiresAttention: boolean;
 }
 
 /** Just enough of the Paseo SDK for the service: agents, a workspace, and the agent directory. */
@@ -53,6 +54,7 @@ class FakePaseo {
         status: "idle",
         archivedAt: null,
         lastMessage: null,
+        requiresAttention: false,
       };
       this.agents.set(agent.id, agent);
       if (agent.parent) this.onChildCreated?.(agent);
@@ -71,7 +73,7 @@ class FakePaseo {
   }
 
   private snapshot(agent: FakeAgent) {
-    return { id: agent.id, status: agent.status, archivedAt: agent.archivedAt, activeTurn: null, pendingPermissions: [], workspaceId: "wks_test", lastError: undefined };
+    return { id: agent.id, status: agent.status, archivedAt: agent.archivedAt, activeTurn: null, pendingPermissions: [], workspaceId: "wks_test", lastError: undefined, requiresAttention: agent.requiresAttention };
   }
 
   private handle(id: string) {
@@ -185,6 +187,23 @@ describe("check-ins", () => {
     expect(children()).toHaveLength(2);
     expect(assistant().sent.filter((text) => decodeUpdate(text)?.kind === "checkin")).toHaveLength(1);
     expect(service.store.state.quietStreak).toBe(1);
+  });
+
+  it("clears the chat's unread mark first, so the phone is notified again", async () => {
+    const cleared: string[] = [];
+    service.access.clearAttention = async (agentId: string) => {
+      cleared.push(agentId);
+      fake.agents.get(agentId)!.requiresAttention = false;
+    };
+    assistant().requiresAttention = true; // the welcome was never opened
+    clock += 11 * 60_000;
+    reportWith({ notify: true, summary: "x", items: [{ key: "k", title: "Ana replied", detail: "", urgency: "normal" }] });
+    await tick();
+    await settle();
+    await tick();
+    await settle();
+    expect(cleared).toEqual([assistant().id]);
+    expect(assistant().sent.some((text) => decodeUpdate(text)?.kind === "checkin")).toBe(true);
   });
 
   it("holds ordinary news while proactive messages go unanswered, and resets when the user writes", async () => {

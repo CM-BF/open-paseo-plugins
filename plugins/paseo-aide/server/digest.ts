@@ -4,12 +4,12 @@ import type { PaseoApi } from "./access";
 
 const ORDER: Record<WaitingAgent["reason"], number> = { permission: 0, error: 1, finished: 2 };
 
+export const MAX_FINISHED = 15;
+
 /**
  * The user's Paseo agents that are waiting on them: approvals, failures and finished work
  * nobody has looked at. Read from the daemon, so it costs no model call.
  */
-export const MAX_FINISHED = 15;
-
 export async function waitingAgents(paseo: PaseoApi): Promise<WaitingAgent[]> {
   const result = await paseo.agents.list({ filter: { requiresAttention: true }, page: { limit: 100 } });
   const waiting: WaitingAgent[] = [];

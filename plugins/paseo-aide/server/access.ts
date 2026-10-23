@@ -46,25 +46,7 @@ export class PaseoAccess {
   }
 
   private async openLocal(): Promise<PaseoApi> {
-    const lock = JSON.parse(await readFile(join(this.home, "paseo.pid"), "utf8")) as { listen?: unknown };
-    const listen = typeof lock.listen === "string" ? lock.listen.trim().replace(/^tcp:\/\//, "") : "";
-    if (!/^[\w.-]+:\d+$|^\[[\da-f:]+\]:\d+$/i.test(listen)) throw new Error("The Paseo daemon address is not a local TCP endpoint.");
-    const token = (await readFile(join(this.home, "local-credential"), "utf8").catch(() => "")).trim();
-    if (!token) throw new Error("The Paseo local credential is unavailable.");
-    const client = new DaemonClient({
-      url: `ws://${listen}/ws`,
-      clientId: `${PLUGIN_ID}-scheduler`,
-      clientType: "cli",
-      localCredential: () => token,
-      reconnect: { enabled: true },
-      connectTimeoutMs: 5000,
-    });
-    try {
-      await client.connect();
-    } catch (error) {
-      await client.close().catch(() => undefined);
-      throw error;
-    }
+    const client = await connectLocal(this.home, `${PLUGIN_ID}-scheduler`, true);
     const api = createPaseoApi(client) as PaseoApi;
     if (this.closed || this.hooked) {
       void closeLocal({ api, client });
@@ -76,6 +58,19 @@ export class PaseoAccess {
     return api;
   }
 
+  /**
+   * Clears an agent's unread mark so its next finished turn notifies the phone again: Paseo sends
+   * no push while an agent still awaits the user's attention, and the plugin SDK has no call for it.
+   */
+  async clearAttention(agentId: string): Promise<void> {
+    const client = await connectLocal(this.home, `${PLUGIN_ID}-attention`, false);
+    try {
+      await client.clearAgentAttention(agentId);
+    } finally {
+      await client.close().catch(() => undefined);
+    }
+  }
+
   async dispose(): Promise<void> {
     this.closed = true;
     this.hooked = null;
@@ -83,6 +78,30 @@ export class PaseoAccess {
     this.local = null;
     if (local) await closeLocal(local);
   }
+}
+
+/** A connection made the way the `paseo` CLI makes one: the address in paseo.pid and the local credential. */
+async function connectLocal(home: string, clientId: string, reconnect: boolean): Promise<DaemonClient> {
+  const lock = JSON.parse(await readFile(join(home, "paseo.pid"), "utf8")) as { listen?: unknown };
+  const listen = typeof lock.listen === "string" ? lock.listen.trim().replace(/^tcp:\/\//, "") : "";
+  if (!/^[\w.-]+:\d+$|^\[[\da-f:]+\]:\d+$/i.test(listen)) throw new Error("The Paseo daemon address is not a local TCP endpoint.");
+  const token = (await readFile(join(home, "local-credential"), "utf8").catch(() => "")).trim();
+  if (!token) throw new Error("The Paseo local credential is unavailable.");
+  const client = new DaemonClient({
+    url: `ws://${listen}/ws`,
+    clientId,
+    clientType: "cli",
+    localCredential: () => token,
+    reconnect: { enabled: reconnect },
+    connectTimeoutMs: 5000,
+  });
+  try {
+    await client.connect();
+  } catch (error) {
+    await client.close().catch(() => undefined);
+    throw error;
+  }
+  return client;
 }
 
 async function closeLocal(local: { api: PaseoApi; client: DaemonClient }): Promise<void> {

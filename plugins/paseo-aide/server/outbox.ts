@@ -9,6 +9,8 @@ export interface OutboxDeps {
   access: PaseoAccess;
   onDelivered(entry: OutboxEntry): void;
   onDropped(entry: OutboxEntry, reason: string): void;
+  /** Lets the next finished turn notify again (see PaseoAccess.clearAttention). */
+  clearAttention(agentId: string): Promise<void>;
   /** The assistant agent is gone (archived or deleted). */
   onAssistantGone(): void;
 }
@@ -68,6 +70,10 @@ export class Outbox {
     const agent = fresh.agent;
     if (agent.status === "running" || agent.status === "initializing" || agent.activeTurn) return;
     if ((agent.pendingPermissions ?? []).length > 0) return;
+    if (agent.requiresAttention) {
+      // Still unread from an earlier message: without this the new one would reach the phone silently.
+      await this.deps.clearAttention(assistant.agentId).catch((error) => log(`could not clear the chat's unread mark: ${describeError(error)}`));
+    }
     next.attempts++;
     try {
       // The message id makes a retried send idempotent on the daemon.

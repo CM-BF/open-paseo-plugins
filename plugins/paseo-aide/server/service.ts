@@ -102,6 +102,7 @@ export class AideService {
       onDelivered: (entry) => this.onDelivered(entry),
       onDropped: (entry, reason) => this.activity.add({ kind: "delivery", title: `Did not send: ${entryTitle(entry)}`, detail: `Not delivered because ${reason}.`, outcome: "failed" }),
       onAssistantGone: () => this.markDetached("The assistant chat is no longer available."),
+      clearAttention: (agentId) => this.access.clearAttention(agentId),
     });
   }
 
