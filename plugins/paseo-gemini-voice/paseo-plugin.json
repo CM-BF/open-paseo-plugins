@@ -1,0 +1,9 @@
+{
+  "id": "paseo-gemini-voice",
+  "name": "Gemini 中文语音",
+  "description": "让 Paseo 的听写和语音对话支持中文：Gemini 识别中英混说，Gemini 或 macOS 朗读回复",
+  "media": [],
+  "requirements": {
+    "paseo": ">=0.12.0"
+  }
+}
