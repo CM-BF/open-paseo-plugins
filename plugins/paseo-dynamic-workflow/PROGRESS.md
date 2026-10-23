@@ -233,7 +233,7 @@ Fixture：`~/plugin-test-2026-10-22-dwf-optin`，project `prj_36afb70a124afaaa`�
 
 操作失误记录：reload 没有可靠地受非 fixture 活动运行检查约束，误中断另一任务的两次运行：`wf_72355de8655f`（01:25:52 UTC）和其后续 `wf_5119f3a9d9e6`（01:28:14 UTC），各有3个子 agent。最后一次命令虽已打印活动运行，仍无条件执行 reload。已向用户说明；两份原脚本/journal/run.json 保留，均 `notified:true`，确认插件已向原 agent 投递中断通知，可由原 agent 使用 resumeFromRunId 恢复。没有自动重启，也未删除其记录。已把“每次 reload 都必须重新检查，检测到非 fixture 活动运行即中止，不能只打印后无条件继续”写入实机测试技能。
 
-## Claude Code workflow 用法与 Ultracode（2026-10-22，进行中）
+## Claude Code workflow 用法与 Ultracode（2026-10-22，完成）
 
 ### 起因与诊断
 
@@ -252,12 +252,12 @@ Fixture：`~/plugin-test-2026-10-22-dwf-optin`，project `prj_36afb70a124afaaa`�
 | --- | --- |
 | 每个 agent 一个 Ultracode 开关，打开即同时开启 workflow；关闭 workflow 时清掉 Ultracode | 一次操作；`agent-access.json` 仍是 version 1，只加可选的 `ultracodeAgentIds`，旧 shim 进程照常工作 |
 | 模式通过多个通道送达：MCP initialize instructions（仅开启的 agent）、`workflow` 工具描述（带 `anthropic/alwaysLoad`）、reference 第一行、每次启动结果、每条通知的 `<guidance>` | Paseo 不能每轮注入提醒；Codex 0.154 不处理 list_changed；Claude 默认延迟加载 MCP 工具描述。没有实测证据前不去掉任何通道 |
-| 规模建议设置 small/medium/large/unrestricted，默认 **unrestricted** | 用户的问题是规模太小；建议是上限，medium 只会更小。Ultracode 不受约束 |
+| 规模建议设置 small/medium/large/unrestricted，默认 **unrestricted** | 用户的问题是规模太小；默认不限制建议规模，由请求决定深度。建议不是硬上限，Ultracode 不受约束 |
 | shim 每个进程只读一次规模建议，改设置不发 list_changed | 否则所有开启的 Claude 会话 prompt cache 失效；当前值由启动结果/通知/reference 带到 |
 | 统一三态计票（holds / refuted / cannot_check）：失败或无法检查不算票，多数才确认或驳回，否则 unverified 并返回 | 原来六处示例和脚本计票不一致，基础设施失败会被当成驳回 |
 | 内置命名 workflow：deep-review、deep-research、design-panel、critique、verify-claims（原创脚本，共用 `workflows/_shared.js`，构建时注入） | 让任何 provider 直接用上 Claude 会话常用的审查 → 核实 → 完整性检查 → 汇总流程；同名保存文件覆盖内置，`builtin.<name>` 总是内置版本 |
 | 脚本新增只读全局 `guidance {ultracode, size}`、`agent()` 新增 `timeoutMinutes`，标签清除控制/格式/bidi 字符和尖括号 | 内置 workflow 按模式自动缩放；卡在权限提示的子 agent 不会永远挡住 barrier；标签会进入通知 |
-| resume 继承原 run 的 guidance | resume 是“同一个计划”，否则按 guidance 缩放的脚本缓存全部失效 |
+| resume 继承原 run 的 guidance，用户关闭 Ultracode 时使用当前模式 | 一般保持缓存；用户明确降低模式优先于复用缓存 |
 | 同一条用户消息之后第 4 次启动起，启动结果和通知要求先向用户汇报再继续 | Ultracode 的“下一阶段”提示会让 agent 自动串联，需要软性检查点 |
 | 通知里子 agent 的结果、错误、标签和 run 名不能闭合或伪造标签（结果 JSON 用 `<` 转义，保持合法） | 结果里可能有网页或代码文本 |
 | 不复制 Claude Code 的专有文本和脚本 | 8 词 shingle 重合度检查（工具在 `/tmp/dwf-review/critique-scratch/completeness/overlap.mjs`，Claude 材料不进仓库）：REFERENCE 0.1%、prompts 0.0%、deep-research 0.1%、其他 0% |
@@ -273,14 +273,14 @@ Fixture：`~/plugin-test-2026-10-22-dwf-optin`，project `prj_36afb70a124afaaa`�
 - [x] 内置 workflow 五个及其测试（0c976f1, a288d9c）
 - [x] 兼容性测试：冻结的旧 shim（`server/fixtures/mcp-fa7e41f.mjs`）对新状态文件、store/shim 一致性、RPC 和设置版本错位（98fa102）
 - [x] 统一计票、resume 继承 guidance、串联检查点、通知转义、原创性改写（4ae9f04）
-- [ ] 实现审查 workflow `wf_3f1eca24-b2d` 的修复（核实阶段第一次因 Claude Workflow 不支持 `agentType: 'verification'` 全部失败，已改脚本，待 resume）
-- [ ] 主 daemon 实机验收（Web UI、Codex 和 Claude fixture、内置 workflow、截图）
+- [x] 实现审查的核实与完整性输出已恢复，复用结果归并并修复确认项；后续独立复查的模式切换竞态也已修复（4975377），未重跑原审查。
+- [x] 主 daemon 实机验收及 fixture 清理；已观察与未观察范围见 `docs/verification/2026-10-22-ultracode.md`。
 
 ### 哪些 agent 能看到什么（发布后）
 
 - 本插件版本之前启动的 agent 保持原 shim 进程，直到用户 Reload：fa7e41f 之前的 shim 不看开关就列出工具（bridge 仍拒绝未开启 agent 的启动）；fa7e41f 的 shim 按开关列工具，但不显示 Ultracode 文本。两者都能从启动结果、通知和 reference 第一行得到当前模式。`f66ffa4a` 属于前者。
 - 新 shim：Ultracode 切换实时发 list_changed（Codex 仍需 Reload）；规模建议按进程固定；instructions 每次连接读取一次。
-- CLI 型 agent（OpenCode、Pi、OMP、无 MCP 绑定的旧 agent）：只能从 `paseo-workflow reference` 输出和启动结果得知模式。
+- CLI 型 agent（OpenCode、Pi、OMP、无 MCP 绑定的旧 agent）：从带 CLI 指引的模式消息、`paseo-workflow reference`、启动结果和通知获得当前模式。
 
 ### 回滚
 
@@ -288,8 +288,8 @@ Fixture：`~/plugin-test-2026-10-22-dwf-optin`，project `prj_36afb70a124afaaa`�
 
 ### 已知问题 / 未验证
 
-- Codex 0.154 是否接受工具上的 `_meta` 和 initialize 的 `instructions`、是否把 MCP 工具藏在 tool_search 后面：未实测。
-- Claude 是否在 list_changed 后刷新已加载的工具描述、instructions 是否经 Paseo 传给 Claude：未实测。
+- Codex 0.160.1（luna/astra）不会直接展示本插件 MCP 描述；U Reload 后已实际调用工具。Codex 如何利用 `_meta` / initialize instructions 尚未证明，模式消息已实机验证。
+- Claude 2.1.291 的 alwaysLoad 与 MCP instructions 已通过 transcript 验证；list_changed 后刷新已加载描述未单独实机穷尽，保留 Reload 提示。
 - 子 agent 拿到哪些 MCP 服务器（REFERENCE 的描述是推断）：未实测。
 - shim 首次读取 guidance.json 失败时会在该进程内一直用默认值（unrestricted）。
 
@@ -300,7 +300,7 @@ Claude 额度耗尽后从已完成的记录接续，没有重跑原审查和 fix
 - Reload CLI：采用 daemon 提供的 `PASEO_CLI`，保留 `PASEO_BIN` 兼容；20 秒 deadline 比 30 秒 RPC 短，超时强制结束子进程并报告结果未知，失败显示 CLI stderr 的原因。三条针对性测试先红后绿（包括隔离的假 CLI 超时）。
 - 面板明确启用工具后需 idle Reload，Codex 依赖它发现新工具；REFERENCE 补模式消息来源和显式 `args.size` 优先级。
 - 完成态 Web UI 已核实，桌面与 420px 窄屏截图：`docs/verification/2026-10-22-ultracode-completed-{desktop,compact}.png`。
-- 待完成：其余审查修复、最终部署/回归、fixture 清理、完整记录更新。
+- 已完成其余确认项修复、最终部署/回归、fixture 清理；见末尾最终验收记录。
 
 ### 接续子任务：safe-reload 的目标与失败关闭（2026-10-22）
 
@@ -319,12 +319,12 @@ Claude 额度耗尽后从已完成的记录接续，没有重跑原审查和 fix
 
 ### 2026-10-22：交接后内置 workflow 的核实修复
 
-- 读取实现审查最新结果 `w3634wt08.output`（198 个 agent；171 完成，27 因 Claude 额度失败；critic 已完成，plan 未完成），复用已有发现和核实结果，没有重跑已完成的审查。原始输出及恢复摘要保留在 `/tmp/dwf-review/`。
+- 读取实现审查最新结果 `w3634wt08.output`（198 个 agent；171 完成，27 因 Claude 额度失败；critic 已完成，plan 未完成），复用已有发现和核实结果，没有重跑已完成的审查。原始输出及恢复摘要已持久保存到 `~/.paseo/verification/dwf-ultracode-2026-10-22/`。
 - 内置结果新增 `limit: string | null`；首次 agent cap / token budget 拒绝后，共用包装器记录原因并短路后续调用，核实按批发出，避免异常日志淹没阶段日志。deep-review、deep-research、critique 在有显式 output-token budget 时尝试保留 15% 给最后的计划/汇总/修订；核实与 gap critic 到达该余量后停止。输出长度未知，所以这是尽力预留；没有宣称保留未知的 host agent cap，也没有新增 engine API。只有核实阶段的 verify-claims 不扣这份预留。
 - 缺失投票或 cannot_check 都写入失败 coverage，并使结果 partial/inconclusive；已有多数票结论保留，真正分票仍保留 unverified，不改成单票确认。design-panel 的缺失评分、重复角度中的失败设计者和严重攻击后的失败修订均不再报告完整完成；未修订攻击用 `unaddressedRedTeam` 标明。
 - deep-review 为 gap 发现保留一部分核实名额，干轮后释放剩余名额；去重保留标题词序，ID 按数字顺序决定同严重度名额。research 不再把未入批 claim 标成已处理，gap 结束后用完剩余名额，超出上限的 claims 列入 unverified；最终阶段失败写入 coverage，无法下结论时按实际缺口说明原因。
 - 来源去重仅标准化 scheme/host 大小写并去已知 tracking 参数；保留 www、尾斜杠、路径/查询大小写、ref/source 参数和 hash 路由。verify-claims 修复用户 ID 和生成 ID 冲突。测试包装器现在记录异步拒绝，避免未预期的 agent 被静默吞掉。
-- 本地验证：14 个新增测试在旧实现先失败；修复后 `npx vitest run server/builtin-workflows.test.ts` 30/30 通过（含预算保留、cap、最终汇总、跨 gap 严重发现、URL 身份、空/缺失投票等），`npm run typecheck` 和 `git diff --check` 通过。未在本子任务操作 daemon；整合后的实机验收由主任务记录。日志：`/tmp/dwf-review/builtin-regressions-red.log`、`builtin-final-tests.log`、`builtin-final-typecheck.log`。
+- 本地验证：14 个新增测试在旧实现先失败；修复后 `npx vitest run server/builtin-workflows.test.ts` 30/30 通过（含预算保留、cap、最终汇总、跨 gap 严重发现、URL 身份、空/缺失投票等），`npm run typecheck` 和 `git diff --check` 通过。未在本子任务操作 daemon；整合后的实机验收由主任务记录。日志已持久保存到 `~/.paseo/verification/dwf-ultracode-2026-10-22/` 的 `builtin-regressions-red.log`、`builtin-final-tests.log`、`builtin-final-typecheck.log`。
 
 - 后续交互检查补充：run 通知正在投递时 ON→OFF→ON 会清掉中间 OFF 的待替换内容，不能在一次明确失败后发出过时的 OFF。新增确定性回归先失败后通过。
 - 操作失误：最初新增的两个 Reload RPC 红灯测试尚未 mock `./reload`，以模拟 agent ID `a` 调用了主 daemon CLI；CLI 把它当作前缀，实际刷新了此前的测试 agent B=`af28c02e-08b2-4609-9c72-954a293bb71a` 两次（2026-10-23 06:19:41.486 / 06:19:42.089 UTC）。证据为 `~/.paseo/20261022-2323-01-daemon.log` 第8969、8973行，均为 `Refreshing agent ... from persistence`。这不属于计划内验收；没有作用于用户真实 agent。发现后测试统一 mock Reload helper，之后的回归不接触真实 CLI；未自动重启或变更该 fixture 的其他状态。
@@ -340,3 +340,13 @@ Claude 额度耗尽后从已完成的记录接续，没有重跑原审查和 fix
 
 - 最终独立审查发现：原先先 await agentAccess 再入队，旧 ON 的 refresh 较慢时，新 OFF 会先保存，旧 ON 随后反而覆盖用户最后的选择。现在 handler 在任何异步校验前同步登记每个 agent 的队列位置，agent 验证、保存和通知都在该位置内执行；失败不会污染后续操作，结束后仍清理队列。
 - 新增确定性 fake API 回归，旧实现返回 ultracode=true（预期 false）而失败，修复后通过；所有 Reload helper 都 mock，未调用真实 CLI。局部 `server/contribute.test.ts`、`server/notifier.test.ts`、`server/service.test.ts` 通过，typecheck 和 diff-check 通过。
+
+
+### 最终验收与清理（2026-10-22）
+
+- 最终代码 `4975377`：typecheck、29 文件 / 288 测试、diff-check 通过；安全闸确认无活动 run 后 reload，主 daemon 0.12.0 正常 running。没有重启 daemon。daemon 输出的五个脚本和 reference 与源码逐字匹配。
+- 最新 Web UI 已核对新提示，桌面与 420px 截图为 `docs/verification/2026-10-22-ultracode-final-{desktop,compact}.png`；U 的 Reload 在 23:28:54 成功，关闭后的 OFF 消息送达并得到回复。
+- 原 fixture `wf_2d04ea7bb729` 的 18 个子调用全部完成、三种埋入缺陷均独立核实。U 显式选了 small，因此未实机覆盖 unrestricted 的完整性循环；新版加强默认不传 size 的指引，不能把这次成功夸大成全部内置深度通过。
+- 五个父 agent 与 18 个子 agent 共 23 个按完整 ID 独立核对已 archive；原 project/workspace 不在原生列表，Web UI 显示 Workspace unavailable。repo 与测试 run 目录删除，开关/outbox 无 fixture。归档 nonce bindings 保留，不改活跃插件内存。截图 `2026-10-22-ultracode-cleanup-desktop.png`。
+- 运行结果、journal、原审查输出、最终 transcript、测试日志和 cleanup.json 持久保存在 `~/.paseo/verification/dwf-ultracode-2026-10-22/`。Chrome 已关闭；临时 profile 与本任务 scratch 清理，不碰其他测试资源。
+- daemon 当前目录源仍是本 workspace 的 `open-paseo-plugins/plugins/paseo-dynamic-workflow`。删除 worktree 前必须切换持久源；恢复来源、备份和尚未实测的边界详见 `docs/verification/2026-10-22-ultracode.md`。
