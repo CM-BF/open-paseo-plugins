@@ -11,10 +11,12 @@ import { contributeServer } from "./contribute";
 import type { PaseoApi } from "./gate";
 import { statePaths } from "./paths";
 
+const { reloadMock } = vi.hoisted(() => ({ reloadMock: vi.fn(async () => ({ reloaded: true, message: "fixture reload" })) }));
+vi.mock("./reload", () => ({ reloadAgent: reloadMock }));
 const disposals: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
   try { for (const dispose of disposals.splice(0).reverse()) await dispose(); }
-  finally { vi.useRealTimers(); }
+  finally { vi.useRealTimers(); reloadMock.mockClear(); }
 });
 
 type RpcHandler = (input: unknown, context: { paseo: PaseoApi }) => unknown | Promise<unknown>;
@@ -133,7 +135,7 @@ it("does not persist a toggle whose agent refresh completes after shutdown", asy
   await rejected;
 });
 
-it("tells the agent once when Ultracode changes, and cancels an undelivered message when the switch flips back", async () => {
+it("always tells the agent the latest Ultracode mode, even when an earlier notice is undelivered", async () => {
   // A busy agent keeps its messages in the outbox, so the test can read them.
   const agent = { provider: "codex", archivedAt: null, labels: {}, status: "running" };
   const api = { agents: { ref: () => ({ refresh: async () => ({ agent }) }) } } as unknown as PaseoApi;
@@ -146,19 +148,20 @@ it("tells the agent once when Ultracode changes, and cancels an undelivered mess
     await vi.waitFor(async () => { entries = await read(); expect(entries).toHaveLength(count); }, { timeout: 5_000 });
     return entries;
   };
+  await f.sessionOpen({ agentId: "u", reason: "create", env: { [BINDING_ENV]: "nonce-u" } });
   expect(await f.invoke(setAgentAccessRpc.name, { agentId: "u", ultracode: true })).toMatchObject({ enabled: true, ultracode: true });
   const entries = await outbox(1);
   expect(entries[0]).toMatchObject({ agentId: "u", id: expect.stringMatching(/^ultracode-u-/) });
   expect(entries[0]!.text).toMatch(/^\[paseo-dynamic-workflow\] The user turned Ultracode on for you/);
   expect(entries[0]!.text).toContain("find them with your tool search");
-  // Flipped back before delivery: the agent was never told, so nothing is sent.
+  // The busy agent may already have read ON via reference, so OFF must still reach it.
   await f.invoke(setAgentAccessRpc.name, { agentId: "u", ultracode: false });
-  await outbox(0);
+  await vi.waitFor(async () => expect((await outbox(1))[0]!.text).toContain("turned Ultracode off"));
   // Enabling workflows alone sends nothing.
   await f.invoke(setAgentAccessRpc.name, { agentId: "u", enabled: true });
-  await outbox(0);
+  await vi.waitFor(async () => expect((await outbox(1))[0]!.text).toContain("turned Ultracode off"));
   await f.invoke(setAgentAccessRpc.name, { agentId: "u", ultracode: true });
-  expect((await outbox(1)).map((entry) => entry.text.split("\n")[0])).toEqual([expect.stringContaining("turned Ultracode on")]);
+  await vi.waitFor(async () => expect((await outbox(1)).map((entry) => entry.text.split("\n")[0])).toEqual([expect.stringContaining("turned Ultracode on")]));
 });
 
 it("refuses Ultracode for workflow children and empty changes, and writes guidance only from valid settings", async () => {
@@ -189,4 +192,59 @@ it("does not reload an agent that is working", async () => {
   const api = { agents: { ref: () => ({ refresh: async () => ({ agent }) }) } } as unknown as PaseoApi;
   const f = await fixture(api);
   expect(await f.invoke(reloadAgentRpc.name, { agentId: "u" })).toMatchObject({ reloaded: false, message: expect.stringContaining("working") });
+});
+
+it("gives CLI instructions to unbound agents and makes a workflow disable temporary", async () => {
+  const agent = { provider: "codex", archivedAt: null, labels: {}, status: "running" };
+  const api = { agents: { ref: () => ({ refresh: async () => ({ agent }) }) } } as unknown as PaseoApi;
+  const f = await fixture(api);
+  const entry = async () => JSON.parse(await readFile(f.paths.outbox, "utf8")).entries.find((e: { superseded?: boolean }) => !e.superseded);
+  await f.invoke(setAgentAccessRpc.name, { agentId: "u", ultracode: true });
+  await vi.waitFor(async () => expect((await entry()).text).toContain(f.paths.cli));
+  expect((await entry()).text).toContain("reference");
+  expect((await entry()).text).not.toContain("tool search");
+  expect((await entry()).text).not.toContain("ask the user to reload");
+  await f.invoke(setAgentAccessRpc.name, { agentId: "u", enabled: false });
+  await vi.waitFor(async () => expect((await entry()).text).toContain("until the user enables"));
+});
+
+it("does not reload after shutdown overtakes the final agent refresh", async () => {
+  const { api, refresh } = apiFixture();
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  const snapshot = { agent: { provider: "codex", archivedAt: null, labels: {} } };
+  refresh.mockResolvedValueOnce(snapshot);
+  refresh.mockImplementationOnce(async () => { await wait; return snapshot; });
+  const f = await fixture(api);
+  const pending = f.invoke(reloadAgentRpc.name, { agentId: "a" });
+  const rejected = expect(pending).rejects.toThrow("stopping");
+  await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+  await f.dispose();
+  release();
+  await rejected;
+});
+
+it("does not reload an agent archived during the final refresh", async () => {
+  const { api, refresh } = apiFixture();
+  refresh.mockResolvedValueOnce({ agent: { provider: "codex", archivedAt: null, labels: {} } });
+  refresh.mockResolvedValueOnce(null);
+  const f = await fixture(api);
+  await expect(f.invoke(reloadAgentRpc.name, { agentId: "a" })).rejects.toThrow("was not found");
+});
+
+it("publishes the final mode when ON and OFF updates arrive concurrently", async () => {
+  const agent = { provider: "codex", archivedAt: null, labels: {}, status: "running" };
+  const api = { agents: { ref: () => ({ refresh: async () => ({ agent }) }) } } as unknown as PaseoApi;
+  const f = await fixture(api);
+  const [on, off] = await Promise.all([
+    f.invoke(setAgentAccessRpc.name, { agentId: "u", ultracode: true }),
+    f.invoke(setAgentAccessRpc.name, { agentId: "u", ultracode: false }),
+  ]);
+  expect(on).toMatchObject({ ultracode: true });
+  expect(off).toMatchObject({ ultracode: false });
+  await vi.waitFor(async () => {
+    const entries = JSON.parse(await readFile(f.paths.outbox, "utf8")).entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0].text).toContain("turned Ultracode off");
+  });
 });

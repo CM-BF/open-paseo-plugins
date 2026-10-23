@@ -152,3 +152,44 @@ it("re-renders a queued notification when the user changes Ultracode before it i
   await vi.waitFor(async () => expect(await queued()).toContain("Ultracode is off for you"));
   expect(await queued()).not.toContain("launch the next phase");
 });
+
+it("refreshes attempted run notices under a new immutable receipt across repeated mode changes", async () => {
+  const guidance: { current: { ultracode: boolean; size: "unrestricted" | "small" | "medium" | "large" } } = { current: { ultracode: true, size: "unrestricted" } };
+  const f = await fixture(guidance);
+  const id = runId(await f.service.launch("parent", { script: meta() + "return 1" }));
+  const entries = async () => JSON.parse(await readFile(f.paths.outbox, "utf8")).entries as Array<{ id: string; logicalId?: string; text: string; attempts: number; lastError: string | null; superseded?: boolean }>;
+  await vi.waitFor(async () => expect((await entries())[0]?.text).toContain("launch the next phase"));
+  const send = vi.fn(async () => { throw new Error("temporary transport error"); });
+  f.gate.capture({ agents: { ref: () => ({ refresh: async () => ({ agent: { status: "idle", activeTurn: null, archivedAt: null } }), send }) } } as unknown as PaseoApi);
+  await vi.waitFor(async () => { f.service.notifier.kick("parent"); expect((await entries())[0]?.lastError).toBe("temporary transport error"); });
+  f.service.notifier.pause();
+  guidance.current = { ultracode: false, size: "small" };
+  await f.service.refreshNotifications("parent");
+  guidance.current = { ultracode: false, size: "medium" };
+  await f.service.refreshNotifications("parent");
+  await vi.waitFor(async () => {
+    const queued = await entries();
+    expect(queued).toHaveLength(2);
+    expect(queued[0]).toMatchObject({ id: `notify-${id}`, attempts: 1, superseded: true, text: expect.stringContaining("launch the next phase") });
+    expect(queued[1]).toMatchObject({ logicalId: `notify-${id}`, attempts: 0, text: expect.stringContaining("size guideline medium") });
+    expect(queued[1]!.id).not.toBe(queued[0]!.id);
+    expect(queued[1]!.text).not.toContain("launch the next phase");
+  });
+  expect(send).toHaveBeenCalledOnce();
+});
+
+it("keeps an uncertain logical run receipt quarantined when guidance changes", async () => {
+  const guidance: { current: { ultracode: boolean; size: "unrestricted" | "small" | "medium" | "large" } } = { current: { ultracode: true, size: "unrestricted" } };
+  const f = await fixture(guidance);
+  const id = runId(await f.service.launch("parent", { script: meta() + "return 1" }));
+  const entries = async () => JSON.parse(await readFile(f.paths.outbox, "utf8")).entries;
+  await vi.waitFor(async () => expect((await entries())[0]?.id).toBe(`notify-${id}`));
+  const send = vi.fn(async () => { throw new Error("agent_request_outcome_unknown"); });
+  f.gate.capture({ agents: { ref: () => ({ refresh: async () => ({ agent: { status: "idle", activeTurn: null, archivedAt: null } }), send }) } } as unknown as PaseoApi);
+  await vi.waitFor(async () => { f.service.notifier.kick("parent"); expect((await entries())[0]?.uncertain).toBe(true); });
+  guidance.current = { ultracode: false, size: "small" };
+  await f.service.refreshNotifications("parent");
+  await f.service.notifier.dispose();
+  expect(send).toHaveBeenCalledOnce();
+  expect(await entries()).toEqual([expect.objectContaining({ id: `notify-${id}`, attempts: 1, uncertain: true })]);
+});

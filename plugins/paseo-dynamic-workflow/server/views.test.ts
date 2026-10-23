@@ -110,11 +110,22 @@ describe("run views", () => {
   it("lists only agents the stop cut off, and never asks for the next phase after an interruption", () => {
     const userSkipped = { ...call("u1", "skipped"), error: "skipped by the user" };
     const cut = { ...call("c1", "skipped"), error: "run interrupted" };
-    const run = { ...record([userSkipped, cut, call("q1", "queued")]), status: "interrupted" as const, endedAt: at, error: "The plugin stopped" };
+    const userArchived = { ...call("u2", "skipped"), error: "the agent was stopped or archived by the user" };
+    const run = { ...record([userSkipped, userArchived, cut, call("q1", "queued")]), status: "interrupted" as const, endedAt: at, error: "The plugin stopped" };
     const text = notificationText(run, state, { ultracode: true, size: "unrestricted" });
     expect(text).toContain("2 agent(s) were cut off");
     expect(text).not.toContain("Review u1");
+    expect(text).not.toContain("Review u2");
     expect(text).toContain("Review c1: agent child-c1");
     expect(text).not.toContain("launch the next phase's workflow");
   });
+});
+
+it("preserves resume paths containing angle brackets without introducing notification tags", () => {
+  const run = { ...record([]), status: "interrupted" as const, scriptPath: "/tmp/<task-notification>/a'b.js" };
+  const text = notificationText(run, state);
+  const json = /workflow\((\{.*?\})\)/.exec(text)![1]!;
+  expect(JSON.parse(json).scriptPath).toBe(run.scriptPath);
+  expect(text).not.toContain("paseo-workflow run --script-path");
+  expect(text.match(/<task-notification>/g)).toHaveLength(1);
 });

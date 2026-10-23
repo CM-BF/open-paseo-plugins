@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { PaseoApi } from "./gate";
 import { describeError, log, SerialWriter, unref } from "./util";
@@ -11,6 +12,9 @@ export interface OutboxEntry {
   lastError: string | null;
   retryAfter?: number;
   uncertain?: boolean;
+  /** A newer payload uses a fresh receipt id; this attempted receipt is never replayed. */
+  superseded?: boolean;
+  logicalId?: string;
 }
 
 const MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
@@ -28,6 +32,8 @@ export class Notifier {
   private loaded = false;
   private paused = false;
   private readonly deliveries = new Set<Promise<void>>();
+  private readonly sending = new Set<string>();
+  private readonly replacements = new Map<string, { id: string; text: string }>();
 
   constructor(
     private readonly file: string,
@@ -71,18 +77,37 @@ export class Notifier {
     this.persist();
   }
 
-  /** Drops entries whose id starts with `prefix` and that were never attempted; returns how many. */
-  removeUnsent(prefix: string): number {
-    const before = this.entries.length;
-    this.entries = this.entries.filter((entry) => !(entry.id.startsWith(prefix) && entry.attempts === 0));
-    const removed = before - this.entries.length;
-    if (removed > 0) this.persist();
-    return removed;
+  /** Retire stale payloads without changing or replaying attempted message ids. */
+  supersede(prefix: string): void {
+    this.entries = this.entries.filter((entry) => {
+      if (!entry.id.startsWith(prefix)) return true;
+      if (entry.attempts === 0) return false;
+      entry.superseded = true;
+      return true;
+    });
+    this.persist();
   }
 
-  /** Ids of entries not yet attempted, for one agent or all. */
-  unsentIds(agentId?: string): string[] {
-    return this.entries.filter((entry) => entry.attempts === 0 && (agentId === undefined || entry.agentId === agentId)).map((entry) => entry.id);
+  pendingIds(agentId?: string): string[] {
+    return [...new Set(this.entries
+      .filter((entry) => !entry.superseded && (agentId === undefined || entry.agentId === agentId))
+      .map((entry) => entry.logicalId ?? entry.id))];
+  }
+
+  /** Known failed receipts can be superseded; an uncertain receipt must be reconciled first. */
+  replacePending(id: string, text: string): void {
+    const entry = this.entries.find((candidate) => !candidate.superseded && (candidate.logicalId ?? candidate.id) === id);
+    if (!entry || entry.text === text || entry.uncertain) return;
+    if (this.sending.has(entry.id)) {
+      this.replacements.set(entry.id, { id, text });
+      return;
+    }
+    if (entry.attempts === 0) {
+      this.updatePending(entry.id, text);
+      return;
+    }
+    entry.superseded = true;
+    this.add({ id: `${id}-revision-${randomUUID()}`, logicalId: id, agentId: entry.agentId, text });
   }
 
   pendingFor(agentId: string): number {
@@ -129,9 +154,10 @@ export class Notifier {
     const status = fresh.agent.status;
     if (status === "running" || status === "initializing") return;
     if (fresh.agent.activeTurn) return;
-    const next = this.entries.find((entry) => entry.agentId === agentId && !entry.uncertain && (entry.retryAfter ?? 0) <= now);
+    const next = this.entries.find((entry) => entry.agentId === agentId && !entry.uncertain && !entry.superseded && (entry.retryAfter ?? 0) <= now);
     if (!next) return;
     next.attempts++;
+    this.sending.add(next.id);
     try {
       await handle.send(next.text, { messageId: next.id, activeTurnBehavior: "steer" });
       this.entries = this.entries.filter((entry) => entry !== next);
@@ -145,6 +171,13 @@ export class Notifier {
       next.retryAfter = Date.now() + Math.min(300_000, RECONCILE_MS * 2 ** Math.min(next.attempts - 1, 4));
       if (next.uncertain) log(`notification ${next.id} has an uncertain delivery receipt; retained in ${this.file}`);
       this.persist();
+    } finally {
+      this.sending.delete(next.id);
+      const replacement = this.replacements.get(next.id);
+      this.replacements.delete(next.id);
+      // A successful send already delivered the result; an ambiguous receipt must not be
+      // bypassed with another id. A later mode-change notice carries the current guidance.
+      if (replacement && next.lastError && !next.uncertain && !next.superseded) this.replacePending(replacement.id, replacement.text);
     }
   }
 

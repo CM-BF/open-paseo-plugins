@@ -308,3 +308,11 @@ Claude 额度耗尽后从已完成的记录接续，没有重跑原审查和 fix
 - 优先使用 daemon 提供的 `PASEO_CLI`，兼容 `PASEO_BIN`，仅未指定时使用平台默认 CLI；指定的 CLI 无法执行时不回退。脚本仅支持本机 home，拒绝 `PASEO_HOST`。按已安装 CLI 的规则展开 `~`、默认值和相对 home；先读取 daemon status，要求 home 与所选目录实际相同、running/reachable、listen/serverId 存在，再扫描该 home。所有 CLI 调用显式传递同一 `--home`，实际 reload 前复核 home/listen/serverId，并把最终 run 扫描放在 mutation 前。
 - 缺少 runs 目录、缺少/损坏 run.json、未知版本/状态、run ID 与目录不符、缺少 owner 均阻止 reload，不再静默跳过。仍存在扫描与 reload 之间新建 run 的短窗口，不能宣称原子安全。
 - 验证：新建 `server/safe-reload.test.ts`，原实现 26 项中 21 项为红；修复后扩展为 30 项全部通过，`npm run typecheck`、目标文件 `git diff --check` 通过。测试仅执行临时假 CLI，覆盖精确 argv、带空格和 shell 字符的 home、CLI 优先级、tilde/default/relative home、远程环境目标、daemon 更换与无效状态、活动阻塞、dry-run、损坏/缺失记录。未 reload 或修改真实 daemon。
+
+### 2026-10-22：交接后的通知与模式回归修复
+
+- 真实复现并修复：ON/OFF 在 busy agent 上抵消导致 OFF 丢失、失败 ON 后重试旧模式、同 agent 并发 ON/OFF 读取旧状态。访问修改和通知按 agent 串行；每次切换总是保留最新模式消息，已尝试的旧模式 receipt 标成 superseded，不再投递。
+- 已尝试的 run 通知不改正文或 messageId。仅明确失败的旧投递在正文变化时由新 ID 替代，持久化 logicalId 使后续刷新仍找到同一 run；正在投递时先等 receipt。`outcome_unknown` / `key_conflict` 的 run receipt 留在 outbox 隔离，**不换 ID 自动重发**，需先核对 timeline/receipt；独立的新用户模式切换事件仍可投递。
+- CLI provider 和无 MCP binding 的旧 agent 收到 CLI reference/run 入口，不再误导它们靠 Reload 添加 MCP。关闭 workflow 的通知说明持续到用户再次开启；Ultracode 提示明确内置 workflow 默认不传 args.size，除非用户要求轻量运行，2048 字符截断约束仍通过。
+- Reload RPC 在最后一次 refresh 后重新检查插件 shutdown 和 agent 是否存在/归档，避免清理后启动 CLI；通知的 cut-off 列表排除用户手动停止/归档的子 agent；含尖括号的恢复路径仅给可无损解析的 JSON 工具形式，避免替换字符后指向错误路径。
+- 验证：先运行新增回归，确认旧实现失败；修复后 `npx vitest run server/notifier.test.ts server/contribute.test.ts server/views.test.ts server/service.test.ts server/mcp-guidance.test.ts` 为 5 文件、43 项通过，`npm run typecheck` 和 `git diff --check` 通过。未自行 reload daemon；实机验证由整合阶段完成。

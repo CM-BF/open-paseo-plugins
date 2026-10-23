@@ -20,6 +20,7 @@ The \`${cli}\` command runs a JavaScript orchestration script in the background:
 /** Appended to the workflow tool description (and the MCP instructions) for an agent with Ultracode on. */
 export const ULTRACODE_NOTICE = `Ultracode is ON for this agent. The user turned it on in Paseo, and only the user turns it off; never change it yourself. It is a standing opt-in: launch workflows without asking first.
 Aim for the most complete, best-checked result you can produce. Spend tokens freely: cost is never a reason to drop coverage, verification or synthesis, and no size guideline applies.
+- For built-ins, omit args.size under Ultracode unless the user asked for a lighter run.
 - Hand every substantive task (research, review, audit, debugging, design, any change beyond a few lines) to a workflow. Scout inline only until you know the work-list, then launch.
 - Multi-phase work gets one workflow per phase: understand, design, implement, review. When a run's notification arrives, read the result and launch the next phase; this opt-in covers it.
 - Build each run from the patterns that fit the task. Research, review and audit: cover several angles in parallel, check every claim or finding with independent refuters (three by default, majority decides) or distinct lenses, run a completeness critic whose gaps become another round, repeat until a round adds nothing new, then synthesize with a separate agent. Design: independent proposals scored by a judge panel. Implementation or migration: discover the sites, change each one, then verify each change. One reviewer over everything is not verification. Do not cap children's answers or the number of findings to save tokens; use effort 'low' or 'medium' for mechanical search stages and keep high effort for judges.
@@ -30,7 +31,7 @@ Read the Ultracode section of workflow_reference before your first script.`;
  * The Ultracode text for the head of the workflow tool description and the MCP instructions.
  * Claude Code cuts both at 2048 characters, so it stays short; the details are in the reference.
  */
-export const ULTRACODE_SHORT = `Ultracode is ON for this agent (set by the user; never change it yourself). It is a standing opt-in: hand every substantive task (research, review, audit, debugging, design, changes beyond a few lines) to a workflow without asking, and aim for the most complete, best-checked result; cost is never a reason to drop coverage, independent verification or synthesis. One workflow per phase; when a run's notification arrives, launch the next phase. Stay solo for conversation, quick questions, status checks, git operations, small edits and discussing a finished run. Read the Ultracode section of workflow_reference before your first script.`;
+export const ULTRACODE_SHORT = `Ultracode is ON for this agent (set by the user; never change it yourself). It is a standing opt-in: hand every substantive task (research, review, audit, debugging, design, changes beyond a few lines) to a workflow without asking, and aim for the most complete, best-checked result; cost is never a reason to drop coverage, independent verification or synthesis. One workflow per phase; when a run's notification arrives, launch the next phase. Stay solo for conversation, quick questions, status checks, git operations, small edits and discussing a finished run. For built-ins, omit args.size unless the user asked for a lighter run. Read the Ultracode section of workflow_reference before your first script.`;
 
 export function sizeGuidelineText(size: WorkflowSize): string {
   if (size === "unrestricted") {
@@ -76,12 +77,16 @@ export function referenceStatus(guidance: ToolGuidance): string {
  * Codex keeps MCP tool descriptions behind tool search, so without this message a Codex agent
  * learns of the mode only after it already chose to look for workflow tools.
  */
-export function ultracodeChangeText(on: boolean, workflowsOff = false): string {
+export function ultracodeChangeText(on: boolean, workflowsOff = false, cliPath?: string): string {
   const head = `${NOTIFICATION_MARKER} The user turned Ultracode ${on ? "on" : "off"} for you in Paseo. This message comes from the plugin, not from the user.`;
   if (on) {
-    return `${head}\n<ultracode>on</ultracode>\n${ULTRACODE_NOTICE}\nYour workflow tools are in the dynamic_workflow MCP server: workflow, workflow_status, workflow_stop and workflow_reference. If they are not listed among your tools, find them with your tool search; if they are not there either, your session started before workflows were turned on, so ask the user to reload you (from this agent's menu or its Dynamic workflows panel) instead of doing the work without them. There is nothing to do now: reply only "Ultracode on." and wait for the user's next request.`;
+    const transport = cliPath
+      ? `Use the workflow CLI: '${cliPath.replaceAll("'", "'\\''")}' reference prints your current mode and the authoring API; its run command launches a workflow script. This agent has no workflow MCP binding, so use the CLI for this conversation.`
+      : `Your workflow tools are in the dynamic_workflow MCP server: workflow, workflow_status, workflow_stop and workflow_reference. If they are not listed among your tools, find them with your tool search; if they are not there either, your session started before workflows were turned on, so ask the user to reload you (from this agent's menu or its Dynamic workflows panel) instead of doing the work without them.`;
+    const notice = cliPath ? ULTRACODE_NOTICE.replaceAll("workflow_reference", "the CLI reference command") : ULTRACODE_NOTICE;
+    return `${head}\n<ultracode>on</ultracode>\n${notice}\n${transport} There is nothing to do now: reply only "Ultracode on." and wait for the user's next request.`;
   }
-  return `${head}\n<ultracode>off</ultracode>\n${workflowsOff ? "Workflows are also turned off for you: do not launch any." : 'Workflows again need the user\'s opt-in for each request ("use a workflow", or the word "ultracode" in a message).'} Reply only "Ultracode off." and wait for the user's next request.`;
+  return `${head}\n<ultracode>off</ultracode>\n${workflowsOff ? "Workflows are also turned off for you: do not launch any until the user enables them again." : 'Workflows again need the user\'s opt-in for each request ("use a workflow", or the word "ultracode" in a message).'} Reply only "Ultracode off." and wait for the user's next request.`;
 }
 
 /** From this many launches since the user's last message, ask the agent to check in before the next. */

@@ -196,7 +196,7 @@ export function notificationText(record: RunRecord, state: StatePaths, guidance:
     if (record.error) parts.push(`<error>${escapeTags(truncate(record.error, 4000))}</error>`);
     parts.push(`<recovery>Resume with ${resumeHint(record)}: completed agent() calls return their cached results.</recovery>`);
     // Only calls the stop cut off; a call the user skipped stays skipped.
-    const cut = record.calls.filter((call) => ["running", "permission", "queued", "starting"].includes(call.status) || (call.status === "skipped" && call.error !== "skipped by the user"));
+    const cut = record.calls.filter((call) => ["running", "permission", "queued", "starting"].includes(call.status) || (call.status === "skipped" && call.error !== "skipped by the user" && call.error !== "the agent was stopped or archived by the user"));
     if (record.status === "interrupted" && cut.length > 0) {
       const reused = record.calls.filter((call) => call.status === "completed" || call.status === "cached").length;
       const shown = cut.slice(0, 30).map((call) => `${escapeTags(truncate(call.label, 120))}: ${call.agentId ? `agent ${call.agentId}` : "not started"}`);
@@ -257,5 +257,8 @@ function firstLine(text: string): string {
 function resumeHint(record: RunRecord): string {
   const args = record.args;
   const path = `'${record.scriptPath.replaceAll("'", "'\\''")}'`;
-  return `workflow(${escapeJsonTags(JSON.stringify({ scriptPath: record.scriptPath, resumeFromRunId: record.runId, ...(args === undefined ? {} : { args }) }))}) or paseo-workflow run --script-path ${escapeTags(path)} --resume ${record.runId} (inherits saved args)`;
+  const tool = `workflow(${escapeJsonTags(JSON.stringify({ scriptPath: record.scriptPath, resumeFromRunId: record.runId, ...(args === undefined ? {} : { args }) }))})`;
+  // The JSON form preserves angle brackets through unicode escapes; replacing them in a shell
+  // path would point at a different file. Keep CLI hints only when the path is tag-safe.
+  return /[<>]/.test(path) ? `${tool} (inherits saved args)` : `${tool} or paseo-workflow run --script-path ${path} --resume ${record.runId} (inherits saved args)`;
 }

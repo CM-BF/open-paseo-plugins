@@ -155,38 +155,47 @@ export function contributeServer(server: PluginServerContext, options: Contribut
       hasMcpBinding: providerFamily !== null && MCP_FAMILIES.has(providerFamily) && bindings.hasAgent(agentId),
     };
   };
-  // One pending mode message per agent: a toggle back before delivery cancels it instead of
-  // sending "on" then "off".
+  // Keep the latest mode even if the agent is busy: it may already have read reference. For
+  // attempted deliveries retain the old receipt as superseded, and send a fresh message id.
   let modeMessages = 0;
-  const announceUltracode = (agentId: string, on: boolean, workflowsOff: boolean) => {
+  const announceUltracode = (agentId: string, on: boolean, workflowsOff: boolean, cliPath?: string) => {
     const prefix = `ultracode-${agentId}-`;
-    if (service.notifier.removeUnsent(prefix) > 0) return;
-    service.notifier.add({ id: `${prefix}${Date.now()}-${++modeMessages}`, agentId, text: ultracodeChangeText(on, workflowsOff) });
+    service.notifier.supersede(prefix);
+    service.notifier.add({ id: `${prefix}${Date.now()}-${++modeMessages}`, agentId, text: ultracodeChangeText(on, workflowsOff, cliPath) });
   };
   server.handle(getAgentAccessRpc, async (input, context) => agentAccess(input.agentId, context));
+  const accessChanges = new Map<string, Promise<unknown>>();
   server.handle(setAgentAccessRpc, async (input, context) => {
     const current = await agentAccess(input.agentId, context);
     if (input.enabled === undefined && input.ultracode === undefined) throw new ServiceError("invalid_request", "Set enabled, ultracode or both.");
     if ((input.enabled || input.ultracode) && current.isWorkflowChild) throw new ServiceError("recursive_workflow", "Workflow children cannot enable workflow tools; use workflow() in the orchestration script.");
-    if (stopping || startup !== "ready") throw new ServiceError("not_ready", "The workflow plugin is stopping.");
-    const wasUltracode = access.ultracode(input.agentId);
-    await access.update(input.agentId, {
-      ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
-      ...(input.ultracode !== undefined ? { ultracode: input.ultracode } : {}),
+    const operation = (accessChanges.get(input.agentId) ?? Promise.resolve()).catch(() => undefined).then(async () => {
+      if (stopping || startup !== "ready") throw new ServiceError("not_ready", "The workflow plugin is stopping.");
+      const wasUltracode = access.ultracode(input.agentId);
+      await access.update(input.agentId, {
+        ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+        ...(input.ultracode !== undefined ? { ultracode: input.ultracode } : {}),
+      });
+      if (stopping || startup !== "ready") throw new ServiceError("not_ready", "The workflow plugin is stopping.");
+      const isUltracode = access.ultracode(input.agentId);
+      if (isUltracode !== wasUltracode) {
+        announceUltracode(input.agentId, isUltracode, !access.enabled(input.agentId), current.hasMcpBinding ? undefined : current.cliPath);
+        await service.refreshNotifications(input.agentId);
+      }
+      return { ...current, enabled: access.enabled(input.agentId), ultracode: isUltracode };
     });
-    const isUltracode = access.ultracode(input.agentId);
-    if (isUltracode !== wasUltracode) {
-      announceUltracode(input.agentId, isUltracode, !access.enabled(input.agentId));
-      await service.refreshNotifications(input.agentId);
-    }
-    return { ...current, enabled: access.enabled(input.agentId), ultracode: isUltracode };
+    accessChanges.set(input.agentId, operation);
+    try { return await operation; }
+    finally { if (accessChanges.get(input.agentId) === operation) accessChanges.delete(input.agentId); }
   });
 
   server.handle(reloadAgentRpc, async (input, context) => {
     const current = await agentAccess(input.agentId, context);
     if (current.isWorkflowChild) throw new ServiceError("recursive_workflow", "Workflow children are not reloaded from this panel.");
     const fresh = await context.paseo.agents.ref(input.agentId).refresh();
-    const busy = fresh?.agent.status === "running" || fresh?.agent.status === "initializing" || Boolean(fresh?.agent.activeTurn);
+    if (stopping || startup !== "ready") throw new ServiceError("not_ready", "The workflow plugin is stopping.");
+    if (!fresh || fresh.agent.archivedAt) throw new ServiceError("unknown_agent", `Agent ${input.agentId} was not found on this host.`);
+    const busy = fresh.agent.status === "running" || fresh.agent.status === "initializing" || Boolean(fresh.agent.activeTurn);
     if (busy) return { reloaded: false, message: "The agent is working; reload it when it is idle, from this panel or its menu." };
     return reloadAgent(input.agentId);
   });

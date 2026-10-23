@@ -155,7 +155,7 @@ export class WorkflowService {
     await recoverChildren(paseo, record);
     await new RunFiles(this.paths, record.runId).saveRecord(record);
     this.rememberRecord(record, this.records.has(record.runId));
-    this.notifier.updatePending(`notify-${record.runId}`, this.notification(record));
+    this.notifier.replacePending(`notify-${record.runId}`, this.notification(record));
     await this.publishCard(record);
   }
 
@@ -344,15 +344,14 @@ export class WorkflowService {
   }
 
   /**
-   * Re-renders queued run notifications with the current guidance, after the user changed
-   * Ultracode or the size guideline: an old "Ultracode is on, launch the next phase" must not
-   * arrive after the user turned it off.
+   * Refreshes pending guidance while preserving receipt identity. Known failed deliveries may
+   * be superseded; uncertain receipts require reconciliation and are never resent here.
    */
   async refreshNotifications(agentId?: string): Promise<void> {
-    for (const id of this.notifier.unsentIds(agentId)) {
+    for (const id of this.notifier.pendingIds(agentId)) {
       if (!id.startsWith("notify-")) continue;
       const record = await this.recordFor(id.slice("notify-".length)).catch(() => null);
-      if (record) this.notifier.updatePending(id, this.notification(record));
+      if (record) this.notifier.replacePending(id, this.notification(record));
     }
   }
 
