@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { getAgentAccessRpc, getCallRpc, getRunRpc, listRunsRpc, serviceStatusRpc, setAgentAccessRpc, skipCallRpc, stopRunRpc, transcriptRpc } from "../shared/contracts";
 import { CHILD_ENV, ENABLE_ENV, LABEL_RUN, PLUGIN_VERSION } from "../shared/ids";
@@ -33,21 +33,21 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     settings = state.status === "ready" ? { ...DEFAULT_PREFERENCES, ...state.values } : DEFAULT_PREFERENCES;
     if (state.status !== "ready") log(`settings are invalid (${state.error}); using defaults`);
   };
-  // The MCP shim reads the size guideline from disk, so it also works while the bridge restarts.
-  let guidanceWritten: string | null = null;
+  // New MCP shims read the size guideline from disk once per process. Write it only from valid
+  // settings and only when it changes, so a bad read or a restart does not touch the file.
   let guidanceWrites: Promise<void> = Promise.resolve();
-  const writeGuidance = () => {
-    const size = settings.workflowSize;
+  const writeGuidance = (size: Preferences["workflowSize"]) => {
     guidanceWrites = guidanceWrites.then(async () => {
-      if (stopping || guidanceWritten === size) return;
+      if (stopping) return;
+      const text = `${JSON.stringify({ version: 1, workflowSize: size })}\n`;
+      if ((await readFile(paths.guidance, "utf8").catch(() => null)) === text) return;
       await mkdir(paths.root, { recursive: true, mode: 0o700 });
-      await writeAtomically(paths.guidance, `${JSON.stringify({ version: 1, workflowSize: size })}\n`, 0o600);
-      guidanceWritten = size;
+      await writeAtomically(paths.guidance, text, 0o600);
     }).catch((error) => log(`could not write workflow guidance: ${describeError(error)}`));
   };
   const onSettings = (state: Awaited<ReturnType<typeof settingsHandle.read>>) => {
     applySettings(state);
-    writeGuidance();
+    if (state.status === "ready") writeGuidance(settings.workflowSize);
   };
   const removeSettingsListener = settingsHandle.subscribe(onSettings);
   void settingsHandle.read().then(onSettings, (error) => log(`could not read settings: ${describeError(error)}`));

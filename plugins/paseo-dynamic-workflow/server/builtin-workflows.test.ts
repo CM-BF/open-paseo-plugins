@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentOutcome, AgentTask } from "./agent-runner";
 import { BUILTIN_WORKFLOWS } from "./builtin-workflows";
@@ -20,6 +22,13 @@ async function run(name: string, behavior: (task: AgentTask) => AgentOutcome, ar
 const failed: AgentOutcome = { ok: false, error: "provider error", skipped: false, worktree: null };
 
 describe("built-in workflows", () => {
+  it("are generated from workflows/*.js (run node scripts/build-reference.mjs)", () => {
+    const dir = join(__dirname, "..", "workflows");
+    const files = readdirSync(dir).filter((file) => file.endsWith(".js") && !file.startsWith("_")).sort();
+    expect(Object.keys(BUILTIN_WORKFLOWS).sort()).toEqual(files.map((file) => file.slice(0, -3)));
+    for (const file of files) expect(BUILTIN_WORKFLOWS[file.slice(0, -3)]).toBe(readFileSync(join(dir, file), "utf8"));
+  });
+
   it("parse, carry their own name, and say when to use them", () => {
     expect(Object.keys(BUILTIN_WORKFLOWS).length).toBeGreaterThan(0);
     for (const [name, source] of Object.entries(BUILTIN_WORKFLOWS)) {

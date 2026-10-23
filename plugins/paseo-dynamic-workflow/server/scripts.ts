@@ -235,23 +235,26 @@ async function accessForAgent() {
     const access = await readJson('agent-access.json');
     const ids = (list) => Array.isArray(list) && list.every((id) => typeof id === 'string' && id.length > 0);
     if (access.version !== 1 || !ids(access.enabledAgentIds) || !access.enabledAgentIds.includes(agentId)) return null;
-    const ultracode = ids(access.ultracodeAgentIds) && access.ultracodeAgentIds.includes(agentId);
-    let size = DEFAULT_SIZE;
-    if (!ultracode) {
-      try {
-        const guidance = await readJson('guidance.json');
-        if (guidance.version === 1 && Object.hasOwn(SIZE_TEXT, guidance.workflowSize)) size = guidance.workflowSize;
-      } catch { /* Missing guidance keeps the default size. */ }
-    }
-    return { ultracode, size };
+    const ultracode = Array.isArray(access.ultracodeAgentIds) && access.ultracodeAgentIds.includes(agentId);
+    return { ultracode, size: await processSize() };
   } catch { return null; }
+}
+// The size guideline is read once per process: a later settings change must not rewrite every
+// enabled agent's tool list (and prompt cache). Launch results and notifications carry the current value.
+let sizeOnce = null;
+function processSize() {
+  sizeOnce ??= readJson('guidance.json').then(
+    (guidance) => (guidance.version === 1 && Object.hasOwn(SIZE_TEXT, guidance.workflowSize) ? guidance.workflowSize : DEFAULT_SIZE),
+    () => DEFAULT_SIZE,
+  );
+  return sizeOnce;
 }
 function toolsFor(access) {
   if (!access) return [];
   const text = access.ultracode ? ULTRACODE_TEXT : SIZE_TEXT[access.size];
   return TOOLS.map((tool) => (tool.name === 'workflow' ? { ...tool, description: tool.description + '\n\n' + text, _meta: TOOL_META } : tool));
 }
-const fingerprint = (access) => (access ? (access.ultracode ? 'ultracode' : 'size:' + access.size) : 'off');
+const fingerprint = (access) => (access ? (access.ultracode ? 'ultracode' : 'on') : 'off');
 
 let initialized = false;
 let lastListed = 'off';
@@ -274,7 +277,7 @@ function checkAvailability() {
 let watcher;
 try {
   watcher = watch(env.DYNAMIC_WORKFLOW_HOME, (_event, name) => {
-    if (!name || name === 'agent-access.json' || name === 'bindings.json' || name === 'guidance.json') checkAvailability();
+    if (!name || name === 'agent-access.json' || name === 'bindings.json') checkAvailability();
   });
   watcher.on('error', () => { watcher.close(); });
 } catch { /* Missing state remains disabled. A new process can attach after installation. */ }

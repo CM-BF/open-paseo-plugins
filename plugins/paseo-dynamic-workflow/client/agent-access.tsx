@@ -14,7 +14,8 @@ export function AgentAccess({ agentId, styles }: { agentId: string; styles: Styl
   const setAccess = useRpc(setAgentAccessRpc);
   const queryClient = useQueryClient();
   const toast = useToast();
-  const queryKey = [PLUGIN_ID, "agent-access", agentId];
+  // Versioned: a reload keeps query state, and older cached results lack the Ultracode flag.
+  const queryKey = [PLUGIN_ID, "agent-access", 2, agentId];
   const access = useQuery({ queryKey, queryFn: () => getAccess({ agentId }) });
   const update = useMutation({
     mutationFn: (change: { enabled?: boolean; ultracode?: boolean }) => setAccess({ agentId, ...change }),
@@ -59,13 +60,11 @@ export function AgentAccess({ agentId, styles }: { agentId: string; styles: Styl
       {value && !value.isWorkflowChild ? (
         <Text style={styles.mutedText}>
           {mcp
-            ? value.providerFamily === "claude"
-              ? "Claude picks up switch changes on its next tool refresh; if the tools or Ultracode notice do not change, use Reload from the agent menu."
-              : "Reload this agent after changing a switch to refresh its tool list and Ultracode notice. Use Reload from the agent menu."
+            ? "Reload this agent from the agent menu after changing a switch: its tool list and instructions refresh on reload. Until then the next launch result and run notification state the current mode."
             : value.enabled
               ? mcpFamily
                 ? "This agent predates workflow tool setup; use the command below, or create a new agent for MCP tools."
-                : "Include this reference command in your next prompt so the agent can learn how to run workflows."
+                : "Include this reference command in your next prompt so the agent can learn how to run workflows. After changing Ultracode, include it again: its first line states the mode."
               : "Enable to get the workflow reference command for this agent."}
         </Text>
       ) : null}

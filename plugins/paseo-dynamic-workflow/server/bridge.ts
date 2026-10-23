@@ -4,7 +4,6 @@ import type { ToolGuidance, WorkflowSize } from "../shared/guidance";
 import { PLUGIN_VERSION } from "../shared/ids";
 import type { BindingStore } from "./bindings";
 import type { AgentAccessStore } from "./agent-access";
-import { toolDefinitions } from "./scripts";
 import { ServiceError, type WorkflowService } from "./service";
 import { describeError, log } from "./util";
 
@@ -103,10 +102,6 @@ export class Bridge {
     const input = args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
     const agentId = await this.callerId(request);
     try {
-      if (match[1] === "list") {
-        send(response, 200, { tools: agentId && this.options.access.enabled(agentId) ? toolDefinitions(this.guidance(agentId)) : [] });
-        return;
-      }
       const text = await this.dispatch(match[1] ?? "", input, agentId);
       send(response, 200, { text });
     } catch (error) {

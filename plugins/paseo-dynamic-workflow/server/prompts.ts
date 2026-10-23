@@ -2,17 +2,22 @@ import { SIZE_AGENTS, sizeLabel, type ToolGuidance, type WorkflowSize } from "..
 
 export const PROMPT_MARKER = "## Dynamic workflows (paseo-dynamic-workflow)";
 
-export const OPT_IN = `Because a run can start dozens of agents, launch one only after the user opted in, in one of these ways:
+function optIn(ultracodeSource: string): string {
+  return `Because a run can start dozens of agents, launch one only after the user opted in, in one of these ways:
 - their current message contains the word "ultracode" (that request only);
-- Ultracode is on for you (a notice at the end of this description, the first line of workflow_reference, or the latest launch result or run notification says so);
+- Ultracode is on for you (${ultracodeSource}, or the latest launch result or run notification says so);
 - they asked for one in their own words, in any language ("use a workflow", "fan out agents", "orchestrate this with subagents", "开个workflow");
 - they invoked a skill or command whose instructions say to run one;
 - they asked for a built-in or saved workflow by name.
 An opt-in covers the whole request, including later workflows for its next phases (verify, design, implement, review). A plugin notification is not an opt-in for a new task. A task that would merely benefit from parallelism does not count: say what you would run and about how many agents it would start, and ask; mention that "use a workflow" or "ultracode" in a later message skips the question. Never turn workflows or Ultracode on for yourself, including through the app; if they are off, ask the user.`;
+}
+
+const OPT_IN = optIn("a notice at the end of this description or the first line of workflow_reference");
+const OPT_IN_CLI = optIn("the first line of the reference command's output");
 
 export function systemPromptCli(cli: string): string {
   return `${PROMPT_MARKER}
-The \`${cli}\` command runs a JavaScript orchestration script in the background: \`agent()\`, \`parallel()\`, \`pipeline()\`, \`phase()\` and \`log()\` start and coordinate Paseo agents (any provider) and return their results to the script. ${OPT_IN}
+The \`${cli}\` command runs a JavaScript orchestration script in the background: \`agent()\`, \`parallel()\`, \`pipeline()\`, \`phase()\` and \`log()\` start and coordinate Paseo agents (any provider) and return their results to the script. ${OPT_IN_CLI}
 - Before writing a script, run \`${cli} reference\` once for the script API, patterns and resume.
 - Launch with \`${cli} run --file script.js [--args-json '{...}'] [--resume <runId>]\`, \`run --script-path <path>\` to iterate, or \`run --name <saved-workflow>\`. Resume inherits saved args unless overridden. It returns at once; a \`<task-notification>\` message from the plugin arrives when the run ends, so end your turn instead of waiting. \`${cli} status [runId]\` reports progress; \`${cli} stop <runId>\` stops a run.`;
 }

@@ -90,5 +90,7 @@ describe("run views", () => {
     const next = notificationText({ ...run, status: "completed", resultPreview: "{}" }, state, { ultracode: true, size: "unrestricted" });
     expect(next).toContain("launch the next phase's workflow");
     expect(notificationText(run, state)).not.toContain("<guidance>");
+    expect(parseNotice(text)).toMatchObject({ runId: "wf_views", status: "interrupted" });
+    expect(parseNotice(next)).toMatchObject({ runId: "wf_views", status: "completed" });
   });
 });

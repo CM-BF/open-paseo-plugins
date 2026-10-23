@@ -62,15 +62,22 @@ it("serves the same per-agent catalog as the bridge, with instructions only for 
   expect(off.init.instructions).toBeUndefined();
 });
 
-it("announces a changed catalog when Ultracode or the size guideline changes", async () => {
-  const f = await shim({ enabled: ["agent-a"] });
+it("announces an Ultracode toggle, but keeps the size guideline it started with", async () => {
+  const f = await shim({ enabled: ["agent-a"], size: "medium" });
   await f.rpc("tools/list");
   await f.write({ enabled: ["agent-a"], ultracode: ["agent-a"] });
   await vi.waitFor(() => expect(f.notifications()).toBe(1));
   expect(JSON.stringify((await f.rpc("tools/list")).tools)).toContain("Ultracode is ON for this agent");
   await f.write({ enabled: ["agent-a"], size: "large" });
   await vi.waitFor(() => expect(f.notifications()).toBe(2));
-  expect(JSON.stringify((await f.rpc("tools/list")).tools)).toContain("Size guideline (set by the user): large");
+  // A settings change reaches running agents through launch results and notifications, not by
+  // rewriting their tool list (and prompt cache).
+  await f.write({ enabled: ["agent-a"], size: "small" });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(f.notifications()).toBe(2);
+  expect(JSON.stringify((await f.rpc("tools/list")).tools)).toContain("Size guideline (set by the user): medium");
+  const fresh = await shim({ enabled: ["agent-a"], size: "small" });
+  expect(JSON.stringify((await fresh.rpc("tools/list")).tools)).toContain("Size guideline (set by the user): small");
 });
 
 it("asks Claude Code to load the workflow description instead of deferring it, and keeps the spec small", () => {

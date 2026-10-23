@@ -7,7 +7,8 @@ import { describeError, log, writeAtomically } from "./util";
 const AgentAccessFileSchema = z.object({
   version: z.literal(1),
   enabledAgentIds: z.array(z.string().min(1)),
-  ultracodeAgentIds: z.array(z.string().min(1)).optional(),
+  // Lenient like the MCP shim: anything that is not a list of ids means none.
+  ultracodeAgentIds: z.unknown().optional(),
 });
 
 export interface AccessChange {
@@ -24,6 +25,8 @@ export class AgentAccessStore {
   private enabledIds = new Set<string>();
   private ultracodeIds = new Set<string>();
   private loaded: Promise<void> | null = null;
+  /** The file exists but could not be read: writing would silently drop every agent's opt-in. */
+  private unreadable = false;
   private writes: Promise<void> = Promise.resolve();
   private stopped = false;
 
@@ -33,9 +36,12 @@ export class AgentAccessStore {
     this.loaded ??= readFile(this.file, "utf8").then((text) => {
       const parsed = AgentAccessFileSchema.parse(JSON.parse(text));
       this.enabledIds = new Set(parsed.enabledAgentIds);
-      this.ultracodeIds = new Set((parsed.ultracodeAgentIds ?? []).filter((id) => this.enabledIds.has(id)));
+      const listed = Array.isArray(parsed.ultracodeAgentIds) ? parsed.ultracodeAgentIds : [];
+      this.ultracodeIds = new Set(listed.filter((id): id is string => typeof id === "string" && this.enabledIds.has(id)));
     }).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "ENOENT") log(`could not read agent workflow access; all agents stay disabled: ${describeError(error)}`);
+      if (error.code === "ENOENT") return;
+      this.unreadable = true;
+      log(`could not read agent workflow access; all agents stay disabled until ${this.file} is fixed or removed: ${describeError(error)}`);
     });
     return this.loaded;
   }
@@ -56,6 +62,7 @@ export class AgentAccessStore {
     const operation = this.writes.then(async () => {
       await this.load();
       if (this.stopped) throw new Error("The workflow plugin is stopping.");
+      if (this.unreadable) throw new Error(`${this.file} is unreadable; fix or remove it, then reload the plugin. Saving now would drop every other agent's setting.`);
       if (!agentId.trim()) throw new Error("agentId is required");
       // Derive each update inside the queue, and expose it only after its write succeeds.
       const enabled = new Set(this.enabledIds);

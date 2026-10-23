@@ -74,3 +74,13 @@ it("ignores ultracode entries for agents that are not enabled", async () => {
   await store.load();
   expect([store.ultracode("a"), store.ultracode("ghost"), store.enabled("ghost")]).toEqual([true, false, false]);
 });
+
+it("refuses to overwrite an access file it could not read, so other agents keep their setting", async () => {
+  const { file, store } = await fixture();
+  const original = JSON.stringify({ version: 1, enabledAgentIds: ["a", 5] });
+  await writeFile(file, original);
+  await store.load();
+  await expect(store.set("b", true)).rejects.toThrow("unreadable");
+  expect(await readFile(file, "utf8")).toBe(original);
+  expect(store.enabled("b")).toBe(false);
+});

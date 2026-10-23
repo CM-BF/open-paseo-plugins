@@ -75,24 +75,22 @@ it("fails startup when its socket cannot listen", async () => {
   expect(broken.listening).toBe(false);
 });
 
-it("lists tool descriptions only for the opted-in caller and updates the same MCP binding after toggles", async () => {
+it("resolves the caller from its MCP binding before the agent header, and follows toggles", async () => {
   const f = await fixture();
   await f.bindings.bind("nonce-a", "agent-a");
   const a = { "x-dynamic-workflow-binding": "nonce-a" };
-  const b = { "x-dynamic-workflow-agent": "agent-b" };
-  expect(JSON.parse((await post(f.socketPath, "{}", "list", a)).body)).toEqual({ tools: [] });
+  const reference = async (headers?: Record<string, string>) => (await post(f.socketPath, "{}", "workflow_reference", headers)).status;
+  expect(await reference(a)).toBe(400);
   await f.access.set("agent-a", true);
-  const tools = JSON.parse((await post(f.socketPath, "{}", "list", a)).body).tools;
-  expect(tools.map((tool: { name: string }) => tool.name)).toEqual(["workflow", "workflow_status", "workflow_stop", "workflow_reference"]);
-  expect(tools.every((tool: { description?: string }) => Boolean(tool.description))).toBe(true);
-  expect(JSON.parse((await post(f.socketPath, "{}", "list", b)).body)).toEqual({ tools: [] });
-  expect(JSON.parse((await post(f.socketPath, "{}", "list")).body)).toEqual({ tools: [] });
+  expect(await reference(a)).toBe(200);
+  expect(await reference({ "x-dynamic-workflow-agent": "agent-b" })).toBe(400);
+  expect(await reference()).toBe(400);
   const unknownBinding = { "x-dynamic-workflow-binding": "missing", "x-dynamic-workflow-agent": "agent-a" };
-  expect(JSON.parse((await post(f.socketPath, "{}", "list", unknownBinding)).body)).toEqual({ tools: [] });
+  expect(await reference(unknownBinding)).toBe(400);
   expect((await post(f.socketPath, '{"arguments":{"script":"return 1"}}', "workflow", unknownBinding)).status).toBe(400);
   expect(f.launch).not.toHaveBeenCalled();
   await f.access.set("agent-a", false);
-  expect(JSON.parse((await post(f.socketPath, "{}", "list", a)).body)).toEqual({ tools: [] });
+  expect(await reference(a)).toBe(400);
 });
 
 it("denies launch and reference while disabled, preserving status and stop for existing runs", async () => {
@@ -127,9 +125,9 @@ it("keeps the caller's opt-in after the bridge and access store restart", async 
   await f.bridge.close();
   const access = new AgentAccessStore(f.accessFile);
   await access.load();
-  const restarted = new Bridge({ service: {} as WorkflowService, bindings: f.bindings, access, workflowSize: () => "medium" });
+  const restarted = new Bridge({ service: { reference: () => "ok" } as unknown as WorkflowService, bindings: f.bindings, access, workflowSize: () => "medium" });
   disposals.push(() => restarted.close());
   await restarted.start(f.socketPath);
-  expect(JSON.parse((await post(f.socketPath, "{}", "list", { "x-dynamic-workflow-agent": "agent-a" })).body).tools).toHaveLength(4);
-  expect(JSON.parse((await post(f.socketPath, "{}", "list", { "x-dynamic-workflow-agent": "agent-b" })).body).tools).toEqual([]);
+  expect((await post(f.socketPath, "{}", "workflow_reference", { "x-dynamic-workflow-agent": "agent-a" })).status).toBe(200);
+  expect((await post(f.socketPath, "{}", "workflow_reference", { "x-dynamic-workflow-agent": "agent-b" })).status).toBe(400);
 });
