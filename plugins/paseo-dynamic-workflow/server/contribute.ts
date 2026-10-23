@@ -166,10 +166,12 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   server.handle(getAgentAccessRpc, async (input, context) => agentAccess(input.agentId, context));
   const accessChanges = new Map<string, Promise<unknown>>();
   server.handle(setAgentAccessRpc, async (input, context) => {
-    const current = await agentAccess(input.agentId, context);
-    if (input.enabled === undefined && input.ultracode === undefined) throw new ServiceError("invalid_request", "Set enabled, ultracode or both.");
-    if ((input.enabled || input.ultracode) && current.isWorkflowChild) throw new ServiceError("recursive_workflow", "Workflow children cannot enable workflow tools; use workflow() in the orchestration script.");
+    // Reserve the queue position before agentAccess awaits refresh/provider validation, so a
+    // later request cannot overtake an older one whose daemon read happens to be slower.
     const operation = (accessChanges.get(input.agentId) ?? Promise.resolve()).catch(() => undefined).then(async () => {
+      const current = await agentAccess(input.agentId, context);
+      if (input.enabled === undefined && input.ultracode === undefined) throw new ServiceError("invalid_request", "Set enabled, ultracode or both.");
+      if ((input.enabled || input.ultracode) && current.isWorkflowChild) throw new ServiceError("recursive_workflow", "Workflow children cannot enable workflow tools; use workflow() in the orchestration script.");
       if (stopping || startup !== "ready") throw new ServiceError("not_ready", "The workflow plugin is stopping.");
       const wasUltracode = access.ultracode(input.agentId);
       await access.update(input.agentId, {

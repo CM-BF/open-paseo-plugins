@@ -248,3 +248,30 @@ it("publishes the final mode when ON and OFF updates arrive concurrently", async
     expect(entries[0].text).toContain("turned Ultracode off");
   });
 });
+
+it("keeps request order when the older access validation refresh is slower", async () => {
+  const { api, refresh } = apiFixture();
+  let release!: () => void;
+  let entered!: () => void;
+  const stalled = new Promise<void>((resolve) => { release = resolve; });
+  const refreshing = new Promise<void>((resolve) => { entered = resolve; });
+  const snapshot = { agent: { provider: "codex", archivedAt: null, labels: {}, status: "running" } };
+  refresh.mockImplementationOnce(async () => { entered(); await stalled; return snapshot; });
+  refresh.mockResolvedValue(snapshot);
+  const f = await fixture(api);
+  const olderOn = f.invoke(setAgentAccessRpc.name, { agentId: "a", ultracode: true });
+  await refreshing;
+  const newerOff = f.invoke(setAgentAccessRpc.name, { agentId: "a", ultracode: false });
+  // Let the newer RPC enter before releasing the older validation. It must reserve its
+  // place synchronously, even though its own refresh would finish sooner.
+  await f.status();
+  release();
+  await Promise.all([olderOn, newerOff]);
+  expect(await f.invoke(getAgentAccessRpc.name, { agentId: "a" })).toMatchObject({ ultracode: false });
+  await vi.waitFor(async () => {
+    const entries = JSON.parse(await readFile(f.paths.outbox, "utf8")).entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0].text).toContain("turned Ultracode off");
+  });
+  expect(reloadMock).not.toHaveBeenCalled();
+});

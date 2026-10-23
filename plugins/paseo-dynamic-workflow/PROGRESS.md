@@ -335,3 +335,8 @@ Claude 额度耗尽后从已完成的记录接续，没有重跑原审查和 fix
 - README / OVERVIEW / authoring reference 对齐最新模式投递，不再声称 ON→OFF 不发送最新 OFF；明确 mode-change 通知可以报告用户的常驻 opt-in，run completion 不能授权新任务。
 - Reference 说明内置 size 是深度、实际数量可超过同名通用建议；显式 args.size 的优先级；missing/cannot_check coverage、limit 和最终阶段尽力预算预留。重建 `server/reference.ts`，与原文一致。
 - 整合 `ccbbda6`、`3460fd3`、`135e6f6`、`a02b73a`、`a5851ab`、`2f80146` 后：typecheck、29 文件 / 287 测试和 diff-check 全部通过。日志保存在 `~/.paseo/verification/dwf-ultracode-2026-10-22/final-tests.log`。
+
+### 2026-10-22：模式 RPC 在异步校验前占位
+
+- 最终独立审查发现：原先先 await agentAccess 再入队，旧 ON 的 refresh 较慢时，新 OFF 会先保存，旧 ON 随后反而覆盖用户最后的选择。现在 handler 在任何异步校验前同步登记每个 agent 的队列位置，agent 验证、保存和通知都在该位置内执行；失败不会污染后续操作，结束后仍清理队列。
+- 新增确定性 fake API 回归，旧实现返回 ultracode=true（预期 false）而失败，修复后通过；所有 Reload helper 都 mock，未调用真实 CLI。局部 `server/contribute.test.ts`、`server/notifier.test.ts`、`server/service.test.ts` 通过，typecheck 和 diff-check 通过。
