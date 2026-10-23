@@ -71,6 +71,15 @@ export class Notifier {
     this.persist();
   }
 
+  /** Drops entries whose id starts with `prefix` and that were never attempted; returns how many. */
+  removeUnsent(prefix: string): number {
+    const before = this.entries.length;
+    this.entries = this.entries.filter((entry) => !(entry.id.startsWith(prefix) && entry.attempts === 0));
+    const removed = before - this.entries.length;
+    if (removed > 0) this.persist();
+    return removed;
+  }
+
   pendingFor(agentId: string): number {
     return this.entries.filter((entry) => entry.agentId === agentId).length;
   }

@@ -21,7 +21,7 @@ paseo plugin install 'git:https://github.com/CM-BF/open-paseo-plugins.git:plugin
 
 先在目标 agent 中输入 `/dynamic-workflows`，打开 **Enable workflow tools for this agent**。选择保存在 daemon 上，刷新界面后仍有效。改动开关后从 agent 菜单 **Reload**，工具列表和 MCP instructions 才会刷新（Codex 0.154 不处理工具列表变更通知；Claude 的刷新未实测）。然后对 agent 说“用 workflow 做……”或在消息里写 `ultracode`（这些就是 opt-in，工具描述里写了规则）。agent 会先调 `workflow_reference` 读参考，再调 `workflow` 启动；工具立即返回 run id、脚本路径和运行目录，agent 结束这一轮，等通知到来。
 
-**Ultracode**：同一面板的第二个开关，按 agent 保存。开启后 workflow 成为常驻 opt-in，agent 以最完整、最可靠的结果为目标而不是成本：每个实质任务都开 workflow，每个阶段一个 workflow，每条发现由独立 agent 多票核实，跑完整性检查和独立汇总。Paseo 无法像 Claude Code 那样每轮注入提醒，所以模式写在 MCP instructions 和工具描述里（Reload 后生效），并在 reference 第一行、每次启动结果和每条完成通知里重申。Claude 的 MCP 工具默认被 tool search 延迟加载，`workflow` 工具带 `anthropic/alwaysLoad`，开启的 agent 才会一直看到它的描述。
+**Ultracode**：同一面板的第二个开关，按 agent 保存。开启后 workflow 成为常驻 opt-in，agent 以最完整、最可靠的结果为目标而不是成本：每个实质任务都开 workflow，每个阶段一个 workflow，每条发现由独立 agent 多票核实，跑完整性检查和独立汇总。Paseo 无法像 Claude Code 那样每轮注入提醒，所以切换开关时插件给该 agent 发一条简短消息（空闲时投递，投递前切回则撤销，对应 Claude Code 的进入/退出提醒），模式也写在 MCP instructions 和工具描述里（Reload 后生效），并在 reference 第一行、每次启动结果和每条完成通知里重申。实测 Paseo 里的 Codex 0.160.1（gpt-6-luna、gpt-6-astra）把 MCP 工具藏在 tool search 后面，模型一开始看不到 workflow 工具说明，所以对 Codex 而言这条消息才是 Ultracode 生效的途径。Claude 的 MCP 工具默认被 tool search 延迟加载，`workflow` 工具带 `anthropic/alwaysLoad`，开启的 agent 才会一直看到它的描述。
 
 **规模建议**（设置里的 Workflow size guideline）：unrestricted（默认）/ small（约 5 个 agent）/ medium（约 10）/ large（约 50），对应 Claude Code 的 Dynamic workflow size；Ultracode agent 不受它约束。已在运行的 shim 保持启动时读到的值，避免改设置时让所有会话的 prompt cache 失效；启动结果和通知里是当前值。
 

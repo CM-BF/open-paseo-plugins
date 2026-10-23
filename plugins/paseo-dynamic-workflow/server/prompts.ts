@@ -1,4 +1,5 @@
 import { SIZE_AGENTS, sizeLabel, type ToolGuidance, type WorkflowSize } from "../shared/guidance";
+import { NOTIFICATION_MARKER } from "../shared/notification";
 
 export const PROMPT_MARKER = "## Dynamic workflows (paseo-dynamic-workflow)";
 
@@ -68,6 +69,19 @@ export function referenceStatus(guidance: ToolGuidance): string {
     ? 'No size guideline: size each run to the request ("Scale").'
     : `Size guideline: ${guidance.size}, about ${SIZE_AGENTS[guidance.size]} agents per run, which the request can override ("Scale").`;
   return `> Status for you: Ultracode off. Launch only on an opt-in ("When you may launch one"). ${size}`;
+}
+
+/**
+ * Sent once when the user turns Ultracode on or off, like Claude Code's enter and exit reminders.
+ * Codex keeps MCP tool descriptions behind tool search, so without this message a Codex agent
+ * learns of the mode only after it already chose to look for workflow tools.
+ */
+export function ultracodeChangeText(on: boolean, workflowsOff = false): string {
+  const head = `${NOTIFICATION_MARKER} The user turned Ultracode ${on ? "on" : "off"} for you in Paseo. This message comes from the plugin, not from the user.`;
+  if (on) {
+    return `${head}\n<ultracode>on</ultracode>\n${ULTRACODE_NOTICE}\nYour workflow tools are in the dynamic_workflow MCP server: workflow, workflow_status, workflow_stop and workflow_reference. If they are not listed among your tools, find them with your tool search. There is nothing to do now: reply only "Ultracode on." and wait for the user's next request.`;
+  }
+  return `${head}\n<ultracode>off</ultracode>\n${workflowsOff ? "Workflows are also turned off for you: do not launch any." : 'Workflows again need the user\'s opt-in for each request ("use a workflow", or the word "ultracode" in a message).'} Reply only "Ultracode off." and wait for the user's next request.`;
 }
 
 /** From this many launches since the user's last message, ask the agent to check in before the next. */

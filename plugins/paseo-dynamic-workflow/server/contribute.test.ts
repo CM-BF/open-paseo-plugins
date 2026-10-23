@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -131,4 +131,29 @@ it("does not persist a toggle whose agent refresh completes after shutdown", asy
   await f.dispose();
   release();
   await rejected;
+});
+
+it("tells the agent once when Ultracode changes, and cancels an undelivered message when the switch flips back", async () => {
+  // A busy agent keeps its messages in the outbox, so the test can read them.
+  const agent = { provider: "codex", archivedAt: null, labels: {}, status: "running" };
+  const api = { agents: { ref: () => ({ refresh: async () => ({ agent }) }) } } as unknown as PaseoApi;
+  const f = await fixture(api);
+  const outbox = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return JSON.parse(await readFile(f.paths.outbox, "utf8").catch(() => '{"entries":[]}')).entries as Array<{ id: string; agentId: string; text: string }>;
+  };
+  expect(await f.invoke(setAgentAccessRpc.name, { agentId: "u", ultracode: true })).toMatchObject({ enabled: true, ultracode: true });
+  let entries = await outbox();
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({ agentId: "u", id: expect.stringMatching(/^ultracode-u-/) });
+  expect(entries[0]!.text).toMatch(/^\[paseo-dynamic-workflow\] The user turned Ultracode on for you/);
+  expect(entries[0]!.text).toContain("find them with your tool search");
+  // Flipped back before delivery: the agent was never told, so nothing is sent.
+  await f.invoke(setAgentAccessRpc.name, { agentId: "u", ultracode: false });
+  expect(await outbox()).toEqual([]);
+  // Enabling workflows alone sends nothing.
+  await f.invoke(setAgentAccessRpc.name, { agentId: "u", enabled: true });
+  expect(await outbox()).toEqual([]);
+  await f.invoke(setAgentAccessRpc.name, { agentId: "u", ultracode: true });
+  expect((await outbox()).map((entry) => entry.text.split("\n")[0])).toEqual([expect.stringContaining("turned Ultracode on")]);
 });
