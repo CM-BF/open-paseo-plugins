@@ -79,7 +79,7 @@ export function referenceStatus(guidance: ToolGuidance): string {
 export function ultracodeChangeText(on: boolean, workflowsOff = false): string {
   const head = `${NOTIFICATION_MARKER} The user turned Ultracode ${on ? "on" : "off"} for you in Paseo. This message comes from the plugin, not from the user.`;
   if (on) {
-    return `${head}\n<ultracode>on</ultracode>\n${ULTRACODE_NOTICE}\nYour workflow tools are in the dynamic_workflow MCP server: workflow, workflow_status, workflow_stop and workflow_reference. If they are not listed among your tools, find them with your tool search. There is nothing to do now: reply only "Ultracode on." and wait for the user's next request.`;
+    return `${head}\n<ultracode>on</ultracode>\n${ULTRACODE_NOTICE}\nYour workflow tools are in the dynamic_workflow MCP server: workflow, workflow_status, workflow_stop and workflow_reference. If they are not listed among your tools, find them with your tool search; if they are not there either, your session started before workflows were turned on, so ask the user to reload you (from this agent's menu or its Dynamic workflows panel) instead of doing the work without them. There is nothing to do now: reply only "Ultracode on." and wait for the user's next request.`;
   }
   return `${head}\n<ultracode>off</ultracode>\n${workflowsOff ? "Workflows are also turned off for you: do not launch any." : 'Workflows again need the user\'s opt-in for each request ("use a workflow", or the word "ultracode" in a message).'} Reply only "Ultracode off." and wait for the user's next request.`;
 }

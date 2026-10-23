@@ -1,6 +1,6 @@
 import { mkdir, readFile } from "node:fs/promises";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { getAgentAccessRpc, getCallRpc, getRunRpc, listRunsRpc, serviceStatusRpc, setAgentAccessRpc, skipCallRpc, stopRunRpc, transcriptRpc } from "../shared/contracts";
+import { getAgentAccessRpc, getCallRpc, getRunRpc, listRunsRpc, reloadAgentRpc, serviceStatusRpc, setAgentAccessRpc, skipCallRpc, stopRunRpc, transcriptRpc } from "../shared/contracts";
 import { CHILD_ENV, ENABLE_ENV, LABEL_RUN, PLUGIN_VERSION } from "../shared/ids";
 import { DEFAULT_PREFERENCES, type Preferences, preferences } from "../shared/settings";
 import { AgentAccessStore } from "./agent-access";
@@ -12,6 +12,7 @@ import { defaultStateDir, statePaths } from "./paths";
 import { writeScripts } from "./scripts";
 import { transcriptEntries } from "./transcript";
 import { ServiceError, WorkflowService } from "./service";
+import { reloadAgent } from "./reload";
 import { ultracodeChangeText } from "./prompts";
 import { describeError, log, unref, writeAtomically } from "./util";
 import { compactRunDetail } from "./views";
@@ -179,6 +180,15 @@ export function contributeServer(server: PluginServerContext, options: Contribut
       await service.refreshNotifications(input.agentId);
     }
     return { ...current, enabled: access.enabled(input.agentId), ultracode: isUltracode };
+  });
+
+  server.handle(reloadAgentRpc, async (input, context) => {
+    const current = await agentAccess(input.agentId, context);
+    if (current.isWorkflowChild) throw new ServiceError("recursive_workflow", "Workflow children are not reloaded from this panel.");
+    const fresh = await context.paseo.agents.ref(input.agentId).refresh();
+    const busy = fresh?.agent.status === "running" || fresh?.agent.status === "initializing" || Boolean(fresh?.agent.activeTurn);
+    if (busy) return { reloaded: false, message: "The agent is working; reload it when it is idle, from this panel or its menu." };
+    return reloadAgent(input.agentId);
   });
 
   server.handle(listRunsRpc, async (input, context) => {

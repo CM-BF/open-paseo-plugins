@@ -25,6 +25,13 @@ export const setAgentAccessRpc = defineRpc({
   output: AgentAccessSchema,
 });
 
+/** Restarts an idle agent so its MCP tool list and instructions match its switches. */
+export const reloadAgentRpc = defineRpc({
+  name: "agent-access.reload",
+  input: z.object({ agentId: z.string().min(1) }),
+  output: z.object({ reloaded: z.boolean(), message: z.string() }),
+});
+
 export const listRunsRpc = defineRpc({
   name: "runs.list",
   input: z.object({ agentId: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }),

@@ -3,7 +3,7 @@ import { copyText, useToast } from "@getpaseo/plugin/client/react-native";
 import { SettingsCard, SettingsSwitch } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pressable, Text, View } from "react-native";
-import { getAgentAccessRpc, setAgentAccessRpc } from "../shared/contracts";
+import { getAgentAccessRpc, reloadAgentRpc, setAgentAccessRpc } from "../shared/contracts";
 import { PLUGIN_ID } from "../shared/ids";
 import { errorMessage } from "./format";
 import type { Styles } from "./styles";
@@ -17,6 +17,12 @@ export function AgentAccess({ agentId, styles }: { agentId: string; styles: Styl
   // Versioned: a reload keeps query state, and older cached results lack the Ultracode flag.
   const queryKey = [PLUGIN_ID, "agent-access", 2, agentId];
   const access = useQuery({ queryKey, queryFn: () => getAccess({ agentId }) });
+  const reloadAgent = useRpc(reloadAgentRpc);
+  const reload = useMutation({
+    mutationFn: () => reloadAgent({ agentId }),
+    onSuccess: (result) => (result.reloaded ? toast.show(result.message) : toast.error(result.message)),
+    onError: (error) => toast.error(`Could not reload: ${errorMessage(error)}`),
+  });
   const update = useMutation({
     mutationFn: (change: { enabled?: boolean; ultracode?: boolean }) => setAccess({ agentId, ...change }),
     onMutate: () => queryClient.cancelQueries({ queryKey }),
@@ -70,6 +76,11 @@ export function AgentAccess({ agentId, styles }: { agentId: string; styles: Styl
                 : "Include this reference command in your next prompt so the agent can learn how to run workflows. After changing Ultracode, include it again: its first line states the mode."
               : "Enable to get the workflow reference command for this agent."}
         </Text>
+      ) : null}
+      {mcp && !value?.isWorkflowChild ? (
+        <Pressable onPress={() => reload.mutate()} disabled={reload.isPending} accessibilityRole="button" accessibilityLabel="Reload this agent now">
+          <Text style={styles.link}>{reload.isPending ? "Reloading…" : "Reload agent now"}</Text>
+        </Pressable>
       ) : null}
       {value?.enabled && !value.isWorkflowChild && !mcp ? (
         <View style={styles.panelCard}>

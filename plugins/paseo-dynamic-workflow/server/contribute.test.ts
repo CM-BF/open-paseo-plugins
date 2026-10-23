@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { afterEach, expect, it, vi } from "vitest";
-import { getAgentAccessRpc, serviceStatusRpc, setAgentAccessRpc } from "../shared/contracts";
+import { getAgentAccessRpc, reloadAgentRpc, serviceStatusRpc, setAgentAccessRpc } from "../shared/contracts";
 import { BINDING_ENV, CHILD_ENV, ENABLE_ENV, LABEL_RUN } from "../shared/ids";
 import { DEFAULT_PREFERENCES } from "../shared/settings";
 import { contributeServer } from "./contribute";
@@ -182,4 +182,11 @@ it("leaves guidance.json alone when the stored settings are invalid", async () =
   disposals.push(dispose);
   await status!({}, { paseo: {} as PaseoApi });
   await expect(readFile(statePaths(root).guidance, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("does not reload an agent that is working", async () => {
+  const agent = { provider: "codex", archivedAt: null, labels: {}, status: "running" };
+  const api = { agents: { ref: () => ({ refresh: async () => ({ agent }) }) } } as unknown as PaseoApi;
+  const f = await fixture(api);
+  expect(await f.invoke(reloadAgentRpc.name, { agentId: "u" })).toMatchObject({ reloaded: false, message: expect.stringContaining("working") });
 });
