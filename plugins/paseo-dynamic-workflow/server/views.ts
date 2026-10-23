@@ -195,10 +195,11 @@ export function notificationText(record: RunRecord, state: StatePaths, guidance:
   } else {
     if (record.error) parts.push(`<error>${escapeTags(truncate(record.error, 4000))}</error>`);
     parts.push(`<recovery>Resume with ${resumeHint(record)}: completed agent() calls return their cached results.</recovery>`);
-    const cut = record.calls.filter((call) => ["skipped", "running", "permission", "queued"].includes(call.status));
+    // Only calls the stop cut off; a call the user skipped stays skipped.
+    const cut = record.calls.filter((call) => ["running", "permission", "queued", "starting"].includes(call.status) || (call.status === "skipped" && call.error !== "skipped by the user"));
     if (record.status === "interrupted" && cut.length > 0) {
       const reused = record.calls.filter((call) => call.status === "completed" || call.status === "cached").length;
-      const shown = cut.slice(0, 30).map((call) => `${truncate(call.label, 120)}: ${call.agentId ? `agent ${call.agentId}` : "not started"}`);
+      const shown = cut.slice(0, 30).map((call) => `${escapeTags(truncate(call.label, 120))}: ${call.agentId ? `agent ${call.agentId}` : "not started"}`);
       if (cut.length > shown.length) shown.push(`${cut.length - shown.length} more in the run snapshot.`);
       parts.push([
         "<interrupted-agents>",
@@ -220,8 +221,8 @@ export function notificationText(record: RunRecord, state: StatePaths, guidance:
   if (worktrees.length > 0) {
     parts.push("<worktrees>");
     for (const call of worktrees) parts.push(call.pendingBranch
-      ? `${call.label}: branch ${call.pendingBranch}; child creation/cleanup is unresolved (agent ${call.agentId ?? "unknown"}); inspect the run snapshot before merging or deleting it.`
-      : `${call.label}: branch ${call.worktree?.branch} at ${call.worktree?.path}${call.worktree?.changed === null ? " (cleanup/change status unknown; inspect before merging or deleting)" : ""}`);
+      ? `${escapeTags(call.label)}: branch ${call.pendingBranch}; child creation/cleanup is unresolved (agent ${call.agentId ?? "unknown"}); inspect the run snapshot before merging or deleting it.`
+      : `${escapeTags(call.label)}: branch ${call.worktree?.branch} at ${call.worktree?.path}${call.worktree?.changed === null ? " (cleanup/change status unknown; inspect before merging or deleting)" : ""}`);
     parts.push("</worktrees>");
   }
   parts.push(
@@ -256,5 +257,5 @@ function firstLine(text: string): string {
 function resumeHint(record: RunRecord): string {
   const args = record.args;
   const path = `'${record.scriptPath.replaceAll("'", "'\\''")}'`;
-  return `workflow(${JSON.stringify({ scriptPath: record.scriptPath, resumeFromRunId: record.runId, ...(args === undefined ? {} : { args }) })}) or paseo-workflow run --script-path ${path} --resume ${record.runId} (inherits saved args)`;
+  return `workflow(${escapeJsonTags(JSON.stringify({ scriptPath: record.scriptPath, resumeFromRunId: record.runId, ...(args === undefined ? {} : { args }) }))}) or paseo-workflow run --script-path ${escapeTags(path)} --resume ${record.runId} (inherits saved args)`;
 }

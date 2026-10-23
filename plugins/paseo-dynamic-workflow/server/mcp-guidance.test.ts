@@ -14,7 +14,7 @@ afterEach(async () => { for (const dispose of disposals.splice(0).reverse()) awa
 
 interface Message { id?: number; method?: string; result?: { tools?: unknown[]; instructions?: string } }
 
-async function shim(state: { enabled: string[]; ultracode?: string[]; size?: string }) {
+async function shim(state: { enabled: string[]; ultracode?: string[]; size?: string; rawGuidance?: string }) {
   const root = await mkdtemp(join(tmpdir(), "dwf-mcp-guidance-"));
   disposals.push(() => rm(root, { recursive: true, force: true }));
   await writeFile(join(root, "mcp.mjs"), renderMcp());
@@ -24,6 +24,7 @@ async function shim(state: { enabled: string[]; ultracode?: string[]; size?: str
     next.size ? writeAtomically(join(root, "guidance.json"), JSON.stringify({ version: 1, workflowSize: next.size }), 0o600) : Promise.resolve(),
   ]);
   await write(state);
+  if (state.rawGuidance !== undefined) await writeAtomically(join(root, "guidance.json"), state.rawGuidance, 0o600);
   const child = spawn(process.execPath, [join(root, "mcp.mjs")], {
     env: { ...process.env, DYNAMIC_WORKFLOW_HOME: root, [BINDING_ENV]: "nonce" },
     stdio: ["pipe", "pipe", "pipe"],
@@ -36,7 +37,8 @@ async function shim(state: { enabled: string[]; ultracode?: string[]; size?: str
   const rpc = async (method: string, params?: unknown) => {
     const requestId = ++id;
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params })}\n`);
-    await vi.waitFor(() => expect(messages.some((message) => message.id === requestId)).toBe(true));
+    // A new node process can take seconds to start on a loaded machine.
+    await vi.waitFor(() => expect(messages.some((message) => message.id === requestId)).toBe(true), { timeout: 15_000 });
     return messages.find((message) => message.id === requestId)!.result!;
   };
   const init = await rpc("initialize", { protocolVersion: "2025-06-18" });
@@ -65,19 +67,28 @@ it("serves the same per-agent catalog as the bridge, with instructions only for 
 it("announces an Ultracode toggle, but keeps the size guideline it started with", async () => {
   const f = await shim({ enabled: ["agent-a"], size: "medium" });
   await f.rpc("tools/list");
+  // An agent enabled at startup may get one announcement on initialized; count from a settled baseline.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const base = f.notifications();
   await f.write({ enabled: ["agent-a"], ultracode: ["agent-a"] });
-  await vi.waitFor(() => expect(f.notifications()).toBe(1));
+  await vi.waitFor(() => expect(f.notifications()).toBe(base + 1), { timeout: 10_000 });
   expect(JSON.stringify((await f.rpc("tools/list")).tools)).toContain("Ultracode is ON for this agent");
   await f.write({ enabled: ["agent-a"], size: "large" });
-  await vi.waitFor(() => expect(f.notifications()).toBe(2));
+  await vi.waitFor(() => expect(f.notifications()).toBe(base + 2), { timeout: 10_000 });
   // A settings change reaches running agents through launch results and notifications, not by
   // rewriting their tool list (and prompt cache).
   await f.write({ enabled: ["agent-a"], size: "small" });
   await new Promise((resolve) => setTimeout(resolve, 300));
-  expect(f.notifications()).toBe(2);
+  expect(f.notifications()).toBe(base + 2);
   expect(JSON.stringify((await f.rpc("tools/list")).tools)).toContain("Size guideline (set by the user): medium");
   const fresh = await shim({ enabled: ["agent-a"], size: "small" });
   expect(JSON.stringify((await fresh.rpc("tools/list")).tools)).toContain("Size guideline (set by the user): small");
+});
+
+it("falls back to the default size when guidance.json holds null", async () => {
+  const f = await shim({ enabled: ["agent-a"], rawGuidance: "null" });
+  expect((await f.rpc("tools/list")).tools).toEqual(toolDefinitions({ ultracode: false, size: "unrestricted" }));
+  expect(f.init.instructions).toBeTruthy();
 });
 
 it("asks Claude Code to load the workflow description instead of deferring it, and keeps the spec small", () => {

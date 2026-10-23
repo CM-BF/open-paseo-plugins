@@ -191,6 +191,7 @@ export class WorkflowService {
     let args = input.args;
     let guidance = this.guidance(callerId);
     let inheritedGuidance = false;
+    let droppedUltracode = false;
     if (input.resumeFromRunId) {
       const previous = input.resumeFromRunId.trim();
       if (!RUN_ID_PATTERN.test(previous)) throw new ServiceError("invalid_request", `resumeFromRunId "${previous}" is not a run id (wf_...).`);
@@ -202,10 +203,13 @@ export class WorkflowService {
       this.requireOwner(record, callerId);
       if (!Object.prototype.hasOwnProperty.call(input, "args")) args = record.args;
       // Resume means the same plan: scripts that scale with `guidance` must see what the first run saw.
-      if (record.guidance) {
+      // Turning Ultracode off is a request to spend less, so it wins over cache reuse.
+      const turnedOff = record.guidance?.ultracode === true && guidance !== null && !guidance.ultracode;
+      if (record.guidance && !turnedOff) {
         inheritedGuidance = guidance === null || guidance.ultracode !== record.guidance.ultracode || guidance.size !== record.guidance.size;
         guidance = { ultracode: record.guidance.ultracode, size: isWorkflowSize(record.guidance.size) ? record.guidance.size : "unrestricted" };
       }
+      if (turnedOff) droppedUltracode = true;
       cache = await ResumeCache.load(runPaths(this.paths, previous));
       resumedFrom = previous;
     }
@@ -283,7 +287,8 @@ export class WorkflowService {
 
     const lines = [
       `Workflow launched in background. Run ID: ${runId}`,
-      `Summary: ${parsed.meta.description}`,
+      `Summary: ${parsed.meta.description.replace(/[\p{Cc}\p{Cf}\u2028\u2029<>]+/gu, " ").slice(0, 400)}`,
+      ...(source.kind === "name" ? [`Named workflow "${input.name?.trim()}" resolved to ${source.path ?? "the built-in that ships with the plugin"}.`] : []),
       `Script file: ${record.scriptPath}`,
       `Run files: ${files.paths.dir} (script.js, run.json, journal.jsonl, result.json)`,
     ];
@@ -293,6 +298,7 @@ export class WorkflowService {
     lines.push("A <task-notification> message arrives when the run ends; end your turn now unless other work does not depend on it. workflow_status reports progress.");
     const current = this.guidance(callerId);
     if (current) lines.push(guidanceReminder(current));
+    if (droppedUltracode) lines.push(`The user turned Ultracode off after ${resumedFrom}, so this resume runs without it; scripts that scale with \`guidance\` start fewer agents and their changed calls miss the cache.`);
     if (inheritedGuidance && guidance) lines.push(`This resume keeps the guidance of ${resumedFrom} (Ultracode ${guidance.ultracode ? "on" : "off"}, size ${guidance.size}) so its cached results stay valid; launch without resumeFromRunId to use the current setting.`);
     if ((record.chain ?? 1) >= CHAIN_CHECK_IN) lines.push(chainCheckIn(record.chain ?? 1));
     return lines.join("\n");
@@ -337,6 +343,19 @@ export class WorkflowService {
     return statusText(record, this.paths);
   }
 
+  /**
+   * Re-renders queued run notifications with the current guidance, after the user changed
+   * Ultracode or the size guideline: an old "Ultracode is on, launch the next phase" must not
+   * arrive after the user turned it off.
+   */
+  async refreshNotifications(agentId?: string): Promise<void> {
+    for (const id of this.notifier.unsentIds(agentId)) {
+      if (!id.startsWith("notify-")) continue;
+      const record = await this.recordFor(id.slice("notify-".length)).catch(() => null);
+      if (record) this.notifier.updatePending(id, this.notification(record));
+    }
+  }
+
   private notification(record: RunRecord): string {
     return notificationText(record, this.paths, this.guidance(record.parentAgentId));
   }
@@ -351,9 +370,10 @@ export class WorkflowService {
       // Without the daemon the saved project workflows are unknown; built-ins still apply.
     }
     const dirs = cwd ? await workflowDirs(cwd) : [];
+    const note = cwd ? undefined : "Saved workflows are not listed: the plugin could not reach Paseo to find your working directory. Built-ins are complete; retry for the saved ones.";
     const settings = this.settings();
     const limits = `> Your limits: ${concurrency(settings)} agents at once per run, at most ${settings.maxAgentsPerRun} agents per run.`;
-    return [`${referenceStatus(guidance)}\n${limits}`, REFERENCE.trimEnd(), catalogText(await listWorkflows(dirs), this.paths.builtins)].join("\n\n") + "\n";
+    return [`${referenceStatus(guidance)}\n${limits}`, REFERENCE.trimEnd(), catalogText(await listWorkflows(dirs), this.paths.builtins, note)].join("\n\n") + "\n";
   }
 
   async list(agentId: string | undefined, limit: number): Promise<RunSummary[]> {

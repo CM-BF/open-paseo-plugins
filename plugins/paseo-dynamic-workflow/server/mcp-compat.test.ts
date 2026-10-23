@@ -33,7 +33,8 @@ async function start(program: "current" | "fa7e41f") {
   const rpc = async (method: string, params?: unknown) => {
     const requestId = ++id;
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params })}\n`);
-    await vi.waitFor(() => expect(messages.some((message) => message.id === requestId)).toBe(true));
+    // A new node process can take seconds to start on a loaded machine.
+    await vi.waitFor(() => expect(messages.some((message) => message.id === requestId)).toBe(true), { timeout: 15_000 });
     return messages.find((message) => message.id === requestId)!.result!;
   };
   await rpc("initialize", { protocolVersion: "2025-06-18" });

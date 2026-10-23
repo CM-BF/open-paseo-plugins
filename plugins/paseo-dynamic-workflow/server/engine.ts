@@ -516,13 +516,14 @@ function normalizeOptions(raw: Record<string, unknown>): AgentOptions {
     return value;
   };
   const label = string("label");
-  if (label) options.label = cleanLabel(label);
+  const cleaned = label ? cleanLabel(label) : "";
+  if (cleaned) options.label = cleaned;
   const timeout = raw.timeoutMinutes;
   if (timeout !== undefined && timeout !== null) {
     if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0 || timeout > 24 * 60) {
       throw new TypeError("agent() opts.timeoutMinutes must be a number of minutes from 0 (exclusive) to 1440");
     }
-    options.timeoutMs = Math.round(timeout * 60_000);
+    options.timeoutMs = Math.max(1, Math.round(timeout * 60_000));
   }
   const model = string("model");
   if (model) options.model = model;
@@ -565,11 +566,11 @@ function normalizeOptions(raw: Record<string, unknown>): AgentOptions {
  */
 export function cleanLabel(text: string, max = 120): string {
   const cleaned = text.replace(/[\p{Cc}\p{Cf}\p{Co}\u2028\u2029<>]+/gu, " ").replace(/\s+/g, " ").trim();
-  return truncate(cleaned || "agent", max);
+  return cleaned ? truncate(cleaned, max) : "";
 }
 
 function defaultLabel(prompt: string): string {
-  return cleanLabel(prompt.trim().split("\n")[0] ?? "agent", 48);
+  return cleanLabel(prompt.trim().split("\n")[0] ?? "", 48) || "agent";
 }
 
 /** 0 means no limit. */

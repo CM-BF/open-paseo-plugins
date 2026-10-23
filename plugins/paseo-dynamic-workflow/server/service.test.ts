@@ -116,18 +116,39 @@ it("states the caller's guidance, keeps the first run's guidance on resume, and 
   await vi.waitFor(async () => expect((await readRecord(f.paths, id))?.status).toBe("completed"));
   expect(JSON.parse(await readFile(join(f.paths.runs, id, "result.json"), "utf8"))).toEqual({ ultracode: true, size: "unrestricted" });
 
+  // Turning Ultracode off wins over cache reuse.
   guidance.current = { ultracode: false, size: "small" };
-  const resumed = await f.service.launch("parent", { script: meta() + "return guidance", resumeFromRunId: id });
-  expect(resumed).toContain("Ultracode is off for you");
-  expect(resumed).toContain(`This resume keeps the guidance of ${id} (Ultracode on, size unrestricted)`);
+  const dropped = await f.service.launch("parent", { script: meta() + "return guidance", resumeFromRunId: id });
+  expect(dropped).toContain("Ultracode is off for you");
+  expect(dropped).toContain(`The user turned Ultracode off after ${id}`);
+  const droppedId = runId(dropped);
+  await vi.waitFor(async () => expect((await readRecord(f.paths, droppedId))?.status).toBe("completed"));
+  expect(JSON.parse(await readFile(join(f.paths.runs, droppedId, "result.json"), "utf8"))).toEqual({ ultracode: false, size: "small" });
+
+  // Any other change keeps the first run's guidance, so its cached results stay valid.
+  guidance.current = { ultracode: true, size: "unrestricted" };
+  const resumed = await f.service.launch("parent", { script: meta() + "return guidance", resumeFromRunId: droppedId });
+  expect(resumed).toContain("Ultracode is on for you");
+  expect(resumed).toContain(`This resume keeps the guidance of ${droppedId} (Ultracode off, size small)`);
   const resumedId = runId(resumed);
   await vi.waitFor(async () => expect((await readRecord(f.paths, resumedId))?.status).toBe("completed"));
-  expect(JSON.parse(await readFile(join(f.paths.runs, resumedId, "result.json"), "utf8"))).toEqual({ ultracode: true, size: "unrestricted" });
+  expect(JSON.parse(await readFile(join(f.paths.runs, resumedId, "result.json"), "utf8"))).toEqual({ ultracode: false, size: "small" });
 
-  const third = await f.service.launch("parent", { script: meta() + "return 3" });
-  expect(third).not.toContain("you launched since the user's last message");
   const fourth = await f.service.launch("parent", { script: meta() + "return 4" });
   expect(fourth).toContain("This is run 4 you launched since the user's last message");
   f.timeline.refetch.mockResolvedValue(userMessage("go on", 2) as never);
   expect(await f.service.launch("parent", { script: meta() + "return 5" })).not.toContain("you launched since");
+});
+
+it("re-renders a queued notification when the user changes Ultracode before it is delivered", async () => {
+  const guidance: { current: { ultracode: boolean; size: "unrestricted" | "small" | "medium" | "large" } } = { current: { ultracode: true, size: "unrestricted" } };
+  const f = await fixture(guidance);
+  // The parent stays mid-turn, so the notification waits in the outbox.
+  const id = runId(await f.service.launch("parent", { script: meta() + "return 1" }));
+  const queued = async () => JSON.parse(await readFile(f.paths.outbox, "utf8")).entries.find((entry: { id: string }) => entry.id === `notify-${id}`)?.text as string | undefined;
+  await vi.waitFor(async () => expect(await queued()).toContain("launch the next phase's workflow"));
+  guidance.current = { ultracode: false, size: "unrestricted" };
+  await f.service.refreshNotifications("parent");
+  await vi.waitFor(async () => expect(await queued()).toContain("Ultracode is off for you"));
+  expect(await queued()).not.toContain("launch the next phase");
 });

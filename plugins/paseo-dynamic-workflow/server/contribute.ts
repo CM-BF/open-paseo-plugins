@@ -37,6 +37,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   // New MCP shims read the size guideline from disk once per process. Write it only from valid
   // settings and only when it changes, so a bad read or a restart does not touch the file.
   let guidanceWrites: Promise<void> = Promise.resolve();
+  let lastSize: Preferences["workflowSize"] | null = null;
   const writeGuidance = (size: Preferences["workflowSize"]) => {
     guidanceWrites = guidanceWrites.then(async () => {
       if (stopping) return;
@@ -48,7 +49,12 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   };
   const onSettings = (state: Awaited<ReturnType<typeof settingsHandle.read>>) => {
     applySettings(state);
-    if (state.status === "ready") writeGuidance(settings.workflowSize);
+    if (state.status === "ready") {
+      const changed = settings.workflowSize !== lastSize;
+      lastSize = settings.workflowSize;
+      writeGuidance(settings.workflowSize);
+      if (changed) void service.refreshNotifications().catch((error) => log(`could not refresh notifications: ${describeError(error)}`));
+    }
   };
   const removeSettingsListener = settingsHandle.subscribe(onSettings);
   void settingsHandle.read().then(onSettings, (error) => log(`could not read settings: ${describeError(error)}`));
@@ -168,7 +174,10 @@ export function contributeServer(server: PluginServerContext, options: Contribut
       ...(input.ultracode !== undefined ? { ultracode: input.ultracode } : {}),
     });
     const isUltracode = access.ultracode(input.agentId);
-    if (isUltracode !== wasUltracode) announceUltracode(input.agentId, isUltracode, !access.enabled(input.agentId));
+    if (isUltracode !== wasUltracode) {
+      announceUltracode(input.agentId, isUltracode, !access.enabled(input.agentId));
+      await service.refreshNotifications(input.agentId);
+    }
     return { ...current, enabled: access.enabled(input.agentId), ultracode: isUltracode };
   });
 

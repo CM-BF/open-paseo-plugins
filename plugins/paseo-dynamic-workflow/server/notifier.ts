@@ -80,6 +80,11 @@ export class Notifier {
     return removed;
   }
 
+  /** Ids of entries not yet attempted, for one agent or all. */
+  unsentIds(agentId?: string): string[] {
+    return this.entries.filter((entry) => entry.attempts === 0 && (agentId === undefined || entry.agentId === agentId)).map((entry) => entry.id);
+  }
+
   pendingFor(agentId: string): number {
     return this.entries.filter((entry) => entry.agentId === agentId).length;
   }

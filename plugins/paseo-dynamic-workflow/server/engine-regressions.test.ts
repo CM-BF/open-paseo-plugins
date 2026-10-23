@@ -249,6 +249,9 @@ return { ultracode: guidance.ultracode, size: guidance.size, threw }`;
     const runner = new FakeRunner((task) => ok(task.timeoutMs));
     const { result, state } = await runScript(`${meta()}return [await agent('a', { timeoutMinutes: 2 }), await agent('b'), await agent('c', { timeoutMinutes: 30 })]`, runner, { agentTimeoutMs: 10 * 60_000 });
     expect(result).toEqual([2 * 60_000, 10 * 60_000, 10 * 60_000]);
+    const unlimited = await runScript(`${meta()}return [await agent('a', { timeoutMinutes: 2 }), await agent('b'), await agent('c', { timeoutMinutes: 0.000001 })]`, runner);
+    expect(unlimited.result).toEqual([2 * 60_000, 0, 1]);
+    await cleanup(unlimited.state);
     let bad: unknown;
     try { await runScript(`${meta()}return await agent('a', { timeoutMinutes: -1 })`, runner).then((r) => { bad = r.record.error; return cleanup(r.state); }); } catch (error) { bad = error; }
     expect(String(bad)).toMatch(/timeoutMinutes/);

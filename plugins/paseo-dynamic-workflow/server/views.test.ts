@@ -106,4 +106,15 @@ describe("run views", () => {
     expect(text).toContain("This is run 4 you launched since the user's last message");
     expect(text).not.toContain("launch the next phase's workflow");
   });
+
+  it("lists only agents the stop cut off, and never asks for the next phase after an interruption", () => {
+    const userSkipped = { ...call("u1", "skipped"), error: "skipped by the user" };
+    const cut = { ...call("c1", "skipped"), error: "run interrupted" };
+    const run = { ...record([userSkipped, cut, call("q1", "queued")]), status: "interrupted" as const, endedAt: at, error: "The plugin stopped" };
+    const text = notificationText(run, state, { ultracode: true, size: "unrestricted" });
+    expect(text).toContain("2 agent(s) were cut off");
+    expect(text).not.toContain("Review u1");
+    expect(text).toContain("Review c1: agent child-c1");
+    expect(text).not.toContain("launch the next phase's workflow");
+  });
 });

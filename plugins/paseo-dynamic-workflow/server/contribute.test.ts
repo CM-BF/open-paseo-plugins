@@ -138,22 +138,48 @@ it("tells the agent once when Ultracode changes, and cancels an undelivered mess
   const agent = { provider: "codex", archivedAt: null, labels: {}, status: "running" };
   const api = { agents: { ref: () => ({ refresh: async () => ({ agent }) }) } } as unknown as PaseoApi;
   const f = await fixture(api);
-  const outbox = async () => {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    return JSON.parse(await readFile(f.paths.outbox, "utf8").catch(() => '{"entries":[]}')).entries as Array<{ id: string; agentId: string; text: string }>;
+  type Entry = { id: string; agentId: string; text: string };
+  const read = async () => JSON.parse(await readFile(f.paths.outbox, "utf8").catch(() => '{"entries":[]}')).entries as Entry[];
+  // The outbox is written in the background; wait for the expected count instead of sleeping.
+  const outbox = async (count: number) => {
+    let entries: Entry[] = [];
+    await vi.waitFor(async () => { entries = await read(); expect(entries).toHaveLength(count); }, { timeout: 5_000 });
+    return entries;
   };
   expect(await f.invoke(setAgentAccessRpc.name, { agentId: "u", ultracode: true })).toMatchObject({ enabled: true, ultracode: true });
-  let entries = await outbox();
-  expect(entries).toHaveLength(1);
+  const entries = await outbox(1);
   expect(entries[0]).toMatchObject({ agentId: "u", id: expect.stringMatching(/^ultracode-u-/) });
   expect(entries[0]!.text).toMatch(/^\[paseo-dynamic-workflow\] The user turned Ultracode on for you/);
   expect(entries[0]!.text).toContain("find them with your tool search");
   // Flipped back before delivery: the agent was never told, so nothing is sent.
   await f.invoke(setAgentAccessRpc.name, { agentId: "u", ultracode: false });
-  expect(await outbox()).toEqual([]);
+  await outbox(0);
   // Enabling workflows alone sends nothing.
   await f.invoke(setAgentAccessRpc.name, { agentId: "u", enabled: true });
-  expect(await outbox()).toEqual([]);
+  await outbox(0);
   await f.invoke(setAgentAccessRpc.name, { agentId: "u", ultracode: true });
-  expect((await outbox()).map((entry) => entry.text.split("\n")[0])).toEqual([expect.stringContaining("turned Ultracode on")]);
+  expect((await outbox(1)).map((entry) => entry.text.split("\n")[0])).toEqual([expect.stringContaining("turned Ultracode on")]);
+});
+
+it("refuses Ultracode for workflow children and empty changes, and writes guidance only from valid settings", async () => {
+  const { api } = apiFixture();
+  const f = await fixture(api);
+  await expect(f.invoke(setAgentAccessRpc.name, { agentId: "child", ultracode: true })).rejects.toThrow("children cannot enable");
+  await expect(f.invoke(setAgentAccessRpc.name, { agentId: "a" })).rejects.toThrow("Set enabled, ultracode or both");
+  expect(await f.invoke(getAgentAccessRpc.name, { agentId: "child" })).toMatchObject({ enabled: false, ultracode: false });
+  await vi.waitFor(async () => expect(JSON.parse(await readFile(f.paths.guidance, "utf8"))).toEqual({ version: 1, workflowSize: "unrestricted" }));
+});
+
+it("leaves guidance.json alone when the stored settings are invalid", async () => {
+  const root = await mkdtemp(join(tmpdir(), "dwf-contribute-invalid-"));
+  disposals.push(() => rm(root, { recursive: true, force: true }));
+  const host = {
+    registerSettings: () => ({ read: async () => ({ status: "invalid", error: "bad" }), subscribe: () => () => {} }),
+    before: () => {}, on: () => {}, handle: (contract: { name: string }, handler: RpcHandler) => { if (contract.name === serviceStatusRpc.name) status = handler; },
+  };
+  let status: RpcHandler | undefined;
+  const dispose = contributeServer(host as unknown as PluginServerContext, { stateDir: root });
+  disposals.push(dispose);
+  await status!({}, { paseo: {} as PaseoApi });
+  await expect(readFile(statePaths(root).guidance, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 });

@@ -248,9 +248,9 @@ async function accessForAgent() {
 let sizeOnce = null;
 function processSize() {
   sizeOnce ??= readJson('guidance.json').then(
-    (guidance) => (guidance.version === 1 && Object.hasOwn(SIZE_TEXT, guidance.workflowSize) ? guidance.workflowSize : DEFAULT_SIZE),
+    (guidance) => (guidance && guidance.version === 1 && Object.hasOwn(SIZE_TEXT, guidance.workflowSize) ? guidance.workflowSize : DEFAULT_SIZE),
     () => DEFAULT_SIZE,
-  );
+  ).catch(() => DEFAULT_SIZE);
   return sizeOnce;
 }
 function toolsFor(access) {
@@ -498,5 +498,6 @@ export async function writeScripts(paths: StatePaths, node: NodeRuntime = curren
   await writeIfChanged(paths.cli, renderShim(paths.root, "cli.mjs", node), 0o700);
   await writeIfChanged(paths.reference, `${STATIC_REFERENCE_NOTE}\n\n${REFERENCE}`, 0o600);
   await mkdir(paths.builtins, { recursive: true, mode: 0o700 });
-  for (const [name, script] of Object.entries(BUILTIN_WORKFLOWS)) await writeIfChanged(join(paths.builtins, `${name}.js`), script, 0o600);
+  // Read-only: they document the built-ins; to change one, copy it into a workflows directory.
+  for (const [name, script] of Object.entries(BUILTIN_WORKFLOWS)) await writeIfChanged(join(paths.builtins, `${name}.js`), script, 0o400);
 }

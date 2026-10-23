@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { BUILTIN_WORKFLOWS } from "./builtin-workflows";
 import { paseoHome } from "./paths";
-import { parseWorkflowScript } from "./script-parse";
+import { MAX_SCRIPT_CHARS, parseWorkflowScript } from "./script-parse";
 
 const execFileAsync = promisify(execFile);
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -43,23 +43,43 @@ export async function workflowDirs(cwd: string): Promise<string[]> {
   }
   const dirs: string[] = [];
   for (const root of roots) dirs.push(join(root, ".paseo", "workflows"), join(root, ".claude", "workflows"));
-  dirs.push(join(paseoHome(), "workflows"), join(homedir(), ".claude", "workflows"));
+  dirs.push(...userWorkflowDirs());
   return [...new Set(dirs)];
 }
 
-/** Saved files win over built-ins of the same name, so a user can replace a built-in; `builtin.<name>` skips them. */
+/** Only the user's own directories may replace a built-in: a checked-out repository cannot. */
+function userWorkflowDirs(): string[] {
+  return [join(paseoHome(), "workflows"), join(homedir(), ".claude", "workflows")];
+}
+
+function mayShadowBuiltin(dir: string): boolean {
+  return userWorkflowDirs().includes(dir);
+}
+
+/** A regular file of script size; never a FIFO, device or directory that would block or flood a read. */
+async function readScriptFile(path: string): Promise<string | null> {
+  const entry = await stat(path).catch(() => null);
+  if (!entry || !entry.isFile() || entry.size > MAX_SCRIPT_CHARS * 4) return null;
+  return readFile(path, "utf8").catch(() => null);
+}
+
+/**
+ * Saved files win over built-ins of the same name only from ~/.paseo/workflows or
+ * ~/.claude/workflows; `builtin.<name>` always runs the shipped one.
+ */
 export async function findNamedWorkflow(name: string, dirs: string[]): Promise<NamedWorkflow> {
   if (name.startsWith(BUILTIN_PREFIX)) {
     const bare = name.slice(BUILTIN_PREFIX.length);
     if (Object.hasOwn(BUILTIN_WORKFLOWS, bare)) return { script: BUILTIN_WORKFLOWS[bare]!, path: null };
     throw new UnknownWorkflowError(`There is no built-in workflow "${bare}". Built-ins: ${Object.keys(BUILTIN_WORKFLOWS).sort().join(", ")}`);
   }
+  const builtin = Object.hasOwn(BUILTIN_WORKFLOWS, name) ? BUILTIN_WORKFLOWS[name] : undefined;
   for (const dir of dirs) {
+    if (builtin !== undefined && !mayShadowBuiltin(dir)) continue;
     const path = join(dir, `${name}.js`);
-    const script = await readFile(path, "utf8").catch(() => null);
+    const script = await readScriptFile(path);
     if (script !== null) return { script, path };
   }
-  const builtin = Object.hasOwn(BUILTIN_WORKFLOWS, name) ? BUILTIN_WORKFLOWS[name] : undefined;
   if (builtin !== undefined) return { script: builtin, path: null };
   const available = (await listWorkflows(dirs)).map((entry) => entry.name);
   throw new UnknownWorkflowError(
@@ -75,9 +95,10 @@ export async function listWorkflows(dirs: string[]): Promise<CatalogEntry[]> {
     if (!isDir) continue;
     for (const file of (await readdir(dir).catch(() => [] as string[])).sort()) {
       const name = file.endsWith(".js") ? file.slice(0, -3) : "";
-      if (!isWorkflowName(name) || entries.has(name)) continue;
+      if (!isWorkflowName(name) || name.startsWith(BUILTIN_PREFIX) || entries.has(name)) continue;
+      if (Object.hasOwn(BUILTIN_WORKFLOWS, name) && !mayShadowBuiltin(dir)) continue;
       const path = join(dir, file);
-      const script = await readFile(path, "utf8").catch(() => null);
+      const script = await readScriptFile(path);
       if (script !== null) entries.set(name, describe(name, script, path));
     }
   }
@@ -87,27 +108,35 @@ export async function listWorkflows(dirs: string[]): Promise<CatalogEntry[]> {
   return [...entries.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** Text from a saved file is the file author's: one line, no markup, clipped. */
+function flat(text: string, max: number): string {
+  const cleaned = text.replace(/[\p{Cc}\p{Cf}\p{Co}\u2028\u2029]+/gu, " ").replace(/[<>]/g, "").replace(/\s+/g, " ").trim();
+  return cleaned.length > max ? `${cleaned.slice(0, max - 1)}…` : cleaned;
+}
+
 function describe(name: string, script: string, source: string): CatalogEntry {
   try {
     const { meta } = parseWorkflowScript(script);
-    return { name, description: meta.description, ...(meta.whenToUse ? { whenToUse: meta.whenToUse } : {}), source };
+    const limit = source === "built-in" ? 2000 : 400;
+    return { name, description: flat(meta.description, limit), ...(meta.whenToUse ? { whenToUse: flat(meta.whenToUse, limit) } : {}), source };
   } catch (error) {
-    return { name, description: `(does not parse: ${error instanceof Error ? error.message : String(error)})`, source };
+    return { name, description: `(does not parse: ${flat(error instanceof Error ? error.message : String(error), 200)})`, source };
   }
 }
 
-/** Markdown appended to the reference for one caller; `builtinDir` holds readable copies of the built-ins. */
-export function catalogText(entries: CatalogEntry[], builtinDir?: string): string {
+/** Markdown appended to the reference for one caller; `builtinDir` holds read-only copies of the built-ins. */
+export function catalogText(entries: CatalogEntry[], builtinDir?: string, note?: string): string {
   if (entries.length === 0) return "## Named workflows available to you\n\nNone.";
   const lines = entries.map((entry) => {
-    const where = entry.source === "built-in" ? (builtinDir ? `built-in, source ${join(builtinDir, `${entry.name}.js`)}` : "built-in") : entry.source;
+    const where = entry.source === "built-in" ? (builtinDir ? `built-in, read-only source ${join(builtinDir, `${entry.name}.js`)}` : "built-in") : `saved file ${entry.source}`;
     const when = entry.whenToUse ? ` When to use: ${entry.whenToUse}` : "";
     return `- \`${entry.name}\` (${where}): ${entry.description}${when}`;
   });
   return [
     "## Named workflows available to you",
     "",
-    "Launch one with `workflow({ name, args })` or `paseo-workflow run --name <name> --args-json '...'`. A saved file of the same name replaces a built-in; `builtin.<name>` always runs the shipped one. Each built-in's header comment documents its `args`; read its source file below before the first launch.",
+    "Launch one with `workflow({ name, args })` or `paseo-workflow run --name <name> --args-json '...'`. A file of the same name in ~/.paseo/workflows or ~/.claude/workflows replaces a built-in (project directories cannot); `builtin.<name>` always runs the shipped one. Descriptions of saved files are their authors' text. Each built-in's header comment documents its `args`: read its source file below before the first launch.",
+    ...(note ? ["", note] : []),
     "",
     ...lines,
   ].join("\n");
