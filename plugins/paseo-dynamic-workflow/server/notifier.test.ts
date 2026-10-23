@@ -124,3 +124,17 @@ it("waits for an in-flight run receipt before deciding whether a changed payload
   expect(f.send).toHaveBeenCalledOnce();
   expect(JSON.parse(await readFile(f.file, "utf8")).entries).toHaveLength(1);
 });
+
+it("forgets a pending replacement when guidance returns to the in-flight payload", async () => {
+  const f = await fixture();
+  let reject!: (error: Error) => void;
+  f.send.mockImplementationOnce(() => new Promise<void>((_resolve, rejectSend) => { reject = rejectSend; }));
+  f.notifier.add({ id: "notify-wf_test", agentId: "p", text: "Ultracode on" });
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledOnce());
+  f.notifier.replacePending("notify-wf_test", "Ultracode off");
+  f.notifier.replacePending("notify-wf_test", "Ultracode on");
+  reject(new Error("temporary transport error"));
+  await vi.waitFor(async () => expect(JSON.parse(await readFile(f.file, "utf8")).entries[0].lastError).toBe("temporary transport error"));
+  await f.notifier.dispose();
+  expect(JSON.parse(await readFile(f.file, "utf8")).entries).toEqual([expect.objectContaining({ id: "notify-wf_test", text: "Ultracode on", attempts: 1 })]);
+});

@@ -97,11 +97,13 @@ export class Notifier {
   /** Known failed receipts can be superseded; an uncertain receipt must be reconciled first. */
   replacePending(id: string, text: string): void {
     const entry = this.entries.find((candidate) => !candidate.superseded && (candidate.logicalId ?? candidate.id) === id);
-    if (!entry || entry.text === text || entry.uncertain) return;
+    if (!entry || entry.uncertain) return;
     if (this.sending.has(entry.id)) {
-      this.replacements.set(entry.id, { id, text });
+      if (entry.text === text) this.replacements.delete(entry.id);
+      else this.replacements.set(entry.id, { id, text });
       return;
     }
+    if (entry.text === text) return;
     if (entry.attempts === 0) {
       this.updatePending(entry.id, text);
       return;
