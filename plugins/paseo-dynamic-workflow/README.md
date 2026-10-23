@@ -11,7 +11,7 @@
 ```bash
 cd plugins/paseo-dynamic-workflow && npm ci
 paseo plugin install "$PWD"
-# 合并到 main 之后也可以从 Git 安装（manifest 里的 build 会执行 npm ci --omit=dev）：
+# 也可以从 Git 安装（manifest 里的 build 会执行 npm ci --omit=dev）：
 paseo plugin install 'git:https://github.com/CM-BF/open-paseo-plugins.git:plugins/paseo-dynamic-workflow'
 ```
 

@@ -4,6 +4,11 @@
 
 `paseo` 不一定在 agent shell 的 PATH 里；macOS 桌面版的 CLI 在 `/Applications/Paseo.app/Contents/Resources/bin/paseo`。
 
+## 目录规范
+
+- 本仓库的所有插件都必须放在 `plugins/<id>/`，每个插件独占一个目录。禁止把插件放在仓库根目录或其他顶级目录。
+- 插件的 `paseo-plugin.json`、入口、源码、依赖声明、文档和测试资源均放在该插件目录内。新增、导入或迁移插件时，同步更新 README、安装路径和相关引用。
+
 ## 进度记录
 
 1. 每个插件在自己的目录里维护 `PROGRESS.md`：目标、关键设计决定（以及为什么）、子任务清单和各自状态、验证记录（日期、daemon 版本、commit、场景、结果、截图路径）、已知问题和下一步。

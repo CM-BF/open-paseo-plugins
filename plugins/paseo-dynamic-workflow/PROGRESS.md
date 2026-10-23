@@ -174,3 +174,9 @@ Fixture：`~/plugin-test-2026-10-22-dwf-review`，project `prj_8474b59633637446`
 - 本次state备份和运行证据保留在 `~/.paseo/verification/dwf-review-2026-10-22/`，未用备份覆盖用户运行期间的其他数据。
 - Headless Chrome、其profile、Paseo浏览器标签已关闭/清理。只操作本次插件和fixture，没有更改其他插件。
 - 历史“交付状态”中的 running 描述属于前次交付，**以此处 disabled 为最终状态**。
+
+## 发布到远程 main（2026-10-22）
+
+- 用户明确要求发布到 `origin/main`，插件保持在 `plugins/paseo-dynamic-workflow/`。仓库 `AGENTS.md` 新增强制目录规范：所有插件必须位于 `plugins/<id>/`，禁止放在仓库根目录或其他顶级目录；`CLAUDE.md` 通过 `@AGENTS.md` 引用同一规则。
+- 发布范围为完整插件、仓库开发规则/README 和验收辅助脚本，没有其他插件改动。远程 main 的初始提交是当前分支祖先，可常规快进，不覆盖已有历史。
+- 发布前检查：全部被跟踪 manifest 均符合 `plugins/<id>/paseo-plugin.json`；Git 安装路径与 build 已配置；`git diff --check` 通过。上一轮159项测试、typecheck与主daemon验收已完成，本次只改目录规则和发布文案。
