@@ -195,3 +195,9 @@ Fixture：`~/plugin-test-2026-10-22-dwf-review`，project `prj_8474b59633637446`
 - `/dynamic-workflows` 和 Command Center 的 “Dynamic workflow tools and runs” 均可进入。workflow 子 agent 不允许开启；Claude/Codex 提示从 agent 菜单 Reload 刷新工具列表（不承诺 Codex 自动刷新）；其他 provider 开启后显示可复制的 CLI reference 命令，用户可放入下一条提示，不自动发送消息。
 - 全局设置移除 “Add workflow tools to new agents”，改为按 agent 开启的入口说明；保留工具预批准与运行设置。preferences v2 迁移丢弃旧的全局注入开关，其余字段按新 schema 保留。
 - 局部检查：`git diff --check` 通过；typecheck 仅剩并行后端修改中的两个 bridge.test.ts 缺少 access fixture 错误，客户端与设置 schema 无类型错误。尚未进行本次主 daemon/Web UI 验收，由整合阶段记录。
+
+### 按 agent 开启：旧 agent 入口补充
+
+- 独立复核确认：插件未安装或禁用时创建的 Claude/Codex agent 没有 workflow MCP 配置，Reload 不能补加。客户端现在同时检查 provider family 和服务端 `hasMcpBinding`，仅已配置 MCP 的 agent 显示 Reload 提示。
+- 未配置 MCP 的旧 agent 开启后显示 CLI reference 命令，并说明也可创建新 agent 使用 MCP 工具；不把 Reload 描述为补装工具的方式，不自动发送消息。
+- 验证：`npm run typecheck` 与 `git diff --check` 通过；主 daemon/Web UI 场景由整合阶段验收。

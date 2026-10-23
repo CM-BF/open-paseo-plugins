@@ -22,7 +22,8 @@ export function AgentAccess({ agentId, styles }: { agentId: string; styles: Styl
     onSuccess: (value) => queryClient.setQueryData(queryKey, value),
   });
   const value = access.data;
-  const mcp = value?.providerFamily === "claude" || value?.providerFamily === "codex";
+  const mcpFamily = value?.providerFamily === "claude" || value?.providerFamily === "codex";
+  const mcp = mcpFamily && value?.hasMcpBinding;
   const referenceCommand = value ? `'${value.cliPath.replace(/'/g, "'\\''")}' reference` : "";
 
   return (
@@ -51,7 +52,9 @@ export function AgentAccess({ agentId, styles }: { agentId: string; styles: Styl
           {mcp
             ? "Reload this agent after changing the switch to refresh its tool list. Use Reload from the agent menu."
             : value.enabled
-              ? "Include this reference command in your next prompt so the agent can learn how to run workflows."
+              ? mcpFamily
+                ? "This agent predates workflow tool setup; use the command below, or create a new agent for MCP tools."
+                : "Include this reference command in your next prompt so the agent can learn how to run workflows."
               : "Enable to get the workflow reference command for this agent."}
         </Text>
       ) : null}
