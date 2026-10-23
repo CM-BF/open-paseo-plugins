@@ -75,4 +75,18 @@ describe("run views", () => {
     const text = notificationText(run, state);
     expect(text).toContain(JSON.stringify({ scriptPath: run.scriptPath, resumeFromRunId: run.runId, args: run.args }));
   });
+
+  it("interrupted notifications list cut-off agents and restate the caller's Ultracode mode", () => {
+    const run = { ...record([call("a1", "skipped"), call("a2", "queued")]), status: "interrupted" as const, endedAt: at, error: "The plugin stopped" };
+    run.calls[1] = { ...run.calls[1]!, agentId: null };
+    const text = notificationText(run, state, { ultracode: true, size: "unrestricted" });
+    expect(text).toContain("No agent() call had completed, so a resume reruns every call.");
+    expect(text).toContain("Review a1: agent child-a1");
+    expect(text).toContain("Review a2: not started");
+    expect(text).toMatch(/<guidance>Ultracode is on for you/);
+    const off = notificationText({ ...run, status: "completed", resultPreview: "{}" }, state, { ultracode: false, size: "medium" });
+    expect(off).not.toContain("<interrupted-agents>");
+    expect(off).toContain("<guidance>Ultracode is off for you: the standard opt-in rule applies; size guideline medium (under 10 agents).</guidance>");
+    expect(notificationText(run, state)).not.toContain("<guidance>");
+  });
 });

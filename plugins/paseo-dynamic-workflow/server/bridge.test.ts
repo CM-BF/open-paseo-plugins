@@ -101,7 +101,7 @@ it("denies launch and reference while disabled, preserving status and stop for e
   for (const tool of ["workflow", "workflow_reference"]) {
     const response = await post(f.socketPath, '{"arguments":{"script":"return 1"}}', tool, headers);
     expect(response.status).toBe(400);
-    expect(JSON.parse(response.body).error).toMatchObject({ code: "workflow_disabled", message: expect.stringContaining("enable workflows for this agent") });
+    expect(JSON.parse(response.body).error).toMatchObject({ code: "workflow_disabled", message: expect.stringContaining("Ask the user to turn them on") });
   }
   expect(f.launch).not.toHaveBeenCalled();
   expect(f.reference).not.toHaveBeenCalled();

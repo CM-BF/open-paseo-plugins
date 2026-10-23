@@ -129,7 +129,7 @@ export class Bridge {
     const requireEnabledAgent = (): string => {
       const id = requireAgent();
       if (!this.options.access.enabled(id)) {
-        throw new ServiceError("workflow_disabled", "Dynamic workflows are disabled for this agent. Open this agent's Dynamic workflows panel and enable workflows for this agent, then retry.");
+        throw new ServiceError("workflow_disabled", "Dynamic workflows are disabled for this agent. Ask the user to turn them on in this agent's Dynamic workflows panel (type /dynamic-workflows in this conversation), then retry. Do not change the switch yourself.");
       }
       return id;
     };

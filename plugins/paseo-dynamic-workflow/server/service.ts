@@ -5,6 +5,7 @@ import { CARD_KIND, CARD_VERSION, LABEL_RUN, RUN_ID_PATTERN } from "../shared/id
 import { NOTIFICATION_MARKER } from "../shared/notification";
 import type { RunDetail, RunSummary } from "../shared/run-types";
 import { sizeLabel, type ToolGuidance } from "../shared/guidance";
+import { guidanceReminder } from "./prompts";
 import type { Preferences } from "../shared/settings";
 import { AgentRunner, type ParentContext } from "./agent-runner";
 import { parseBudgetDirective } from "./budget";
@@ -50,6 +51,8 @@ export interface ServiceOptions {
   paths: StatePaths;
   gate: Gate;
   settings: () => Preferences;
+  /** The caller's current Ultracode and size guidance; restated in launch results and notifications. */
+  guidance?: (agentId: string) => ToolGuidance;
 }
 
 const CARD_THROTTLE_MS = 1200;
@@ -60,6 +63,7 @@ export class WorkflowService {
   private readonly paths: StatePaths;
   private readonly gate: Gate;
   private readonly settings: () => Preferences;
+  private readonly guidance: (agentId: string) => ToolGuidance | null;
   private readonly runner: AgentRunner;
   readonly notifier: Notifier;
   private readonly engines = new Map<string, RunEngine>();
@@ -76,6 +80,7 @@ export class WorkflowService {
     this.paths = options.paths;
     this.gate = options.gate;
     this.settings = options.settings;
+    this.guidance = options.guidance ?? (() => null);
     this.runner = new AgentRunner(() => this.requirePaseo());
     this.notifier = new Notifier(options.paths.outbox, () => this.gate.paseo);
   }
@@ -99,7 +104,7 @@ export class WorkflowService {
       if (!record) continue;
       this.rememberRecord(record, this.records.size < MAX_CACHED_RECORDS);
       if (record.status !== "running" && record.status !== "stopping" && !record.notified) {
-        this.notifier.add({ id: `notify-${runId}`, agentId: record.parentAgentId, text: notificationText(record, this.paths) });
+        this.notifier.add({ id: `notify-${runId}`, agentId: record.parentAgentId, text: this.notification(record) });
         record.notified = true;
         await new RunFiles(this.paths, runId).saveRecord(record);
       }
@@ -107,7 +112,7 @@ export class WorkflowService {
       // archived; archive any that are still open.
       if (record.status === "interrupted" && record.endedAt && Date.now() - Date.parse(record.endedAt) < 24 * 60 * 60_000) {
         if (!record.notified) {
-          this.notifier.add({ id: `notify-${runId}`, agentId: record.parentAgentId, text: notificationText(record, this.paths) });
+          this.notifier.add({ id: `notify-${runId}`, agentId: record.parentAgentId, text: this.notification(record) });
           record.notified = true;
           await new RunFiles(this.paths, runId).saveRecord(record);
         }
@@ -134,7 +139,7 @@ export class WorkflowService {
       if (!record.notified) {
         record.notified = true;
         await files.saveRecord(record);
-        this.notifier.add({ id: `notify-${runId}`, agentId: record.parentAgentId, text: notificationText(record, this.paths) });
+        this.notifier.add({ id: `notify-${runId}`, agentId: record.parentAgentId, text: this.notification(record) });
       }
       this.rememberRecord(record, this.records.has(runId));
       void this.gate.wait().then(
@@ -148,7 +153,7 @@ export class WorkflowService {
     await recoverChildren(paseo, record);
     await new RunFiles(this.paths, record.runId).saveRecord(record);
     this.rememberRecord(record, this.records.has(record.runId));
-    this.notifier.updatePending(`notify-${record.runId}`, notificationText(record, this.paths));
+    this.notifier.updatePending(`notify-${record.runId}`, this.notification(record));
     await this.publishCard(record);
   }
 
@@ -274,6 +279,8 @@ export class WorkflowService {
     if (budgetTotal !== null) lines.push(`Token budget from the user's message: ${budgetTotal} output tokens.`);
     lines.push(`To iterate: edit the script file, then workflow({ scriptPath: ${JSON.stringify(record.scriptPath)}, resumeFromRunId: "${runId}" }) or paseo-workflow run --script-path ${JSON.stringify(record.scriptPath)} --resume ${runId}. Resume inherits saved args unless you override them.`);
     lines.push("A <task-notification> message arrives when the run ends; end your turn now unless other work does not depend on it. workflow_status reports progress.");
+    const guidance = this.guidance(callerId);
+    if (guidance) lines.push(guidanceReminder(guidance));
     return lines.join("\n");
   }
 
@@ -314,6 +321,10 @@ export class WorkflowService {
     if (!record) throw new ServiceError("unknown_run", `No workflow run ${runId} on this host.`);
     this.requireOwner(record, callerId);
     return statusText(record, this.paths);
+  }
+
+  private notification(record: RunRecord): string {
+    return notificationText(record, this.paths, this.guidance(record.parentAgentId));
   }
 
   /** The reference for one caller: its current guidance, the shared text, and the workflows it can name. */
@@ -419,7 +430,7 @@ export class WorkflowService {
       if (timer) clearTimeout(timer);
       timers.delete(record.runId);
     }
-    this.notifier.add({ id: `notify-${record.runId}`, agentId: record.parentAgentId, text: notificationText(record, this.paths) });
+    this.notifier.add({ id: `notify-${record.runId}`, agentId: record.parentAgentId, text: this.notification(record) });
     record.notified = true;
     await engine.files.saveRecord(record);
     await this.publishCard(record);

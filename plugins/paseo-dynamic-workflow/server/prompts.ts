@@ -1,15 +1,8 @@
-import { SIZE_AGENTS, type ToolGuidance, type WorkflowSize } from "../shared/guidance";
+import { SIZE_AGENTS, sizeLabel, type ToolGuidance, type WorkflowSize } from "../shared/guidance";
 
 export const PROMPT_MARKER = "## Dynamic workflows (paseo-dynamic-workflow)";
 
 const OPT_IN = `Launch one only when the user opted into multi-agent orchestration. Opt-in means one of: the user's message contains the keyword "ultracode" (that turn only); Ultracode is on for you (this tool's description or \`workflow_reference\` says so); the user asked in their own words ("use a workflow", "fan out agents", "orchestrate this with subagents"); the user invoked a skill or command that says to run one; or the user asked for a named workflow. A task that would merely benefit from parallelism does not count: describe what a workflow would do and roughly what it costs, and ask; mention that "use a workflow" or "ultracode" in a later message skips the ask.`;
-
-export function systemPromptMcp(): string {
-  return `${PROMPT_MARKER}
-The \`workflow\` tool runs a JavaScript orchestration script in the background: \`agent()\`, \`parallel()\`, \`pipeline()\`, \`phase()\` and \`log()\` start and coordinate Paseo agents (any provider) and return their results to the script. ${OPT_IN}
-- Before writing a script, call \`workflow_reference\` once for the script API, patterns and resume.
-- The tool returns at once. A \`<task-notification>\` message from the plugin arrives when the run ends: end your turn instead of waiting. \`workflow_status\` reports progress; \`workflow_stop\` stops a run.`;
-}
 
 export function systemPromptCli(cli: string): string {
   return `${PROMPT_MARKER}
@@ -24,6 +17,17 @@ export const ULTRACODE_NOTICE = `Ultracode is on for this agent: the user's opt-
 export function sizeGuidelineText(size: WorkflowSize): string {
   if (size === "unrestricted") return "Workflow size: unrestricted; no size guideline applies. Scale to the request, and when unsure lean toward thoroughness for research, review and audit work.";
   return `Workflow size guideline: ${size}, keep workflows under ${SIZE_AGENTS[size]} agents. This is a guideline, not a hard limit: follow it unless the user's request calls for a different scale (an audit, a "be thorough", a token budget such as "+500k"). The user can change it in the plugin settings or turn on Ultracode for this agent.`;
+}
+
+/**
+ * One line restated in every launch result and run notification. Paseo cannot add a reminder to
+ * each turn the way Claude Code does, and Codex keeps a stale tool description until a reload,
+ * so these appended messages carry the current mode.
+ */
+export function guidanceReminder(guidance: ToolGuidance): string {
+  return guidance.ultracode
+    ? "Ultracode is on for you: keep the work exhaustive. Verify findings with independent agents, run a completeness critic, use one workflow per phase, and do not fold verification or synthesis into your own turn to save tokens."
+    : `Ultracode is off for you: the standard opt-in rule applies; size guideline ${sizeLabel(guidance.size)}.`;
 }
 
 export function guidanceText(guidance: ToolGuidance): string {

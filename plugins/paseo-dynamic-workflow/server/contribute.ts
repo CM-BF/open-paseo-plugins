@@ -52,7 +52,10 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   const removeSettingsListener = settingsHandle.subscribe(onSettings);
   void settingsHandle.read().then(onSettings, (error) => log(`could not read settings: ${describeError(error)}`));
 
-  const service = new WorkflowService({ paths, gate, settings: () => settings });
+  const service = new WorkflowService({
+    paths, gate, settings: () => settings,
+    guidance: (agentId) => ({ ultracode: access.ultracode(agentId), size: settings.workflowSize }),
+  });
   const bridge = new Bridge({ service, bindings, access, workflowSize: () => settings.workflowSize });
   const capture = (context: { paseo: PaseoApi }) => {
     const wasReady = gate.ready;

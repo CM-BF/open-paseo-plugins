@@ -1,7 +1,8 @@
 /** How large a workflow should be when the agent is not in Ultracode, mirroring Claude Code's levels. */
 export const WORKFLOW_SIZES = ["unrestricted", "small", "medium", "large"] as const;
 export type WorkflowSize = (typeof WORKFLOW_SIZES)[number];
-export const DEFAULT_WORKFLOW_SIZE: WorkflowSize = "medium";
+/** No cap by default: the plugin never had one, and runs without Ultracode are already the small ones. */
+export const DEFAULT_WORKFLOW_SIZE: WorkflowSize = "unrestricted";
 export const SIZE_AGENTS: Readonly<Record<Exclude<WorkflowSize, "unrestricted">, number>> = { small: 5, medium: 10, large: 50 };
 
 /** What the workflow tool tells one agent about scale. */
