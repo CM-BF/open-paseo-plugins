@@ -7,7 +7,7 @@ import type { RunDetail, RunSummary } from "../shared/run-types";
 import { isWorkflowSize, type ToolGuidance } from "../shared/guidance";
 import { CHAIN_CHECK_IN, chainCheckIn, guidanceReminder, referenceStatus } from "./prompts";
 import type { Preferences } from "../shared/settings";
-import { AgentRunner, type ParentContext } from "./agent-runner";
+import { AgentRunner, relayedRequest, type ParentContext } from "./agent-runner";
 import { parseBudgetDirective } from "./budget";
 import { RunEngine } from "./engine";
 import type { Gate, PaseoApi } from "./gate";
@@ -216,6 +216,7 @@ export class WorkflowService {
 
     const message = await this.latestUserMessage(paseo, callerId);
     const budgetTotal = message ? parseBudgetDirective(stripReminders(message.text)) : null;
+    parent.userRequest = relayedRequest(message ? stripReminders(message.text) : null);
     if (this.disposed) throw new ServiceError("not_ready", "The workflow plugin stopped before this launch could start.");
     const runId = newRunId();
     const files = new RunFiles(this.paths, runId);
