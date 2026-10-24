@@ -105,7 +105,7 @@ export function toolDefinitions(guidance?: ToolGuidance): Array<{ name: McpToolN
             type: "string",
             pattern: "^wf_[a-z0-9-]{6,}$",
             description:
-              "Run id of an earlier run to resume from: agent() calls with unchanged prompt and options return its cached results; only edited or new calls run. Stop that run first if it is still running.",
+              "Run id of an earlier run you launched, to resume from: the longest unchanged prefix of agent() calls (same prompt and options, in order) returns cached results; the first edited or new call and everything after it run again. Stop that run first if it is still running.",
           },
         },
       },

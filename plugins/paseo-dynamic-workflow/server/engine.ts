@@ -219,6 +219,10 @@ export class RunEngine {
     if (phase) this.addPhase(phase, false);
 
     const cached = this.options.cache?.take(key);
+    void this.files.journal({ type: "agent_started", at: nowIso(), callId, key, label });
+    if (cached && !cached.hit && cached.diverged) {
+      this.addLog(`Resume: "${label}" is new or edited, so it and every later agent() call run live`);
+    }
     if (cached?.hit) {
       const call = this.newCall(callId, label, phase, "cached");
       call.startedAt = call.queuedAt;
@@ -309,7 +313,7 @@ export class RunEngine {
         call.endedAt = nowIso();
         call.status = this.runAbort.signal.aborted ? "skipped" : "failed";
         call.error = describeError(error);
-        void this.files.journal({ type: "agent_failed", at: call.endedAt, callId, key, label, error: call.error });
+        void this.files.journal({ type: "agent_failed", at: call.endedAt, callId, key, label, error: call.error, cutoff: this.runAbort.signal.aborted });
         this.changed();
       }
       throw error;
@@ -333,7 +337,7 @@ export class RunEngine {
     }
     call.status = outcome.skipped ? "skipped" : "failed";
     call.error = outcome.error;
-    void this.files.journal({ type: "agent_failed", at: call.endedAt, callId, key, label, error: outcome.error });
+    void this.files.journal({ type: "agent_failed", at: call.endedAt, callId, key, label, error: outcome.error, cutoff: this.runAbort.signal.aborted });
     if (this.runAbort.signal.aborted) {
       this.changed();
       throw new HardStop("The workflow was stopped");

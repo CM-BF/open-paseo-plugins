@@ -47,7 +47,7 @@ describe("unattended children", () => {
       timeline: { subscribe: () => Object.assign(() => {}, { ready: Promise.resolve() }) },
     };
     const api = {
-      agents: { create: vi.fn(async () => handle), ref: vi.fn((id: string) => (id === "parent" ? { refresh: async () => null } : handle)) },
+      agents: { create: vi.fn(async () => handle), ref: vi.fn((id: string) => (id === "parent" ? { refresh: async (): Promise<null> => null } : handle)) },
       providers: {
         listModels: vi.fn(async () => ({ models: [{ id: "sonnet", label: "S", isDefault: true }] })),
         listAvailable: vi.fn(async () => ({ providers: [{ provider: "claude", available: true }] })),

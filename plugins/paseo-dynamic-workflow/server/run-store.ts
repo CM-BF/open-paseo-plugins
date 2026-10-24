@@ -52,7 +52,8 @@ export type RunRecord = z.infer<typeof RunRecordSchema>;
 export type JournalEntry =
   | { type: "run_started"; at: string; runId: string; resumedFrom: string | null }
   | { type: "agent_completed"; at: string; callId: string; key: string; label: string; result: unknown; cached: boolean; worktree?: AgentCall["worktree"] }
-  | { type: "agent_failed"; at: string; callId: string; key: string; label: string; error: string }
+  | { type: "agent_started"; at: string; callId: string; key: string; label: string }
+  | { type: "agent_failed"; at: string; callId: string; key: string; label: string; error: string; cutoff?: boolean }
   | { type: "phase"; at: string; title: string }
   | { type: "log"; at: string; message: string }
   | { type: "run_finished"; at: string; status: RunStatus; error: string | null };
@@ -91,35 +92,50 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
+type CacheSlot = { value: unknown; worktree: AgentCall["worktree"] } | "failed" | "cutoff";
+
 /**
- * Results of an earlier run, by key in invocation order. Failed calls occupy cache misses so
- * later same-key successes keep their positions, independent of completion timing.
+ * Results of an earlier run, by key in invocation order. Failed and cut-off calls occupy their
+ * slots so later same-key successes keep their positions, independent of completion timing.
+ *
+ * Like the built-in Workflow tool, reuse stops at the first edited or new call: once a call has
+ * no slot in the earlier run, it and every later call run live. A call that failed, or that the
+ * earlier run's stop or interruption cut off, reruns without ending reuse for the calls after it.
+ * Journals written before `agent_started` lines existed cannot tell a new call from a cut-off
+ * one, so they keep per-call matching.
  */
 export class ResumeCache {
-  private readonly byKey = new Map<string, Array<{ value: unknown; worktree: AgentCall["worktree"] } | null>>();
+  private readonly byKey = new Map<string, CacheSlot[]>();
   private readonly used = new Map<string, number>();
+  private strict = false;
+  private diverged = false;
 
   static async load(paths: RunPaths): Promise<ResumeCache> {
     const cache = new ResumeCache();
     const text = await readFile(paths.journal, "utf8").catch(() => "");
-    const calls: Array<Extract<JournalEntry, { type: "agent_completed" | "agent_failed" }>> = [];
+    const byCall = new Map<string, { key: string; slot: CacheSlot }>();
     for (const line of text.split("\n")) {
       if (!line.trim()) continue;
+      let entry: JournalEntry;
       try {
-        const entry = JSON.parse(line) as JournalEntry;
-        if (entry.type === "agent_completed" || entry.type === "agent_failed") calls.push(entry);
+        entry = JSON.parse(line) as JournalEntry;
       } catch {
-        // A torn last line from a crash; the rest is still usable.
+        continue; // A torn last line from a crash; the rest is still usable.
+      }
+      if (entry.type === "agent_started") {
+        cache.strict = true;
+        if (!byCall.has(entry.callId)) byCall.set(entry.callId, { key: entry.key, slot: "cutoff" });
+      } else if (entry.type === "agent_completed") {
+        byCall.set(entry.callId, { key: entry.key, slot: { value: entry.result, worktree: entry.worktree ?? null } });
+      } else if (entry.type === "agent_failed") {
+        byCall.set(entry.callId, { key: entry.key, slot: entry.cutoff ? "cutoff" : "failed" });
       }
     }
-    calls.sort((a, b) => Number(a.callId.slice(1)) - Number(b.callId.slice(1)));
-    for (const entry of calls) {
-      if (entry.type === "agent_completed") cache.add(entry.key, entry.result, entry.worktree ?? null);
-      else {
-        const list = cache.byKey.get(entry.key) ?? [];
-        list.push(null);
-        cache.byKey.set(entry.key, list);
-      }
+    const ordered = [...byCall.entries()].sort(([a], [b]) => Number(a.slice(1)) - Number(b.slice(1)));
+    for (const [, { key, slot }] of ordered) {
+      const list = cache.byKey.get(key) ?? [];
+      list.push(slot);
+      cache.byKey.set(key, list);
     }
     return cache;
   }
@@ -132,17 +148,23 @@ export class ResumeCache {
 
   get size(): number {
     let total = 0;
-    for (const list of this.byKey.values()) total += list.filter((entry) => entry !== null).length;
+    for (const list of this.byKey.values()) total += list.filter((entry) => typeof entry === "object").length;
     return total;
   }
 
-  take(key: string): { hit: true; value: unknown; worktree: AgentCall["worktree"] } | { hit: false } {
+  /** `diverged` is true on the call that ended reuse for the rest of the run. */
+  take(key: string): { hit: true; value: unknown; worktree: AgentCall["worktree"] } | { hit: false; diverged?: true } {
+    if (this.diverged) return { hit: false };
     const list = this.byKey.get(key);
     const index = this.used.get(key) ?? 0;
-    if (!list || index >= list.length) return { hit: false };
+    if (!list || index >= list.length) {
+      if (!this.strict) return { hit: false };
+      this.diverged = true;
+      return { hit: false, diverged: true };
+    }
     this.used.set(key, index + 1);
     const entry = list[index];
-    return entry ? { hit: true, ...entry } : { hit: false };
+    return typeof entry === "object" ? { hit: true, ...entry } : { hit: false };
   }
 }
 
