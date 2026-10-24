@@ -350,3 +350,22 @@ Claude 额度耗尽后从已完成的记录接续，没有重跑原审查和 fix
 - 五个父 agent 与 18 个子 agent 共 23 个按完整 ID 独立核对已 archive；原 project/workspace 不在原生列表，Web UI 显示 Workspace unavailable。repo 与测试 run 目录删除，开关/outbox 无 fixture。归档 nonce bindings 保留，不改活跃插件内存。截图 `2026-10-22-ultracode-cleanup-desktop.png`。
 - 运行结果、journal、原审查输出、最终 transcript、测试日志和 cleanup.json 持久保存在 `~/.paseo/verification/dwf-ultracode-2026-10-22/`。Chrome 已关闭；临时 profile 与本任务 scratch 清理，不碰其他测试资源。
 - daemon 当前目录源仍是本 workspace 的 `open-paseo-plugins/plugins/paseo-dynamic-workflow`。删除 worktree 前必须切换持久源；恢复来源、备份和尚未实测的边界详见 `docs/verification/2026-10-22-ultracode.md`。
+
+## 对照原生 Workflow 的复刻审查（2026-10-24）
+
+方法：主 agent（Claude Code 2.1.291，自带 Workflow）先用原生工具跑探针，取得真实的报错文本、null 语义、`<failures>`/`<recovery>`/`<usage>` 格式、子 agent prompt 外框和 resume 行为；再从本机二进制提取实现片段（只放在 `/tmp/dwf-parity`，不进仓库、不照抄文本）。审查 workflow `wf_9873805a-3b0`（10 个维度 → 合并 → 每条 3 个视角核实），会话结束时已完成 273 个 agent：158 条原始差异合并后 88 条有核实票，86 条确认。完整性检查与计划阶段未跑（会话结束），按用户要求改为自己实现。结果：`/tmp/dwf-parity/verified.json`。
+
+已修复（每项先写回归测试）：
+- 指引：只核实结论依赖的发现/主张，先合并重复；critic/synthesis 不喂全部 JSON；循环要有轮数上限；机械核查用 medium effort。起因是 agent 736de498 的调研脚本把 319 条“原子事实”各派 3 个核实者（957 个 agent），部分源于我们的 Ultracode 文案“check every claim… do not cap”。新增 REFERENCE「Mistakes that make a workflow too big」。
+- `ultracode` 关键词视为请求 workflow（与原生一致），引用/询问该词不算；规模规则不再互相矛盾；通知声明不是用户输入或批准。
+- 子 agent：固定的“脚本计算的任务”外框，每行缩进两格；转述触发本次的用户消息（≤4000 字符，兄弟 agent 前缀一致）；无条件禁止再开 agent/workflow；question/plan 类权限请求自动拒绝并让其按假设继续（工具权限仍由人回答）。
+- resume：与原生一致只复用最长未改动前缀（新增 `agent_started` 日志行；第一个新增或改动的调用及其后全部重跑，并在日志说明）；失败或被停止切断的调用重跑但不终止复用；完成顺序无关；旧 journal 保持逐调用匹配。resume 链中间一次提前结束时，更早的结果仍可补位。
+- 通知：`<failures>` 用 `[label] failed: msg`，并列出 `parallel[i]`/`pipeline[i]` 被拒的槽（相同消息合并计数）；`<usage>` 用 agents_done/agents_error/agents_skipped/agents_cut_off/agents_empty_result/agents_cached/subagent_tokens；用户手动停止的 run 不给 resume 提示；恢复提示指向子 agent transcript；CLI 提示用绝对路径。
+- 启动：解析错误带出错行与插入符，并总是说明“必须是纯 JavaScript”；脚本错误指向 reference、去掉 `invalid_script:` 前缀；启动结果加入空缓存提醒和观看位置。
+- reference 工具也 alwaysLoad；MCP 说明里写明在 Paseo 中优先用本插件；默认并发改为原生的 min(16, max(2, CPUs-2))。
+- 卡死检测：10 分钟无活动（单个工具调用中 60 分钟）视为 stall，归档并重开，最多 3 次；面板新增 Restart；行内显示 attempt、工具调用数和最后一个工具。
+- agentType 支持 Claude 名称（Explore/Plan/claude）和 `.claude/agents/<type>.md`（作为角色文本，不应用其工具限制/模型）；`model: 'inherit'`。
+
+刻意保留（不同于原生，理由）：结构化输出仍是 prompt + JSON 提取 + 3 次纠正（跨 provider）；工具默认预批准（Codex 等每次弹窗更差）；预算按 run 计且只算子 agent（插件看不到父 agent 的用量）；resume 生成新 run id（卡片/历史按 run 展示）；规模建议默认 unrestricted（用户要求）。
+
+本地检查：303 项测试、typecheck 通过。实机验收见下一节。
