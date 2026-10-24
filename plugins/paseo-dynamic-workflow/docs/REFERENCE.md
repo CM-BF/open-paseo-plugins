@@ -48,7 +48,7 @@ Ultracode is a per-agent mode the user turns on in the agent's Dynamic workflows
 
 Paseo cannot add a reminder to every turn, and providers often keep MCP tool descriptions out of view until you search for them. So the mode reaches you in several places: a one-time message from the plugin when the user turns Ultracode on or off, the MCP server instructions and the workflow tool description (both refreshed when the agent reloads), the first line of this reference, the result of every launch, and the `<guidance>` line of every run notification. The latest of these wins. If your workflow tools are not listed directly, find them with your tool search (server `dynamic_workflow`). When a completed run's notification says Ultracode is on, read the result and launch the next phase's workflow unless the task is finished. From the fourth run you launch after one user message, launch results and notifications ask you to summarize progress and check with the user before launching more, unless the plan they approved covers it; follow that.
 
-If you also have Claude Code's own Workflow tool, use this one when the children should be Paseo agents (another provider, or visible in Paseo); otherwise either works. Do not run both for the same task.
+If you also have Claude Code's own Workflow tool, prefer this one inside Paseo: its children are Paseo agents (any provider) that the user can watch, answer and stop from the app. Both share the same script API, so a script written for one runs on the other. Do not run both for the same task.
 
 ## Scale
 
@@ -138,7 +138,7 @@ Children are ordinary Paseo agents. They appear in your Subagents track while th
 
 **`workflow(nameOrRef, args?)`** runs another workflow inline and returns its result: a workflow name or `{ scriptPath }`. It shares this run's concurrency, agent cap and budget; its phases appear under its name. It throws for an unknown name, an unreadable path or a script that does not parse. Nesting is one level: `workflow()` inside a nested workflow throws.
 
-**Limits.** At most min(8, CPUs - 2) agents run at once in a run by default (configurable up to 16; each run has its own limit); extra calls queue. A run starts at most 1000 agents by default (configurable lower); cached results do not count. One `parallel()` or `pipeline()` call takes at most 4096 items. A run allows at most 4096 runtime requests and 16 MiB of pending request data. Log and phase events are limited to 100 per second and log lines to 2000 characters; excess events are coalesced into a dropped-events summary. A script that blocks without awaiting for two minutes is stopped. The first line of this reference shows your current limits.
+**Limits.** At most min(16, max(2, CPUs - 2)) agents run at once in a run by default (configurable up to 16; each run has its own limit); extra calls queue. A run starts at most 1000 agents by default (configurable lower); cached results do not count. One `parallel()` or `pipeline()` call takes at most 4096 items. A run allows at most 4096 runtime requests and 16 MiB of pending request data. Log and phase events are limited to 100 per second and log lines to 2000 characters; excess events are coalesced into a dropped-events summary. A script that blocks without awaiting for two minutes is stopped. The first line of this reference shows your current limits.
 
 ## pipeline() or a barrier
 

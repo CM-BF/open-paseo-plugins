@@ -100,7 +100,7 @@ function SettingsEditor({ settings }: { settings: ReadySettings }) {
           />
           <SettingsInput
             label="Concurrent agents per run"
-            hint="0 means min(8, CPUs - 2). At most 16."
+            hint="0 means min(16, max(2, CPUs - 2)). At most 16."
             initialValue={numbers.maxConcurrentAgents}
             disabled={settings.saving}
             error={concurrent === null ? "Enter a whole number from 0 to 16." : null}

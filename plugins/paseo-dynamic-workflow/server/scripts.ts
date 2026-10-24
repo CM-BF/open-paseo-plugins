@@ -132,6 +132,7 @@ export function toolDefinitions(guidance?: ToolGuidance): Array<{ name: McpToolN
     },
     workflow_reference: {
       description: REFERENCE_TOOL_DESCRIPTION,
+      ...(guidance ? { _meta: { "anthropic/alwaysLoad": true } } : {}),
       inputSchema: { type: "object", additionalProperties: false, properties: {} },
     },
   };
@@ -256,7 +257,9 @@ function processSize() {
 function toolsFor(access) {
   if (!access) return [];
   const text = access.ultracode ? ULTRACODE_TEXT : SIZE_TEXT[access.size];
-  return TOOLS.map((tool) => (tool.name === 'workflow' ? { ...tool, description: tool.description.replace(GUIDANCE_SLOT, () => text), _meta: TOOL_META } : tool));
+  return TOOLS.map((tool) => (tool.name === 'workflow'
+    ? { ...tool, description: tool.description.replace(GUIDANCE_SLOT, () => text), _meta: TOOL_META }
+    : tool.name === 'workflow_reference' ? { ...tool, _meta: { 'anthropic/alwaysLoad': true } } : tool));
 }
 const fingerprint = (access) => (access ? (access.ultracode ? 'ultracode' : 'on') : 'off');
 

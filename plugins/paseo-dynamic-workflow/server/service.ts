@@ -596,7 +596,8 @@ export class WorkflowService {
 
 function concurrency(settings: Preferences): number {
   if (settings.maxConcurrentAgents > 0) return settings.maxConcurrentAgents;
-  return Math.max(1, Math.min(8, cpus().length - 2));
+  // The built-in Workflow tool's default: min(16, max(2, CPUs - 2)).
+  return Math.min(16, Math.max(2, cpus().length - 2));
 }
 
 function featureValues(features: ReadonlyArray<{ id: string; value: unknown }> | undefined): Record<string, unknown> | undefined {

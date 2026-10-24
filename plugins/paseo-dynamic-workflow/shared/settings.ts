@@ -5,7 +5,7 @@ import { DEFAULT_WORKFLOW_SIZE, WORKFLOW_SIZES } from "./guidance";
 export const PreferencesSchema = z.object({
   /** Preapprove the workflow MCP tools (Claude, Codex; never OpenCode). */
   preapproveTools: z.boolean().default(true),
-  /** Concurrent child agents per run. 0 means min(8, CPUs - 2). */
+  /** Concurrent child agents per run. 0 means min(16, max(2, CPUs - 2)). */
   maxConcurrentAgents: z.number().int().min(0).max(16).default(0),
   /** Child agents a run may start over its lifetime. */
   maxAgentsPerRun: z.number().int().min(1).max(1000).default(1000),

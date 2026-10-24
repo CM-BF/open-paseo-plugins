@@ -44,7 +44,7 @@ export function sizeGuidelineText(size: WorkflowSize): string {
 export function mcpInstructions(guidance: ToolGuidance): string {
   const lines = [
     "Dynamic workflows (paseo-dynamic-workflow): the `workflow` tool runs a JavaScript script in the background that fans work out to many Paseo agents (any provider), verifies it and synthesizes the result; a <task-notification> message arrives when the run ends.",
-    "Launch one only after the user opted in: the word \"ultracode\" in their own message (a request to use a workflow for it), Ultracode on for you, an explicit request for a workflow in their own words, a skill or command that says to, or a named workflow. Call `workflow_reference` before your first script. Never change your own workflow or Ultracode switches.",
+    "Launch one only after the user opted in: the word \"ultracode\" in their own message (a request to use a workflow for it), Ultracode on for you, an explicit request for a workflow in their own words, a skill or command that says to, or a named workflow. Call `workflow_reference` before your first script. Never change your own workflow or Ultracode switches. If you also have a built-in Workflow tool, prefer this one in Paseo: its children are Paseo agents the user can watch and answer.",
   ];
   if (guidance.ultracode) lines.push(ULTRACODE_SHORT);
   return lines.join("\n");
