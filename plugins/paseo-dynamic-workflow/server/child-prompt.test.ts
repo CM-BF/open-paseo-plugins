@@ -92,3 +92,41 @@ describe("stall detection", () => {
     expect(handle.archive).toHaveBeenCalled();
   });
 });
+
+describe("agent types", () => {
+  it("uses a Claude Code agent file as the role when no profile matches", async () => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const dir = await mkdtemp(join(tmpdir(), "dwf-agents-"));
+    await mkdir(join(dir, ".claude", "agents"), { recursive: true });
+    await writeFile(join(dir, ".claude", "agents", "security-auditor.md"), "---\nname: security-auditor\n---\nAudit for injection bugs.\n");
+    const created: any[] = [];
+    const snapshot: any = { id: "child", provider: "claude", model: "sonnet", cwd: dir, workspaceId: "cw", status: "idle", archivedAt: null, pendingPermissions: [] };
+    const handle = {
+      id: "child", current: () => snapshot, refresh: vi.fn(async () => ({ agent: snapshot, project: null })),
+      waitForFinish: vi.fn(async () => ({ status: "idle", final: snapshot, lastMessage: "ok", error: null })),
+      send: vi.fn(async () => {}), archive: vi.fn(async () => ({ archivedAt: "now" })),
+      timeline: { subscribe: () => Object.assign(() => {}, { ready: Promise.resolve() }) },
+    };
+    const api = {
+      agents: { create: vi.fn(async (o: any) => { created.push(o); return handle; }), ref: vi.fn((id: string) => (id === "parent" ? { refresh: async (): Promise<null> => null } : handle)) },
+      providers: {
+        listModels: vi.fn(async () => ({ models: [{ id: "sonnet", label: "S", isDefault: true }] })),
+        listAvailable: vi.fn(async () => ({ providers: [{ provider: "claude", available: true }] })),
+        listModes: vi.fn(async () => ({ modes: [{ id: "bypassPermissions", colorTier: "dangerous", isUnattended: true }] })),
+        snapshot: vi.fn(async () => ({ entries: [] })),
+      },
+      config: { get: vi.fn(async () => ({ config: { agentProfiles: [] } })) },
+      workspaces: { archive: vi.fn(async () => ({ archivedAt: "now", error: null })) },
+    };
+    const progress: AgentProgress = { started: vi.fn(), status: vi.fn(), usage: vi.fn(), repaired: vi.fn() };
+    const t = task({ opts: { agentType: "security-auditor", model: "inherit" } });
+    t.parent.cwd = dir;
+    const outcome = await new AgentRunner(() => api as unknown as PaseoApi).run(t, progress);
+    await rm(dir, { recursive: true, force: true });
+    expect(outcome).toMatchObject({ ok: true });
+    expect(created[0].config.systemPrompt).toContain("Audit for injection bugs.");
+    expect(created[0].config.provider).toBe("claude/sonnet");
+  });
+});

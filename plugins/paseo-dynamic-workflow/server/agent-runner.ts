@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { realpath, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { CHILD_ENV, LABEL_CALL, LABEL_RUN } from "../shared/ids";
 import type { Usage } from "../shared/run-types";
 import type { PaseoApi } from "./gate";
@@ -83,6 +84,7 @@ export type AgentOutcome =
 const BUILT_IN_TYPES: Record<string, string | null> = {
   "general-purpose": null,
   general: null,
+  claude: null,
   default: null,
   explore:
     "Role: explorer. Read and search to answer the task. Do not create, modify or delete files, and run only read-only commands.",
@@ -119,6 +121,22 @@ interface ResolvedConfig {
   featureValues?: Record<string, unknown>;
   role: string | null;
   options?: Record<string, unknown>;
+}
+
+/** The body of a Claude Code custom agent definition, used as the child's role text. */
+async function claudeAgentRole(type: string, cwd: string): Promise<string | null> {
+  if (!/^[\w.-]{1,64}$/.test(type)) return null;
+  for (const dir of [join(cwd, ".claude", "agents"), join(homedir(), ".claude", "agents")]) {
+    let text: string;
+    try {
+      text = await readFile(join(dir, `${type}.md`), "utf8");
+    } catch {
+      continue;
+    }
+    const body = text.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
+    if (body) return `Role (from ${join(dir, `${type}.md`)}):\n${body.slice(0, 20_000)}`;
+  }
+  return null;
 }
 
 class Aborted extends Error {}
@@ -413,8 +431,16 @@ export class AgentRunner {
       if (builtIn !== undefined) {
         config.role = builtIn;
       } else {
-        const profile = await this.findProfile(type);
-        config = {
+        // A Paseo profile first (the documented meaning), then a Claude Code agent file.
+        let profile: Record<string, unknown> | null = null;
+        try {
+          profile = await this.findProfile(type);
+        } catch (error) {
+          const role = error instanceof ConfigurationError ? await claudeAgentRole(type, task.opts.cwd ?? task.parent.cwd) : null;
+          if (role === null) throw error;
+          config.role = role;
+        }
+        if (profile) config = {
           provider: String(profile.provider),
           model: typeof profile.model === "string" ? profile.model : null,
           ...(typeof profile.modeId === "string" ? { modeId: profile.modeId } : {}),
@@ -432,7 +458,7 @@ export class AgentRunner {
       config = { provider: providerOverride, model: null, role: config.role };
     }
     const beforeModel = `${config.provider}/${config.model ?? ""}`;
-    const requestedModel = task.opts.model?.trim();
+    const requestedModel = task.opts.model?.trim().toLowerCase() === "inherit" ? undefined : task.opts.model?.trim();
     if (requestedModel) {
       const cwd = task.opts.cwd ?? task.parent.cwd;
       const models = await this.providerModels(config.provider, cwd);
@@ -531,7 +557,7 @@ export class AgentRunner {
     if (!profile || typeof profile.provider !== "string") {
       const names = this.profiles.list.map((entry) => String(entry.name));
       throw new ConfigurationError(
-        `Unknown agentType "${type}". Use general-purpose, explore, plan, verification, or an agent profile: ${names.length ? names.join(", ") : "(none configured)"}`,
+        `Unknown agentType "${type}". Use general-purpose, explore, plan, verification, a Claude Code agent file (.claude/agents/<type>.md in the project or ~/.claude/agents), or an agent profile: ${names.length ? names.join(", ") : "(none configured)"}`,
       );
     }
     return profile;
