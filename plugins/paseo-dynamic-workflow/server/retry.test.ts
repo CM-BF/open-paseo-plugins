@@ -40,3 +40,20 @@ it("lets the user restart a running agent while the script keeps waiting", async
   expect(record.calls[0]).toMatchObject({ status: "completed", attempt: 2 });
   expect(record.logs.some((l) => /restarted by the user/.test(l.message))).toBe(true);
 });
+
+it("persists the reserved branch of each retry for recovery", async () => {
+  const state = await tempState(); states.push(state);
+  let engine: RunEngine | null = null;
+  const seen: Array<{ expected: string; actual: string | undefined }> = [];
+  const { branchName } = await import("./agent-runner");
+  const runner = new FakeRunner(async (task, progress) => {
+    await progress.creating?.({ agentId: `child-${task.callId}` });
+    seen.push({ expected: branchName(task), actual: engine?.record.calls[0]?.pendingBranch });
+    return task.callId === "a1"
+      ? { ok: false, error: "stalled", skipped: false, stalled: true, worktree: null }
+      : ok("done");
+  });
+  await runScript(`${meta}return await agent('work', { isolation: 'worktree' })`, runner, { state, onEngine: (e) => { engine = e; } });
+  expect(seen).toHaveLength(2);
+  for (const branch of seen) expect(branch.actual).toBe(branch.expected);
+});

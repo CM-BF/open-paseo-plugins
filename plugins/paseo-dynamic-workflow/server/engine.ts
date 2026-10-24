@@ -285,6 +285,7 @@ export class RunEngine {
         call.startedAt = nowIso();
         this.changed();
         for (let attempt = 1; ; attempt++) {
+        const attemptCallId = attempt > 1 ? `${callId}r${attempt}` : callId;
         const attemptAbort = new AbortController();
         const forward = () => attemptAbort.abort(controller.signal.reason);
         if (controller.signal.aborted) forward();
@@ -295,7 +296,7 @@ export class RunEngine {
         outcome = await this.options.runner.run(
           {
             runId: this.runId,
-            callId: attempt > 1 ? `${callId}r${attempt}` : callId,
+            callId: attemptCallId,
             workflowName: this.record.meta.name,
             label,
             phase,
@@ -309,7 +310,7 @@ export class RunEngine {
           {
             creating: async (info) => {
               call.agentId = info.agentId;
-              if (opts.isolation === "worktree") call.pendingBranch = branchName({ runId: this.runId, callId, label });
+              if (opts.isolation === "worktree") call.pendingBranch = branchName({ runId: this.runId, callId: attemptCallId, label });
               this.changed();
               await this.files.saveRecord(this.record);
             },
