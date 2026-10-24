@@ -63,6 +63,12 @@ export const skipCallRpc = defineRpc({
   output: z.object({ skipped: z.boolean(), message: z.string() }),
 });
 
+export const restartCallRpc = defineRpc({
+  name: "runs.restart-call",
+  input: z.object({ runId: z.string(), callId: z.string() }),
+  output: z.object({ restarted: z.boolean(), message: z.string() }),
+});
+
 export const serviceStatusRpc = defineRpc({
   name: "service.status",
   input: z.object({}),

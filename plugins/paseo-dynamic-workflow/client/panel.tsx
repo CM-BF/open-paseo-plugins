@@ -4,7 +4,7 @@ import { copyText, ScrollView, useToast } from "@getpaseo/plugin/client/react-na
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { getCallRpc, getRunRpc, listRunsRpc, skipCallRpc, stopRunRpc, transcriptRpc } from "../shared/contracts";
+import { getCallRpc, getRunRpc, listRunsRpc, restartCallRpc, skipCallRpc, stopRunRpc, transcriptRpc } from "../shared/contracts";
 import { PLUGIN_ID } from "../shared/ids";
 import type { TranscriptEntry } from "../shared/contracts";
 import type { AgentCall, RunDetail, RunSummary } from "../shared/run-types";
@@ -337,12 +337,27 @@ const CallRow = memo(function CallRow({
   const [skipping, setSkipping] = useState(false);
   const queryClient = useQueryClient();
   const skipCall = useRpc(skipCallRpc);
+  const restartCall = useRpc(restartCallRpc);
+  const [restarting, setRestarting] = useState(false);
   const toast = useToast();
   const look = CALL_LOOK[call.status];
   const live = isLiveCall(call.status);
   const now = useNow(live && call.startedAt !== null);
   const time = elapsed(call.startedAt, call.endedAt, now);
   useEffect(() => { if (!live) setSkipping(false); }, [live]);
+  useEffect(() => { setRestarting(false); }, [call.attempt, live]);
+  const restart = async () => {
+    setRestarting(true);
+    try {
+      const result = await restartCall({ runId, callId: call.callId });
+      toast.show(result.message);
+      if (!result.restarted) setRestarting(false);
+      await queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, "run", runId] });
+    } catch (error) {
+      setRestarting(false);
+      toast.error(`Could not restart the agent: ${errorMessage(error)}`);
+    }
+  };
   const skip = async () => {
     setSkipping(true);
     try {
@@ -370,16 +385,18 @@ const CallRow = memo(function CallRow({
         <Text style={styles.callMeta} numberOfLines={1}>
           {look.label}
           {time ? ` · ${time}` : ""}
+          {call.attempt ? ` · attempt ${call.attempt}` : ""}
+          {call.toolCalls ? ` · ${plural(call.toolCalls, "tool")}${call.lastTool ? `, last ${call.lastTool}` : ""}` : ""}
           {call.usage.outputTokens ? ` · ${formatTokens(call.usage.outputTokens)} tok` : ""}
         </Text>
       </Pressable>
-      {open ? <CallDetails runId={runId} call={call} styles={styles} theme={theme} navigation={navigation} skipping={skipping} onSkip={skip} /> : null}
+      {open ? <CallDetails runId={runId} call={call} styles={styles} theme={theme} navigation={navigation} skipping={skipping} onSkip={skip} restarting={restarting} onRestart={restart} /> : null}
 
     </View>
   );
 });
 
-function CallDetails({ runId, call, styles, theme, navigation, skipping, onSkip }: {
+function CallDetails({ runId, call, styles, theme, navigation, skipping, onSkip, restarting, onRestart }: {
   runId: string;
   call: AgentCall;
   styles: Styles;
@@ -387,6 +404,8 @@ function CallDetails({ runId, call, styles, theme, navigation, skipping, onSkip 
   navigation: Navigation;
   skipping: boolean;
   onSkip: () => Promise<void>;
+  restarting: boolean;
+  onRestart: () => Promise<void>;
 }) {
   const [showTranscript, setShowTranscript] = useState(false);
   const live = isLiveCall(call.status);
@@ -444,6 +463,11 @@ function CallDetails({ runId, call, styles, theme, navigation, skipping, onSkip 
                 accessibilityLabel={`Open agent ${call.label}`}
               >
                 <Text style={styles.buttonText}>Open agent</Text>
+              </Pressable>
+            ) : null}
+            {live && call.status !== "queued" ? (
+              <Pressable onPress={() => void onRestart()} disabled={restarting || skipping} style={styles.button} accessibilityRole="button" accessibilityLabel={`Restart ${call.label}`}>
+                <Text style={styles.buttonText}>{restarting ? "Restarting…" : "Restart"}</Text>
               </Pressable>
             ) : null}
             {live ? (

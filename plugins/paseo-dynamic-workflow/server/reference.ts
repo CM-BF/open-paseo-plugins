@@ -110,6 +110,7 @@ return { triaged: verdicts.filter(Boolean) }
 **\`agent(prompt, opts?)\`** starts one Paseo agent with the prompt and resolves with its final message. With \`opts.schema\` (a JSON Schema with \`type: 'object'\` and \`properties\` at the root, \`required\` naming declared properties only) the agent must answer with matching JSON; the plugin validates it, asks the agent to correct a mismatch up to three times, and resolves with the parsed object.
 
 - It **resolves to \`null\`** when the agent fails while running, times out, or the user skips it. Filter with \`.filter(Boolean)\`.
+- A child that shows no activity for 10 minutes while no tool is running (60 minutes during one tool call) counts as stalled: the plugin archives it and starts a fresh child with the same prompt, up to three attempts, then the call resolves to \`null\`. The user can also restart a running child from the panel; the \`agent()\` call keeps waiting and gets the new child's answer. Restarts are logged and the attempt number shows on the agent's row.
 - It **throws** for invalid options; configuration errors (an unknown \`agentType\` or model, a provider or mode your permission level does not allow, a bad \`cwd\`, an agent that could not be created); an answer that still does not match the schema after three corrections; the run's agent cap; and a spent token budget.
 - Inside \`parallel()\` and \`pipeline()\` a throw becomes \`null\` at that position and is logged. Elsewhere a throw ends the script unless you wrap the call in \`try\`/\`catch\`.
 

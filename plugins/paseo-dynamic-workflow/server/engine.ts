@@ -51,6 +51,8 @@ class HardStop extends Error {
 
 /** One running workflow: its worker, its agent calls, and the record that describes them. */
 const MAX_FAILURES = 100;
+const MAX_STALL_ATTEMPTS = 3;
+const MAX_USER_RESTARTS = 5;
 
 export class RunEngine {
   readonly record: RunRecord;
@@ -59,6 +61,9 @@ export class RunEngine {
   private worker: Worker | null = null;
   private readonly runAbort = new AbortController();
   private readonly callAborts = new Map<string, AbortController>();
+  private readonly attemptAborts = new Map<string, AbortController>();
+  private readonly attemptTools = new Map<string, number>();
+  private readonly restarts = new Map<string, number>();
   private readonly inFlight = new Set<Promise<unknown>>();
   private readonly queue: Array<{ start(): void; cancel(): void }> = [];
   private active = 0;
@@ -140,6 +145,16 @@ export class RunEngine {
     this.record.status = "stopping";
     this.changed();
     await this.finish("stopped", reason);
+    return true;
+  }
+
+  /** Restarts a live call with a fresh child; the script keeps waiting for the same agent() call. */
+  restart(callId: string): boolean {
+    const call = this.record.calls.find((entry) => entry.callId === callId);
+    const attempt = this.attemptAborts.get(callId);
+    if (!call || !attempt || isTerminalCall(call.status) || call.status === "queued") return false;
+    this.restarts.set(callId, (this.restarts.get(callId) ?? 0) + 1);
+    attempt.abort("restart requested by the user");
     return true;
   }
 
@@ -269,17 +284,25 @@ export class RunEngine {
         call.status = "starting";
         call.startedAt = nowIso();
         this.changed();
-        return await this.options.runner.run(
+        for (let attempt = 1; ; attempt++) {
+        const attemptAbort = new AbortController();
+        const forward = () => attemptAbort.abort(controller.signal.reason);
+        if (controller.signal.aborted) forward();
+        else controller.signal.addEventListener("abort", forward, { once: true });
+        this.attemptAborts.set(callId, attemptAbort);
+        let outcome: AgentOutcome;
+        try {
+        outcome = await this.options.runner.run(
           {
             runId: this.runId,
-            callId,
+            callId: attempt > 1 ? `${callId}r${attempt}` : callId,
             workflowName: this.record.meta.name,
             label,
             phase,
             prompt,
             opts,
             parent: this.options.parent,
-            signal: controller.signal,
+            signal: attemptAbort.signal,
             timeoutMs: shorterLimit(this.options.agentTimeoutMs, opts.timeoutMs),
             archiveWhenDone: this.options.archiveWhenDone,
           },
@@ -311,8 +334,34 @@ export class RunEngine {
               call.repairs++;
               this.changed();
             },
+            activity: (info) => {
+              if (this.settled) return;
+              call.toolCalls = (call.toolCalls ?? 0) - (this.attemptTools.get(callId) ?? 0) + info.toolCalls;
+              this.attemptTools.set(callId, info.toolCalls);
+              call.lastTool = info.lastTool;
+              this.changed();
+            },
           },
         );
+        } finally {
+          controller.signal.removeEventListener("abort", forward);
+          this.attemptAborts.delete(callId);
+          this.attemptTools.delete(callId);
+        }
+        const restart = this.restarts.get(callId);
+        const userRestart = restart !== undefined && !outcome.ok && attemptAbort.signal.aborted && !controller.signal.aborted;
+        const retryStall = !outcome.ok && "stalled" in outcome && outcome.stalled === true && attempt < MAX_STALL_ATTEMPTS;
+        if (this.runAbort.signal.aborted || controller.signal.aborted || (!userRestart && !retryStall)) {
+          if (!outcome.ok && "stalled" in outcome && outcome.stalled) return { ...outcome, error: `${outcome.error} (gave up after ${attempt} attempts)` };
+          return outcome;
+        }
+        if (userRestart && restart >= MAX_USER_RESTARTS) return { ok: false as const, error: `abandoned after ${restart} user restarts`, skipped: false, worktree: outcome.worktree };
+        this.addLog(`Agent "${label}" ${userRestart || outcome.ok ? "was restarted by the user" : outcome.error}; starting attempt ${attempt + 1}`);
+        call.attempt = attempt + 1;
+        call.agentId = null;
+        call.status = "starting";
+        this.changed();
+        }
       } finally {
         this.release();
       }

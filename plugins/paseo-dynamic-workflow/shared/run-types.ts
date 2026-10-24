@@ -48,6 +48,11 @@ export const AgentCallSchema = z.object({
   pendingBranch: z.string().optional(),
   /** Follow-up prompts sent because the reply did not match the schema. */
   repairs: z.number(),
+  /** Attempt number when the call was restarted (stall or user restart); absent for the first. */
+  attempt: z.number().optional(),
+  /** Tool calls the child started so far, and the latest tool's name. */
+  toolCalls: z.number().optional(),
+  lastTool: z.string().nullable().optional(),
 });
 export type AgentCall = z.infer<typeof AgentCallSchema>;
 

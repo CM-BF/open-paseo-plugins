@@ -326,6 +326,10 @@ export class WorkflowService {
     return statusText(engine.record, this.paths);
   }
 
+  restart(runId: string, callId: string): boolean {
+    return this.engines.get(runId)?.restart(callId) ?? false;
+  }
+
   skip(runId: string, callId: string): boolean {
     return this.engines.get(runId)?.skip(callId) ?? false;
   }

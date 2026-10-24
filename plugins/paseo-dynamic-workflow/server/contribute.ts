@@ -1,6 +1,6 @@
 import { mkdir, readFile } from "node:fs/promises";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { getAgentAccessRpc, getCallRpc, getRunRpc, listRunsRpc, reloadAgentRpc, serviceStatusRpc, setAgentAccessRpc, skipCallRpc, stopRunRpc, transcriptRpc } from "../shared/contracts";
+import { getAgentAccessRpc, getCallRpc, getRunRpc, listRunsRpc, reloadAgentRpc, serviceStatusRpc, restartCallRpc, setAgentAccessRpc, skipCallRpc, stopRunRpc, transcriptRpc } from "../shared/contracts";
 import { CHILD_ENV, ENABLE_ENV, LABEL_RUN, PLUGIN_VERSION } from "../shared/ids";
 import { DEFAULT_PREFERENCES, type Preferences, preferences } from "../shared/settings";
 import { AgentAccessStore } from "./agent-access";
@@ -229,6 +229,11 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     capture(context);
     const skipped = service.skip(input.runId, input.callId);
     return { skipped, message: skipped ? "Skipping the agent; its agent() call returns null." : "That agent is not running." };
+  });
+  server.handle(restartCallRpc, (input, context) => {
+    capture(context);
+    const restarted = service.restart(input.runId, input.callId);
+    return { restarted, message: restarted ? "Restarting the agent with a fresh child; its agent() call keeps waiting." : "That agent is not running." };
   });
   server.handle(transcriptRpc, async (input, context) => {
     capture(context);

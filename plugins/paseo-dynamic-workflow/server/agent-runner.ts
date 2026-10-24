@@ -54,6 +54,8 @@ export interface AgentTask {
   signal: AbortSignal;
   timeoutMs: number;
   archiveWhenDone: boolean;
+  /** No timeline activity for this long (and no tool running) counts as a stall; default 10 minutes. */
+  stallMs?: number;
 }
 
 export interface AgentProgress {
@@ -62,6 +64,8 @@ export interface AgentProgress {
   status(status: "running" | "permission"): void;
   usage(usage: Usage): void;
   repaired(): void;
+  /** Live activity: tool calls started so far and the latest one. */
+  activity?(info: { toolCalls: number; lastTool: string | null }): void;
 }
 
 export interface WorktreeInfo {
@@ -74,7 +78,7 @@ export interface WorktreeInfo {
 
 export type AgentOutcome =
   | { ok: true; value: unknown; worktree: WorktreeInfo | null }
-  | { ok: false; error: string; skipped: boolean; throws?: boolean; worktree: WorktreeInfo | null };
+  | { ok: false; error: string; skipped: boolean; throws?: boolean; stalled?: boolean; worktree: WorktreeInfo | null };
 
 const BUILT_IN_TYPES: Record<string, string | null> = {
   "general-purpose": null,
@@ -118,6 +122,10 @@ interface ResolvedConfig {
 }
 
 class Aborted extends Error {}
+class Stalled extends Error {}
+const STALL_MS = 10 * 60_000;
+/** A single tool call (a long test run) may stay silent longer before it counts as a stall. */
+const TOOL_STALL_MS = 60 * 60_000;
 class ConfigurationError extends Error {}
 type AgentHandle = ReturnType<PaseoApi["agents"]["ref"]>;
 type AgentSnapshot = NonNullable<ReturnType<AgentHandle["current"]>>;
@@ -140,6 +148,16 @@ export class AgentRunner {
     let ownsReservedBranch = false;
     let releaseTimeline: (() => void) | null = null;
     let canceled: string | null = null;
+    let lastActivity = Date.now();
+    let toolCalls = 0;
+    const runningTools = new Set<string>();
+    const stallMs = task.stallMs ?? STALL_MS;
+    const stalled = (): string | null => {
+      const quiet = Date.now() - lastActivity;
+      if (quiet < (runningTools.size > 0 ? Math.max(stallMs, TOOL_STALL_MS) : stallMs)) return null;
+      return `stalled: no activity from the agent for ${Math.round(quiet / 60_000)} minutes`;
+    };
+    const watch = { stalled, touch: () => { lastActivity = Date.now(); } };
     const deadline = task.timeoutMs > 0 ? Date.now() + task.timeoutMs : Number.POSITIVE_INFINITY;
     const cwd = resolve(task.opts.cwd ?? task.parent.cwd);
     const usage = usageTracker(progress);
@@ -201,7 +219,21 @@ export class AgentRunner {
       // Subscribe before sending the first prompt so even a very short canceled turn
       // cannot be mistaken for a successful idle result containing partial text.
       const observation = handle.timeline.subscribe((message) => {
-        if (message.event.type === "turn_canceled") canceled = message.event.reason || "the agent was stopped by the user";
+        lastActivity = Date.now();
+        const event = message.event as { type: string; reason?: string; item?: { type?: string; status?: string; callId?: string; name?: string } };
+        if (event.type === "turn_canceled") canceled = event.reason || "the agent was stopped by the user";
+        const item = event.type === "timeline" ? event.item : undefined;
+        if (item?.type === "tool_call" && typeof item.callId === "string") {
+          if (item.status === "running") {
+            if (!runningTools.has(item.callId)) {
+              runningTools.add(item.callId);
+              toolCalls++;
+              progress.activity?.({ toolCalls, lastTool: typeof item.name === "string" ? item.name : null });
+            }
+          } else {
+            runningTools.delete(item.callId);
+          }
+        }
       });
       releaseTimeline = observation;
       await retryTransient(() => observation.ready, task.signal, deadline);
@@ -216,7 +248,7 @@ export class AgentRunner {
       };
       await active();
       await this.send(handle, buildPrompt(task, reservedBranch), task, deadline, "initial");
-      let turn = await this.waitTurn(handle, task.signal, deadline, progress, usage, () => canceled);
+      let turn = await this.waitTurn(handle, task.signal, deadline, progress, usage, () => canceled, watch);
       await active();
       let value: unknown = turn.lastMessage;
       if (turn.status === "error") throw new Error(turn.error ?? "the agent failed");
@@ -230,7 +262,7 @@ export class AgentRunner {
           await active();
           progress.repaired();
           await this.send(handle, repairPrompt(errors, schema), task, deadline, `repair-${attempt}`);
-          turn = await this.waitTurn(handle, task.signal, deadline, progress, usage, () => canceled);
+          turn = await this.waitTurn(handle, task.signal, deadline, progress, usage, () => canceled, watch);
           await active();
           if (turn.status === "error") throw new Error(turn.error ?? "the agent failed");
         }
@@ -251,6 +283,7 @@ export class AgentRunner {
       // Without a completed create we cannot prove a reserved branch is unused:
       // a daemon-side creation may still be in flight. Recovery owns that case.
       if (ownsReservedBranch && reservedBranch && !agentId && base) await removeUnchangedBranch(cwd, reservedBranch, base);
+      if (error instanceof Stalled) return { ok: false, error: error.message, skipped: false, stalled: true, worktree };
       return { ok: false, error: skipped ? describeError(task.signal.reason ?? error) : describeError(error), skipped, throws: !skipped && (error instanceof ConfigurationError || !handle), worktree };
     } finally {
       releaseTimeline?.();
@@ -278,6 +311,7 @@ export class AgentRunner {
     progress: AgentProgress,
     usage: UsageTracker,
     canceled: () => string | null,
+    watch: { stalled(): string | null; touch(): void } = { stalled: () => null, touch: () => {} },
   ): Promise<{ status: "idle" | "error"; lastMessage: string | null; error: string | null }> {
     const startedAt = Date.now();
     for (;;) {
@@ -287,10 +321,15 @@ export class AgentRunner {
       const result = await retryTransient(() => handle.waitForFinish(slice), signal, deadline);
       if (canceled()) throw new Aborted(canceled()!);
       assertChildActive(result.final);
-      if (result.status === "timeout") continue;
+      if (result.status === "timeout") {
+        const stall = watch.stalled();
+        if (stall) throw new Stalled(stall);
+        continue;
+      }
       if (result.status === "permission") {
         progress.status("permission");
         await this.waitForPermission(handle, signal, deadline);
+        watch.touch();
         progress.status("running");
         continue;
       }

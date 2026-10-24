@@ -64,3 +64,31 @@ describe("unattended children", () => {
     expect(respondToPermission).toHaveBeenCalledWith(expect.objectContaining({ requestId: "q1", response: expect.objectContaining({ behavior: "deny" }) }));
   }, 15_000);
 });
+
+describe("stall detection", () => {
+  it("reports a stall when a child shows no activity and no tool is running", async () => {
+    const snapshot: any = { id: "child", provider: "claude", model: "sonnet", cwd: "/tmp", workspaceId: "cw", status: "running", archivedAt: null, pendingPermissions: [] };
+    const handle = {
+      id: "child", current: () => snapshot,
+      refresh: vi.fn(async () => ({ agent: snapshot, project: null })),
+      waitForFinish: vi.fn(() => new Promise((resolve) => setTimeout(() => resolve({ status: "timeout", final: snapshot, lastMessage: null, error: null }), 30))),
+      send: vi.fn(async () => {}), archive: vi.fn(async () => ({ archivedAt: "now" })), respondToPermission: vi.fn(),
+      timeline: { subscribe: () => Object.assign(() => {}, { ready: Promise.resolve() }) },
+    };
+    const api = {
+      agents: { create: vi.fn(async () => handle), ref: vi.fn((id: string) => (id === "parent" ? { refresh: async (): Promise<null> => null } : handle)) },
+      providers: {
+        listModels: vi.fn(async () => ({ models: [{ id: "sonnet", label: "S", isDefault: true }] })),
+        listAvailable: vi.fn(async () => ({ providers: [{ provider: "claude", available: true }] })),
+        listModes: vi.fn(async () => ({ modes: [{ id: "bypassPermissions", colorTier: "dangerous", isUnattended: true }] })),
+        snapshot: vi.fn(async () => ({ entries: [] })),
+      },
+      config: { get: vi.fn(async () => ({ config: {} })) },
+      workspaces: { archive: vi.fn(async () => ({ archivedAt: "now", error: null })) },
+    };
+    const progress: AgentProgress = { started: vi.fn(), status: vi.fn(), usage: vi.fn(), repaired: vi.fn() };
+    const outcome = await new AgentRunner(() => api as unknown as PaseoApi).run({ ...task(), stallMs: 80 }, progress);
+    expect(outcome).toMatchObject({ ok: false, stalled: true, error: expect.stringMatching(/^stalled/) });
+    expect(handle.archive).toHaveBeenCalled();
+  });
+});
