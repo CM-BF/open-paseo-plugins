@@ -106,3 +106,22 @@ it("reruns an interrupted invocation without discarding later completed results"
   expect(second.record.calls.map((c) => c.status)).toEqual(["cached", "completed", "cached"]);
   expect(runner.tasks.map((t) => t.prompt)).toEqual(["b"]);
 });
+
+it("does not duplicate same-key slots while loading a chain of legacy journals", async () => {
+  const s = await state();
+  const script = `${meta}return parallel([() => agent('same'), () => agent('same')])`;
+  const older = await runScript(script, new FakeRunner((t) => ok('old:' + t.callId)), { state: s });
+  const newer = await runScript(script, new FakeRunner((t) => ok('new:' + t.callId)), { state: s });
+  for (const result of [older, newer]) {
+    const path = runPaths(s, result.record.runId).journal;
+    const lines = (await readFile(path, 'utf8')).trim().split('\n').filter((line) => JSON.parse(line).type !== 'agent_started');
+    await writeFile(path, lines.join('\n') + '\n');
+  }
+  const cache = await ResumeCache.load([runPaths(s, newer.record.runId), runPaths(s, older.record.runId)]);
+  const { callKey } = await import('./run-store');
+  const key = callKey('same', {});
+  expect(cache.size).toBe(2);
+  expect(cache.take(key)).toMatchObject({ hit: true, value: 'new:a1' });
+  expect(cache.take(key)).toMatchObject({ hit: true, value: 'new:a2' });
+  expect(cache.take(key)).toEqual({ hit: false });
+});

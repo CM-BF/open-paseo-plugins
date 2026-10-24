@@ -126,15 +126,32 @@ export class ResumeCache {
     for (const run of runs) {
       histories.push(await ResumeCache.read(run, cache));
     }
+    // Legacy journals only identify an occurrence by callId. Merge those occurrences before
+    // grouping by key; appending every ancestor would invent duplicate cached calls.
+    if (!cache.strict) {
+      const merged = new Map<string, { key: string; slot: CacheSlot }>();
+      for (const history of histories) {
+        for (const [id, entry] of history) {
+          const current = merged.get(id);
+          if (!current || (typeof current.slot !== "object" && typeof entry.slot === "object" && entry.key === current.key)) merged.set(id, entry);
+        }
+      }
+      const ordered = [...merged.entries()].sort(([a], [b]) => Number(a.slice(1)) - Number(b.slice(1)));
+      for (const [, { key, slot }] of ordered) {
+        const list = cache.byKey.get(key) ?? [];
+        list.push(slot);
+        cache.byKey.set(key, list);
+      }
+      return cache;
+    }
     for (const history of histories) {
       const ordered = [...history.entries()].sort(([a], [b]) => Number(a.slice(1)) - Number(b.slice(1)));
       let prefix = "";
       for (const [, { key, slot }] of ordered) {
         prefix = historyKey(prefix, key);
-        const lookup = cache.strict ? prefix : key;
+        const lookup = prefix;
         const list = cache.byKey.get(lookup) ?? [];
-        if (!cache.strict) list.push(slot);
-        else if (list.length === 0 || (typeof list[0] !== "object" && typeof slot === "object")) list[0] = slot;
+        if (list.length === 0 || (typeof list[0] !== "object" && typeof slot === "object")) list[0] = slot;
         cache.byKey.set(lookup, list);
       }
     }

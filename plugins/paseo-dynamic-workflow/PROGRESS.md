@@ -380,3 +380,4 @@ Claude 额度耗尽后从已完成的记录接续，没有重跑原审查和 fix
 
 - 重试实际使用 a1r2 等 attempt 调用 ID，原 `pendingBranch` 却仍记录 a1。若创建期间插件停止，恢复会查错分支。新增回归先失败，改为按本次 attempt ID 记录后 3 项 retry 回归通过；没有创建真实 worktree。
 - 移除上一批误提交的 Finder `.DS_Store`。
+- 迁移补充：旧格式（无 agent_started）的跨 resume 链按 callId 先合并再分组，避免把祖先同 key 的调用重复追加成不存在的缓存槽；新增回归先失败（size=4，预期2），修复后 10 项 resume 回归通过。
