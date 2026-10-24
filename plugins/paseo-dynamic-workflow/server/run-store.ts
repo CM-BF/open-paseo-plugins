@@ -102,7 +102,9 @@ type CacheSlot = { value: unknown; worktree: AgentCall["worktree"] } | "failed" 
  *
  * Like the built-in Workflow tool, reuse stops at the first edited or new call: once a call has
  * no slot in the earlier run, it and every later call run live. A call that failed, or that the
- * earlier run's stop or interruption cut off, reruns without ending reuse for the calls after it.
+ * earlier run's stop or interruption cut off, reruns. Only a cut-off call permits later reuse;
+ * an explicit failure ends reuse. History participates in the key so reordering or deleting a
+ * call cannot splice together results from different prefixes.
  * Journals written before `agent_started` lines existed cannot tell a new call from a cut-off
  * one, so they keep per-call matching.
  */
@@ -111,6 +113,7 @@ export class ResumeCache {
   private readonly used = new Map<string, number>();
   private strict = false;
   private diverged = false;
+  private prefix = "";
 
   /**
    * `paths` is one run, or a resume chain newest first. A newer run's slot wins; an older run's
@@ -119,18 +122,21 @@ export class ResumeCache {
   static async load(paths: RunPaths | RunPaths[]): Promise<ResumeCache> {
     const cache = new ResumeCache();
     const runs = Array.isArray(paths) ? paths : [paths];
-    const merged = new Map<string, { key: string; slot: CacheSlot }>();
+    const histories: Array<Map<string, { key: string; slot: CacheSlot }>> = [];
     for (const run of runs) {
-      for (const [callId, entry] of await ResumeCache.read(run, cache)) {
-        const current = merged.get(callId);
-        if (!current || (typeof current.slot !== "object" && typeof entry.slot === "object" && entry.key === current.key)) merged.set(callId, entry);
-      }
+      histories.push(await ResumeCache.read(run, cache));
     }
-    const ordered = [...merged.entries()].sort(([a], [b]) => Number(a.slice(1)) - Number(b.slice(1)));
-    for (const [, { key, slot }] of ordered) {
-      const list = cache.byKey.get(key) ?? [];
-      list.push(slot);
-      cache.byKey.set(key, list);
+    for (const history of histories) {
+      const ordered = [...history.entries()].sort(([a], [b]) => Number(a.slice(1)) - Number(b.slice(1)));
+      let prefix = "";
+      for (const [, { key, slot }] of ordered) {
+        prefix = historyKey(prefix, key);
+        const lookup = cache.strict ? prefix : key;
+        const list = cache.byKey.get(lookup) ?? [];
+        if (!cache.strict) list.push(slot);
+        else if (list.length === 0 || (typeof list[0] !== "object" && typeof slot === "object")) list[0] = slot;
+        cache.byKey.set(lookup, list);
+      }
     }
     return cache;
   }
@@ -173,17 +179,27 @@ export class ResumeCache {
   /** `diverged` is true on the call that ended reuse for the rest of the run. */
   take(key: string): { hit: true; value: unknown; worktree: AgentCall["worktree"] } | { hit: false; diverged?: true } {
     if (this.diverged) return { hit: false };
-    const list = this.byKey.get(key);
-    const index = this.used.get(key) ?? 0;
+    this.prefix = historyKey(this.prefix, key);
+    const lookup = this.strict ? this.prefix : key;
+    const list = this.byKey.get(lookup);
+    const index = this.used.get(lookup) ?? 0;
     if (!list || index >= list.length) {
       if (!this.strict) return { hit: false };
       this.diverged = true;
       return { hit: false, diverged: true };
     }
-    this.used.set(key, index + 1);
+    this.used.set(lookup, index + 1);
     const entry = list[index];
+    if (this.strict && entry === "failed") {
+      this.diverged = true;
+      return { hit: false, diverged: true };
+    }
     return typeof entry === "object" ? { hit: true, ...entry } : { hit: false };
   }
+}
+
+function historyKey(prefix: string, key: string): string {
+  return createHash("sha256").update(prefix).update(":").update(key).digest("hex");
 }
 
 /** One run directory: run.json (snapshot), journal.jsonl (append-only), script.js, result.json. */

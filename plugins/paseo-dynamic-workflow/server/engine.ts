@@ -249,7 +249,7 @@ export class RunEngine {
     const cached = this.options.cache?.take(key);
     void this.files.journal({ type: "agent_started", at: nowIso(), callId, key, label });
     if (cached && !cached.hit && cached.diverged) {
-      this.addLog(`Resume: "${label}" is new or edited, so it and every later agent() call run live`);
+      this.addLog(`Resume: "${label}" has no reusable result for this invocation history, so it and every later agent() call run live`);
     }
     if (cached?.hit) {
       const call = this.newCall(callId, label, phase, "cached");

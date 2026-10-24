@@ -81,7 +81,7 @@ describe("runtime regression contracts", () => {
     expect(result).toEqual({ args: { n: 2 }, kind: "function", nested: expect.stringMatching(/one level/) });
   });
 
-  it("keeps a failed same-key invocation as a miss instead of shifting later cached results", async () => {
+  it("reruns the suffix after a failed same-key invocation", async () => {
     const script = "return parallel([() => agent('same'), () => agent('same')])";
     const first = await run(script, new FakeRunner(task => task.callId === "a1"
       ? { ok: false, error: "failed first vote", skipped: false, worktree: null }
@@ -91,9 +91,9 @@ describe("runtime regression contracts", () => {
     expect(cache.size).toBe(1);
     const runner = new FakeRunner(task => ok("rerun:" + task.callId));
     const second = await run(script, runner, { state: first.state, cache });
-    expect(second.result).toEqual(["rerun:a1", "a2"]);
-    expect(runner.tasks.map(task => task.callId)).toEqual(["a1"]);
-    expect(second.record.calls.map(call => call.status)).toEqual(["completed", "cached"]);
+    expect(second.result).toEqual(["rerun:a1", "rerun:a2"]);
+    expect(runner.tasks.map(task => task.callId)).toEqual(["a1", "a2"]);
+    expect(second.record.calls.map(call => call.status)).toEqual(["completed", "completed"]);
   });
 
   it.each([

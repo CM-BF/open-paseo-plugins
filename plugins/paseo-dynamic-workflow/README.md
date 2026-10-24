@@ -45,7 +45,7 @@ paseo plugin install 'git:https://github.com/CM-BF/open-paseo-plugins.git:plugin
 | 额外选项 | | `provider`、`cwd` |
 | `opts.schema` | StructuredOutput 工具 | 最终消息里的 JSON，Ajv 校验，不符合时追问最多 3 次 |
 | `budget` | 本轮主循环 + 所有 workflow 的 output token | 本次运行子 agent 的 output token（取自 provider 上报，Codex/Pi 偏低） |
-| resume | 未改动的最长前缀命中缓存 | 同样只复用最长未改动前缀：第一个新增或改动的调用及其后全部重跑；匹配不受完成顺序影响；失败或被停止切断的调用重跑但不终止复用；label/phase 不参与 |
+| resume | 未改动的最长前缀命中缓存 | 同样只复用最长未改动前缀：第一个新增、改动、重排或失败的调用及其后全部重跑；按调用顺序匹配，忽略完成顺序；被停止切断的调用重跑但不终止复用；label/phase 不参与 |
 | 单次组合器条目上限 | 4096 | 4096；整次运行最多 4096 个运行时请求，最多启动 1000 个真实子 agent |
 | 内置角色 | 子 agent 类型定义 | explore/plan/verification 是提示词，不强制只读；子 agent 保留父会话的权限约束，无法保守映射时拒绝创建 |
 | 并发 | min(16, CPU-2) | 默认 min(8, CPU-2)，可设到 16（每个子 agent 是一个完整的 CLI 进程） |
