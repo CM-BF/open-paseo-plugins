@@ -48,3 +48,18 @@ describe("resume reuses the longest unchanged prefix", () => {
     expect(runner.tasks.map((t) => t.prompt)).toEqual(["b"]);
   });
 });
+
+describe("resume chains", () => {
+  it("fills positions a stopped-early resume never reached from the run before it", async () => {
+    const s = await state();
+    const script = `${meta}return [await agent('a'), await agent('b'), await agent('c')]`;
+    const first = await runScript(script, echo(), { state: s });
+    const middle = await runScript(`${meta}const a = await agent('a'); throw new Error('early')`, echo(), { state: s, cache: await ResumeCache.load(runPaths(s, first.record.runId)) });
+    expect(middle.record.status).toBe("failed");
+    const runner = echo();
+    const cache = await ResumeCache.load([runPaths(s, middle.record.runId), runPaths(s, first.record.runId)]);
+    const last = await runScript(script, runner, { state: s, cache });
+    expect(last.result).toEqual(["echo:a", "echo:b", "echo:c"]);
+    expect(runner.tasks).toHaveLength(0);
+  });
+});

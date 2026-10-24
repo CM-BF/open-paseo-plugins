@@ -112,8 +112,30 @@ export class ResumeCache {
   private strict = false;
   private diverged = false;
 
-  static async load(paths: RunPaths): Promise<ResumeCache> {
+  /**
+   * `paths` is one run, or a resume chain newest first. A newer run's slot wins; an older run's
+   * result fills a position the newer run did not complete, when the key there is the same.
+   */
+  static async load(paths: RunPaths | RunPaths[]): Promise<ResumeCache> {
     const cache = new ResumeCache();
+    const runs = Array.isArray(paths) ? paths : [paths];
+    const merged = new Map<string, { key: string; slot: CacheSlot }>();
+    for (const run of runs) {
+      for (const [callId, entry] of await ResumeCache.read(run, cache)) {
+        const current = merged.get(callId);
+        if (!current || (typeof current.slot !== "object" && typeof entry.slot === "object" && entry.key === current.key)) merged.set(callId, entry);
+      }
+    }
+    const ordered = [...merged.entries()].sort(([a], [b]) => Number(a.slice(1)) - Number(b.slice(1)));
+    for (const [, { key, slot }] of ordered) {
+      const list = cache.byKey.get(key) ?? [];
+      list.push(slot);
+      cache.byKey.set(key, list);
+    }
+    return cache;
+  }
+
+  private static async read(paths: RunPaths, cache: ResumeCache): Promise<Map<string, { key: string; slot: CacheSlot }>> {
     const text = await readFile(paths.journal, "utf8").catch(() => "");
     const byCall = new Map<string, { key: string; slot: CacheSlot }>();
     for (const line of text.split("\n")) {
@@ -133,13 +155,7 @@ export class ResumeCache {
         byCall.set(entry.callId, { key: entry.key, slot: entry.cutoff ? "cutoff" : "failed" });
       }
     }
-    const ordered = [...byCall.entries()].sort(([a], [b]) => Number(a.slice(1)) - Number(b.slice(1)));
-    for (const [, { key, slot }] of ordered) {
-      const list = cache.byKey.get(key) ?? [];
-      list.push(slot);
-      cache.byKey.set(key, list);
-    }
-    return cache;
+    return byCall;
   }
 
   add(key: string, result: unknown, worktree: AgentCall["worktree"] = null): void {

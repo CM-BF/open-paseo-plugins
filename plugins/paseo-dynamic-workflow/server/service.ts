@@ -213,7 +213,15 @@ export class WorkflowService {
         guidance = { ultracode: record.guidance.ultracode, size: isWorkflowSize(record.guidance.size) ? record.guidance.size : "unrestricted" };
       }
       if (turnedOff) droppedUltracode = true;
-      cache = await ResumeCache.load(runPaths(this.paths, previous));
+      // Earlier runs of the chain fill positions a resume that stopped early never reached.
+      const chain = [runPaths(this.paths, previous)];
+      for (let at = record.resumedFrom, hops = 0; at && hops < 20; hops++) {
+        const older = await readRecord(this.paths, at).catch(() => null);
+        if (!older || older.parentAgentId !== callerId) break;
+        chain.push(runPaths(this.paths, at));
+        at = older.resumedFrom;
+      }
+      cache = await ResumeCache.load(chain);
       resumedFrom = previous;
     }
 
