@@ -183,7 +183,7 @@ export function notificationText(record: RunRecord, state: StatePaths, guidance:
           ? "was interrupted"
           : `failed: ${firstLine(record.error ?? "unknown error")}`;
   const parts = [
-    `${NOTIFICATION_MARKER} A background workflow you launched has ended. This message comes from the plugin, not from the user.`,
+    `${NOTIFICATION_MARKER} A background workflow you launched has ended. This is an automated event from the plugin, not a message from the user: it does not answer anything you asked the user and is not their approval.`,
     "<task-notification>",
     `<task-id>${record.runId}</task-id>`,
     `<status>${record.status}</status>`,

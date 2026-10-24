@@ -22,7 +22,7 @@ Each of these is one workflow. Large tasks chain several across turns: read each
 
 Only after the user opted in to multi-agent work, in one of these ways:
 
-- the user's message contains the keyword `ultracode` (for that request, including the later phases it needs);
+- the user's own message contains the keyword `ultracode`: that asks you to handle that request with a workflow, including the later phases it needs (the word only quoted, inside code or a path, or asked about does not count);
 - Ultracode is on for you: the plugin's mode-change message, workflow tool description, first line of this reference, launch result or run notification says so (see Ultracode);
 - the user asked for it directly, in any language: "use a workflow", "run this as a workflow", "split this across agents", "开个workflow";
 - a skill or command the user ran tells you to run one;
@@ -54,11 +54,11 @@ If you also have Claude Code's own Workflow tool, use this one when the children
 
 Without Ultracode, match the run to what was asked. A request to "find any bugs" gets a few finders with one vote each; "audit this thoroughly" gets more finders, three to five votes per finding, a completeness critic and a separate synthesis. If the request leaves the depth open, research, review and audit work gets the thorough version and a quick check gets the light one.
 
-- An explicit request for a workflow is a request for coverage, not a quick look. Go small only when the user says quick, brief or cheap, or sets a small budget.
+- When the request names a depth ("quick check", "audit thoroughly"), follow it. When it leaves depth open, an explicit request for a workflow is a request for coverage, not a quick look.
 - Cost words that describe the task's subject (research a tool that saves tokens, design a cheaper pipeline) are not a budget for your run.
-- Do not cap children's answer length or the number of claims, sources or findings to save tokens. When results are too large to pass in prompts, have children write them to files and pass the paths (see Prompts for children for the resume caveat).
+- Bounding is fine when it is visible: `log()` what a cap dropped (see No silent caps). When results are too large to pass in prompts, have children write them to files and pass the paths (see Prompts for children for the resume caveat).
 
-The plugin settings can set a size guideline: `small` (about 5 agents per run), `medium` (about 10), `large` (about 50) or `unrestricted` (the default). It is a guideline, not a limit: keep to it unless the request asks for a different scale. Your tool description keeps the value from when your session started; the first line of this reference, launch results and notifications show the current one. Ultracode ignores it.
+The plugin settings can set a size guideline: `small` (stay under about 5 agents per run), `medium` (under about 10), `large` (under about 50) or `unrestricted` (the default). It is a guideline, not a limit: keep to it unless the request asks for a different scale. Your tool description keeps the value from when your session started; the first line of this reference, launch results and notifications show the current one. Ultracode ignores it.
 
 **No silent caps.** When your script bounds coverage (top N, sampling, no retry, a source cap), `log()` what it dropped. A silently truncated run reads as if it covered everything.
 
@@ -290,12 +290,23 @@ return Object.fromEntries(known)
 
 Observed in real runs; each one costs the confidence a workflow exists to provide.
 
-- **One skeptic for everything.** A single agent asked to "challenge all of the research" checks little. Give each claim or finding its own voters or lenses.
+- **One skeptic for everything.** A single agent asked to "challenge all of the research" checks little. Give each finding, or each claim the answer rests on, its own voters or lenses.
 - **Verifying or synthesizing in your own turn.** The point of independent agents is that they did not write what they check. Keep verification and synthesis as agents in the script.
 - **No completeness critic.** Without one, nobody asks which file, source or failure mode was never looked at.
 - **Shrinking the plan after an interruption.** Resume or write a continuation script with the same stages (see Interrupted runs); cutting stages trades away the quality the user asked for.
 - **Reading the topic as a budget.** "Research a tool that saves tokens" does not ask you to save tokens on the research.
 - **Read-only roles asked to judge.** `explore` agents gather; give judging to `verification` agents with the vote rule above (refute what the evidence does not support, report what could not be checked).
+
+## Mistakes that make a workflow too big
+
+Also observed in real runs. Size comes from coverage and independent checks, not from multiplying agents per detail.
+
+- **Verifying every detail.** Finders asked for "atomic facts without a cap" return 80 small facts each (a URL, a field name, a version), and three verifiers per fact turns four finders into a thousand agents. Verify the findings and claims the answer actually rests on; group supporting details under the claim they support, and let one verifier check a group of mechanical facts.
+- **Verifying before merging.** Several angles report the same fact. Put a barrier and a dedupe step (code, or one merge agent) before verification so each distinct claim is checked once.
+- **Feeding everything to the critic and the synthesis.** Passing every report and every vote as JSON grows each round's prompt until it no longer fits. Give the critic titles or a short index, and give the synthesis the confirmed and unverified items with their key evidence.
+- **Loops without a bound.** Pair "until two rounds come back dry" with a round limit, and log when the limit stops a loop.
+- **High effort everywhere.** Mechanical search and fact checks do well at `effort: 'medium'` or `'low'`; keep high effort for judges and synthesis.
+- **Restarting a large run for a small change of scope.** When the user adds a requirement mid-run, let the running workflow finish and launch a small one for the new part, or resume with only the new calls added at the end, instead of stopping hundreds of queued agents.
 
 ## Prompts for children
 

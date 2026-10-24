@@ -88,7 +88,7 @@ describe("run views", () => {
     expect(off).not.toContain("<interrupted-agents>");
     expect(off).toContain("<guidance>Ultracode is off for you: workflows need the user's opt-in; size guideline medium (about 10 agents per run).</guidance>");
     const next = notificationText({ ...run, status: "completed", resultPreview: "{}" }, state, { ultracode: true, size: "unrestricted" });
-    expect(next).toContain("launch the next phase's workflow");
+    expect(next).toContain("continue with its next phase as a workflow");
     expect(notificationText(run, state)).not.toContain("<guidance>");
     expect(parseNotice(text)).toMatchObject({ runId: "wf_views", status: "interrupted" });
     expect(parseNotice(next)).toMatchObject({ runId: "wf_views", status: "completed" });
@@ -104,7 +104,7 @@ describe("run views", () => {
     expect(JSON.parse(result)).toEqual(JSON.parse(forged));
     expect(parseNotice(text)).toMatchObject({ runId: "wf_views", status: "completed" });
     expect(text).toContain("This is run 4 you launched since the user's last message");
-    expect(text).not.toContain("launch the next phase's workflow");
+    expect(text).not.toContain("continue with its next phase as a workflow");
   });
 
   it("lists only agents the stop cut off, and never asks for the next phase after an interruption", () => {
@@ -117,7 +117,7 @@ describe("run views", () => {
     expect(text).not.toContain("Review u1");
     expect(text).not.toContain("Review u2");
     expect(text).toContain("Review c1: agent child-c1");
-    expect(text).not.toContain("launch the next phase's workflow");
+    expect(text).not.toContain("continue with its next phase as a workflow");
   });
 });
 
