@@ -381,3 +381,12 @@ Claude 额度耗尽后从已完成的记录接续，没有重跑原审查和 fix
 - 重试实际使用 a1r2 等 attempt 调用 ID，原 `pendingBranch` 却仍记录 a1。若创建期间插件停止，恢复会查错分支。新增回归先失败，改为按本次 attempt ID 记录后 3 项 retry 回归通过；没有创建真实 worktree。
 - 移除上一批误提交的 Finder `.DS_Store`。
 - 迁移补充：旧格式（无 agent_started）的跨 resume 链按 callId 先合并再分组，避免把祖先同 key 的调用重复追加成不存在的缓存槽；新增回归先失败（size=4，预期2），修复后 10 项 resume 回归通过。
+
+### 2026-10-24：接续实机验收与交付状态
+
+- 最终运行代码 `94f9bda`：typecheck、33 文件 / 310 测试、diff-check 通过。本轮自行补上 resume 调用历史、旧日志跨链槽位和重试分支恢复的遗漏；新增回归均先红后绿。
+- 主 daemon 0.12.0，server `srv_BSheQn5lzdEE`。空闲闸后改成 daemon 管理的本地 Git checkout，revision 固定 `94f9bdaa3fb8917e9018e13f346d842e2e288bef`，精确恢复 preferences，再安全 reload。没有重启 daemon或改动其他插件。来源不再依赖本 synthetic worktree。
+- Codex 新 agent 通过真实 MCP 启动探针、收到卡片和完成通知；原脚本 resume 缓存3个成功结果，改第二个 prompt 后只缓存第一个；真实 UI Restart 换成 attempt 2，工具计数和结果回投可见。桌面与500px compact截图及完整边界见 `docs/verification/2026-10-24-parity.md`。
+- Claude 新 fixture仍遇到额度限制，不能报通过。一次 Codex 子调用拒绝计算任务，原始输出保留，未改提示词规避。Restart结果含正确stdout和额外格式，未夸大为字节一致。
+- 原审查86条确认差异按已处理/部分改善/保留差异/尚未对齐逐项记入 `docs/PARITY.md`；**不等于86条已全部修复，更不能称与原生完全无区别**。
+- fixture的11个会话（含自动额度fallback）按完整ID核对归档；测试project/workspace、4个run和fixture repo清理。access/outbox无fixture，归档nonce binding保留。截图显示Workspace unavailable。原始结果、回归红绿日志、安装备份、cleanup.json保存在 `~/.paseo/verification/dwf-parity-2026-10-24/`。本地分支尚未push。
