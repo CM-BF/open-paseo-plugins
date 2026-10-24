@@ -50,6 +50,8 @@ class HardStop extends Error {
 }
 
 /** One running workflow: its worker, its agent calls, and the record that describes them. */
+const MAX_FAILURES = 100;
+
 export class RunEngine {
   readonly record: RunRecord;
   readonly files: RunFiles;
@@ -167,6 +169,9 @@ export class RunEngine {
       const payload = safeParse(message.json) as Record<string, unknown> | null;
       if (!payload) return;
       if (message.op === "phase" && typeof payload.title === "string") this.addPhase(payload.title, true);
+      if (message.op === "failure" && typeof payload.label === "string" && typeof payload.message === "string") {
+        this.addFailure(payload.label, payload.message, typeof payload.count === "number" ? payload.count : 1);
+      }
       if (message.op === "log" && typeof payload.message === "string") {
         this.addLog(payload.group ? `[${String(payload.group)}] ${payload.message}` : payload.message);
       }
@@ -190,6 +195,14 @@ export class RunEngine {
       if (message.ok) void this.complete(message.json ?? "null");
       else void this.finish("failed", scriptError(message.error, this.record.meta.name));
     }
+  }
+
+  private addFailure(label: string, message: string, count: number): void {
+    const failures = (this.record.failures ??= []);
+    const same = failures.find((entry) => entry.message === message);
+    if (same) same.count = Math.max(same.count, count);
+    else if (failures.length < MAX_FAILURES) failures.push({ label, message, count });
+    this.changed();
   }
 
   private reply(id: number, payload: { ok: true; json: string } | { ok: false; error: ErrorReply }): void {

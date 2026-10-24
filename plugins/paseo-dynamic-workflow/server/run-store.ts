@@ -46,6 +46,8 @@ export const RunRecordSchema = z.object({
   /** This run's position among the caller's launches since its latest user message. */
   chain: z.number().int().min(1).optional(),
   notified: z.boolean(),
+  /** Rejected parallel()/pipeline() slots, identical messages collapsed: the notification's <failures>. */
+  failures: z.array(z.object({ label: z.string(), message: z.string(), count: z.number() })).optional(),
 });
 export type RunRecord = z.infer<typeof RunRecordSchema>;
 

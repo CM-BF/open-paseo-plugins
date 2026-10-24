@@ -64,7 +64,7 @@ describe("run views", () => {
     const run = { ...record([call("a1", "failed")]), status: "completed" as const, endedAt: at, resultPreview: "[null]" };
     const text = notificationText(run, state);
     expect(parseNotice(text)).toMatchObject({ runId: run.runId, status: "completed" });
-    expect(text).toContain("Review a1: invalid structured reply");
+    expect(text).toContain("[Review a1] failed: invalid structured reply");
     expect(text).toContain("/tmp/dwf-view-contract/runs/wf_views/journal.jsonl");
     expect(statusText(run, state)).toContain("Run dir:");
     expect(statusText(run, state)).not.toContain("Transcript dir:");
@@ -128,4 +128,30 @@ it("preserves resume paths containing angle brackets without introducing notific
   expect(JSON.parse(json).scriptPath).toBe(run.scriptPath);
   expect(text).not.toContain("paseo-workflow run --script-path");
   expect(text.match(/<task-notification>/g)).toHaveLength(1);
+});
+
+describe("notification parity", () => {
+  it("lists rejected parallel/pipeline slots, counts empty results and keeps a user stop quiet", async () => {
+    const { notificationText } = await import("./views");
+    const { statePaths } = await import("./paths");
+    const state = statePaths("/tmp/dwf-parity-views");
+    const base = {
+      version: 1, runId: "wf_parity00001", meta: { name: "p", description: "d" }, status: "completed", parentAgentId: "a", workspaceId: null, cwd: "/tmp",
+      scriptPath: "/tmp/p.js", source: "script", resumedFrom: null, startedAt: "2026-10-24T00:00:00.000Z", endedAt: "2026-10-24T00:00:01.000Z", error: null,
+      phaseOrder: [], calls: [
+        { callId: "a1", label: "one", phase: null, status: "completed", agentId: "c1", provider: "claude", model: "m", queuedAt: "x", startedAt: "x", endedAt: "x", resultPreview: "[]", error: null, usage: { inputTokens: 10, outputTokens: 5, costUsd: 0 }, worktree: null, repairs: 0 },
+        { callId: "a2", label: "two", phase: null, status: "skipped", agentId: null, provider: null, model: null, queuedAt: "x", startedAt: null, endedAt: "x", resultPreview: null, error: "run stopped", usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 }, worktree: null, repairs: 0 },
+      ],
+      logs: [], resultPreview: "1", usage: { inputTokens: 10, outputTokens: 5, costUsd: 0 }, budgetTotal: null, notified: false,
+      failures: [{ label: "parallel[1]", message: "thunk boom", count: 1 }, { label: "pipeline[0]", message: "token budget spent", count: 40 }],
+    } as any;
+    const text = notificationText(base, state);
+    expect(text).toContain("parallel[1] failed: thunk boom\npipeline[0] failed: token budget spent (40 slots)");
+    expect(text).toContain("<agents_done>1</agents_done><agents_error>0</agents_error><agents_skipped>0</agents_skipped><agents_cut_off>1</agents_cut_off><agents_empty_result>1</agents_empty_result>");
+    expect(text).toContain("<subagent_tokens>15</subagent_tokens>");
+    const stopped = notificationText({ ...base, status: "stopped", error: "stopped by the user" }, state);
+    expect(stopped).not.toContain("<recovery>");
+    expect(stopped).toContain("Do not resume or relaunch it unless they ask");
+    expect(notificationText({ ...base, status: "failed", error: "boom" }, state)).toContain("<recovery>Resume with");
+  });
 });

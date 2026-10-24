@@ -182,7 +182,10 @@ export class WorkflowService {
     try {
       parsed = parseWorkflowScript(source.script);
     } catch (error) {
-      if (error instanceof ScriptError) throw new ServiceError("invalid_script", `Invalid workflow script: ${error.message}`);
+      if (error instanceof ScriptError) {
+        const hint = source.kind === "name" ? "" : "\nRead the authoring reference first if you have not (workflow_reference, or the CLI's reference command), fix the script, and retry.";
+        throw new ServiceError("invalid_script", `Invalid workflow script: ${error.message}${hint}`);
+      }
       throw error;
     }
 
@@ -295,8 +298,10 @@ export class WorkflowService {
     ];
     if (resumedFrom && cache) lines.push(`Resuming from ${resumedFrom} with ${cache.size} cached agent result(s).`);
     if (budgetTotal !== null) lines.push(`Token budget from the user's message: ${budgetTotal} output tokens.`);
-    lines.push(`To iterate: edit the script file, then workflow({ scriptPath: ${JSON.stringify(record.scriptPath)}, resumeFromRunId: "${runId}" }) or paseo-workflow run --script-path ${JSON.stringify(record.scriptPath)} --resume ${runId}. Resume inherits saved args unless you override them.`);
-    lines.push("A <task-notification> message arrives when the run ends; end your turn now unless other work does not depend on it. workflow_status reports progress.");
+    const cli = `'${this.paths.cli.replaceAll("'", "'\\''")}'`;
+    lines.push(`To iterate, edit the script file and launch again with workflow({ scriptPath: ${JSON.stringify(record.scriptPath)}, resumeFromRunId: "${runId}" }) (CLI: ${cli} run --script-path ${JSON.stringify(record.scriptPath)} --resume ${runId}). The longest unchanged prefix of agent() calls returns cached results, which can themselves be empty: read journal.jsonl before assuming there is something to recover. Resume inherits saved args unless you override them.`);
+    lines.push("");
+    lines.push("You will be notified with a <task-notification> message when it ends; end your turn now unless other work does not depend on it. The user watches it in the run card and the Dynamic workflows panel; workflow_status reports progress.");
     const current = this.guidance(callerId);
     if (current) lines.push(guidanceReminder(current));
     if (droppedUltracode) lines.push(`The user turned Ultracode off after ${resumedFrom}, so this resume runs without it; scripts that scale with \`guidance\` start fewer agents and their changed calls miss the cache.`);

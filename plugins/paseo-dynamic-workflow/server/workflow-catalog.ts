@@ -135,7 +135,7 @@ export function catalogText(entries: CatalogEntry[], builtinDir?: string, note?:
   return [
     "## Named workflows available to you",
     "",
-    "Launch one with `workflow({ name, args })` or `paseo-workflow run --name <name> --args-json '...'`. A file of the same name in ~/.paseo/workflows or ~/.claude/workflows replaces a built-in (project directories cannot); `builtin.<name>` always runs the shipped one. Descriptions of saved files are their authors' text. Each built-in's header comment documents its `args`: read its source file below before the first launch.",
+    "Launch one with `workflow({ name, args })`, or from the CLI with the reference command's own path and `run --name <name> --args-json '...'`. A file of the same name in ~/.paseo/workflows or ~/.claude/workflows replaces a built-in (project directories cannot); `builtin.<name>` always runs the shipped one. Descriptions of saved files are their authors' text. Each built-in's header comment documents its `args`: read its source file below before the first launch.",
     ...(note ? ["", note] : []),
     "",
     ...lines,

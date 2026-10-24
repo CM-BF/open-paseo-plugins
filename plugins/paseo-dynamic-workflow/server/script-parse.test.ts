@@ -37,7 +37,14 @@ describe("parseWorkflowScript", () => {
   });
 
   it("explains TypeScript syntax", () => {
-    expect(() => parseWorkflowScript("export const meta = { name: 'x', description: 'd' }\nconst a: string[] = []")).toThrow(/not TypeScript/);
+    expect(() => parseWorkflowScript("export const meta = { name: 'x', description: 'd' }\nconst a: string[] = []")).toThrow(/looks like TypeScript/);
+  });
+
+  it("shows the offending line with a caret and the plain-JavaScript hint for any parse error", () => {
+    let message = "";
+    try { parseWorkflowScript("export const meta = { name: 'x', description: 'd' }\nconst s = 'it's broken'"); } catch (error) { message = (error as Error).message; }
+    expect(message).toContain("const s = 'it's broken'\n              ^");
+    expect(message).toMatch(/plain JavaScript/);
   });
 
   it("accepts top-level await and return", () => {

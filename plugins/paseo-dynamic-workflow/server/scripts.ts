@@ -194,7 +194,7 @@ async function callTool(name, args) {
     }
     if (outcome.status >= 200 && outcome.status < 300 && outcome.body) return { text: String(outcome.body.text) };
     const failure = outcome.body && outcome.body.error ? outcome.body.error : { code: 'http_' + outcome.status, message: 'HTTP ' + outcome.status };
-    return { error: failure.code + ': ' + failure.message };
+    return { error: (failure.code === 'invalid_script' ? '' : failure.code + ': ') + failure.message };
   }
 }
 `;

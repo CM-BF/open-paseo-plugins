@@ -82,6 +82,7 @@ export const PRELUDE = String.raw`(function (host) {
   function note(where, index, error, stage) {
     var label = where + ' item ' + index + (stage === undefined ? '' : ' (stage ' + (stage + 1) + ')');
     host.emit('log', J.stringify({ message: (label + ' failed: ' + text(error)).slice(0, 2000), group: null }));
+    host.failure(where.replace('()', '') + '[' + index + ']', (error && typeof error.message === 'string' ? error.message : text(error)).slice(0, 500));
   }
 
   function makeApi(scope) {
@@ -263,6 +264,9 @@ let pendingBytes = 0;
 let eventWindow = Date.now();
 let eventCount = 0;
 let droppedEvents = 0;
+const failures = new Map();
+const changedFailures = new Set();
+let failureFlush = false;
 
 function post(message) {
   parentPort.postMessage(message);
@@ -307,6 +311,26 @@ const sharedHost = {
       pendingBytes += bytes;
       pending.set(id, { resolve, reject, bytes });
       post({ t: 'request', id, op, json });
+    });
+  },
+  // Failures bypass the event rate limit: identical messages collapse into one counted entry,
+  // flushed once per tick, so 400 slots rejected by a spent budget cost one message.
+  failure(label, message) {
+    if (stopped) return;
+    const entry = failures.get(message);
+    if (entry) entry.count++;
+    else if (failures.size < 100) failures.set(message, { label, count: 1 });
+    else return;
+    changedFailures.add(message);
+    if (failureFlush) return;
+    failureFlush = true;
+    Promise.resolve().then(() => {
+      failureFlush = false;
+      for (const key of changedFailures) {
+        const item = failures.get(key);
+        post({ t: 'event', op: 'failure', json: JSON.stringify({ label: item.label, message: key, count: item.count }) });
+      }
+      changedFailures.clear();
     });
   },
   emit(op, json) {

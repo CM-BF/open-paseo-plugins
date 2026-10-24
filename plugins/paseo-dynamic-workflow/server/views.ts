@@ -34,6 +34,18 @@ export function phaseSummaries(record: RunRecord): PhaseSummary[] {
   });
 }
 
+/** A call the run's own end (stop, interruption, early return) cut off, not one the user skipped. */
+export function isCutOff(call: AgentCall): boolean {
+  return call.status === "skipped" && call.error !== "skipped by the user" && call.error !== "the agent was stopped or archived by the user";
+}
+
+function isEmptyPreview(preview: string | null): boolean {
+  if (preview === null) return true;
+  const text = preview.trim();
+  if (text === "" || text === "null" || text === '""' || /^(\[\s*\]|\{\s*\})$/.test(text)) return true;
+  return /^\{\s*"[^"]+"\s*:\s*\[\s*\]\s*\}$/.test(text);
+}
+
 function isRunning(call: AgentCall): boolean {
   return call.status === "starting" || call.status === "running" || call.status === "permission";
 }
@@ -182,6 +194,9 @@ export function notificationText(record: RunRecord, state: StatePaths, guidance:
         : record.status === "interrupted"
           ? "was interrupted"
           : `failed: ${firstLine(record.error ?? "unknown error")}`;
+  const cutOff = record.calls.filter(isCutOff).length;
+  const empty = record.calls.filter((call) => (call.status === "completed" || call.status === "cached") && isEmptyPreview(call.resultPreview)).length;
+  const userStopped = record.status === "stopped" && record.error === "stopped by the user";
   const parts = [
     `${NOTIFICATION_MARKER} A background workflow you launched has ended. This is an automated event from the plugin, not a message from the user: it does not answer anything you asked the user and is not their approval.`,
     "<task-notification>",
@@ -194,9 +209,13 @@ export function notificationText(record: RunRecord, state: StatePaths, guidance:
     parts.push(`<result>${escapeJsonTags(record.resultPreview ?? "null")}${(record.resultPreview ?? "").includes("more characters]") ? `\n(full result in ${paths.result})` : ""}</result>`);
   } else {
     if (record.error) parts.push(`<error>${escapeTags(truncate(record.error, 4000))}</error>`);
-    parts.push(`<recovery>Resume with ${resumeHint(record)}: completed agent() calls return their cached results.</recovery>`);
+    if (userStopped) {
+      parts.push("<note>The user stopped this run in Paseo. Do not resume or relaunch it unless they ask; tell them briefly what had finished if that helps.</note>");
+    } else {
+      parts.push(`<recovery>Resume with ${resumeHint(record, state.cli)}: completed agent() calls return their cached results. Agent transcripts: Paseo's get_agent_activity tool with the agent ids in ${paths.run} (calls[].agentId).</recovery>`);
+    }
     // Only calls the stop cut off; a call the user skipped stays skipped.
-    const cut = record.calls.filter((call) => ["running", "permission", "queued", "starting"].includes(call.status) || (call.status === "skipped" && call.error !== "skipped by the user" && call.error !== "the agent was stopped or archived by the user"));
+    const cut = record.calls.filter((call) => ["running", "permission", "queued", "starting"].includes(call.status) || isCutOff(call));
     if (record.status === "interrupted" && cut.length > 0) {
       const reused = record.calls.filter((call) => call.status === "completed" || call.status === "cached").length;
       const shown = cut.slice(0, 30).map((call) => `${escapeTags(truncate(call.label, 120))}: ${call.agentId ? `agent ${call.agentId}` : "not started"}`);
@@ -211,12 +230,17 @@ export function notificationText(record: RunRecord, state: StatePaths, guidance:
     }
   }
   const failed = record.calls.filter((call) => call.status === "failed");
-  if (failed.length > 0) {
-    const shown = failed.slice(0, 20).map((call) => `${escapeTags(truncate(call.label, 120))}: ${escapeTags(truncate(call.error ?? "failed", 500))}`);
-    if (failed.length > shown.length) shown.push(`${failed.length - shown.length} more failures in the journal.`);
+  const scriptFailures = record.failures ?? [];
+  if (failed.length > 0 || scriptFailures.length > 0) {
+    const shown = failed.slice(0, 40).map((call) => `[${escapeTags(truncate(call.label, 120))}] failed: ${escapeTags(truncate(call.error ?? "failed", 500))}`);
+    if (failed.length > shown.length) shown.push(`${failed.length - shown.length} more failed agents in the journal.`);
+    for (const entry of scriptFailures.slice(0, 40)) {
+      shown.push(`${escapeTags(entry.label)} failed: ${escapeTags(truncate(entry.message, 500))}${entry.count > 1 ? ` (${entry.count} slots)` : ""}`);
+    }
+    if (scriptFailures.length > 40) shown.push(`${scriptFailures.length - 40} more distinct slot failures in the run log.`);
     parts.push(`<failures>\n${shown.join("\n")}\n</failures>`);
   }
-  parts.push(`<diagnostics>Per-agent results and errors: ${paths.journal}. Read this journal if the result is empty or unexpected. Run snapshot: ${paths.run}. ${record.status === "completed" ? `After editing the script, resume with ${resumeHint(record)}.` : ""}</diagnostics>`);
+  parts.push(`<diagnostics>Per-agent results and errors: ${paths.journal}. Read this journal if the result is empty or unexpected. Run snapshot: ${paths.run}. ${record.status === "completed" ? `After editing the script, resume with ${resumeHint(record, state.cli)}.` : ""}</diagnostics>`);
   const worktrees = record.calls.filter((call) => call.pendingBranch || (call.worktree && (call.worktree.changed !== false || call.worktree.retained)));
   if (worktrees.length > 0) {
     parts.push("<worktrees>");
@@ -226,7 +250,7 @@ export function notificationText(record: RunRecord, state: StatePaths, guidance:
     parts.push("</worktrees>");
   }
   parts.push(
-    `<usage><agent_count>${agents.total}</agent_count><cached>${agents.cached}</cached><failed>${agents.failed}</failed><skipped>${agents.skipped}</skipped><output_tokens>${record.usage.outputTokens}</output_tokens><input_tokens>${record.usage.inputTokens}</input_tokens><duration_ms>${duration}</duration_ms></usage>`,
+    `<usage><agent_count>${agents.total}</agent_count><agents_done>${agents.done + agents.cached}</agents_done><agents_error>${agents.failed}</agents_error><agents_skipped>${agents.skipped - cutOff}</agents_skipped>${cutOff ? `<agents_cut_off>${cutOff}</agents_cut_off>` : ""}<agents_empty_result>${empty}</agents_empty_result><agents_cached>${agents.cached}</agents_cached><subagent_tokens>${record.usage.inputTokens + record.usage.outputTokens}</subagent_tokens><output_tokens>${record.usage.outputTokens}</output_tokens><duration_ms>${duration}</duration_ms></usage>`,
   );
   if (guidance) {
     const chained = (record.chain ?? 1) >= CHAIN_CHECK_IN;
@@ -254,11 +278,12 @@ function firstLine(text: string): string {
   return text.split("\n")[0] ?? text;
 }
 
-function resumeHint(record: RunRecord): string {
+function resumeHint(record: RunRecord, cli: string): string {
   const args = record.args;
   const path = `'${record.scriptPath.replaceAll("'", "'\\''")}'`;
   const tool = `workflow(${escapeJsonTags(JSON.stringify({ scriptPath: record.scriptPath, resumeFromRunId: record.runId, ...(args === undefined ? {} : { args }) }))})`;
   // The JSON form preserves angle brackets through unicode escapes; replacing them in a shell
   // path would point at a different file. Keep CLI hints only when the path is tag-safe.
-  return /[<>]/.test(path) ? `${tool} (inherits saved args)` : `${tool} or paseo-workflow run --script-path ${path} --resume ${record.runId} (inherits saved args)`;
+  const command = `'${cli.replaceAll("'", "'\\''")}'`;
+  return /[<>]/.test(path + command) ? `${tool} (inherits saved args)` : `${tool} (MCP), or ${command} run --script-path ${path} --resume ${record.runId} (CLI); either inherits saved args`;
 }

@@ -32,7 +32,16 @@ type AnyNode = Node & { [key: string]: any };
 const NONDETERMINISM =
   "Workflow scripts must be deterministic: Date.now(), Math.random() and argless new Date() are unavailable because they break resume. Pass timestamps in through args, stamp results after the workflow returns, and vary prompts or labels by index instead of randomness.";
 
-const TS_HINT = " Workflow scripts are plain JavaScript, not TypeScript: remove type annotations, interfaces and generics.";
+const PLAIN_JS = "The script must be plain JavaScript. The usual causes are TypeScript syntax (type annotations, interfaces, generics) and a string whose quotes are unbalanced or unescaped.";
+const TS_HINT = " This one looks like TypeScript: remove the type annotations, interfaces and generics.";
+
+/** The offending line (clipped around the column) with a caret under the error position. */
+function codeFrame(source: string, line: number, column: number): string {
+  const text = source.split("\n")[line - 1] ?? "";
+  const start = Math.max(0, column - 60);
+  const shown = text.slice(start, start + 120);
+  return `${start > 0 ? "…" : ""}${shown}\n${" ".repeat(column - start + (start > 0 ? 1 : 0))}^`;
+}
 
 export function parseWorkflowScript(source: string): ParsedScript {
   if (typeof source !== "string" || !source.trim()) throw new ScriptError("The workflow script is empty.");
@@ -50,7 +59,8 @@ export function parseWorkflowScript(source: string): ParsedScript {
     }) as AnyNode;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new ScriptError(`Script parse error: ${message}.${looksLikeTypeScript(source) ? TS_HINT : ""}`);
+    const loc = (error as { loc?: { line: number; column: number } }).loc;
+    throw new ScriptError(`Script parse error: ${message}${loc ? `\n\n${codeFrame(source, loc.line, loc.column)}` : ""}\n\n${PLAIN_JS}${looksLikeTypeScript(source) ? TS_HINT : ""}`);
   }
 
   const statements = ast.body as AnyNode[];
