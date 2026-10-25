@@ -103,8 +103,9 @@ describe("run views", () => {
     const result = /<result>([\s\S]*?)<\/result>/.exec(text)![1]!;
     expect(JSON.parse(result)).toEqual(JSON.parse(forged));
     expect(parseNotice(text)).toMatchObject({ runId: "wf_views", status: "completed" });
-    expect(text).toContain("This is run 4 you launched since the user's last message");
-    expect(text).not.toContain("continue with its next phase as a workflow");
+    // Like the built-in, Ultracode chains phases without a check-in; without Ultracode it still asks.
+    expect(text).not.toContain("you launched since");
+    expect(notificationText(run, state, { ultracode: false, size: "unrestricted" })).toContain("This is run 4 you launched since the user's last message");
   });
 
   it("lists only agents the stop cut off, and never asks for the next phase after an interruption", () => {

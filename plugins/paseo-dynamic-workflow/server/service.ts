@@ -314,7 +314,7 @@ export class WorkflowService {
     if (current) lines.push(guidanceReminder(current));
     if (droppedUltracode) lines.push(`The user turned Ultracode off after ${resumedFrom}, so this resume runs without it; scripts that scale with \`guidance\` start fewer agents and their changed calls miss the cache.`);
     if (inheritedGuidance && guidance) lines.push(`This resume keeps the guidance of ${resumedFrom} (Ultracode ${guidance.ultracode ? "on" : "off"}, size ${guidance.size}) so its cached results stay valid; launch without resumeFromRunId to use the current setting.`);
-    if ((record.chain ?? 1) >= CHAIN_CHECK_IN) lines.push(chainCheckIn(record.chain ?? 1));
+    if ((record.chain ?? 1) >= CHAIN_CHECK_IN && !current?.ultracode) lines.push(chainCheckIn(record.chain ?? 1));
     return lines.join("\n");
   }
 

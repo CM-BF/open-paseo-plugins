@@ -253,7 +253,7 @@ export function notificationText(record: RunRecord, state: StatePaths, guidance:
     `<usage><agent_count>${agents.total}</agent_count><agents_done>${agents.done + agents.cached}</agents_done><agents_error>${agents.failed}</agents_error><agents_skipped>${agents.skipped - cutOff}</agents_skipped>${cutOff ? `<agents_cut_off>${cutOff}</agents_cut_off>` : ""}<agents_empty_result>${empty}</agents_empty_result><agents_cached>${agents.cached}</agents_cached><subagent_tokens>${record.usage.inputTokens + record.usage.outputTokens}</subagent_tokens><output_tokens>${record.usage.outputTokens}</output_tokens><duration_ms>${duration}</duration_ms></usage>`,
   );
   if (guidance) {
-    const chained = (record.chain ?? 1) >= CHAIN_CHECK_IN;
+    const chained = (record.chain ?? 1) >= CHAIN_CHECK_IN && !guidance.ultracode;
     const next = chained ? ` ${chainCheckIn(record.chain ?? 1)}` : guidance.ultracode && record.status === "completed" ? ` ${ULTRACODE_NEXT_PHASE}` : "";
     parts.push(`<guidance>${guidanceReminder(guidance)}${next}</guidance>`);
   }

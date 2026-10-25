@@ -112,5 +112,5 @@ it("keeps the opt-in rule and the per-agent guidance inside Claude Code's 2048-c
     }
     expect(mcpInstructions(guidance).length).toBeLessThanOrEqual(CLAUDE_CUT);
   }
-  expect(mcpInstructions({ ultracode: true, size: "unrestricted" })).toContain("Stay solo for conversation");
+  expect(mcpInstructions({ ultracode: true, size: "unrestricted" })).toContain("Stay solo only on conversational or trivial turns");
 });

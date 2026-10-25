@@ -135,7 +135,10 @@ it("states the caller's guidance, keeps the first run's guidance on resume, and 
   expect(JSON.parse(await readFile(join(f.paths.runs, resumedId, "result.json"), "utf8"))).toEqual({ ultracode: false, size: "small" });
 
   const fourth = await f.service.launch("parent", { script: meta() + "return 4" });
-  expect(fourth).toContain("This is run 4 you launched since the user's last message");
+  expect(fourth).not.toContain("you launched since");
+  guidance.current = { ultracode: false, size: "unrestricted" };
+  const fifth = await f.service.launch("parent", { script: meta() + "return 'b'" });
+  expect(fifth).toContain("This is run 5 you launched since the user's last message");
   f.timeline.refetch.mockResolvedValue(userMessage("go on", 2) as never);
   expect(await f.service.launch("parent", { script: meta() + "return 5" })).not.toContain("you launched since");
 });
