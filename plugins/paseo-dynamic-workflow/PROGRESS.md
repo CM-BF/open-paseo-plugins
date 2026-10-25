@@ -390,3 +390,10 @@ Claude 额度耗尽后从已完成的记录接续，没有重跑原审查和 fix
 - Claude 新 fixture仍遇到额度限制，不能报通过。一次 Codex 子调用拒绝计算任务，原始输出保留，未改提示词规避。Restart结果含正确stdout和额外格式，未夸大为字节一致。
 - 原审查86条确认差异按已处理/部分改善/保留差异/尚未对齐逐项记入 `docs/PARITY.md`；**不等于86条已全部修复，更不能称与原生完全无区别**。
 - fixture的11个会话（含自动额度fallback）按完整ID核对归档；测试project/workspace、4个run和fixture repo清理。access/outbox无fixture，归档nonce binding保留。截图显示Workspace unavailable。原始结果、回归红绿日志、安装备份、cleanup.json保存在 `~/.paseo/verification/dwf-parity-2026-10-24/`。本地分支尚未push。
+
+## 第二轮修复与发布（2026-10-25）
+
+- 按用户决定：Claude agent 优先用原生 Workflow（工具描述、MCP 说明、模式消息、reference）；插件留给没有原生工具的 agent。
+- 继续对齐：opt-in 成本理由、Ultracode 只在对话/琐碎回合不用 workflow 且不再要求第4次确认；运行时宽松处理（非字符串 prompt/label/phase、未知 effort/isolation 记日志、schema 根只要求 object、meta 可选字段错型忽略并保留 title、默认 label 前60字符、console 合并参数、函数结果报错、错误提示）；父 agent 自停不再追加通知；summary 用 description；截断按实际长度；缓存调用保留原子 agent；面板显示任务开头。台账：已处理 43、部分改善 16、保留差异 15、尚未对齐 12（见 docs/PARITY.md）。
+- 314 项测试、typecheck 通过；推送远程 main `c62670f..c9beded`；daemon 更新到 `c9beded`（git 源 `file:///Users/citrine/Projects/flowly-kanban/open-paseo-plugins`），running，日志无启动错误，reference 输出含新文本。此前已用 Claude 父 agent（haiku）实测 `94f9bda`：结果与原生探针一致。
+- 操作失误：更新脚本在连续 120 秒空闲后再检查一次才执行 `plugin update`，但 update 先拉取并构建，约 1 秒后才 reload；736de498 恰在这段时间 resume 了 `wf_25381c3c913a`（8 个缓存命中、1 个刚开始的调用），被 reload 记为 interrupted。中断通知已排队投递给 736de498，它可用 resumeFromRunId 继续（8 个结果仍可复用）。教训：`plugin update` 的构建时间不受空闲检查保护，应先 install/准备好再执行短暂 reload，或请运行方暂停启动。
