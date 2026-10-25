@@ -607,6 +607,9 @@ function normalizeOptions(raw: Record<string, unknown>, warn: (message: string) 
   if (provider) options.provider = provider;
   const agentType = string("agentType");
   if (agentType) options.agentType = agentType;
+  for (const key of ["disallowedTools", "bashCommandClamp", "stallMs"]) {
+    if (raw[key] !== undefined) warn(`ignored agent() opts.${key}: Paseo children cannot apply it`);
+  }
   // Like the built-in, values it does not know are ignored rather than fatal; the run log says so.
   const effort = raw.effort;
   if (effort !== undefined && effort !== null) {
