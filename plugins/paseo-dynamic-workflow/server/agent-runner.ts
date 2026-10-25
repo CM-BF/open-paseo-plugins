@@ -624,7 +624,7 @@ export function buildPrompt(task: AgentTask, branch: string | null): string {
   // Identical across siblings first (provider prompt caches share it), call-specific notes last.
   const request = relayedRequest(task.parent.userRequest);
   const head = request ? `${REQUEST_FRAME}\n${indent(request)}\n\n` : "";
-  const notes: string[] = [`Workflow "${task.workflowName}", run ${task.runId}, agent "${task.label}"${task.phase ? `, phase "${task.phase}"` : ""}. Your final message is returned to the workflow script as data.`];
+  const notes: string[] = [`Workflow "${task.workflowName}", run ${task.runId}, agent "${task.label}"${task.phase ? `, phase "${task.phase}"` : ""}. Your final message is returned to the workflow script as data. Do not start other agents or workflows.`];
   if (task.opts.schema) {
     notes.push(
       `It must be exactly one JSON value matching this JSON Schema, with no prose and no code fences:\n${JSON.stringify(task.opts.schema.schema)}`,
@@ -632,7 +632,7 @@ export function buildPrompt(task: AgentTask, branch: string | null): string {
   }
   if (branch) {
     notes.push(
-      "You work in an isolated git worktree; other agents edit their own copies in parallel. Commit your changes on the current branch before you finish and leave the branch in place: the orchestrator merges it.",
+      `You work in an isolated git worktree (your working directory) on branch ${branch}; other agents edit their own copies in parallel. Commit your changes on that branch before you finish and leave it in place for the orchestrator to merge. A worktree you leave unchanged is removed.`,
     );
   }
   return `${head}${TASK_FRAME}\n${indent(task.prompt)}\n\n[Paseo workflow: notes]\n${notes.join("\n")}`;

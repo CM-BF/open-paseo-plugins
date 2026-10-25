@@ -193,7 +193,7 @@ export function notificationText(record: RunRecord, state: StatePaths, guidance:
         ? "was stopped"
         : record.status === "interrupted"
           ? "was interrupted"
-          : `failed: ${firstLine(record.error ?? "unknown error")}`;
+          : `failed: ${truncate(record.error ?? "unknown error", 2000)}`;
   const cutOff = record.calls.filter(isCutOff).length;
   const empty = record.calls.filter((call) => (call.status === "completed" || call.status === "cached") && isEmptyPreview(call.resultPreview)).length;
   const userStopped = record.status === "stopped" && record.error === "stopped by the user";
@@ -202,11 +202,11 @@ export function notificationText(record: RunRecord, state: StatePaths, guidance:
     "<task-notification>",
     `<task-id>${record.runId}</task-id>`,
     `<status>${record.status}</status>`,
-    `<summary>Dynamic workflow "${escapeTags(record.meta.name)}" ${escapeTags(verb)}</summary>`,
+    `<summary>Dynamic workflow "${escapeTags(truncate(record.meta.description, 300))}" ${escapeTags(verb)}</summary>`,
   ];
   if (record.status === "completed") {
     parts.push(`<output-file>${paths.result}</output-file>`);
-    parts.push(`<result>${escapeJsonTags(record.resultPreview ?? "null")}${(record.resultPreview ?? "").includes("more characters]") ? `\n(full result in ${paths.result})` : ""}</result>`);
+    parts.push(`<result>${escapeJsonTags(record.resultPreview ?? "null")}${resultTruncated(record) ? `\n(truncated: ${record.resultLength} characters in all, full result in ${paths.result})` : ""}</result>`);
   } else {
     if (record.error) parts.push(`<error>${escapeTags(truncate(record.error, 4000))}</error>`);
     if (userStopped) {
@@ -272,6 +272,11 @@ function escapeTags(text: string): string {
 /** Inside JSON, `<` and `>` can only occur in strings, where \\u003c and \\u003e keep the JSON valid. */
 function escapeJsonTags(json: string): string {
   return json.replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
+}
+
+function resultTruncated(record: RunRecord): boolean {
+  if (typeof record.resultLength === "number") return record.resultLength > (record.resultPreview ?? "").replace(/… \[\d+ more characters\]$/, "").length;
+  return /… \[\d+ more characters\]$/.test(record.resultPreview ?? "");
 }
 
 function firstLine(text: string): string {

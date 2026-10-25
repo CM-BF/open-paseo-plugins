@@ -196,3 +196,19 @@ it("keeps an uncertain logical run receipt quarantined when guidance changes", a
   expect(send).toHaveBeenCalledOnce();
   expect(await entries()).toEqual([expect.objectContaining({ id: `notify-${id}`, attempts: 1, uncertain: true })]);
 });
+
+it("does not queue a notification turn for a stop the launching agent requested, but does for a user stop", async () => {
+  const f = await fixture();
+  const slow = meta() + "await new Promise(r => setTimeout(r, 60000)); return 1";
+  const own = runId(await f.service.launch("parent", { script: slow }));
+  expect(await f.service.stop(own, { agentId: "parent" })).toContain("no <task-notification> will follow");
+  await vi.waitFor(async () => expect((await readRecord(f.paths, own))?.status).toBe("stopped"));
+  const user = runId(await f.service.launch("parent", { script: slow }));
+  await f.service.stop(user, {});
+  await vi.waitFor(async () => expect((await readRecord(f.paths, user))?.status).toBe("stopped"));
+  await vi.waitFor(async () => {
+    const ids = JSON.parse(await readFile(f.paths.outbox, "utf8")).entries.map((entry: { id: string }) => entry.id);
+    expect(ids).toContain(`notify-${user}`);
+    expect(ids).not.toContain(`notify-${own}`);
+  });
+});

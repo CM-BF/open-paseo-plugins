@@ -152,7 +152,7 @@ export const STATUS_TOOL_DESCRIPTION =
   "Report a dynamic workflow run: status, phases, active agents, recent log lines and, once it ended, the result. Without runId, list your recent runs. waitSeconds (at most 50) waits for the run to end before answering; prefer ending your turn and waiting for the <task-notification>.";
 
 export const STOP_TOOL_DESCRIPTION =
-  "Stop a running dynamic workflow: queued agent() calls fail, running child agents are stopped and archived, and the run ends as stopped. Completed results stay in the journal for resumeFromRunId.";
+  "Stop a running dynamic workflow: running and queued agents are cut off (running children are stopped and archived), their agent() calls end, and the run ends as stopped; no notification follows a stop you request. Completed results stay in the journal for resumeFromRunId.";
 
 export const REFERENCE_TOOL_DESCRIPTION =
   "Return the dynamic workflow authoring reference for you: your current Ultracode mode and limits, the script API, scale rules, pipeline versus barrier, quality patterns with code, prompts for child agents, resume, and the named workflows you can launch. Read it before writing your first workflow script. It does not itself authorize running a workflow.";

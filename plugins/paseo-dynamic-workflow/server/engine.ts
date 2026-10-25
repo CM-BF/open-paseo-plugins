@@ -259,8 +259,12 @@ export class RunEngine {
       call.endedAt = call.queuedAt;
       call.resultPreview = preview(cached.value, CALL_PREVIEW_CHARS);
       call.worktree = cached.worktree;
+      // The original child stays linked, so the panel can still show its transcript.
+      call.agentId = cached.agentId ?? null;
+      call.provider = cached.provider ?? null;
+      call.model = cached.model ?? null;
       this.record.calls.push(call);
-      void this.files.journal({ type: "agent_completed", at: nowIso(), callId, key, label, result: cached.value, cached: true, worktree: cached.worktree });
+      void this.files.journal({ type: "agent_completed", at: nowIso(), callId, key, label, result: cached.value, cached: true, worktree: cached.worktree, agentId: call.agentId, provider: call.provider, model: call.model });
       this.changed();
       return cached.value;
     }
@@ -392,7 +396,7 @@ export class RunEngine {
     if (outcome.ok) {
       call.status = "completed";
       call.resultPreview = preview(outcome.value, CALL_PREVIEW_CHARS);
-      void this.files.journal({ type: "agent_completed", at: call.endedAt, callId, key, label, result: outcome.value, cached: false, worktree: call.worktree });
+      void this.files.journal({ type: "agent_completed", at: call.endedAt, callId, key, label, result: outcome.value, cached: false, worktree: call.worktree, agentId: call.agentId, provider: call.provider, model: call.model });
       if (outcome.worktree && outcome.worktree.changed !== false) {
         const description = outcome.worktree.changed ? "left changes" : "kept a worktree whose changes could not be inspected";
         this.addLog(`Agent "${label}" ${description} on branch ${outcome.worktree.branch} (${outcome.worktree.path})`);
@@ -509,6 +513,7 @@ export class RunEngine {
     await this.files.writeResult(json).catch((error) => log(`could not write the result of ${this.runId}: ${describeError(error)}`));
     if (this.settled) return;
     this.record.resultPreview = truncate(json, RESULT_PREVIEW_CHARS);
+    this.record.resultLength = json.length;
     const leftover = [...this.callAborts.values()];
     if (leftover.length > 0) {
       this.addLog(`${leftover.length} agent() call(s) were still running when the script returned; they were stopped (await every agent() call)`);

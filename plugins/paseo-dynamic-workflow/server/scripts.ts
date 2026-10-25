@@ -85,6 +85,7 @@ export function toolDefinitions(guidance?: ToolGuidance): Array<{ name: McpToolN
         properties: {
           script: {
             type: "string",
+            maxLength: 524_288,
             description:
               "Self-contained workflow script. Must begin with `export const meta = { name, description, phases }` (pure literal) followed by the body using agent()/parallel()/pipeline()/phase().",
           },
@@ -107,6 +108,8 @@ export function toolDefinitions(guidance?: ToolGuidance): Array<{ name: McpToolN
             description:
               "Run id of an earlier run you launched, to resume from: the longest unchanged prefix of agent() calls (same prompt and options, in order) returns cached results; the first edited or new call and everything after it run again. Stop that run first if it is still running.",
           },
+          description: { type: "string", description: "Ignored: set the workflow description in the script's meta block." },
+          title: { type: "string", description: "Ignored: set the workflow title in the script's meta block." },
         },
       },
     },

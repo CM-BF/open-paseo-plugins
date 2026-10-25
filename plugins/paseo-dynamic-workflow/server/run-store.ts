@@ -47,13 +47,14 @@ export const RunRecordSchema = z.object({
   chain: z.number().int().min(1).optional(),
   notified: z.boolean(),
   /** Rejected parallel()/pipeline() slots, identical messages collapsed: the notification's <failures>. */
+  resultLength: z.number().optional(),
   failures: z.array(z.object({ label: z.string(), message: z.string(), count: z.number() })).optional(),
 });
 export type RunRecord = z.infer<typeof RunRecordSchema>;
 
 export type JournalEntry =
   | { type: "run_started"; at: string; runId: string; resumedFrom: string | null }
-  | { type: "agent_completed"; at: string; callId: string; key: string; label: string; result: unknown; cached: boolean; worktree?: AgentCall["worktree"] }
+  | { type: "agent_completed"; at: string; callId: string; key: string; label: string; result: unknown; cached: boolean; worktree?: AgentCall["worktree"]; agentId?: string | null; provider?: string | null; model?: string | null }
   | { type: "agent_started"; at: string; callId: string; key: string; label: string }
   | { type: "agent_failed"; at: string; callId: string; key: string; label: string; error: string; cutoff?: boolean }
   | { type: "phase"; at: string; title: string }
@@ -94,7 +95,7 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-type CacheSlot = { value: unknown; worktree: AgentCall["worktree"] } | "failed" | "cutoff";
+type CacheSlot = { value: unknown; worktree: AgentCall["worktree"]; agentId?: string | null; provider?: string | null; model?: string | null } | "failed" | "cutoff";
 
 /**
  * Results of an earlier run, by key in invocation order. Failed and cut-off calls occupy their
@@ -173,7 +174,7 @@ export class ResumeCache {
         cache.strict = true;
         if (!byCall.has(entry.callId)) byCall.set(entry.callId, { key: entry.key, slot: "cutoff" });
       } else if (entry.type === "agent_completed") {
-        byCall.set(entry.callId, { key: entry.key, slot: { value: entry.result, worktree: entry.worktree ?? null } });
+        byCall.set(entry.callId, { key: entry.key, slot: { value: entry.result, worktree: entry.worktree ?? null, agentId: entry.agentId ?? null, provider: entry.provider ?? null, model: entry.model ?? null } });
       } else if (entry.type === "agent_failed") {
         byCall.set(entry.callId, { key: entry.key, slot: entry.cutoff ? "cutoff" : "failed" });
       }
@@ -194,7 +195,7 @@ export class ResumeCache {
   }
 
   /** `diverged` is true on the call that ended reuse for the rest of the run. */
-  take(key: string): { hit: true; value: unknown; worktree: AgentCall["worktree"] } | { hit: false; diverged?: true } {
+  take(key: string): { hit: true; value: unknown; worktree: AgentCall["worktree"]; agentId?: string | null; provider?: string | null; model?: string | null } | { hit: false; diverged?: true } {
     if (this.diverged) return { hit: false };
     this.prefix = historyKey(this.prefix, key);
     const lookup = this.strict ? this.prefix : key;

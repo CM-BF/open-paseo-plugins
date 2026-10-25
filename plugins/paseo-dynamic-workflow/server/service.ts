@@ -199,7 +199,7 @@ export class WorkflowService {
       const previous = input.resumeFromRunId.trim();
       if (!RUN_ID_PATTERN.test(previous)) throw new ServiceError("invalid_request", `resumeFromRunId "${previous}" is not a run id (wf_...).`);
       if (this.engines.has(previous)) {
-        throw new ServiceError("still_running", `Workflow ${previous} is still running. Stop it first with workflow_stop({ runId: "${previous}" }), then resume.`);
+        throw new ServiceError("still_running", `Workflow ${previous} is still running. Stop it first (workflow_stop({ runId: "${previous}" }), or the CLI's stop ${previous}), then resume.`);
       }
       const record = await readRecord(this.paths, previous);
       if (!record) throw new ServiceError("unknown_run", `No workflow run ${previous} on this host.`);
@@ -331,7 +331,8 @@ export class WorkflowService {
     // Acknowledge the request before child cleanup, which can outlast the host RPC.
     void engine.stop(by.agentId ? "stopped by the launching agent" : "stopped by the user")
       .catch((error) => log(`could not stop ${runId}: ${describeError(error)}`));
-    return statusText(engine.record, this.paths);
+    const note = by.agentId ? `\nStopping ${runId}; no <task-notification> will follow this stop. Completed agent() results stay in ${runPaths(this.paths, runId).journal} for resumeFromRunId.` : "";
+    return statusText(engine.record, this.paths) + note;
   }
 
   restart(runId: string, callId: string): boolean {
@@ -483,7 +484,10 @@ export class WorkflowService {
       if (timer) clearTimeout(timer);
       timers.delete(record.runId);
     }
-    this.notifier.add({ id: `notify-${record.runId}`, agentId: record.parentAgentId, text: this.notification(record) });
+    // The launching agent asked for this stop and already has the stop result: no extra turn.
+    if (!(record.status === "stopped" && record.error === "stopped by the launching agent")) {
+      this.notifier.add({ id: `notify-${record.runId}`, agentId: record.parentAgentId, text: this.notification(record) });
+    }
     record.notified = true;
     await engine.files.saveRecord(record);
     await this.publishCard(record);
@@ -515,7 +519,7 @@ export class WorkflowService {
   }
 
   private requireOwner(record: RunRecord, agentId: string): void {
-    if (record.parentAgentId !== agentId) throw new ServiceError("forbidden", "This workflow belongs to another agent.");
+    if (record.parentAgentId !== agentId) throw new ServiceError("forbidden", "This workflow belongs to another agent: only the agent that launched a run can read, stop or resume it. To reuse its script, launch a fresh run with its scriptPath (no resumeFromRunId).");
   }
 
   /** The caller's latest message from the user (plugin notifications skipped), or null. */

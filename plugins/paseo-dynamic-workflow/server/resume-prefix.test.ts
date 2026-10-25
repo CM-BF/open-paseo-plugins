@@ -125,3 +125,11 @@ it("does not duplicate same-key slots while loading a chain of legacy journals",
   expect(cache.take(key)).toMatchObject({ hit: true, value: 'new:a2' });
   expect(cache.take(key)).toEqual({ hit: false });
 });
+
+it("keeps the original child agent linked on cached calls", async () => {
+  const s = await state();
+  const script = `${meta}return await agent('a')`;
+  const first = await runScript(script, echo(), { state: s });
+  const second = await runScript(script, echo(), { state: s, cache: await ResumeCache.load(runPaths(s, first.record.runId)) });
+  expect(second.record.calls[0]).toMatchObject({ status: "cached", agentId: "child-a1", provider: "claude", model: "claude-test" });
+});
