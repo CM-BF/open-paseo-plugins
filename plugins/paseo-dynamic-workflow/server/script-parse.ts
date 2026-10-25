@@ -12,6 +12,7 @@ export interface WorkflowMetaPhase {
 export interface WorkflowMeta {
   name: string;
   description: string;
+  title?: string;
   whenToUse?: string;
   phases?: WorkflowMetaPhase[];
 }
@@ -162,25 +163,19 @@ function validateMeta(value: unknown): WorkflowMeta {
   if (typeof meta.description !== "string" || !meta.description.trim()) {
     throw new ScriptError("meta.description must be a non-empty string.");
   }
-  if (meta.whenToUse !== undefined && typeof meta.whenToUse !== "string") throw new ScriptError("meta.whenToUse must be a string.");
+  // Like the built-in: optional fields of the wrong type are ignored, not fatal.
   const result: WorkflowMeta = { name: meta.name.trim(), description: meta.description.trim() };
+  if (typeof meta.title === "string" && meta.title.trim()) result.title = meta.title.trim();
   if (typeof meta.whenToUse === "string") result.whenToUse = meta.whenToUse;
-  if (meta.phases !== undefined) {
-    if (!Array.isArray(meta.phases)) throw new ScriptError("meta.phases must be an array of { title, detail? }.");
-    result.phases = meta.phases.map((phase, index) => {
-      if (typeof phase === "string") return { title: phase };
-      if (!phase || typeof phase !== "object" || typeof (phase as WorkflowMetaPhase).title !== "string") {
-        throw new ScriptError(`meta.phases[${index}] must be { title: string, detail?: string }.`);
-      }
+  if (Array.isArray(meta.phases)) {
+    const phases: WorkflowMetaPhase[] = [];
+    for (const phase of meta.phases) {
+      if (typeof phase === "string") { phases.push({ title: phase }); continue; }
+      if (!phase || typeof phase !== "object" || typeof (phase as Record<string, unknown>).title !== "string") continue;
       const { title, detail, model } = phase as Record<string, unknown>;
-      if (detail !== undefined && typeof detail !== "string") throw new ScriptError(`meta.phases[${index}].detail must be a string.`);
-      if (model !== undefined && typeof model !== "string") throw new ScriptError(`meta.phases[${index}].model must be a string.`);
-      return {
-        title: title as string,
-        ...(typeof detail === "string" ? { detail } : {}),
-        ...(typeof model === "string" ? { model } : {}),
-      };
-    });
+      phases.push({ title: title as string, ...(typeof detail === "string" ? { detail } : {}), ...(typeof model === "string" ? { model } : {}) });
+    }
+    if (phases.length > 0) result.phases = phases;
   }
   return result;
 }

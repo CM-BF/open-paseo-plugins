@@ -432,6 +432,11 @@ function CallDetails({ runId, call, styles, theme, navigation, skipping, onSkip,
               {call.worktree.changed === true ? " · has changes" : call.worktree.changed === false ? " · unchanged, removed" : ""}
             </Text>
           ) : null}
+          {call.promptPreview ? (
+            <Text style={styles.muted} numberOfLines={3} selectable>
+              Task: {call.promptPreview}
+            </Text>
+          ) : null}
           {details.isPending ? <Text style={styles.muted}>Loading details…</Text> : null}
           {details.isError ? <Text style={styles.danger}>Could not load details: {errorMessage(details.error)}</Text> : null}
           {detail.error ? (

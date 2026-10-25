@@ -61,3 +61,12 @@ describe("parseWorkflowScript", () => {
     expect(() => parseWorkflowScript("export const meta = { name: 'x', description: 'd' }\nconst log = []; let args = 1; return { log, args }")).not.toThrow();
   });
 });
+
+describe("meta leniency", () => {
+  it("ignores optional meta fields of the wrong type and keeps title, like the built-in", () => {
+    const parsed = parseWorkflowScript("export const meta = { name: 'x', description: 'd', title: 'T', whenToUse: 5, phases: [{ title: 'A' }, { nope: 1 }] }\nreturn 1");
+    expect(parsed.meta).toMatchObject({ name: "x", title: "T", phases: [{ title: "A" }] });
+    expect(parsed.meta.whenToUse).toBeUndefined();
+    expect(() => parseWorkflowScript("export const meta = { name: 'x', description: 'd', phases: 'none' }\nreturn 1")).not.toThrow();
+  });
+});

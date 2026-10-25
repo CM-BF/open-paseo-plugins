@@ -53,6 +53,8 @@ export const AgentCallSchema = z.object({
   /** Tool calls the child started so far, and the latest tool's name. */
   toolCalls: z.number().optional(),
   lastTool: z.string().nullable().optional(),
+  /** The start of the prompt, whitespace collapsed, so queued and cached agents show their task. */
+  promptPreview: z.string().optional(),
 });
 export type AgentCall = z.infer<typeof AgentCallSchema>;
 

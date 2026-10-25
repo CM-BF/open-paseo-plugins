@@ -9,6 +9,7 @@ import { describeError, log, nowIso, preview, truncate, unref } from "./util";
 
 export const MAX_ITEMS = 4096;
 const RESULT_PREVIEW_CHARS = 20_000;
+const PROMPT_PREVIEW_CHARS = 300;
 const CALL_PREVIEW_CHARS = 2_000;
 const MAX_LOGS = 300;
 const HEARTBEAT_MS = 10_000;
@@ -254,7 +255,7 @@ export class RunEngine {
       this.addLog(`Resume: "${label}" has no reusable result for this invocation history, so it and every later agent() call run live`);
     }
     if (cached?.hit) {
-      const call = this.newCall(callId, label, phase, "cached");
+      const call = this.newCall(callId, label, phase, "cached", prompt);
       call.startedAt = call.queuedAt;
       call.endedAt = call.queuedAt;
       call.resultPreview = preview(cached.value, CALL_PREVIEW_CHARS);
@@ -275,7 +276,7 @@ export class RunEngine {
     this.checkBudget();
     this.liveAgents++;
 
-    const call = this.newCall(callId, label, phase, "queued");
+    const call = this.newCall(callId, label, phase, "queued", prompt);
     this.record.calls.push(call);
     this.changed();
     const controller = new AbortController();
@@ -420,12 +421,13 @@ export class RunEngine {
     return null;
   }
 
-  private newCall(callId: string, label: string, phase: string | null, status: AgentCall["status"]): AgentCall {
+  private newCall(callId: string, label: string, phase: string | null, status: AgentCall["status"], prompt: string): AgentCall {
     return {
       callId,
       label,
       phase,
       status,
+      promptPreview: truncate(prompt.replace(/\s+/g, " ").trim(), PROMPT_PREVIEW_CHARS),
       agentId: null,
       provider: null,
       model: null,

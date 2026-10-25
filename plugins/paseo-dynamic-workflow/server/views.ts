@@ -173,7 +173,10 @@ export function statusText(record: RunRecord, state: StatePaths): string {
   if (record.error) lines.push(`Error: ${record.error}`);
   if (record.status === "completed") {
     lines.push(`Result (${paths.result}):`);
-    lines.push(truncate(record.resultPreview ?? "null", 8000));
+    // Count what is missing against the whole result, not against the stored preview.
+    const shown = (record.resultPreview ?? "null").replace(/… \[\d+ more characters\]$/, "").slice(0, 8000);
+    const total = record.resultLength ?? (record.resultPreview ?? "null").length;
+    lines.push(total > shown.length ? `${shown}… [${total - shown.length} more characters in ${paths.result}]` : shown);
   }
   lines.push(`Run dir: ${paths.dir}`);
   lines.push(`Per-agent results and failures: ${paths.journal}`);
