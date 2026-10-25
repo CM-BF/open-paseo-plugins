@@ -238,11 +238,13 @@ export class RunEngine {
 
   private async agentCall(request: AgentRequest): Promise<unknown> {
     if (this.runAbort.signal.aborted) throw new HardStop("The workflow was stopped");
-    const opts = normalizeOptions(request.opts ?? {});
+    const warnings: string[] = [];
+    const opts = normalizeOptions(request.opts ?? {}, (message) => warnings.push(message));
     const prompt = request.prompt;
     const phase = typeof request.phase === "string" && request.phase ? request.phase : null;
     const callId = `a${++this.callSeq}`;
-    const label = opts.label?.trim() || defaultLabel(prompt);
+    const label = opts.label?.trim() || defaultLabel(prompt, this.callSeq);
+    for (const warning of warnings) this.addLog(`Agent "${label}": ${warning}`);
     const key = callKey(prompt, request.opts ?? {});
     if (phase) this.addPhase(phase, false);
 
@@ -264,7 +266,7 @@ export class RunEngine {
     }
 
     if (this.liveAgents >= this.options.maxAgents) {
-      throw new Error(`The run reached its agent cap (${this.options.maxAgents} agents); no more agent() calls can start`);
+      throw Object.assign(new Error(`The run reached its agent cap (${this.options.maxAgents} agents); no more agent() calls can start. A runaway loop is the usual cause: check loop bounds and dedupe before fanning out. The user can raise the cap in the plugin settings.`), { name: "WorkflowAgentCapError" });
     }
     this.checkBudget();
     this.liveAgents++;
@@ -437,7 +439,7 @@ export class RunEngine {
   private checkBudget(): void {
     const total = this.record.budgetTotal;
     if (total !== null && this.record.usage.outputTokens >= total) {
-      throw new Error(`The token budget is spent (${this.record.usage.outputTokens} of ${total} output tokens); agent() calls throw from here on`);
+      throw Object.assign(new Error(`The token budget is spent (${this.record.usage.outputTokens} of ${total} output tokens); agent() calls throw from here on. Guard loops with budget.remaining() and return what you have.`), { name: "WorkflowBudgetExceededError" });
     }
   }
 
@@ -574,7 +576,7 @@ export function isTerminalCall(status: AgentCall["status"]): boolean {
   return status === "completed" || status === "cached" || status === "failed" || status === "skipped";
 }
 
-function normalizeOptions(raw: Record<string, unknown>): AgentOptions {
+function normalizeOptions(raw: Record<string, unknown>, warn: (message: string) => void = () => {}): AgentOptions {
   const options: AgentOptions = {};
   const string = (key: string): string | undefined => {
     const value = raw[key];
@@ -598,17 +600,16 @@ function normalizeOptions(raw: Record<string, unknown>): AgentOptions {
   if (provider) options.provider = provider;
   const agentType = string("agentType");
   if (agentType) options.agentType = agentType;
-  const effort = string("effort");
-  if (effort) {
-    if (!(EFFORTS as readonly string[]).includes(effort)) {
-      throw new TypeError(`agent() opts.effort must be one of ${EFFORTS.join(", ")}`);
-    }
-    options.effort = effort;
+  // Like the built-in, values it does not know are ignored rather than fatal; the run log says so.
+  const effort = raw.effort;
+  if (effort !== undefined && effort !== null) {
+    if (typeof effort === "string" && (EFFORTS as readonly string[]).includes(effort)) options.effort = effort;
+    else warn(`ignored agent() opts.effort ${JSON.stringify(effort)} (use one of ${EFFORTS.join(", ")})`);
   }
-  const isolation = string("isolation");
-  if (isolation) {
-    if (isolation !== "worktree") throw new TypeError("agent() opts.isolation must be 'worktree'");
-    options.isolation = "worktree";
+  const isolation = raw.isolation;
+  if (isolation !== undefined && isolation !== null) {
+    if (isolation === "worktree") options.isolation = "worktree";
+    else warn(`ignored agent() opts.isolation ${JSON.stringify(isolation)} (only 'worktree' is supported)`);
   }
   const cwd = string("cwd");
   if (cwd) {
@@ -636,8 +637,9 @@ export function cleanLabel(text: string, max = 120): string {
   return cleaned ? truncate(cleaned, max) : "";
 }
 
-function defaultLabel(prompt: string): string {
-  return cleanLabel(prompt.trim().split("\n")[0] ?? "", 48) || "agent";
+function defaultLabel(prompt: string, index: number): string {
+  const flat = prompt.replace(/\s+/g, " ").trim();
+  return cleanLabel(flat.length > 60 ? flat.slice(0, 60) : flat, 60) || `agent ${index}`;
 }
 
 /** 0 means no limit. */

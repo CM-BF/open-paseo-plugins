@@ -106,16 +106,21 @@ log('done')`,
 
   it("validates agent() options and schemas before starting an agent", async () => {
     const runner = echo();
-    const { result } = await run(
+    const { result, record } = await run(
       `${meta()}const errors = []
-for (const opts of [{ effort: 'huge' }, { isolation: 'sandbox' }, { schema: { type: 'array' } }, { label: 5 }]) {
+for (const opts of [{ schema: { type: 'array' } }, { timeoutMinutes: -1 }]) {
   try { await agent('x', opts) } catch (e) { errors.push(e.message) }
 }
-return errors`,
+// Like the built-in, unknown effort and isolation values are ignored and a numeric label is converted.
+const lenient = [await agent('x', { effort: 'huge' }), await agent('y', { isolation: 'sandbox', label: 5 })]
+return { errors, lenient }`,
       runner,
     );
-    expect(result).toHaveLength(4);
-    expect(runner.tasks).toHaveLength(0);
+    expect((result as any).errors).toHaveLength(2);
+    expect((result as any).errors[0]).toMatch(/type: 'object'/);
+    expect((result as any).lenient).toEqual(["echo:x", "echo:y"]);
+    expect(runner.tasks.map((t) => [t.label, t.opts.effort, t.opts.isolation])).toEqual([["x", undefined, undefined], ["5", undefined, undefined]]);
+    expect(record.logs.some((l) => /ignored agent\(\) opts.effort "huge"/.test(l.message))).toBe(true);
   });
 
   it("caps concurrency", async () => {

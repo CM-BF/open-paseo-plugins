@@ -45,11 +45,13 @@ describe("compileSchema", () => {
 
   it.each([
     [{ type: "array" }],
-    [{ type: "object" }],
-    [{ type: "object", properties: {}, required: ["x"] }],
     ["nope"],
   ])("rejects an unsatisfiable root %j", (bad) => {
     expect(() => compileSchema(bad)).toThrow(SchemaError);
+  });
+  it("accepts object roots the built-in accepts: no properties, or required naming undeclared keys", () => {
+    expect(() => compileSchema({ type: "object" })).not.toThrow();
+    expect(compileSchema({ type: "object", properties: {}, required: ["x"] }).validate({ x: 1 })).toEqual([]);
   });
 });
 

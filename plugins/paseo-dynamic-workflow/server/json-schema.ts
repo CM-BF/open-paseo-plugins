@@ -16,8 +16,8 @@ export interface CompiledSchema {
 }
 
 /**
- * Validates an agent() schema up front: a JSON Schema object with `type: "object"` and
- * `properties` at the root, and `required` naming only declared properties. Common impossible
+ * Validates an agent() schema up front: a JSON Schema object with `type: "object"` at the root,
+ * like the built-in (`properties` optional; `required` may name undeclared properties). Common impossible
  * requirements fail here, before an agent runs; this is not a general schema satisfiability solver.
  */
 export function compileSchema(schema: unknown): CompiledSchema {
@@ -25,17 +25,11 @@ export function compileSchema(schema: unknown): CompiledSchema {
     throw new SchemaError("agent() opts.schema must be a JSON Schema object");
   }
   const root = schema as Record<string, unknown>;
-  if (root.type !== "object" || !root.properties || typeof root.properties !== "object" || Array.isArray(root.properties)) {
-    throw new SchemaError("agent() opts.schema needs {type: 'object', properties: {...}} at the root");
+  if (root.type !== "object" || (root.properties !== undefined && (typeof root.properties !== "object" || root.properties === null || Array.isArray(root.properties)))) {
+    throw new SchemaError("agent() received an unusable opts.schema: the root must declare type: 'object' (wrap arrays or primitives in an object property). The agent was not started; fix the schema and call agent() again.");
   }
-  if (root.required !== undefined) {
-    if (!Array.isArray(root.required) || root.required.some((key) => typeof key !== "string")) {
-      throw new SchemaError("agent() opts.schema.required must be an array of property names");
-    }
-    const missing = (root.required as string[]).filter((key) => !(key in (root.properties as object)));
-    if (missing.length > 0) {
-      throw new SchemaError(`agent() opts.schema.required names properties that are not declared: ${missing.join(", ")}`);
-    }
+  if (root.required !== undefined && (!Array.isArray(root.required) || root.required.some((key) => typeof key !== "string"))) {
+    throw new SchemaError("agent() opts.schema.required must be an array of property names");
   }
   checkRequiredConstraints(root);
   const key = JSON.stringify(root);

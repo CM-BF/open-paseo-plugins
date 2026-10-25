@@ -82,7 +82,7 @@ export function ultracodeChangeText(on: boolean, workflowsOff = false, cliPath?:
   if (on) {
     const transport = cliPath
       ? `Use the workflow CLI: '${cliPath.replaceAll("'", "'\\''")}' reference prints your current mode and the authoring API; its run command launches a workflow script. This agent has no workflow MCP binding, so use the CLI for this conversation.`
-      : `Your workflow tools are in the dynamic_workflow MCP server: workflow, workflow_status, workflow_stop and workflow_reference. If they are not listed among your tools, find them with your tool search; if they are not there either, your session started before workflows were turned on, so ask the user to reload you (from this agent's menu or its Dynamic workflows panel) instead of doing the work without them.`;
+      : `If you are a Claude Code agent with the built-in Workflow tool, run workflows with that tool. Otherwise your workflow tools are in the dynamic_workflow MCP server: workflow, workflow_status, workflow_stop and workflow_reference. If they are not listed among your tools, find them with your tool search; if they are not there either, your session started before workflows were turned on, so ask the user to reload you (from this agent's menu or its Dynamic workflows panel) instead of doing the work without them.`;
     const notice = cliPath ? ULTRACODE_NOTICE.replaceAll("workflow_reference", "the CLI reference command") : ULTRACODE_NOTICE;
     return `${head}\n<ultracode>on</ultracode>\n${notice}\n${transport} There is nothing to do now: reply only "Ultracode on." and wait for the user's next request.`;
   }

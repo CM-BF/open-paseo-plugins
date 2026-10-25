@@ -28,7 +28,9 @@ export const PRELUDE = String.raw`(function (host) {
   SafeDate.now = function () { unavailable('Date.now()'); };
   Object.defineProperty(RealDate.prototype, 'constructor', { value: SafeDate, writable: false, configurable: false });
   globalThis.Date = SafeDate;
-  Math.random = function () { unavailable('Math.random()'); };
+  Math.random = function () {
+    throw new Error('Math.random() is unavailable in workflow scripts because it would break resume. For N independent samples, put the index in the agent label or prompt.');
+  };
   var dateTimePrototype = Intl.DateTimeFormat.prototype;
   var formatGetter = Object.getOwnPropertyDescriptor(dateTimePrototype, 'format').get;
   Object.defineProperty(dateTimePrototype, 'format', { get: function () {
@@ -91,6 +93,7 @@ export const PRELUDE = String.raw`(function (host) {
       return scope.group ? scope.group + ' › ' + title : title;
     }
     function phase(title) {
+      if (title !== null && title !== undefined && typeof title !== 'string') title = String(title);
       if (typeof title !== 'string' || !title.trim()) throw new TypeError('phase() expects a non-empty title string');
       currentPhase = scoped(title.trim().slice(0, 200));
       host.emit('phase', J.stringify({ title: currentPhase }));
@@ -99,6 +102,7 @@ export const PRELUDE = String.raw`(function (host) {
       host.emit('log', J.stringify({ message: text(message).slice(0, 2000), group: scope.group }));
     }
     function agent(prompt, opts) {
+      if ((typeof prompt === 'number' || typeof prompt === 'boolean') || (prompt && typeof prompt === 'object' && !Array.isArray(prompt) && typeof prompt.toString === 'function' && prompt.toString !== Object.prototype.toString)) prompt = String(prompt);
       if (typeof prompt !== 'string' || !prompt.trim()) {
         return Promise.reject(new TypeError('agent() expects a non-empty prompt string, got ' + kind(prompt)));
       }
@@ -106,15 +110,14 @@ export const PRELUDE = String.raw`(function (host) {
         return Promise.reject(new TypeError('agent() options must be an object'));
       }
       var options = opts || {};
-      if (options.phase !== undefined && typeof options.phase !== 'string') {
-        return Promise.reject(new TypeError('agent() opts.phase must be a string'));
-      }
+      if (options.phase !== undefined && options.phase !== null && typeof options.phase !== 'string') options = Object.assign({}, options, { phase: String(options.phase) });
+      if (options.label !== undefined && options.label !== null && typeof options.label !== 'string') options = Object.assign({}, options, { label: String(options.label) });
       var payload;
       try {
         payload = J.stringify({
           prompt: prompt,
           opts: options,
-          phase: options.phase !== undefined ? scoped(options.phase) : (currentPhase !== null ? currentPhase : scope.group),
+          phase: typeof options.phase === 'string' ? scoped(options.phase) : (currentPhase !== null ? currentPhase : scope.group),
         });
       } catch (e) {
         return Promise.reject(new TypeError('agent() options must be JSON-serializable: ' + e.message));
@@ -122,7 +125,7 @@ export const PRELUDE = String.raw`(function (host) {
       return call('agent', payload);
     }
     function workflow(ref, childArgs) {
-      if (scope.depth > 0) return Promise.reject(new Error('workflow() nesting is one level only: a nested workflow cannot call workflow()'));
+      if (scope.depth > 0) return Promise.reject(new Error('workflow() cannot be called from within a nested workflow: nesting is one level only. Inline the inner script or call its agents directly.'));
       var request;
       try {
         request = J.stringify({ ref: ref, args: childArgs === undefined ? null : childArgs });
@@ -224,7 +227,15 @@ export const PRELUDE = String.raw`(function (host) {
       return host.setTimer(callback, delay);
     },
     clearTimeout: function (id) { host.clearTimer(id); },
-    console: Object.freeze({ log: root.log, info: root.log, warn: root.log, error: root.log, debug: root.log }),
+    console: Object.freeze((function () {
+      function writer(prefix) {
+        return function () {
+          var parts = Array.prototype.map.call(arguments, function (item) { return typeof item === 'string' ? item : text(item); });
+          root.log(prefix + parts.join(' '));
+        };
+      }
+      return { log: writer(''), info: writer(''), debug: writer(''), warn: writer('[warn] '), error: writer('[error] ') };
+    })()),
   };
   Object.keys(globals).forEach(function (name) {
     Object.defineProperty(globalThis, name, { value: globals[name], writable: false, configurable: false, enumerable: false });
@@ -237,6 +248,8 @@ export const PRELUDE = String.raw`(function (host) {
       return fn(args, root.agent, root.phase, root.log, root.workflow)();
     }).then(function (value) {
       if (value && typeof value.then === 'function') throw new TypeError('The script returned a promise: await it before returning');
+      if (typeof value === 'function') throw new TypeError('workflow result cannot be a function');
+      if (typeof value === 'symbol' || typeof value === 'bigint') throw new TypeError('workflow result is not JSON-serializable (a ' + typeof value + ')');
       var json;
       try {
         json = J.stringify(value === undefined ? null : value);
