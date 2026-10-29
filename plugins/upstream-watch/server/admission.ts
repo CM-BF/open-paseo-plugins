@@ -17,7 +17,7 @@ export async function admitLaunch(
       configurationKey(watch) !== configurationKey(expected) ||
       watch.error ||
       watch.observation?.head !== input.head ||
-      !watch.observation.hasUpdate
+      (!watch.observation.hasUpdate && !watch.review)
     ) {
       throw new Error("关联或检查结果已改变，请刷新后再创建更新任务");
     }

@@ -17,6 +17,7 @@ import {
 } from "../shared/contracts";
 import { AgentPicker } from "./agent-picker";
 import { Badge, Body, Button, Row, Title } from "./kit";
+import { ReviewReport } from "./feature-review";
 
 const relationships = {
   fork: "Fork 上游",
@@ -86,6 +87,8 @@ export function WatchCard({
   });
   const observation = watch.observation;
   const pending = observation?.hasUpdate;
+  const reviewing = Boolean(watch.review);
+  const agentLabel = reviewing ? "建议 agent" : "更新 agent";
   const status = !watch.enabled
     ? "已暂停"
     : watch.error
@@ -96,7 +99,9 @@ export function WatchCard({
           ? "需要人工核对"
           : pending
             ? "有相关更新"
-            : "已跟上";
+            : reviewing
+              ? "本次无新增差异"
+              : "已跟上";
   const openAgent = () => {
     if (task?.agentId)
       navigation?.openAgent({ agentId: task.agentId, serverId: host.id });
@@ -118,6 +123,7 @@ export function WatchCard({
           warning={Boolean(watch.error || pending)}
         />
         <Badge theme={theme} label={relationships[watch.relationship]} />
+        {reviewing ? <Badge theme={theme} label="仅建议" /> : null}
       </Row>
       <ExternalLink href={`https://github.com/${watch.repository}`}>
         <Text style={{ color: theme.colors.accent, fontSize: 14 }}>
@@ -205,19 +211,33 @@ export function WatchCard({
           ) : null}
         </View>
       ) : null}
+      {reviewing ? (
+        <Button
+          theme={theme}
+          label={
+            details
+              ? "收起核心功能对照"
+              : `查看 ${watch.review!.features.length} 项核心功能对照`
+          }
+          onPress={() => setDetails((value) => !value)}
+        />
+      ) : null}
+      {details && reviewing ? (
+        <ReviewReport theme={theme} watch={watch} />
+      ) : null}
       {task ? (
         <View style={{ gap: 7 }}>
           <Body theme={theme}>
             {task.status === "created"
-              ? `已创建更新 agent：${task.title}`
+              ? `已创建${agentLabel}：${task.title}`
               : task.status === "preparing"
-                ? "正在创建更新 agent…"
+                ? `正在创建${agentLabel}…`
                 : `任务创建待确认：${task.error || "连接中断"}`}
           </Body>
           {task.agentId && navigation ? (
             <Button
               theme={theme}
-              label="查看更新 agent"
+              label={`查看${agentLabel}`}
               icon="ArrowUpRight"
               onPress={openAgent}
             />
@@ -232,10 +252,13 @@ export function WatchCard({
         </View>
       ) : null}
       <Row>
-        {pending && watch.enabled && !watch.error && !task ? (
+        {(pending || (reviewing && observation)) &&
+        watch.enabled &&
+        !watch.error &&
+        !task ? (
           <Button
             theme={theme}
-            label="开更新 agent"
+            label={`开${agentLabel}`}
             icon="Bot"
             primary
             busy={mutation.isPending}
@@ -299,7 +322,7 @@ export function WatchCard({
           <Row>
             <Button
               theme={theme}
-              label="创建更新 agent"
+              label={`创建${agentLabel}`}
               primary
               disabled={!selection.workspaceId || !selection.provider}
               busy={mutation.isPending}

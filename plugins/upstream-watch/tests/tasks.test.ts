@@ -10,6 +10,7 @@ import {
   type TaskExecution,
 } from "../server/tasks";
 import { watchSchema, type Watch } from "../shared/contracts";
+import { cindyDraft } from "../shared/cindy";
 
 const temporary: string[] = [];
 afterEach(async () => {
@@ -72,6 +73,62 @@ const settle = async (manager: TaskManager, status: string) => {
 };
 
 describe("frozen update task journal", () => {
+  it("creates a separate read-only review after an implementation task at the same head", async () => {
+    const manager = new TaskManager(await file());
+    const current = watch();
+    const executor = vi.fn(async () => ({ agentId: randomUUID() }));
+    const adapt = await manager.launch(current, input, executor);
+    await settle(manager, "created");
+    current.review = cindyDraft().review;
+    const review = await manager.launch(current, input, executor);
+    expect(review.intent).toBe("review");
+    expect(review.id).not.toBe(adapt.id);
+    expect(review.prompt).toContain("不得修改代码");
+    expect(review.prompt).toContain("不能自行执行未来移植");
+    expect(review.prompt).not.toContain("执行本地 Paseo 插件的上游适配任务");
+    expect(review.prompt).toContain("coreFeatures");
+    expect(review.prompt).toContain(current.baseline);
+    expect(review.prompt).toContain(current.observation!.head);
+    const repeated = await manager.launch(current, input, executor);
+    expect(repeated.id).toBe(review.id);
+    await vi.waitFor(async () =>
+      expect(
+        (await manager.list()).every((task) => task.status === "created"),
+      ).toBe(true),
+    );
+    expect(executor).toHaveBeenCalledTimes(2);
+  });
+  it("allows a missing-feature review without a new upstream diff and freezes its original inventory on retry", async () => {
+    const manager = new TaskManager(await file());
+    const current = watch();
+    current.review = cindyDraft().review;
+    current.observation!.hasUpdate = false;
+    const task = await manager.launch(current, input, async () => {
+      throw new Error("unknown");
+    });
+    await settle(manager, "uncertain");
+    current.review!.features[0].notes = "changed after creation";
+    await manager.retry(task.id, async (retried) => {
+      expect(retried.intent).toBe("review");
+      expect(retried.prompt).toBe(task.prompt);
+      expect(retried.prompt).not.toContain("changed after creation");
+      return { agentId: "review-agent" };
+    });
+    await settle(manager, "created");
+  });
+  it("loads older journals as adaptation tasks without rewriting their frozen prompt", async () => {
+    const path = await file();
+    const manager = new TaskManager(path);
+    await manager.launch(watch(), input, async () => ({ agentId: "legacy" }));
+    await settle(manager, "created");
+    const disk = JSON.parse(await readFile(path, "utf8"));
+    delete disk.tasks[0].intent;
+    await writeFile(path, JSON.stringify(disk));
+    const resumed = new TaskManager(path);
+    const task = (await resumed.list())[0];
+    expect(task.intent).toBe("adapt");
+    expect(task.prompt).toBe(disk.tasks[0].prompt);
+  });
   it("persists the full payload and idempotency key before calling the executor", async () => {
     const path = await file();
     const manager = new TaskManager(path);

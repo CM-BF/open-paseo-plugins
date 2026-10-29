@@ -1,4 +1,7 @@
-import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
+import type {
+  PluginHandlerContext,
+  PluginServerContext,
+} from "@getpaseo/plugin/server";
 import { homedir } from "node:os";
 import { join, isAbsolute } from "node:path";
 import { stat } from "node:fs/promises";
@@ -23,6 +26,7 @@ import { TaskManager } from "./tasks";
 import { discoverSources } from "./discovery";
 import { environment, validateTarget } from "./workspaces";
 import { admitLaunch } from "./admission";
+import { featureReview } from "../shared/feature-review";
 type PaseoApi = PluginHandlerContext["paseo"];
 
 export function contributeServer(server: PluginServerContext) {
@@ -57,13 +61,25 @@ export function contributeServer(server: PluginServerContext) {
       );
       if (disposed) throw new Error("插件已停止，任务创建结果待确认");
       const agent = await workspace.agents.create({
-        config: { provider: task.provider },
+        config: {
+          provider: task.provider,
+          ...(task.intent === "review" &&
+          task.provider.split("/")[0] === "codex"
+            ? {
+                providerOptions: {
+                  sandbox_mode: "read-only",
+                  approval_policy: "on-request",
+                },
+              }
+            : {}),
+        },
         title: task.title,
         prompt: task.prompt,
         idempotencyKey: task.idempotencyKey,
         labels: {
           "upstream-watch.task": task.id,
           "upstream-watch.head": task.head,
+          "upstream-watch.intent": task.intent,
         },
       });
       return { agentId: agent.id };
@@ -78,6 +94,10 @@ export function contributeServer(server: PluginServerContext) {
       checking: monitor.checking,
       authentication: github.authentication,
       tasks: await tasks.list(),
+      reviews: state.watches.flatMap((watch) => {
+        const review = featureReview(watch);
+        return review ? [review] : [];
+      }),
     };
   });
   server.handle(saveRpc, async (input) => {

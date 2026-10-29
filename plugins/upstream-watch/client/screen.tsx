@@ -15,6 +15,8 @@ import {
 import { Badge, Body, Button, Field, Panel, Row, Tabs, Title } from "./kit";
 import { WatchForm } from "./watch-form";
 import { WatchCard } from "./watch-card";
+import { cindyDraft } from "../shared/cindy";
+import { taskIntent } from "../shared/feature-review";
 
 type Tab = "watches" | "discovery" | "settings";
 const tabs: { id: Tab; label: string }[] = [
@@ -92,7 +94,7 @@ export function UpstreamScreen(props: PluginScreenProps) {
           插件的上游更新
         </Text>
         <Body theme={theme} muted>
-          跟踪 fork、参考项目与参考功能，把上游变化交给 agent 适配。
+          跟踪 fork、参考项目与核心功能，让 agent 提建议或按选择执行适配。
         </Body>
         <Row>
           <Button
@@ -116,6 +118,19 @@ export function UpstreamScreen(props: PluginScreenProps) {
             theme={theme}
             label={`${count} 项待处理`}
             warning={count > 0}
+          />
+          <Button
+            theme={theme}
+            label="从 Cindy 核心清单开始"
+            onPress={() => {
+              const existing = overview.data?.watches.find(
+                (watch) =>
+                  watch.repository.toLowerCase() === "makecindy/cindy" &&
+                  watch.pluginId === "cindy-companion",
+              );
+              setForm(existing || cindyDraft());
+              setTab("watches");
+            }}
           />
         </Row>
       </View>
@@ -190,6 +205,7 @@ export function UpstreamScreen(props: PluginScreenProps) {
               task={overview.data?.tasks.find(
                 (task) =>
                   task.watchId === watch.id &&
+                  task.intent === taskIntent(watch) &&
                   task.head === watch.observation?.head,
               )}
               edit={(draft) => setForm(draft)}

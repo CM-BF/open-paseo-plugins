@@ -7,6 +7,8 @@ import { GitHubClient, type GitHubTransport } from "../server/github";
 import { Monitor, OBSERVATION_MAX_AGE } from "../server/monitor";
 import { Store } from "../server/store";
 import { type WatchDraft } from "../shared/contracts";
+import { cindyDraft } from "../shared/cindy";
+import { featureReview } from "../shared/feature-review";
 
 const BASE = "a".repeat(40),
   HEAD = "b".repeat(40),
@@ -89,6 +91,27 @@ afterEach(async () => {
 });
 
 describe("Monitor", () => {
+  it("persists the review inventory across scheduled scans and restart without advancing its baseline", async () => {
+    const { monitor, store, path } = await fixture();
+    await monitor.save(draft({ baseline: BASE, review: cindyDraft().review }));
+    monitor.schedule();
+    await vi.waitFor(async () =>
+      expect((await store.read()).watches[0].checkedAt).toBeDefined(),
+    );
+    await monitor.waitForIdle();
+    const current = (await new Store(path).read()).watches[0];
+    expect(current.review?.mode).toBe("recommend-only");
+    expect(current.review?.features).toHaveLength(9);
+    expect(current.baseline).toBe(BASE);
+    expect(
+      featureReview(current)?.features.find((item) => item.id === "voice-im")
+        ?.adoption,
+    ).toBe("missing");
+    expect((await store.read()).settings).toEqual({
+      enabled: true,
+      intervalHours: 24,
+    });
+  });
   it("saves without network, establishes first baseline, and persists it", async () => {
     const { monitor, store, calls, path } = await fixture();
     const watch = await monitor.save(draft());

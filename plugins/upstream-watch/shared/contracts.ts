@@ -2,6 +2,39 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
 export const revisionSchema = z.string().regex(/^[a-f0-9]{40}$/i);
+const relativePathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(500)
+  .refine(
+    (value) =>
+      !value.startsWith("/") &&
+      !/[\\\0\r\n*?\[\]]/.test(value) &&
+      !value.split("/").some((part) => !part || part === "." || part === ".."),
+    "请填写仓库内的相对文件名或目录，不使用 glob 或 ..",
+  );
+export const featureSchema = z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
+  title: z.string().trim().min(1).max(120),
+  upstreamPaths: z.array(relativePathSchema).min(1).max(12),
+  localPaths: z.array(relativePathSchema).max(12).default([]),
+  adoption: z.enum(["adopted", "partial", "missing", "out-of-scope"]),
+  notes: z.string().max(1500).default(""),
+});
+export type Feature = z.infer<typeof featureSchema>;
+export const reviewSchema = z
+  .object({
+    mode: z.literal("recommend-only"),
+    features: z.array(featureSchema).min(1).max(24),
+  })
+  .refine(
+    (value) =>
+      new Set(value.features.map((item) => item.id)).size ===
+      value.features.length,
+    "功能 ID 不能重复",
+  )
+  .refine((value) => JSON.stringify(value).length <= 20_000, "功能清单过长");
 export const watchDraftSchema = z.object({
   id: z.string().uuid().optional(),
   name: z.string().trim().min(1).max(120),
@@ -19,6 +52,7 @@ export const watchDraftSchema = z.object({
     .regex(/^wks_[a-f0-9]{16}$/)
     .optional(),
   provider: z.string().trim().max(200).default(""),
+  review: reviewSchema.optional(),
 });
 export type WatchDraft = z.infer<typeof watchDraftSchema>;
 export const observationSchema = z.object({
@@ -56,6 +90,30 @@ export const watchSchema = watchDraftSchema.extend({
   observation: observationSchema.optional(),
 });
 export type Watch = z.infer<typeof watchSchema>;
+export const featureReviewSchema = z.object({
+  watchId: z.string().uuid(),
+  baseline: revisionSchema.optional(),
+  head: revisionSchema.optional(),
+  checkedAt: z.string().optional(),
+  error: z.string().optional(),
+  complete: z.boolean(),
+  compareUrl: z.string().optional(),
+  features: z.array(
+    featureSchema.extend({
+      changedFiles: observationSchema.shape.files,
+      evidence: z.enum(["changed", "no-path-change", "unknown"]),
+      recommendation: z.string(),
+      sources: z.array(
+        z.object({
+          path: z.string(),
+          baselineUrl: z.string().optional(),
+          headUrl: z.string().optional(),
+        }),
+      ),
+    }),
+  ),
+  unclassifiedFiles: observationSchema.shape.files,
+});
 export const settingsSchema = z.object({
   enabled: z.boolean().default(true),
   intervalHours: z.number().int().min(1).max(168).default(24),
@@ -71,6 +129,7 @@ export const taskSchema = z.object({
   id: z.string().uuid(),
   watchId: z.string().uuid(),
   head: revisionSchema,
+  intent: z.enum(["adapt", "review"]).default("adapt"),
   title: z.string(),
   workspaceId: z.string(),
   targetPath: z.string(),
@@ -91,6 +150,7 @@ export const overviewRpc = defineRpc({
     checking: z.boolean(),
     authentication: z.enum(["gh", "anonymous"]),
     tasks: z.array(taskSchema),
+    reviews: z.array(featureReviewSchema).default([]),
   }),
 });
 export const saveRpc = defineRpc({

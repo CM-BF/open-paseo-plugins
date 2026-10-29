@@ -6,6 +6,7 @@ import { View } from "react-native";
 import { saveRpc, type WatchDraft } from "../shared/contracts";
 import { AgentPicker } from "./agent-picker";
 import { Body, Button, Field, Panel, Row, Title, type Themed } from "./kit";
+import { ReviewEditor } from "./feature-review";
 
 export function WatchForm({
   theme,
@@ -125,11 +126,44 @@ export function WatchForm({
         value={draft.notes}
         onChange={(value) => update("notes", value)}
       />
+      <SettingsSelect
+        label="点击创建 agent 后的任务范围"
+        value={draft.review ? "review" : "adapt"}
+        options={[
+          { value: "adapt", label: "实现适配" },
+          { value: "review", label: "只提出移植建议" },
+        ]}
+        onValueChange={(value) =>
+          update(
+            "review",
+            value === "review"
+              ? {
+                  mode: "recommend-only",
+                  features: [
+                    {
+                      id: "core",
+                      title: "核心功能",
+                      upstreamPaths: ["src"],
+                      localPaths: [],
+                      adoption: "partial",
+                      notes: "",
+                    },
+                  ],
+                }
+              : undefined,
+          )
+        }
+      />
+      {draft.review ? (
+        <ReviewEditor
+          theme={theme}
+          review={draft.review}
+          onChange={(review) => update("review", review)}
+        />
+      ) : null}
       <Button
         theme={theme}
-        label={
-          agentSetup ? "收起 agent 默认设置" : "设置一键更新的工作区与模型"
-        }
+        label={agentSetup ? "收起 agent 默认设置" : "设置 agent 的工作区与模型"}
         onPress={() => setAgentSetup((value) => !value)}
       />
       {agentSetup ? (

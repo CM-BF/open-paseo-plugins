@@ -1,7 +1,7 @@
 {
   "id": "upstream-watch",
   "name": "上游更新",
-  "description": "Track the fork, reference projects and feature paths behind your plugins, then launch an adaptation agent for new upstream changes.",
+  "description": "Track plugin upstream changes and core-feature gaps, then request evidence-based port recommendations or explicit adaptation work.",
   "media": [],
   "build": [
     ["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"]

@@ -9,6 +9,7 @@ import { TaskManager } from "../server/tasks";
 import { admitLaunch } from "../server/admission";
 import { environment, validateTarget } from "../server/workspaces";
 import type { PaseoApi } from "@getpaseo/client";
+import { cindyDraft } from "../shared/cindy";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -96,6 +97,28 @@ it("persists a task while preserving the adopted baseline and saving selected de
     provider: input.provider,
     observation: { hasUpdate: true },
   });
+});
+
+it("rejects changed review scope during preflight, but admits a current review without a diff", async () => {
+  const { store, tasks, watch, input } = await setup();
+  watch.review = cindyDraft().review;
+  watch.observation!.hasUpdate = false;
+  await store.change((state) => {
+    state.watches[0] = structuredClone(watch);
+  });
+  const stale = structuredClone(watch);
+  delete stale.review;
+  const executor = vi.fn(async () => ({ agentId: randomUUID() }));
+  await expect(
+    admitLaunch(store, tasks, stale, input, executor),
+  ).rejects.toThrow("已改变");
+  expect(executor).not.toHaveBeenCalled();
+  const review = await admitLaunch(store, tasks, watch, input, executor);
+  expect(review.intent).toBe("review");
+  await vi.waitFor(async () =>
+    expect((await tasks.list())[0].status).toBe("created"),
+  );
+  expect((await store.read()).watches[0].baseline).toBe(watch.baseline);
 });
 
 it("accepts a synthetic workspace repository mount and rejects unrelated targets", async () => {
