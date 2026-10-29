@@ -771,5 +771,17 @@
     "sha256": "e7fc988314e4fe019f44a65d70e2437e74b78221bed7b50e2e9553769cb0b38e",
     "modified": true,
     "changes": "Original custom teammate form; host close/generation guards, async native navigation, portrait preparation guard and unavailable import/provider entries."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotProjectsSettings.tsx",
+    "destination": "vendor/renderer/features/bots/BotProjectsSettings.tsx",
+    "sha256": "c6c286dce3829a2cb3a4be57aea2963c4f5ab8ca27cae072c3afb652c35e535f",
+    "modified": true
+  },
+  {
+    "source": "apps/desktop/src/shared/botWorkbench.ts",
+    "destination": "vendor/shared/botWorkbench.ts",
+    "sha256": "49998428d240e87a40ae76e5a11f3e97ca37897c2ab2680194dfb739143d9bca",
+    "modified": true
   }
 ]

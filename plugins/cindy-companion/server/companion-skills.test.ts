@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, writeFile, mkdir, rm, symlink, stat, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, mkdir, rm, symlink, stat, readdir, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
@@ -7,12 +7,30 @@ import { CompanionStore } from './store';
 import { CompanionSkills } from './companion-skills';
 import type { CompanionSkillMutation } from '../shared/companion-skills';
 
+const observation = vi.hoisted(() => ({ silent: false, reverse: false }));
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, watch: (...args: Parameters<typeof actual.watch>) => observation.silent
+    ? { close() {}, on() { return this; } }
+    : actual.watch(...args) };
+});
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, opendir: async (...args: Parameters<typeof actual.opendir>) => {
+    const directory = await actual.opendir(...args);
+    if (!observation.reverse || !/(?:^|\/)(?:skills|disabled-skills)$/.test(String(args[0]))) return directory;
+    // Small fixture only: simulate a different OS enumeration order.
+    const entries: import('node:fs').Dirent[] = []; for await (const entry of directory) entries.push(entry);
+    return { async *[Symbol.asyncIterator]() { yield* entries.reverse(); } };
+  } };
+});
+
 let root: string, store: CompanionStore, library: CompanionSkills;
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'cindy-skill-adapter-'));
   store = new CompanionStore(root); await store.load(); library = new CompanionSkills(store);
 });
-afterEach(async () => { vi.restoreAllMocks(); await rm(root, { recursive: true, force: true }); });
+afterEach(async () => { observation.silent = false; observation.reverse = false; vi.restoreAllMocks(); await rm(root, { recursive: true, force: true }); });
 const create = (operationId = 'save-1'): Extract<CompanionSkillMutation, { kind: 'save' }> => ({ kind: 'save', operationId, slug: 'research',
   name: '资料研究', description: '需要检索资料时使用', body: 'Read references/source.md, then check the facts.', expectedRevision: null });
 const operationPath = (id: string, botId = 'cindy') => join(root, 'skill-operations', botId, `${createHash('sha256').update(id).digest('hex')}.json`);
@@ -64,13 +82,59 @@ test('native snapshots preserve cache epochs and classify only bounded selected 
   expect(disabled).toMatchObject({ enabledCount: 0, mounts: [], localSkillIds: ['research'] });
   expect(disabled.token).not.toBe(first.token);
 });
-test('an external body edit changes the native source epoch without requiring full source hashing', async () => {
+test('an external body edit changes the native source epoch even when no watch event arrives', async () => {
+  observation.silent = true;
   await library.mutate('cindy', create());
   const first = await library.nativeSnapshot('cindy');
   const source = await readFile(skillFile(), 'utf8');
+  const digest = vi.spyOn(library as unknown as { digest(...args: unknown[]): Promise<unknown> }, 'digest');
   await writeFile(skillFile(), source + '\nExternal body correction.\n');
-  await vi.waitFor(async () => expect((await library.nativeSnapshot('cindy')).token).not.toBe(first.token));
+  const updated = await library.nativeSnapshot('cindy');
+  expect(updated.token).not.toBe(first.token);
+  expect((await library.nativeSnapshot('cindy')).token).toBe(updated.token);
+  expect(digest).not.toHaveBeenCalled();
   expect(await readFile(skillFile(), 'utf8')).toBe(source + '\nExternal body correction.\n');
+});
+test('silent watcher metadata distinguishes disabled catalogs and ignores unrelated resource edits', async () => {
+  observation.silent = true;
+  const saved = await library.mutate('cindy', create());
+  const native = await library.nativeSnapshot('cindy');
+  await mkdir(join(skillFile(), '../references'), { recursive: true });
+  await writeFile(join(skillFile(), '../references/source.md'), 'Resource update only');
+  expect((await library.nativeSnapshot('cindy')).token).toBe(native.token);
+  await library.mutate('cindy', { kind: 'enabled', operationId: 'disable-for-query', slug: 'research', enabled: false, expectedRevision: saved.revision! });
+  const disabledNative = await library.nativeSnapshot('cindy'), before = await library.query('cindy');
+  const source = await readFile(skillFile(false), 'utf8');
+  await writeFile(skillFile(false), source.replace('资料研究', '新的研究'));
+  const changed = await library.query('cindy', { query: '新的研究' });
+  expect(changed.revision).not.toBe(before.revision);
+  expect(changed.total).toBe(1);
+  expect((await library.query('cindy')).revision).toBe(changed.revision);
+  expect((await library.nativeSnapshot('cindy')).token).toBe(disabledNative.token);
+});
+test('silent watcher detects same-size body edits with restored mtime and entrypoint removal', async () => {
+  observation.silent = true;
+  await library.mutate('cindy', create());
+  await utimes(skillFile(), 1_700_000_000, 1_700_000_000);
+  const first = await library.nativeSnapshot('cindy'), before = await stat(skillFile(), { bigint: true });
+  const source = await readFile(skillFile(), 'utf8');
+  await writeFile(skillFile(), source.replace('Read references', 'Scan references'));
+  await utimes(skillFile(), 1_700_000_000, 1_700_000_000);
+  const after = await stat(skillFile(), { bigint: true });
+  expect(after.size).toBe(before.size); expect(after.mtimeNs).toBe(before.mtimeNs); expect(after.ctimeNs).not.toBe(before.ctimeNs);
+  const edited = await library.nativeSnapshot('cindy'); expect(edited.token).not.toBe(first.token);
+  await rm(skillFile());
+  const removed = await library.nativeSnapshot('cindy');
+  expect(removed.enabledCount).toBe(0); expect(removed.mounts).toEqual([]); expect(removed.token).not.toBe(edited.token);
+});
+test('source epochs remain stable when filesystem enumeration order changes', async () => {
+  observation.silent = true;
+  await library.mutate('cindy', create());
+  await library.mutate('cindy', { ...create('second'), slug: 'second', name: 'Second' });
+  const first = await library.nativeSnapshot('cindy'), catalog = await library.query('cindy');
+  observation.reverse = true;
+  expect((await library.nativeSnapshot('cindy')).token).toBe(first.token);
+  expect((await library.query('cindy')).revision).toBe(catalog.revision);
 });
 test('receipt replay after a later edit neither overwrites it nor changes the original result', async () => {
   const first = await library.mutate('cindy', create());

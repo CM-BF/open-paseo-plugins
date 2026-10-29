@@ -29,6 +29,7 @@ import { BotCapabilitySettings } from './BotCapabilitySettings';
 import { BotRoutines } from './BotRoutines';
 import { BotAutonomySettings } from './BotAutonomySettings';
 import { BotMemorySettings } from './BotMemorySettings';
+import { BotProjectsSettings } from './BotProjectsSettings';
 import { CompanionVoiceSettings } from './voice/CompanionVoiceSettings';
 import { BotChannelsPage } from './BotChannelsPage';
 import { botSettingsChanges, normalizeBotSettingsPayload, reconcileBotSettingsDraft, type BotSettingsPayload } from './botSettingsAutosave';
@@ -594,6 +595,7 @@ export function BotSettings({
               }} />
           </div>
         </section>
+        {page === 'projects' && <BotProjectsSettings key={bot.id} botId={bot.id} />}
         {page === 'capabilities' && (
           <div>
             <BotCapabilitySettings

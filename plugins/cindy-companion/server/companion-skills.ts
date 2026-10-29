@@ -15,6 +15,22 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 const revisionFromHash = (sourceHash: string, enabled: boolean) => hash(JSON.stringify([enabled, sourceHash]));
 const revision = (source: string, enabled: boolean) => revisionFromHash(hash(source), enabled);
 const EDITOR_BYTES = 1024 * 1024;
+interface SourceMetadata { runtime: string; query: string }
+/** Order-independent metadata evidence: constant memory, no source/body reads. */
+function metadataSet() {
+  const sum = Buffer.alloc(32); let count = 0;
+  return {
+    add(value: unknown[]) {
+      const digest = createHash('sha256').update(JSON.stringify(value)).digest();
+      let carry = 0;
+      for (let i = sum.length - 1; i >= 0; i--) {
+        const next = sum[i]! + digest[i]! + carry; sum[i] = next & 255; carry = next >>> 8;
+      }
+      count++;
+    },
+    stamp: () => `${count}:${sum.toString('hex')}`,
+  };
+}
 interface Located { source?: string; sourceHash: string; bytes: number; enabled: boolean; dir: string; file: string; revision: string }
 /** Called while the store's mutation lock is held; it must not re-enter the store. */
 export type SkillAccess = (state: SavedState) => Promise<void>;
@@ -89,8 +105,9 @@ export class CompanionSkills {
     return found;
   }
   /** Check precisely the paths consumed by upstream scanners before handing them over. */
-  private async scanPaths(id: string): Promise<void> {
+  private async scanPaths(id: string): Promise<SourceMetadata> {
     const root = this.root(id); await this.directory(root);
+    const runtime = metadataSet(), query = metadataSet();
     for (const shelf of ['skills', 'disabled-skills']) {
       const dir = join(root, shelf); await this.directory(dir);
       const entries = await opendir(dir, { bufferSize: 32 }).catch(error => {
@@ -101,12 +118,24 @@ export class CompanionSkills {
         if (entry.name.startsWith('.')) continue;
         const child = join(dir, entry.name); await this.store.safePath(child);
         if (!entry.isDirectory()) continue;
-        for (const name of ['SKILL.md', 'skill.md']) await this.store.safePath(join(child, name));
+        for (const name of ['SKILL.md', 'skill.md']) {
+          const file = join(child, name); await this.store.safePath(file);
+          const stat = await lstat(file, { bigint: true }).catch(error => {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error;
+          });
+          if (!stat) continue;
+          if (stat.isSymbolicLink()) throwIpcError('UNSAFE_PATH', 'Skill entrypoints cannot be symbolic links');
+          // ctime catches same-size edits even if an editor restores mtime. The
+          // filename is included; resources under the Skill remain outside this index.
+          const value = [shelf, entry.name, name, stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeNs, stat.ctimeNs].map(String);
+          query.add(value); if (shelf === 'skills') runtime.add(value);
+        }
       }
     }
     // The upstream projection/index write only beneath these generated roots.
     for (const name of ['.runtime-skills', '.runtime-skills/skills', '.runtime-skills/skills/personal-skill-library', '.runtime-skills/.claude-plugin', '.claude-plugin']) await this.directory(join(root, name));
     for (const name of ['.runtime-skills/catalog.jsonl', '.runtime-skills/query-catalog.jsonl', '.runtime-skills/skills/personal-skill-library/SKILL.md', '.runtime-skills/.claude-plugin/plugin.json', '.claude-plugin/plugin.json']) await this.store.safePath(join(root, name));
+    return { runtime: runtime.stamp(), query: query.stamp() };
   }
   private async atomic(path: string, value: string, beforePublish?: () => Promise<void>): Promise<void> {
     await this.store.safePath(path); await this.directory(dirname(path));
@@ -143,10 +172,10 @@ export class CompanionSkills {
       if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throwIpcError('INVALID_PARAMS', `Invalid ${key}`);
     // Query generation is serialized, but read-only callers never migrate original source.
     return this.store.withSnapshot(async state => {
-      this.owner(state, id); await access?.(state); await this.scanPaths(id);
+      this.owner(state, id); await access?.(state); const metadata = await this.scanPaths(id);
       const root = this.root(id);
       const cached = await cachedBotSkillRuntime(root, async () => ({ pluginRoot: root, skills: [], catalogRevision: randomUUID(),
-        artifacts: [await buildBotSkillQueryIndex(root, iterateBotSkillQuerySummaries(this.store.root, id, { migrate: false }))] }), 'query') as Awaited<ReturnType<typeof cachedBotSkillRuntime>> & { catalogRevision?: string };
+        artifacts: [await buildBotSkillQueryIndex(root, iterateBotSkillQuerySummaries(this.store.root, id, { migrate: false }))] }), 'query', metadata.query) as Awaited<ReturnType<typeof cachedBotSkillRuntime>> & { catalogRevision?: string };
       if (typeof cached.catalogRevision !== 'string') throwIpcError('SKILL_CATALOG_CHANGED', 'The skill catalog was rebuilt; restart the search from its first page');
       if (input.expectedRevision !== undefined && input.expectedRevision !== cached.catalogRevision)
         throwIpcError('SKILL_CATALOG_CHANGED', 'The skill library changed between pages; reload the first page');
@@ -157,16 +186,16 @@ export class CompanionSkills {
         skills: nativePaths ? result.skills : result.skills.map(({ filePath: _path, bodyStartLine: _line, ...skill }) => skill) };
     });
   }
-  /** Extra metadata survives the original cache's structuredClone without modifying vendor code. */
+  /** Extra metadata survives the original cache's structuredClone. */
   private async runtimeProjection(id: string) {
-    await this.scanPaths(id); await this.ensureManifest(id);
+    const metadata = await this.scanPaths(id); await this.ensureManifest(id);
     const cached = await cachedBotSkillRuntime(this.root(id), async () => {
       let enabledCount = 0;
       const source = iterateBotSkillRuntimeSummaries(this.store.root, id);
       async function* counted() { for await (const skill of source) { enabledCount++; yield skill; } }
       const projection = await projectCompanionSkillMounts(this.root(id), counted());
       return { ...projection, sourceToken: randomUUID(), enabledCount };
-    }) as Awaited<ReturnType<typeof cachedBotSkillRuntime>> & { sourceToken?: string; enabledCount?: number };
+    }, 'runtime', metadata.runtime) as Awaited<ReturnType<typeof cachedBotSkillRuntime>> & { sourceToken?: string; enabledCount?: number };
     if (typeof cached.sourceToken !== 'string' || !Number.isSafeInteger(cached.enabledCount) || cached.enabledCount! < 0)
       throwIpcError('SKILL_RUNTIME_UNAVAILABLE', 'Skill projection identity is unavailable');
     return { ...cached, sourceToken: cached.sourceToken, enabledCount: cached.enabledCount! };

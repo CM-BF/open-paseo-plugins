@@ -6,6 +6,7 @@ import ts from 'typescript';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { transformBotRoster } from './transform-roster.mjs';
+import { transformBotProjects, extractLinkedProjectTypes } from './transform-projects.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const plugin = path.dirname(here);
 if (!process.argv[2]) throw new Error('Usage: node import-upstream.mjs /path/to/pinned/cindy');
@@ -25,7 +26,6 @@ const adapters = {
   'features/bots/RemoteTeammateSettings': 'unsupported.tsx',
   'features/bots/BotHomeComputerSetting': 'home.tsx',
   'features/bots/CindyMergeSetting': 'unsupported.tsx',
-  'features/bots/BotProjectsSettings': 'unsupported.tsx',
   'features/bots/companionAvatarCache': 'avatar-cache.ts',
   'components/chat/MarkdownRenderer': 'memory-markdown.tsx',
   'components/new-chat/ModelRouteSelector': 'model-picker.tsx',
@@ -83,12 +83,16 @@ function deps(file, code) {
 function add(file, transform) {
   if (seen.has(file) || adapterFor(file)) return;
   seen.add(file);
-  const bytes = fs.readFileSync(file);
+  const bytes = /\/(?:BotProjectsSettings\.tsx|botWorkbench\.ts)$/.test(file)
+    ? execFileSync('git', ['-C', upstream, 'show', `${revision}:${path.relative(upstream, file)}`])
+    : fs.readFileSync(file);
   let code = bytes.toString('utf8');
   const isText = /\.(tsx?|js|mjs|json|css)$/.test(file);
   if (transform) code=transform(code);
   if (isText) {
     if(file.endsWith('/BotRosterView.tsx')) code=transformBotRoster(code);
+    if(file.endsWith('/BotProjectsSettings.tsx')) code=transformBotProjects(code);
+    if(file.endsWith('/shared/botWorkbench.ts')) code=extractLinkedProjectTypes(code);
     if(file.endsWith('/BotPortraitPicker.tsx')) code=code.replace(
       'w-[360px] max-w-[calc(100vw-32px)] rounded-xl',
       'w-[360px] max-h-[var(--radix-popover-content-available-height)] max-w-[calc(100vw-32px)] overflow-y-auto rounded-xl');
@@ -141,8 +145,6 @@ add(settingsFile,source=>{
   const start=source.indexOf('export function BotSettings(');
   const end=source.indexOf('\nexport function BotsHomeView()');
   let body=source.slice(start,end);
-  // This is the same settings component; only the unrelated project page is outside the chosen surface.
-  body=body.replace("        {page === 'projects' && <BotProjectsSettings key={bot.id} botId={bot.id} />}\n",'');
   body=body.replace("navigate(kind === 'skill' ? '/skillhub/local' : `/settings?tab=${toolSettings[id ?? ''] ?? 'builtin-tools'}`);",'showHostSettingsNotice();').replace("if (allowed) navigate('/settings?tab=providers');",'if (allowed) showHostSettingsNotice();');
   return `// Extracted from Cindy BotsHomeView: original BotSettings JSX, autosave and navigation guards.\n`+
 `import { showHostSettingsNotice } from '@/features/bots/paseoHostStatus';
@@ -175,6 +177,7 @@ import { BotCapabilitySettings } from './BotCapabilitySettings';
 import { BotRoutines } from './BotRoutines';
 import { BotAutonomySettings } from './BotAutonomySettings';
 import { BotMemorySettings } from './BotMemorySettings';
+import { BotProjectsSettings } from './BotProjectsSettings';
 import { CompanionVoiceSettings } from './voice/CompanionVoiceSettings';
 import { BotChannelsPage } from './BotChannelsPage';
 import { botSettingsChanges, normalizeBotSettingsPayload, reconcileBotSettingsDraft, type BotSettingsPayload } from './botSettingsAutosave';
@@ -194,6 +197,7 @@ for(const rel of ['features/bots/BotMarketDialog.tsx','features/bots/BotRosterVi
 }
 for(const locale of ['en','zh-CN']) add(path.join(renderer,`i18n/locales/${locale}/common.json`));
 add(path.join(shared,'botGroupChat.ts'));
+add(path.join(shared,'botWorkbench.ts'));
 // The desktop uses this pure formatter through maker-shared. Its complete implementation is reused.
 const timelineSource='packages/maker-shared/src/botTimeline.ts';
 const timelineBytes=fs.readFileSync(path.join(upstream,timelineSource));

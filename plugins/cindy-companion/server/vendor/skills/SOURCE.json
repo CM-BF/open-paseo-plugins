@@ -40,8 +40,10 @@
       "upstream": "apps/desktop/src/main/maker-ipc/botSkillRuntimeCache.ts",
       "local": "botSkillRuntimeCache.ts",
       "upstreamSha256": "ddc351003b8672eb768da4c2f02eb45b16d08ac946fb7de06c4bbf54a9796c2b",
-      "localSha256": "ddc351003b8672eb768da4c2f02eb45b16d08ac946fb7de06c4bbf54a9796c2b",
-      "changes": []
+      "localSha256": "3ef2c222cd787f305584350109a038c7bae5b941f3e26abe3b5ce48cae291c97",
+      "changes": [
+        "Accept an optional streamed entrypoint metadata stamp supplied by the owner adapter; changes invalidate the original revision loop while preserving watcher, LRU, writer and legacy-caller behavior."
+      ]
     },
     {
       "upstream": "apps/desktop/src/main/maker-ipc/botSkillQueryIndex.ts",
@@ -82,9 +84,10 @@
       "upstream": "apps/desktop/src/main/maker-ipc/__tests__/botSkillRuntimeCache.test.ts",
       "local": "../../companion-skills-runtimecache.test.ts",
       "upstreamSha256": "f8834a54e25c5fd080d67a7e57fa03c31c41cd720aa6e5c146455dfe37d5e670",
-      "localSha256": "644efb9a3b12c2777f7751a7954616fa83374be725bc6b95482dcbd7eca7cec1",
+      "localSha256": "a96be0e9b6cb61e267549e3dabf41c7e435585f1868ac326dd8429f983fc7ea6",
       "changes": [
-        "Only imports retargeted to this extracted module set."
+        "Imports retargeted to this extracted module set.",
+        "Add deterministic coverage for caller metadata invalidation while a shared hydration is in flight, including unchanged-stamp cache reuse."
       ]
     },
     {

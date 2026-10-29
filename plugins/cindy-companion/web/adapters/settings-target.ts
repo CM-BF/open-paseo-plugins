@@ -22,7 +22,7 @@ async function profileResult(op: string, args: Record<string, unknown>) {
 }
 const target: BotSettingsTarget = {
   kind: 'local', online: true,
-  pages: new Set(['profile','personality','memory','model','voice','capabilities','channels','routines','history','advanced']),
+  pages: new Set(['profile','personality','memory','projects','model','voice','capabilities','channels','routines','history','advanced']),
   profile: {
     update: updateProfile as any,
     chooseAvatar: (botId, avatarImageBase64) => profileResult('profile.chooseAvatar', { botId, avatarImageBase64 }) as any,

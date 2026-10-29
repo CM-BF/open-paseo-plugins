@@ -9,7 +9,6 @@
   "features/bots/RemoteTeammateSettings": "unsupported.tsx",
   "features/bots/BotHomeComputerSetting": "home.tsx",
   "features/bots/CindyMergeSetting": "unsupported.tsx",
-  "features/bots/BotProjectsSettings": "unsupported.tsx",
   "features/bots/companionAvatarCache": "avatar-cache.ts",
   "components/chat/MarkdownRenderer": "memory-markdown.tsx",
   "components/new-chat/ModelRouteSelector": "model-picker.tsx",

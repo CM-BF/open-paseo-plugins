@@ -1,0 +1,48 @@
+{
+  "repository": "https://github.com/makecindy/cindy",
+  "revision": "118767c987f518286ae10a506a54287c3dc2a560",
+  "files": [
+    {
+      "file": "botWorkbenchLegacy.ts",
+      "upstreamPath": "apps/desktop/src/main/maker-ipc/botWorkbenchLegacy.ts",
+      "originalSha256": "472e963654274aaee901415a72e3d6eead705c373462a116c48f98815d48e959",
+      "portedSha256": "472e963654274aaee901415a72e3d6eead705c373462a116c48f98815d48e959",
+      "adaptation": "Unchanged complete original module."
+    },
+    {
+      "file": "projectDisplayName.ts",
+      "upstreamPath": "apps/desktop/src/shared/projectDisplayName.ts",
+      "originalSha256": "8ba49c7fea40d39f56e6292837fa17ec71ca7dd7e5cf360ea825417465512a0e",
+      "portedSha256": "8ba49c7fea40d39f56e6292837fa17ec71ca7dd7e5cf360ea825417465512a0e",
+      "adaptation": "Unchanged complete original module."
+    },
+    {
+      "file": "workingDir.ts",
+      "upstreamPath": "apps/desktop/src/shared/workingDir.ts",
+      "originalSha256": "b81a28e5fb6426ee50781f4733698f75e01172102e4fb507b3706d65075b444e",
+      "portedSha256": "80c2a9af3be5e5fac1aa3fb79a200d07dc00f92aefd86dfcf96e67ccb2e68707",
+      "adaptation": "Exact extraction of normalizeWorkingDirForStorage, stripWindowsLongPathPrefix and isWindowsPathLike; unrelated worktree grouping omitted."
+    },
+    {
+      "file": "botWorkbenchService.ts",
+      "upstreamPath": "apps/desktop/src/main/maker-ipc/botWorkbenchService.ts",
+      "originalSha256": "dcaaa6b78b00061fd1f7d6e7b3f8d4efd9a96306eafe29f32fbb8c87aeb1b5d1",
+      "portedSha256": "0124c7febb78728693e6f8d8764cce190353e3f4548b9a8120bfc882e2ca1d86",
+      "adaptation": "Extract linked-project storage only; import relocations; omit Electron broadcasts and legacy/cloud-only API. Await caller ownership/path/revision guards before reads and atomic publication; exclusive private temporary file."
+    }
+  ],
+  "adapterReferences": [
+    {
+      "path": "apps/desktop/src/main/maker-ipc/botLinkedProjects.ts",
+      "sha256": "12c23a9bb14d394ba21a3cedef2f78279064b903eb761ceeb9af69d9b94cd16b"
+    },
+    {
+      "path": "apps/desktop/src/main/maker-ipc/botWorkbenchTools.ts",
+      "sha256": "44a4cde7d2dcca551fbe6e69fc8085d77838fe120f60608ea89a2e1d0d6fd767"
+    },
+    {
+      "path": "apps/desktop/src/shared/botWorkbench.ts",
+      "sha256": "49998428d240e87a40ae76e5a11f3e97ca37897c2ab2680194dfb739143d9bca"
+    }
+  ]
+}

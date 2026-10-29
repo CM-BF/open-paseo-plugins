@@ -7,7 +7,9 @@ This is an extraction of the original settings, teammate catalog and selected gr
 
 ## Source changes
 
-- `BotsHomeView.tsx`: only its original `BotSettings` component and required imports are retained; the Projects child is excluded from the user-selected surface.
+- `BotsHomeView.tsx`: only its original `BotSettings` component and required imports are retained; Linked Projects is restored in its original Memory → Linked Projects → Model menu position.
+- `BotProjectsSettings.tsx`: original layout, controls and translations remain. Owner/unmount guards reject retained callbacks and late responses; a failed read/write disables project mutations until explicit Reload succeeds. The adapter keeps the host CAS revision private, invalidates it on write errors, and never retries writes or treats a subsequent read as the missing write receipt. The original change subscription is wired to confirmed changes made in this frame; changes from another client are caught by CAS and refresh on reopening/Reload, without claiming a cross-client push subscription.
+- `botWorkbench.ts`: extracts only the original linked-project reference and UI option types; unrelated workbench task logic is not copied. Both new source slices are read with `git show` at the pinned commit, and `transform-projects.mjs` records the minimal extraction/adaptation.
 - `BotSettingsDrawer.tsx`: host close requests enter the original route blocker and save/leave guard.
 - `BotAvatar.tsx`: accepts validated data image URLs from the local Paseo avatar store.
 - `BotPortraitPicker.tsx`: limits the original popup to Radix's available viewport height and scrolls its contents when needed. The original anchor, side offset, collision padding, width, portrait sizes and responsive grid remain. This small-screen adaptation is not an unchanged upstream file.
@@ -85,6 +87,7 @@ Bundled npm notices: `licenses/THIRD-PARTY.md`. Font/image SHA-256 inventory: `a
 | `apps/desktop/src/renderer/features/bots/BotModelChainEditor.tsx` | `vendor/renderer/features/bots/BotModelChainEditor.tsx` | `789f63c1eedf1232566e7422ead041c0d55e142419b97150a0ee45f45e9972bb` | no |
 | `apps/desktop/src/renderer/features/bots/BotNightlyLearning.tsx` | `vendor/renderer/features/bots/BotNightlyLearning.tsx` | `93d18a32b4baaa2a1b1e3cf08ea4853fc381feabf824a956330484013eb38679` | no |
 | `apps/desktop/src/renderer/features/bots/BotPortraitPicker.tsx` | `vendor/renderer/features/bots/BotPortraitPicker.tsx` | `9b459c146602f916cd083c7b333c0036add46843634da2e47bd0f0b264bd4e11` | yes |
+| `apps/desktop/src/renderer/features/bots/BotProjectsSettings.tsx` | `vendor/renderer/features/bots/BotProjectsSettings.tsx` | `c6c286dce3829a2cb3a4be57aea2963c4f5ab8ca27cae072c3afb652c35e535f` | yes |
 | `apps/desktop/src/renderer/features/bots/botPronounContext.tsx` | `vendor/renderer/features/bots/botPronounContext.tsx` | `3eff8fefc2315b6d25417b1b05dfabcf30e7d5149d8662ead67f32922ce2d9da` | no |
 | `apps/desktop/src/renderer/features/bots/BotRoutines.tsx` | `vendor/renderer/features/bots/BotRoutines.tsx` | `1a53c691cbd0ca07a4fa8758c8d341b56d56c8f17a3abf8726db98edd2a5e72f` | no |
 | `apps/desktop/src/renderer/features/bots/botSettingsAutosave.ts` | `vendor/renderer/features/bots/botSettingsAutosave.ts` | `f9e6fafec648d889557fcb83eb4ee17989ea4f6e21a7bceb9a97fbb190d5a982` | no |
@@ -122,6 +125,7 @@ Bundled npm notices: `licenses/THIRD-PARTY.md`. Font/image SHA-256 inventory: `a
 | `apps/desktop/src/renderer/themes/event.ts` | `vendor/renderer/themes/event.ts` | `77538148b6221eab748bdfd549d60e40ed45761dc1ef832b30cbf5a2ab4efab9` | no |
 | `apps/desktop/src/renderer/themes/theme-service.ts` | `vendor/renderer/themes/theme-service.ts` | `ece3aeb31b7c19e82960eda8d7a1e9b4a7f83b67c678ae7d913a62a594161289` | no |
 | `apps/desktop/src/renderer/utils/ipcError.ts` | `vendor/renderer/utils/ipcError.ts` | `194496d855797d86b2d0acf73f6bc350589763ab26b1d7b6892167718f016a5d` | no |
+| `apps/desktop/src/shared/botWorkbench.ts` | `vendor/shared/botWorkbench.ts` | `49998428d240e87a40ae76e5a11f3e97ca37897c2ab2680194dfb739143d9bca` | yes |
 | `apps/desktop/src/shared/alibabaSpeechVoices.ts` | `vendor/shared/alibabaSpeechVoices.ts` | `5638ddfb01312c61e3a37087e76bd992516dee9936384d52f2b8ade2609396c3` | no |
 | `apps/desktop/src/shared/botAvatarHue.ts` | `vendor/shared/botAvatarHue.ts` | `17ae349c46691603c07dc0c365d959374d62e54275986b1eb99a562a39e6cf42` | no |
 | `apps/desktop/src/shared/botAvatarValue.ts` | `vendor/shared/botAvatarValue.ts` | `73762251dc1355fd58df7908567925efbb877e906119e66fb4e7922427d873ee` | no |

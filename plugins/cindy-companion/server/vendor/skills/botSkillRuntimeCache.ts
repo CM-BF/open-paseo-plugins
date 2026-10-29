@@ -10,6 +10,7 @@ type Entry = {
   revision: number;
   loadedRevision: number;
   stamp: string;
+  sourceMetadataStamp?: string;
   watchers: FSWatcher[];
   value?: Projection;
   loading?: Promise<Projection>;
@@ -45,7 +46,7 @@ async function sourceStamp(root: string, shelves: string[]): Promise<string> {
 }
 
 /** Rebuild once per mutation, share concurrent hydrations, observe external edits. */
-export async function cachedBotSkillRuntime(root: string, build: () => Promise<Projection>, kind: 'runtime' | 'query' = 'runtime'): Promise<Projection> {
+export async function cachedBotSkillRuntime(root: string, build: () => Promise<Projection>, kind: 'runtime' | 'query' = 'runtime', sourceMetadataStamp?: string): Promise<Projection> {
   root = path.resolve(root);
   const key = kind === 'runtime' ? root : `${root}\0query`;
   const shelves = kind === 'runtime' ? ['skills'] : ['skills', 'disabled-skills'];
@@ -54,6 +55,12 @@ export async function cachedBotSkillRuntime(root: string, build: () => Promise<P
   if (!entry) {
     entry = { revision: 0, loadedRevision: -1, stamp: '', watchers: [] };
     entries.set(key, entry);
+  }
+  // Native watchers can coalesce/drop an external entrypoint edit. A caller that
+  // already scans source paths supplies metadata evidence without reading bodies.
+  if (sourceMetadataStamp !== undefined && entry.sourceMetadataStamp !== sourceMetadataStamp) {
+    entry.sourceMetadataStamp = sourceMetadataStamp;
+    entry.revision++;
   }
   if (entry.stamp !== stamp || !entry.watchers.length) {
     // Reattach on directory replacement without forking an in-flight build.
@@ -107,7 +114,7 @@ export async function cachedBotSkillRuntime(root: string, build: () => Promise<P
     const present = await Promise.all(artifacts.map(file => fs.access(file))).then(() => true, () => false);
     // Eviction may happen while checking generated files. Rejoin the active
     // entry rather than enqueueing work from a now-discarded cache entry.
-    if (entries.get(key) !== current) return cachedBotSkillRuntime(root, build, kind);
+    if (entries.get(key) !== current) return cachedBotSkillRuntime(root, build, kind, sourceMetadataStamp);
     if (present && current.loadedRevision === current.revision) return structuredClone(current.value);
     if (!present) current.revision++;
   }

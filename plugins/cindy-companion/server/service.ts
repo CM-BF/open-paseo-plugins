@@ -36,6 +36,7 @@ import { sessionBinding, validateSessionBinding } from './session-authority';
 import { CompanionTasks, taskNeedsSettlement } from './companion-tasks';
 import { NativeTaskDriver } from './companion-task-driver';
 import { createHash } from 'node:crypto';
+import { CompanionProjects, type ProjectAccess } from './linked-projects';
 
 const OPS = ['caps', 'assets.fontChunk', 'paseo.presets.list', 'paseo.presets.invite', 'paseo.presets.status', 'preset.opening.status', 'preset.opening.choose',
   'groups.list', 'groups.get', 'groups.create', 'groups.update', 'groups.setMembers', 'groups.send', 'groups.continue', 'groups.stop', 'groups.delete','groups.cleanup',
@@ -46,7 +47,7 @@ const OPS = ['caps', 'assets.fontChunk', 'paseo.presets.list', 'paseo.presets.in
   'groups.plans.list','groups.plans.create','groups.plans.start','groups.plans.continue','groups.plans.retry','groups.plans.stop','groups.plans.dismiss','groups.plans.edit','groups.plans.note','groups.plans.revise','groups.plans.cancelRequest','groups.plans.settings','groups.plans.artifact','groups.plans.directories',
   'companion.tasks.list','companion.tasks.get','companion.tasks.start','companion.tasks.message','companion.tasks.stop','companion.tasks.responsibility','companion.tasks.artifact','companion.tasks.owner',
   'profile.get', 'profile.update', 'profile.chooseAvatar', 'lifecycle.run', 'models.default', 'models.features',
-  'memory.list', 'memory.read', 'memory.update', 'memory.delete', 'capabilities.catalog', 'history.search',
+  'memory.list', 'memory.read', 'memory.update', 'memory.delete', 'capabilities.catalog', 'history.search', 'projects.list', 'projects.set',
   'skills.list', 'skills.read', 'skills.inspect', 'skills.save', 'skills.source', 'skills.enabled', 'skills.delete',
   'paseo.bootstrap', 'profile.list', 'profile.create', 'profile.ensure', 'paseo.conversation.ensure',
   'conversation.send', 'conversation.history', 'home.get', 'memory.create', 'paseo.openPath',
@@ -55,6 +56,7 @@ export class CompanionService {
   readonly store: CompanionStore;
   readonly runtime: CompanionRuntime;
   readonly skills: CompanionSkills;
+  readonly projects: CompanionProjects;
   readonly routines: CompanionRoutines;
   readonly groups: CompanionGroups;
   readonly groupHistory: CompanionGroupHistory;
@@ -77,7 +79,7 @@ export class CompanionService {
   private readonly ownedApi:(fallback:Paseo)=>Promise<Paseo>;
   readonly memory: ReturnType<typeof createBotMemoryService>;
   constructor(store = new CompanionStore(), options: { scheduleDriver?: ScheduleDriver; groupDriver?: (paseo: Paseo) => GroupDriver;taskDriver?:(paseo:Paseo)=>GroupDriver;paseoForTools?:()=>Promise<Paseo> } = {}) {
-    this.store = store; this.runtime = new CompanionRuntime(store); this.skills = new CompanionSkills(store);
+    this.store = store; this.runtime = new CompanionRuntime(store); this.skills = new CompanionSkills(store); this.projects = new CompanionProjects(store);
     this.runtime.setSkillsFactory(id => this.skills.nativeSnapshot(id));
     this.routines = new CompanionRoutines(store, this.runtime, options.scheduleDriver ?? new ScheduleCli());
     this.groups = new CompanionGroups(store, this.runtime, options.groupDriver);
@@ -176,6 +178,21 @@ export class CompanionService {
   async invokeSessionTool(id:string,scope:SessionScope,op:string,args:Record<string,unknown>):Promise<InvokeResult>{
     try{return await this.admit(async()=>{
       const paseo=await this.toolsPaseo();await validateSessionBinding(this.store,paseo,id,scope);
+      if (op === 'list_teammate_projects') {
+        if (scope.role !== 'canonical' && scope.role !== 'routine') throwIpcError('BOT_MAIN_TASK_REQUIRED', 'Project links are available in the companion private conversation or its routine');
+        if (args.include_available !== undefined && typeof args.include_available !== 'boolean') throwIpcError('INVALID_PARAMS', 'include_available must be a boolean');
+        const access: ProjectAccess = async state => {
+          const binding = sessionBinding(state, id, scope), agent = paseo.agents.ref(scope.agentId);
+          if (!await agent.refresh() || agent.archivedAt || agent.cwd !== binding.cwd || (binding.workspaceId && agent.workspaceId !== binding.workspaceId))
+            throwIpcError('SESSION_SCOPE_REVOKED', 'The native session no longer owns this project access');
+        };
+        const { projects } = await this.projects.list(id, paseo, access);
+        return { ok: true, value: { projects: projects.filter(project => project.linked || args.include_available === true).map(project => ({
+          project_id: project.id, name: project.name, working_dir: project.path, device_id: project.deviceId ?? null,
+          linked: project.linked, available_locally: project.available,
+          ...(!project.deviceId && project.available ? { context_locations: ['AGENTS.md', 'CLAUDE.md', 'README.md', '.cindy/project-knowledge/TOC.md'] } : {}),
+        })) } };
+      }
       if (['list_teammate_skills', 'read_teammate_skill', 'inspect_teammate_skill', 'save_teammate_skill'].includes(op)) {
         const access: SkillAccess = async state => {
           const binding = sessionBinding(state, id, scope), agent = paseo.agents.ref(scope.agentId);
@@ -298,6 +315,8 @@ export class CompanionService {
   private async dispatchUnlocked({ op, args }: InvokeInput, paseo: Paseo): Promise<unknown> {
     if (op === 'caps') return this.caps();
     if (op === 'assets.fontChunk') return readFontChunk(args);
+    if (op === 'projects.list') return this.projects.list(botId(args.botId), paseo);
+    if (op === 'projects.set') return this.projects.set(botId(args.botId), paseo, args);
     if (op === 'paseo.presets.list') return this.presets.list();
     if (op === 'paseo.presets.invite') return this.presets.invite(args);
     if (op === 'paseo.presets.status') return this.presets.status(string(args.requestId, 'requestId', 200));

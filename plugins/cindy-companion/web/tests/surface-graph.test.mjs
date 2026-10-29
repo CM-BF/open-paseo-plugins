@@ -14,7 +14,7 @@ test('all real settings, preset and group surface modules link against one web r
     '@cindy/maker-scheduler/cron': path.join(plugin, 'vendor/shared/upstream/cron.ts'),
     '@paseo/frame-storage': path.join(web, 'frame-storage.ts'),
   };
-  const result = await build({ entryPoints: [path.join(web, 'app.tsx')], absWorkingDir: plugin,
+  const result = await build({ stdin: { contents: "import './electron'; import './app';", resolveDir: web, sourcefile: 'surface-graph.ts' }, absWorkingDir: plugin,
     alias: webDependencyAliases(web), bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic', metafile: true,
     nodePaths: [path.join(web, 'node_modules')], loader: { '.css': 'empty', '.png': 'dataurl', '.jpg': 'dataurl' },
     plugins: [{ name: 'real-surface-seams', setup(builder) {
@@ -38,5 +38,7 @@ test('all real settings, preset and group surface modules link against one web r
   assert.ok(inputs.some(value => value.endsWith('group-chat.tsx')));
   assert.ok(inputs.some(value => value.endsWith('adapters/bot-capability-settings.tsx')));
   assert.ok(inputs.some(value => value.endsWith('personal-skills.ts')));
+  assert.ok(inputs.some(value => value.endsWith('BotProjectsSettings.tsx')));
+  assert.ok(inputs.some(value => value.endsWith('adapters/linked-projects.ts')));
   assert.equal(inputs.some(value => value.includes('server/presets') || value.includes('font-assets')), false);
 });

@@ -54,6 +54,33 @@ it('shares concurrent hydration work and reconciles mutations during the read', 
   expect(build).toHaveBeenCalledTimes(2);
 });
 
+it('metadata evidence invalidates an in-flight build without relying on watcher delivery', async () => {
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let version = 'old';
+  const build = vi.fn(async () => {
+    const captured = version;
+    if (captured === 'old') await held;
+    return projection(captured);
+  });
+  const first = cachedBotSkillRuntime(root, build, 'runtime', 'old-metadata');
+  await vi.waitFor(() => expect(build).toHaveBeenCalledTimes(1));
+  version = 'new';
+  const stats = vi.spyOn(fs, 'stat');
+  const second = cachedBotSkillRuntime(root, build, 'runtime', 'new-metadata');
+  // Let the second source scan join the same writer before releasing the first.
+  const third = cachedBotSkillRuntime(root, build, 'runtime', 'new-metadata');
+  await vi.waitFor(() => expect(stats).toHaveBeenCalledTimes(4));
+  await Promise.allSettled(stats.mock.results.map(result => result.value));
+  await new Promise<void>(resolve => setImmediate(resolve));
+  release();
+  const results = await Promise.all([first, second, third]);
+  expect(results.map(value => value.skills[0].name)).toEqual(['new', 'new', 'new']);
+  expect(build).toHaveBeenCalledTimes(2);
+  expect((await cachedBotSkillRuntime(root, build, 'runtime', 'new-metadata')).skills[0].name).toBe('new');
+  expect(build).toHaveBeenCalledTimes(2);
+});
+
 it('retries failed catalog builds and never caches an unwatchable source', async () => {
   const build = vi.fn().mockRejectedValueOnce(new Error('fixture write failure')).mockResolvedValue(projection('retry'));
   await expect(cachedBotSkillRuntime(root, build)).rejects.toThrow('fixture write failure');

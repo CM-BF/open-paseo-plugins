@@ -147,8 +147,8 @@ test('revocation during preparation is checked again before any skill bytes are 
 test('revocation during a real HTTP catalog read prevents returning names and native paths', async () => {
   const f = await fixture(); await f.service.skills.mutate('cindy', { ...uiSave, kind: 'save' });
   const { client } = await f.connect(f.scope);
-  const target = f.service.skills as unknown as { scanPaths(id: string): Promise<void> }, scan = target.scanPaths.bind(target);
-  vi.spyOn(target, 'scanPaths').mockImplementation(async id => { await scan(id); f.native.archivedAt = 'archived'; });
+  const target = f.service.skills as unknown as { scanPaths(id: string): Promise<{ runtime: string; query: string }> }, scan = target.scanPaths.bind(target);
+  vi.spyOn(target, 'scanPaths').mockImplementation(async id => { const metadata = await scan(id); f.native.archivedAt = 'archived'; return metadata; });
   const result = payload(await client.callTool({ name: 'list_teammate_skills', arguments: {} }));
   expect(result).toMatchObject({ code: 'SESSION_SCOPE_REVOKED' });
   expect(result).not.toHaveProperty('skills'); expect(result).not.toHaveProperty('value');
