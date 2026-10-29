@@ -11,11 +11,13 @@
     "index.server.tsx",
     "client/",
     "server/",
-    "shared/"
+    "shared/",
+    "scripts/"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build:client": "node scripts/build-client.mjs"
   },
   "devDependencies": {
     "@getpaseo/plugin": "0.13.2",
@@ -26,7 +28,12 @@
     "react": "19.1.0",
     "react-native": "0.81.5",
     "typescript": "^5.9.3",
-    "vitest": "3.2.4"
+    "vitest": "3.2.4",
+    "@babel/core": "^7.29.7",
+    "@babel/plugin-transform-async-generator-functions": "^7.29.7",
+    "@babel/plugin-transform-block-scoping": "^7.29.7",
+    "@babel/plugin-transform-classes": "^7.29.7",
+    "esbuild": "^0.28.2"
   },
   "dependencies": {
     "@getpaseo/client": "0.13.2",
