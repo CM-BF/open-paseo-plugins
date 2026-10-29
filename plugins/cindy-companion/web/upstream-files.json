@@ -315,7 +315,8 @@
     "source": "apps/desktop/src/renderer/features/bots/BotPortraitPicker.tsx",
     "destination": "vendor/renderer/features/bots/BotPortraitPicker.tsx",
     "sha256": "9b459c146602f916cd083c7b333c0036add46843634da2e47bd0f0b264bd4e11",
-    "modified": true
+    "modified": true,
+    "changes": "Relocated original portrait resources; constrain the original popup to Radix available height with internal vertical scrolling while preserving its anchor, offsets, width, portrait dimensions and responsive grid."
   },
   {
     "source": "apps/desktop/src/renderer/features/bots/BotRoutines.tsx",

@@ -10,6 +10,7 @@ This is an extraction of the original settings, teammate catalog and selected gr
 - `BotsHomeView.tsx`: only its original `BotSettings` component and required imports are retained; the Projects child is excluded from the user-selected surface.
 - `BotSettingsDrawer.tsx`: host close requests enter the original route blocker and save/leave guard.
 - `BotAvatar.tsx`: accepts validated data image URLs from the local Paseo avatar store.
+- `BotPortraitPicker.tsx`: limits the original popup to Radix's available viewport height and scrolls its contents when needed. The original anchor, side offset, collision padding, width, portrait sizes and responsive grid remain. This small-screen adaptation is not an unchanged upstream file.
 - `confirm-dialog-provider.tsx` and `speechVoiceLabelCache.ts`: transient cache uses frame memory because the sandbox has an opaque origin.
 - `CompanionVoiceSettings.tsx`: adds an explicit unavailable-service notice; original voice state, controls and error UI remain.
 - `BotChannelsPage.tsx`: no IM API means an explicit disconnected notice and disabled Add button; original full page/dialog source remains.

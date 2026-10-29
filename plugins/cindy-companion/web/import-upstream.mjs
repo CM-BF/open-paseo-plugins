@@ -89,6 +89,9 @@ function add(file, transform) {
   if (transform) code=transform(code);
   if (isText) {
     if(file.endsWith('/BotRosterView.tsx')) code=transformBotRoster(code);
+    if(file.endsWith('/BotPortraitPicker.tsx')) code=code.replace(
+      'w-[360px] max-w-[calc(100vw-32px)] rounded-xl',
+      'w-[360px] max-h-[var(--radix-popover-content-available-height)] max-w-[calc(100vw-32px)] overflow-y-auto rounded-xl');
     if(file.endsWith('/styles/globals.css')) code=code
       .replace(/@font-face\s*\{\s*font-family: 'Cindy CJK Punctuation Bundled';[^}]*\}\s*/g,'')
       .replaceAll("'Cindy CJK Punctuation Bundled'", "'HarmonyOS Sans SC'")

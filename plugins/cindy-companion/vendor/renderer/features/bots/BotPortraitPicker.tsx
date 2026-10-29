@@ -229,7 +229,7 @@ export function BotPortraitPicker({
             align="start"
             sideOffset={12}
             collisionPadding={16}
-            className="z-[60] w-[360px] max-w-[calc(100vw-32px)] rounded-xl border border-[var(--border-default)] bg-[var(--confirm-bg)] p-3"
+            className="z-[60] w-[360px] max-h-[var(--radix-popover-content-available-height)] max-w-[calc(100vw-32px)] overflow-y-auto rounded-xl border border-[var(--border-default)] bg-[var(--confirm-bg)] p-3"
           >
             <div className="grid grid-cols-4 gap-2 min-[400px]:grid-cols-6">
               {Array.from({ length: BOT_PORTRAIT_COUNT }, (_, index) => {
