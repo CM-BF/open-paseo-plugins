@@ -92,6 +92,7 @@ async function fixture() {
     await tasks.waitForIdle();
   };
   return {
+    api,
     root,
     store,
     tasks,
@@ -235,6 +236,18 @@ it("defers a new scope while the previous review is running or awaiting permissi
   f.previous.pendingPermissions = [];
   await f.check();
   expect(f.executor).toHaveBeenCalledTimes(2);
+});
+it("checks every older review instead of assuming the latest task owns all running work", async () => {
+  const f = await fixture();
+  await f.check();
+  const first = (await f.tasks.list())[0];
+  f.revision.mockResolvedValue("d".repeat(40));
+  await f.check();
+  f.api.agents.ref = ((id: string) => ({ ...f.previous, status: id === first.agentId ? "running" : "idle" })) as unknown as typeof f.api.agents.ref;
+  f.revision.mockResolvedValue("e".repeat(40));
+  await f.check();
+  expect(f.executor).toHaveBeenCalledTimes(2);
+  expect((await f.store.read()).watches[0].reviewState?.error).toContain("仍在运行");
 });
 it.each(["pause", "edit", "delete", "dispose"])(
   "rejects %s racing native workspace preflight",

@@ -69,8 +69,8 @@ export class ReviewCoordinator {
           placement.projectRootPath,
       );
       if (disposed()) return;
-      const previous = previousTasks.at(-1);
-      if (previous?.agentId) {
+      for (const previous of previousTasks) {
+        if (!previous.agentId) continue;
         const agent = paseo.agents.ref(previous.agentId);
         await agent.refresh();
         if (
