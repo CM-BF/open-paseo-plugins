@@ -14,6 +14,7 @@ import { botId, CompanionError, record, string, throwIpcError, unsupported } fro
 import { CompanionRoutines, ScheduleCli, type ScheduleDriver } from './schedules';
 import { readFontChunk } from './font-assets';
 import { CompanionGroups, parseTrackedMentions } from './groups';
+import { CompanionGroupHistory } from './group-history';
 import { NativeGroupDriver, type GroupDriver } from './group-driver';
 import { GroupPlans } from './group-plans';
 import { GroupPlanOrganizer } from './group-plan-organizer';
@@ -32,6 +33,8 @@ import { createHash } from 'node:crypto';
 
 const OPS = ['caps', 'assets.fontChunk', 'paseo.presets.list', 'paseo.presets.invite', 'paseo.presets.status', 'preset.opening.status', 'preset.opening.choose',
   'groups.list', 'groups.get', 'groups.create', 'groups.update', 'groups.setMembers', 'groups.send', 'groups.continue', 'groups.stop', 'groups.delete','groups.cleanup',
+  'groups.history.get', 'groups.history.send', 'groups.history.react', 'groups.history.reactors',
+  'groups.threads.get', 'groups.threads.reply', 'groups.threads.follow', 'groups.threads.shareToMain', 'groups.threads.stop', 'groups.threads.continue',
   'groups.plans.list','groups.plans.create','groups.plans.start','groups.plans.continue','groups.plans.retry','groups.plans.stop','groups.plans.dismiss','groups.plans.edit','groups.plans.note','groups.plans.revise','groups.plans.cancelRequest','groups.plans.settings','groups.plans.artifact','groups.plans.directories',
   'companion.tasks.list','companion.tasks.get','companion.tasks.start','companion.tasks.message','companion.tasks.stop','companion.tasks.responsibility','companion.tasks.artifact','companion.tasks.owner',
   'profile.get', 'profile.update', 'profile.chooseAvatar', 'lifecycle.run', 'models.default', 'models.features',
@@ -44,6 +47,7 @@ export class CompanionService {
   readonly runtime: CompanionRuntime;
   readonly routines: CompanionRoutines;
   readonly groups: CompanionGroups;
+  readonly groupHistory: CompanionGroupHistory;
   readonly presets: PresetImports;
   readonly openings: PresetOpenings;
   private readonly memoryStores = new Map<string, CompanionMemoryStore>();
@@ -64,6 +68,7 @@ export class CompanionService {
     this.store = store; this.runtime = new CompanionRuntime(store);
     this.routines = new CompanionRoutines(store, this.runtime, options.scheduleDriver ?? new ScheduleCli());
     this.groups = new CompanionGroups(store, this.runtime, options.groupDriver);
+    this.groupHistory = new CompanionGroupHistory(store, this.groups);
     this.toolsPaseo=options.paseoForTools??(()=>this.localPaseo.get());
     this.ownedApi=options.groupDriver||options.taskDriver?async fallback=>fallback:()=>this.toolsPaseo();
     const managed=(factory:(api:Paseo)=>GroupDriver):GroupDriver=>({
@@ -268,6 +273,22 @@ export class CompanionService {
     if (op === 'groups.create') return this.groups.create(paseo, args);
     if (op.startsWith('groups.')) {
       const groupId = botId(args.groupId);
+      // Internal topic execution IDs are not public group IDs. Every RPC keeps the real room boundary.
+      const publicGroup = (await this.store.snapshot()).groups?.[groupId];
+      if (!publicGroup || publicGroup.deletedAt) throwIpcError('NOT_FOUND', 'Group not found');
+      if (op.startsWith('groups.history.') || op.startsWith('groups.threads.')) {
+        if (args.actorId !== undefined || args.callerId !== undefined) throwIpcError('INVALID_PARAMS', 'History actors are assigned by the host');
+        if (op === 'groups.history.get') return this.groupHistory.get(paseo, groupId, args);
+        if (op === 'groups.history.send') return this.groupHistory.send(paseo, groupId, args);
+        if (op === 'groups.history.react') return this.groupHistory.react(groupId, args);
+        if (op === 'groups.history.reactors') return this.groupHistory.reactors(groupId, args);
+        if (op === 'groups.threads.get') return this.groupHistory.thread(paseo, groupId, args);
+        if (op === 'groups.threads.reply') return this.groupHistory.reply(paseo, groupId, args);
+        if (op === 'groups.threads.follow') return this.groupHistory.follow(paseo, groupId, args);
+        if (op === 'groups.threads.shareToMain') return this.groupHistory.share(paseo, groupId, args);
+        if (op === 'groups.threads.stop' || op === 'groups.threads.continue') return this.groupHistory.action(paseo, groupId, args, op.endsWith('.stop') ? 'stop' : 'continue');
+        return unsupported(op);
+      }
       if(op==='groups.cleanup')return this.groups.cleanup(paseo,groupId);
       if(op.startsWith('groups.plans.')){
         const {plans,organizer}=this.work(paseo);await plans.init();await organizer.init();

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { existsSync } from 'node:fs';
 import React from 'react';
 import { act, create } from 'react-test-renderer';
 import { build } from 'esbuild';
@@ -19,14 +20,15 @@ const mocks = {
   bots: `export const useBotProfiles=()=>globalThis.__GROUP_SURFACE_TEST__.profiles;`,
   avatar: `export const BotAvatar=()=>null;export const BotGroupAvatarStack=()=>null;`,
   utils: `export const cn=(...values)=>values.filter(Boolean).join(' ');`,
-  bridge: `export class BridgeError extends Error {constructor(code,message){super(message);this.code=code;}} export const invoke=(op,args)=>{const s=globalThis.__GROUP_SURFACE_TEST__;s.calls.push({op,args});return s.invoke(op,args);};export const post=(type,fields)=>globalThis.__GROUP_SURFACE_TEST__.posts.push({type,...fields});`,
+  bridge: `export const initValue=()=>({host:{id:'test'}}); export class BridgeError extends Error {constructor(code,message){super(message);this.code=code;}} export const invoke=(op,args)=>{const s=globalThis.__GROUP_SURFACE_TEST__;s.calls.push({op,args});return s.invoke(op,args);};export const post=(type,fields)=>globalThis.__GROUP_SURFACE_TEST__.posts.push({type,...fields});`,
   groupHook: `import {useState} from 'react';export const mergeMessages=(a,b)=>[...new Map([...a,...b].map(m=>[m.id,m])).values()].sort((a,b)=>a.sequence-b.sequence);export const useGroup=()=>{const s=globalThis.__GROUP_SURFACE_TEST__;const[data,setData]=useState(s.data);s.setData=setData;return{data,setData,error:s.readError,refresh:()=>{s.refreshes++;}};};`,
-  mention: `export const useBotGroupMentionPicker=({onTextChange})=>({list:null,tracked:[],reset(){},onChange:onTextChange,onKeyDown:()=>false,textareaProps:{}});`,
+  mention: `export const useBotGroupMentionPicker=({onTextChange})=>({list:null,tracked:[],setTracked(){},reset(){},onChange:onTextChange,onKeyDown:()=>false,textareaProps:{}});`,
   markdown: `import {createElement} from 'react';export const MarkdownRenderer=({content})=>createElement('markdown',{},content);`,
   send: `import {createElement} from 'react';export const SendButton=props=>createElement('send-button',props);`,
   confirm: `export const useConfirmDialog=()=>({confirm:async()=>true});`,
   spinner: `export const Spinner=()=>null;`,
   tip: `import {createElement} from 'react';export const Tip=({children})=>createElement('tip',{},children);`,
+  history: `export const useGroupHistory=()=>({data:null,error:'',refresh(){}});`,
   work: `export const useGroupPlans=()=>globalThis.__GROUP_SURFACE_TEST__.work??({data:null,error:'',pending:null,refresh(){}});`,
   dropdown: `import {createElement} from 'react';const c=tag=>({children,...props})=>createElement(tag,props,children);export const DropdownMenu=c('dropdown'),DropdownMenuTrigger=c('dropdown-trigger'),DropdownMenuContent=c('dropdown-content'),DropdownMenuItem=c('dropdown-item'),DropdownMenuLabel=c('dropdown-label'),DropdownMenuSeparator=c('dropdown-separator');`,
 };
@@ -42,11 +44,12 @@ const built = await build({
         : /(?:BotAvatar|BotGroupAvatars)$/.test(p) ? 'avatar' : /lib\/utils$/.test(p) ? 'utils'
         : /(?:^|\/)bridge$/.test(p) ? 'bridge' : /useBotGroupMentionPicker$/.test(p) ? 'mention'
         : /memory-markdown$/.test(p) ? 'markdown' : /SendButton$/.test(p) ? 'send'
-        : /adapters\/group-plans$/.test(p) ? 'work' : /dropdown-menu$/.test(p) ? 'dropdown' : /tooltip$/.test(p) ? 'tip'
+        : p === './group-history-store' && args.importer.endsWith('group-chat.tsx') ? 'history' : /adapters\/group-plans$/.test(p) ? 'work' : /dropdown-menu$/.test(p) ? 'dropdown' : /tooltip$/.test(p) ? 'tip'
         : /confirm-dialog-provider$/.test(p) ? 'confirm' : /spinner$/.test(p) ? 'spinner'
         : p === './adapters/group-store' && args.importer.endsWith('group-chat.tsx') ? 'groupHook' : null;
       if (mock) return { path: mock, namespace: 'mock' };
-      if (p.startsWith('@/')) return { path: web + '/../vendor/renderer/' + p.slice(2) + (/menuStyles|utils|toast/.test(p) ? '.ts' : '.tsx') };
+      if (p === '@/components/chat/MarkdownRenderer') return { path: 'markdown', namespace: 'mock' };
+      if (p.startsWith('@/')) { const base=web+'/../vendor/renderer/'+p.slice(2); return {path:base+(existsSync(base+'.ts')?'.ts':'.tsx')}; }
       if (p === './botGroupStore') return { path: web + '/adapters/group-store.ts' };
       if (p === './botGroupPresentation') return { path: web + '/adapters/group-presentation.ts' };
     });

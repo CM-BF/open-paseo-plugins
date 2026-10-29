@@ -2,6 +2,7 @@
 import type { BotGroupTrackedMention } from './vendor/botGroupMentions';
 import type { GroupPlanArtifact } from './group-plans';
 import type { TaskResultReceipt } from './companion-tasks';
+import type { BotGroupQuoteView } from './vendor/botGroupQuote';
 export type { BotGroupTrackedMention };
 export type GroupRoundStatus = 'queued' | 'running' | 'permission' | 'waiting' | 'completed' | 'stopping' | 'stopped' | 'interrupted' | 'failed' | 'unknown';
 export interface GroupMember { botId: string; name: string; avatar: string; avatarColor: string; status: string }
@@ -16,6 +17,11 @@ export interface GroupMessage {
   /** Frozen handoff metadata; later retries and edits never rewrite this message. */
   artifacts?: GroupPlanArtifact[];
   taskId?:string;taskParentSessionId?:string;taskResult?:TaskResultReceipt;
+  /** Host-authored history data; callers submit only source IDs. */
+  threadRootId?: string | null;
+  quote?: BotGroupQuoteView;
+  threadShareRef?: { rootId: string; messageId: string };
+  deleted?: boolean;
 }
 export interface GroupStep {
   botId: string; botName: string; status: 'queued' | 'running' | 'permission' | 'completed' | 'silent' | 'failed' | 'stopped' | 'unknown';

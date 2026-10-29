@@ -175,3 +175,7 @@ The original group plan/task components and native timeline translation are reco
 in [work-SOURCE.md](work-SOURCE.md) and [work-upstream-files.json](work-upstream-files.json).
 That inventory adds source code and original UI strings only, with no new external
 avatars, prompts, fonts or personal data.
+
+## Group history and topics
+
+The next group history slice is documented in [history-SOURCE.md](history-SOURCE.md), with pinned source hashes in `history-upstream-files.json`. It retains original quote/thread/preview/share/reaction presentation and replaces only host data seams; runtime and visual verification remain separate.

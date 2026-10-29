@@ -13,6 +13,7 @@ import { syncBotProfileFromFolder } from './vendor/botProfileFolderSync';
 import { botId, CompanionError, record, string, throwIpcError } from './errors';
 import type { SavedRoutine } from './schedules';
 import type { SavedGroup } from './groups';
+import type { SavedGroupHistory, SavedGroupThread } from './group-history';
 import type { SavedPresetReceipt, PresetRoutineDraft } from './presets/install-state';
 import { avatarDataUrl } from './avatar';
 import type { SavedPresetOpening } from './presets/opening';
@@ -35,6 +36,10 @@ export interface SavedState {
   bindings: Record<string, Binding>; createKeys: Record<string, string>;
   voice: Record<string, unknown>; routines: Record<string, SavedRoutine>;
   groups?: Record<string, SavedGroup>;
+  /** Monotonic snapshot generation, including asynchronous native result writes. */
+  historyRevision?: number;
+  groupHistory?: Record<string, SavedGroupHistory>;
+  groupThreads?: Record<string, SavedGroupThread>;
   groupCreateKeys?: Record<string, { groupId: string; fingerprint: string }>;
   groupPlans?: Record<string,SavedGroupWorkPlan>;
   groupPlanSettings?: Record<string,GroupPlanSettings>;
@@ -110,7 +115,7 @@ export class CompanionStore {
   async transaction<T>(run: (state: SavedState) => T | Promise<T>): Promise<T> {
     await this.load();
     return this.serial(async () => {
-      const draft = structuredClone(this.state); const result = await run(draft);
+      const draft = structuredClone(this.state); draft.historyRevision = (this.state.historyRevision ?? 0) + 1; const result = await run(draft);
       await this.persist(draft); this.state = draft; return structuredClone(result);
     });
   }

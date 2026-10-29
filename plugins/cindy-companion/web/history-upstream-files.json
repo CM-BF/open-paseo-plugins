@@ -1,0 +1,100 @@
+[
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupQuote.tsx",
+    "destination": "vendor/renderer/features/bots/BotGroupQuote.tsx",
+    "sha256": "be3522b61157ba7e0c82c9c7a04cffd000391e13bba56df4309f06e411cadb5e",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupThreadViews.tsx",
+    "destination": "vendor/renderer/features/bots/BotGroupThreadViews.tsx",
+    "sha256": "c7e9f895674bacfdc30324f436126e2270a7fbeed359703136cafced4523aa27",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/ThreadPanel.tsx",
+    "destination": "vendor/renderer/features/bots/ThreadPanel.tsx",
+    "sha256": "ced56d6cefcccb6a0a02d7d1796f809a433dd888a5b8615238b4aea6719b36fd",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/useThreadPanelResize.ts",
+    "destination": "vendor/renderer/features/bots/useThreadPanelResize.ts",
+    "sha256": "2395e911ba70d6fe8d3538e0159a8a944ffc0018dc41d2cf193c409a715597dd",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/ChatReactionButton.tsx",
+    "destination": "vendor/renderer/features/bots/ChatReactionButton.tsx",
+    "sha256": "2e5e7b455270472a575c0e31baed0154c7eb7a90c3fbc520085406442ef3db7a",
+    "modified": true,
+    "changes": "Replace Electron reactors read with scoped Paseo RPC adapter; original rendering and identity guards retained."
+  },
+  {
+    "source": "apps/desktop/src/renderer/components/chat/ChatReplyIcon.tsx",
+    "destination": "vendor/renderer/components/chat/ChatReplyIcon.tsx",
+    "sha256": "b26053af6e52c72617fca8433a8e85719cf1ecf1ba0c717b610388b82165037f",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/components/chat/chatChrome.ts",
+    "destination": "vendor/renderer/components/chat/chatChrome.ts",
+    "sha256": "3b24488d617b6d10229c5a0c5e28b16b15d144558b85ddef62edda05df095c00",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/lib/shareConversationImage.ts",
+    "destination": "vendor/renderer/lib/shareConversationImage.ts",
+    "sha256": "1ff720ac2982402b9465071bba9c5725317f33c3af1da72f193b770c2d013b9d",
+    "modified": true,
+    "changes": "Extract only SHARE_MESSAGE_ATTR/SHARE_EXCLUDE_ATTR identity constants; no image sharing implementation claimed."
+  },
+  {
+    "source": "apps/desktop/src/renderer/components/chat/MessageActionBar.tsx",
+    "destination": "vendor/renderer/components/chat/BubbleHoverToolbar.tsx",
+    "sha256": "54aa2b927c396a7c5d37b4c61eb50039e37cc1dc3119ccc04b4a4baa45926721",
+    "modified": true,
+    "changes": "Extract original BubbleHoverToolbar function unchanged with minimal imports. Compact action JSX also adapted in web/group-history-actions.tsx; original quote/topic/reaction/more geometry retained."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupThreadHint.tsx",
+    "destination": "vendor/renderer/features/bots/BotGroupThreadHint.tsx",
+    "sha256": "9540d5bd10d110750d8f7473a5ca9aa2b9dbe5c2ef4a82984560dca95ad5c352",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/ChatThreadPanel.tsx",
+    "destination": "web/group-history-thread.tsx",
+    "sha256": "e2dbcb98750d14acf4675b80522b921d8f8d9312515f3ab0207d2b951618c3e4",
+    "modified": true,
+    "changes": "Retain original panel/scroll/follow/reply/share layout; replace cloud/Electron with scoped durable Paseo RPCs, add exact-turn recovery actions."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupComposer.tsx",
+    "destination": "web/group-history-thread.tsx",
+    "sha256": "5a7b9bb460d2c9a3fff413bea1e820e4af1389a4a0662686d6e1b5099df0a0fe",
+    "modified": true,
+    "changes": "Reuse thread-mode card/input/footer/also-send geometry; retain text-only thread mode and current original mention picker."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupTimelineItem.tsx",
+    "destination": "web/group-history-message.tsx",
+    "sha256": "da97ec499a0396d88b04f1cfd69d5b63aac3ed88703642bb40d17fa80e642823",
+    "modified": true,
+    "changes": "Use existing extracted bubbles plus original quote/thread/share/reaction components; preserve work/task frozen receipt cards."
+  },
+  {
+    "source": "apps/desktop/src/renderer/components/chat/MessageActionBar.tsx",
+    "destination": "web/group-history-actions.tsx",
+    "sha256": "54aa2b927c396a7c5d37b4c61eb50039e37cc1dc3119ccc04b4a4baa45926721",
+    "modified": true,
+    "changes": "Extract compact quote/topic/reaction/more geometry and original icons; explicit browser clipboard errors, no false image-export action."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/ChatServerControls.tsx",
+    "destination": "web/group-history-actions.tsx",
+    "sha256": "9f6c3e4d6fe19174e2555a3a50ec6f495987c6d87e12d63e8f798cf553ec981d",
+    "modified": true,
+    "changes": "Reuse original emoji choices, reaction corner and compact toolbar; stable scoped mutation RPC with visible failure."
+  }
+]

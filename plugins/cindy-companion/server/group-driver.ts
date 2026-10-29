@@ -7,7 +7,8 @@ export interface GroupLane {
   agentId: string; operationId: string; groupId: string; roundId: string; botId: string;
   cwd: string; title: string; config: Record<string, unknown>; phase: 'creating' | 'ready' | 'unknown';
   workspaceId?: string;
-  scope?: 'main' | 'talk'; retired?: boolean;
+  scope?: 'main' | 'talk' | 'thread'; retired?: boolean;
+  threadRootId?: string;
   sessionScope?: SessionScope;
   dispatch?: LaneDispatch;
   cleanupPending?:boolean;
@@ -40,7 +41,8 @@ export class NativeGroupDriver implements GroupDriver {
       if (lane.phase === 'ready') throwIpcError('GROUP_LANE_MISSING', 'The group conversation is missing');
       agent = await this.paseo.agents.create({ agentId: lane.agentId, idempotencyKey: lane.operationId,
         config: lane.config as never, cwd: lane.cwd, title: lane.title, background: true,
-        labels: { 'cindy-companion.groupId': lane.groupId, 'cindy-companion.botId': lane.botId, 'cindy-companion.roundId': lane.roundId } });
+        labels: { 'cindy-companion.groupId': lane.groupId, 'cindy-companion.botId': lane.botId, 'cindy-companion.roundId': lane.roundId,
+          ...(lane.threadRootId ? { 'cindy-companion.threadRootId': lane.threadRootId } : {}) } });
       await agent.refresh();
     }
     if (agent.archivedAt || agent.cwd !== lane.cwd) throwIpcError('GROUP_LANE_MISMATCH', 'The group conversation no longer matches its binding');
