@@ -6,6 +6,7 @@ import { useBotProfiles } from './bot-store';
 import { providerRows } from './catalog';
 import { toast } from '../../vendor/renderer/lib/toast';
 import { createRoutineRefresh } from './routine-refresh';
+import { personalSkillPage } from '../personal-skills';
 const request = <T = any>(op: string, args: Record<string, unknown> = {}): Promise<T> => invoke<T>(op, args);
 const routineRefresh = createRoutineRefresh(request);
 export const onRoutinesChanged = routineRefresh.subscribe;
@@ -53,7 +54,11 @@ const target: BotSettingsTarget = {
       const result = await request('capabilities.catalog', { botId: bot.id });
       if (result.entries) return {
         ...result.entries,
-        skill: [...(result.personal ?? []).map((item: any) => ({ id: `personal:${item.slug}`, name: item.name, available: item.enabled !== false, personal: true })), ...(result.entries.skill ?? [])],
+        personalSkills: personalSkillPage({ skills: result.personal ?? [], total: result.personalPage?.total ?? result.personal?.length ?? 0,
+          ...(result.personalPage?.revision !== undefined ? { revision: result.personalPage.revision } : {}),
+          ...(result.personalPage?.nextOffset !== undefined ? { nextOffset: result.personalPage.nextOffset } : {}) }),
+        personalRuntime: result.personalRuntime,
+        providerError: result.providerError,
       };
       return result;
     },

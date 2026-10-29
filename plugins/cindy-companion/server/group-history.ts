@@ -140,7 +140,7 @@ export class CompanionGroupHistory {
   }
   async send(paseo: Paseo, groupId: string, args: Record<string, unknown>) {
     if (args.quote === undefined) throwIpcError('INVALID_PARAMS', 'A quoted source message is required');
-    if (args.attachments !== undefined || args.threadRootId !== undefined || args.threadShareRef !== undefined)
+    if (args.threadRootId !== undefined || args.threadShareRef !== undefined)
       throwIpcError('UNSUPPORTED', 'Quoted sends currently accept text and mentions only');
     const receipt = await this.groups.send(paseo, groupId, args), state = await this.store.snapshot();
     return { ...receipt, message: project(state, groupId, receipt.message) };

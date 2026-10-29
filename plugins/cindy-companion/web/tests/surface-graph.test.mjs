@@ -36,5 +36,7 @@ test('all real settings, preset and group surface modules link against one web r
   assert.ok(inputs.some(value => value.endsWith('BotGroupCreateDialog.tsx')));
   assert.ok(inputs.some(value => value.endsWith('BotRosterView.tsx')));
   assert.ok(inputs.some(value => value.endsWith('group-chat.tsx')));
+  assert.ok(inputs.some(value => value.endsWith('adapters/bot-capability-settings.tsx')));
+  assert.ok(inputs.some(value => value.endsWith('personal-skills.ts')));
   assert.equal(inputs.some(value => value.includes('server/presets') || value.includes('font-assets')), false);
 });

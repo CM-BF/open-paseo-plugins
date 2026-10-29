@@ -1,8 +1,10 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { CompanionSessionTools } from './mcp';
+import { registerCompanionSkillTools } from './companion-skills-tools';
 /** Input names/limits follow pinned Cindy lizi_xdtHelperMcpServer.ts:381-721. Host-only caller identity is omitted. */
 export function registerSessionTools(server:McpServer,context:CompanionSessionTools):void{
+  registerCompanionSkillTools(server, context);
   server.registerTool('list_agents',{description:'List active local companions by stable id. Remote device discovery is not connected on this host.',inputSchema:{}},()=>context.invoke('list_agents',{}));
   server.registerTool('start_session_task',{
     description:'Start an independent tracked native session for work that needs separate execution. Pass all required context; it does not inherit this chat or companion memory. The group receives a task card and frozen result. Private task results remain available in the task card; do not claim automatic parent delivery. Start once; an unknown outcome must not be replayed. This does not contact a named teammate.',

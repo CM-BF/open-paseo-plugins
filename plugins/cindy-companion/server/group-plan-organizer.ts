@@ -8,6 +8,7 @@ import type { CompanionStore } from './store';
 import { prepareLaneDispatch,stopFailureCode,type GroupDriver,type GroupLane } from './group-driver';
 import type { GroupPlans, GroupPlanState } from './group-plans';
 import { record, string, throwIpcError } from './errors';
+import { nativeConfigOnly } from './native-skills';
 
 export interface SavedPlanRequest {
   view: GroupPlanRequest; fingerprint: string; input: PlanDecisionInput; lane?: GroupLane;
@@ -98,7 +99,8 @@ export class GroupPlanOrganizer {
   private async run(id:string,signal:AbortSignal){
     let saved=(await this.snapshot()).groupPlanRequests![id]!;
     const cwd=join(this.store.root,'group-organizers',id);await this.store.safePath(cwd);await mkdir(cwd,{recursive:true});
-    const base=await this.deps.configFor(saved.view.organizerBotId,cwd);
+    const companionConfig=await this.deps.configFor(saved.view.organizerBotId,cwd);
+    const {skillMounts:_personalMounts,...base}=nativeConfigOnly(companionConfig);
     // The public host has no auxiliary text API. This is a separate native utility session,
     // with no companion memory/skills instructions, and never a canonical/group execution lane.
     const provider=String(base.provider).split('/')[0];

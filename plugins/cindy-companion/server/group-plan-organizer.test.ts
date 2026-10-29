@@ -28,6 +28,15 @@ it('persists a planning request once, uses original strict JSON logic in an isol
  expect(t.driver.reply).toHaveBeenCalledTimes(1);expect((await t.store.snapshot()).groups!.team!.messages.filter(m=>m.authorKind==='user')).toHaveLength(1);
  expect(snapshot.plans[0]!.sourceMessageId).toBe((await t.organizer.list('team'))[0]!.sourceMessageId);expect(t.fallback).not.toHaveBeenCalled();
 });
+it('does not grant personal native skill mounts to the isolated organizer utility session',async()=>{
+ const t=await setup();t.configFor.mockResolvedValue({provider:'codex/test',systemPrompt:'PRIVATE_IDENTITY',mcpServers:{memory:{secret:'private'}},providerOptions:{sandbox_mode:'workspace-write'},
+  skillMounts:[{directory:'/private/companion-library'}],__cindyNativeSkills:{token:'personal-source',enabledCount:1,mounts:[{directory:'/private/companion-library'}]}} as never);
+ await t.organizer.create('team',{operationId:'no-skills',request:'Arrange work'});
+ await vi.waitFor(async()=>expect((await t.organizer.list('team'))[0]!.status).toBe('complete'));
+ const lane=vi.mocked(t.driver.ensure).mock.calls[0]![0];expect(lane.config).not.toHaveProperty('skillMounts');expect(lane.config).not.toHaveProperty('__cindyNativeSkills');
+ const stored=Object.values((await new CompanionStore(t.root).snapshot()).groupPlanRequests!)[0]!.lane!;
+ expect(stored.config).not.toHaveProperty('skillMounts');expect(stored.config).not.toHaveProperty('__cindyNativeSkills');expect(stored.config.mcpServers).toEqual({});
+});
 it('written @steps skip organizer generation and start exactly the original relay order',async()=>{
  const t=await setup();const result=await t.organizer.create('team',{operationId:'written',request:'@Cindy 设计；@Designer 检查'});
  expect('plan'in result).toBe(true);await vi.waitFor(async()=>expect((await t.plans.list('team')).plans[0]!.status).toBe('waiting'));

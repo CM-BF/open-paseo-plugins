@@ -179,3 +179,32 @@ avatars, prompts, fonts or personal data.
 ## Group history and topics
 
 The next group history slice is documented in [history-SOURCE.md](history-SOURCE.md), with pinned source hashes in `history-upstream-files.json`. It retains original quote/thread/preview/share/reaction presentation and replaces only host data seams; runtime and visual verification remain separate.
+
+## Group attachments, process drafts and durable outbox
+
+The subsequent A+B slice is recorded in [media-SOURCE.md](media-SOURCE.md) and
+[media-upstream-files.json](media-upstream-files.json). It adds the original
+attachment/composer/outbox presentation and owner-scoped process drafts; native
+model attachment delivery and the remaining original editor/OS actions remain
+explicitly tracked gaps. This supersedes the initial group/history slice's
+attachment/outbox and same-frame-only draft descriptions above.
+
+## Modern personal skills list
+
+[skills-SOURCE.md](skills-SOURCE.md) and [skills-upstream-files.json](skills-upstream-files.json)
+record the adapted modern Capabilities component. The original vendor file
+remains unchanged; the web alias adds complete-index search and explicit personal
+pagination, preserves disabled personal rows, and reports native loading as
+unconfirmed. It does not introduce the older remote skill editor into this page.
+
+### Browser timer binding (2026-10-29)
+
+The Paseo-authored group, work-plan, history and shared task observers bind their default timer callbacks to `globalThis`. Chromium rejects `Window.setTimeout` and `Window.clearTimeout` when called as methods of an arbitrary timer adapter object; Node's permissive timers hid this in earlier tests. `web/tests/browser-timers.test.mjs` exercises the real observers with strict browser receiver checks through polling, refresh and disposal. No original Cindy component, layout or asset is changed by this fix.
+
+## Original Cindy theme family
+
+The pinned source defaults to `cindy` (`themes/families.ts:28`), whose light/dark members are `cindyLight`/`cindyDark`; the `default-*` exports are the separate Classic family. The initial port incorrectly chose Classic. `web/app.tsx` now selects the original Cindy family for the host light/dark mode. Dark surface/card tokens are the unchanged upstream `#181818`/`#1F1F1F`; light uses `#F2F2ED`/`#FDFDF8`. No guessed color overrides or original component geometry changes are introduced.
+
+`theme-upstream-files.json` records exact upstream bytes for both theme modules, their shared window-backing constants and the two required brand-logo imports at commit `118767c987f518286ae10a506a54287c3dc2a560`. The logos remain upstream branding assets, not a grant of trademark rights or a claim that this port is official; their inclusion is not a blanket Apache license assertion for non-code assets. The extracted settings/group views do not render the theme brand logo.
+
+Upstream Cindy-family CSS makes the document body transparent for desktop vibrancy. The settings drawer and group root each provide their own original `var(--surface)` background, so their opaque content fills this isolated iframe without an additional transparency override. Browser fixture checks verify the computed tokens and actual wide/narrow rendering separately from installed host acceptance.

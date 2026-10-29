@@ -13,10 +13,11 @@ import { BotGroupThreadPreview, BotGroupThreadShareQuote, botGroupThreadShareLab
 import { MarkdownRenderer } from './adapters/memory-markdown';
 import { GroupTaskCard } from './group-task';
 import { GroupHistoryActions, type HistoryMenuAction } from './group-history-actions';
+import { GroupMessageAttachments } from './group-media-view';
 import { executionMessage } from '../shared/execution-notice';
 export function originalHistoryMessage(message: GroupMessage & Partial<GroupHistoryMessage>): BotGroupMessageView {
   return { ...message, authorBotId: message.authorBotId ?? null, mentions: message.mentions ?? { all: false, botIds: [] }, noticeCode: null,
-    planId: message.planId ?? null, files: [], attachments: [] };
+    planId: message.planId ?? null, files: [], attachments: (message.attachments ?? []).map(item => ({...item,id:item.mediaId,url:null,path:null,state:'loading' as const})) };
 }
 export function GroupHistoryMessageView({ groupId, message, previous, members, locale, files, quoteSources = [], onQuote, onThread, onLocate, onChanged = () => {}, menuActions, footer, historyEnabled = false, readOnly = false }: {
   groupId: string; message: GroupMessage & Partial<GroupHistoryMessage>; previous?: GroupMessage; members: GroupSnapshot['group']['members']; locale: string; files?: ReactNode;
@@ -30,7 +31,7 @@ export function GroupHistoryMessageView({ groupId, message, previous, members, l
   const member = members.find(value => value.botId === message.authorBotId);
   const original = originalHistoryMessage(message);
   const quote = message.quote ? <BotGroupQuoteBlock display={resolveBotGroupQuote(message.quote, quoteSources.map(originalHistoryMessage))} onLocate={onLocate ? () => onLocate(message.quote!.messageId) : undefined}/> : null;
-  const body = message.deleted ? <p className="text-13 italic text-[var(--text-tertiary)]">{t('bots.groupChat.quote.deleted')}</p> : <>{quote}{message.threadShare ? <><p className="flex select-none items-center gap-1 text-12 text-[var(--text-tertiary)]"><CornerDownRight size={12} aria-hidden/>{botGroupThreadShareLabel(message.threadShare,t)}</p><BotGroupThreadShareQuote share={message.threadShare} members={members as BotGroupMemberView[]} attachments={null} onOpenThread={onThread ? () => onThread(message.threadShare!.threadRootId, message.threadShare!.messageId) : undefined} inset={message.authorKind !== 'user'}/></> : <MarkdownRenderer content={message.content}/>} {message.taskId && <GroupTaskCard groupId={groupId} message={message}/>} {files}</>;
+  const body = message.deleted ? <p className="text-13 italic text-[var(--text-tertiary)]">{t('bots.groupChat.quote.deleted')}</p> : <>{quote}{message.threadShare ? <><p className="flex select-none items-center gap-1 text-12 text-[var(--text-tertiary)]"><CornerDownRight size={12} aria-hidden/>{botGroupThreadShareLabel(message.threadShare,t)}</p><BotGroupThreadShareQuote share={message.threadShare} members={members as BotGroupMemberView[]} attachments={null} onOpenThread={onThread ? () => onThread(message.threadShare!.threadRootId, message.threadShare!.messageId) : undefined} inset={message.authorKind !== 'user'}/></> : <MarkdownRenderer content={message.content}/>} {message.taskId && <GroupTaskCard groupId={groupId} message={message}/>} {files}<GroupMessageAttachments groupId={groupId} messageId={message.id} attachments={message.attachments ?? []} align={message.authorKind === 'user' ? 'right' : 'left'}/></>;
   const actions = historyEnabled && !system && !message.deleted ? <GroupHistoryActions groupId={groupId} message={original} members={members as BotGroupMemberView[]} revision={message.reactionRevision ?? message.historyRevision ?? 0} align={message.authorKind === 'user' ? 'right' : 'left'} onChanged={onChanged} onQuote={onQuote && isBotGroupMessageQuotable(original) ? () => onQuote(message) : undefined} onThread={onThread && !message.threadRootId && !message.threadShare ? () => onThread(message.id) : undefined} menuActions={menuActions} disabled={readOnly}/> : null;
   const preview = onThread && (message.replyCount ?? 0) > 0 ? <BotGroupThreadPreview message={original} members={members as BotGroupMemberView[]} onOpen={() => onThread(message.id)}/> : null;
   const clock = formatBotTimelineClock(message.createdAt, locale);

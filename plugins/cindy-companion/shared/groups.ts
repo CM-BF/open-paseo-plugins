@@ -3,6 +3,7 @@ import type { BotGroupTrackedMention } from './vendor/botGroupMentions';
 import type { GroupPlanArtifact } from './group-plans';
 import type { TaskResultReceipt } from './companion-tasks';
 import type { BotGroupQuoteView } from './vendor/botGroupQuote';
+import type { GroupAttachment } from './group-media';
 export type { BotGroupTrackedMention };
 export type GroupRoundStatus = 'queued' | 'running' | 'permission' | 'waiting' | 'completed' | 'stopping' | 'stopped' | 'interrupted' | 'failed' | 'unknown';
 export interface GroupMember { botId: string; name: string; avatar: string; avatarColor: string; status: string }
@@ -22,6 +23,8 @@ export interface GroupMessage {
   quote?: BotGroupQuoteView;
   threadShareRef?: { rootId: string; messageId: string };
   deleted?: boolean;
+  /** Immutable host-verified user attachment metadata; bytes are read through scoped media RPC. */
+  attachments?: GroupAttachment[];
 }
 export interface GroupStep {
   botId: string; botName: string; status: 'queued' | 'running' | 'permission' | 'completed' | 'silent' | 'failed' | 'stopped' | 'unknown';
@@ -47,6 +50,7 @@ export interface GroupSnapshot {
 }
 export interface GroupSendInput {
   groupId: string; text: string; clientMessageId: string; trackedMentions?: BotGroupTrackedMention[];
+  attachments?: Array<{ mediaId: string }>;
 }
 /** All operations use settings.invoke and its standard {ok,value}/{ok:false,code,message} envelope.
  * groups.list {} -> {groups:GroupSummary[]}

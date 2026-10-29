@@ -37,7 +37,7 @@ export function mergeGroupSnapshot(previous: GroupSnapshot | null, next: GroupSn
 
 /** One read at a time, bounded recovery after errors, and no work after unmount. */
 export function observeGroup(groupId: string, emit: (value: GroupSnapshot) => void, fail: (error: Error) => void,
-  request: typeof invoke = invoke, timers = { set: setTimeout, clear: clearTimeout }) {
+  request: typeof invoke = invoke, timers = { set: setTimeout.bind(globalThis), clear: clearTimeout.bind(globalThis) }) {
   let disposed = false, inFlight = false, again = false, generation = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const refresh = async () => {

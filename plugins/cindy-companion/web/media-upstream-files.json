@@ -1,0 +1,72 @@
+[
+  {
+    "source": "apps/desktop/src/renderer/components/ui/file-type-tile.tsx",
+    "destination": "vendor/renderer/components/ui/file-type-tile.tsx",
+    "sha256": "3afdbf7e7acfee1654c7653305601c7be9351a3e5cedf994f73088cf2b89cae5",
+    "modified": true,
+    "notes": "Only the shared file-presentation import is redirected to the previously extracted vendor module."
+  },
+  {
+    "source": "apps/desktop/src/renderer/components/new-chat/ComposerAttachments.tsx",
+    "destination": "web/group-media-view.tsx",
+    "sha256": "a6f543f1f47a629a5802f72c82df1a68c1661fca4d89dd685d695484c93d54af",
+    "modified": true,
+    "notes": "Extracts the authored 56px tray, 220px file cards, type tile, remove control and status placement; opaque group media replaces Electron paths and local cache."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupMessageAttachments.tsx",
+    "destination": "web/group-media-view.tsx",
+    "sha256": "b4d9150358b156638e60b68e29f085620b23580983e0c89436afdb18d250669d",
+    "modified": true,
+    "notes": "Extracts ordered picture rows and adjacent file-chip rows, original gaps/alignment and the in-place loading/error slot."
+  },
+  {
+    "source": "apps/desktop/src/renderer/components/chat/ImageMissingPlaceholder.tsx",
+    "destination": "web/group-media-view.tsx",
+    "sha256": "e1263e213923e37bff62ddfb610ed7f6c2b57d091f2c59ae2111c9837bce349e",
+    "modified": true,
+    "notes": "Extracts the original 280px/140px dashed loading/unavailable image placeholder markup; retry is scoped to the same immutable attachment."
+  },
+  {
+    "source": "apps/desktop/src/renderer/components/chat/ChatImageView.tsx",
+    "destination": "web/group-media-view.tsx",
+    "sha256": "d7516fe7f19c1403cb720f27846f9922becd6e7932ed67ae76afdf2659376189",
+    "modified": true,
+    "notes": "Extracts user-attached 280px by 180px image bounds and rounded picture presentation."
+  },
+  {
+    "source": "apps/desktop/src/renderer/components/chat/TextLightbox.tsx",
+    "destination": "web/group-media-view.tsx",
+    "sha256": "93dcc90b19aec181ead2b2810302d02de65ddc8c80e42288dd4a2a6694f87154",
+    "modified": true,
+    "notes": "Extracts the original 80vw/80vh document-card and toolbar/body/10MiB preview limit. Read-only text/Markdown use verified bytes; system-path actions become explicit download, never server OS-open."
+  },
+  {
+    "source": "apps/desktop/src/renderer/components/chat/ImageLightbox.tsx",
+    "destination": "web/group-media-view.tsx",
+    "sha256": "067a81d9f594db2710fb0f664d5ecf39c43b813ead72ef5f88f8b4e7b90a3230",
+    "modified": true,
+    "notes": "Uses original overlay/toolbar tokens and existing original gesture arithmetic. This is an adapted viewing slice, not the full annotation/editor implementation."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupTimelineItem.tsx",
+    "destination": "web/group-outbox.tsx",
+    "sha256": "da97ec499a0396d88b04f1cfd69d5b63aac3ed88703642bb40d17fa80e642823",
+    "modified": true,
+    "notes": "Extracts original right-aligned outbox bubble, opacity, failure row and edit/retry button geometry; durable receipt states and exact reconciliation replace renderer networking."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupComposer.tsx",
+    "destination": "web/group-chat.tsx",
+    "sha256": "5a7b9bb460d2c9a3fff413bea1e820e4af1389a4a0662686d6e1b5099df0a0fe",
+    "modified": true,
+    "notes": "Adds authored file menu, file/paste/drop tray, attachment-only send and delayed process-draft preservation around the previously extracted composer."
+  },
+  {
+    "source": "apps/desktop/src/renderer/lib/composerDraftStore.ts",
+    "destination": "client/group-drafts.ts",
+    "sha256": "42be0a6f5307d0556aeab9d3209fd0d18b49df7cf717e781002bd11ccd79de44",
+    "modified": true,
+    "notes": "Adapts owner-scoped in-process Map/discard generation semantics to parent-frame host/group/topic identities. No unsent draft is stored on the server or claimed to persist across app restart."
+  }
+]

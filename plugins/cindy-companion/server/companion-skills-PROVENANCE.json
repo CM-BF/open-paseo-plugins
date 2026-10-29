@@ -1,0 +1,22 @@
+{
+  "repository": "https://github.com/makecindy/cindy",
+  "revision": "5f0b5f42b46969c3ac21b0cd798a07e36b46e8fd",
+  "files": [
+    {
+      "upstream": "packages/lizi-mcps/src/xdt-helper/bot_skills.ts",
+      "upstreamSha256": "58a3f88cf8564486983af9366479ab08f7b5761a4e48be1b19ecbc63f0b8562d",
+      "local": "server/companion-skills-tools.ts",
+      "adaptation": [
+        "Retain original list/save names and aliases, user-request-only learning and bounded pagination. Bind to authenticated session context; add exact-revision reads, metadata inspection and immutable write operation IDs. Saved receipts do not claim current native loading."
+      ]
+    },
+    {
+      "upstream": "apps/desktop/src/main/maker-ipc/botSkillService.ts",
+      "upstreamSha256": "42d91128fed5016b539eced5cf481342b04a8f04fa71acac6d023e2bde651b9b",
+      "local": "server/service.ts",
+      "adaptation": [
+        "Adapt companion ownership and group/plan read-only roles to durable Paseo session bindings and the admitted RPC/MCP service; repeated native authority checks occur during storage operations."
+      ]
+    }
+  ]
+}

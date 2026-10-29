@@ -1,0 +1,32 @@
+[
+  {
+    "source": "apps/desktop/src/renderer/themes/builtin/cindy-dark.ts",
+    "destination": "vendor/renderer/themes/builtin/cindy-dark.ts",
+    "sha256": "1569bc8ad78b0fb70aca992f169a521b25189f0fd575e9be068925887bdc921e",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/themes/builtin/cindy-light.ts",
+    "destination": "vendor/renderer/themes/builtin/cindy-light.ts",
+    "sha256": "32ceaead0952a7001a67927cc7deaa2dee9cebdb835406544f01296818a3ec16",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/assets/cindy-logo-dark.png",
+    "destination": "vendor/renderer/assets/cindy-logo-dark.png",
+    "sha256": "0811d76e0adf4d6bb81202ecaba85d9e8e38893fe559cccd80a59aaa5c359a3b",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/assets/cindy-logo-light.png",
+    "destination": "vendor/renderer/assets/cindy-logo-light.png",
+    "sha256": "25a0315baad1752e554e01dd05eec20c969693b9da83976dbe15395baf566ed4",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/shared/windowBackdrop.ts",
+    "destination": "vendor/shared/windowBackdrop.ts",
+    "sha256": "6754c06e8cca291758e10c1267f9c367ea753a91ab308121944e893f7a9cf863",
+    "modified": false
+  }
+]

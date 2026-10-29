@@ -20,7 +20,7 @@ const mocks = {
   bots: `export const useBotProfiles=()=>globalThis.__GROUP_SURFACE_TEST__.profiles;`,
   avatar: `export const BotAvatar=()=>null;export const BotGroupAvatarStack=()=>null;`,
   utils: `export const cn=(...values)=>values.filter(Boolean).join(' ');`,
-  bridge: `export const initValue=()=>({host:{id:'test'}}); export class BridgeError extends Error {constructor(code,message){super(message);this.code=code;}} export const invoke=(op,args)=>{const s=globalThis.__GROUP_SURFACE_TEST__;s.calls.push({op,args});return s.invoke(op,args);};export const post=(type,fields)=>globalThis.__GROUP_SURFACE_TEST__.posts.push({type,...fields});`,
+  bridge: `import {groupDraftRequest} from '${web}/../client/group-drafts.ts'; export class BridgeError extends Error{constructor(code,message){super(message);this.code=code;}}export const initValue=()=>({host:{id:globalThis.__GROUP_SURFACE_TEST__.host??'test'}});export const invoke=(op,args)=>{const s=globalThis.__GROUP_SURFACE_TEST__;if(op.startsWith('paseo.groupDrafts.'))return Promise.resolve(groupDraftRequest({host:{id:String(s.draftOwner??0)},view:'group',groupId:args.groupId},op,args));if(op==='groups.outbox.list')return Promise.resolve({groupId:args.groupId,entries:s.outbox??[],nextBefore:null});s.calls.push({op,args:structuredClone(args)});return s.invoke(op,args)};export const post=(type,fields)=>globalThis.__GROUP_SURFACE_TEST__.posts.push({type,...fields});`,
   groupHook: `import {useState} from 'react';export const mergeMessages=(a,b)=>[...new Map([...a,...b].map(m=>[m.id,m])).values()].sort((a,b)=>a.sequence-b.sequence);export const useGroup=()=>{const s=globalThis.__GROUP_SURFACE_TEST__;const[data,setData]=useState(s.data);s.setData=setData;return{data,setData,error:s.readError,refresh:()=>{s.refreshes++;}};};`,
   mention: `export const useBotGroupMentionPicker=({onTextChange})=>({list:null,tracked:[],setTracked(){},reset(){},onChange:onTextChange,onKeyDown:()=>false,textareaProps:{}});`,
   markdown: `import {createElement} from 'react';export const MarkdownRenderer=({content})=>createElement('markdown',{},content);`,
@@ -37,7 +37,7 @@ const built = await build({
   bundle: true, nodePaths: [web + '/node_modules'], write: false, platform: 'node', format: 'cjs', jsx: 'automatic', loader: { '.css': 'empty' }, external: ['react', 'react/jsx-runtime', 'lucide-react'],
   plugins: [{ name: 'group-platform-boundary', setup(builder) {
     builder.onResolve({ filter: /.*/ }, args => {
-      const p = args.path;
+      const p = args.path; if(p.startsWith('/'))return{path:p,namespace:'file'};
       const mock = p === '@radix-ui/react-dialog' ? 'dialog' : p === 'react-i18next' ? 'translation'
         : /(?:^|\/)button$/.test(p) ? 'button' : /(?:^|\/)input$/.test(p) ? 'input' : /form-field$/.test(p) ? 'field'
         : /dataOwnerGeneration$/.test(p) ? 'owner' : /(?:botStore|bot-store)$/.test(p) ? 'bots'
@@ -64,31 +64,31 @@ const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
 const profile = (id, createdAt = 0) => ({ id, name: id, status: 'active', enabled: true, createdAt });
 const round = (status = 'running') => ({ id: 'round-1', status, createdAt: 1, updatedAt: 2, steps: [{ botId: 'a', botName: 'a', status: 'running', agentId: 'native-a' }] });
 const snapshot = (r = null) => ({ group: { id: 'group-1', name: 'Discussion', revision: 1, replyMode: 'all', members: [{ ...profile('a'), botId: 'a' }, { ...profile('b'), botId: 'b' }], round: r }, messages: [], hasOlder: false });
-const reset = () => { state.work = undefined; state.calls = []; state.posts = []; state.profiles = [profile('b', 2), profile('a', 1)]; state.refreshes = 0; state.data = snapshot(); state.readError = ''; };
+const outboxEntry=(args,extra={})=>({groupId:args.groupId,clientMessageId:args.clientMessageId,input:args,attachments:[],sequence:1,revision:1,status:'queued',recovery:'none',...extra});
+const reset = () => { state.draftOwner=(state.draftOwner??0)+1; state.outbox=[]; state.work = undefined; state.calls = []; state.posts = []; state.profiles = [profile('b', 2), profile('a', 1)]; state.refreshes = 0; state.data = snapshot(); state.readError = ''; };
 const render = async (Component, props) => { let renderer; await act(async () => { renderer = create(React.createElement(Component, props)); }); return renderer; };
 
-test('division tag routes the actual composer through plan creation and retains a rejected request', async () => {
-  reset(); const plans = [], pending = deferred();
-  state.work = { data: { plans: [], settings: { revision: 1, organizerBotId: null, projectDir: null, autoContinue: false } }, pending: null, error: '',
-    createPlan: (...args) => { plans.push(args); return pending.promise; }, refresh() {} };
-  state.invoke = async () => { throw new Error('ordinary discussion must not be sent'); };
-  const tree = await render(GroupChat, { groupId: 'group-1' });
-  act(() => tree.root.findByType('dropdown-item').props.onSelect());
-  act(() => tree.root.findByType('textarea').props.onChange({ target: { value: 'Arrange a real deliverable' } }));
-  act(() => { tree.root.findByType('send-button').props.onClick(); tree.root.findByType('send-button').props.onClick(); });
-  assert.equal(plans.length, 1); assert.deepEqual(plans[0], ['Arrange a real deliverable', []]); assert.equal(state.calls.length, 0);
-  await act(async () => pending.resolve(null));
-  assert.equal(tree.root.findByType('textarea').props.value, 'Arrange a real deliverable'); assert.equal(tree.root.findAllByProps({ 'data-testid': 'bot-group-division-tag' }).length, 1);
-  act(() => tree.unmount());
+test('division tag queues its immutable input once and retains a rejected durable handoff', async () => {
+  reset(); const pending = deferred();
+  state.work = {data:{plans:[],settings:{revision:1,autoContinue:false}},pending:null,error:'',refresh(){}};
+  state.invoke = () => pending.promise;
+  const tree = await render(GroupChat,{groupId:'group-1'});
+  act(()=>tree.root.findAllByType('dropdown-item').at(-1).props.onSelect());
+  act(()=>tree.root.findByType('textarea').props.onChange({target:{value:'Arrange a real deliverable'}}));
+  await act(async()=>{tree.root.findByType('send-button').props.onClick();tree.root.findByType('send-button').props.onClick()});
+  assert.equal(state.calls.length,1); assert.equal(state.calls[0].op,'groups.outbox.enqueue');assert.equal(state.calls[0].args.division,true);
+  await act(async()=>pending.reject(new Error('Not accepted')));
+  assert.equal(tree.root.findByType('textarea').props.value,'Arrange a real deliverable');assert.equal(tree.root.findAllByProps({'data-testid':'bot-group-division-tag'}).length,1);act(()=>tree.unmount());
 });
 
 test('active work supplements target the owned plan and a queued receipt says it is for the next turn', async () => {
   reset(); const calls = [], p = { id: 'work', groupId: 'group-1', revision: 1, status: 'running', kind: 'work', organizerName: 'A', organizerBotId: 'a', currentStep: 0, execution: { state: 'running' }, steps: [{ position: 0, botId: 'a', botName: 'A', task: 'Build', status: 'running', artifacts: [] }] };
   state.work = { data: { plans: [p], settings: { revision: 1, autoContinue: false } }, pending: null, error: '', action: async (...args) => { calls.push(args); return { accepted: true, plan: p, delivery: 'queued' }; }, refresh() {} };
+  state.invoke=async(op,args)=>({accepted:true,entry:outboxEntry(args,{status:'sent',target:{kind:'plan-note',planId:'work',messageId:'note'}})});
   const tree = await render(GroupChat, { groupId: 'group-1' });
   act(() => tree.root.findByType('textarea').props.onChange({ target: { value: 'Keep the original spacing' } }));
   await act(async () => tree.root.findByType('send-button').props.onClick());
-  assert.deepEqual(calls[0], [p, 'note', { text: 'Keep the original spacing' }]); assert.equal(state.calls.length, 0);
+  assert.equal(calls.length,0);assert.equal(state.calls[0].op,'groups.outbox.enqueue');assert.equal(state.calls[0].args.text,'Keep the original spacing');
   assert.match(JSON.stringify(tree.toJSON()), /paseoWork.noteQueued/);
   act(() => tree.root.findByType('send-button').props.onClick());
   assert.equal(calls.at(-1)[1], 'stop'); act(() => tree.unmount());
@@ -192,21 +192,19 @@ test('failed creation retries the same immutable operation rather than creating 
   act(() => renderer.unmount());
 });
 
-test('discussion keeps a failed draft and idempotency key, then displays only acknowledged send state', async () => {
-  reset(); let attempts = 0; const pending = deferred();
-  state.invoke = () => ++attempts === 1 ? Promise.reject(new Error('response lost')) : pending.promise;
-  const renderer = await render(GroupChat, { groupId: 'group-1' });
-  act(() => renderer.root.findByType('textarea').props.onChange({ target: { value: 'Discuss this' } }));
-  await act(async () => renderer.root.findByType('send-button').props.onClick());
-  assert.equal(renderer.root.findByType('textarea').props.value, 'Discuss this');
-  assert.match(JSON.stringify(renderer.toJSON()), /response lost/);
-  act(() => { renderer.root.findByType('send-button').props.onClick(); renderer.root.findByType('send-button').props.onClick(); });
-  assert.equal(state.calls.length, 2); assert.deepEqual(state.calls[0], state.calls[1]);
-  await act(async () => pending.resolve({ accepted: true, message: { id: 'message-1', sequence: 1, authorKind: 'user', authorName: 'You', kind: 'message', content: 'Discuss this', createdAt: 1 }, round: round('running') }));
-  assert.equal(renderer.root.findByType('textarea').props.value, '');
-  assert.equal(renderer.root.findByType('send-button').props.isStreaming, true);
-  assert.equal(renderer.root.findAllByProps({ 'data-bot-group-message-id': 'message-1' }).length, 1);
-  act(() => renderer.unmount());
+test('discussion preserves a lost ACK identity and waits for real group state after durable acceptance',async()=>{
+ reset();const pending=deferred();let first;
+ state.invoke=(op,args)=>{if(op==='groups.outbox.enqueue'){first=args;return Promise.reject(new Error('response lost'))}assert.equal(op,'groups.outbox.reconcile');return pending.promise};
+ const renderer=await render(GroupChat,{groupId:'group-1'});
+ act(()=>renderer.root.findByType('textarea').props.onChange({target:{value:'Discuss this'}}));await act(async()=>renderer.root.findByType('send-button').props.onClick());
+ assert.equal(renderer.root.findByType('textarea').props.value,'Discuss this');assert.match(JSON.stringify(renderer.toJSON()),/response lost/);
+ await act(async()=>{renderer.root.findByType('send-button').props.onClick();renderer.root.findByType('send-button').props.onClick()});
+ assert.equal(state.calls.length,2);assert.equal(state.calls[0].args.clientMessageId,state.calls[1].args.clientMessageId);
+ await act(async()=>pending.resolve({entry:outboxEntry(first)}));
+ assert.equal(renderer.root.findByType('textarea').props.value,'');assert.equal(renderer.root.findByType('send-button').props.isStreaming,false);
+ assert.equal(renderer.root.findAllByProps({'data-testid':'bot-group-outbox'}).length,1);
+ act(()=>state.setData({...snapshot(round('running')),messages:[{id:'message-1',sequence:1,authorKind:'user',authorName:'You',kind:'message',content:'Discuss this',createdAt:1}]}));
+ assert.equal(renderer.root.findByType('send-button').props.isStreaming,true);act(()=>renderer.unmount());
 });
 
 test('accepted Stop retains running state until the host confirms stopping or stopped', async () => {
@@ -223,31 +221,23 @@ test('accepted Stop retains running state until the host confirms stopping or st
   act(() => renderer.unmount());
 });
 
-test('typing during a discussion sends an independent queued reply and never replaces the active Stop target', async () => {
-  reset(); state.data = snapshot({ ...round('running'), kind: 'talk' });
-  state.invoke = async op => op === 'groups.send' ? { accepted: true,
-    message: { id: 'side-message', sequence: 1, authorKind: 'user', kind: 'message', content: '@b question', createdAt: 3 },
-    round: { ...round('queued'), id: 'side-round', kind: 'reply', createdAt: 3, updatedAt: 3, steps: [{ botId: 'b', botName: 'b', status: 'queued' }] },
-  } : { accepted: true, round: { ...round('stopping'), updatedAt: 4 } };
-  const renderer = await render(GroupChat, { groupId: 'group-1' });
-  act(() => renderer.root.findByType('textarea').props.onChange({ target: { value: '@b question' } }));
-  assert.equal(renderer.root.findByType('send-button').props.isStreaming, false);
-  await act(async () => renderer.root.findByType('send-button').props.onClick());
-  assert.equal(state.calls[0].op, 'groups.send');
-  assert.equal(renderer.root.findAllByProps({ 'data-pending-round-id': 'side-round' }).length, 1);
-  assert.equal(renderer.root.findByType('send-button').props.isStreaming, true);
-  await act(async () => renderer.root.findByType('send-button').props.onClick());
-  assert.deepEqual(state.calls[1], { op: 'groups.stop', args: { groupId: 'group-1', roundId: 'round-1' } });
-  act(() => renderer.unmount());
+test('typing during a discussion queues independently and never replaces the round Stop target',async()=>{
+ reset();state.data=snapshot({...round('running'),kind:'talk'});
+ state.invoke=async(op,args)=>op==='groups.outbox.enqueue'?{accepted:true,entry:outboxEntry(args)}:{accepted:true,round:{...round('stopping'),updatedAt:4}};
+ const renderer=await render(GroupChat,{groupId:'group-1'});
+ act(()=>renderer.root.findByType('textarea').props.onChange({target:{value:'@b question'}}));await act(async()=>renderer.root.findByType('send-button').props.onClick());
+ assert.equal(state.calls[0].op,'groups.outbox.enqueue');assert.equal(renderer.root.findByType('send-button').props.isStreaming,true);
+ await act(async()=>renderer.root.findByType('send-button').props.onClick());assert.deepEqual(state.calls[1],{op:'groups.stop',args:{groupId:'group-1',roundId:'round-1'}});act(()=>renderer.unmount());
 });
 
 test('a supplementary message states deferred delivery until the host records a real later recipient', async () => {
   reset(); state.data = snapshot(round('running'));
   const message = { id: 'note', sequence: 1, authorKind: 'user', kind: 'message', content: 'More context', createdAt: 3, delivery: 'deferred', code: 'HOST_UPGRADE_REQUIRED' };
-  state.invoke = async () => ({ accepted: true, message, round: round('running') });
+  state.invoke = async (op,args) => ({accepted:true,entry:outboxEntry(args,{status:'sent',target:{kind:'message',messageId:message.id}})});
   const renderer = await render(GroupChat, { groupId: 'group-1' });
   act(() => renderer.root.findByType('textarea').props.onChange({ target: { value: 'More context' } }));
   await act(async () => renderer.root.findByType('send-button').props.onClick());
+  act(()=>state.setData({...snapshot(round('running')),messages:[message]}));
   assert.match(JSON.stringify(renderer.toJSON()), /paseoGroups.deferred/);
   act(() => state.setData({ ...snapshot(round('running')), messages: [{ ...message, delivery: 'delivered' }] }));
   assert.doesNotMatch(JSON.stringify(renderer.toJSON()), /paseoGroups.deferred/);
@@ -299,4 +289,50 @@ test('a group with unfinished deletion keeps Delete retry and close available wh
  await act(async()=>remove.props.onClick());assert.equal(state.calls.at(-1).op,'groups.delete');
  assert.deepEqual(state.calls.at(-1).args,{groupId:'group-1',expectedRevision:1});act(()=>tree.unmount());
  const chat=await render(GroupChat,{groupId:'group-1'});assert.equal(chat.root.findByType('textarea').props.readOnly,true);assert.equal(chat.root.findByType('send-button').props.disabled,true);act(()=>chat.unmount());
+});
+
+test('real composer waits for sealed bytes and durable enqueue ACK before clearing an attachment-only draft',async()=>{
+ reset();const begin=deferred(),started=deferred(),sealed=deferred(),enqueue=deferred();let metadata;
+ state.invoke=async(op,args)=>{if(op==='groups.media.begin'){metadata=args;started.resolve();await begin.promise;return{uploadId:'u',status:'uploading',nextOffset:0,totalBytes:args.size,chunkBytes:393216}}if(op==='groups.media.write')return{uploadId:'u',status:'uploading',nextOffset:metadata.size,totalBytes:metadata.size,chunkBytes:393216};if(op==='groups.media.complete'){const value={uploadId:'u',status:'sealed',nextOffset:metadata.size,totalBytes:metadata.size,chunkBytes:393216,attachment:{mediaId:'pdf',name:metadata.name,mimeType:metadata.mimeType,size:metadata.size,sha256:metadata.sha256,category:'pdf'}};sealed.resolve();return value}if(op==='groups.outbox.enqueue')return enqueue.promise;throw new Error(op)};
+ const tree=await render(GroupChat,{groupId:'group-1'});const file=new File(['%PDF-test'],'review.pdf',{type:'application/pdf'});
+ act(()=>tree.root.findByProps({type:'file'}).props.onChange({target:{files:[file],value:'review.pdf'}}));await started.promise;
+ assert.equal(tree.root.findByType('send-button').props.disabled,true);act(()=>tree.root.findByType('send-button').props.onClick());assert.equal(state.calls.some(x=>x.op==='groups.outbox.enqueue'),false);
+ await act(async()=>{begin.resolve();await sealed.promise});assert.equal(tree.root.findByType('send-button').props.disabled,false);
+ await act(async()=>tree.root.findByType('send-button').props.onClick());const submitted=state.calls.find(x=>x.op==='groups.outbox.enqueue');assert.deepEqual(submitted.args.attachments,[{mediaId:'pdf'}]);assert.equal(submitted.args.text,'');
+ assert.equal(tree.root.findAllByProps({'aria-label':'paseoMedia.remove:review.pdf'}).length,1);
+ await act(async()=>enqueue.resolve({accepted:true,entry:outboxEntry(submitted.args,{attachments:[{mediaId:'pdf',name:'review.pdf',mimeType:'application/pdf',size:9,sha256:metadata.sha256,category:'pdf'}]})}));
+ assert.equal(tree.root.findAllByProps({'aria-label':'paseoMedia.remove:review.pdf'}).length,0);assert.equal(tree.root.findAllByProps({'data-testid':'bot-group-outbox'}).length,1);act(()=>tree.unmount());
+});
+
+test('closing waits for pending upload cancellation and keeps a failed cancellation visible',async()=>{
+ reset();const begin=deferred(),started=deferred();let metadata,cancels=0;
+ state.invoke=async(op,args)=>{if(op==='groups.media.begin'){metadata=args;started.resolve();return begin.promise}if(op==='groups.media.cancel'){if(++cancels===1)throw new Error('Cancellation not confirmed');return{cancelled:true,retained:false}}throw new Error('No later write: '+op)};
+ const tree=await render(GroupChat,{groupId:'group-1'});act(()=>tree.root.findByProps({type:'file'}).props.onChange({target:{files:[new File(['data'],'x.txt',{type:'text/plain'})],value:''}}));await started.promise;
+ act(()=>window.dispatchEvent(new Event('cindy-request-close')));assert.equal(state.posts.some(x=>x.type==='close'),false);
+ const leave=()=>tree.root.findAllByType('button').find(x=>x.props.children==='paseoMedia.cancelLeave');act(()=>leave().props.onClick());assert.equal(state.posts.some(x=>x.type==='close'),false);
+ await act(async()=>begin.resolve({uploadId:'u',status:'uploading',nextOffset:0,totalBytes:metadata.size,chunkBytes:393216}));assert.match(JSON.stringify(tree.toJSON()),/Cancellation not confirmed/);assert.equal(state.posts.some(x=>x.type==='close'),false);
+ await act(async()=>leave().props.onClick());assert.equal(state.posts.filter(x=>x.type==='close').length,1);const cancelCalls=state.calls.filter(x=>x.op==='groups.media.cancel');assert.deepEqual(cancelCalls[0],cancelCalls[1]);act(()=>tree.unmount());
+});
+
+test('editing a failed durable attachment message uses atomic edit retention before restoring the composer',async()=>{
+ reset();const attachment={mediaId:'retained',name:'notes.txt',mimeType:'text/plain',category:'text',size:5,sha256:'a'.repeat(64)};const queued=outboxEntry({groupId:'group-1',clientMessageId:'failed',text:'Original text',attachments:[{mediaId:'retained'}]},{status:'failed',recovery:'retry',attachments:[attachment]});state.outbox=[queued];const pending=deferred();state.invoke=()=>pending.promise;
+ const tree=await render(GroupChat,{groupId:'group-1'});const edit=tree.root.findAllByType('button').find(x=>x.props.children==='bots.groupChat.outbox.edit');await act(async()=>{void edit.props.onClick()});assert.equal(state.calls[0].op,'groups.outbox.edit');assert.equal(tree.root.findByType('textarea').props.value,'');
+ state.outbox=[];await act(async()=>pending.resolve({accepted:true,entry:{...queued,status:'discarded',revision:2}}));assert.equal(tree.root.findByType('textarea').props.value,'Original text');assert.equal(tree.root.findAllByProps({'aria-label':'paseoMedia.remove:notes.txt'}).length,1);assert.equal(state.calls.some(x=>x.op==='groups.outbox.discard'),false);act(()=>tree.unmount());
+});
+
+test('an edit ACK lost before refresh survives frame replacement and replays only its saved transfer identity',async()=>{
+ reset();const attachment={mediaId:'retained',name:'notes.txt',mimeType:'text/plain',category:'text',size:5,sha256:'a'.repeat(64)};
+ const failed=outboxEntry({groupId:'group-1',clientMessageId:'failed-edit',text:'Keep this text',attachments:[{mediaId:attachment.mediaId}]},{status:'failed',recovery:'retry',attachments:[attachment]});
+ const discarded={...failed,status:'discarded',revision:2,recovery:'none'};state.outbox=[failed];let attempts=0;
+ state.invoke=async(op)=>{assert.equal(op,'groups.outbox.edit');attempts++;if(attempts===1){state.outbox=[discarded];throw new Error('Edit ACK lost')}return{accepted:true,entry:discarded}};
+ let tree=await render(GroupChat,{groupId:'group-1'});
+ await act(async()=>tree.root.findAllByType('button').find(x=>x.props.children==='bots.groupChat.outbox.edit').props.onClick());
+ const first=state.calls[0];assert.equal(tree.root.findByType('textarea').props.value,'');assert.equal(tree.root.findByType('textarea').props.readOnly,true);
+ await act(async()=>tree.unmount());tree=await render(GroupChat,{groupId:'group-1'});
+ assert.equal(tree.root.findAllByProps({'data-testid':'bot-group-outbox'}).length,0);assert.equal(state.calls.length,1);assert.equal(tree.root.findByType('textarea').props.value,'');
+ act(()=>tree.root.findByType('send-button').props.onClick());assert.equal(state.calls.length,1);
+ await act(async()=>tree.root.findAllByType('button').find(x=>x.props.children==='paseoMedia.restoreEdit').props.onClick());
+ assert.deepEqual(state.calls[1],first);assert.equal(attempts,2);assert.equal(tree.root.findByType('textarea').props.value,'Keep this text');assert.equal(tree.root.findByType('textarea').props.readOnly,false);
+ assert.equal(tree.root.findAllByProps({'aria-label':'paseoMedia.remove:notes.txt'}).length,1);assert.equal(tree.root.findAllByType('button').some(x=>x.props.children==='paseoMedia.restoreEdit'),false);
+ await act(async()=>tree.unmount());tree=await render(GroupChat,{groupId:'group-1'});assert.equal(tree.root.findByType('textarea').props.value,'Keep this text');assert.equal(attempts,2);act(()=>tree.unmount());
 });

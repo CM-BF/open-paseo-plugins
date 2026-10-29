@@ -33,6 +33,23 @@ async function setup() {
   return { root, service, store, driver, data, paseo };
 }
 const input = () => ({ name: 'Daily review', prompt: 'Review the work', enabled: true, sessionMode: 'fresh', triggers: [{ id: 't1', kind: 'cron', expression: '0 9 * * *', timezone: 'America/Los_Angeles' }] });
+it('injects current native mounts only at an owned creation hook and never claims the schedule template stores them',async()=>{
+  const {service,store,paseo,driver,root}=await setup();
+  Object.assign(paseo,{agents:{supportsNativeSkillMounts:()=>true}});
+  let count=1,token='first';service.runtime.setSkillsFactory(async()=>({profile:await store.get('cindy'),token,enabledCount:count,localSkillIds:[],mounts:count?[{directory:join(root,'projection')}]:[]}));
+  const routine=await service.routines.save(paseo,'cindy',input());
+  const template=vi.mocked(driver.create).mock.calls[0]![0].config;
+  expect(template).not.toHaveProperty('skillMounts');expect(template).not.toHaveProperty('__cindyNativeSkills');
+  const owned=(await store.snapshot()).routines[routine.id]!.execution!;
+  const request={config:{cwd:owned.cwd,provider:'codex',model:owned.route.model}};
+  const result=await service.routines.beforeCreate(request,paseo);
+  expect(result.config).toMatchObject({skillMounts:[{directory:join(root,'projection')}]});expect(result.config).not.toHaveProperty('__cindyNativeSkills');
+  count=0;token='disabled';expect((await service.routines.beforeCreate(request,paseo)).config).toMatchObject({skillMounts:[]});
+  count=1;Object.assign(paseo.agents,{supportsNativeSkillMounts:()=>false});
+  await expect(service.routines.beforeCreate(request,paseo)).rejects.toMatchObject({code:'NATIVE_SKILL_MOUNTS_UNSUPPORTED'});
+  await expect(service.routines.save(paseo,'cindy',input())).rejects.toMatchObject({code:'NATIVE_SKILL_MOUNTS_UNSUPPORTED'});
+  expect(driver.create).toHaveBeenCalledOnce();
+});
 it('keeps bundled disabled routine drafts entirely local until explicitly enabled', async () => {
   const { service, store, paseo, driver } = await setup();
   const data = { ...input(), enabled: false, id: 'preset-draft', botId: 'cindy', revision: 1, createdAt: 1, updatedAt: 1 };

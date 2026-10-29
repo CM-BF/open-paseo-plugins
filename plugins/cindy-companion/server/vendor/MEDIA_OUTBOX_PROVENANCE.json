@@ -1,0 +1,84 @@
+{
+  "upstream": "https://github.com/makecindy/cindy",
+  "revision": "118767c987f518286ae10a506a54287c3dc2a560",
+  "license": "Apache-2.0; repository LICENSE and server/vendor/NOTICE retained",
+  "files": [
+    {
+      "source": "apps/desktop/src/shared/attachmentSafety.ts",
+      "target": "shared/vendor/attachmentSafety.ts",
+      "sourceSha256": "9310e2a9dc4204f3f6e27248470217af5bb8f21e3a3a9ee006381b7928399a0a",
+      "method": "byte-identical"
+    },
+    {
+      "source": "apps/desktop/src/main/maker-ipc/botGroupAttachments.ts",
+      "target": "server/vendor/attachmentFileName.ts",
+      "sourceSha256": "3bd386e28ffbc9e790b8eeb545cb945f5302450c9cb43eb1a01d034acb902a6f",
+      "method": "safeAttachmentFileName exact extraction, lines 78-84"
+    }
+  ],
+  "adaptedRules": [
+    "botGroupOutboxStorage.ts durable receipt/tombstone-before-reference-release",
+    "botGroupAttachments.ts batch-owned references",
+    "chatServerMedia.ts immutable sealed bytes/hash/size limits"
+  ],
+  "newTransport": "Paseo chunk RPC, opaque IDs; no Cindy cloud endpoint or credentials",
+  "adaptedProductionSources": [
+    {
+      "source": "apps/desktop/src/main/maker-ipc/botGroupOutboxStorage.ts",
+      "symbol": "accessBotGroupOutbox",
+      "lines": [
+        [
+          15,
+          32
+        ],
+        [
+          34,
+          97
+        ]
+      ],
+      "sha256": "9f0682a474295d57d8b5a677d817ab6cea1c32e95572faf076d2747ee0086b6f"
+    },
+    {
+      "source": "apps/desktop/src/main/maker-ipc/botGroupAttachments.ts",
+      "symbol": "safeAttachmentFileName / prepareBotGroupAttachments",
+      "lines": [
+        [
+          78,
+          84
+        ],
+        [
+          107,
+          217
+        ]
+      ],
+      "sha256": "3bd386e28ffbc9e790b8eeb545cb945f5302450c9cb43eb1a01d034acb902a6f"
+    },
+    {
+      "source": "apps/desktop/src/main/maker-ipc/chatServerMedia.ts",
+      "symbol": "createChatMedia",
+      "lines": [
+        [
+          27,
+          37
+        ],
+        [
+          63,
+          110
+        ],
+        [
+          127,
+          165
+        ]
+      ],
+      "sha256": "53cf570fe5a281c4eed2e6edb2e6b85aa034be245643cca60e162c70cdfbf73d"
+    }
+  ],
+  "hostAdaptations": [
+    "Opaque group-owned UUIDs replace cloud media IDs/URLs; bytes use inert .bin names, fixed 393216-byte chunks, immutable SHA-256 metadata and group-scoped access checks.",
+    "All media refs, outbox receipts and group messages share CompanionStore.transaction; staged data is fsynced before its durable cursor.",
+    "Explicit queued/unknown states and operation receipts distinguish durable local reception from native execution; no idle inference or alternate native send fallback.",
+    "Failed-entry edit atomically returns attachment ownership to staging and tombstones the old outbox identity; discard releases only its own refs.",
+    "Cindy production rejects empty media; this adapter preserves that rule as MEDIA_EMPTY.",
+    "Native file/image inputs are not connected in this slice: ATTACHMENT_INPUT_UNAVAILABLE is emitted before creating or sending to a model. Thread replies remain text-only."
+  ]
+}

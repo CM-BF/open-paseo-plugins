@@ -11,7 +11,7 @@ import { CompanionRuntime, COMPANION_CONTEXT_GUIDANCE, resolveFastFeature, route
 import { parseRoutineInput, type Routine, type RoutineInput } from './vendor/scheduler/routines';
 import { CompanionError, record, string, throwIpcError } from './errors';
 import { ScheduleSdk, scheduleCadence } from './schedule-sdk';
-import { verifyPackagedSkills } from './presets/skills';
+import { assertNativeSkillsSupport } from './native-skills';
 import { publicPaseoCli } from './host-cli';
 
 export interface NativeSchedule { id: string; name?: string | null; status?: string; runs?: Array<Record<string, unknown>>; [key: string]: unknown }
@@ -170,9 +170,6 @@ export class CompanionRoutines {
       throwIpcError('ROUTINE_BINDING_MISMATCH', 'The scheduled agent does not match its immutable companion binding');
     await this.store.safePath(execution.cwd);
     if (!profile.enabled || profile.status !== 'active') throwIpcError('COMPANION_PAUSED', 'This companion is not active');
-    const packaged = await verifyPackagedSkills(this.store, profile);
-    if (profile.skills.some(skill => !packaged.supportedSkillIds.includes(skill)) || profile.capabilities.mcpServers.length || profile.capabilities.toolsets.length)
-      throwIpcError('CAPABILITY_NOT_APPLIED', 'This routine cannot apply selected skills, external MCP servers or toolsets');
     const agentId=(request as typeof request&{agentId?:unknown}).agentId;
     let scope:import('../shared/session-scope').SessionScope|undefined;
     if(agentId!==undefined){
@@ -180,9 +177,11 @@ export class CompanionRoutines {
       scope={agentId,role:'routine',routineId:saved.data.id};
       await this.store.transaction(state=>{const previous=state.routineAgents?.[agentId];if(previous&&(previous.botId!==saved.botId||previous.routineId!==saved.data.id||previous.cwd!==execution.cwd))throwIpcError('ROUTINE_BINDING_MISMATCH','The native identity belongs to another routine');(state.routineAgents??={})[agentId]={botId:saved.botId,routineId:saved.data.id,cwd:execution.cwd,sessionScope:scope!};});
     }
-    const instructions = await this.runtime.instructionsFor(saved.botId,scope);
+    const instructions = await this.runtime.instructionsFor(saved.botId,scope,paseo);
     const featureValues = await this.features(paseo, execution.route, execution.cwd);
+    assertNativeSkillsSupport(paseo, instructions);
     return { ...request, config: { ...request.config, systemPrompt: instructions.systemPrompt,
+      ...(Object.hasOwn(instructions,'skillMounts') ? {skillMounts:instructions.skillMounts} : {}),
       mcpServers: { ...request.config.mcpServers, ...instructions.mcpServers } as PluginBeforeRequests['agent.create']['config']['mcpServers'],
       modeId: execution.mode, providerOptions: { ...request.config.providerOptions, ...execution.providerOptions },
       ...(featureValues ? { featureValues: { ...request.config.featureValues, ...featureValues } } : {}) } };
@@ -225,9 +224,7 @@ export class CompanionRoutines {
       if (input.preRunHook || input.silentWhenIdle || input.modelOverride?.agentDeviceId) throwIpcError('UNSUPPORTED_ROUTINE_OPTION', 'This host cannot execute event checks, silent idle hooks or remote model routes');
       const cadence = this.cadence(input); scheduleCadence(cadence);
       const profile = await this.store.get(botId); const driver = this.driverFor(paseo);
-      const packaged = await verifyPackagedSkills(this.store, profile);
-      if (profile.skills.some(skill => !packaged.supportedSkillIds.includes(skill)) || profile.capabilities.mcpServers.length || profile.capabilities.toolsets.length)
-        throwIpcError('CAPABILITY_NOT_APPLIED', 'This routine cannot apply selected skills, external MCP servers or toolsets');
+      const instructions = await this.runtime.instructionsFor(botId,undefined,paseo);
       const route = input.modelOverride ? { harness: input.modelOverride.agentKind === 'claude-code' ? 'claude' as const : input.modelOverride.agentKind,
         model: input.modelOverride.model, providerId: input.modelOverride.providerId ?? null, effort: input.modelOverride.effort ?? '', fastMode: input.modelOverride.fastMode ?? false } : selectedRoute(profile) ?? await this.runtime.defaultRoute(paseo, botId);
       if (route.agentDeviceId) throwIpcError('UNSUPPORTED_ROUTINE_OPTION', 'Remote routine model routes are unavailable');
@@ -247,14 +244,16 @@ export class CompanionRoutines {
         const cwd = join(profile.homeDir, 'routines', id, 'workspace');
         await this.store.safePath(cwd); await mkdir(cwd, { recursive: true, mode: 0o700 }); await this.store.safePath(cwd);
         const providerOptions = provider === 'codex' ? { approval_policy: 'on-request', sandbox_mode: 'workspace-write' } : undefined;
-        const instructions = await this.runtime.instructionsFor(botId);
         const featureValues = await this.features(paseo, route, cwd);
         saved = { botId, operationName: `cindy:${botId}:${id}`, phase: 'creating', data, nativePrompt: prompt,
           execution: { cwd, route, mode, profileVersion: profile.currentVersion, ...(providerOptions ? { providerOptions } : {}) } };
         await this.store.transaction(state => { state.routines[id] = saved!; });
         try {
+          // Schedule templates do not yet preserve native mounts. The exact owned
+          // agent.create hook above applies current mounts before provider launch.
+          assertNativeSkillsSupport(paseo, instructions);
           const created = await driver.create({ name: saved.operationName, prompt, provider: `${provider}/${route.model}`, cwd, cadence, thinking: route.effort || undefined, mode,
-            config: { ...instructions, ...(providerOptions ? { providerOptions } : {}), ...(featureValues ? { featureValues } : {}) } });
+            config: { systemPrompt:instructions.systemPrompt, ...(instructions.mcpServers ? {mcpServers:instructions.mcpServers} : {}), ...(providerOptions ? { providerOptions } : {}), ...(featureValues ? { featureValues } : {}) } });
           string(created.id, 'schedule id', 200);
           saved.scheduleId = created.id;
           // Persist the returned ID before the optional pause, so a pause failure is recoverable.

@@ -2,6 +2,7 @@
 import { createElement, useLayoutEffect, useRef, type ReactElement, type ReactNode } from "react";
 import { Platform } from "react-native";
 import { FRAME_CHANNEL, readFrameEvent } from "./frame-protocol";
+import { groupDraftRequest } from './group-drafts';
 
 type FrameWindow = { postMessage(data: unknown, origin: string): void };
 type FrameElement = { contentWindow: FrameWindow | null };
@@ -76,6 +77,11 @@ export function SettingsFrame(props: SettingsFrameProps): ReactElement | null {
         const invoke = latest.current.invoke;
         const openWorkFile = latest.current.onOpenWorkFile;
         const scope = latest.current.init;
+        if (message.op.startsWith('paseo.groupDrafts.')) {
+          try { post({ type: 'response', id: message.id, result: { ok: true, value: groupDraftRequest(scope, message.op, (message.args ?? {}) as Record<string, unknown>) } }); }
+          catch (error) { post({ type: 'response', id: message.id, error: error instanceof Error ? error.message : 'Draft could not be saved.' }); }
+          inFlight--; return;
+        }
         Promise.resolve().then(async () => {
           if (disposed) return;
           const args = (message.args ?? {}) as Record<string, unknown>;
@@ -119,7 +125,7 @@ export function SettingsFrame(props: SettingsFrameProps): ReactElement | null {
     ref: frame,
     title: props.init.view === 'teammate-create' ? 'Create Cindy teammate' : props.init.view === 'group' ? 'Cindy group chat' : props.init.view === 'presets' ? 'Cindy preset teammates' : props.init.view === 'group-create' ? 'Create Cindy group chat' : 'Cindy teammate settings',
     srcDoc: props.document,
-    sandbox: "allow-scripts",
+    sandbox: "allow-scripts allow-downloads allow-forms",
     referrerPolicy: "no-referrer",
     style: { width: "100%", height: "100%", display: "block", border: 0, colorScheme: props.init.theme },
   });

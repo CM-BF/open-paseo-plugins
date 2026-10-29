@@ -6,6 +6,9 @@ import type { PluginBeforeRequests } from '@getpaseo/plugin/server';
 import type { CompanionProfile, InvokeInput, InvokeResult, BootstrapData } from '../shared/contracts';
 import { BOT_SETTINGS_PROTOCOL_VERSION } from '../shared/vendor/botRemoteSettings';
 import { CompanionStore } from './store';
+import { CompanionSkills, type SkillAccess } from './companion-skills';
+import { skillMutation } from './companion-skills-rpc';
+import type { CompanionSkillMutation, CompanionSkillMutationResult } from '../shared/companion-skills';
 import { CompanionRuntime, type Paseo } from './runtime';
 import { CompanionMemoryStore } from './memory';
 import { createBotMemoryService } from './vendor/botMemoryService';
@@ -13,20 +16,23 @@ import { parseBotMemoryScopeKey } from './vendor/memory/storage';
 import { botId, CompanionError, record, string, throwIpcError, unsupported } from './errors';
 import { CompanionRoutines, ScheduleCli, type ScheduleDriver } from './schedules';
 import { readFontChunk } from './font-assets';
-import { CompanionGroups, parseTrackedMentions } from './groups';
+import { CompanionGroups } from './groups';
 import { CompanionGroupHistory } from './group-history';
+import { GroupMedia } from './group-media';
+import { GroupOutbox, outboxInput } from './group-outbox';
+import { lookupMainReception, mainWorkRoute, receptionTarget, validateMainReception } from './group-reception';
+import type { GroupOutboxInput } from '../shared/group-outbox';
 import { NativeGroupDriver, type GroupDriver } from './group-driver';
 import { GroupPlans } from './group-plans';
 import { GroupPlanOrganizer } from './group-plan-organizer';
 import { browsePlanDirectories } from './group-plan-workdir';
-import { resolveBotGroupMentions } from '../shared/vendor/botGroupMentions';
 import { PresetImports } from './presets/import';
 import { PresetOpenings } from './presets/opening';
 import { avatarDataUrl } from './avatar';
 import type { SessionScope } from '../shared/session-scope';
 import { LocalPaseo } from './local-paseo';
 import { publicPaseoCli } from './host-cli';
-import { validateSessionBinding } from './session-authority';
+import { sessionBinding, validateSessionBinding } from './session-authority';
 import { CompanionTasks, taskNeedsSettlement } from './companion-tasks';
 import { NativeTaskDriver } from './companion-task-driver';
 import { createHash } from 'node:crypto';
@@ -34,20 +40,26 @@ import { createHash } from 'node:crypto';
 const OPS = ['caps', 'assets.fontChunk', 'paseo.presets.list', 'paseo.presets.invite', 'paseo.presets.status', 'preset.opening.status', 'preset.opening.choose',
   'groups.list', 'groups.get', 'groups.create', 'groups.update', 'groups.setMembers', 'groups.send', 'groups.continue', 'groups.stop', 'groups.delete','groups.cleanup',
   'groups.history.get', 'groups.history.send', 'groups.history.react', 'groups.history.reactors',
+  'groups.media.begin','groups.media.write','groups.media.status','groups.media.complete','groups.media.cancel','groups.media.read',
+  'groups.outbox.enqueue','groups.outbox.list','groups.outbox.reconcile','groups.outbox.retry','groups.outbox.discard','groups.outbox.edit',
   'groups.threads.get', 'groups.threads.reply', 'groups.threads.follow', 'groups.threads.shareToMain', 'groups.threads.stop', 'groups.threads.continue',
   'groups.plans.list','groups.plans.create','groups.plans.start','groups.plans.continue','groups.plans.retry','groups.plans.stop','groups.plans.dismiss','groups.plans.edit','groups.plans.note','groups.plans.revise','groups.plans.cancelRequest','groups.plans.settings','groups.plans.artifact','groups.plans.directories',
   'companion.tasks.list','companion.tasks.get','companion.tasks.start','companion.tasks.message','companion.tasks.stop','companion.tasks.responsibility','companion.tasks.artifact','companion.tasks.owner',
   'profile.get', 'profile.update', 'profile.chooseAvatar', 'lifecycle.run', 'models.default', 'models.features',
   'memory.list', 'memory.read', 'memory.update', 'memory.delete', 'capabilities.catalog', 'history.search',
+  'skills.list', 'skills.read', 'skills.inspect', 'skills.save', 'skills.source', 'skills.enabled', 'skills.delete',
   'paseo.bootstrap', 'profile.list', 'profile.create', 'profile.ensure', 'paseo.conversation.ensure',
   'conversation.send', 'conversation.history', 'home.get', 'memory.create', 'paseo.openPath',
   'routines.list', 'routines.sources', 'routines.reconcile', 'routines.save', 'routines.saveWithModel', 'routines.saveWithSessionMode', 'routines.history', 'routines.runNow', 'routines.remove'] as const;
 export class CompanionService {
   readonly store: CompanionStore;
   readonly runtime: CompanionRuntime;
+  readonly skills: CompanionSkills;
   readonly routines: CompanionRoutines;
   readonly groups: CompanionGroups;
   readonly groupHistory: CompanionGroupHistory;
+  readonly groupMedia: GroupMedia;
+  readonly groupOutbox: GroupOutbox;
   readonly presets: PresetImports;
   readonly openings: PresetOpenings;
   private readonly memoryStores = new Map<string, CompanionMemoryStore>();
@@ -65,10 +77,14 @@ export class CompanionService {
   private readonly ownedApi:(fallback:Paseo)=>Promise<Paseo>;
   readonly memory: ReturnType<typeof createBotMemoryService>;
   constructor(store = new CompanionStore(), options: { scheduleDriver?: ScheduleDriver; groupDriver?: (paseo: Paseo) => GroupDriver;taskDriver?:(paseo:Paseo)=>GroupDriver;paseoForTools?:()=>Promise<Paseo> } = {}) {
-    this.store = store; this.runtime = new CompanionRuntime(store);
+    this.store = store; this.runtime = new CompanionRuntime(store); this.skills = new CompanionSkills(store);
+    this.runtime.setSkillsFactory(id => this.skills.nativeSnapshot(id));
     this.routines = new CompanionRoutines(store, this.runtime, options.scheduleDriver ?? new ScheduleCli());
     this.groups = new CompanionGroups(store, this.runtime, options.groupDriver);
     this.groupHistory = new CompanionGroupHistory(store, this.groups);
+    this.groupMedia=new GroupMedia(store);
+    this.groupOutbox=new GroupOutbox(store,{lookup:lookupMainReception,validate:validateMainReception,
+      accept:async(input,paseo)=>receptionTarget(await this.receiveMain(paseo,input)),collect:groupId=>this.groupMedia.collect(groupId)});
     this.toolsPaseo=options.paseoForTools??(()=>this.localPaseo.get());
     this.ownedApi=options.groupDriver||options.taskDriver?async fallback=>fallback:()=>this.toolsPaseo();
     const managed=(factory:(api:Paseo)=>GroupDriver):GroupDriver=>({
@@ -104,11 +120,13 @@ export class CompanionService {
       await Promise.allSettled([...this.operations]);
       // Accepted memory writes may schedule refresh timers while draining.
       for (const timer of this.timers) clearTimeout(timer); this.timers.clear();
+      await this.groupOutbox.close();
       await this.routines.close();
       await this.taskBackend?.close();
       await this.workBackend?.organizer.close();
       await this.workBackend?.plans.close();
       await this.groups.close();
+      await this.groupMedia.close();
       await this.runtime.close();
       await this.localPaseo.dispose();
     })();
@@ -124,6 +142,23 @@ export class CompanionService {
       this.workBackend={plans,organizer};
     }
     return this.workBackend;
+  }
+  private async receiveMain(paseo:Paseo,input:GroupOutboxInput){
+    const {groupId,clientMessageId:operationId,text}=input,work=this.work(paseo);
+    // Receipt replay precedes mutable plan/routing checks. A new plan cannot capture an old send.
+    const prior=lookupMainReception(await this.store.snapshot(),input);
+    if(prior?.kind==='message')return input.quote?this.groupHistory.send(paseo,groupId,{...input}):this.groups.send(paseo,groupId,{...input});
+    const replay=await work.organizer.replay(groupId,operationId,text)??await work.plans.replayNote(groupId,operationId,text);if(replay)return replay;
+    const state=await this.store.snapshot();validateMainReception(state,input);
+    if(input.division)return work.organizer.create(groupId,{operationId,request:text,trackedMentions:input.trackedMentions});
+    if(input.quote)return this.groupHistory.send(paseo,groupId,{...input});
+    const {plan}=mainWorkRoute(state,input);
+    if(plan){
+      if(plan.view.status==='proposed')return work.organizer.create(groupId,{operationId,request:text},{planId:plan.view.id,expectedRevision:plan.view.revision});
+      const result=await work.plans.action('note',{groupId,planId:plan.view.id,expectedRevision:plan.view.revision,operationId,text});
+      return{...result,...await work.plans.replayNote(groupId,operationId,text)};
+    }
+    return this.groups.send(paseo,groupId,{...input});
   }
   private tasks(paseo:Paseo){
     this.taskBackend??=new CompanionTasks(this.store,{driver:this.taskDriverFactory(paseo),configFor:async(botId,cwd)=>this.runtime.taskConfigFor(await this.ownedApi(paseo),botId,cwd),
@@ -141,6 +176,19 @@ export class CompanionService {
   async invokeSessionTool(id:string,scope:SessionScope,op:string,args:Record<string,unknown>):Promise<InvokeResult>{
     try{return await this.admit(async()=>{
       const paseo=await this.toolsPaseo();await validateSessionBinding(this.store,paseo,id,scope);
+      if (['list_teammate_skills', 'read_teammate_skill', 'inspect_teammate_skill', 'save_teammate_skill'].includes(op)) {
+        const access: SkillAccess = async state => {
+          const binding = sessionBinding(state, id, scope), agent = paseo.agents.ref(scope.agentId);
+          if (!await agent.refresh() || agent.archivedAt || agent.cwd !== binding.cwd || (binding.workspaceId && agent.workspaceId !== binding.workspaceId))
+            throwIpcError('SESSION_SCOPE_REVOKED', 'The native session no longer owns this skill access');
+        };
+        if (op === 'list_teammate_skills') return { ok: true, value: await this.skills.query(id, { query: args.query as string | undefined, offset: args.offset as number | undefined, limit: args.limit as number | undefined, expectedRevision: args.expected_revision as string | undefined }, access, true) };
+        if (op === 'read_teammate_skill') return { ok: true, value: await this.skills.read(id, args.slug, access) };
+        if (op === 'inspect_teammate_skill') return { ok: true, value: await this.skills.inspect(id, args.slug, access) };
+        if (scope.role !== 'canonical' && scope.role !== 'routine') throwIpcError('BOT_SESSION_READ_ONLY', 'This group or plan session may read but cannot change personal skills');
+        const input = skillMutation('save', { ...args, operationId: args.idempotency_key, expectedRevision: args.expected_revision });
+        return { ok: true, value: await this.saveSkills(paseo, id, input, access) };
+      }
       if(op==='list_agents')return{ok:true,value:{agents:(await this.store.list()).filter(p=>p.enabled&&p.status==='active').map(p=>({id:p.id,name:p.name,description:p.description,local:true})),unavailableDevices:[]}};
       const tasks=this.tasks(paseo),taskId=args.task_id===undefined?undefined:string(args.task_id,'task_id',128);
       if(op==='start_session_task'){
@@ -170,13 +218,26 @@ export class CompanionService {
       if (id) await this.runtime.applyProfile(paseo, id);
     });
   }
+  private async saveSkills(paseo: Paseo, id: string, input: CompanionSkillMutation, access?: SkillAccess): Promise<CompanionSkillMutationResult> {
+    const receipt = await this.skills.mutate(id, input, access);
+    // The durable save is complete and its store lock released before native refresh.
+    // Replaying a receipt may retry refresh, never replay the source mutation.
+    try { return { ...receipt, application: await this.runtime.applyProfile(paseo, id) }; }
+    catch (error) {
+      return { ...receipt, application: { state: 'pending',
+        code: error instanceof CompanionError ? error.code : 'NATIVE_SKILLS_APPLY_FAILED',
+        message: `Skill saved; native application is unconfirmed: ${error instanceof Error ? error.message : String(error)}` } };
+    }
+  }
   restoreToolEndpoint(): Promise<void> {
     return this.admit(async () => {
       const profiles = await this.store.list(); const state = await this.store.snapshot();
       const id = profiles.find(profile => profile.canonicalSessionId)?.id ?? Object.values(state.routines)[0]?.botId ??
         Object.values(state.groups ?? {}).flatMap(group => Object.values(group.lanes)).find(lane => state.profiles[lane.botId])?.botId??
         Object.values(state.groupPlans??{}).flatMap(plan=>Object.values(plan.lanes)).find(lane=>state.profiles[lane.botId])?.botId;
-      if (id) await this.runtime.instructionsFor(id);
+      // Restoring persisted MCP endpoints must not depend on provider availability
+      // or whether a changed skill can currently be mounted by this host.
+      if (id) await this.runtime.ensureToolEndpoint(id);
     });
   }
   beforeCreateRoutine(request: PluginBeforeRequests['agent.create'], paseo: Paseo) {
@@ -275,7 +336,24 @@ export class CompanionService {
       const groupId = botId(args.groupId);
       // Internal topic execution IDs are not public group IDs. Every RPC keeps the real room boundary.
       const publicGroup = (await this.store.snapshot()).groups?.[groupId];
+      if(publicGroup?.deletedAt&&op==='groups.delete'){await this.groupMedia.collect(groupId);return{deleted:true,groupId};}
       if (!publicGroup || publicGroup.deletedAt) throwIpcError('NOT_FOUND', 'Group not found');
+      if(op.startsWith('groups.media.')){
+        if(op==='groups.media.begin')return this.groupMedia.begin(groupId,args);
+        if(op==='groups.media.write')return this.groupMedia.write(groupId,args);
+        if(op==='groups.media.status')return this.groupMedia.status(groupId,args);
+        if(op==='groups.media.complete')return this.groupMedia.complete(groupId,args);
+        if(op==='groups.media.cancel')return this.groupMedia.cancel(groupId,args);
+        if(op==='groups.media.read')return this.groupMedia.read(groupId,args);
+        return unsupported(op);
+      }
+      if(op.startsWith('groups.outbox.')){
+        if(op==='groups.outbox.reconcile')return this.groupOutbox.reconcile(groupId,args);
+        if(op==='groups.outbox.enqueue')return this.groupOutbox.enqueue(args,await this.ownedApi(paseo));
+        if(op==='groups.outbox.list')return this.groupOutbox.list(groupId,args,await this.ownedApi(paseo));
+        if(op==='groups.outbox.retry'||op==='groups.outbox.discard'||op==='groups.outbox.edit')return this.groupOutbox.mutate(op.endsWith('.retry')?'retry':op.endsWith('.edit')?'edit':'discard',groupId,args,await this.ownedApi(paseo));
+        return unsupported(op);
+      }
       if (op.startsWith('groups.history.') || op.startsWith('groups.threads.')) {
         if (args.actorId !== undefined || args.callerId !== undefined) throwIpcError('INVALID_PARAMS', 'History actors are assigned by the host');
         if (op === 'groups.history.get') return this.groupHistory.get(paseo, groupId, args);
@@ -308,25 +386,10 @@ export class CompanionService {
       }
       if (op === 'groups.get') {const result=await this.groups.get(paseo, groupId, args);const {plans,organizer}=this.work(paseo);return{...result,...await plans.list(groupId),requests:await organizer.list(groupId)};}
       if (op === 'groups.update' || op === 'groups.setMembers') return this.groups.update(paseo, groupId, args, op === 'groups.setMembers');
-      if (op === 'groups.send') {
-        const operationId=string(args.clientMessageId,'clientMessageId',200),text=string(args.text,'text',32000),tracked=parseTrackedMentions(args.trackedMentions);
-        const work=this.work(paseo);const replay=await work.organizer.replay(groupId,operationId,text)??await work.plans.replayNote(groupId,operationId,text);
-        if(replay)return replay;
-        const state=await this.store.snapshot(),group=state.groups?.[groupId];
-        if(group){const mentions=resolveBotGroupMentions(text,{members:group.botIds.map(id=>({botId:id,name:state.profiles[id]?.name??id})),tracked,allLabels:['all','everyone','所有人','全部','大家']});
-          const openPlan=Object.values(state.groupPlans??{}).find(p=>p.view.groupId===groupId&&['proposed','running','waiting'].includes(p.view.status));
-          if(openPlan&&group.replyMode==='all'&&!mentions.all&&!mentions.botIds.length){
-            const {plans,organizer}=work;
-            if(openPlan.view.status==='proposed')return organizer.create(groupId,{operationId,request:args.text},{planId:openPlan.view.id,expectedRevision:openPlan.view.revision});
-            const result=await plans.action('note',{groupId,planId:openPlan.view.id,expectedRevision:openPlan.view.revision,operationId,text:args.text});
-            return{...result,...await plans.replayNote(groupId,operationId,text)};
-          }
-        }
-        return this.groups.send(paseo, groupId, args);
-      }
+      if (op === 'groups.send') return this.receiveMain(paseo,outboxInput({...args,groupId}));
       if (op === 'groups.continue') return this.groups.continue(paseo, groupId, args);
       if (op === 'groups.stop') return this.groups.stop(paseo, groupId, string(args.roundId, 'roundId', 200));
-      if (op === 'groups.delete') return this.groups.remove(paseo, groupId, args.expectedRevision);
+      if (op === 'groups.delete') {const result=await this.groups.remove(paseo, groupId, args.expectedRevision);await this.groupMedia.collect(groupId);return result;}
       return unsupported(op);
     }
     if (op === 'paseo.bootstrap') return this.bootstrap(paseo, args.botId === undefined ? undefined : botId(args.botId));
@@ -386,6 +449,11 @@ export class CompanionService {
       return this.history(paseo, p.canonicalSessionId, args);
     }
     if (op === 'history.search') return this.searchHistory(paseo, await this.store.get(id), string(args.query, 'query', 1000), Number(args.limit ?? 20));
+    if (op === 'skills.list') return this.skills.query(id, { query: args.query as string | undefined, offset: args.offset as number | undefined, limit: args.limit as number | undefined, expectedRevision: args.expectedRevision as string | undefined });
+    if (op === 'skills.read') return this.skills.read(id, args.slug);
+    if (op === 'skills.inspect') return this.skills.inspect(id, args.slug);
+    if (op === 'skills.save' || op === 'skills.source' || op === 'skills.enabled' || op === 'skills.delete')
+      return this.saveSkills(paseo, id, skillMutation(op.slice('skills.'.length) as 'save' | 'source' | 'enabled' | 'delete', args));
     if (op === 'memory.list') return this.memory.list(id, args.query);
     if (op === 'memory.read') return this.memory.read(id, args.filename);
     if (op === 'memory.update') return this.memory.update({ botId: id, filename: string(args.filename, 'filename', 256), title: string(args.title, 'title', 1000), body: string(args.body, 'body', 8192), expectedUpdatedAt: string(args.expectedUpdatedAt, 'expectedUpdatedAt', 64) });
@@ -398,11 +466,18 @@ export class CompanionService {
       return this.memory.read(id, result.filename);
     }
     if (op === 'capabilities.catalog') {
-      const p = await this.store.get(id); if (!p.canonicalSessionId) return { personal: [], entries: { skill: [], mcp: [], toolset: [] }, state: 'not-created', configurable: false,
+      const p = await this.store.get(id), page = await this.skills.query(id, { limit: 50 });
+      const personal = { personal: page.skills, personalPage: { revision: page.revision, total: page.total, ...(page.nextOffset === undefined ? {} : { nextOffset: page.nextOffset }) },
+        personalRuntime: { status: 'pending', reason: 'native-loading-unverified' } };
+      if (!p.canonicalSessionId) return { ...personal, entries: { skill: [], mcp: [], toolset: [] }, state: 'not-created', configurable: false,
         code: 'CAPABILITY_SELECTION_UNSUPPORTED', message: 'Start the companion to inspect provider-native skills. Per-companion skill, external MCP and toolset selection is not exposed by this host.' };
-      const result = await paseo.agents.ref(p.canonicalSessionId).commands();
-      if (result.error) throwIpcError('CAPABILITY_CATALOG_UNAVAILABLE', result.error);
-      return { personal: [], entries: { skill: result.commands.filter(command => command.kind === 'skill').map(command => ({ id: command.name, name: command.name, description: command.description ?? '', available: false, joined: p.skills.includes(command.name),
+      let result: Awaited<ReturnType<ReturnType<Paseo['agents']['ref']>['commands']>>;
+      try { result = await paseo.agents.ref(p.canonicalSessionId).commands(); }
+      catch (error) { return { ...personal, entries: { skill: [], mcp: [], toolset: [] }, configurable: false,
+        providerError: { code: 'CAPABILITY_CATALOG_UNAVAILABLE', message: error instanceof Error ? error.message : String(error) } }; }
+      if (result.error) return { ...personal, entries: { skill: [], mcp: [], toolset: [] }, configurable: false,
+        providerError: { code: 'CAPABILITY_CATALOG_UNAVAILABLE', message: result.error } };
+      return { ...personal, entries: { skill: result.commands.filter(command => command.kind === 'skill').map(command => ({ id: command.name, name: command.name, description: command.description ?? '', available: false, joined: p.skills.includes(command.name),
         reason: 'Visible through the provider; per-companion skill selection is not available on this host.' })),
         mcp: [], toolset: [] }, configurable: false, code: 'CAPABILITY_SELECTION_UNSUPPORTED', message: 'Provider-native skills are shown for reference. This host does not expose per-companion skill, external MCP or toolset selection.',
         configured: { skills: p.skills, mcpServers: p.capabilities.mcpServers, toolsets: p.capabilities.toolsets }, runtime: await this.runtime.state(id) };

@@ -9,7 +9,7 @@ export type WorkPlanAction = 'start' | 'continue' | 'retry' | 'stop' | 'dismiss'
 
 /** Poll the durable projection, with one read in flight and no post-disposal callbacks. */
 export function observeGroupPlans(groupId: string, emit: (value: GroupPlanSnapshot) => void, fail: (error: Error) => void,
-  request: typeof invoke = invoke, timers = { set: setTimeout, clear: clearTimeout }, isCurrent = () => true) {
+  request: typeof invoke = invoke, timers = { set: setTimeout.bind(globalThis), clear: clearTimeout.bind(globalThis) }, isCurrent = () => true) {
   let disposed = false, inFlight = false, again = false, generation = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const read = async () => {

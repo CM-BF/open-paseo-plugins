@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Paseo } from './runtime';
 import { throwIpcError } from './errors';
 import type { SessionScope } from '../shared/session-scope';
+import { assertNativeSkillsSupport, nativeConfigOnly, skillsIntentFromConfig } from './native-skills';
 
 export interface GroupLane {
   agentId: string; operationId: string; groupId: string; roundId: string; botId: string;
@@ -37,23 +38,28 @@ export class NativeGroupDriver implements GroupDriver {
   constructor(private readonly paseo: Paseo) {}
   async ensure(lane: GroupLane) {
     let agent = this.paseo.agents.ref(lane.agentId);
-    if (!await agent.refresh()) {
+    const found = await agent.refresh();
+    if (!found || (lane.phase !== 'ready' && skillsIntentFromConfig(lane.config))) {
       if (lane.phase === 'ready') throwIpcError('GROUP_LANE_MISSING', 'The group conversation is missing');
+      assertNativeSkillsSupport(this.paseo, lane.config);
       agent = await this.paseo.agents.create({ agentId: lane.agentId, idempotencyKey: lane.operationId,
-        config: lane.config as never, cwd: lane.cwd, title: lane.title, background: true,
+        config: nativeConfigOnly(lane.config) as never, cwd: lane.cwd, title: lane.title, background: true,
         labels: { 'cindy-companion.groupId': lane.groupId, 'cindy-companion.botId': lane.botId, 'cindy-companion.roundId': lane.roundId,
           ...(lane.threadRootId ? { 'cindy-companion.threadRootId': lane.threadRootId } : {}) } });
-      await agent.refresh();
+      if(!await agent.refresh())throwIpcError('GROUP_CREATE_NOT_CONFIRMED','Native creation returned without a readable group session');
     }
     if (agent.archivedAt || agent.cwd !== lane.cwd) throwIpcError('GROUP_LANE_MISMATCH', 'The group conversation no longer matches its binding');
     return { workspaceId: agent.workspaceId ?? undefined };
   }
   async configure(lane: GroupLane, config: Record<string, unknown>) {
+    if (Object.hasOwn(lane.config,'skillMounts') && !Object.hasOwn(config,'skillMounts'))
+      throwIpcError('NATIVE_SKILL_MOUNTS_UNSUPPORTED','The previous native mounts cannot be refreshed or cleared by this connected SDK');
+    assertNativeSkillsSupport(this.paseo, config);
     if (JSON.stringify(lane.config) === JSON.stringify(config)) return;
     const agent = this.paseo.agents.ref(lane.agentId) as ReturnType<Paseo['agents']['ref']> & {
       setModel?: (model: string | null) => Promise<void>; setThinkingOption?: (effort: string | null) => Promise<unknown>;
       setFeature?: (id: string, value: unknown) => Promise<void>;
-      updateInstructions?: (config: { systemPrompt: string; mcpServers?: Record<string, unknown> }) => Promise<unknown>;
+      updateInstructions?: (config: { systemPrompt: string; mcpServers?: Record<string, unknown>; skillMounts?: Array<{directory:string}> }) => Promise<unknown>;
     };
     await agent.refresh();
     if (agent.activeTurn || agent.status === 'running' || agent.pendingPermissions?.length) throwIpcError('GROUP_LANE_BUSY', 'The group conversation is still active');
@@ -62,7 +68,7 @@ export class NativeGroupDriver implements GroupDriver {
     const modelChanged = lane.config.provider !== config.provider;
     const effortChanged = lane.config.thinkingOptionId !== config.thinkingOptionId;
     const featuresChanged = JSON.stringify(lane.config.featureValues ?? {}) !== JSON.stringify(config.featureValues ?? {});
-    const instructionsChanged = JSON.stringify([lane.config.systemPrompt, lane.config.mcpServers]) !== JSON.stringify([config.systemPrompt, config.mcpServers]);
+    const instructionsChanged = JSON.stringify([lane.config.systemPrompt, lane.config.mcpServers, skillsIntentFromConfig(lane.config), lane.config.skillMounts]) !== JSON.stringify([config.systemPrompt, config.mcpServers, skillsIntentFromConfig(config), config.skillMounts]);
     if ((modelChanged && !agent.setModel) || (effortChanged && !agent.setThinkingOption) || (featuresChanged && !agent.setFeature) || (instructionsChanged && !agent.updateInstructions))
       throwIpcError('HOST_UPGRADE_REQUIRED', 'Saved companion settings require a newer host to refresh this existing group conversation');
     if (modelChanged) await agent.setModel!(selection.slice(selection.indexOf('/') + 1));
@@ -71,7 +77,8 @@ export class NativeGroupDriver implements GroupDriver {
       const old = (lane.config.featureValues ?? {}) as Record<string, unknown>; const next = (config.featureValues ?? {}) as Record<string, unknown>;
       for (const id of new Set([...Object.keys(old), ...Object.keys(next)])) await agent.setFeature!(id, next[id] ?? (id === 'fast_mode' ? false : 'default'));
     }
-    if (instructionsChanged) await agent.updateInstructions!({ systemPrompt: String(config.systemPrompt ?? ''), mcpServers: (config.mcpServers ?? {}) as Record<string, unknown> });
+    if (instructionsChanged) await agent.updateInstructions!({ systemPrompt: String(config.systemPrompt ?? ''), mcpServers: (config.mcpServers ?? {}) as Record<string, unknown>,
+      ...(Object.hasOwn(config,'skillMounts') ? {skillMounts:config.skillMounts as Array<{directory:string}>} : {}) });
   }
   async stop(lane: GroupLane) {
     const receipt=lane.dispatch;

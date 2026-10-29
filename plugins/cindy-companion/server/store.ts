@@ -22,6 +22,9 @@ import type { GroupPlanSettings } from '../shared/group-plans';
 import type { SavedPlanRequest } from './group-plan-organizer';
 import type { SessionScope } from '../shared/session-scope';
 import { taskNeedsSettlement, type SavedCompanionTask } from './companion-tasks';
+import type { SavedGroupMedia } from './group-media';
+import type { SavedGroupOutbox } from './group-outbox';
+import type { NativeSkillsIntent } from './native-skills';
 
 export interface Binding {
   agentId: string; workspaceId?: string; operationId: string; phase: 'creating' | 'ready' | 'unknown';
@@ -29,6 +32,10 @@ export interface Binding {
   appliedVersion: number | null; appliedCapabilities: CompanionCapabilities; error?: string;
   appliedProfile?: CompanionProfile;
   sessionScope?: SessionScope;
+  desiredSkills?: NativeSkillsIntent;
+  appliedSkills?: NativeSkillsIntent;
+  skillsSupported?: boolean;
+  skillsError?: { code: string; message: string };
 }
 interface ProfileVersion { version: number; at: number; profile: CompanionProfile }
 export interface SavedState {
@@ -40,6 +47,11 @@ export interface SavedState {
   historyRevision?: number;
   groupHistory?: Record<string, SavedGroupHistory>;
   groupThreads?: Record<string, SavedGroupThread>;
+  groupMedia?: Record<string, SavedGroupMedia>;
+  groupMediaKeys?: Record<string, string>;
+  groupMediaCancelKeys?: Record<string, string>;
+  groupOutbox?: Record<string, SavedGroupOutbox>;
+  outboxSequence?: number;
   groupCreateKeys?: Record<string, { groupId: string; fingerprint: string }>;
   groupPlans?: Record<string,SavedGroupWorkPlan>;
   groupPlanSettings?: Record<string,GroupPlanSettings>;
@@ -118,6 +130,11 @@ export class CompanionStore {
       const draft = structuredClone(this.state); draft.historyRevision = (this.state.historyRevision ?? 0) + 1; const result = await run(draft);
       await this.persist(draft); this.state = draft; return structuredClone(result);
     });
+  }
+  /** Hold ownership stable during a filesystem read/index build without rewriting the state journal. */
+  async withSnapshot<T>(run: (state: SavedState) => T | Promise<T>): Promise<T> {
+    await this.load();
+    return this.serial(async () => structuredClone(await run(structuredClone(this.state))));
   }
   async snapshot(): Promise<SavedState> { await this.load(); await this.queue.catch(() => {}); return structuredClone(this.state); }
   async list(): Promise<CompanionProfile[]> { return Object.values((await this.snapshot()).profiles); }

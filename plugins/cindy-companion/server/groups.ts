@@ -12,6 +12,7 @@ import { NativeGroupDriver, prepareLaneDispatch, stopFailureCode, type GroupDriv
 import { botId, CompanionError, record, string, throwIpcError } from './errors';
 import { untrustedJsonBlock } from './vendor/untrustedPrompt';
 import { botGroupQuoteExcerpt } from '../shared/vendor/botGroupQuote';
+import { adoptGroupMedia, parseMediaInputs, pinGroupMedia, retireGroupMedia } from './group-media';
 
 export interface SavedGroup {
   id: string; name: string; description: string; botIds: string[]; replyMode: 'all' | 'mentioned';
@@ -24,6 +25,10 @@ export interface SavedGroup {
   threadContext?: { groupId: string; rootId: string; root: GroupMessage };
 }
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+export function groupSendFingerprint(text:string,tracked:BotGroupTrackedMention[],quoteId?:string,attachments:Array<{mediaId:string;sha256?:string}>=[]){
+  const parts:unknown[]=quoteId?[text,tracked,{quoteId}]:[text,tracked];
+  if(attachments.length)parts.push({attachments});return digest(parts);
+}
 const active = (status: string) => ['queued', 'running', 'permission', 'stopping'].includes(status);
 export function parseTrackedMentions(input:unknown):BotGroupTrackedMention[]{
   if(input===undefined)return[];
@@ -48,7 +53,7 @@ function publicFailure(error: unknown): string {
   if(code==='unsupported_capability')return 'HOST_UPGRADE_REQUIRED';
   if((error as {dispatchOutcome?:string})?.dispatchOutcome==='unknown')return 'ADMISSION_OUTCOME_UNKNOWN';
   return ['RUNTIME_TIMEOUT', 'GROUP_LANE_BUSY', 'GROUP_LANE_MISSING', 'GROUP_LANE_MISMATCH', 'REPLY_NOT_CONFIRMED', 'STOP_NOT_CONFIRMED',
-    'ADMISSION_OUTCOME_UNKNOWN','PROVIDER_ADMISSION_UNAVAILABLE','GROUP_STOP_REQUIRES_NATIVE', 'CONNECTION_LOST', 'CAPABILITY_NOT_APPLIED', 'PERMISSION_MODE_UNAVAILABLE', 'PROVIDER_UNAVAILABLE', 'BACKGROUND_UNSUPPORTED', 'HOST_UPGRADE_REQUIRED', 'MEMBER_UNAVAILABLE'].includes(code ?? '') ? code! : 'RUNTIME_ERROR';
+    'ATTACHMENT_INPUT_UNAVAILABLE','ADMISSION_OUTCOME_UNKNOWN','PROVIDER_ADMISSION_UNAVAILABLE','GROUP_STOP_REQUIRES_NATIVE', 'CONNECTION_LOST', 'CAPABILITY_NOT_APPLIED', 'PERMISSION_MODE_UNAVAILABLE', 'PROVIDER_UNAVAILABLE', 'BACKGROUND_UNSUPPORTED', 'HOST_UPGRADE_REQUIRED', 'MEMBER_UNAVAILABLE'].includes(code ?? '') ? code! : 'RUNTIME_ERROR';
 }
 function groupLanes(state:SavedState,id:string):GroupLane[]{return [...Object.values(execution(state,id)!.lanes),...Object.values(state.groupThreads??{}).filter(thread=>thread.groupId===id).flatMap(thread=>Object.values(thread.execution.lanes)),...Object.values(state.groupPlans??{}).filter(plan=>plan.view.groupId===id).flatMap(plan=>[...Object.values(plan.lanes),...plan.retiredLanes??[]]),...Object.values(state.groupPlanRequests??{}).filter(request=>request.view.groupId===id&&request.lane).map(request=>request.lane!)];}
 function roundOf(group: SavedGroup) { return (group.activeRoundId ? group.rounds.find(round => round.id === group.activeRoundId) : group.rounds.at(-1)) ?? null; }
@@ -89,6 +94,7 @@ export function groupTurnPrompt(group: SavedGroup, round: GroupRound, position: 
   };
   const main = group.messages.filter(message => message.sequence < source.sequence && message.kind === 'message').slice(-12)
     .map(message => ({ from: message.authorName, kind: message.authorKind, text: message.deleted ? '' : message.content.length > 600 ? `${message.content.slice(0, 600)}…` : message.content,
+      ...(!message.deleted&&message.attachments?.length?{attachments:message.attachments.map(a=>({name:a.name,mimeType:a.mimeType,nativeInput:'not_provided'}))}:{}),
       ...(message.deleted ? { deleted: true } : quoteContext(message)), ...(message.threadShareRef ? { sharedReplyId: message.threadShareRef.messageId } : {}) }));
   return [
     'You are participating as yourself in a Cindy group chat. Reply to the current request (currentRequest) addressed to you.',
@@ -166,7 +172,7 @@ export class CompanionGroups {
   async ensureRecovered(paseo: Paseo): Promise<void> { await this.init(paseo); }
   private project(group: SavedGroup, state: SavedState): GroupSummary {
     return { id: group.id, name: group.name, description: group.description, replyMode: group.replyMode, revision: group.revision,
-      createdAt: group.createdAt, updatedAt: group.updatedAt, lastMessage: group.messages.findLast(message => message.kind !== 'round-end' && Boolean(message.content)), round: roundOf(group),
+      createdAt: group.createdAt, updatedAt: group.updatedAt, lastMessage: group.messages.findLast(message => message.kind !== 'round-end' && Boolean(message.content||message.attachments?.length)), round: roundOf(group),
       ...(group.mutation?{mutation:group.mutation}:{}),
       cleanupPending:groupLanes(state,group.id).filter(lane=>lane.cleanupPending).map(lane=>({agentId:lane.agentId,title:lane.title,code:lane.cleanupCode??'GROUP_ARCHIVE_REQUIRES_NATIVE'})),
       pendingReplies: group.rounds.filter(round => round.id !== roundOf(group)?.id && ['queued', 'waiting'].includes(round.status)),
@@ -243,25 +249,27 @@ export class CompanionGroups {
   async send(paseo: Paseo, id: string, args: Record<string, unknown>, sourceMessageId?:string) {
     await this.init(paseo);
     groupIn(await this.store.snapshot(),id);
-    const text = string(args.text, 'group message', 32000); if (text.length > 8000) throwIpcError('INVALID_PARAMS', 'Group messages are limited to 8000 characters');
+    const attachments=parseMediaInputs(args.attachments);
+    const text = string(args.text, 'group message', 32000,true); if (text.length > 8000||(!text.trim()&&!attachments.length)) throwIpcError('INVALID_PARAMS', 'A group message needs text or attachments and is limited to 8000 characters');
     const requestKey = digest(string(args.clientMessageId, 'clientMessageId', 200));
     const tracked=parseTrackedMentions(args.trackedMentions);
     const quoteInput = args.quote === undefined ? undefined : record(args.quote);
     if (quoteInput && Object.keys(quoteInput).some(key => key !== 'messageId')) throwIpcError('INVALID_PARAMS', 'A quote accepts only a message ID');
     const quoteId = quoteInput ? string(quoteInput.messageId, 'quoted message ID', 100) : undefined;
-    const fingerprint = digest(quoteId ? [text, tracked, { quoteId }] : [text, tracked]);
     const value = await this.serial(id, () => this.store.transaction(state => {
       const group = groupIn(state, id); const receipt = group.receipts[requestKey];
+      const frozen=receipt?group.messages.find(message=>message.id===receipt.messageId)?.attachments:undefined;
+      const fingerprint=groupSendFingerprint(text,tracked,quoteId,attachments.map(item=>({mediaId:item.mediaId,sha256:receipt?frozen?.find(a=>a.mediaId===item.mediaId)?.sha256:state.groupMedia?.[item.mediaId]?.sha256})));
       if (receipt) {
         if (receipt.fingerprint !== fingerprint) throwIpcError('IDEMPOTENCY_CONFLICT', 'Message key belongs to different content');
         return { accepted: true as const, message: group.messages.find(message => message.id === receipt.messageId)!, round: group.rounds.find(round => round.id === receipt.roundId) ?? null };
       }
-      if (group.threadContext && quoteId) throwIpcError('INVALID_PARAMS', 'Topics do not accept quoted replies');
+      if (group.threadContext && (quoteId||attachments.length)) throwIpcError('INVALID_PARAMS', 'Topics accept text and mentions only');
       const quoted = quoteId ? group.messages.find(message => message.id === quoteId) : undefined;
       if (quoteId && (!quoted || quoted.deleted || quoted.kind !== 'message' || quoted.authorKind === 'system' || quoted.threadRootId || quoted.threadShareRef))
         throwIpcError('QUOTE_UNAVAILABLE', 'The quoted main-group message is unavailable');
       const quote = quoted ? { messageId: quoted.id, authorKind: quoted.authorKind as 'user' | 'bot', authorName: quoted.authorName,
-        excerpt: botGroupQuoteExcerpt(quoted.content), attachmentCount: 0, attachmentName: null, sequence: quoted.sequence } : undefined;
+        excerpt: botGroupQuoteExcerpt(quoted.content), attachmentCount: quoted.attachments?.length??0, attachmentName: quoted.attachments?.[0]?.name??null, sequence: quoted.sequence } : undefined;
       if(Object.values(state.groupPlanRequests??{}).some(request=>request.view.groupId===id&&['planning','unknown'].includes(request.view.status)))throwIpcError('PLAN_OPEN','The organizer is still arranging work');
       const current = roundOf(group);
       const members = group.botIds.map(botId => ({ botId, name: state.profiles[botId]?.name ?? botId }));
@@ -274,6 +282,7 @@ export class CompanionGroups {
       if(responders.length&&!mentions.all&&!mentions.botIds.length&&Object.values(state.groupPlans??{}).some(plan=>plan.view.groupId===id&&['proposed','running','waiting'].includes(plan.view.status)))throwIpcError('PLAN_OPEN','Send this addition to the current work arrangement');
       if (responders.length && current && (current.status === 'unknown' || current.status === 'stopping')) throwIpcError('GROUP_BUSY', 'The current discussion stop must be confirmed before sending another request');
       for (const id of responders) { const p = state.profiles[id]; if (!p || p.status !== 'active' || !p.enabled) throwIpcError('MEMBER_UNAVAILABLE', 'A responding companion is unavailable'); }
+      if(attachments.length&&responders.length&&current&&active(current.status))throwIpcError('ATTACHMENT_ROUTE_UNSUPPORTED','Attachments cannot be added to an active discussion; keep the draft until it finishes');
       if (responders.length && current && active(current.status) && !mentions.all && mentions.botIds.length === 0) {
         const message = append(state, group, { authorKind: 'user', authorName: 'You', kind: 'message', content: text, mentions, roundId: current.id,
           delivery: 'deferred', code: 'HOST_UPGRADE_REQUIRED', ...(quote ? { quote } : {}) });
@@ -287,6 +296,7 @@ export class CompanionGroups {
       const existing=sourceMessageId?group.messages.find(message=>message.id===sourceMessageId&&message.authorKind==='user'&&message.content===text):undefined;
       if(sourceMessageId&&!existing)throwIpcError('NOT_FOUND','Planning source message not found');
       const message = existing??append(state, group, { authorKind: 'user', authorName: 'You', kind: 'message', content: text, mentions, ...(quote ? { quote } : {}), ...(roundId ? { roundId } : {}) });
+      if(attachments.length){message.attachments=pinGroupMedia(state,id,attachments,`message:${message.id}`);adoptGroupMedia(state,id,attachments);}
       if(existing){existing.mentions=mentions;existing.roundId=roundId;}
       const round: GroupRound | null = roundId ? { id: roundId, sourceMessageId: message.id, status: 'queued', kind: sideReply || responders.length === 1 ? 'reply' : 'talk', steps: responders.map(botId => ({ botId, botName: state.profiles[botId]!.name, status: 'queued' })), position: 0, autoThrough: sideReply ? responders.length : Math.min(5, responders.length), createdAt: Date.now(), updatedAt: Date.now() } : null;
       if (round) { group.rounds.push(round); if (sideReply) (group.pendingRoundIds ??= []).push(round.id); else group.activeRoundId = round.id; }
@@ -345,6 +355,10 @@ export class CompanionGroups {
       const p = state.profiles[step.botId];
       try {
         if (!p || !p.enabled || p.status !== 'active' || !group.botIds.includes(p.id)) throwIpcError('MEMBER_UNAVAILABLE', 'Companion unavailable');
+        const input=group.messages.find(message=>message.id===round.sourceMessageId);
+        const quoted=input?.quote?group.messages.find(message=>message.id===input.quote!.messageId&&!message.deleted):undefined;
+        if(input?.attachments?.length||quoted?.attachments?.length||group.threadContext?.root.attachments?.length)
+          throwIpcError('ATTACHMENT_INPUT_UNAVAILABLE','Attachments are saved in the conversation; this runtime cannot safely dispatch their native input');
         // Production talk cards own a talkPlanId lane. A one-recipient main-group
         // reply retains its ordinary bot × group lane across user requests.
         const main = Boolean(group.threadContext) || round.kind === 'reply' || round.steps.length === 1;
@@ -416,6 +430,10 @@ export class CompanionGroups {
           const code = stopCode??publicFailure(error);
           Object.assign(r.steps[index]!, { status: stopped ? 'failed' : 'unknown', code }); r.code = code;
           append(state, g, { authorKind: 'system', authorName: 'System', kind: 'notice', content: `${step.botName} could not complete this turn.`, roundId, code });
+          if(code==='ATTACHMENT_INPUT_UNAVAILABLE'){
+            for(const other of r.steps)if(other.status==='queued')Object.assign(other,{status:'failed',code});
+            r.status='failed';r.updatedAt=Date.now();return activateNext(g);
+          }
           // A failed teammate does not silence other members. An unconfirmed native
           // stop is different: it cannot safely release the single-speaker slot.
           r.updatedAt = Date.now();
@@ -486,6 +504,7 @@ export class CompanionGroups {
     return this.serial(id, async () => {
       const state=await this.store.transaction(state=>{
       const group=groupIn(state,id,true);
+      if(Object.values(state.groupOutbox??{}).some(item=>item.view.groupId===id&&['sending','unknown'].includes(item.view.status)))throwIpcError('OUTBOX_OUTCOME_UNKNOWN','Reconcile pending message reception before deleting this group');
       if (Object.values(state.groupThreads ?? {}).some(thread => thread.groupId === id && thread.execution.rounds.some(round => active(round.status) || round.status === 'unknown')))
         throwIpcError('GROUP_BUSY', 'Stop active topic replies before deleting the group');
       if(Object.values(state.companionTasks??{}).some(task=>task.owner.scope.groupId===id&&taskNeedsSettlement(task)))throwIpcError('TASK_BUSY','Stop delegated work before deleting this group');
@@ -496,7 +515,10 @@ export class CompanionGroups {
       });
       const group=state.groups![id]!;
       const failures=await this.reconcileCleanup(paseo,id,groupLanes(state,id));if(failures.length)throw failures[0];
-      await this.store.transaction(state => { const g = groupIn(state, id,true); g.deletedAt = Date.now(); g.revision++;delete g.mutation; });
+      await this.store.transaction(state => { const g = groupIn(state, id,true); g.deletedAt = Date.now(); g.revision++;delete g.mutation;
+        for(const item of Object.values(state.groupOutbox??{}))if(item.view.groupId===id&&!['sent','discarded'].includes(item.view.status)){item.view.status='discarded';item.view.recovery='none';item.view.revision++;item.view.updatedAt=Date.now();}
+        retireGroupMedia(state,id);
+      });
       return { deleted: true as const, groupId: id };
     });
   }

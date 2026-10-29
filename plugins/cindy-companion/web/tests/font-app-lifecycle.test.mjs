@@ -6,7 +6,7 @@ import { act, create } from 'react-test-renderer';
 import { build } from 'esbuild';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT=true;
-const host=globalThis.__FONT_APP_TEST__={events:[],fonts:[],adopted:[],init:null,root:null};
+const host=globalThis.__FONT_APP_TEST__={events:[],fonts:[],themes:[],adopted:[],init:null,root:null};
 const listeners=new Map();
 globalThis.window={addEventListener(type,fn){if(!listeners.has(type))listeners.set(type,new Set());listeners.get(type).add(fn);},removeEventListener(type,fn){listeners.get(type)?.delete(fn);}};
 globalThis.document={documentElement:{dataset:{}},getElementById(){return {};}};
@@ -35,9 +35,9 @@ const result=await build({entryPoints:[new URL('../app.tsx',import.meta.url).pat
   path.endsWith('/tooltip')?`export const Tooltip={Provider:({children})=>children};`:
   path.endsWith('/toast')?`export const ToastContainer=()=>null;export const toast={error:()=>{}};`:
   path.endsWith('/spinner')?`export const Spinner=()=>null;`:
-  path.endsWith('/theme-service')?`export const themeService={applyTheme:()=>{}};`:
-  path.endsWith('/default-dark')?`export const defaultDark={};`:
-  path.endsWith('/default-light')?`export const defaultLight={};`:
+  path.endsWith('/theme-service')?`export const themeService={applyTheme:theme=>globalThis.__FONT_APP_TEST__.themes.push(theme.id)};`:
+  path.endsWith('/cindy-dark')?`export const cindyDark={id:'cindy-dark'};`:
+  path.endsWith('/cindy-light')?`export const cindyLight={id:'cindy-light'};`:
   `export {};`)}));
 }}]});
 const module={exports:{}};new Function('require','module','exports',result.outputFiles[0].text)(createRequire(import.meta.url),module,module.exports);
@@ -61,5 +61,14 @@ test('real App mounts the original drawer only after the complete font load and 
  await act(async()=>host.fonts[0].resolve());
  assert.equal(renderer.root.findAllByType('original-drawer').length,1);assert.equal(host.adopted.length,1);
  assert.equal(listeners.get('keydown')?.size??0,0);
+ act(()=>renderer.unmount());
+});
+
+test('real App follows the pinned Cindy default family in both host modes',async()=>{
+ host.fonts=[];host.themes=[];let renderer;
+ await act(async()=>{renderer=create(host.root);});
+ await act(async()=>host.init({...init,theme:'dark'}));
+ await act(async()=>host.init({...init,theme:'light'}));
+ assert.deepEqual(host.themes,['cindy-dark','cindy-light']);
  act(()=>renderer.unmount());
 });

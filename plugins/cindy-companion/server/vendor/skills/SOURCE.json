@@ -1,0 +1,101 @@
+{
+  "repository": "https://github.com/makecindy/cindy",
+  "revision": "5f0b5f42b46969c3ac21b0cd798a07e36b46e8fd",
+  "files": [
+    {
+      "upstream": "apps/desktop/src/main/maker-ipc/botSkillStore.ts",
+      "local": "botSkillStore.ts",
+      "upstreamSha256": "eca2e2b2661e76ce1ab5bd163059e5676cda544801e22ffca64ba779d39ac1c4",
+      "localSha256": "e00c71c83e8dc2d46f9c62a546b45b05934086b87c1f0a7557ad0139d59c820c",
+      "changes": [
+        "Replace constructor parameter property with an explicit field for erasable TypeScript worker loading."
+      ]
+    },
+    {
+      "upstream": "apps/desktop/src/main/maker-ipc/botSkillFrontmatter.ts",
+      "local": "botSkillFrontmatter.ts",
+      "upstreamSha256": "8a43e640bb82ed58ccbed2056031a015e984fb7e5efa3323a88380b6fd677bee",
+      "localSha256": "132a50bdae1cd8c58e9fc1b3a666e524d30658c3c50382ff2c0138f31caf0bd5",
+      "changes": [
+        "Resolve scalar YAML through the existing gray-matter dependency seam; original scalar-reader logic is retained."
+      ]
+    },
+    {
+      "upstream": "apps/desktop/src/main/maker-ipc/botSkillRuntimeSource.ts",
+      "local": "botSkillRuntimeSource.ts",
+      "upstreamSha256": "07f5a0dca65e942442fa4a80d13f6f31a09b8f3e296db9191988343bb022446d",
+      "localSha256": "b9c1a1775fe50ec0ef405212223e84fb248926ec1b37d38d161ec0e33844f58c",
+      "changes": [
+        "Add an optional query-summary migration flag, preserving upstream default behavior; scoped read-only queries disable source migration."
+      ]
+    },
+    {
+      "upstream": "apps/desktop/src/main/maker-ipc/botSkillRuntimeProjection.ts",
+      "local": "botSkillRuntimeProjection.ts",
+      "upstreamSha256": "20f89333efef1923c1b05428634a64a07db3df62768cbee1385294cdc91479c8",
+      "localSha256": "20f89333efef1923c1b05428634a64a07db3df62768cbee1385294cdc91479c8",
+      "changes": []
+    },
+    {
+      "upstream": "apps/desktop/src/main/maker-ipc/botSkillRuntimeCache.ts",
+      "local": "botSkillRuntimeCache.ts",
+      "upstreamSha256": "ddc351003b8672eb768da4c2f02eb45b16d08ac946fb7de06c4bbf54a9796c2b",
+      "localSha256": "ddc351003b8672eb768da4c2f02eb45b16d08ac946fb7de06c4bbf54a9796c2b",
+      "changes": []
+    },
+    {
+      "upstream": "apps/desktop/src/main/maker-ipc/botSkillQueryIndex.ts",
+      "local": "botSkillQueryIndex.ts",
+      "upstreamSha256": "8876d1345338bd39e053c634cf89a11e6b059293493a8d2e708ce5419c44df73",
+      "localSha256": "8876d1345338bd39e053c634cf89a11e6b059293493a8d2e708ce5419c44df73",
+      "changes": []
+    },
+    {
+      "upstream": "apps/desktop/src/main/maker-ipc/__tests__/botSkillStore.test.ts",
+      "local": "../../companion-skills-store.test.ts",
+      "upstreamSha256": "7c4bb1367dfc0a380ffcfdc359f7b82ed082a1ad634902f5928d6e4a6a9cd388",
+      "localSha256": "aeb06a7d686f7008388da30cc3fe036ff360272f22241561b69c49323bafb60f",
+      "changes": [
+        "Only imports retargeted to this extracted module set."
+      ]
+    },
+    {
+      "upstream": "apps/desktop/src/main/maker-ipc/__tests__/botSkillRuntimeSource.test.ts",
+      "local": "../../companion-skills-runtimesource.test.ts",
+      "upstreamSha256": "cb7520c3c2ae03619f38bb5f08da3ca0e3765576e5eb14ea849ff33845fe68f7",
+      "localSha256": "915e1fb09928ea073fcb17fc215e32c75c8b67ae07a6cd95bb61714f1533977e",
+      "changes": [
+        "Module imports retargeted; unchanged js-yaml oracle loaded with a typed createRequire from the installed gray-matter dependency."
+      ]
+    },
+    {
+      "upstream": "apps/desktop/src/main/maker-ipc/__tests__/botSkillRuntimeProjection.test.ts",
+      "local": "../../companion-skills-runtimeprojection.test.ts",
+      "upstreamSha256": "7b9245c4cee98e7ba0bc2ff863924fbcb5ed7a5e1bf89bede48305487a98f8fa",
+      "localSha256": "457989cb112537e9b0ddb20aa3275b7cfe07c39efc0f7a6a60b112b1059216db",
+      "changes": [
+        "Module imports retargeted; fixture composition calls the actual extracted cache/projector/index.",
+        "Removed unrelated Pi/Codex config-builder assertions; no provider loading or Electron-service acceptance is claimed."
+      ]
+    },
+    {
+      "upstream": "apps/desktop/src/main/maker-ipc/__tests__/botSkillRuntimeCache.test.ts",
+      "local": "../../companion-skills-runtimecache.test.ts",
+      "upstreamSha256": "f8834a54e25c5fd080d67a7e57fa03c31c41cd720aa6e5c146455dfe37d5e670",
+      "localSha256": "644efb9a3b12c2777f7751a7954616fa83374be725bc6b95482dcbd7eca7cec1",
+      "changes": [
+        "Only imports retargeted to this extracted module set."
+      ]
+    },
+    {
+      "upstream": "apps/desktop/src/main/maker-ipc/__tests__/botSkillQueryIndex.test.ts",
+      "local": "../../companion-skills-queryindex.test.ts",
+      "upstreamSha256": "8f761ef3cfc09885802f283ee6d62861c7d3e1340d2117557c43550cc7a3f0d1",
+      "localSha256": "b1288860ce937f06ffa1a0d22c083cbf6316e9e0c5b89b05349905e356a3b1dc",
+      "changes": [
+        "Module imports retargeted; actual query index called directly instead of the unported Electron session service.",
+        "Electron owner-boundary case omitted; Paseo authority must be verified separately in adapter tests."
+      ]
+    }
+  ]
+}

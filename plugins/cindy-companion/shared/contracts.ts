@@ -32,6 +32,8 @@ export interface RuntimeState {
   state: 'not-created' | 'creating' | 'ready' | 'pending' | 'unknown' | 'error';
   code?: string; message?: string; active?: boolean;
   configuredModel: BotModelRoute | null; appliedModel: BotModelRoute | null;
+  skills?: { desiredToken: string; appliedToken: string | null; enabledCount: number;
+    status: 'none' | 'pending' | 'applied' | 'unavailable'; code?: string; message?: string };
 }
 export interface CompanionHome { name: string; local: true; transferSupported: false; directory: string }
 export interface BootstrapData {

@@ -2,7 +2,7 @@
 
 A port of Cindy's core companion experience into a Paseo plugin, including its Teammates sidebar, original settings, preset catalog, group discussion and work cards. The ongoing scope is faithful placement, styling and behavior across the [28-feature inventory](CORE_FEATURES.md). Paseo's native agents and conversations remain the execution and chat surfaces. The inventory is not yet complete.
 
-The original React settings components, styles, icons, avatar picker and memory logic come from [makecindy/cindy](https://github.com/makecindy/cindy), pinned to `118767c987f518286ae10a506a54287c3dc2a560`. Host adapters connect them to real Paseo agents and local companion data.
+The original React settings components, styles, icons, avatar picker and memory logic come from [makecindy/cindy](https://github.com/makecindy/cindy), pinned to `118767c987f518286ae10a506a54287c3dc2a560`. Host adapters connect them to real Paseo agents and local companion data. Personal skill storage/index/projection use the separately pinned `5f0b5f42b46969c3ac21b0cd798a07e36b46e8fd` source, with exact provenance under `server/vendor/skills/`.
 
 ## Use
 
@@ -30,8 +30,10 @@ Keep this checkout available while it is installed. Local directory installation
 | Identity and avatar | Original settings forms, presets, crop flow and local persistence. Existing sessions report pending changes when the host cannot update their instructions. |
 | Conversation | One stable canonical Paseo agent per companion; repeated clicks reuse it. Missing or archived agents are reported instead of silently replaced. |
 | Preset teammates | Ten original packages with durable invitation receipts, original skills/resources, authored welcome text and starter choices. Preset routines remain disabled until explicitly enabled. New market/create UI still requires installed acceptance. |
-| Group discussion and work | Persistent groups, reply modes, original work-plan/task-card components, shared plan work directories and frozen result-file receipts. Native admission, exact stopping and cleanup remain subject to the limits below; this second-wave source is not installed or live-verified. |
+| Group discussion and work | Persistent groups, reply modes, original work-plan/task-card components, shared plan work directories and frozen result-file receipts. Native admission, exact stopping and cleanup remain subject to the limits below; the newer source is not installed or live-verified. |
 | Companion tasks | Scoped task tools, persistent child/task ownership, queue/pause/resume/cancel state and original collaboration cards. Private parent completion delivery and named teammate direct messaging remain open. |
+| Personal Skills | Original complete library, scoped list/read/save tools, durable revisions and operation receipts, and the original Capabilities list with search and pagination. Existing sessions apply changed mounts only when the connected host SDK supports them and confirms a safe refresh. Current production hosts show saved/pending; external skill/MCP/toolset selection remains open. |
+| Attachments and outbox | Original group attachment presentation, verified chunk storage and durable draft/send/edit/cancel recovery. Native attachment input is not yet connected; it fails explicitly before dispatch. Thread replies remain text-only. |
 | Memory | Original file format and editing semantics, search, optimistic conflict checks, and MCP read/write tools. No Cindy account or cloud memory is copied. |
 | Model | Actual Paseo provider catalogs, model, thinking and speed options. Updating an existing session requires the proposed public Paseo configuration APIs. Cross-provider replacement and automatic model fallback are not implemented. |
 | Routines | Native Paseo schedules with one time trigger and a new task session. Other Cindy trigger and execution modes are rejected. |
@@ -40,7 +42,7 @@ Keep this checkout available while it is installed. Local directory installation
 | Capabilities and computer transfer | No claim of Cindy's capability isolation or remote computer migration. Unsupported operations return errors. |
 | Mobile | Teammate chat is available; the original HTML settings drawer currently requires desktop or web. |
 
-The accompanying [Paseo draft PR #8168](https://github.com/getpaseo/paseo/pull/8168) exposes generic agent configuration, schedules, navigation, current-agent header contributions and guarded turn operations. These changes belong in Paseo; companion storage and Cindy UI stay in this plugin. On older hosts, the teammate selection ring follows clicks; hosts with the new API keep it synchronized with native navigation. [Upstream-watch PR #2](https://github.com/CM-BF/open-paseo-plugins/pull/2) separately tracks Cindy and proposes future changes without implementing them automatically.
+The accompanying [Paseo draft PR #8168](https://github.com/getpaseo/paseo/pull/8168) exposes generic agent configuration, schedules, navigation, current-agent header contributions, guarded turn operations and per-agent native skill mounts. These changes belong in Paseo; companion storage and Cindy UI stay in this plugin. On older hosts, the teammate selection ring follows clicks; hosts with the new API keep it synchronized with native navigation. [Upstream-watch PR #2](https://github.com/CM-BF/open-paseo-plugins/pull/2) separately tracks Cindy and proposes future changes without implementing them automatically.
 
 Lost native acknowledgements remain uncertain across restart and are not inferred from an idle snapshot or automatically resent. An unavailable exact stop links to the recorded native conversation for manual action. Cleanup verifies an actual native archive; it never closes whichever user turn happens to be active. These are source-level guarantees under test, not production execution acceptance. See [PROGRESS.md](PROGRESS.md) for the exact installed source and remaining work.
 

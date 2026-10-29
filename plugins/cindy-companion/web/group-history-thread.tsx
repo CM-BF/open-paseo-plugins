@@ -15,16 +15,16 @@ import { SendButton } from '../vendor/renderer/components/new-chat/SendButton';
 import { useBotGroupMentionPicker } from '../vendor/renderer/features/bots/useBotGroupMentionPicker';
 import { BOT_GROUP_COMPOSER_CARD, BOT_GROUP_COMPOSER_DOCK, BOT_GROUP_COMPOSER_INPUT, BOT_GROUP_COMPOSER_FOOTER, fitBotGroupComposerInput, useRefitBotGroupComposerInputOnResize } from '../vendor/renderer/features/bots/botGroupComposerChrome';
 import { cn } from '../vendor/renderer/lib/utils';
-import { invoke, post, initValue } from './bridge';
+import { invoke, post } from './bridge';
 import { historyError } from './group-history-rpc';
 import { mergeHistoryMessages, observeHistory, useHistoryMutations } from './group-history-store';
 import { GroupHistoryMessageView } from './group-history-message';
 import { executionMessage } from '../shared/execution-notice';
 
+import { useGroupDraft } from './group-drafts';
+
 type Draft = { text: string; alsoSend: boolean; tracked: BotGroupTrackedMention[];
   attempt?: { signature: string; clientMessageId: string }; unposted: string[] };
-// Same iframe reopening retains the draft and lost-ACK ID; durable outbox is a separate next wave.
-const drafts = new Map<string, Draft>();
 const activeRound = (round: GroupRound | null | undefined) => ['queued', 'running', 'permission', 'stopping', 'unknown'].includes(round?.status ?? '');
 const visible = () => typeof document !== 'undefined' && document.visibilityState !== 'hidden' && document.hasFocus();
 
@@ -33,9 +33,7 @@ export function GroupHistoryThread({ groupId, rootId, focusMessageId, members, r
   onClose(): void; onChanged(): void; onRevealShare(messageId: string): void; resize?: ThreadPanelResize; obscured?: boolean;
 }) {
   const { t, i18n } = useTranslation();
-  const draftKey = `${initValue()?.host.id ?? ''}\u0000${groupId}\u0000${rootId}`;
-  if (!drafts.has(draftKey)) drafts.set(draftKey, { text: '', alsoSend: false, tracked: [], unposted: [] });
-  const draft = drafts.get(draftKey)!;
+  const draft = useRef<Draft>({text:'',alsoSend:false,tracked:[],unposted:[]}).current;
   const [text, setText] = useState(draft.text), [alsoSend, setAlsoSend] = useState(draft.alsoSend), [unposted, setUnposted] = useState(draft.unposted);
   const [data, setData] = useState<GroupThreadSnapshot | null>(null), [error, setError] = useState(''), [sending, setSending] = useState(false), [olderBusy, setOlderBusy] = useState(false);
   const alive = useRef(true), sendingRef = useRef(false), olderLock = useRef(false), stick = useRef(true), scroll = useRef<HTMLDivElement>(null), panel = useRef<HTMLElement>(null), textarea = useRef<HTMLTextAreaElement>(null);
@@ -53,8 +51,10 @@ export function GroupHistoryThread({ groupId, rootId, focusMessageId, members, r
   const mutation = useHistoryMutations(refresh, i18n.language);
   const mention = useBotGroupMentionPicker({ text, onTextChange: value => { draft.text = value; setText(value); }, members: members as BotGroupMemberView[], textareaRef: textarea,
     allLabels: ['all', 'everyone', '所有人', t('bots.groupChat.mention.all')] });
-  const restoredMentions = useRef(draft.tracked);
-  useEffect(() => { mention.setTracked(restoredMentions.current); }, []);
+  const savedDraft = useGroupDraft(groupId, { text, trackedMentions:mention.tracked, quote:null, division:false, attachments:[], topic:{alsoSend,unposted,attempt:draft.attempt} }, value => {
+    draft.text = value.text; draft.tracked = value.trackedMentions; draft.alsoSend = value.topic?.alsoSend ?? false; draft.unposted = value.topic?.unposted ?? []; draft.attempt = value.topic?.attempt;
+    setText(draft.text); mention.setTracked(draft.tracked); setAlsoSend(draft.alsoSend); setUnposted(draft.unposted);
+  }, rootId);
   useEffect(() => { draft.tracked = mention.tracked; }, [mention.tracked]);
   useEffect(() => {
     alive.current = true;
@@ -103,12 +103,14 @@ export function GroupHistoryThread({ groupId, rootId, focusMessageId, members, r
     draft.unposted = receipt ? draft.unposted.filter(id => id !== messageId) : [...new Set([...draft.unposted, messageId])]; setUnposted([...draft.unposted]);
   };
   const send = async () => {
-    if (readOnly || !data || sendingRef.current || !text.trim()) return;
+    if (!savedDraft.ready || readOnly || !data || sendingRef.current || !text.trim()) return;
     const requested = text, trackedMentions = mention.tracked, toMain = alsoSend;
     const signature = JSON.stringify({ text: requested, trackedMentions });
     if (draft.attempt?.signature !== signature) draft.attempt = { signature, clientMessageId: crypto.randomUUID() };
     sendingRef.current = true; setSending(true); setError('');
     try {
+      await savedDraft.replace({text:requested,trackedMentions,quote:null,division:false,attachments:[],topic:{alsoSend:toMain,unposted,attempt:draft.attempt}});
+      if (!alive.current) return;
       const receipt = await invoke<GroupHistorySendReceipt>('groups.threads.reply', { groupId, rootId, text: requested, trackedMentions, clientMessageId: draft.attempt.clientMessageId });
       if (!alive.current) return;
       if (receipt.message.threadRootId !== rootId) throw new Error('The host returned another topic reply.');
@@ -134,15 +136,15 @@ export function GroupHistoryThread({ groupId, rootId, focusMessageId, members, r
         </Fragment>; })}
       </div>}
     </div>
-    {(error || mutation.error) && <p role="alert" className="px-4 pt-3 text-13 text-[var(--error-fg)]">{error || mutation.error}</p>}
+    {(error || mutation.error || savedDraft.error) && <p role="alert" className="px-4 pt-3 text-13 text-[var(--error-fg)]">{error || mutation.error || savedDraft.error}</p>}
     {!!unposted.length && <div role="alert" className="mb-2 flex flex-wrap items-center gap-2 px-4 text-13 text-[var(--error-fg)]"><span>{t('bots.groupChat.server.thread.alsoSendFailed', { count: unposted.length })}</span><Button variant="secondary" size="sm" compact disabled={readOnly || mutation.pending.some(key => key.startsWith('share:'))} onClick={() => { for (const id of unposted) void share(id); }}>{t('bots.groupChat.server.thread.retryPost')}</Button></div>}
     {round?.code && <p role="status" className="px-4 text-12 text-[var(--text-secondary)]">{executionMessage(round.code, i18n.language)}</p>}
     {running?.agentId && <Button variant="secondary" tone="quiet" size="sm" onClick={() => post('navigate-agent', { agentId: running.agentId })}>{t('paseoGroups.openTask')}</Button>}
     {active && <Button variant="secondary" tone="quiet" size="sm" disabled={readOnly || mutation.pending.includes('stop') || round?.status === 'stopping'} onClick={stop}>{t('bots.groupChat.composer.stop')}</Button>}
     {round?.status === 'waiting' && <Button variant="secondary" tone="quiet" size="sm" disabled={readOnly || mutation.pending.includes('continue')} onClick={() => { if (!readOnly) void mutation.run('continue', 'groups.threads.continue', { groupId, rootId, roundId: round.id }); }}>{t('bots.groupChat.timeline.continue')}</Button>}
     <div className="border-t border-[var(--border-default)]"><div className={cn(BOT_GROUP_COMPOSER_DOCK, 'px-4')}>{mention.list}<div className={BOT_GROUP_COMPOSER_CARD}>
-      <textarea ref={textarea} rows={1} maxLength={8000} value={text} readOnly={readOnly || sending || !data} aria-label={t('bots.groupChat.composer.label')} placeholder={t('bots.groupChat.server.sendReply')} {...mention.textareaProps} onChange={event => mention.onChange(event.target.value)} onKeyDown={event => { if (event.nativeEvent.isComposing || event.keyCode === 229 || mention.onKeyDown(event)) return; if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} className={BOT_GROUP_COMPOSER_INPUT}/>
-      <div className={BOT_GROUP_COMPOSER_FOOTER}><button type="button" role="checkbox" aria-checked={alsoSend} disabled={sending || readOnly || !data} onClick={() => { draft.alsoSend = !alsoSend; setAlsoSend(!alsoSend); }} className="-ml-1.5 inline-flex min-h-7 min-w-0 select-none items-center gap-2 rounded-full px-1.5 text-13 text-[var(--text-secondary)] outline-none transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-50"><span aria-hidden className={cn('flex h-4 w-4 shrink-0 items-center justify-center rounded-full', alsoSend ? 'bg-[var(--accent-cta-bg-pure)] text-[var(--accent-pure-cta-fg)]' : 'border border-[var(--border-default)]')}>{alsoSend && <Check size={10} strokeWidth={3}/>}</span><span className="min-w-0 truncate">{t('bots.groupChat.server.thread.alsoSend')}</span></button><SendButton disabled={readOnly || sending || !text.trim() || !data} isStreaming={false} onClick={() => void send()}/></div>
+      <textarea ref={textarea} rows={1} maxLength={8000} value={text} readOnly={!savedDraft.ready || readOnly || sending || !data} aria-label={t('bots.groupChat.composer.label')} placeholder={t('bots.groupChat.server.sendReply')} {...mention.textareaProps} onChange={event => mention.onChange(event.target.value)} onKeyDown={event => { if (event.nativeEvent.isComposing || event.keyCode === 229 || mention.onKeyDown(event)) return; if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} className={BOT_GROUP_COMPOSER_INPUT}/>
+      <div className={BOT_GROUP_COMPOSER_FOOTER}><button type="button" role="checkbox" aria-checked={alsoSend} disabled={sending || readOnly || !data} onClick={() => { draft.alsoSend = !alsoSend; setAlsoSend(!alsoSend); }} className="-ml-1.5 inline-flex min-h-7 min-w-0 select-none items-center gap-2 rounded-full px-1.5 text-13 text-[var(--text-secondary)] outline-none transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-50"><span aria-hidden className={cn('flex h-4 w-4 shrink-0 items-center justify-center rounded-full', alsoSend ? 'bg-[var(--accent-cta-bg-pure)] text-[var(--accent-pure-cta-fg)]' : 'border border-[var(--border-default)]')}>{alsoSend && <Check size={10} strokeWidth={3}/>}</span><span className="min-w-0 truncate">{t('bots.groupChat.server.thread.alsoSend')}</span></button><SendButton disabled={!savedDraft.ready || readOnly || sending || !text.trim() || !data} isStreaming={false} onClick={() => void send()}/></div>
     </div></div></div>
   </ThreadPanel>;
 }

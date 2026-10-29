@@ -4,6 +4,14 @@
     "sha256": "12923c15beac4d20e2e12135e71cd2054e99c7aa3327645f0e042373e631dbcd"
   },
   {
+    "source": "../vendor/renderer/assets/cindy-logo-dark.png",
+    "sha256": "0811d76e0adf4d6bb81202ecaba85d9e8e38893fe559cccd80a59aaa5c359a3b"
+  },
+  {
+    "source": "../vendor/renderer/assets/cindy-logo-light.png",
+    "sha256": "25a0315baad1752e554e01dd05eec20c969693b9da83976dbe15395baf566ed4"
+  },
+  {
     "source": "assets/fonts/HarmonyOS_SansSC_Medium.ttf",
     "sha256": "7aa97804da2fc3802d116011b73ee25791303598718cc58dc49fedc9d63e5d2a"
   },

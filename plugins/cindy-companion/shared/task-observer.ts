@@ -9,7 +9,7 @@ function intentId() { return `task-${Date.now().toString(36)}-${(++intentSequenc
 /** Shared native/DOM adapter: monotonic reads, exact owner binding, durable mutation intents. */
 export function observeTask(data: TaskCardData, request: TaskRequest, emit: (value: TaskObservation) => void,
   options: { groupId?: string; current?: () => boolean; timers?: { set: typeof setTimeout; clear: typeof clearTimeout } } = {}) {
-  const timers = options.timers ?? { set: setTimeout, clear: clearTimeout };
+  const timers = options.timers ?? { set: setTimeout.bind(globalThis), clear: clearTimeout.bind(globalThis) };
   let disposed = false, reading = false, again = false, epoch = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let intent: { key: string; operationId: string } | null = null;

@@ -14,7 +14,7 @@ export function mergeHistoryMessages(previous: GroupHistoryMessage[], next: Grou
 }
 
 export function observeHistory<T extends { revision: number }>(read: () => Promise<T>, emit: (data: T) => void,
-  fail: (error: unknown) => void, timers = { set: setTimeout, clear: clearTimeout }) {
+  fail: (error: unknown) => void, timers = { set: setTimeout.bind(globalThis), clear: clearTimeout.bind(globalThis) }) {
   let disposed = false, inFlight = false, again = false, epoch = 0, revision = -1;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const readNow = async () => {

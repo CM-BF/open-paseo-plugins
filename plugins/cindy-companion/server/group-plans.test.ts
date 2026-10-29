@@ -70,6 +70,27 @@ it('failed execution requires an explicit retry with stable lane and new immutab
   const calls=vi.mocked(t.driver.reply).mock.calls;expect(calls[0]![0].agentId).toBe(calls[1]![0].agentId);expect(calls[0]![1].messageId).not.toBe(calls[1]![1].messageId);
   expect(calls[1]![1].prompt).toContain('Check what completed');
 });
+it('reconciles an unconfirmed creation with its original config before applying newer skills after real store reopen',async()=>{
+ const t=await setup();const old={provider:'codex/test',systemPrompt:'identity old',skillMounts:[{directory:'/same/mount'}],__cindyNativeSkills:{token:'source-old',enabledCount:1,mounts:[{directory:'/same/mount'}]}};
+ const next={...old,systemPrompt:'identity new',__cindyNativeSkills:{...old.__cindyNativeSkills,token:'source-new'}};
+ t.configFor.mockResolvedValue(old as never);const calls:string[]=[];let original:GroupLane|undefined;
+ vi.mocked(t.driver.ensure).mockImplementation(async lane=>{
+  calls.push(`ensure:${(lane.config.__cindyNativeSkills as {token:string}).token}`);
+  if(!original){original=structuredClone(lane);throw new Error('native created; ACK lost');}
+  expect(lane.operationId).toBe(original.operationId);expect(lane.config).toEqual(original.config);return{workspaceId:'workspace'};
+ });
+ const configure=vi.fn(async(lane:GroupLane,config:Record<string,unknown>)=>{
+  calls.push(`configure:${(config.__cindyNativeSkills as {token:string}).token}`);expect(lane.phase).toBe('ready');
+  expect(Object.values((await new CompanionStore(t.root).snapshot()).groupPlans!)[0]!.lanes.cindy!.config).toEqual(old);
+ });t.driver.configure=configure;
+ await t.create({start:true});await t.wait('waiting');expect(t.driver.reply).not.toHaveBeenCalled();await t.plans.close();
+ t.configFor.mockResolvedValue(next as never);const store=new CompanionStore(t.root),plans=new GroupPlans(store,{driver:t.driver,configFor:t.configFor,workDirectories:t.dirs});managers.push(plans);
+ const p=(await plans.list('team')).plans[0]!;await plans.action('retry',{groupId:'team',planId:p.id,expectedRevision:p.revision,operationId:'recover-same-create'});
+ await vi.waitFor(async()=>expect((await plans.list('team')).plans[0]!.steps[0]!.status).toBe('done'));
+ expect(calls).toEqual(['ensure:source-old','ensure:source-old','configure:source-new']);expect(t.driver.reply).toHaveBeenCalledOnce();
+ expect(vi.mocked(t.driver.reply).mock.calls[0]![0].config).toEqual(next);
+ expect(Object.values((await new CompanionStore(t.root).snapshot()).groupPlans!)[0]!.lanes.cindy!.config).toEqual(next);
+});
 it('stop is quick, waits for admitted creation, suppresses late replies, and requires unknown stop reconciliation',async()=>{
   const t=await setup();const entered=barrier<void>(),release=barrier<{workspaceId:string}>();
   vi.mocked(t.driver.ensure).mockImplementation(async()=>{entered.resolve();return release.promise;});vi.mocked(t.driver.stop).mockRejectedValueOnce(new Error('not stopped'));

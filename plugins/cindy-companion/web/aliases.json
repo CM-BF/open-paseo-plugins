@@ -2,6 +2,7 @@
   "features/bots/botStore": "bot-store.ts",
   "features/bots/paseoHostStatus": "host-status.tsx",
   "features/bots/useBotSettingsTarget": "settings-target.ts",
+  "features/bots/BotCapabilitySettings": "bot-capability-settings.tsx",
   "features/bots/companionCloudStore": "cloud.ts",
   "features/bots/cloudCompanionPresentation": "cloud.ts",
   "features/bots/useRemoteBots": "cloud.ts",

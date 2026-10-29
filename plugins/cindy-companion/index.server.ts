@@ -1,11 +1,15 @@
-import type { PluginServerContext } from '@getpaseo/plugin/server';
+import type { PluginHandlerContext, PluginServerContext } from '@getpaseo/plugin/server';
 import { bootstrapRpc, invokeRpc } from './shared/contracts';
 import { CompanionService } from './server/service';
 import { CompanionMcpServer } from './server/mcp';
 import { registerSessionTools } from './server/session-tools';
 
 export default function contribute(server: PluginServerContext) {
-  const service = new CompanionService();
+  // New hosts expose their already-connected SDK before the first UI request.
+  // Older hosts retain the local fallback, whose absent capability gates keep
+  // new native features explicitly unavailable rather than dropping config.
+  const hostPaseo = (server as PluginServerContext & { readonly paseo?: PluginHandlerContext['paseo'] }).paseo;
+  const service = new CompanionService(undefined, hostPaseo ? { paseoForTools: async () => hostPaseo } : {});
   const mcp = new CompanionMcpServer({ root: service.store.root,
     safePath: path => service.store.safePath(path), readProfile: id => service.store.get(id),
     invokeMemory: (id, op, args) => service.invokeMemoryTool(id, op, args),

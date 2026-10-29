@@ -301,3 +301,53 @@ test('task artifacts retain the frozen result receipt and await native navigatio
   assert.match(node.messages.at(-1).error, /Workspace changed/);
   act(() => renderer.unmount());
 });
+
+test('real frame keeps process drafts across group documents and isolates host/topic generations', async () => {
+  const state=setupFrame();let renderer;const group='draft-'+crypto.randomUUID();
+  const props=(host,groupId=group)=>({...state.props(host),init:{...state.props(host).init,view:'group',groupId}});
+  await act(async()=>{renderer=create(React.createElement(SettingsFrame,props('a')),{createNodeMock:state.createNodeMock})});
+  let n=0;const request=(node,op,args)=>{const id='draft-'+(++n);state.send(node,{type:'request',id,op:'paseo.groupDrafts.'+op,args:{groupId:group,...args}});return node.messages.find(x=>x.id===id)};
+  const a=state.nodes.at(-1),first=request(a,'get',{}).result.value;
+  const draft={text:'Unsent original',trackedMentions:[],quote:null,division:false,attachments:[]};
+  assert.equal(request(a,'save',{generation:first.generation,sequence:1,draft}).result.ok,true);
+  const topic=request(a,'get',{rootId:'root'}).result.value;
+  assert.equal(topic.draft,null);request(a,'save',{rootId:'root',generation:topic.generation,sequence:1,draft:{...draft,text:'Topic only'}});
+  act(()=>renderer.update(React.createElement(SettingsFrame,props('b'))));const b=state.nodes.at(-1);
+  assert.equal(request(b,'get',{}).result.value.draft,null);
+  const oldCount=a.messages.length;request(a,'save',{generation:first.generation,sequence:2,draft:{...draft,text:'Late old host'}});assert.equal(a.messages.length,oldCount);
+  act(()=>renderer.update(React.createElement(SettingsFrame,props('a'))));const reopened=state.nodes.at(-1),restored=request(reopened,'get',{}).result.value;
+  assert.equal(restored.draft.text,'Unsent original');assert.equal(request(reopened,'get',{rootId:'root'}).result.value.draft.text,'Topic only');
+  assert.match(request(reopened,'save',{generation:first.generation,sequence:999,draft:{...draft,text:'Stale generation'}}).error,/another view/);
+  const cleared=request(reopened,'discard',{generation:restored.generation}).result.value;
+  assert.match(request(reopened,'save',{generation:restored.generation,sequence:999,draft}).error,/another view/);
+  assert.equal(request(reopened,'get',{}).result.value.draft,null);assert.ok(cleared.generation>restored.generation);assert.equal(state.calls.length,0);
+  act(()=>renderer.unmount());
+});
+
+test('frame draft bridge rejects cross-group writes and unsealed local file data',async()=>{
+ const state=setupFrame();let renderer;const group='draft-'+crypto.randomUUID();const props={...state.props('a'),init:{...state.props('a').init,view:'group',groupId:group}};
+ await act(async()=>{renderer=create(React.createElement(SettingsFrame,props),{createNodeMock:state.createNodeMock})});const node=state.nodes.at(-1);
+ const req=(id,op,args)=>{state.send(node,{type:'request',id,op:'paseo.groupDrafts.'+op,args});return node.messages.find(x=>x.id===id)};
+ assert.match(req('cross','get',{groupId:'other'}).error,/another group/);
+ const generation=req('open','get',{groupId:group}).result.value.generation;
+ const draft={text:'x',trackedMentions:[],quote:null,division:false,attachments:[{mediaId:'opaque',name:'x',mimeType:'text/plain',size:1,category:'file',sha256:'a'.repeat(64),path:'/private/local',file:{bytes:'not retained'}}]};
+ assert.match(req('invalid','save',{groupId:group,generation,sequence:1,draft}).error,/completed attachment/);assert.equal(state.calls.length,0);
+ act(()=>renderer.unmount());
+});
+
+test('every real frame permits original submit forms while keeping an opaque origin and blocked top navigation', async () => {
+  const state = setupFrame(); let renderer;
+  for (const view of ['settings', 'teammate-create', 'group-create', 'presets', 'group']) {
+    const props = { ...state.props('a'), init: { ...state.props('a').init, view } };
+    await act(async () => {
+      if (renderer) renderer.update(React.createElement(SettingsFrame, props));
+      else renderer = create(React.createElement(SettingsFrame, props), { createNodeMock: state.createNodeMock });
+    });
+    const frame = renderer.root.findByType('iframe');
+    // Chromium blocks even React preventDefault submit handlers without allow-forms.
+    assert.deepEqual(new Set(frame.props.sandbox.split(/\s+/)), new Set(['allow-scripts', 'allow-downloads', 'allow-forms']));
+    assert.equal(frame.props.referrerPolicy, 'no-referrer');
+    assert.equal(frame.props.srcDoc, props.document);
+  }
+  act(() => renderer.unmount());
+});

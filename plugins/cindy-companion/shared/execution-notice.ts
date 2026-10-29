@@ -8,9 +8,11 @@ const keys = {
   HOST_RESTARTED: 'interrupted', PLUGIN_CLOSED: 'interrupted',
   REPLY_NOT_CONFIRMED: 'outcomeUnknown', CONNECTION_LOST: 'outcomeUnknown',
   GROUP_ARCHIVE_REQUIRES_NATIVE: 'nativeArchive', CLEANUP_NOT_CONFIRMED: 'cleanupUnknown',
+  ATTACHMENT_INPUT_UNAVAILABLE: 'attachmentUnavailable',
 } as const;
 const messages = {
   en: {
+    attachmentUnavailable: 'The message and its attachments are saved in this group. This runtime cannot pass these attachments to the teammate yet, so the teammate has not received this input.',
     upgrade: 'This input has not been sent. The current runtime cannot safely start this work. Your request is kept; you can try again later.',
     busy: 'This input has not been sent because the task session is busy. Its current work has not been interrupted.',
     admissionUnknown: 'This input may have been sent, but the host has not confirmed it. Open the task to check; do not send another copy.',
@@ -25,6 +27,7 @@ const messages = {
     failed: 'This action could not be completed. Open the task session to check its state and details.',
   },
   'zh-CN': {
+    attachmentUnavailable: '消息和附件已保存在群里。当前运行环境还不能把这些附件传给伙伴，因此这条内容尚未送入伙伴的模型。',
     upgrade: '这条内容尚未发送。当前运行环境尚未提供安全启动能力；请求已保留，可稍后重试。',
     busy: '这条内容尚未发送，因为任务会话正在忙。会话中原有的工作没有被打断。',
     admissionUnknown: '这条内容可能已经发送，但主机尚未确认。请打开任务核对，不要重复发送。',

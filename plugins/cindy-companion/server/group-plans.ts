@@ -229,26 +229,29 @@ export class GroupPlans {
         const config=await this.deps.configFor(step.botId,saved.directory!.workDir,sessionScope);
         if(signal.aborted)return;
         let lane=saved.lanes[step.botId];
-        if(lane&&hash(lane.config)!==hash(config)){
-          if(!this.deps.driver.configure)throwIpcError('HOST_UPGRADE_REQUIRED','This host cannot refresh the existing work session');
-          await this.deps.driver.configure(lane,config);
-        }
         const before=await this.directories.snapshot(saved.directory!);
         const prepared=await this.transaction(s=>{
           const current=s.groupPlans![id]!;if(current.view.execution.state==='stopping')return null;
           available(s,groupAt(s,p.groupId),step.botId);
           const lane=current.lanes[step.botId]??={agentId,sessionScope,operationId:randomUUID(),groupId:p.groupId,roundId:p.id,botId:step.botId,
             cwd:current.directory!.workDir,title:`${step.botName} · ${groupAt(s,p.groupId).name} · 分工`,config,phase:'creating'};
-          lane.config=config;lane.sessionScope=sessionScope;
           const attempt:PlanAttempt={id:randomUUID(),position,botId:step.botId,agentId:lane.agentId,cwd:lane.cwd,messageId:randomUUID(),noteIds:current.notes.filter(n=>!n.consumed).map(n=>n.id),phase:'preparing',before:[...before]};
           lane.dispatch=prepareLaneDispatch(attempt.messageId);attempt.dispatch=lane.dispatch;
           current.attempts.push(attempt);current.view.execution={state:'preparing'};touch(current.view);
           return{lane,attempt};
         });
         if(!prepared||signal.aborted)return;lane=prepared.lane;attempt=prepared.attempt;
+        // A lost creation ACK must replay the immutable original config first.
+        // Updating that config under the old creation key would change its intent.
         const ensured=await this.deps.driver.ensure(lane);
-        await this.transaction(s=>{const current=s.groupPlans![id]!;const stored=current.lanes[step.botId]!;stored.phase='ready';stored.workspaceId=ensured.workspaceId;
-          current.view.steps[position]!.agentId=stored.agentId;current.view.steps[position]!.workspaceId=stored.workspaceId;});
+        lane=await this.transaction(s=>{const current=s.groupPlans![id]!;const stored=current.lanes[step.botId]!;stored.phase='ready';stored.workspaceId=ensured.workspaceId;
+          current.view.steps[position]!.agentId=stored.agentId;current.view.steps[position]!.workspaceId=stored.workspaceId;return stored;});
+        if(signal.aborted)return;
+        if(hash(lane.config)!==hash(config)){
+          if(!this.deps.driver.configure)throwIpcError('HOST_UPGRADE_REQUIRED','This host cannot refresh the existing work session');
+          await this.deps.driver.configure(lane,config);
+        }
+        lane=await this.transaction(s=>{const stored=s.groupPlans![id]!.lanes[step.botId]!;stored.config=config;stored.sessionScope=sessionScope;return stored;});
         if(signal.aborted)return;
         state=await this.snapshot();saved=state.groupPlans![id]!;step=saved.view.steps[position]!;
         const noteSet=new Set(attempt.noteIds),notes=saved.notes.filter(n=>noteSet.has(n.id));

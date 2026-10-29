@@ -1,0 +1,11 @@
+# Cindy personal skill modules
+
+Extracted from `makecindy/cindy` at `5f0b5f42b46969c3ac21b0cd798a07e36b46e8fd`, with per-file original and local hashes in `SOURCE.json`. The repository's upstream Apache license and NOTICE remain at the plugin root. This newer source is intentionally separate from the earlier renderer baseline.
+
+The original store, metadata reader, streamed summaries, byte-bounded native projection, runtime cache and query index are retained. The store's error class uses an explicit field instead of a TypeScript parameter property. The metadata parser resolves its isolated YAML scalar through the plugin's existing gray-matter dependency; its original parsing logic is unchanged. The summary iterator accepts an optional migration flag so read-only session queries preserve original files. Its default and trusted native projection retain upstream migration behavior. Projection, cache and query index remain byte-identical to upstream.
+
+Five original real-filesystem test files are adapted. Store/cache tests only retarget imports. Stream tests retain the installed js-yaml parser as their independent expected-value oracle. Query/projection tests call the extracted modules directly instead of the unported Electron service; the Electron authority case and unrelated Pi/Codex configuration assertions are omitted. These tests do not establish Paseo authority or provider loading. Every test adaptation is recorded in `SOURCE.json`.
+
+These are internal storage and projection primitives, not public RPC handlers. Profile/session authority, path admission, deletion coordination, mutation receipts and shutdown draining belong to the Paseo service adapter. Projection of native skill mounts does not establish that a provider loaded them. Current public Paseo APIs do not supply verified per-agent skill mounts; no global skill directory or provider configuration is modified by this extraction.
+
+The modules live under `server/vendor/skills/` because Paseo production modules must belong to `client/`, `server/` or `shared/`. This placement change preserves all six module bytes; only consuming imports and the test provenance paths change.
