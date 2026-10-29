@@ -1,0 +1,85 @@
+<style>
+.conversation{max-width:1180px;margin:auto;padding:38px 38px 60px;color:var(--host-ink);font-family:system-ui,-apple-system,"PingFang SC",sans-serif;line-height:1.65}.conversation *{box-sizing:border-box}.conversation h1{font-size:38px;font-weight:550;letter-spacing:-.045em;line-height:1.2;margin:0 0 12px}.conversation h2{font-size:20px;font-weight:550;letter-spacing:-.02em;margin:0 0 8px}.conversation p{margin:0 0 14px}.conversation .muted{color:var(--host-ink-3);font-size:13px}.conversation .intro{max-width:680px;font-size:15px;margin-bottom:32px}.conversation .workspace{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:34px;align-items:stretch}.conversation .playground{min-width:0}.conversation .drawing{background:var(--host-raised);border:1px solid var(--host-line);border-radius:16px;margin:20px 0 14px;overflow:hidden}.conversation svg{display:block;width:100%;height:auto;touch-action:none}.conversation svg .handle{fill:var(--host-sheet);stroke:var(--host-iris);stroke-width:2;cursor:grab;outline:none}.conversation svg .handle:active{cursor:grabbing}.conversation svg .handle:focus-visible{stroke:var(--host-ink);stroke-width:4}.conversation button{font:inherit;font-size:13px;padding:9px 13px;border:1px solid var(--host-line-strong);border-radius:7px;color:var(--host-ink);background:var(--host-sheet);cursor:pointer}.conversation button:hover{border-color:var(--host-iris)}.conversation button:focus-visible,.conversation textarea:focus-visible,.conversation input:focus-visible{outline:2px solid var(--host-iris);outline-offset:3px}.conversation button:disabled{opacity:.55;cursor:wait}.conversation .controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:12px}.conversation .controls label{display:flex;gap:8px;align-items:center}.conversation input[type=range]{width:100px;accent-color:var(--host-iris)}.conversation .plain{border:0;padding:8px 0;background:transparent;color:var(--host-iris-ink)}.conversation .reply{padding:24px;border:1px dashed var(--host-line-strong);border-radius:16px;min-height:320px;display:flex;flex-direction:column;justify-content:center}.conversation .reply p{max-width:34em}.conversation .reply .hint{font-size:15px}.conversation .reply-actions{display:flex;gap:12px;flex-wrap:wrap}.conversation .message{border-top:1px solid var(--host-line);margin-top:32px;padding-top:24px;display:grid;grid-template-columns:210px 1fr;gap:24px}.conversation textarea{resize:vertical;display:block;width:100%;min-height:90px;border:1px solid var(--host-line-strong);border-radius:9px;padding:13px 15px;background:var(--host-sheet);color:var(--host-ink);font:inherit;font-size:14px}.conversation textarea::placeholder{color:var(--host-ink-3)}.conversation .message-footer{display:flex;justify-content:space-between;gap:18px;align-items:center;margin-top:10px}.conversation .send{background:var(--host-iris);color:var(--host-on-ink);border-color:var(--host-iris);white-space:nowrap}.conversation #send-status{font-size:12px;color:var(--host-ink-3);margin:0}.conversation .footer{margin-top:30px;font-size:12px;color:var(--host-ink-3)}@media(max-width:760px){.conversation{padding:26px 20px}.conversation h1{font-size:31px}.conversation .workspace,.conversation .message{grid-template-columns:1fr}.conversation .reply{min-height:230px}.conversation .message{gap:10px}}
+</style>
+<main class="conversation" id="conversation">
+  <h1>我们在这里继续。</h1>
+  <p class="intro">这张画布可以边聊边变。你指一个地方、提出一个想法，我把解释或修改放回那个位置。</p>
+  <div class="workspace">
+    <section class="playground" id="playground">
+      <h2>先动手试一下</h2>
+      <p class="muted">拖动三个点，改变曲线。这只是可交互的草稿，内容随时可以换。</p>
+      <div class="drawing">
+        <svg id="curve-scene" viewBox="0 0 760 300" role="group" aria-label="曲线草稿。可拖动三个控制点，也可聚焦控制点后用方向键移动。">
+          <path id="guide" fill="none" stroke="var(--host-line-strong)" stroke-dasharray="4 7"/>
+          <path id="curve" fill="none" stroke="var(--host-iris)" stroke-width="3"/>
+          <circle id="traveler" r="7" fill="var(--host-ink)" pointer-events="none"/>
+          <circle class="handle" data-point="0" r="13" tabindex="0" role="button" aria-label="起点，用方向键移动"/>
+          <circle class="handle" data-point="1" r="13" tabindex="0" role="button" aria-label="控制点，用方向键移动"/>
+          <circle class="handle" data-point="2" r="13" tabindex="0" role="button" aria-label="终点，用方向键移动"/>
+          <text x="28" y="275" fill="var(--host-ink-3)" font-size="12">拖动 / 调节 / 暂停</text>
+        </svg>
+      </div>
+      <div class="controls"><button id="toggle-motion" type="button">暂停</button><label>速度 <input id="motion-speed" aria-label="动画速度" type="range" min="0.2" max="2" step="0.1" value="1"><output id="speed-label">1×</output></label><button id="reset-curve" type="button" class="plain">重置曲线</button></div>
+      <button id="explain-curve" type="button" class="plain">让你解释这条曲线</button>
+    </section>
+    <section class="reply" id="reply-zone" aria-label="下一次回答的位置">
+      <div id="reply-content">
+        <h2>下一次回答，就放在这里。</h2>
+        <p class="hint">可以是一段解释，也可以是新的图表、动画或交互组件。它不必长成聊天气泡。</p>
+        <p class="muted">试着让我在这里加一个东西，看看左边的曲线和速度是否保留。</p>
+      </div>
+      <div class="reply-actions"><button id="add-explanation" type="button">在这里加个动画解释</button><button id="challenge-layout" type="button" class="plain">质疑这个布局</button></div>
+    </section>
+  </div>
+  <section class="message" id="message-area">
+    <div><h2>也可以直接说。</h2><p class="muted">这个入口会把话发给当前主线里的我。</p></div>
+    <div>
+      <label for="conversation-draft" class="muted">你的想法或要求</label>
+      <textarea id="conversation-draft" maxlength="20000" placeholder="比如：把右边改成一个能比较两种方案的交互解释……"></textarea>
+      <div class="message-footer"><p id="send-status" role="status" aria-live="polite">先打开发送预览；确认后，我会收到。</p><button id="send-message" type="button" class="send">发给你</button></div>
+    </div>
+  </section>
+  <p id="conversation-guide" class="footer">Option / Alt + 拖动框选；右键就地提问、修改或开 fork。Esc 取消。“决策”里可以查看 agent 中途自行做出的重要选择。</p>
+</main>
+<script>
+(() => {
+  const byId=id=>document.getElementById(id);
+  const initial=board.restoreState();
+  const defaults=[{x:95,y:160},{x:380,y:65},{x:665,y:160}];
+  const saved=initial.conversationDemo||{};
+  let points=Array.isArray(saved.points)&&saved.points.length===3&&saved.points.every(p=>Number.isFinite(p.x)&&Number.isFinite(p.y))?saved.points.map(p=>({...p})):defaults.map(p=>({...p}));
+  let paused=typeof saved.paused==='boolean'?saved.paused:matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let speed=Number.isFinite(saved.speed)?Math.max(.2,Math.min(2,saved.speed)):1;
+  let phase=0,last=performance.now(),drag=null;
+  const scene=byId('curve-scene'),handles=[...scene.querySelectorAll('[data-point]')];
+  const draft=byId('conversation-draft');draft.value=typeof initial.conversationDraft==='string'?initial.conversationDraft:'';
+  const persist=()=>board.saveState({...board.getState(),conversationDemo:{points,paused,speed},conversationDraft:draft.value});
+  const draw=()=>{byId('guide').setAttribute('d',`M${points[0].x} ${points[0].y}L${points[1].x} ${points[1].y}L${points[2].x} ${points[2].y}`);byId('curve').setAttribute('d',`M${points[0].x} ${points[0].y}Q${points[1].x} ${points[1].y} ${points[2].x} ${points[2].y}`);handles.forEach((el,i)=>{el.setAttribute('cx',points[i].x);el.setAttribute('cy',points[i].y)});};
+  const controls=()=>{byId('toggle-motion').textContent=paused?'播放':'暂停';byId('motion-speed').value=String(speed);byId('speed-label').textContent=speed+'×';};
+  const clamp=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
+  scene.addEventListener('pointerdown',event=>{const handle=event.target.closest('[data-point]');if(!handle)return;drag={index:Number(handle.dataset.point),pointerId:event.pointerId};handle.setPointerCapture(event.pointerId);});
+  scene.addEventListener('pointermove',event=>{if(!drag||drag.pointerId!==event.pointerId)return;const matrix=scene.getScreenCTM();if(!matrix)return;const p=new DOMPoint(event.clientX,event.clientY).matrixTransform(matrix.inverse());points[drag.index]={x:clamp(p.x,28,732),y:clamp(p.y,28,245)};draw();});
+  const finishDrag=event=>{if(drag&&drag.pointerId===event.pointerId){drag=null;persist();}};
+  scene.addEventListener('pointerup',finishDrag);scene.addEventListener('pointercancel',finishDrag);
+  handles.forEach((handle,index)=>handle.addEventListener('keydown',event=>{const delta={ArrowLeft:[-8,0],ArrowRight:[8,0],ArrowUp:[0,-8],ArrowDown:[0,8]}[event.key];if(!delta)return;event.preventDefault();points[index]={x:clamp(points[index].x+delta[0],28,732),y:clamp(points[index].y+delta[1],28,245)};draw();persist();}));
+  byId('toggle-motion').onclick=()=>{paused=!paused;controls();persist();};
+  byId('motion-speed').oninput=event=>{speed=Number(event.target.value);controls();persist();};
+  byId('reset-curve').onclick=()=>{points=defaults.map(p=>({...p}));draw();persist();};
+  draft.oninput=persist;
+  const animate=now=>{if(!paused)phase=(phase+Math.min(now-last,100)*.00022*speed)%1;last=now;const t=phase,u=1-t;const x=u*u*points[0].x+2*u*t*points[1].x+t*t*points[2].x,y=u*u*points[0].y+2*u*t*points[1].y+t*t*points[2].y;byId('traveler').setAttribute('cx',x);byId('traveler').setAttribute('cy',y);requestAnimationFrame(animate);};
+  draw();controls();requestAnimationFrame(animate);
+  let sending=false;
+  function ask(prompt,selector,kind='question'){
+    if(sending)return;const status=byId('send-status');
+    if(!prompt.trim()){status.textContent='先写一句你想说的话。';draft.focus();return;}
+    const context=board.getContext();
+    const anchor={kind:'element',selector,boardRevision:context.boardRevision,canvasRevision:context.canvasRevision,text:selector==='#playground'?`曲线控制点：${points.map(p=>`(${Math.round(p.x)}, ${Math.round(p.y)})`).join('、')}；速度 ${speed}；${paused?'暂停':'播放中'}`:document.querySelector(selector).innerText.slice(0,3000)};
+    sending=true;document.querySelectorAll('.conversation button').forEach(el=>{if(el.id!=='toggle-motion'&&el.id!=='reset-curve')el.disabled=true});
+    board.ask({prompt,kind,anchor}).then(result=>{status.textContent=result.status==='submitted'?'已提交。等我把回答或修改放回画布；可以在顶部“讨论”查看进展。':'没有发送，内容仍保留。';}).catch(()=>{status.textContent='发送未成功，内容仍保留。可以用顶部的提问入口重试。';}).finally(()=>{sending=false;document.querySelectorAll('.conversation button').forEach(el=>el.disabled=false);});
+  }
+  byId('send-message').onclick=()=>ask(draft.value,'#conversation');
+  byId('explain-curve').onclick=()=>ask('请解释这三个点怎样决定这条曲线。在 #reply-content 放一个可以操作的解释；保留左边当前控制点、速度和播放状态。','#playground');
+  byId('add-explanation').onclick=()=>ask('请在 #reply-content 添加一个交互动画，解释 Board 局部更新为什么能保留别处的输入与动画。使用真实可操作的小例子，保留左侧曲线和我的草稿。','#reply-zone','change');
+  byId('challenge-layout').onclick=()=>ask('我想质疑这个初始布局：左边演示、右边回答，是否还在限制自由表达？请讨论它的取舍，并提出一种更适合直接交流的布局；暂时别改主线。','#conversation','fork');
+})();
+</script>
