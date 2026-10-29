@@ -17,7 +17,6 @@ import {
   environmentRpc,
   modelsRpc,
   discoveryRpc,
-  type UpdateTask,
 } from "../shared/contracts";
 import { Store } from "./store";
 import { GitHubClient } from "./github";
@@ -28,8 +27,11 @@ import { environment, validateTarget } from "./workspaces";
 import { admitLaunch } from "./admission";
 import { featureReview } from "../shared/feature-review";
 import { LocalPaseo } from "./local-paseo";
-import { localRevision } from "./review-context";
+import { localRevision, verifyLocalRevision } from "./review-context";
 import { ReviewCoordinator } from "./reviews";
+import { ReviewSourceCache } from './review-source';
+import { prepareReviewPrompt } from './review-preparation';
+import type { TaskExecution } from './tasks';
 type PaseoApi = PluginHandlerContext["paseo"];
 
 export function contributeServer(server: PluginServerContext) {
@@ -39,6 +41,7 @@ export function contributeServer(server: PluginServerContext) {
   const github = new GitHubClient();
   const localPaseo = new LocalPaseo(home);
   const tasks = new TaskManager(join(folder, "tasks.json"));
+  const sources = new ReviewSourceCache(join(folder, 'sources'));
   const ready = Promise.all([store.ready, tasks.ready]);
   let disposed = false;
   const reviews = new ReviewCoordinator({
@@ -60,7 +63,7 @@ export function contributeServer(server: PluginServerContext) {
     );
 
   function executor(paseo: PaseoApi) {
-    return async (task: UpdateTask & { idempotencyKey: string }) => {
+    return async (task: TaskExecution) => {
       if (disposed) throw new Error("插件已停止，任务创建结果待确认");
       const workspace = paseo.workspaces.ref(task.workspaceId);
       const current = await workspace.refresh();
@@ -73,15 +76,22 @@ export function contributeServer(server: PluginServerContext) {
           current.projectRootPath,
       );
       if (disposed) throw new Error("插件已停止，任务创建结果待确认");
-      if (
-        task.intent === "review" &&
-        task.localRevision &&
-        (await localRevision(task.targetPath)) !== task.localRevision
-      )
-        throw new TaskCreationError(
-          "本地提交已改变，请重新检查上游生成当前范围的建议。",
-          { definitive: true },
-        );
+      let prompt = task.prompt;
+      if (task.intent === 'review') {
+        try {
+          prompt = await prepareReviewPrompt(task, { prepare: (source, head) => sources.prepare(source, head),
+            state: () => store.read(), disposed: () => disposed,
+            placement: async () => {
+              const refreshed = await workspace.refresh();
+              if (!refreshed) throw new Error('建议的目标工作区已不存在。');
+              await validateTarget(task.targetPath, workspace.directory || refreshed.workspaceDirectory || refreshed.projectRootPath);
+              await verifyLocalRevision(task.targetPath, task.localRevision!);
+            } });
+        } catch (error) {
+          throw new TaskCreationError(error instanceof Error ? error.message : '固定源码准备失败', { definitive: true });
+        }
+      }
+      if (disposed) throw new TaskCreationError('插件已停止，尚未创建建议 agent。', { definitive: true });
       const agent = await workspace.agents.create({
         config: {
           provider: task.provider,
@@ -99,7 +109,7 @@ export function contributeServer(server: PluginServerContext) {
             : {}),
         },
         title: task.title,
-        prompt: task.prompt,
+        prompt,
         idempotencyKey: task.idempotencyKey,
         labels: {
           "upstream-watch.task": task.id,
@@ -207,6 +217,7 @@ export function contributeServer(server: PluginServerContext) {
   return async () => {
     disposed = true;
     monitor.dispose();
+    await sources.close();
     await monitor.waitForIdle();
     await tasks.waitForIdle();
     await localPaseo.dispose();

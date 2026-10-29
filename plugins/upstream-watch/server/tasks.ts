@@ -10,13 +10,17 @@ import {
 } from "../shared/contracts";
 import { taskIntent } from "../shared/feature-review";
 import { reviewKey } from "./review-context";
+import { normalizeRepository } from "./validation";
+import type { ReviewSource } from "./review-source";
 
-export type TaskExecution = UpdateTask & { idempotencyKey: string };
+export type TaskExecution = UpdateTask & { idempotencyKey: string; reviewSource?: ReviewSource; automatic?: boolean };
 export type TaskExecutor = (
   task: TaskExecution,
 ) => Promise<{ agentId: string }>;
 const persistedTaskSchema = taskSchema.extend({
   idempotencyKey: z.string().min(1),
+  reviewSource: z.object({ repository: z.string(), baseline: z.string().regex(/^[a-f0-9]{40}$/i) }).optional(),
+  automatic: z.boolean().optional(),
 });
 const fileSchema = z.object({
   version: z.literal(1),
@@ -206,6 +210,7 @@ export class TaskManager {
         createdAt: new Date().toISOString(),
         status: "preparing",
         idempotencyKey: `upstream-watch:${id}`,
+        ...(intent === 'review' ? { reviewSource: { repository: normalizeRepository(watch.repository), baseline: watch.baseline }, automatic: input.automatic === true } : {}),
       };
       await this.commit([...this.tasks, task]);
       this.start(task, executor);

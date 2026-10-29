@@ -108,10 +108,13 @@ describe("frozen update task journal", () => {
     });
     await settle(manager, "uncertain");
     current.review!.features[0].notes = "changed after creation";
+    current.repository = 'another/project';
+    current.baseline = 'c'.repeat(40);
     await manager.retry(task.id, async (retried) => {
       expect(retried.intent).toBe("review");
       expect(retried.prompt).toBe(task.prompt);
       expect(retried.prompt).not.toContain("changed after creation");
+      expect(retried.reviewSource).toEqual({ repository: 'example/plugin', baseline: 'a'.repeat(40) });
       return { agentId: "review-agent" };
     });
     await settle(manager, "created");

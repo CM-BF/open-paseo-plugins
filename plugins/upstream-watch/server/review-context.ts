@@ -40,3 +40,12 @@ export function reviewKey(watch: Watch, localRevision?: string): string {
     )
     .digest("hex");
 }
+
+/** Development may move HEAD; the fixed reviewed commit must remain readable. */
+export async function verifyLocalRevision(targetPath: string, revision: string): Promise<void> {
+  const expected = revisionSchema.parse(revision).toLowerCase();
+  try {
+    const result = await exec('git', ['-C', targetPath, 'rev-parse', '--verify', `${expected}^{commit}`], { timeout: 5000, maxBuffer: 4096, windowsHide: true });
+    if (result.stdout.trim().toLowerCase() !== expected) throw new Error('Commit mismatch');
+  } catch { throw new Error('无法读取建议固定的本地 Git commit；没有创建建议 agent。'); }
+}
