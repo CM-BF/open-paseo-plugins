@@ -21,7 +21,7 @@ On 2026-10-29, the main daemon is Paseo 0.13.2 and the deployed plugin remains r
 - [x] Add a persisted core-feature inventory and recommendation-only review workflow.
 - [x] Register Cindy once, using adopted baseline `118767c987f518286ae10a506a54287c3dc2a560`.
 - [ ] Verify type checking, relevant behavior tests and real scan/recommendation output; preserve existing tracks.
-- [ ] Record deployment source, backup, cleanup and draft PR.
+- [x] Record deployment source, backup, cleanup and draft PR.
 
 Actual UI acceptance of the new review workflow remains pending until tested against the running plugin. Source checks and RPC results alone do not establish visual acceptance.
 
@@ -56,3 +56,11 @@ Added an owned bare Git source cache prepared before native review creation, plu
 On 2026-10-29, source revision `39170743c3b5a58b52fb34ba68a344777aab898d` passed clean production dependency installation, the shipped Paseo compiler and Hermes. An initial network fetch failed before any agent creation; a controlled retry obtained both exact public commits and verified their commit/tree objects. The original failure's transport detail was unavailable, so no specific root cause is asserted. The retained checkout was reloaded on the main 0.13.2 daemon after fresh owned-agent idle checks and source/state backups. All six watches, the 28-feature inventory, 24-hour interval and unchanged adopted baseline were verified; the five unrelated watches remained byte-for-byte unchanged.
 
 The normal automatic-review path created one new read-only agent for the expanded evidence scope. Its single native input exactly matched the frozen prompt plus prepared source metadata, and its final answer belonged to the same successfully completed native turn. The resulting 10,038-character report cited actual pinned upstream changes. Its full 28-feature parity assessment **did not pass acceptance**: most rows still relied on the local progress ledger, and some inferred work-in-progress capabilities as present in the fixed commit or moved requested missing features outside scope. Strengthened the review instructions to require per-ID production-code evidence, exact local-commit references, bounded absence searches, separate runtime acceptance, and preservation of requested scope. This prompt revision still needs a new real report; the previous result is retained as partial evidence, not overwritten or labeled complete. Private reports and backups remain outside Git. Actual UI acceptance remains open.
+
+### Evidence review v2 and production defaults
+
+Source `709d8a0b36aa4115d56d619e7c9101c104a40e34` passed a clean production-only install, the shipped compiler and Hermes and was published as [draft PR #2](https://github.com/CM-BF/open-paseo-plugins/pull/2). The retained installation was reloaded after owned-agent checks and a complete backup. A second automatic native review used the exact prepared source cache and prompt, completed normally, and retained all 28 requested IDs. Its 13,522-character answer explicitly declined to assess production implementation: it listed source paths but performed no per-feature code reading. Its semantic verdict is **incomplete**, not accepted. The original report and hash remain retained privately. No baseline advanced, no implementation task ran, and unrelated tracks were preserved.
+
+An independent source audit is in progress to diagnose the remaining review-quality gap. Removed the production executor's hardcoded `low` reasoning override for one Codex model: cheapest-model test configuration must not silently alter real selected-model reviews. Reviews now inherit the native model default while retaining the read-only sandbox. The override removal is not itself a claim that report quality is fixed; it still needs validation, and no third automatic report is claimed here.
+
+The native-default correction passes TypeScript and all 133 offline tests. Clean production export and the report-quality follow-up remain separate checks; the running installation is still `709d8a0`.

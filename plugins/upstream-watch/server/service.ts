@@ -95,9 +95,6 @@ export function contributeServer(server: PluginServerContext) {
       const agent = await workspace.agents.create({
         config: {
           provider: task.provider,
-          ...(task.intent === "review" && task.provider === "codex/gpt-6-luna"
-            ? { thinkingOptionId: "low" }
-            : {}),
           ...(task.intent === "review" &&
           task.provider.split("/")[0] === "codex"
             ? {
