@@ -1,0 +1,3 @@
+# Preserve the exact third-party license and font bytes in Git exports.
+web/licenses/** -text
+web/assets/fonts/*.ttf -text

@@ -1,0 +1,6 @@
+/* The host owns the full-screen scrim. This isolated document is exactly the drawer width. */
+html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { background: var(--surface); }
+#root { isolation: isolate; }
+/* Root-window dragging is not a browser-frame operation. */
+* { -webkit-app-region: no-drag; }

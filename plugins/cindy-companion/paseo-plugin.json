@@ -1,0 +1,7 @@
+{
+  "id": "cindy-companion",
+  "name": "Cindy Companion",
+  "description": "Cindy's Teammates entry and original settings drawer, connected to Paseo agents",
+  "requirements": { "paseo": ">=0.13.2" },
+  "build": [["npm", "ci", "--omit=dev", "--no-audit", "--no-fund"]]
+}
