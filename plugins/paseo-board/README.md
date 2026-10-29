@@ -4,7 +4,7 @@ A persistent, fully interactive visualize with contextual human–agent conversa
 
 ## Use
 
-Requires Paseo 0.13.2. Use Node 22 LTS or Node 24 LTS with npm 11 for installation and development. For a local directory installation, clone this repository, then run:
+Requires Paseo 0.13.2 or later, with no upper version cap. The development toolchain was verified with Node 22 LTS / Node 24 LTS and npm 11. For a local directory installation, clone this repository, then run:
 
 ```sh
 cd plugins/paseo-board

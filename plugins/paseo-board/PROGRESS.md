@@ -47,6 +47,12 @@ Provide a persistent, fully interactive, task-independent conversation canvas fo
 
 ## Known boundaries and next steps
 
+### 2026-10-29 — open-ended Paseo compatibility
+
+- Removed the speculative `<0.14.0` upper bound from the manifest; the supported API baseline remains `>=0.13.2`. Updating Paseo no longer requires a manifest-only plugin release just because its minor or major version changed.
+- README and OVERVIEW now state the minimum version and no upper cap. Development dependency pins remain for repeatable builds; they do not gate the installed plugin's host version. Node/npm versions in the README describe the verified development toolchain.
+- Validated the host's `assertPluginCompatibility` function for both daemon and app: `0.13.2`, `0.13.3`, `0.14.0-beta.1`, `0.14.0`, and `1.0.0` are accepted; `0.13.1` is rejected (12 checks passed). This validates the version gate, not future host APIs or UI behavior. No runtime code changed or UI retest was needed for this metadata update.
+
 - Physical phone behavior and a fresh narrow-width native walkthrough have not been verified; no mobile parity is claimed.
 - Source and fixture tests do not replace the real native desktop checks recorded above.
 - Decision extraction is conservative and cannot recover unstated private reasoning. A send with uncertain acknowledgement is not blindly retried; the SDK still has a narrow idle-check/send race.
