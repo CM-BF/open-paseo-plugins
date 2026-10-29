@@ -6,12 +6,22 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import type { CompanionProfile, InvokeResult } from '../shared/contracts';
+import { sessionScopeSchema, type SessionScope } from '../shared/session-scope';
+
+export interface CompanionSessionTools {
+  botId: string;
+  scope: SessionScope;
+  invoke(op: string, args: Record<string, unknown>): Promise<{ content: { type: 'text'; text: string }[]; isError: boolean }>;
+}
 
 export interface CompanionMcpDependencies {
   root: string;
   safePath(path: string): Promise<void>;
   readProfile(botId: string): Promise<CompanionProfile>;
   invokeMemory(botId: string, op: string, args: Record<string, unknown>): Promise<InvokeResult>;
+  validateScope?(botId: string, scope: SessionScope): Promise<void>;
+  invokeSession?(botId: string, scope: SessionScope, op: string, args: Record<string, unknown>): Promise<InvokeResult>;
+  registerSessionTools?(server: McpServer, context: CompanionSessionTools): void;
 }
 interface Endpoint { version: 1; port: number; secret: string }
 export interface CompanionMcpConfig { type: 'http'; url: string; headers: Record<string, string>; alwaysLoad: true }
@@ -28,8 +38,10 @@ export class CompanionMcpServer {
   private receiving = 0;
   constructor(deps: CompanionMcpDependencies) { this.deps = deps; }
 
-  async configFor(botId: string): Promise<CompanionMcpConfig> {
+  async configFor(botId: string, scope?: SessionScope): Promise<CompanionMcpConfig> {
     await this.deps.readProfile(botId);
+    const encodedScope = scope ? Buffer.from(JSON.stringify(sessionScopeSchema.parse(scope))).toString('base64url') : undefined;
+    if (encodedScope && (!this.deps.validateScope || !this.deps.invokeSession || !this.deps.registerSessionTools)) throw new Error('Session tools are not configured');
     if (!this.starting) {
       const attempt = this.start();
       this.starting = attempt;
@@ -37,11 +49,11 @@ export class CompanionMcpServer {
     }
     await this.starting;
     if (this.disposed || !this.endpoint) throw new Error('Companion tools are closed');
-    return { type: 'http', url: `http://127.0.0.1:${this.endpoint.port}/mcp/${botId}`,
-      headers: { Authorization: `Bearer ${this.token(botId)}` }, alwaysLoad: true };
+    return { type: 'http', url: `http://127.0.0.1:${this.endpoint.port}/mcp/${botId}${encodedScope ? `/session/${encodedScope}` : ''}`,
+      headers: { Authorization: `Bearer ${this.token(botId, encodedScope)}` }, alwaysLoad: true };
   }
-  private token(botId: string): string {
-    return createHmac('sha256', this.endpoint!.secret).update(botId).digest('hex');
+  private token(botId: string, encodedScope?: string): string {
+    return createHmac('sha256', this.endpoint!.secret).update(encodedScope ? `session-v1\0${botId}\0${encodedScope}` : botId).digest('hex');
   }
   private async start(): Promise<void> {
     const path = join(this.deps.root, 'mcp-endpoint.json');
@@ -79,16 +91,21 @@ export class CompanionMcpServer {
     let admitted = false;
     try {
       if (this.disposed || !this.endpoint) return reject(503, 'Companion tools are starting');
-      const path = /^\/mcp\/([a-zA-Z0-9][a-zA-Z0-9_-]{0,99})$/.exec(req.url ?? '');
+      const path = /^\/mcp\/([a-zA-Z0-9][a-zA-Z0-9_-]{0,99})(?:\/session\/([A-Za-z0-9_-]{1,2048}))?$/.exec(req.url ?? '');
       if (!path) return reject(404, 'Not found');
       // Agent MCP clients do not send Origin. Browser origins cannot use this daemon-local API.
       if (req.headers.origin || ![`127.0.0.1:${this.endpoint.port}`, `localhost:${this.endpoint.port}`].includes(req.headers.host ?? '')) return reject(403, 'Invalid origin');
       const auth = req.headers.authorization?.replace(/^Bearer /, '') ?? '';
-      const expected = this.token(path[1]);
-      if (auth.length !== expected.length || !timingSafeEqual(Buffer.from(auth), Buffer.from(expected))) return reject(401, 'Unauthorized');
+      const expected = this.token(path[1], path[2]);
+      if (!/^[a-f0-9]{64}$/.test(auth) || !timingSafeEqual(Buffer.from(auth), Buffer.from(expected))) return reject(401, 'Unauthorized');
       if (req.method !== 'POST') return reject(405, 'Use POST');
       if (this.receiving + this.requests.size + this.operations.size >= 16) return reject(429, 'Too many companion tool requests');
       this.receiving++; admitted = true;
+      const scope = path[2] ? Object.freeze(sessionScopeSchema.parse(JSON.parse(Buffer.from(path[2], 'base64url').toString('utf8')))) : undefined;
+      if (scope) {
+        if (!this.deps.validateScope || !this.deps.invokeSession || !this.deps.registerSessionTools) return reject(403, 'Session tools are unavailable');
+        await this.deps.validateScope(path[1], scope);
+      }
       const profile = await this.deps.readProfile(path[1]);
       if (!profile.enabled || profile.status !== 'active') return reject(403, 'Companion is paused');
       const parts: Buffer[] = []; let bytes = 0;
@@ -102,7 +119,7 @@ export class CompanionMcpServer {
       try { body = JSON.parse(Buffer.concat(parts).toString('utf8')); }
       catch { return reject(400, 'Invalid JSON'); }
       if (this.disposed) return reject(503, 'Companion tools are closed');
-      const mcp = this.createTools(profile.id);
+      const mcp = this.createTools(profile.id, scope);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       this.requests.add(mcp);
       res.once('close', () => { this.requests.delete(mcp); void mcp.close(); });
@@ -121,10 +138,14 @@ export class CompanionMcpServer {
     void job.finally(() => { this.operations.delete(job); }).catch(() => {});
     return job;
   }
-  private createTools(botId: string): McpServer {
+  private createTools(botId: string, scope?: SessionScope): McpServer {
     const mcp = new McpServer({ name: 'cindy-companion', version: '0.1.0' });
     const output = (value: unknown, isError = false) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value) }], isError });
-    const invoke = (op: string, args: Record<string, unknown>) => this.runTool(async () => {
+    const scoped = <T>(operation: () => Promise<T>) => this.runTool(async () => {
+      if (scope) await this.deps.validateScope!(botId, scope);
+      return operation();
+    });
+    const invoke = (op: string, args: Record<string, unknown>) => scoped(async () => {
       const profile = await this.deps.readProfile(botId);
       if (!profile.enabled || profile.status !== 'active' || !profile.capabilities.memory) return output({ code: 'MEMORY_DISABLED', message: 'Memory is disabled for this teammate.' }, true);
       const result = await this.deps.invokeMemory(botId, op, args);
@@ -133,7 +154,7 @@ export class CompanionMcpServer {
     mcp.registerTool('companion_context', {
       description: 'Read this teammate’s current identity, user context and memory setting. Read at the beginning of each turn; saved settings may have changed.',
       inputSchema: {}, annotations: { readOnlyHint: true },
-    }, () => this.runTool(async () => {
+    }, () => scoped(async () => {
       const p = await this.deps.readProfile(botId);
       if (!p.enabled || p.status !== 'active') return output({ code: 'COMPANION_PAUSED' }, true);
       const result = await this.deps.invokeMemory(botId, 'profile.context', {});
@@ -149,6 +170,12 @@ export class CompanionMcpServer {
       inputSchema: { filename: z.string().max(100), title: z.string().min(1).max(100), body: z.string().min(1).max(8192), expectedUpdatedAt: z.string().max(64) } }, args => invoke('memory.update', args));
     mcp.registerTool('memory_delete', { description: 'Remove an obsolete memory, with the exact updatedAt from memory_read.',
       inputSchema: { filename: z.string().max(100), expectedUpdatedAt: z.string().max(64) }, annotations: { destructiveHint: true } }, args => invoke('memory.delete', args));
+    if (scope) this.deps.registerSessionTools!(mcp, { botId, scope, invoke: (op, args) => scoped(async () => {
+      const profile = await this.deps.readProfile(botId);
+      if (!profile.enabled || profile.status !== 'active') return output({ code: 'COMPANION_PAUSED' }, true);
+      const result = await this.deps.invokeSession!(botId, scope, op, args);
+      return output(result.ok ? result.value : result, !result.ok);
+    }) });
     return mcp;
   }
   private async stopServer(): Promise<void> {

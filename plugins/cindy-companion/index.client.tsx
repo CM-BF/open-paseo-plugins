@@ -6,6 +6,8 @@ import { CompanionSettings } from "./client/settings";
 import { CompanionGroup } from './client/group';
 import { PresetOpening } from './client/opening';
 import { OPENING_KIND, openingSchema } from './shared/opening';
+import { contributeTaskCards } from './client/task-contribution';
+import { contributeTaskOwner } from './client/task-owner';
 
 export default function contribute(client: PluginClientContext) {
   const headers = new Map<string, { workspaceId: string; remove(): void }>();
@@ -39,11 +41,13 @@ export default function contribute(client: PluginClientContext) {
   }
   const removeGroup = client.addScreen({ id: 'group', title: 'Group chat', Component: GroupScreen });
   const removeOpening = client.addTimelineRenderer({ kind: OPENING_KIND, version: 1, schema: openingSchema, Component: PresetOpening });
+  const removeTaskCards = contributeTaskCards(client);
+  const removeTaskOwner = contributeTaskOwner(client);
   const removeCommand = client.addCommandCenterItem({ id: "open-cindy", title: "Chat with Cindy", icon: "MessagesSquare", context: "global",
     onSelect({ openScreen }) { openScreen({ screenId: "conversation", params: { botId: "cindy" } }); },
   });
   return () => {
-    removeSidebar(); removeConversation(); removeGroup(); removeOpening(); removeCommand();
+    removeSidebar(); removeConversation(); removeGroup(); removeOpening(); removeTaskCards(); removeTaskOwner(); removeCommand();
     for (const header of headers.values()) header.remove();
     headers.clear();
   };

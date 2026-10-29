@@ -13,14 +13,27 @@ import { parseBotMemoryScopeKey } from './vendor/memory/storage';
 import { botId, CompanionError, record, string, throwIpcError, unsupported } from './errors';
 import { CompanionRoutines, ScheduleCli, type ScheduleDriver } from './schedules';
 import { readFontChunk } from './font-assets';
-import { CompanionGroups } from './groups';
-import type { GroupDriver } from './group-driver';
+import { CompanionGroups, parseTrackedMentions } from './groups';
+import { NativeGroupDriver, type GroupDriver } from './group-driver';
+import { GroupPlans } from './group-plans';
+import { GroupPlanOrganizer } from './group-plan-organizer';
+import { browsePlanDirectories } from './group-plan-workdir';
+import { resolveBotGroupMentions } from '../shared/vendor/botGroupMentions';
 import { PresetImports } from './presets/import';
 import { PresetOpenings } from './presets/opening';
 import { avatarDataUrl } from './avatar';
+import type { SessionScope } from '../shared/session-scope';
+import { LocalPaseo } from './local-paseo';
+import { publicPaseoCli } from './host-cli';
+import { validateSessionBinding } from './session-authority';
+import { CompanionTasks, taskNeedsSettlement } from './companion-tasks';
+import { NativeTaskDriver } from './companion-task-driver';
+import { createHash } from 'node:crypto';
 
 const OPS = ['caps', 'assets.fontChunk', 'paseo.presets.list', 'paseo.presets.invite', 'paseo.presets.status', 'preset.opening.status', 'preset.opening.choose',
-  'groups.list', 'groups.get', 'groups.create', 'groups.update', 'groups.setMembers', 'groups.send', 'groups.continue', 'groups.stop', 'groups.delete',
+  'groups.list', 'groups.get', 'groups.create', 'groups.update', 'groups.setMembers', 'groups.send', 'groups.continue', 'groups.stop', 'groups.delete','groups.cleanup',
+  'groups.plans.list','groups.plans.create','groups.plans.start','groups.plans.continue','groups.plans.retry','groups.plans.stop','groups.plans.dismiss','groups.plans.edit','groups.plans.note','groups.plans.revise','groups.plans.cancelRequest','groups.plans.settings','groups.plans.artifact','groups.plans.directories',
+  'companion.tasks.list','companion.tasks.get','companion.tasks.start','companion.tasks.message','companion.tasks.stop','companion.tasks.responsibility','companion.tasks.artifact','companion.tasks.owner',
   'profile.get', 'profile.update', 'profile.chooseAvatar', 'lifecycle.run', 'models.default', 'models.features',
   'memory.list', 'memory.read', 'memory.update', 'memory.delete', 'capabilities.catalog', 'history.search',
   'paseo.bootstrap', 'profile.list', 'profile.create', 'profile.ensure', 'paseo.conversation.ensure',
@@ -39,11 +52,27 @@ export class CompanionService {
   private readonly profileMutations = new Map<string, Promise<unknown>>();
   private closing: Promise<void> | null = null;
   private disposed = false;
+  private workBackend:{plans:GroupPlans;organizer:GroupPlanOrganizer}|null=null;
+  private readonly groupDriverFactory:(paseo:Paseo)=>GroupDriver;
+  private readonly localPaseo = new LocalPaseo(publicPaseoCli().home);
+  private taskBackend:CompanionTasks|null=null;
+  private readonly toolsPaseo:()=>Promise<Paseo>;
+  private readonly taskDriverFactory:(paseo:Paseo)=>GroupDriver;
+  private readonly ownedApi:(fallback:Paseo)=>Promise<Paseo>;
   readonly memory: ReturnType<typeof createBotMemoryService>;
-  constructor(store = new CompanionStore(), options: { scheduleDriver?: ScheduleDriver; groupDriver?: (paseo: Paseo) => GroupDriver } = {}) {
+  constructor(store = new CompanionStore(), options: { scheduleDriver?: ScheduleDriver; groupDriver?: (paseo: Paseo) => GroupDriver;taskDriver?:(paseo:Paseo)=>GroupDriver;paseoForTools?:()=>Promise<Paseo> } = {}) {
     this.store = store; this.runtime = new CompanionRuntime(store);
     this.routines = new CompanionRoutines(store, this.runtime, options.scheduleDriver ?? new ScheduleCli());
     this.groups = new CompanionGroups(store, this.runtime, options.groupDriver);
+    this.toolsPaseo=options.paseoForTools??(()=>this.localPaseo.get());
+    this.ownedApi=options.groupDriver||options.taskDriver?async fallback=>fallback:()=>this.toolsPaseo();
+    const managed=(factory:(api:Paseo)=>GroupDriver):GroupDriver=>({
+      ensure:async lane=>factory(await this.toolsPaseo()).ensure(lane),reply:async(lane,input)=>factory(await this.toolsPaseo()).reply(lane,input),
+      stop:async lane=>factory(await this.toolsPaseo()).stop(lane),archive:async lane=>factory(await this.toolsPaseo()).archive(lane),
+      configure:async(lane,config)=>factory(await this.toolsPaseo()).configure!(lane,config),
+    });
+    this.groupDriverFactory=options.groupDriver??(()=>managed(api=>new NativeGroupDriver(api)));
+    this.taskDriverFactory=options.taskDriver??(()=>managed(api=>new NativeTaskDriver(api)));
     this.presets = new PresetImports(store);
     this.openings = new PresetOpenings(store);
     this.memory = createBotMemoryService({
@@ -71,10 +100,63 @@ export class CompanionService {
       // Accepted memory writes may schedule refresh timers while draining.
       for (const timer of this.timers) clearTimeout(timer); this.timers.clear();
       await this.routines.close();
+      await this.taskBackend?.close();
+      await this.workBackend?.organizer.close();
+      await this.workBackend?.plans.close();
       await this.groups.close();
       await this.runtime.close();
+      await this.localPaseo.dispose();
     })();
     return this.closing;
+  }
+  private work(paseo:Paseo){
+    if(!this.workBackend){
+      const driver=this.groupDriverFactory(paseo),configFor=async(id:string,cwd:string,scope?:SessionScope)=>this.runtime.nativeConfigFor(await this.ownedApi(paseo),id,cwd,scope);
+      const plans=new GroupPlans(this.store,{driver,configFor,verifyWorkspace:async(id,cwd)=>{const workspace=(await this.ownedApi(paseo)).workspaces.ref(id);if(!await workspace.refresh()||workspace.directory!==cwd)throwIpcError('WORKSPACE_MISMATCH','The file no longer belongs to this native workspace');}});
+      const organizer=new GroupPlanOrganizer(this.store,plans,{driver,configFor,fallback:async(groupId,text,clientMessageId,sourceMessageId)=>{
+        await this.groups.send(paseo,groupId,{text,clientMessageId},sourceMessageId);
+      }});
+      this.workBackend={plans,organizer};
+    }
+    return this.workBackend;
+  }
+  private tasks(paseo:Paseo){
+    this.taskBackend??=new CompanionTasks(this.store,{driver:this.taskDriverFactory(paseo),configFor:async(botId,cwd)=>this.runtime.taskConfigFor(await this.ownedApi(paseo),botId,cwd),
+      verifyWorkspace:async(id,cwd)=>{const workspace=(await this.ownedApi(paseo)).workspaces.ref(id);if(!await workspace.refresh()||workspace.directory!==cwd)throwIpcError('WORKSPACE_MISMATCH','The file no longer belongs to this native workspace');}});return this.taskBackend;
+  }
+  validateSessionScope(id:string,scope:SessionScope):Promise<void>{
+    return this.admit(async()=>{botId(id);await validateSessionBinding(this.store,await this.toolsPaseo(),id,scope);});
+  }
+  onNativeTaskTurnEnded(paseo:Paseo,agentId:string):Promise<void>{
+    return this.admit(async()=>{
+      const state=await this.store.snapshot();if(!Object.values(state.companionTasks??{}).some(t=>t.lane?.agentId===agentId&&t.waitingForNativeIdle))return;
+      const agent=paseo.agents.ref(agentId);if(await agent.refresh()&&!agent.archivedAt&&!agent.activeTurn&&agent.status!=='running'&&agent.status!=='initializing'&&!agent.pendingPermissions?.length)await this.tasks(paseo).nativeIdle(agentId);
+    });
+  }
+  async invokeSessionTool(id:string,scope:SessionScope,op:string,args:Record<string,unknown>):Promise<InvokeResult>{
+    try{return await this.admit(async()=>{
+      const paseo=await this.toolsPaseo();await validateSessionBinding(this.store,paseo,id,scope);
+      if(op==='list_agents')return{ok:true,value:{agents:(await this.store.list()).filter(p=>p.enabled&&p.status==='active').map(p=>({id:p.id,name:p.name,description:p.description,local:true})),unavailableDevices:[]}};
+      const tasks=this.tasks(paseo),taskId=args.task_id===undefined?undefined:string(args.task_id,'task_id',128);
+      if(op==='start_session_task'){
+        const native=paseo.agents.ref(scope.agentId);await native.refresh();
+        const operationId=typeof args.idempotency_key==='string'?args.idempotency_key:createHash('sha256').update(JSON.stringify([scope.agentId,native.activeTurn?.turnId,args])).digest('hex');
+        const result=await tasks.start({botId:id,scope},{...args,operationId});
+        return{ok:true,value:{...result,action:op,botId:id,taskId:result.task.id,task_id:result.task.id,session_id:result.task.childSessionId,status:result.task.status,completion_destination:scope.groupId?'group':'task-card'}};
+      }
+      if(!taskId)throwIpcError('INVALID_PARAMS','A task_id is required');
+      const task=(await tasks.get(id,taskId)).task;
+      // The requesting companion owns the task; a different group lane does not inherit it.
+      if(task.parentSessionId!==scope.agentId)throwIpcError('TASK_NOT_OWNED','This session did not create the task');
+      if(op==='check_session_task')return{ok:true,value:{action:op,botId:id,taskId,task_id:taskId,task}};
+      if(task.responsibility==='released')throwIpcError('TASK_RESPONSIBILITY_RELEASED','The companion no longer owns follow-up responsibility for this task');
+      if(op==='message_session_task'){
+        const operationId=typeof args.idempotency_key==='string'?args.idempotency_key:createHash('sha256').update(JSON.stringify([scope.agentId,taskId,paseo.agents.ref(scope.agentId).activeTurn?.turnId,args])).digest('hex');
+        return{ok:true,value:await tasks.message(id,taskId,{...args,operationId})};
+      }
+      if(op==='stop_session_task')return{ok:true,value:await tasks.stop(id,taskId,args.mode)};
+      throwIpcError('UNSUPPORTED','This session tool is not connected');
+    });}catch(error){return{ok:false,code:error instanceof CompanionError?error.code:'SESSION_TOOL_ERROR',message:error instanceof Error?error.message:String(error)};}
   }
   async applyPendingForAgent(paseo: Paseo, agentId: string): Promise<void> {
     return this.admit(async () => {
@@ -87,7 +169,8 @@ export class CompanionService {
     return this.admit(async () => {
       const profiles = await this.store.list(); const state = await this.store.snapshot();
       const id = profiles.find(profile => profile.canonicalSessionId)?.id ?? Object.values(state.routines)[0]?.botId ??
-        Object.values(state.groups ?? {}).flatMap(group => Object.values(group.lanes)).find(lane => state.profiles[lane.botId])?.botId;
+        Object.values(state.groups ?? {}).flatMap(group => Object.values(group.lanes)).find(lane => state.profiles[lane.botId])?.botId??
+        Object.values(state.groupPlans??{}).flatMap(plan=>Object.values(plan.lanes)).find(lane=>state.profiles[lane.botId])?.botId;
       if (id) await this.runtime.instructionsFor(id);
     });
   }
@@ -152,13 +235,74 @@ export class CompanionService {
     if (op === 'paseo.presets.list') return this.presets.list();
     if (op === 'paseo.presets.invite') return this.presets.invite(args);
     if (op === 'paseo.presets.status') return this.presets.status(string(args.requestId, 'requestId', 200));
+    if(op.startsWith('companion.tasks.')){
+      if(op==='companion.tasks.owner'){
+        const agentId=string(args.agentId,'agentId',100),state=await this.store.snapshot(),taskId=state.taskAgents?.[agentId],saved=taskId?state.companionTasks?.[taskId]:undefined;
+        if(!saved?.lane||saved.lane.agentId!==agentId||saved.lane.phase!=='ready')return{owner:null};
+        const agent=paseo.agents.ref(agentId);if(!await agent.refresh()||agent.cwd!==saved.lane.cwd||agent.workspaceId!==saved.view.workspaceId||(args.workspaceId!==undefined&&args.workspaceId!==agent.workspaceId))return{owner:null};
+        const profile=state.profiles[saved.owner.botId]??state.deletedProfiles?.[saved.owner.botId]?.profile;if(!profile)return{owner:null};
+        return{owner:{botId:profile.id,name:profile.name,avatar:profile.avatar,avatarColor:profile.avatarColor,taskId:saved.view.id,responsibility:saved.view.responsibility,canonicalSessionId:profile.canonicalSessionId}};
+      }
+      const id=botId(args.botId),tasks=this.tasks(paseo);await this.store.get(id);
+      if(op==='companion.tasks.list')return tasks.list(id,args.groupId===undefined?undefined:botId(args.groupId));
+      if(op==='companion.tasks.start'){
+        const state=await this.store.snapshot(),agentId=string(args.parentAgentId,'parentAgentId',100);
+        const binding=state.bindings[id];let scope:SessionScope|undefined=binding?.agentId===agentId?binding.sessionScope:undefined;
+        if(!scope)for(const group of Object.values(state.groups??{})){const lane=Object.values(group.lanes).find(l=>l.botId===id&&l.agentId===agentId);if(lane?.sessionScope){scope=lane.sessionScope;break;}}
+        if(!scope)throwIpcError('SESSION_SCOPE_REQUIRED','Open or refresh a companion session that supports collaboration');
+        await validateSessionBinding(this.store,paseo,id,scope);return tasks.start({botId:id,scope},args);
+      }
+      const taskId=string(args.taskId,'taskId',128);
+      const task=(await tasks.get(id,taskId)).task;
+      if((args.parentAgentId!==undefined&&args.parentAgentId!==task.parentSessionId)||(args.groupId!==undefined&&args.groupId!==task.groupId))throwIpcError('TASK_SCOPE_MISMATCH','The task row belongs to a different conversation');
+      if(op==='companion.tasks.get')return tasks.get(id,taskId);
+      if(op==='companion.tasks.message')return tasks.message(id,taskId,args);
+      if(op==='companion.tasks.stop')return tasks.stop(id,taskId,args.mode);
+      if(op==='companion.tasks.responsibility')return tasks.responsibility(id,taskId,args.action);
+      if(op==='companion.tasks.artifact'){
+        return tasks.artifact(id,taskId,string(args.path,'path',4096),args.receiptId===undefined?undefined:string(args.receiptId,'receiptId',128));
+      }
+      return unsupported(op);
+    }
     if (op === 'groups.list') return this.groups.list(paseo);
     if (op === 'groups.create') return this.groups.create(paseo, args);
     if (op.startsWith('groups.')) {
       const groupId = botId(args.groupId);
-      if (op === 'groups.get') return this.groups.get(paseo, groupId, args);
+      if(op==='groups.cleanup')return this.groups.cleanup(paseo,groupId);
+      if(op.startsWith('groups.plans.')){
+        const {plans,organizer}=this.work(paseo);await plans.init();await organizer.init();
+        if(op==='groups.plans.list')return{...await plans.list(groupId),requests:await organizer.list(groupId)};
+        if(op==='groups.plans.create')return organizer.create(groupId,args);
+        if(op==='groups.plans.settings')return plans.settings(groupId,args);
+        if(op==='groups.plans.directories'){await plans.list(groupId);return browsePlanDirectories(args.path===undefined?undefined:string(args.path,'path',4096));}
+        if(op==='groups.plans.cancelRequest')return organizer.cancel(groupId,string(args.requestId,'requestId',200));
+        const planId=string(args.planId,'planId',200);
+        if(op==='groups.plans.artifact')return plans.artifact(groupId,planId,Number(args.position),string(args.path,'artifact path',4096),args.messageId===undefined?undefined:string(args.messageId,'messageId',200));
+        if(!Number.isSafeInteger(args.expectedRevision))throwIpcError('INVALID_PARAMS','Invalid plan revision');
+        const input={...args,groupId,planId,expectedRevision:Number(args.expectedRevision),operationId:string(args.operationId,'operationId',200)};
+        if(op==='groups.plans.revise')return organizer.create(groupId,{operationId:input.operationId,request:string(args.text,'text',16000)}, {planId,expectedRevision:input.expectedRevision});
+        const action=op.slice('groups.plans.'.length);
+        if(['start','continue','retry','stop','dismiss','edit','note'].includes(action))return plans.action(action as 'start',input);
+        return unsupported(op);
+      }
+      if (op === 'groups.get') {const result=await this.groups.get(paseo, groupId, args);const {plans,organizer}=this.work(paseo);return{...result,...await plans.list(groupId),requests:await organizer.list(groupId)};}
       if (op === 'groups.update' || op === 'groups.setMembers') return this.groups.update(paseo, groupId, args, op === 'groups.setMembers');
-      if (op === 'groups.send') return this.groups.send(paseo, groupId, args);
+      if (op === 'groups.send') {
+        const operationId=string(args.clientMessageId,'clientMessageId',200),text=string(args.text,'text',32000),tracked=parseTrackedMentions(args.trackedMentions);
+        const work=this.work(paseo);const replay=await work.organizer.replay(groupId,operationId,text)??await work.plans.replayNote(groupId,operationId,text);
+        if(replay)return replay;
+        const state=await this.store.snapshot(),group=state.groups?.[groupId];
+        if(group){const mentions=resolveBotGroupMentions(text,{members:group.botIds.map(id=>({botId:id,name:state.profiles[id]?.name??id})),tracked,allLabels:['all','everyone','所有人','全部','大家']});
+          const openPlan=Object.values(state.groupPlans??{}).find(p=>p.view.groupId===groupId&&['proposed','running','waiting'].includes(p.view.status));
+          if(openPlan&&group.replyMode==='all'&&!mentions.all&&!mentions.botIds.length){
+            const {plans,organizer}=work;
+            if(openPlan.view.status==='proposed')return organizer.create(groupId,{operationId,request:args.text},{planId:openPlan.view.id,expectedRevision:openPlan.view.revision});
+            const result=await plans.action('note',{groupId,planId:openPlan.view.id,expectedRevision:openPlan.view.revision,operationId,text:args.text});
+            return{...result,...await plans.replayNote(groupId,operationId,text)};
+          }
+        }
+        return this.groups.send(paseo, groupId, args);
+      }
       if (op === 'groups.continue') return this.groups.continue(paseo, groupId, args);
       if (op === 'groups.stop') return this.groups.stop(paseo, groupId, string(args.roundId, 'roundId', 200));
       if (op === 'groups.delete') return this.groups.remove(paseo, groupId, args.expectedRevision);
@@ -261,8 +405,15 @@ export class CompanionService {
       if (confirmName !== p.name) throwIpcError('PRECONDITION_FAILED', 'Companion name changed; confirm again');
       const state = await this.store.snapshot();
       if (Object.values(state.routines).some(routine => routine.botId === id)) throwIpcError('ROUTINES_EXIST', 'Remove this companion’s routines before deleting it');
+      if(Object.values(state.companionTasks??{}).some(task=>task.owner.botId===id&&taskNeedsSettlement(task)))throwIpcError('TASK_BUSY','Stop this companion’s delegated tasks before deleting it');
       if (Object.values(state.groups ?? {}).some(group => !group.deletedAt && group.botIds.includes(id))) throwIpcError('GROUP_MEMBERSHIP_EXISTS', 'Remove this companion from its groups before deleting it');
       if (state.bindings[id]?.phase && state.bindings[id]?.phase !== 'ready') throwIpcError('CREATE_OUTCOME_UNKNOWN', 'Resolve pending agent creation before deleting the companion');
+      await this.store.transaction(current=>{
+        if(Object.values(current.companionTasks??{}).some(task=>task.owner.botId===id&&taskNeedsSettlement(task)))throwIpcError('TASK_BUSY','A delegated task was admitted before deletion');
+        if(Object.values(current.groups??{}).some(group=>!group.deletedAt&&group.botIds.includes(id)))throwIpcError('GROUP_MEMBERSHIP_EXISTS','A group still contains this companion');
+        if(Object.values(current.routines).some(routine=>routine.botId===id))throwIpcError('ROUTINES_EXIST','A routine still belongs to this companion');
+        (current.profileDeletions??={})[id]??={requestedAt:Date.now()};
+      });
       const agents = await Promise.all(p.sessions.map(async session => { const agent = paseo.agents.ref(session.id); return await agent.refresh() ? agent : null; }));
       if (agents.some(agent => agent && (agent.activeTurn || agent.status === 'running' || agent.status === 'initializing'))) throwIpcError('AGENT_BUSY', 'Wait for this companion’s current work to finish before deleting it');
       for (const agent of agents) if (agent && !agent.archivedAt) await agent.archive();

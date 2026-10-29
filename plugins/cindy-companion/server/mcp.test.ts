@@ -6,19 +6,21 @@ import { createServer } from 'node:http';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { CompanionMcpServer } from './mcp';
+import type { CompanionMcpDependencies } from './mcp';
+import { z } from 'zod';
 import { CompanionService } from './service';
 import { CompanionStore } from './store';
 
 const disposals: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const dispose of disposals.splice(0).reverse()) await dispose(); });
-async function fixture(beforeInvoke?: (op: string) => Promise<void>) {
+async function fixture(beforeInvoke?: (op: string) => Promise<void>, session: Partial<Pick<CompanionMcpDependencies, 'validateScope' | 'invokeSession' | 'registerSessionTools'>> = {}) {
   const root = await mkdtemp(join(tmpdir(), 'cindy-mcp-'));
   disposals.push(() => rm(root, { recursive: true, force: true }));
   const store = new CompanionStore(root);
   await store.load();
   const service = new CompanionService(store);
   disposals.push(async () => service.close());
-  const create = () => new CompanionMcpServer({ root, safePath: path => store.safePath(path), readProfile: id => store.get(id),
+  const create = () => new CompanionMcpServer({ ...session, root, safePath: path => store.safePath(path), readProfile: id => store.get(id),
     invokeMemory: async (id, op, args) => { await beforeInvoke?.(op); return service.invokeMemoryTool(id, op, args); } });
   const server = create(); disposals.push(() => server.close());
   const config = await server.configFor('cindy');
@@ -149,4 +151,88 @@ describe('companion MCP over real loopback HTTP', () => {
     await store.deleteProfile(other.id, other.name);
     await expect(clients[1]!.callTool({ name: 'memory_list', arguments: {} })).rejects.toThrow();
   });
+});
+
+it('binds session tools to the signed native scope, separates legacy tokens, and rechecks revocation', async () => {
+  let allowed = true;
+  const received: unknown[] = [];
+  const f = await fixture(undefined, {
+    validateScope: async (botId, scope) => { if (!allowed || botId !== 'cindy' || scope.agentId !== 'agent-a' || scope.role !== 'group' || scope.groupId !== 'group-a') throw Error('Session ownership is no longer valid'); },
+    invokeSession: async (botId, scope, op, args) => { received.push({ botId, scope, op, args }); return { ok: true, value: { caller: scope.agentId } }; },
+    registerSessionTools: (mcp, context) => { mcp.registerTool('session_probe', { inputSchema: { callerSessionId: z.string().optional() } }, args => context.invoke('probe', args)); },
+  });
+  const scope = { agentId: 'agent-a', role: 'group' as const, groupId: 'group-a' };
+  const config = await f.server.configFor('cindy', scope);
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+  const headers = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+  const legacyAsSession = await fetch(config.url, { method: 'POST', headers: { ...headers, ...f.config.headers }, body });
+  expect(legacyAsSession.status).toBe(401);
+  const sessionAsLegacy = await fetch(f.config.url, { method: 'POST', headers: { ...headers, ...config.headers }, body });
+  expect(sessionAsLegacy.status).toBe(401);
+  const forged = config.url.replace(/[^/]+$/, Buffer.from(JSON.stringify({ ...scope, agentId: 'agent-b' })).toString('base64url'));
+  expect((await fetch(forged, { method: 'POST', headers: { ...headers, ...config.headers }, body })).status).toBe(401);
+  const legacy = new Client({ name: 'legacy', version: '1' }); disposals.push(() => legacy.close());
+  await legacy.connect(new StreamableHTTPClientTransport(new URL(f.config.url), { requestInit: { headers: f.config.headers } }));
+  expect((await legacy.listTools()).tools.some(tool => tool.name === 'session_probe')).toBe(false);
+  const client = new Client({ name: 'scoped', version: '1' }); disposals.push(() => client.close());
+  await client.connect(new StreamableHTTPClientTransport(new URL(config.url), { requestInit: { headers: config.headers } }));
+  expect((await client.listTools()).tools.some(tool => tool.name === 'session_probe')).toBe(true);
+  const result = await client.callTool({ name: 'session_probe', arguments: { callerSessionId: 'agent-forged' } });
+  expect(result.isError).toBe(false);
+  expect(received).toEqual([{ botId: 'cindy', scope, op: 'probe', args: { callerSessionId: 'agent-forged' } }]);
+  allowed = false;
+  await expect(client.callTool({ name: 'session_probe', arguments: {} })).rejects.toThrow();
+  expect(received).toHaveLength(1);
+  allowed = true;
+  await client.close(); await legacy.close(); await f.server.close();
+  const replacement = f.create(); disposals.push(() => replacement.close());
+  expect(await replacement.configFor('cindy', scope)).toEqual(config);
+});
+
+it('drains an accepted session operation before endpoint cleanup', async () => {
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let committed = false;
+  const f = await fixture(undefined, {
+    validateScope: async () => {},
+    invokeSession: async () => { entered(); await gate; committed = true; return { ok: true, value: null }; },
+    registerSessionTools: (mcp, context) => { mcp.registerTool('session_probe', { inputSchema: {} }, () => context.invoke('probe', {})); },
+  });
+  const config = await f.server.configFor('cindy', { agentId: 'agent-a', role: 'canonical' });
+  const client = new Client({ name: 'scoped', version: '1' }); disposals.push(() => client.close());
+  await client.connect(new StreamableHTTPClientTransport(new URL(config.url), { requestInit: { headers: config.headers } }));
+  const pending = client.callTool({ name: 'session_probe', arguments: {} }).catch(() => undefined);
+  await started;
+  let closed = false; const closing = f.server.close().then(() => { closed = true; });
+  await Promise.resolve(); expect(closed).toBe(false); expect(committed).toBe(false);
+  release(); await closing; await pending; expect(committed).toBe(true);
+});
+
+it('bounds native ownership validation before accepting more scoped HTTP requests', async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const full = new Promise<void>(resolve => { entered = resolve; });
+  let validating = 0;
+  const f = await fixture(undefined, {
+    validateScope: async () => { if (++validating === 16) entered(); await gate; },
+    invokeSession: async () => ({ ok: true, value: null }),
+    registerSessionTools: () => {},
+  });
+  const config = await f.server.configFor('cindy', { agentId: 'agent-a', role: 'canonical' });
+  const request = () => fetch(config.url, { method: 'POST',
+    headers: { ...config.headers, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+  });
+  const pending = Array.from({ length: 16 }, request);
+  try {
+    await full;
+    const denied = await request();
+    expect(denied.status).toBe(429);
+    expect(validating).toBe(16);
+    await denied.text();
+  } finally {
+    release();
+    await Promise.all(pending.map(async result => { await (await result).text(); }));
+  }
 });

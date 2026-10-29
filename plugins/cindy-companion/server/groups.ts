@@ -1,3 +1,4 @@
+import { taskNeedsSettlement } from './companion-tasks';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -6,7 +7,7 @@ import { resolveBotGroupMentions, type BotGroupTrackedMention } from '../shared/
 import { BOT_GROUP_MAX_MEMBERS, BOT_GROUP_MIN_MEMBERS, BOT_GROUP_NO_REPLY_SENTINEL } from '../shared/vendor/botGroupChat';
 import { CompanionStore, type SavedState } from './store';
 import { CompanionRuntime, type Paseo } from './runtime';
-import { NativeGroupDriver, type GroupDriver, type GroupLane } from './group-driver';
+import { NativeGroupDriver, prepareLaneDispatch, stopFailureCode, type GroupDriver, type GroupLane } from './group-driver';
 import { botId, CompanionError, record, string, throwIpcError } from './errors';
 import { untrustedJsonBlock } from './vendor/untrustedPrompt';
 
@@ -16,18 +17,27 @@ export interface SavedGroup {
   rounds: GroupRound[]; lanes: Record<string, GroupLane>;
   receipts: Record<string, { fingerprint: string; messageId: string; roundId?: string }>;
   continueKeys: Record<string, string>; deletedAt?: number;
-  activeRoundId?: string; pendingRoundIds?: string[];
+  activeRoundId?: string; pendingRoundIds?: string[]; mutation?:'deleting';
 }
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const active = (status: string) => ['queued', 'running', 'permission', 'stopping'].includes(status);
-function groupIn(state: SavedState, id: string): SavedGroup {
-  const group = state.groups?.[id]; if (!group || group.deletedAt) throwIpcError('NOT_FOUND', 'Group not found'); return group;
+export function parseTrackedMentions(input:unknown):BotGroupTrackedMention[]{
+  if(input===undefined)return[];
+  if(!Array.isArray(input)||input.length>100)throwIpcError('INVALID_PARAMS','Invalid mentions');
+  return input.map(raw=>{const value=record(raw);if(!Number.isSafeInteger(value.start)||Number(value.start)<0)throwIpcError('INVALID_PARAMS','Invalid mention position');return{botId:botId(value.botId),label:string(value.label,'mention label',200),start:Number(value.start)};});
+}
+function groupIn(state: SavedState, id: string, allowDeleting=false): SavedGroup {
+  const group = state.groups?.[id]; if (!group || group.deletedAt) throwIpcError('NOT_FOUND', 'Group not found');
+  if(group.mutation&&!allowDeleting)throwIpcError('GROUP_BUSY','Group deletion is awaiting cleanup');return group;
 }
 function publicFailure(error: unknown): string {
   const code = (error as { code?: string })?.code;
+  if(code==='unsupported_capability')return 'HOST_UPGRADE_REQUIRED';
+  if((error as {dispatchOutcome?:string})?.dispatchOutcome==='unknown')return 'ADMISSION_OUTCOME_UNKNOWN';
   return ['RUNTIME_TIMEOUT', 'GROUP_LANE_BUSY', 'GROUP_LANE_MISSING', 'GROUP_LANE_MISMATCH', 'REPLY_NOT_CONFIRMED', 'STOP_NOT_CONFIRMED',
-    'CONNECTION_LOST', 'CAPABILITY_NOT_APPLIED', 'PERMISSION_MODE_UNAVAILABLE', 'PROVIDER_UNAVAILABLE', 'BACKGROUND_UNSUPPORTED', 'HOST_UPGRADE_REQUIRED', 'MEMBER_UNAVAILABLE'].includes(code ?? '') ? code! : 'RUNTIME_ERROR';
+    'ADMISSION_OUTCOME_UNKNOWN','PROVIDER_ADMISSION_UNAVAILABLE','GROUP_STOP_REQUIRES_NATIVE', 'CONNECTION_LOST', 'CAPABILITY_NOT_APPLIED', 'PERMISSION_MODE_UNAVAILABLE', 'PROVIDER_UNAVAILABLE', 'BACKGROUND_UNSUPPORTED', 'HOST_UPGRADE_REQUIRED', 'MEMBER_UNAVAILABLE'].includes(code ?? '') ? code! : 'RUNTIME_ERROR';
 }
+function groupLanes(state:SavedState,id:string):GroupLane[]{return [...Object.values(state.groups![id]!.lanes),...Object.values(state.groupPlans??{}).filter(plan=>plan.view.groupId===id).flatMap(plan=>[...Object.values(plan.lanes),...plan.retiredLanes??[]]),...Object.values(state.groupPlanRequests??{}).filter(request=>request.view.groupId===id&&request.lane).map(request=>request.lane!)];}
 function roundOf(group: SavedGroup) { return (group.activeRoundId ? group.rounds.find(round => round.id === group.activeRoundId) : group.rounds.at(-1)) ?? null; }
 function activateNext(group: SavedGroup): boolean {
   while (group.pendingRoundIds?.length) {
@@ -95,22 +105,33 @@ export class CompanionGroups {
       const interrupted = await this.store.transaction(state => {
         const ids: string[] = [];
         for (const group of Object.values(state.groups ?? {})) {
-          const round = roundOf(group); if (!round || !active(round.status)) continue;
-          round.status = 'interrupted'; round.code = 'HOST_RESTARTED'; round.updatedAt = Date.now(); ids.push(group.id);
+          const round = roundOf(group); if (!round || (!active(round.status)&&round.status!=='unknown')) continue;
+          for(const lane of Object.values(group.lanes).filter(lane=>lane.roundId===round.id)){
+            const index=round.steps.findIndex((step,index)=>(step.agentId===lane.agentId||(!step.agentId&&step.botId===lane.botId))&&(['running','permission','unknown'].includes(step.status)||(round.status==='unknown'&&index===round.position)));
+            if(index>=0&&!lane.dispatch)lane.dispatch={...prepareLaneDispatch(`cindy-group-${round.id}-${index}`),phase:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN'};
+          }
+          // Keep the recovery fence durable until every native stop is confirmed.
+          // A crash during the await below must not make this look like ended work.
+          round.status = 'unknown'; round.code = 'HOST_RESTARTED'; round.updatedAt = Date.now(); ids.push(group.id);
           for (const other of group.rounds) if (other.id !== round.id && active(other.status)) { other.status = 'interrupted'; other.code = 'HOST_RESTARTED'; }
           group.pendingRoundIds = [];
-          for (const step of round.steps) if (['running', 'permission', 'queued'].includes(step.status)) step.status = 'stopped';
-          append(group, { authorKind: 'system', authorName: 'System', kind: 'notice', content: 'The previous discussion ended when the plugin stopped.', roundId: round.id, code: 'HOST_RESTARTED' });
+          for (const step of round.steps) if (['running', 'permission'].includes(step.status)) step.status = 'unknown';
         }
         return ids;
       });
       const driver = this.makeDriver(paseo);
       for (const id of interrupted) {
         const group = (await this.store.snapshot()).groups![id]!; const round = roundOf(group)!;
+        let stopCode:string|undefined;
         for (const lane of Object.values(group.lanes).filter(lane => lane.roundId === round.id)) {
           try { await driver.stop(lane); }
-          catch { await this.store.transaction(state => { const current = roundOf(state.groups![id]!); if (current?.id === round.id) { current.status = 'unknown'; current.code = 'STOP_NOT_CONFIRMED'; } }); }
+          catch(error) { stopCode=stopFailureCode(error); }
         }
+        await this.store.transaction(state=>{const group=state.groups![id]!,current=roundOf(group);if(current?.id!==round.id)return;
+          current.status=stopCode?'unknown':current.stopRequested?'stopped':'interrupted';current.code=stopCode??(current.stopRequested?'USER_STOPPED':'HOST_RESTARTED');
+          for(const [index,step]of current.steps.entries())if(['running','permission','queued','unknown'].includes(step.status)||(stopCode&&index===current.position)){step.status=stopCode?'unknown':'stopped';step.code=stopCode;}
+          if(!stopCode)append(group,{authorKind:'system',authorName:'System',kind:'notice',content:'The previous discussion ended when the plugin stopped.',roundId:round.id,code:'HOST_RESTARTED'});
+        });
       }
     })();
     return this.initialized;
@@ -118,6 +139,8 @@ export class CompanionGroups {
   private project(group: SavedGroup, state: SavedState): GroupSummary {
     return { id: group.id, name: group.name, description: group.description, replyMode: group.replyMode, revision: group.revision,
       createdAt: group.createdAt, updatedAt: group.updatedAt, lastMessage: group.messages.findLast(message => message.kind !== 'round-end' && Boolean(message.content)), round: roundOf(group),
+      ...(group.mutation?{mutation:group.mutation}:{}),
+      cleanupPending:groupLanes(state,group.id).filter(lane=>lane.cleanupPending).map(lane=>({agentId:lane.agentId,title:lane.title,code:lane.cleanupCode??'GROUP_ARCHIVE_REQUIRES_NATIVE'})),
       pendingReplies: group.rounds.filter(round => round.id !== roundOf(group)?.id && ['queued', 'waiting'].includes(round.status)),
       members: group.botIds.map(id => { const p = state.profiles[id]; return { botId: id, name: p?.name ?? id,
         avatar: p?.avatar ?? '', avatarColor: p?.avatarColor ?? '#8b7cf8', status: p ? p.enabled ? p.status : 'paused' : 'missing' }; }) };
@@ -127,7 +150,7 @@ export class CompanionGroups {
     return { groups: Object.values(state.groups ?? {}).filter(group => !group.deletedAt).sort((a,b) => b.updatedAt - a.updatedAt).map(group => this.project(group, state)) };
   }
   async get(paseo: Paseo, id: string, args: Record<string, unknown> = {}): Promise<GroupSnapshot> {
-    await this.init(paseo); const state = await this.store.snapshot(); const group = groupIn(state, id);
+    await this.init(paseo); const state = await this.store.snapshot(); const group = groupIn(state, id,true);
     const limit = args.limit ?? 100; const before = args.beforeSequence;
     if (!Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > 100 || (before !== undefined && (!Number.isSafeInteger(before) || Number(before) < 1))) throwIpcError('INVALID_PARAMS', 'Invalid group history page');
     const candidates = group.messages.filter(message => before === undefined || message.sequence < Number(before));
@@ -137,7 +160,7 @@ export class CompanionGroups {
   private validateMembers(state: SavedState, raw: unknown): string[] {
     if (!Array.isArray(raw) || raw.length < BOT_GROUP_MIN_MEMBERS || raw.length > BOT_GROUP_MAX_MEMBERS) throwIpcError('INVALID_PARAMS', 'Groups require 2 to 6 companions');
     const ids = raw.map(botId); if (new Set(ids).size !== ids.length) throwIpcError('INVALID_PARAMS', 'Duplicate group member');
-    for (const id of ids) { const p = state.profiles[id]; if (!p || p.status !== 'active' || !p.enabled) throwIpcError('MEMBER_UNAVAILABLE', 'A selected companion is unavailable'); }
+    for (const id of ids) { const p = state.profiles[id]; if (!p || p.status !== 'active' || !p.enabled || state.profileDeletions?.[id]) throwIpcError('MEMBER_UNAVAILABLE', 'A selected companion is unavailable'); }
     return ids;
   }
   async create(paseo: Paseo, args: Record<string, unknown>) {
@@ -162,8 +185,11 @@ export class CompanionGroups {
       const group = groupIn(state, id); if (args.expectedRevision !== group.revision) throwIpcError('PRECONDITION_FAILED', 'Group changed; refresh before editing');
       const round = roundOf(group); if (round && (active(round.status) || round.status === 'unknown')) throwIpcError('GROUP_BUSY', 'Stop the discussion before editing its group');
       if (members) {
+        if(Object.values(state.companionTasks??{}).some(task=>task.owner.scope.groupId===id&&taskNeedsSettlement(task)))throwIpcError('TASK_BUSY','Stop delegated work before changing group members');
+        if(Object.values(state.groupPlans??{}).some(plan=>plan.view.groupId===id&&(['preparing','running','permission','stopping','unknown'].includes(plan.view.execution.state)||plan.attempts.some(attempt=>attempt.phase==='answered')))||Object.values(state.groupPlanRequests??{}).some(request=>request.view.groupId===id&&['planning','unknown'].includes(request.view.status)))throwIpcError('PLAN_BUSY','Stop active work and publish pending results before changing group members');
         const nextIds = this.validateMembers(state, args.botIds);
-        for (const lane of Object.values(group.lanes)) if (!nextIds.includes(lane.botId)) lane.retired = true;
+        for (const lane of Object.values(group.lanes)) if (!nextIds.includes(lane.botId)) {lane.retired = true;lane.cleanupPending??=true;}
+        for(const plan of Object.values(state.groupPlans??{}).filter(plan=>plan.view.groupId===id))for(const [botId,lane]of Object.entries(plan.lanes))if(!nextIds.includes(botId)){lane.retired=true;lane.cleanupPending??=true;(plan.retiredLanes??=[]).push(lane);delete plan.lanes[botId];}
         group.botIds = nextIds;
         if (round?.status === 'waiting') { round.status = 'stopped'; round.code = 'MEMBERS_CHANGED'; }
       } else {
@@ -172,21 +198,18 @@ export class CompanionGroups {
         if (args.replyMode !== undefined) { if (args.replyMode !== 'all' && args.replyMode !== 'mentioned') throwIpcError('INVALID_PARAMS', 'Invalid reply mode'); group.replyMode = args.replyMode; }
       }
       group.revision++; group.updatedAt = Date.now();
-      return members ? Object.values(group.lanes).filter(lane => lane.retired) : [];
+      return members ? [...Object.values(group.lanes).filter(lane => lane.retired),...Object.values(state.groupPlans??{}).filter(plan=>plan.view.groupId===id).flatMap(plan=>plan.retiredLanes??[])] : [];
       });
-      const driver = this.makeDriver(paseo); for (const lane of retired) await driver.archive(lane);
+      await this.reconcileCleanup(paseo,id,retired);
     });
     return this.get(paseo, id);
   }
-  async send(paseo: Paseo, id: string, args: Record<string, unknown>) {
+  async send(paseo: Paseo, id: string, args: Record<string, unknown>, sourceMessageId?:string) {
     await this.init(paseo);
+    groupIn(await this.store.snapshot(),id);
     const text = string(args.text, 'group message', 32000); if (text.length > 8000) throwIpcError('INVALID_PARAMS', 'Group messages are limited to 8000 characters');
     const requestKey = digest(string(args.clientMessageId, 'clientMessageId', 200));
-    let tracked: BotGroupTrackedMention[] = [];
-    if (args.trackedMentions !== undefined) {
-      if (!Array.isArray(args.trackedMentions) || args.trackedMentions.length > 100) throwIpcError('INVALID_PARAMS', 'Invalid mentions');
-      tracked = args.trackedMentions.map(raw => { const value = record(raw); if (!Number.isSafeInteger(value.start) || Number(value.start) < 0) throwIpcError('INVALID_PARAMS', 'Invalid mention position'); return { botId: botId(value.botId), label: string(value.label, 'mention label', 200), start: Number(value.start) }; });
-    }
+    const tracked=parseTrackedMentions(args.trackedMentions);
     const fingerprint = digest([text, tracked]);
     const value = await this.serial(id, () => this.store.transaction(state => {
       const group = groupIn(state, id); const receipt = group.receipts[requestKey];
@@ -194,11 +217,13 @@ export class CompanionGroups {
         if (receipt.fingerprint !== fingerprint) throwIpcError('IDEMPOTENCY_CONFLICT', 'Message key belongs to different content');
         return { accepted: true as const, message: group.messages.find(message => message.id === receipt.messageId)!, round: group.rounds.find(round => round.id === receipt.roundId) ?? null };
       }
+      if(Object.values(state.groupPlanRequests??{}).some(request=>request.view.groupId===id&&['planning','unknown'].includes(request.view.status)))throwIpcError('PLAN_OPEN','The organizer is still arranging work');
       const current = roundOf(group);
       const members = group.botIds.map(botId => ({ botId, name: state.profiles[botId]?.name ?? botId }));
       const mentions = resolveBotGroupMentions(text, { members, tracked, allLabels: ['all', 'everyone', '所有人', '全部', '大家'] });
       for (const id of mentions.botIds) if (!group.botIds.includes(id)) throwIpcError('MEMBER_UNAVAILABLE', 'A mentioned companion has left this group');
       const responders = mentions.all ? group.botIds : mentions.botIds.length ? mentions.botIds : group.replyMode === 'all' ? group.botIds : [];
+      if(responders.length&&!mentions.all&&!mentions.botIds.length&&Object.values(state.groupPlans??{}).some(plan=>plan.view.groupId===id&&['proposed','running','waiting'].includes(plan.view.status)))throwIpcError('PLAN_OPEN','Send this addition to the current work arrangement');
       if (responders.length && current && (current.status === 'unknown' || current.status === 'stopping')) throwIpcError('GROUP_BUSY', 'The current discussion stop must be confirmed before sending another request');
       for (const id of responders) { const p = state.profiles[id]; if (!p || p.status !== 'active' || !p.enabled) throwIpcError('MEMBER_UNAVAILABLE', 'A responding companion is unavailable'); }
       if (responders.length && current && active(current.status) && !mentions.all && mentions.botIds.length === 0) {
@@ -211,7 +236,10 @@ export class CompanionGroups {
       const sideReply = Boolean(responders.length && current && active(current.status));
       if (responders.length && current?.status === 'waiting') { current.status = 'stopped'; current.code = 'SUPERSEDED'; current.updatedAt = Date.now(); }
       const roundId = responders.length ? randomUUID() : undefined;
-      const message = append(group, { authorKind: 'user', authorName: 'You', kind: 'message', content: text, mentions, ...(roundId ? { roundId } : {}) });
+      const existing=sourceMessageId?group.messages.find(message=>message.id===sourceMessageId&&message.authorKind==='user'&&message.content===text):undefined;
+      if(sourceMessageId&&!existing)throwIpcError('NOT_FOUND','Planning source message not found');
+      const message = existing??append(group, { authorKind: 'user', authorName: 'You', kind: 'message', content: text, mentions, ...(roundId ? { roundId } : {}) });
+      if(existing){existing.mentions=mentions;existing.roundId=roundId;}
       const round: GroupRound | null = roundId ? { id: roundId, sourceMessageId: message.id, status: 'queued', kind: sideReply || responders.length === 1 ? 'reply' : 'talk', steps: responders.map(botId => ({ botId, botName: state.profiles[botId]!.name, status: 'queued' })), position: 0, autoThrough: sideReply ? responders.length : Math.min(5, responders.length), createdAt: Date.now(), updatedAt: Date.now() } : null;
       if (round) { group.rounds.push(round); if (sideReply) (group.pendingRoundIds ??= []).push(round.id); else group.activeRoundId = round.id; }
       group.receipts[requestKey] = { fingerprint, messageId: message.id, roundId };
@@ -226,6 +254,7 @@ export class CompanionGroups {
       const group = groupIn(state, id); const round = group.rounds.find(round => round.id === roundId);
       if (!round) throwIpcError('PRECONDITION_FAILED', 'Discussion changed');
       if (group.continueKeys[key]) { if (group.continueKeys[key] !== roundId) throwIpcError('IDEMPOTENCY_CONFLICT', 'Continue key belongs to another discussion'); return round; }
+      if(Object.values(state.groupPlans??{}).some(plan=>plan.view.groupId===id&&['proposed','running','waiting'].includes(plan.view.status)))throwIpcError('PLAN_OPEN','Finish the current work arrangement before continuing discussion');
       if (round.status !== 'waiting') throwIpcError('PRECONDITION_FAILED', 'This discussion is not waiting to continue');
       const current = roundOf(group);
       if (current?.status === 'unknown' || current?.status === 'stopping') throwIpcError('GROUP_BUSY', 'Confirm the current stop before continuing');
@@ -275,11 +304,14 @@ export class CompanionGroups {
         laneKey ??= `main:${p.id}:${randomUUID()}`;
         let lane = group.lanes[laneKey];
         const cwd = lane?.cwd ?? join(this.store.root, 'groups', id, main ? 'main' : roundId, main ? randomUUID() : p.id, 'workspace');
-        const config = await this.runtime.nativeConfigFor(paseo, p.id, cwd);
+        const agentId=lane?.agentId??randomUUID();
+        // Existing memory-only lanes retain their original grant until a real host refresh is available.
+        const sessionScope=lane&&!lane.sessionScope?undefined:{agentId,role:'group' as const,groupId:id};
+        const config = await this.runtime.nativeConfigFor(paseo, p.id, cwd,sessionScope);
         if (!lane) {
           await this.store.safePath(cwd); await mkdir(cwd, { recursive: true, mode: 0o700 }); await this.store.safePath(cwd);
           if (signal.aborted) return;
-          const intent: GroupLane = { agentId: randomUUID(), operationId: `cindy-group:${id}:${roundId}:${p.id}`, groupId: id, roundId, botId: p.id,
+          const intent: GroupLane = { agentId, sessionScope, operationId: `cindy-group:${id}:${roundId}:${p.id}`, groupId: id, roundId, botId: p.id,
             cwd, title: `${group.name} · ${p.name}`, config, scope: main ? 'main' : 'talk', phase: 'creating' };
           lane = await this.store.transaction(state => { const g = groupIn(state, id); return g.lanes[laneKey] ?? (g.lanes[laneKey] = intent); });
         }
@@ -293,9 +325,11 @@ export class CompanionGroups {
           if (!driver.configure) throwIpcError('HOST_UPGRADE_REQUIRED', 'This host cannot refresh the existing group conversation');
           await driver.configure(lane, config);
         }
-        await this.store.transaction(state => {
-          const g = groupIn(state, id); const l = g.lanes[laneKey]!; l.phase = 'ready'; l.workspaceId = native.workspaceId; l.config = config; l.roundId = roundId;
+        lane=await this.store.transaction(state => {
+          const g = groupIn(state, id); const l = g.lanes[laneKey]!; l.phase = 'ready'; l.workspaceId = native.workspaceId; l.config = config; l.roundId = roundId;l.sessionScope=sessionScope;
+          l.dispatch=prepareLaneDispatch(`cindy-group-${roundId}-${index}`);
           const r = roundOf(g)!; if (r.id === roundId) Object.assign(r.steps[index]!, { agentId: lane.agentId, workspaceId: native.workspaceId });
+          return l;
         });
         if (signal.aborted || this.closed) { await driver.stop(lane); return; }
         await this.store.transaction(state => { const r = roundOf(groupIn(state, id))!; if (r.id === roundId && !signal.aborted && r.status !== 'stopping') { r.status = 'running'; r.steps[index]!.status = 'running'; r.updatedAt = Date.now(); } });
@@ -303,6 +337,7 @@ export class CompanionGroups {
         const current = groupIn(await this.store.snapshot(), id);
         const includedNotes = [...(roundOf(current)?.noteMessageIds ?? [])];
         const reply = await driver.reply(lane, { prompt: groupTurnPrompt(current, roundOf(current)!, index), messageId: `cindy-group-${roundId}-${index}`, signal,
+          recordDispatch:async receipt=>{await this.store.transaction(state=>{const stored=state.groups![id]!.lanes[laneKey]!;if(stored.agentId!==lane.agentId||stored.dispatch?.messageId!==receipt.messageId)throwIpcError('GROUP_LANE_MISMATCH','Discussion admission changed');stored.dispatch=receipt;});},
           permission: waiting => { void this.store.transaction(state => { const r = roundOf(state.groups![id]!); if (r?.id === roundId && !signal.aborted && active(r.status) && r.status !== 'stopping') { r.status = waiting ? 'permission' : 'running'; r.steps[index]!.status = waiting ? 'permission' : 'running'; } }).catch(() => {}); } });
         if (signal.aborted || this.closed) return;
         await this.store.transaction(state => {
@@ -321,11 +356,12 @@ export class CompanionGroups {
       } catch (error) {
         if (signal.aborted || this.closed) return;
         const latest = groupIn(await this.store.snapshot(), id); const lane = Object.values(latest.lanes).find(lane => lane.roundId === roundId && lane.botId === step.botId);
-        let stopped = true;
-        if (lane) { try { await driver.stop(lane); } catch { stopped = false; } }
+        let stopCode:string|undefined;
+        if (lane) { try { await driver.stop(lane); } catch(error) { stopCode=stopFailureCode(error); } }
+        const stopped=!stopCode;
         const proceed = await this.store.transaction(state => {
           const g = groupIn(state, id); const r = roundOf(g)!; if (r.id !== roundId || signal.aborted) return;
-          const code = stopped ? publicFailure(error) : 'STOP_NOT_CONFIRMED';
+          const code = stopCode??publicFailure(error);
           Object.assign(r.steps[index]!, { status: stopped ? 'failed' : 'unknown', code }); r.code = code;
           append(g, { authorKind: 'system', authorName: 'System', kind: 'notice', content: `${step.botName} could not complete this turn.`, roundId, code });
           // A failed teammate does not silence other members. An unconfirmed native
@@ -356,7 +392,7 @@ export class CompanionGroups {
         const group = groupIn(state, id);
         for (const queued of group.rounds) if (queued.id !== r.id && ['queued', 'waiting'].includes(queued.status)) { queued.status = 'stopped'; queued.code = 'USER_STOPPED'; }
         group.pendingRoundIds = [];
-        if (!['completed', 'stopped', 'interrupted', 'failed'].includes(r.status)) { r.status = 'stopping'; r.updatedAt = Date.now(); }
+        if (!['completed', 'stopped', 'interrupted', 'failed'].includes(r.status)) { r.stopRequested=true;r.status = 'stopping'; r.updatedAt = Date.now(); }
         return r;
       });
       if (round.status !== 'stopping') return;
@@ -373,36 +409,56 @@ export class CompanionGroups {
     // Drain creation/send so an agent created after Stop cannot escape cancellation.
     if (job) await job.promise;
     const group = groupIn(await this.store.snapshot(), id); const driver = job?.driver ?? this.makeDriver(paseo);
-    let failure = false;
-    for (const lane of Object.values(group.lanes).filter(lane => lane.roundId === roundId)) { try { await driver.stop(lane); } catch { failure = true; } }
+    let failure:string|undefined;
+    for (const lane of Object.values(group.lanes).filter(lane => lane.roundId === roundId)) { try { await driver.stop(lane); } catch(error) { failure=stopFailureCode(error); } }
     await this.store.transaction(state => {
       const r = roundOf(groupIn(state, id))!; if (r.id !== roundId) return;
-      r.status = failure ? 'unknown' : 'stopped'; r.code = failure ? 'STOP_NOT_CONFIRMED' : undefined; r.updatedAt = Date.now();
-      for (const step of r.steps) if (['running', 'permission', 'queued'].includes(step.status)) step.status = failure ? 'unknown' : 'stopped';
+      r.status = failure ? 'unknown' : 'stopped'; r.code = failure; r.updatedAt = Date.now();
+      for (const step of r.steps) if (['running', 'permission', 'queued','unknown'].includes(step.status)) {step.status = failure ? 'unknown' : 'stopped';step.code=failure;}
     });
   }
   async remove(paseo: Paseo, id: string, expectedRevision: unknown) {
     await this.init(paseo);
     return this.serial(id, async () => {
-      const group = groupIn(await this.store.snapshot(), id);
+      const state=await this.store.transaction(state=>{
+      const group=groupIn(state,id,true);
+      if(Object.values(state.companionTasks??{}).some(task=>task.owner.scope.groupId===id&&taskNeedsSettlement(task)))throwIpcError('TASK_BUSY','Stop delegated work before deleting this group');
+      if(Object.values(state.groupPlans??{}).some(plan=>plan.view.groupId===id&&(['proposed','running','waiting'].includes(plan.view.status)||plan.view.execution.state==='unknown'))||Object.values(state.groupPlanRequests??{}).some(request=>request.view.groupId===id&&['planning','unknown'].includes(request.view.status)))throwIpcError('PLAN_OPEN','Stop the work arrangement before deleting this group');
       if (expectedRevision !== group.revision) throwIpcError('PRECONDITION_FAILED', 'Group changed');
       if (roundOf(group) && (active(roundOf(group)!.status) || roundOf(group)!.status === 'unknown')) throwIpcError('GROUP_BUSY', 'Stop the discussion before deleting the group');
-      const driver = this.makeDriver(paseo); for (const lane of Object.values(group.lanes)) await driver.archive(lane);
-      await this.store.transaction(state => { const g = groupIn(state, id); g.deletedAt = Date.now(); g.revision++; });
+      group.mutation='deleting';for(const lane of groupLanes(state,id))lane.cleanupPending=true;return state;
+      });
+      const group=state.groups![id]!;
+      const failures=await this.reconcileCleanup(paseo,id,groupLanes(state,id));if(failures.length)throw failures[0];
+      await this.store.transaction(state => { const g = groupIn(state, id,true); g.deletedAt = Date.now(); g.revision++;delete g.mutation; });
       return { deleted: true as const, groupId: id };
     });
   }
+  private async reconcileCleanup(paseo:Paseo,id:string,lanes:GroupLane[]){
+    const driver=this.makeDriver(paseo),failures:unknown[]=[];
+    for(const lane of lanes){let error:unknown;try{await driver.archive(lane);}catch(value){error=value;failures.push(value);}
+      await this.store.transaction(state=>{const stored=groupLanes(state,id).find(value=>value.agentId===lane.agentId);if(!stored)return;stored.cleanupPending=Boolean(error);stored.cleanupCode=error?((error as {code?:string})?.code??'CLEANUP_NOT_CONFIRMED'):undefined;
+        const request=Object.values(state.groupPlanRequests??{}).find(value=>value.lane?.agentId===lane.agentId);if(request){request.cleanupPending=stored.cleanupPending;request.view.cleanupPending=stored.cleanupPending;request.view.cleanupCode=stored.cleanupCode;}
+      });
+    }return failures;
+  }
+  async cleanup(paseo:Paseo,id:string){await this.init(paseo);await this.serial(id,async()=>{const state=await this.store.snapshot();groupIn(state,id,true);await this.reconcileCleanup(paseo,id,groupLanes(state,id).filter(lane=>lane.cleanupPending));});return this.get(paseo,id);}
   async close() {
-    this.closed = true; await Promise.allSettled([...this.locks.values()]);
+    this.closed = true;
+    // Asset-only use never opens the companion store. Closing an unused group
+    // service must not initialize profiles or write state just to drain no work.
+    if (!this.initialized) return;
+    await this.initialized.catch(() => {});
+    await Promise.allSettled([...this.locks.values()]);
     for (const job of this.jobs.values()) job.controller.abort();
     const jobs = [...this.jobs.entries()]; await Promise.allSettled(jobs.map(([, job]) => job.promise));
     await Promise.allSettled([...this.stops.values()]);
     for (const [id, job] of jobs) {
       const group = (await this.store.snapshot()).groups?.[id]; const round = group && roundOf(group); if (!group || !round) continue;
-      let failed = false;
-      for (const lane of Object.values(group.lanes).filter(lane => lane.roundId === round.id)) { try { await job.driver.stop(lane); } catch { failed = true; } }
+      let failed:string|undefined;
+      for (const lane of Object.values(group.lanes).filter(lane => lane.roundId === round.id)) { try { await job.driver.stop(lane); } catch(error) { failed=stopFailureCode(error); } }
       await this.store.transaction(state => {
-        const r = roundOf(state.groups![id]!); if (r?.id === round.id && active(r.status)) { r.status = failed ? 'unknown' : 'interrupted'; r.code = failed ? 'STOP_NOT_CONFIRMED' : 'PLUGIN_CLOSED';
+        const r = roundOf(state.groups![id]!); if (r?.id === round.id && active(r.status)) { r.status = failed ? 'unknown' : 'interrupted'; r.code = failed??'PLUGIN_CLOSED';
           for (const step of r.steps) if (['queued', 'running', 'permission'].includes(step.status)) step.status = failed ? 'unknown' : 'stopped'; }
         const group = state.groups![id]!; for (const other of group.rounds) if (other.id !== r?.id && other.status === 'queued') { other.status = 'interrupted'; other.code = 'PLUGIN_CLOSED'; } group.pendingRoundIds = [];
       });

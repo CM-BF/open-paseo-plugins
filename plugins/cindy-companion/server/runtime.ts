@@ -6,6 +6,7 @@ import type { BotModelRoute } from '../shared/vendor/botModelChain';
 import { CompanionStore, type Binding } from './store';
 import { CompanionError, throwIpcError } from './errors';
 import { verifyPackagedSkills } from './presets/skills';
+import type { SessionScope } from '../shared/session-scope';
 
 export type Paseo = PluginHandlerContext['paseo'];
 export const COMPANION_CONTEXT_GUIDANCE = 'Discover the MCP tool by server cindy_memory and tool basename companion_context, then call its actual registered name. Hosts may expose it as cindy_memory.companion_context or mcp__cindy_memory__companion_context. When a tool registry such as ALL_TOOLS is available, match both cindy_memory and companion_context in its name or metadata; do not require a dot separator. A failed exact-name search does not establish that the plugin is disabled. If discovery or the actual call fails, stop and report that specific failure.';
@@ -40,18 +41,18 @@ export class CompanionRuntime {
   private readonly store: CompanionStore;
   private readonly ensureJobs = new Map<string, Promise<{ profile: CompanionProfile; agentId: string; workspaceId: string | null; runtime: RuntimeState }>>();
   private readonly applyJobs = new Map<string, Promise<unknown>>();
-  private mcpFactory?: (botId: string) => Promise<Record<string, unknown>>;
+  private mcpFactory?: (botId: string, scope?: SessionScope) => Promise<Record<string, unknown>>;
   private disposed = false;
   constructor(store: CompanionStore) { this.store = store; }
-  setMcpFactory(factory: (botId: string) => Promise<Record<string, unknown>>) { this.mcpFactory = factory; }
-  async instructionsFor(id: string) {
+  setMcpFactory(factory: (botId: string, scope?: SessionScope) => Promise<Record<string, unknown>>) { this.mcpFactory = factory; }
+  async instructionsFor(id: string, scope?: SessionScope) {
     await this.store.reconcile(id);
     const profile = await this.store.get(id);
     const skills = await verifyPackagedSkills(this.store, profile);
-    return { systemPrompt: [this.systemPrompt(profile), skills.systemPromptSuffix].filter(Boolean).join('\n\n'), ...(this.mcpFactory ? { mcpServers: { cindy_memory: await this.mcpFactory(id) } } : {}) };
+    return { systemPrompt: [this.systemPrompt(profile), skills.systemPromptSuffix].filter(Boolean).join('\n\n'), ...(this.mcpFactory ? { mcpServers: { cindy_memory: await this.mcpFactory(id, scope) } } : {}) };
   }
   /** Native lane config shared by group and owned background work. */
-  async nativeConfigFor(paseo: Paseo, id: string, cwd: string): Promise<Record<string, unknown>> {
+  async nativeConfigFor(paseo: Paseo, id: string, cwd: string, scope?: SessionScope): Promise<Record<string, unknown>> {
     await this.store.reconcile(id); const profile = await this.store.get(id);
     const skills = await verifyPackagedSkills(this.store, profile);
     if (profile.skills.some(skill => !skills.supportedSkillIds.includes(skill)) || profile.capabilities.mcpServers.length || profile.capabilities.toolsets.length)
@@ -70,9 +71,20 @@ export class CompanionRuntime {
       if (features.error) throwIpcError('PROVIDER_FEATURES_UNAVAILABLE', features.error);
       const feature = resolveFastFeature(features.features ?? [], route.fastMode); featureValues = { [feature.id]: feature.value };
     }
-    return { provider: `${provider}/${route.model}`, modeId: mode, ...await this.instructionsFor(id),
+    return { provider: `${provider}/${route.model}`, modeId: mode, ...await this.instructionsFor(id, scope),
       ...(provider === 'codex' ? { options: { approval_policy: 'on-request', sandbox_mode: 'workspace-write' } } : {}),
       ...(route.effort ? { thinkingOptionId: route.effort } : {}), ...(featureValues ? { featureValues } : {}) };
+  }
+  /** A plain delegated task inherits the selected task model, never the companion's identity or memory. */
+  async taskConfigFor(paseo:Paseo,id:string,cwd:string):Promise<Record<string,unknown>>{
+    const profile=await this.store.get(id),route=profile.capabilities.taskModelOverride??selectedRoute(profile)??await this.defaultRoute(paseo,id);
+    if(route.agentDeviceId)throwIpcError('UNSUPPORTED','Remote delegated sessions are not available');
+    const provider=routeProvider(route),mode=provider==='codex'?'auto':provider==='claude'?'default':null;
+    const catalog=await this.catalog(paseo,id);if(!mode||!catalog.entries.find(e=>e.provider===provider)?.modes?.some(m=>m.id===mode))throwIpcError('PERMISSION_MODE_UNAVAILABLE','The task provider has no verified ask-permission mode');
+    let featureValues:Record<string,unknown>|undefined;
+    if(route.fastMode){const features=await paseo.providers.listFeatures({provider:`${provider}/${route.model}`,cwd});if(features.error)throwIpcError('FEATURE_UNAVAILABLE',features.error);const feature=resolveFastFeature(features.features??[],route.fastMode);featureValues={[feature.id]:feature.value};}
+    return{provider:`${provider}/${route.model}`,modeId:mode,...(route.effort?{thinkingOptionId:route.effort}:{}),...(featureValues?{featureValues}:{}),
+      ...(provider==='codex'?{options:{approval_policy:'on-request',sandbox_mode:'workspace-write'}}:{})};
   }
   async close(): Promise<void> { this.disposed = true; await Promise.allSettled([...this.ensureJobs.values(), ...this.applyJobs.values()]); }
   private assertOpen() { if (this.disposed) throwIpcError('PLUGIN_CLOSED', 'Companion plugin is closing'); }
@@ -86,8 +98,10 @@ export class CompanionRuntime {
     const b = state.bindings[id];
     const base = { agentId: b?.agentId ?? null, workspaceId: b?.workspaceId ?? null, desiredVersion: p.currentVersion, appliedVersion: b?.appliedVersion ?? null,
       configuredModel: selectedRoute(p), appliedModel: b ? selectedRoute({ ...p, capabilities: b.appliedCapabilities }) : null };
+    if(state.profileDeletions?.[id])return{...base,state:'error',code:'COMPANION_DELETING',message:'Deletion is awaiting native cleanup. Retry Delete to complete it.'};
     if (!b) return { ...base, state: 'not-created' };
     if (b.phase !== 'ready') return { ...base, state: b.phase === 'unknown' ? 'unknown' : 'creating', code: b.phase === 'unknown' ? 'CREATE_OUTCOME_UNKNOWN' : undefined, message: b.error };
+    if(this.mcpFactory&&!b.sessionScope)return{...base,state:'pending',code:'SESSION_TOOLS_REFRESH_REQUIRED',message:'Memory remains available. Collaboration tools require a host instruction refresh for this existing session.'};
     const applied = b.appliedProfile ?? state.versions[id]?.find(v => v.version === b.appliedVersion)?.profile;
     if (applied && sameRuntimeProfile(p, applied)) return { ...base, state: 'ready' };
     if (applied && JSON.stringify([p.skills, p.capabilities.skillMode, p.capabilities.skillsExcluded, p.capabilities.mcpServers, p.capabilities.mcpMode, p.capabilities.toolsets, p.capabilities.toolsetMode]) !==
@@ -131,6 +145,7 @@ export class CompanionRuntime {
     this.assertOpen();
     await this.store.reconcile(id);
     let profile = await this.store.get(id);
+    if((await this.store.snapshot()).profileDeletions?.[id])throwIpcError('COMPANION_DELETING','Finish companion deletion before starting a conversation');
     if (!profile.enabled || profile.status !== 'active') throwIpcError('PRECONDITION_FAILED', 'Companion is paused or archived');
     let binding = (await this.store.snapshot()).bindings[id];
     if (binding && this.mcpFactory) {
@@ -153,10 +168,12 @@ export class CompanionRuntime {
         if (catalog.error) throwIpcError('PROVIDER_FEATURES_UNAVAILABLE', catalog.error);
         const feature = resolveFastFeature(catalog.features ?? [], route.fastMode); featureValues = { [feature.id]: feature.value };
       }
-      const config: Record<string, unknown> = { provider: `${routeProvider(route)}/${route.model}`, ...await this.instructionsFor(id),
+      const agentId=randomUUID();
+      const sessionScope:SessionScope={agentId,role:'canonical'};
+      const config: Record<string, unknown> = { provider: `${routeProvider(route)}/${route.model}`, ...await this.instructionsFor(id,sessionScope),
         ...(featureValues ? { featureValues } : {}),
         ...(route.effort ? { thinkingOptionId: route.effort } : {}) };
-      const intent: Binding = { agentId: randomUUID(), operationId: `cindy-companion:${id}:${randomUUID()}`, phase: 'creating',
+      const intent: Binding = { agentId, sessionScope, operationId: `cindy-companion:${id}:${randomUUID()}`, phase: 'creating',
         profileVersion: profile.currentVersion, config, cwd: join(profile.homeDir, 'workspace'), title: profile.name,
         appliedVersion: null, appliedCapabilities: { ...profile.capabilities, modelChain: [route] }, appliedProfile: structuredClone(profile) };
       binding = await this.store.transaction(state => state.bindings[id] ?? (state.bindings[id] = intent));
@@ -201,15 +218,17 @@ export class CompanionRuntime {
     const state = await this.store.snapshot(); const b = state.bindings[id]; const p = state.profiles[id]!;
     if (!b || b.phase !== 'ready') return modelState;
     const applied = b.appliedProfile ?? state.versions[id]!.find(v => v.version === b.appliedVersion)?.profile;
-    if (!applied || (applied.identitySource === p.identitySource && applied.userContextSource === p.userContextSource && applied.capabilities.memory === p.capabilities.memory)) return modelState;
+    if (!applied || (b.sessionScope && applied.identitySource === p.identitySource && applied.userContextSource === p.userContextSource && applied.capabilities.memory === p.capabilities.memory)) return modelState;
     const agent = paseo.agents.ref(b.agentId) as EvolvingAgent;
     if (!agent.updateInstructions) return modelState;
     await agent.refresh();
     if (agent.activeTurn || agent.status === 'running' || agent.status === 'initializing' || agent.pendingPermissions?.length) return { ...modelState, code: 'AGENT_BUSY', message: 'Saved; instructions will apply after the active turn and pending permissions are settled.' };
-    const instructions = await this.instructionsFor(id);
+    const sessionScope:SessionScope={agentId:b.agentId,role:'canonical'};
+    const instructions = await this.instructionsFor(id,sessionScope);
     this.assertOpen(); await agent.updateInstructions(instructions);
     await this.store.transaction(draft => {
       const current = draft.bindings[id]!;
+      current.sessionScope=sessionScope;current.config={...current.config,...instructions};
       current.appliedProfile = { ...applied, identitySource: p.identitySource, userContextSource: p.userContextSource,
         capabilities: { ...applied.capabilities, memory: p.capabilities.memory } };
       if (sameRuntimeProfile(draft.profiles[id]!, current.appliedProfile)) current.appliedVersion = p.currentVersion;

@@ -246,3 +246,58 @@ test('ready frame Escape asks the original page to flush before the host closes'
   assert.equal(state.events.at(-1), 'close');
   act(() => renderer.unmount());
 });
+
+test('work artifact navigation verifies against the captured host and does not navigate after a host switch', async () => {
+  const state = setupFrame(); let renderer; const opened = [];
+  const props = host => ({ ...state.props(host), init: { ...state.props(host).init, view: 'group', groupId: 'one' }, onOpenWorkFile: input => opened.push(input) });
+  await act(async () => { renderer = create(React.createElement(SettingsFrame, props('a')), { createNodeMock: state.createNodeMock }); });
+  const old = state.nodes.at(-1);
+  act(() => state.send(old, { type: 'request', id: 'file-a', op: 'paseo.openWorkArtifact', args: { groupId: 'one', planId: 'plan', position: 0, path: 'report.md' } }));
+  await flush(); assert.equal(state.calls[0].op, 'groups.plans.artifact'); assert.equal(state.calls[0].host, 'a');
+  act(() => renderer.update(React.createElement(SettingsFrame, props('b'))));
+  await act(async () => state.calls[0].resolve({ ok: true, value: { workspaceId: 'wks_a', path: 'report.md' } }));
+  assert.deepEqual(opened, []); assert.equal(old.messages.length, 0);
+  const current = state.nodes.at(-1);
+  act(() => state.send(current, { type: 'request', id: 'file-b', op: 'paseo.openWorkArtifact', args: { groupId: 'one', planId: 'plan', position: 0, path: 'report.md' } }));
+  await flush(); assert.equal(state.calls[1].host, 'b');
+  await act(async () => state.calls[1].resolve({ ok: true, value: { workspaceId: 'wks_b', path: 'report.md' } }));
+  assert.deepEqual(opened, [{ workspaceId: 'wks_b', path: 'report.md', serverId: 'b' }]);
+  assert.deepEqual(current.messages.at(-1).result, { ok: true, value: null });
+  act(() => renderer.unmount());
+});
+
+test('work artifacts report absent navigation, cross-group requests, and unsafe returned locations without opening a file', async () => {
+  const state = setupFrame(); let renderer; const opened = [];
+  const props = { ...state.props('a'), init: { ...state.props('a').init, view: 'group', groupId: 'one' } };
+  await act(async () => { renderer = create(React.createElement(SettingsFrame, props), { createNodeMock: state.createNodeMock }); });
+  const node = state.nodes.at(-1);
+  act(() => state.send(node, { type: 'request', id: 'missing', op: 'paseo.openWorkArtifact', args: { groupId: 'one' } }));
+  await flush(); assert.match(node.messages.at(-1).error, /Update the Paseo/); assert.equal(state.calls.length, 0);
+  act(() => renderer.update(React.createElement(SettingsFrame, { ...props, onOpenWorkFile: value => opened.push(value) })));
+  act(() => state.send(node, { type: 'request', id: 'foreign', op: 'paseo.openWorkArtifact', args: { groupId: 'two' } }));
+  await flush(); assert.match(node.messages.at(-1).error, /another group/); assert.equal(state.calls.length, 0);
+  for (const [i, path] of ['../secret', '/tmp/foreign', 'C:/foreign', 'file\\name'].entries()) {
+    act(() => state.send(node, { type: 'request', id: `unsafe-${i}`, op: 'paseo.openWorkArtifact', args: { groupId: 'one' } }));
+    await flush();
+    await act(async () => state.calls[i].resolve({ ok: true, value: { workspaceId: 'wks_a', path } }));
+    assert.match(node.messages.at(-1).error, /invalid work file/);
+  }
+  assert.deepEqual(opened, []);
+  act(() => renderer.unmount());
+});
+
+test('task artifacts retain the frozen result receipt and await native navigation failures', async () => {
+  const state = setupFrame(); let renderer; const navigation = deferred(); const opened = [];
+  const props = { ...state.props('a'), init: { ...state.props('a').init, view: 'group', groupId: 'one' },
+    onOpenWorkFile: input => { opened.push(input); return navigation.promise; } };
+  await act(async () => { renderer = create(React.createElement(SettingsFrame, props), { createNodeMock: state.createNodeMock }); });
+  const node = state.nodes.at(-1);
+  const args = { groupId: 'one', botId: 'cindy', taskId: 'task', parentAgentId: 'parent', receiptId: 'first-result', path: 'report.md' };
+  act(() => state.send(node, { type: 'request', id: 'file', op: 'paseo.openTaskArtifact', args }));
+  await flush(); assert.equal(state.calls[0].op, 'companion.tasks.artifact'); assert.deepEqual(state.calls[0].args, args);
+  await act(async () => state.calls[0].resolve({ ok: true, value: { workspaceId: 'wks_a', path: 'report.md' } }));
+  assert.equal(node.messages.length, 0); assert.deepEqual(opened, [{ workspaceId: 'wks_a', path: 'report.md', serverId: 'a' }]);
+  await act(async () => navigation.reject(new Error('Workspace changed')));
+  assert.match(node.messages.at(-1).error, /Workspace changed/);
+  act(() => renderer.unmount());
+});

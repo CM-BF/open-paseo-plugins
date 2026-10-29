@@ -168,3 +168,10 @@ The composer follows the upstream `showStop = running && draft is empty` rule. D
 `BotRosterView.tsx` retains the original 520px dialog, name field, random initial portrait, full 17-portrait picker/upload crop, first-model selection and original duplicate-name validation. The original creation page has no description field: it sends an empty description, later editable in Profile. `transform-roster.mjs` reproduces the host close, data-owner, portrait-preparation and asynchronous navigation guards. The external import button stays in its authored position but is disabled with an explicit unavailable-service label; the providers detour reports the unconnected host settings entry. Neither action fabricates an imported teammate or a provider connection.
 
 The bridge sends `{operationId,name,description,avatarImageBase64?,capabilities?:{modelChainOverride}}` to `profile.create`, preserving the same intent on retry. It checks for an actual usable inherited or explicit model and waits for the committed profile before opening the native conversation. Portrait bytes and the model override belong to the same host creation transaction. Original gallery/license provenance is unchanged.
+
+## Work arrangements and companion tasks
+
+The original group plan/task components and native timeline translation are recorded
+in [work-SOURCE.md](work-SOURCE.md) and [work-upstream-files.json](work-upstream-files.json).
+That inventory adds source code and original UI strings only, with no new external
+avatars, prompts, fonts or personal data.

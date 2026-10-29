@@ -160,8 +160,9 @@ export class CompanionRoutines {
   }
   /** Only exact directories recorded before native schedule creation belong to this adapter. */
   async beforeCreate(request: PluginBeforeRequests['agent.create'], paseo: Paseo): Promise<PluginBeforeRequests['agent.create']> {
-    const saved = Object.values((await this.store.snapshot()).routines).find(routine => routine.execution?.cwd === request.config.cwd);
+    const state=await this.store.snapshot();const saved = Object.values(state.routines).find(routine => routine.execution?.cwd === request.config.cwd);
     if (!saved?.execution) return request;
+    if(state.profileDeletions?.[saved.botId])throwIpcError('COMPANION_DELETING','The companion is being deleted');
     if (saved.phase !== 'ready') throwIpcError('SCHEDULE_OUTCOME_UNKNOWN', 'The owning routine is not confirmed');
     const profile = await this.store.get(saved.botId); const execution = saved.execution;
     const expectedCwd = join(profile.homeDir, 'routines', saved.data.id, 'workspace');
@@ -172,7 +173,14 @@ export class CompanionRoutines {
     const packaged = await verifyPackagedSkills(this.store, profile);
     if (profile.skills.some(skill => !packaged.supportedSkillIds.includes(skill)) || profile.capabilities.mcpServers.length || profile.capabilities.toolsets.length)
       throwIpcError('CAPABILITY_NOT_APPLIED', 'This routine cannot apply selected skills, external MCP servers or toolsets');
-    const instructions = await this.runtime.instructionsFor(saved.botId);
+    const agentId=(request as typeof request&{agentId?:unknown}).agentId;
+    let scope:import('../shared/session-scope').SessionScope|undefined;
+    if(agentId!==undefined){
+      if(typeof agentId!=='string'||! /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$/.test(agentId))throwIpcError('ROUTINE_BINDING_MISMATCH','Invalid native routine identity');
+      scope={agentId,role:'routine',routineId:saved.data.id};
+      await this.store.transaction(state=>{const previous=state.routineAgents?.[agentId];if(previous&&(previous.botId!==saved.botId||previous.routineId!==saved.data.id||previous.cwd!==execution.cwd))throwIpcError('ROUTINE_BINDING_MISMATCH','The native identity belongs to another routine');(state.routineAgents??={})[agentId]={botId:saved.botId,routineId:saved.data.id,cwd:execution.cwd,sessionScope:scope!};});
+    }
+    const instructions = await this.runtime.instructionsFor(saved.botId,scope);
     const featureValues = await this.features(paseo, execution.route, execution.cwd);
     return { ...request, config: { ...request.config, systemPrompt: instructions.systemPrompt,
       mcpServers: { ...request.config.mcpServers, ...instructions.mcpServers } as PluginBeforeRequests['agent.create']['config']['mcpServers'],

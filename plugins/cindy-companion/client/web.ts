@@ -26,6 +26,7 @@ export interface SettingsFrameProps {
   onChanged(): void;
   onNavigateAgent(agentId: string): void;
   onNavigateGroup?(groupId: string): void;
+  onOpenWorkFile?(input: { workspaceId: string; path: string; serverId: string }): void | Promise<void>;
   onHandle(handle: SettingsFrameHandle | null): void;
   onReady(): void;
 }
@@ -73,7 +74,27 @@ export function SettingsFrame(props: SettingsFrameProps): ReactElement | null {
         seen.add(message.id);
         inFlight++;
         const invoke = latest.current.invoke;
-        Promise.resolve().then(() => disposed ? undefined : invoke(message.op, (message.args ?? {}) as Record<string, unknown>))
+        const openWorkFile = latest.current.onOpenWorkFile;
+        const scope = latest.current.init;
+        Promise.resolve().then(async () => {
+          if (disposed) return;
+          const args = (message.args ?? {}) as Record<string, unknown>;
+          const artifactOp = message.op === 'paseo.openWorkArtifact' ? 'groups.plans.artifact'
+            : message.op === 'paseo.openTaskArtifact' ? 'companion.tasks.artifact' : undefined;
+          if (!artifactOp) return invoke(message.op, args);
+          if (!openWorkFile) throw new Error('Update the Paseo app to open work files from this card.');
+          if (scope.view !== 'group' || !scope.groupId || args.groupId !== scope.groupId) throw new Error('The work file belongs to another group.');
+          const result = await invoke(artifactOp, args) as { ok?: boolean; value?: { workspaceId?: unknown; path?: unknown }; message?: string };
+          if (disposed) return;
+          if (!result?.ok) return result;
+          const { workspaceId, path } = result.value ?? {};
+          if (typeof workspaceId !== 'string' || !workspaceId || typeof path !== 'string' || !path ||
+            /[\\\u0000-\u001f]/.test(path) || path.startsWith('/') || /^[a-z]:/i.test(path) || path.split('/').some(part => !part || part === '.' || part === '..')) {
+            throw new Error('The host returned an invalid work file location.');
+          }
+          await openWorkFile({ workspaceId, path, serverId: scope.host.id });
+          return { ok: true, value: null };
+        })
           .then(result => post({ type: "response", id: message.id, result }),
             error => post({ type: "response", id: message.id, error: error instanceof Error ? error.message : "Settings request failed" }))
           .finally(() => { inFlight--; });

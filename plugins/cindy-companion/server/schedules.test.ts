@@ -98,6 +98,18 @@ it('refuses routine creation when an explicit approval mode cannot be verified',
   await expect(service.routines.save(paseo, 'cindy', input())).rejects.toMatchObject({ code: 'PERMISSION_MODE_UNAVAILABLE' });
   expect(driver.create).not.toHaveBeenCalled();
 });
+it('signs a routine session only when the public hook supplies its real preallocated native id',async()=>{
+ const {service,store,paseo}=await setup();const scopes:unknown[]=[];
+ service.runtime.setMcpFactory(async(_id,scope)=>{scopes.push(scope);return{type:'http',url:'http://fixture.invalid'};});
+ const routine=await service.routines.save(paseo,'cindy',input()),saved=(await store.snapshot()).routines[routine.id]!;
+ const request={config:{provider:'codex',model:'test-model',cwd:saved.execution!.cwd}};
+ await service.routines.beforeCreate(request,paseo);expect(scopes.at(-1)).toBeUndefined();expect((await store.snapshot()).routineAgents).toBeUndefined();
+ const upgraded={...request,agentId:'native-routine-agent'};await service.routines.beforeCreate(upgraded,paseo);
+ expect(scopes.at(-1)).toEqual({agentId:'native-routine-agent',role:'routine',routineId:routine.id});
+ expect((await store.snapshot()).routineAgents?.['native-routine-agent']).toMatchObject({botId:'cindy',routineId:routine.id,cwd:saved.execution!.cwd});
+ await store.transaction(state=>{state.routineAgents!['native-routine-agent']!.routineId='foreign';});
+ await expect(service.routines.beforeCreate(upgraded,paseo)).rejects.toMatchObject({code:'ROUTINE_BINDING_MISMATCH'});
+});
 it('prefers the public schedule SDK and forwards the complete companion config', async () => {
   const { service, paseo, driver } = await setup();
   service.runtime.setMcpFactory(async () => ({ type: 'http', url: 'http://127.0.0.1/fake' }));

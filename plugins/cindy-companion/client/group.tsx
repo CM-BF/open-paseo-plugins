@@ -13,6 +13,9 @@ export function CompanionGroup(props: PluginScreenProps & { onOpenGroup(groupId:
   const queries = useQueryClient();
   const handle = useRef<SettingsFrameHandle | null>(null);
   const groupId = props.params.groupId;
+  const openFile = (props.navigation as (PluginScreenProps['navigation'] & {
+    openFile?: (input: { workspaceId: string; path: string; serverId?: string }) => void | Promise<void>;
+  }))?.openFile;
   return <View style={{ flex: 1, backgroundColor: props.theme.colors.surface0 }}>
     {canRenderSettingsFrame && groupId ? <SettingsFrame document={SETTINGS_HTML}
       init={{ host: props.host, botId: 'cindy', view: 'group', groupId, locale: 'en', theme: appearanceFromBackground(props.theme.colors.surface0) }}
@@ -20,6 +23,7 @@ export function CompanionGroup(props: PluginScreenProps & { onOpenGroup(groupId:
       onChanged={() => { void queries.invalidateQueries({ queryKey: companionsKey(props.host.id) }); }}
       onClose={() => { /* This is a main screen, not a dismissible dialog. */ }}
       onNavigateAgent={agentId => props.navigation?.openAgent({ agentId, serverId: props.host.id })}
+      onOpenWorkFile={openFile}
       onNavigateGroup={props.onOpenGroup} />
       : <Text style={{ padding: 24, color: props.theme.colors.foregroundMuted }}>Group chat currently opens in Paseo desktop and web.</Text>}
   </View>;

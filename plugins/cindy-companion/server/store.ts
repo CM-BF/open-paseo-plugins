@@ -16,12 +16,18 @@ import type { SavedGroup } from './groups';
 import type { SavedPresetReceipt, PresetRoutineDraft } from './presets/install-state';
 import { avatarDataUrl } from './avatar';
 import type { SavedPresetOpening } from './presets/opening';
+import type { SavedGroupWorkPlan } from './group-plans';
+import type { GroupPlanSettings } from '../shared/group-plans';
+import type { SavedPlanRequest } from './group-plan-organizer';
+import type { SessionScope } from '../shared/session-scope';
+import { taskNeedsSettlement, type SavedCompanionTask } from './companion-tasks';
 
 export interface Binding {
   agentId: string; workspaceId?: string; operationId: string; phase: 'creating' | 'ready' | 'unknown';
   profileVersion: number; config: Record<string, unknown>; cwd: string; title: string;
   appliedVersion: number | null; appliedCapabilities: CompanionCapabilities; error?: string;
   appliedProfile?: CompanionProfile;
+  sessionScope?: SessionScope;
 }
 interface ProfileVersion { version: number; at: number; profile: CompanionProfile }
 export interface SavedState {
@@ -30,6 +36,14 @@ export interface SavedState {
   voice: Record<string, unknown>; routines: Record<string, SavedRoutine>;
   groups?: Record<string, SavedGroup>;
   groupCreateKeys?: Record<string, { groupId: string; fingerprint: string }>;
+  groupPlans?: Record<string,SavedGroupWorkPlan>;
+  groupPlanSettings?: Record<string,GroupPlanSettings>;
+  groupPlanOperations?: Record<string,{fingerprint:string;planId:string}>;
+  groupPlanRequests?: Record<string,SavedPlanRequest>;
+  companionTasks?: Record<string,SavedCompanionTask>;
+  taskAgents?:Record<string,string>;
+  routineAgents?:Record<string,{botId:string;routineId:string;cwd:string;sessionScope:SessionScope}>;
+  profileDeletions?:Record<string,{requestedAt:number}>;
   presetImports?: Record<string, SavedPresetReceipt>;
   presetRoutineDrafts?: Record<string, PresetRoutineDraft>;
   presetOpenings?: Record<string, SavedPresetOpening>;
@@ -202,6 +216,7 @@ export class CompanionStore {
       const profile = state.profiles[id]; if (!profile) throwIpcError('NOT_FOUND', 'Companion not found');
       if (id === 'cindy') throwIpcError('DEFAULT_COMPANION', 'The default Cindy companion cannot be deleted');
       if (profile.name !== confirmName) throwIpcError('PRECONDITION_FAILED', 'Companion name changed; confirm again');
+      if(Object.values(state.companionTasks??{}).some(task=>task.owner.botId===id&&taskNeedsSettlement(task)))throwIpcError('TASK_BUSY','Stop delegated tasks before deleting the companion');
       const presetRoutineDrafts = Object.values(state.presetRoutineDrafts ?? {}).filter(draft => draft.botId === id);
       const presetOpenings = Object.values(state.presetOpenings ?? {}).filter(opening => opening.botId === id);
       (state.deletedProfiles ??= {})[id] = { profile, versions: state.versions[id] ?? [], binding: state.bindings[id], deletedAt: Date.now(),
@@ -209,6 +224,7 @@ export class CompanionStore {
       for (const draft of presetRoutineDrafts) delete state.presetRoutineDrafts![draft.data.id];
       for (const opening of presetOpenings) delete state.presetOpenings![opening.agentId];
       delete state.profiles[id]; delete state.versions[id]; delete state.bindings[id];
+      delete state.profileDeletions?.[id];
       for (const [key, value] of Object.entries(state.createKeys)) if (value === id) { delete state.createKeys[key]; delete state.createPayloads?.[key]; }
     });
   }

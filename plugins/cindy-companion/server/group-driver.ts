@@ -1,23 +1,37 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { randomUUID } from 'node:crypto';
 import type { Paseo } from './runtime';
 import { throwIpcError } from './errors';
-import { publicPaseoCli } from './host-cli';
+import type { SessionScope } from '../shared/session-scope';
 
 export interface GroupLane {
   agentId: string; operationId: string; groupId: string; roundId: string; botId: string;
   cwd: string; title: string; config: Record<string, unknown>; phase: 'creating' | 'ready' | 'unknown';
   workspaceId?: string;
   scope?: 'main' | 'talk'; retired?: boolean;
+  sessionScope?: SessionScope;
+  dispatch?: LaneDispatch;
+  cleanupPending?:boolean;
+  cleanupCode?:string;
+}
+/** Persisted before admission; a lost acknowledgement is never inferred from idle. */
+export interface LaneDispatch {
+  messageId:string; cancelMessageId:string;
+  phase:'prepared'|'dispatching'|'accepted'|'not-sent'|'unknown'|'completed';
+  turnId?:string; code?:string;
+}
+export const prepareLaneDispatch=(messageId:string):LaneDispatch=>({messageId,cancelMessageId:randomUUID(),phase:'prepared'});
+export function stopFailureCode(error:unknown):string {
+  const code=(error as {code?:string})?.code;
+  return ['ADMISSION_OUTCOME_UNKNOWN','GROUP_STOP_REQUIRES_NATIVE','GROUP_LANE_MISMATCH'].includes(code??'')?code!:'STOP_NOT_CONFIRMED';
 }
 export interface GroupDriver {
   ensure(lane: GroupLane): Promise<{ workspaceId?: string }>;
-  reply(lane: GroupLane, input: { prompt: string; messageId: string; signal: AbortSignal; permission: (waiting: boolean) => void }): Promise<string>;
+  reply(lane: GroupLane, input: { prompt: string; messageId: string; signal: AbortSignal; permission: (waiting: boolean) => void;timeoutMs?:number;requireIdleAdmission?:boolean;admitted?:(turnId:string)=>Promise<void>;recordDispatch?:(receipt:LaneDispatch)=>Promise<void> }): Promise<string>;
   stop(lane: GroupLane): Promise<void>;
   archive(lane: GroupLane): Promise<void>;
   configure?(lane: GroupLane, config: Record<string, unknown>): Promise<void>;
 }
-/** Uses only public Paseo APIs and the shipped public CLI on SDKs without interrupt(). */
+/** Background lanes are user-accessible: all dispatch and cancellation is turn-bound. */
 export class NativeGroupDriver implements GroupDriver {
   constructor(private readonly paseo: Paseo) {}
   async ensure(lane: GroupLane) {
@@ -58,40 +72,49 @@ export class NativeGroupDriver implements GroupDriver {
     if (instructionsChanged) await agent.updateInstructions!({ systemPrompt: String(config.systemPrompt ?? ''), mcpServers: (config.mcpServers ?? {}) as Record<string, unknown> });
   }
   async stop(lane: GroupLane) {
+    const receipt=lane.dispatch;
+    if(receipt&&['prepared','not-sent','completed'].includes(receipt.phase))return;
+    if(receipt&&['dispatching','unknown'].includes(receipt.phase)&&!receipt.turnId)
+      throwIpcError('ADMISSION_OUTCOME_UNKNOWN','Native admission is unconfirmed; do not resend or infer cancellation from idle');
     const agent = this.paseo.agents.ref(lane.agentId);
     if (!await agent.refresh()) {
       if (lane.phase !== 'ready') throwIpcError('STOP_NOT_CONFIRMED', 'Agent creation outcome is still unknown');
       return;
     }
-    if (agent.cwd !== lane.cwd) throwIpcError('GROUP_LANE_MISMATCH', 'Refusing to stop a different conversation');
-    if (!agent.activeTurn && agent.status !== 'running' && agent.status !== 'initializing') return;
-    const newer = agent as typeof agent & { interrupt?: () => Promise<unknown> };
-    if (newer.interrupt) await newer.interrupt();
-    else {
-      const cli = publicPaseoCli();
-      const result = await promisify(execFile)(cli.file, ['--home', cli.home, 'agent', 'stop', lane.agentId, '--json'], { timeout: 30000, maxBuffer: 1024 * 1024 });
-      const data = JSON.parse(result.stdout) as { stoppedCount?: number; agentIds?: string[] };
-      if (!Number.isSafeInteger(data.stoppedCount) || !Array.isArray(data.agentIds) || data.agentIds.some(id => id !== lane.agentId))
-        throwIpcError('STOP_NOT_CONFIRMED', 'The host did not confirm this conversation stop');
+    if (agent.cwd !== lane.cwd || (lane.workspaceId&&agent.workspaceId!==lane.workspaceId)) throwIpcError('GROUP_LANE_MISMATCH', 'Refusing to stop a different conversation');
+    const exact=agent as typeof agent&{cancelTurn?:(input:{expectedTurnId:string;messageId:string})=>Promise<{status:'cancelled'|'changed'|'unavailable'}>};
+    if(receipt?.turnId&&exact.cancelTurn){
+      try{
+        const result=await exact.cancelTurn({expectedTurnId:receipt.turnId,messageId:receipt.cancelMessageId});
+        if(result.status==='cancelled'||result.status==='changed')return;
+      }catch(error){if((error as {code?:string}).code!=='unsupported_capability')throw error;}
     }
-    await agent.refresh();
-    if (agent.activeTurn || agent.status === 'running' || agent.status === 'initializing') throwIpcError('STOP_NOT_CONFIRMED', 'The conversation has not stopped yet');
+    if (agent.activeTurn || agent.status === 'running' || agent.status === 'initializing' || agent.pendingPermissions?.length)
+      throwIpcError('GROUP_STOP_REQUIRES_NATIVE','This host cannot stop only the owned turn; stop it in the native session, then retry Stop');
   }
   async archive(lane: GroupLane) {
     await this.stop(lane);
     const agent = this.paseo.agents.ref(lane.agentId);
-    if (!await agent.refresh()) return;
+    if (!await agent.refresh()) {if(lane.phase!=='ready')throwIpcError('CLEANUP_NOT_CONFIRMED','Native creation may still complete; its absence is not confirmed');return;}
     if (agent.cwd !== lane.cwd) throwIpcError('GROUP_LANE_MISMATCH', 'Refusing to archive a different conversation');
-    if (!agent.archivedAt) await agent.archive();
+    // Public archive closes whatever turn is current. There is no atomic idle
+    // archive contract, so even an idle precheck cannot authorize auto-cleanup.
+    if (!agent.archivedAt) throwIpcError('GROUP_ARCHIVE_REQUIRES_NATIVE','Archive this conversation in Paseo, then confirm cleanup here');
   }
-  async reply(lane: GroupLane, input: { prompt: string; messageId: string; signal: AbortSignal; permission: (waiting: boolean) => void }): Promise<string> {
+  async reply(lane: GroupLane, input: Parameters<GroupDriver['reply']>[1]): Promise<string> {
     const agent = this.paseo.agents.ref(lane.agentId);
+    let receipt=lane.dispatch?.messageId===input.messageId?{...lane.dispatch}:prepareLaneDispatch(input.messageId);
+    const record=async(patch:Partial<LaneDispatch>)=>{receipt={...receipt,...patch};lane.dispatch=receipt;await input.recordDispatch?.({...receipt});};
+    if(!['prepared','not-sent'].includes(receipt.phase))throwIpcError('ADMISSION_OUTCOME_UNKNOWN','This input already has a native admission receipt; it cannot be resent');
     await agent.refresh();
-    if (agent.activeTurn || agent.status === 'running' || agent.status === 'initializing') throwIpcError('GROUP_LANE_BUSY', 'This group conversation is already running');
+    const busyCode=input.requireIdleAdmission?'TASK_BUSY':'GROUP_LANE_BUSY';
+    if (agent.activeTurn || agent.status === 'running' || agent.status === 'initializing' || agent.pendingPermissions?.length){await record({phase:'not-sent',code:busyCode});throwIpcError(busyCode, 'This native conversation is already running; the input was not sent');}
+    const guarded=agent as typeof agent&{sendIfIdle?:(text:string,options:{messageId:string})=>Promise<{status:'accepted';turnId:string}|{status:'busy'}|{status:'unavailable'}>};
+    if(!guarded.sendIfIdle){await record({phase:'not-sent',code:'HOST_UPGRADE_REQUIRED'});throwIpcError('HOST_UPGRADE_REQUIRED','This host cannot atomically dispatch input to an idle conversation');}
     if (input.signal.aborted) throwIpcError('GROUP_STOPPED', 'Group stopped');
     let accepted = false; let settled = false; let waitingPermission = false;
-    let dispatching = false; let started = false; let completed = false; let turnId: string | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined; let remaining = 2 * 60 * 60 * 1000; let runningSince = Date.now();
+    let dispatching = false; let started = false; let completed = false; let turnId: string | undefined;let endedTurnId:string|undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined; let remaining = input.timeoutMs??2 * 60 * 60 * 1000; let runningSince = Date.now();
     let resolve!: () => void; let reject!: (error: unknown) => void;
     const finished = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
     // Sending can fail while observation is already active.
@@ -124,6 +147,7 @@ export class NativeGroupDriver implements GroupDriver {
       }
       if (['turn_completed', 'turn_failed', 'turn_canceled'].includes(value.type)) {
         if (!started || ('turnId' in value && turnId && value.turnId !== turnId)) { fail('REPLY_NOT_CONFIRMED'); return; }
+        endedTurnId=turnId;
         if (value.type === 'turn_failed') { fail('RUNTIME_ERROR'); return; }
         if (value.type === 'turn_canceled') { fail('GROUP_STOPPED'); return; }
         completed = true; inspect();
@@ -134,9 +158,25 @@ export class NativeGroupDriver implements GroupDriver {
       await timeline.ready;
       if (settled) await finished;
       if (input.signal.aborted) throwIpcError('GROUP_STOPPED', 'Group stopped');
-      // This dedicated lane has no unrelated input. The explicit idle check precedes sending.
+      await record({phase:'dispatching'});
+      if(input.signal.aborted) {await record({phase:'not-sent',code:'GROUP_STOPPED'});throwIpcError('GROUP_STOPPED','Group stopped');}
       dispatching = true;
-      await agent.send(input.prompt, { messageId: input.messageId, activeTurnBehavior: 'steer' });
+      let admission:Awaited<ReturnType<NonNullable<typeof guarded.sendIfIdle>>>;
+      try{admission=await guarded.sendIfIdle(input.prompt,{messageId:input.messageId});}
+      catch(error){
+        // A method/feature rejection happens before dispatch. Every other lost
+        // acknowledgement stays uncertain; an idle snapshot cannot cancel it.
+        if((error as {code?:string}).code==='unsupported_capability'){await record({phase:'not-sent',code:'HOST_UPGRADE_REQUIRED'});throw error;}
+        await record({phase:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN'});
+        throw Object.assign(error instanceof Error?error:new Error(String(error)),{dispatchOutcome:'unknown'});
+      }
+      if(admission.status==='busy'){await record({phase:'not-sent',code:busyCode});throwIpcError(busyCode,'The conversation has another native turn; this input was not sent');}
+      if(admission.status==='unavailable'){await record({phase:'not-sent',code:'PROVIDER_ADMISSION_UNAVAILABLE'});throwIpcError('PROVIDER_ADMISSION_UNAVAILABLE','This provider cannot guarantee an idle-only turn; the input was not sent');}
+      if(admission.status!=='accepted'||typeof admission.turnId!=='string'||!admission.turnId){await record({phase:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN'});throw Object.assign(new Error('Invalid native admission receipt'),{code:'ADMISSION_OUTCOME_UNKNOWN',dispatchOutcome:'unknown'});}
+      await record({phase:'accepted',turnId:admission.turnId});
+      await input.admitted?.(admission.turnId);
+      if(turnId&&turnId!==admission.turnId)throwIpcError('REPLY_NOT_CONFIRMED','The native turn changed during admission');
+      turnId=admission.turnId;
       accepted = true; arm(); await agent.refresh(); inspect(); await finished;
       if (input.signal.aborted) throwIpcError('GROUP_STOPPED', 'Group stopped');
       // Completion alone is insufficient: bind the answer to this exact persisted input.
@@ -158,6 +198,7 @@ export class NativeGroupDriver implements GroupDriver {
       return text;
     } finally {
       if (timer) clearTimeout(timer); unsubscribe(); timeline(); input.signal.removeEventListener('abort', abort);
+      if(receipt.turnId&&endedTurnId===receipt.turnId)await record({phase:'completed'});
     }
   }
 }
