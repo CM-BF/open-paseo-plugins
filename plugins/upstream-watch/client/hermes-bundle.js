@@ -1350,189 +1350,189 @@ var cindyReview = reviewSchema.parse({
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/TeammatesSection.tsx"],
     localPaths: ["CORE_FEATURES.md", "client/sidebar.tsx"],
     adoption: "partial",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Apartial: avatar chat, settings, native selection; group mixing implementing\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 teammate-entry\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 teammate-entry \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "settings",
     title: "\u539F\u7248\u8BBE\u7F6E\u62BD\u5C49\u4E0E\u81EA\u52A8\u4FDD\u5B58",
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/BotSettingsDrawer.tsx", "apps/desktop/src/renderer/features/bots/botSettingsAutosave.ts"],
-    localPaths: ["CORE_FEATURES.md", "client/settings.tsx", "web/App.tsx"],
+    localPaths: ["CORE_FEATURES.md", "client/settings.tsx", "web/app.tsx"],
     adoption: "partial",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Apartial: original drawer rendered in installed Paseo; editing/compact acceptance open\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 settings\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 settings \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "preset-catalog",
     title: "\u5B98\u65B9\u4F19\u4F34\u9884\u8BBE\u76EE\u5F55",
     upstreamPaths: ["apps/desktop/src/main/bot-import/nativePackage.ts", "apps/desktop/src/renderer/features/bots/BotMarketDialog.tsx"],
     localPaths: ["CORE_FEATURES.md", "shared/presets.ts", "server/presets/catalog.ts"],
     adoption: "partial",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Aimplementing: original catalog/UI and all 100 package files\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 preset-catalog\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 preset-catalog \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "preset-install",
     title: "\u9884\u8BBE\u9080\u8BF7\u3001\u6280\u80FD\u4E0E\u8D44\u6E90\u5B89\u88C5",
     upstreamPaths: ["docs/product-rules/bot-market-native.md"],
     localPaths: ["CORE_FEATURES.md", "server/presets/import.ts", "server/presets/skills.ts"],
     adoption: "partial",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Aimplementing: persistent receipt, 30 skills, 10 references, 18 disabled definitions\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 preset-install\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 preset-install \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "preset-opening",
     title: "\u9080\u8BF7\u6B22\u8FCE\u8BED\u4E0E\u5F00\u573A\u9009\u9879",
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/BotInvitationWelcome.tsx", "apps/desktop/src/renderer/features/bots/BotStarterOptions.tsx"],
-    localPaths: ["CORE_FEATURES.md"],
-    adoption: "missing",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Aopen: original opening saved in receipt, not yet surfaced in native chat\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 preset-opening\u3002"
+    localPaths: ["CORE_FEATURES.md", "client/opening.tsx", "server/presets/opening.ts"],
+    adoption: "partial",
+    notes: "\u539F\u751F\u65F6\u95F4\u7EBF\u6B22\u8FCE\u8BED\u4E0E\u5F00\u573A\u9009\u9879\u5DF2\u5B9E\u73B0\uFF1B\u771F\u5B9E\u754C\u9762\u9A8C\u6536\u4E0E\u5DEE\u5F02\u89C1 CORE_FEATURES.md \u7684 preset-opening\u3002"
   }, {
     id: "custom-teammate",
     title: "\u81EA\u5B9A\u4E49\u4F19\u4F34\u4E0E\u539F\u7248\u5934\u50CF",
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/BotRosterView.tsx", "apps/desktop/src/renderer/features/bots/BotPortraitPicker.tsx"],
     localPaths: ["CORE_FEATURES.md", "server/store.ts"],
     adoption: "partial",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Apartial: durable idempotent basic creation\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 custom-teammate\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 custom-teammate \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "identity",
     title: "\u4EBA\u683C\u4E0E\u7248\u672C\u5316\u4E3B\u9875",
     upstreamPaths: ["apps/desktop/src/main/maker-ipc/botProfileFolder.ts", "apps/desktop/src/main/localDb/ipc/botProfileVersioning.ts"],
     localPaths: ["CORE_FEATURES.md", "server/runtime.ts", "server/vendor/botProfileFolder.ts"],
     adoption: "partial",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Averified core storage/runtime context; live edit refresh depends on host API\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 identity\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 identity \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "memory",
     title: "\u957F\u671F\u8BB0\u5FC6\u3001\u5F15\u7528\u4E0E\u68C0\u7D22",
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/BotMemorySettings.tsx", "packages/maker-core/src/memory"],
     localPaths: ["CORE_FEATURES.md", "server/memory.ts", "server/mcp.ts"],
     adoption: "partial",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Averified read/write/context through real MCP and settings; semantic search not ported\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 memory\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 memory \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "skills-capabilities",
     title: "\u81EA\u6709\u6280\u80FD\u3001\u5DE5\u5177\u9009\u62E9\u4E0E\u9694\u79BB",
     upstreamPaths: ["apps/desktop/src/main/maker-ipc/botSkillStore.ts", "apps/desktop/src/main/maker-ipc/botSkillService.ts", "apps/desktop/src/renderer/features/bots/BotCapabilitySettings.tsx"],
     localPaths: ["CORE_FEATURES.md", "server/presets/skills.ts", "server/runtime.ts"],
     adoption: "partial",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Apartial: preset skills verified and injected; external selection/isolation and learned skills open\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 skills-capabilities\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 skills-capabilities \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "native-chat",
     title: "\u957F\u671F\u4F19\u4F34\u4F1A\u8BDD\u4E0E\u5DE5\u4F5C\u8FC7\u7A0B",
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/BotSessionView.tsx", "apps/desktop/src/renderer/features/bots/botConversationPresentation.ts"],
     localPaths: ["CORE_FEATURES.md", "server/runtime.ts"],
     adoption: "partial",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Apartial: Paseo native chat and history\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 native-chat\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 native-chat \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "topics-quotes",
     title: "\u79C1\u804A\u8BDD\u9898\u4E0E\u5F15\u7528\u6765\u6E90",
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/BotDmThreadHost.tsx", "apps/desktop/src/renderer/features/bots/BotChatQuoteViews.tsx"],
     localPaths: ["CORE_FEATURES.md"],
     adoption: "missing",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Aopen\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 topics-quotes\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 topics-quotes \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "groups-discussion",
     title: "\u7FA4\u804A\u5355\u53D1\u8A00\u4EBA\u961F\u5217",
     upstreamPaths: ["docs/product-rules/bot-group-chat.md", "apps/desktop/src/renderer/features/bots/BotGroupChatView.tsx"],
     localPaths: ["CORE_FEATURES.md", "shared/groups.ts", "server/group-driver.ts"],
     adoption: "partial",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Aimplementing: durable rounds and dedicated native lanes; original creation/presentation adaptation\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 groups-discussion\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 groups-discussion \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "groups-members",
     title: "\u7FA4\u521B\u5EFA\u3001\u6210\u5458\u4E0E\u56DE\u590D\u65B9\u5F0F",
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/BotGroupSettingsDrawer.tsx", "apps/desktop/src/renderer/features/bots/BotAddToGroupMenu.tsx"],
     localPaths: ["CORE_FEATURES.md", "shared/groups.ts", "server/service.ts"],
     adoption: "partial",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Aimplementing backend; UI being connected\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 groups-members\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 groups-members \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "groups-work",
     title: "\u7FA4\u5206\u5DE5\u3001\u8D1F\u8D23\u4EBA\u548C\u5DE5\u4F5C\u76EE\u5F55",
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/BotGroupPlan.tsx", "apps/desktop/src/renderer/features/bots/BotGroupTaskCard.tsx"],
     localPaths: ["CORE_FEATURES.md"],
     adoption: "missing",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Aopen\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 groups-work\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 groups-work \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "groups-rich-history",
     title: "\u7FA4\u8BDD\u9898\u3001\u9644\u4EF6\u3001\u53CD\u5E94\u548C\u53D1\u4EF6\u7BB1",
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/BotGroupThreadViews.tsx", "apps/desktop/src/renderer/features/bots/BotGroupMessageAttachments.tsx", "apps/desktop/src/renderer/features/bots/botGroupOutbox.ts"],
     localPaths: ["CORE_FEATURES.md", "shared/groups.ts"],
     adoption: "partial",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Apartial: durable local text history; remaining rich interactions open\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 groups-rich-history\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 groups-rich-history \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "companion-collaboration",
     title: "\u4F19\u4F34\u79C1\u4FE1\u3001\u540E\u53F0\u59D4\u6D3E\u4E0E\u5B8C\u6210\u56DE\u6295",
     upstreamPaths: ["apps/desktop/src/main/maker-ipc/botDirectMessageService.ts", "apps/desktop/src/main/maker-ipc/botDelegationService.ts", "apps/desktop/src/renderer/features/bots/BotCollaborationCard.tsx"],
     localPaths: ["CORE_FEATURES.md"],
     adoption: "missing",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Aopen\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 companion-collaboration\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 companion-collaboration \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "models",
     title: "\u6A21\u578B\u3001\u601D\u8003\u3001\u901F\u5EA6\u4E0E\u56DE\u9000\u94FE",
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/BotModelChainEditor.tsx", "apps/desktop/src/main/maker-ipc/botModelRouteReconciler.ts"],
     localPaths: ["CORE_FEATURES.md", "server/runtime.ts", "shared/vendor/modelRoute.ts"],
     adoption: "partial",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Apartial: original controls and public host API PR; multi-route recovery open\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 models\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 models \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "routines",
     title: "\u5B9A\u65F6\u4EFB\u52A1\u3001\u89E6\u53D1\u5668\u4E0E\u4F1A\u8BDD\u6A21\u5F0F",
     upstreamPaths: ["docs/product-rules/bot-routines.md", "apps/desktop/src/renderer/features/bots/BotRoutines.tsx"],
     localPaths: ["CORE_FEATURES.md", "server/schedules.ts", "server/schedule-sdk.ts"],
     adoption: "partial",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Apartial: cron/fresh real run verified; disabled preset drafts implementing; remaining modes open\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 routines\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 routines \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "autonomy-todos",
     title: "\u8FD1\u51B5\u3001\u5F85\u529E\u3001\u81EA\u4E3B\u8DDF\u8FDB\u4E0E\u591C\u95F4\u590D\u76D8",
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/BotAutonomySettings.tsx", "apps/desktop/src/renderer/features/bots/BotGlancePopover.tsx", "docs/product-rules/cindy-bots-runtime.md"],
     localPaths: ["CORE_FEATURES.md"],
     adoption: "missing",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Aopen\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 autonomy-todos\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 autonomy-todos \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "history-lifecycle",
     title: "\u5386\u53F2\u641C\u7D22\u4E0E\u751F\u547D\u5468\u671F",
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/BotHistorySessionView.tsx", "apps/desktop/src/renderer/features/bots/BotLifecycleSettings.tsx"],
     localPaths: ["CORE_FEATURES.md", "server/service.ts"],
     adoption: "partial",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Apartial: bounded history search and reversible profile deletion preserving native history\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 history-lifecycle\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 history-lifecycle \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "linked-projects",
     title: "\u9879\u76EE\u5173\u8054\u4E0E\u5DE5\u4F5C\u53F0",
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/BotProjectsSettings.tsx", "apps/desktop/src/main/maker-ipc/botLinkedProjects.ts"],
     localPaths: ["CORE_FEATURES.md"],
     adoption: "missing",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Aopen\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 linked-projects\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 linked-projects \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "voice",
     title: "\u8BED\u97F3\u9884\u89C8\u3001\u6717\u8BFB\u4E0E\u5BF9\u8BDD",
     upstreamPaths: ["docs/product-rules/companion-voice-mode.md", "apps/desktop/src/renderer/features/bots/voice"],
     localPaths: ["CORE_FEATURES.md"],
     adoption: "missing",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Aopen: settings rows present but unsupported actions explicitly fail\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 voice\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 voice \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "messaging",
     title: "\u5916\u90E8\u804A\u5929\u5165\u53E3\u4E0E\u6D88\u606F\u8DEF\u7531",
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/BotChannelsPage.tsx", "apps/desktop/src/main/im/shared/botImConnectionRuntime.ts"],
     localPaths: ["CORE_FEATURES.md"],
     adoption: "missing",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Aopen\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 messaging\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 messaging \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "import-existing",
     title: "\u5BFC\u5165\u73B0\u6709\u4F19\u4F34\u4E0E\u6765\u6E90\u9884\u89C8",
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/BotImportForm.tsx", "apps/desktop/src/main/bot-import"],
     localPaths: ["CORE_FEATURES.md"],
     adoption: "missing",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Aopen\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 import-existing\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 import-existing \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "cross-device",
     title: "\u4E3B\u7535\u8111\u3001\u8DE8\u7AEF\u63A5\u7BA1\u4E0E\u5171\u4EAB\u72B6\u6001",
     upstreamPaths: ["docs/product-rules/cloud-companions.md", "apps/desktop/src/renderer/features/bots/BotHomeComputerSetting.tsx"],
     localPaths: ["CORE_FEATURES.md"],
     adoption: "missing",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Aopen; native Paseo access to the same host remains available\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 cross-device\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 cross-device \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "shared-invites",
     title: "\u5171\u4EAB\u9080\u8BF7\u4E0E\u8DE8\u8D26\u53F7\u53C2\u4E0E",
     upstreamPaths: ["apps/desktop/src/renderer/features/bots/ChatInviteDialog.tsx", "docs/product-rules/shared-task-mode.md"],
     localPaths: ["CORE_FEATURES.md"],
     adoption: "missing",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Aopen; depends on an authorized shared service, not arbitrary URL loading\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 shared-invites\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 shared-invites \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "mobile",
     title: "\u79FB\u52A8\u7AEF\u4F19\u4F34\u4E0E\u8BBE\u7F6E\u6D41\u7A0B",
     upstreamPaths: ["apps/mobile"],
     localPaths: ["CORE_FEATURES.md", "client/conversation.tsx"],
     adoption: "partial",
-    notes: "\u672C\u5730\u77E9\u9635\uFF1Apartial: native Paseo companion chat; original HTML settings limited to web/desktop\u3002\u5B8C\u6574\u9A8C\u6536\u8FB9\u754C\u89C1 CORE_FEATURES.md \u7684 mobile\u3002"
+    notes: "\u4EE5 CORE_FEATURES.md \u7684 mobile \u6700\u65B0\u8BB0\u5F55\u4E3A\u51C6\uFF1B\u9010\u9879\u8BFB\u53D6\u4EE3\u7801\u4E0E\u771F\u5B9E\u9A8C\u6536\u8BC1\u636E\uFF0C\u4E0D\u80FD\u628A\u5B9E\u73B0\u6216\u5355\u5143\u6D4B\u8BD5\u5F53\u4F5C\u5B8C\u6574\u79FB\u690D\u3002"
   }, {
     id: "upstream-tracking",
     title: "\u79FB\u690D\u7EF4\u62A4\u4E0E\u4E0A\u6E38\u8FFD\u8E2A",

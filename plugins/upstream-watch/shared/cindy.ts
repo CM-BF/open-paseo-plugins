@@ -14,7 +14,7 @@ export const cindyReview = reviewSchema.parse({
       localPaths: ["CORE_FEATURES.md", "client/sidebar.tsx"],
       adoption: "partial",
       notes:
-        "本地矩阵：partial: avatar chat, settings, native selection; group mixing implementing。完整验收边界见 CORE_FEATURES.md 的 teammate-entry。",
+        "以 CORE_FEATURES.md 的 teammate-entry 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "settings",
@@ -23,10 +23,10 @@ export const cindyReview = reviewSchema.parse({
         "apps/desktop/src/renderer/features/bots/BotSettingsDrawer.tsx",
         "apps/desktop/src/renderer/features/bots/botSettingsAutosave.ts",
       ],
-      localPaths: ["CORE_FEATURES.md", "client/settings.tsx", "web/App.tsx"],
+      localPaths: ["CORE_FEATURES.md", "client/settings.tsx", "web/app.tsx"],
       adoption: "partial",
       notes:
-        "本地矩阵：partial: original drawer rendered in installed Paseo; editing/compact acceptance open。完整验收边界见 CORE_FEATURES.md 的 settings。",
+        "以 CORE_FEATURES.md 的 settings 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "preset-catalog",
@@ -42,7 +42,7 @@ export const cindyReview = reviewSchema.parse({
       ],
       adoption: "partial",
       notes:
-        "本地矩阵：implementing: original catalog/UI and all 100 package files。完整验收边界见 CORE_FEATURES.md 的 preset-catalog。",
+        "以 CORE_FEATURES.md 的 preset-catalog 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "preset-install",
@@ -55,7 +55,7 @@ export const cindyReview = reviewSchema.parse({
       ],
       adoption: "partial",
       notes:
-        "本地矩阵：implementing: persistent receipt, 30 skills, 10 references, 18 disabled definitions。完整验收边界见 CORE_FEATURES.md 的 preset-install。",
+        "以 CORE_FEATURES.md 的 preset-install 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "preset-opening",
@@ -64,10 +64,10 @@ export const cindyReview = reviewSchema.parse({
         "apps/desktop/src/renderer/features/bots/BotInvitationWelcome.tsx",
         "apps/desktop/src/renderer/features/bots/BotStarterOptions.tsx",
       ],
-      localPaths: ["CORE_FEATURES.md"],
-      adoption: "missing",
+      localPaths: ["CORE_FEATURES.md", "client/opening.tsx", "server/presets/opening.ts"],
+      adoption: "partial",
       notes:
-        "本地矩阵：open: original opening saved in receipt, not yet surfaced in native chat。完整验收边界见 CORE_FEATURES.md 的 preset-opening。",
+        "原生时间线欢迎语与开场选项已实现；真实界面验收与差异见 CORE_FEATURES.md 的 preset-opening。",
     },
     {
       id: "custom-teammate",
@@ -79,7 +79,7 @@ export const cindyReview = reviewSchema.parse({
       localPaths: ["CORE_FEATURES.md", "server/store.ts"],
       adoption: "partial",
       notes:
-        "本地矩阵：partial: durable idempotent basic creation。完整验收边界见 CORE_FEATURES.md 的 custom-teammate。",
+        "以 CORE_FEATURES.md 的 custom-teammate 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "identity",
@@ -95,7 +95,7 @@ export const cindyReview = reviewSchema.parse({
       ],
       adoption: "partial",
       notes:
-        "本地矩阵：verified core storage/runtime context; live edit refresh depends on host API。完整验收边界见 CORE_FEATURES.md 的 identity。",
+        "以 CORE_FEATURES.md 的 identity 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "memory",
@@ -107,7 +107,7 @@ export const cindyReview = reviewSchema.parse({
       localPaths: ["CORE_FEATURES.md", "server/memory.ts", "server/mcp.ts"],
       adoption: "partial",
       notes:
-        "本地矩阵：verified read/write/context through real MCP and settings; semantic search not ported。完整验收边界见 CORE_FEATURES.md 的 memory。",
+        "以 CORE_FEATURES.md 的 memory 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "skills-capabilities",
@@ -124,7 +124,7 @@ export const cindyReview = reviewSchema.parse({
       ],
       adoption: "partial",
       notes:
-        "本地矩阵：partial: preset skills verified and injected; external selection/isolation and learned skills open。完整验收边界见 CORE_FEATURES.md 的 skills-capabilities。",
+        "以 CORE_FEATURES.md 的 skills-capabilities 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "native-chat",
@@ -136,7 +136,7 @@ export const cindyReview = reviewSchema.parse({
       localPaths: ["CORE_FEATURES.md", "server/runtime.ts"],
       adoption: "partial",
       notes:
-        "本地矩阵：partial: Paseo native chat and history。完整验收边界见 CORE_FEATURES.md 的 native-chat。",
+        "以 CORE_FEATURES.md 的 native-chat 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "topics-quotes",
@@ -148,7 +148,7 @@ export const cindyReview = reviewSchema.parse({
       localPaths: ["CORE_FEATURES.md"],
       adoption: "missing",
       notes:
-        "本地矩阵：open。完整验收边界见 CORE_FEATURES.md 的 topics-quotes。",
+        "以 CORE_FEATURES.md 的 topics-quotes 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "groups-discussion",
@@ -164,7 +164,7 @@ export const cindyReview = reviewSchema.parse({
       ],
       adoption: "partial",
       notes:
-        "本地矩阵：implementing: durable rounds and dedicated native lanes; original creation/presentation adaptation。完整验收边界见 CORE_FEATURES.md 的 groups-discussion。",
+        "以 CORE_FEATURES.md 的 groups-discussion 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "groups-members",
@@ -176,7 +176,7 @@ export const cindyReview = reviewSchema.parse({
       localPaths: ["CORE_FEATURES.md", "shared/groups.ts", "server/service.ts"],
       adoption: "partial",
       notes:
-        "本地矩阵：implementing backend; UI being connected。完整验收边界见 CORE_FEATURES.md 的 groups-members。",
+        "以 CORE_FEATURES.md 的 groups-members 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "groups-work",
@@ -187,7 +187,7 @@ export const cindyReview = reviewSchema.parse({
       ],
       localPaths: ["CORE_FEATURES.md"],
       adoption: "missing",
-      notes: "本地矩阵：open。完整验收边界见 CORE_FEATURES.md 的 groups-work。",
+      notes: "以 CORE_FEATURES.md 的 groups-work 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "groups-rich-history",
@@ -200,7 +200,7 @@ export const cindyReview = reviewSchema.parse({
       localPaths: ["CORE_FEATURES.md", "shared/groups.ts"],
       adoption: "partial",
       notes:
-        "本地矩阵：partial: durable local text history; remaining rich interactions open。完整验收边界见 CORE_FEATURES.md 的 groups-rich-history。",
+        "以 CORE_FEATURES.md 的 groups-rich-history 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "companion-collaboration",
@@ -213,7 +213,7 @@ export const cindyReview = reviewSchema.parse({
       localPaths: ["CORE_FEATURES.md"],
       adoption: "missing",
       notes:
-        "本地矩阵：open。完整验收边界见 CORE_FEATURES.md 的 companion-collaboration。",
+        "以 CORE_FEATURES.md 的 companion-collaboration 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "models",
@@ -229,7 +229,7 @@ export const cindyReview = reviewSchema.parse({
       ],
       adoption: "partial",
       notes:
-        "本地矩阵：partial: original controls and public host API PR; multi-route recovery open。完整验收边界见 CORE_FEATURES.md 的 models。",
+        "以 CORE_FEATURES.md 的 models 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "routines",
@@ -245,7 +245,7 @@ export const cindyReview = reviewSchema.parse({
       ],
       adoption: "partial",
       notes:
-        "本地矩阵：partial: cron/fresh real run verified; disabled preset drafts implementing; remaining modes open。完整验收边界见 CORE_FEATURES.md 的 routines。",
+        "以 CORE_FEATURES.md 的 routines 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "autonomy-todos",
@@ -258,7 +258,7 @@ export const cindyReview = reviewSchema.parse({
       localPaths: ["CORE_FEATURES.md"],
       adoption: "missing",
       notes:
-        "本地矩阵：open。完整验收边界见 CORE_FEATURES.md 的 autonomy-todos。",
+        "以 CORE_FEATURES.md 的 autonomy-todos 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "history-lifecycle",
@@ -270,7 +270,7 @@ export const cindyReview = reviewSchema.parse({
       localPaths: ["CORE_FEATURES.md", "server/service.ts"],
       adoption: "partial",
       notes:
-        "本地矩阵：partial: bounded history search and reversible profile deletion preserving native history。完整验收边界见 CORE_FEATURES.md 的 history-lifecycle。",
+        "以 CORE_FEATURES.md 的 history-lifecycle 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "linked-projects",
@@ -282,7 +282,7 @@ export const cindyReview = reviewSchema.parse({
       localPaths: ["CORE_FEATURES.md"],
       adoption: "missing",
       notes:
-        "本地矩阵：open。完整验收边界见 CORE_FEATURES.md 的 linked-projects。",
+        "以 CORE_FEATURES.md 的 linked-projects 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "voice",
@@ -294,7 +294,7 @@ export const cindyReview = reviewSchema.parse({
       localPaths: ["CORE_FEATURES.md"],
       adoption: "missing",
       notes:
-        "本地矩阵：open: settings rows present but unsupported actions explicitly fail。完整验收边界见 CORE_FEATURES.md 的 voice。",
+        "以 CORE_FEATURES.md 的 voice 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "messaging",
@@ -305,7 +305,7 @@ export const cindyReview = reviewSchema.parse({
       ],
       localPaths: ["CORE_FEATURES.md"],
       adoption: "missing",
-      notes: "本地矩阵：open。完整验收边界见 CORE_FEATURES.md 的 messaging。",
+      notes: "以 CORE_FEATURES.md 的 messaging 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "import-existing",
@@ -317,7 +317,7 @@ export const cindyReview = reviewSchema.parse({
       localPaths: ["CORE_FEATURES.md"],
       adoption: "missing",
       notes:
-        "本地矩阵：open。完整验收边界见 CORE_FEATURES.md 的 import-existing。",
+        "以 CORE_FEATURES.md 的 import-existing 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "cross-device",
@@ -329,7 +329,7 @@ export const cindyReview = reviewSchema.parse({
       localPaths: ["CORE_FEATURES.md"],
       adoption: "missing",
       notes:
-        "本地矩阵：open; native Paseo access to the same host remains available。完整验收边界见 CORE_FEATURES.md 的 cross-device。",
+        "以 CORE_FEATURES.md 的 cross-device 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "shared-invites",
@@ -341,7 +341,7 @@ export const cindyReview = reviewSchema.parse({
       localPaths: ["CORE_FEATURES.md"],
       adoption: "missing",
       notes:
-        "本地矩阵：open; depends on an authorized shared service, not arbitrary URL loading。完整验收边界见 CORE_FEATURES.md 的 shared-invites。",
+        "以 CORE_FEATURES.md 的 shared-invites 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "mobile",
@@ -350,7 +350,7 @@ export const cindyReview = reviewSchema.parse({
       localPaths: ["CORE_FEATURES.md", "client/conversation.tsx"],
       adoption: "partial",
       notes:
-        "本地矩阵：partial: native Paseo companion chat; original HTML settings limited to web/desktop。完整验收边界见 CORE_FEATURES.md 的 mobile。",
+        "以 CORE_FEATURES.md 的 mobile 最新记录为准；逐项读取代码与真实验收证据，不能把实现或单元测试当作完整移植。",
     },
     {
       id: "upstream-tracking",
