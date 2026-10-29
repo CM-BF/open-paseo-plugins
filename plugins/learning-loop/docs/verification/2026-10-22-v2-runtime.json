@@ -1,0 +1,65 @@
+{
+  "daemon": {
+    "serverId": "srv_BSheQn5lzdEE",
+    "version": "0.12.0"
+  },
+  "codeCommit": "477bb9433ee27ab74783135682b3ffb3f8b5a559",
+  "stablePath": "/Users/citrine/.paseo/local-plugins/learning-loop/477bb9433ee27ab74783135682b3ffb3f8b5a559",
+  "dataBackup": "/Users/citrine/.paseo/local-plugins/learning-loop/backups/pre-a78236a2b000-20261022-221137",
+  "settings": {
+    "writeApproval": "off",
+    "sessionRetentionDays": 0,
+    "exportCatalog": false
+  },
+  "budget": {
+    "day": "2026-10-23",
+    "settledCount": 1,
+    "chargedUsd": 0.05885
+  },
+  "liveCatalogs": {
+    "legacy-probe": {
+      "count": 5,
+      "nativeBoundary": false
+    },
+    "v2-probe": {
+      "count": 5,
+      "nativeBoundary": false
+    },
+    "v3-probe": {
+      "count": 5,
+      "nativeBoundary": true
+    }
+  },
+  "cleanup": {
+    "agentId": "ae1eb780-e4cb-4621-948f-0bc889b3e208",
+    "sessionRows": 0,
+    "messageRows": 0,
+    "bindingCount": 0,
+    "fixtureDirectoryExists": false,
+    "catalogFileExists": false
+  },
+  "parentOmhCleanup": {
+    "agentIds": [
+      "4cae8e14-5faf-43fc-b83a-7b0bbd44d131",
+      "74fb4edf-546d-4796-851a-af251236d504",
+      "7e68df10-81da-44ef-a2dd-dde0ccc1442a"
+    ],
+    "removed": {
+      "sessionRows": 3,
+      "messageRows": 38,
+      "bindings.json": 3,
+      "counters.json": 0,
+      "reviews.jsonl": 0
+    },
+    "backup": "/Users/citrine/.paseo/local-plugins/learning-loop/backups/omh-cleanup-20261023-053116",
+    "afterReload": {
+      "sessionRows": 0,
+      "messageRows": 0,
+      "bindings.json": 0,
+      "counters.json": 0,
+      "reviews.jsonl": 0,
+      "preservedHashesUnchanged": true,
+      "exportFileExists": false
+    }
+  }
+}
