@@ -11,11 +11,15 @@ export type FrameRequest = {
 
 export type FrameEvent = FrameRequest | {
   channel: typeof FRAME_CHANNEL;
-  type: "ready" | "close" | "changed" | "profile-changed";
+  type: "ready" | "close" | "changed" | "profile-changed" | "groups-changed";
 } | {
   channel: typeof FRAME_CHANNEL;
   type: "navigate-agent";
   agentId: string;
+} | {
+  channel: typeof FRAME_CHANNEL;
+  type: "navigate-group";
+  groupId: string;
 };
 
 /** Validate before dispatching into the selected host's authenticated RPC. */
@@ -23,7 +27,11 @@ export function readFrameEvent(value: unknown): FrameEvent | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const message = value as Record<string, unknown>;
   if (message.channel !== FRAME_CHANNEL) return null;
-  if (["ready", "close", "changed", "profile-changed"].includes(String(message.type))) return value as FrameEvent;
+  if (["ready", "close", "changed", "profile-changed", "groups-changed"].includes(String(message.type))) return value as FrameEvent;
+  if (message.type === "navigate-group") {
+    return typeof message.groupId === "string" && message.groupId.length > 0 && message.groupId.length <= 128
+      ? value as FrameEvent : null;
+  }
   if (message.type === "navigate-agent") {
     return typeof message.agentId === "string" && message.agentId.length > 0 && message.agentId.length <= 128
       ? value as FrameEvent : null;

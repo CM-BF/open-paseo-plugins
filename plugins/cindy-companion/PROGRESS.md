@@ -2,13 +2,16 @@
 
 ## Goal and decisions
 
-Port Cindy's companion entry and settings as a plugin. The user's definition of fidelity is UI style, placement and functionality within the selected scope, not the whole Cindy application. Reuse upstream source instead of redrawing the settings page. Keep generic host changes in a separate Paseo PR.
+Port Cindy's core companion experience as a plugin. On 2026-10-29 the user expanded the earlier settings scope to an explicit feature-by-feature core port, especially preset teammates and ad hoc group discussion, plus periodic upstream feature tracking. UI style, placement and behavior must follow original source. The complete ongoing inventory and owners are in [CORE_FEATURES.md](./CORE_FEATURES.md); the earlier settings milestone does not complete that inventory. Keep generic host changes in a separate Paseo PR.
 
 Pinned Cindy source: `118767c987f518286ae10a506a54287c3dc2a560`.
 
 The original sidebar avatar opens chat. Settings is a right drawer opened by the companion menu or chat header. The native Paseo conversation remains the chat surface. Original settings render in an isolated HTML frame; the host owns the backdrop and navigation. Companion storage, memory and agent bindings belong to the plugin.
 
 ## Work status
+
+- First expansion installed: original 10-package market, complete idempotent preset import and group creation/discussion. The retained installation runs source commit `80061c4`; group work/collaboration remains a separate in-progress wave and is not included in this publication.
+- Native computer use can now bind Paseo, and the original drawer was visibly rendered. Full editing, compact/light and new-feature UI acceptance remain open; see the matrix for the exact evidence boundary.
 
 - Implemented: original settings slice and host bridge; Teammates sidebar; persistent profile, identity and avatar; stable canonical agent creation; shared memory service and authenticated loopback MCP; bounded native history search; native schedule adapter.
 - Implemented with host dependency: model/thinking/speed updates and instruction refresh. Older hosts return explicit pending states. A separate Paseo branch adds the public APIs.
@@ -39,3 +42,17 @@ Source branch: `feat/cindy-port`; initial implementation `33627ca`, tool-discove
 ## Next
 
 Complete actual wide and compact right-drawer acceptance when the app is accessible: compare the supplied Cindy screenshots, then exercise avatar/profile changes, persisted edits, guarded close and host switching. Record screenshot evidence before marking visual parity passed. Keep the installed directory available until the plugin is moved to a stable managed revision.
+
+## 2026-10-29 core expansion, first integration checkpoint
+
+Original preset market and custom teammate dialog, persistent full-package invitation, greeting/starter timeline, mixed teammate/group entry, original group creation/settings and durable multi-companion discussions are integrated. Inviting preserves all 100 package files; preset routines remain disabled drafts. Follow-up during a running group is durably queued or clearly deferred.
+
+Validation: shipped compiler preserves settings bootstrap and all three original font streams; Hermes accepts the client bundle. Focused backend integration 34/34 and host/opening callbacks 12/12 pass. Existing independent group/driver/schedule and original frontend checks were green before this freeze. Installed UI/real discussion acceptance remains pending, so this is not full parity. Group work/collaboration and strict turn steering are the next active implementation wave. See CORE_FEATURES.md for all 28 acceptance tracks.
+
+## 2026-10-29 first expansion production and live verification
+
+The publication exports source commit `80061c4fec6895ce9baba403a38a6c58671bd95a`, with 557 exact Git file blobs verified before these documentation updates. A clean production-only dependency installation passed the actual shipped Paseo compiler and Hermes. The compiler preserved settings bootstrap SHA-256 `c15832bca8312efa0f93b90fcfcc3f35264ffbf5d7972d136a37be358f49048c` and all three original font streams.
+
+On the main Paseo 0.13.2 daemon, a dedicated two-companion fixture completed a real discussion with each companion's own context tool and matched native completion. Duplicate create/send operation IDs did not start duplicate work. The fixture group and profiles were deleted and both owned agents archived, with cleanup checked. Private evidence: `verification/cindy-companion/group-7871d7f1-55eb-4a11-842d-700a4398346b.json` under the default Paseo home.
+
+The plugin PR remains a draft. Actual new preset/group UI, compact/light layouts and screenshot parity have not passed: the computer tool cannot currently bind the reported-open native window, and official web app loopback connections timed out. No security configuration was changed. The broader 28-feature scope remains open, including the next collaboration/task wave and generic host APIs.

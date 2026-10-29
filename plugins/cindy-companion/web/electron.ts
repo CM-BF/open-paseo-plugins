@@ -1,5 +1,6 @@
 import { invoke, BridgeError } from './bridge';
 import { currentBotId, onRoutinesChanged } from './adapters/settings-target';
+import { presetApi } from './adapters/presets';
 function chooseAvatarSource(): Promise<{canceled:boolean;previewDataUrl?:string}> {
   return new Promise((resolve,reject)=>{
     const input=document.createElement('input'); input.type='file'; input.accept='image/png,image/jpeg,image/webp,image/avif,image/gif'; input.style.display='none'; document.body.append(input);
@@ -22,4 +23,5 @@ Object.defineProperty(window,'electronAPI',{value:{
   openExternal:(url:string)=>invoke('paseo.openExternal',{url}),
   localDb:{bots:{chooseAvatarSource,generateAvatar:()=>Promise.reject(new BridgeError('UNSUPPORTED','Portrait generation is not connected.')),todos:{dailyCheck:(botId:string,enabled:boolean)=>invoke('paseo.todos.dailyCheck',{botId,enabled})}}},
   routines:{nightlyLearning:nightly,onChanged:onRoutinesChanged},
+  botMarket:presetApi,
 }, configurable:false});

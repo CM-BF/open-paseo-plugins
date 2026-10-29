@@ -24,3 +24,6 @@ test('failed profile writes preserve the current saved state and remain rejected
 test('saved but pending settings remain pending and announce the application boundary',async()=>{
  const x=setup();const operation=x.api.updateProfile('cindy',{name:'Changed'});x.reply({ok:true,value:{profile:{...x.api.snapshot().bot,name:'Changed'},runtime:{state:'pending',desiredVersion:2,appliedVersion:1,message:'Reload this companion to apply.'}}});await operation;assert.equal(x.api.snapshot().bot.name,'Changed');assert.equal(x.api.snapshot().runtime.state,'pending');assert.match(x.notices[0],/Saved.*Reload/);
 });
+test('profile refresh uses the actual host list operation and adopts newly persisted teammates',async()=>{
+ const x=setup();const operation=x.api.refreshProfiles();assert.equal(x.sent.at(-1).op,'profile.list');const profile={...x.api.snapshot().bot,id:'new',name:'New'};x.reply({ok:true,value:{profiles:[x.api.snapshot().bot,profile]}});await operation;assert.equal(x.api.snapshot().profiles.length,2);
+});

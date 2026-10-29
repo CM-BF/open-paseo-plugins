@@ -13,8 +13,15 @@ import { parseBotMemoryScopeKey } from './vendor/memory/storage';
 import { botId, CompanionError, record, string, throwIpcError, unsupported } from './errors';
 import { CompanionRoutines, ScheduleCli, type ScheduleDriver } from './schedules';
 import { readFontChunk } from './font-assets';
+import { CompanionGroups } from './groups';
+import type { GroupDriver } from './group-driver';
+import { PresetImports } from './presets/import';
+import { PresetOpenings } from './presets/opening';
+import { avatarDataUrl } from './avatar';
 
-const OPS = ['caps', 'assets.fontChunk', 'profile.get', 'profile.update', 'profile.chooseAvatar', 'lifecycle.run', 'models.default', 'models.features',
+const OPS = ['caps', 'assets.fontChunk', 'paseo.presets.list', 'paseo.presets.invite', 'paseo.presets.status', 'preset.opening.status', 'preset.opening.choose',
+  'groups.list', 'groups.get', 'groups.create', 'groups.update', 'groups.setMembers', 'groups.send', 'groups.continue', 'groups.stop', 'groups.delete',
+  'profile.get', 'profile.update', 'profile.chooseAvatar', 'lifecycle.run', 'models.default', 'models.features',
   'memory.list', 'memory.read', 'memory.update', 'memory.delete', 'capabilities.catalog', 'history.search',
   'paseo.bootstrap', 'profile.list', 'profile.create', 'profile.ensure', 'paseo.conversation.ensure',
   'conversation.send', 'conversation.history', 'home.get', 'memory.create', 'paseo.openPath',
@@ -23,15 +30,22 @@ export class CompanionService {
   readonly store: CompanionStore;
   readonly runtime: CompanionRuntime;
   readonly routines: CompanionRoutines;
+  readonly groups: CompanionGroups;
+  readonly presets: PresetImports;
+  readonly openings: PresetOpenings;
   private readonly memoryStores = new Map<string, CompanionMemoryStore>();
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private readonly operations = new Set<Promise<unknown>>();
+  private readonly profileMutations = new Map<string, Promise<unknown>>();
   private closing: Promise<void> | null = null;
   private disposed = false;
   readonly memory: ReturnType<typeof createBotMemoryService>;
-  constructor(store = new CompanionStore(), options: { scheduleDriver?: ScheduleDriver } = {}) {
+  constructor(store = new CompanionStore(), options: { scheduleDriver?: ScheduleDriver; groupDriver?: (paseo: Paseo) => GroupDriver } = {}) {
     this.store = store; this.runtime = new CompanionRuntime(store);
     this.routines = new CompanionRoutines(store, this.runtime, options.scheduleDriver ?? new ScheduleCli());
+    this.groups = new CompanionGroups(store, this.runtime, options.groupDriver);
+    this.presets = new PresetImports(store);
+    this.openings = new PresetOpenings(store);
     this.memory = createBotMemoryService({
       getStore: async scope => {
         const id = parseBotMemoryScopeKey(scope); if (!id) throwIpcError('INVALID_PARAMS', 'Invalid memory scope');
@@ -57,6 +71,7 @@ export class CompanionService {
       // Accepted memory writes may schedule refresh timers while draining.
       for (const timer of this.timers) clearTimeout(timer); this.timers.clear();
       await this.routines.close();
+      await this.groups.close();
       await this.runtime.close();
     })();
     return this.closing;
@@ -71,7 +86,8 @@ export class CompanionService {
   restoreToolEndpoint(): Promise<void> {
     return this.admit(async () => {
       const profiles = await this.store.list(); const state = await this.store.snapshot();
-      const id = profiles.find(profile => profile.canonicalSessionId)?.id ?? Object.values(state.routines)[0]?.botId;
+      const id = profiles.find(profile => profile.canonicalSessionId)?.id ?? Object.values(state.routines)[0]?.botId ??
+        Object.values(state.groups ?? {}).flatMap(group => Object.values(group.lanes)).find(lane => state.profiles[lane.botId])?.botId;
       if (id) await this.runtime.instructionsFor(id);
     });
   }
@@ -117,8 +133,37 @@ export class CompanionService {
     catch (error) { return { ok: false, code: error instanceof CompanionError ? error.code : 'HOST_ERROR', message: error instanceof Error ? error.message : String(error) }; }
   }
   private async dispatch({ op, args }: InvokeInput, paseo: Paseo): Promise<unknown> {
+    // Native creation/send and deletion share admission. A late starter callback
+    // cannot recreate or append to a teammate after its delete has begun.
+    if (['profile.update', 'profile.chooseAvatar', 'profile.ensure', 'paseo.conversation.ensure',
+      'conversation.send', 'preset.opening.choose', 'lifecycle.run'].includes(op)) {
+      const id = botId(args.botId);
+      const previous = this.profileMutations.get(id) ?? Promise.resolve();
+      const current = previous.catch(() => {}).then(() => this.dispatchUnlocked({ op, args }, paseo));
+      this.profileMutations.set(id, current);
+      void current.finally(() => { if (this.profileMutations.get(id) === current) this.profileMutations.delete(id); }).catch(() => {});
+      return current;
+    }
+    return this.dispatchUnlocked({ op, args }, paseo);
+  }
+  private async dispatchUnlocked({ op, args }: InvokeInput, paseo: Paseo): Promise<unknown> {
     if (op === 'caps') return this.caps();
     if (op === 'assets.fontChunk') return readFontChunk(args);
+    if (op === 'paseo.presets.list') return this.presets.list();
+    if (op === 'paseo.presets.invite') return this.presets.invite(args);
+    if (op === 'paseo.presets.status') return this.presets.status(string(args.requestId, 'requestId', 200));
+    if (op === 'groups.list') return this.groups.list(paseo);
+    if (op === 'groups.create') return this.groups.create(paseo, args);
+    if (op.startsWith('groups.')) {
+      const groupId = botId(args.groupId);
+      if (op === 'groups.get') return this.groups.get(paseo, groupId, args);
+      if (op === 'groups.update' || op === 'groups.setMembers') return this.groups.update(paseo, groupId, args, op === 'groups.setMembers');
+      if (op === 'groups.send') return this.groups.send(paseo, groupId, args);
+      if (op === 'groups.continue') return this.groups.continue(paseo, groupId, args);
+      if (op === 'groups.stop') return this.groups.stop(paseo, groupId, string(args.roundId, 'roundId', 200));
+      if (op === 'groups.delete') return this.groups.remove(paseo, groupId, args.expectedRevision);
+      return unsupported(op);
+    }
     if (op === 'paseo.bootstrap') return this.bootstrap(paseo, args.botId === undefined ? undefined : botId(args.botId));
     if (op === 'profile.list') return { profiles: await this.store.list() };
     if (op === 'profile.create') return { profile: await this.store.create(args) };
@@ -127,6 +172,8 @@ export class CompanionService {
     if (/^(voice\.|channels\.|autonomy\.)/.test(op)) return unsupported(op);
     if (op === 'routines.sources') return []; // This adapter has time triggers only; no event connector is registered.
     const id = botId(args.botId);
+    if (op === 'preset.opening.status') return this.openings.status(paseo, id, string(args.agentId, 'agentId', 100));
+    if (op === 'preset.opening.choose') return this.openings.choose(paseo, id, string(args.agentId, 'agentId', 100), args.option);
     if (op === 'models.features') {
       const p = await this.store.get(id); const model = string(args.model, 'model', 500);
       const harness = args.harness === 'claude' ? 'claude' : args.harness === 'pi' ? 'pi' : args.harness === 'codex' ? 'codex' : null;
@@ -152,17 +199,14 @@ export class CompanionService {
       catch (error) { return { profile, runtime: { ...await this.runtime.state(id), state: 'pending', code: 'RUNTIME_APPLY_FAILED', message: error instanceof Error ? error.message : String(error) } }; }
     }
     if (op === 'profile.chooseAvatar') {
-      const raw = string(args.avatarImageBase64, 'avatar', 1800000).replace(/^data:image\/(?:png|jpeg|webp);base64,/, '');
-      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(raw)) throwIpcError('INVALID_PARAMS', 'Invalid avatar image');
-      const bytes = Buffer.from(raw, 'base64');
-      const mime = bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) ? 'image/png' :
-        bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 ? 'image/jpeg' :
-        bytes.subarray(0, 4).toString() === 'RIFF' && bytes.subarray(8, 12).toString() === 'WEBP' ? 'image/webp' : null;
-      if (!mime) throwIpcError('INVALID_PARAMS', 'Avatar must be PNG, JPEG or WebP');
-      const profile = await this.store.update(id, { avatar: `data:${mime};base64,${raw}`, ...(args.expectedAvatar === undefined ? {} : { expectedAvatar: args.expectedAvatar }) });
+      const profile = await this.store.update(id, { avatar: avatarDataUrl(args.avatarImageBase64), ...(args.expectedAvatar === undefined ? {} : { expectedAvatar: args.expectedAvatar }) });
       return { profile, runtime: await this.runtime.state(id) };
     }
-    if (['profile.ensure', 'paseo.conversation.ensure'].includes(op)) return this.runtime.ensure(paseo, id);
+    if (['profile.ensure', 'paseo.conversation.ensure'].includes(op)) {
+      const result = await this.runtime.ensure(paseo, id);
+      await this.openings.ensure(paseo, id, result.agentId);
+      return result;
+    }
     if (op === 'conversation.send') {
       const text = string(args.text, 'message', 100000); const messageId = string(args.clientMessageId, 'clientMessageId', 200);
       const { agentId } = await this.runtime.ensure(paseo, id);
@@ -217,6 +261,7 @@ export class CompanionService {
       if (confirmName !== p.name) throwIpcError('PRECONDITION_FAILED', 'Companion name changed; confirm again');
       const state = await this.store.snapshot();
       if (Object.values(state.routines).some(routine => routine.botId === id)) throwIpcError('ROUTINES_EXIST', 'Remove this companion’s routines before deleting it');
+      if (Object.values(state.groups ?? {}).some(group => !group.deletedAt && group.botIds.includes(id))) throwIpcError('GROUP_MEMBERSHIP_EXISTS', 'Remove this companion from its groups before deleting it');
       if (state.bindings[id]?.phase && state.bindings[id]?.phase !== 'ready') throwIpcError('CREATE_OUTCOME_UNKNOWN', 'Resolve pending agent creation before deleting the companion');
       const agents = await Promise.all(p.sessions.map(async session => { const agent = paseo.agents.ref(session.id); return await agent.refresh() ? agent : null; }));
       if (agents.some(agent => agent && (agent.activeTurn || agent.status === 'running' || agent.status === 'initializing'))) throwIpcError('AGENT_BUSY', 'Wait for this companion’s current work to finish before deleting it');

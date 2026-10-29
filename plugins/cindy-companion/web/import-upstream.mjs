@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import ts from 'typescript';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { transformBotRoster } from './transform-roster.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const plugin = path.dirname(here);
 if (!process.argv[2]) throw new Error('Usage: node import-upstream.mjs /path/to/pinned/cindy');
@@ -29,6 +30,7 @@ const adapters = {
   'components/chat/MarkdownRenderer': 'memory-markdown.tsx',
   'components/new-chat/ModelRouteSelector': 'model-picker.tsx',
   'hooks/useDeviceProviders': 'catalog.ts',
+  'hooks/useProviders': 'catalog.ts',
   'lib/makerChatStore': 'voice-session.ts',
   'components/settings/HookConnectionsSection': 'unsupported.tsx',
   'components/settings/WechatBotSection': 'unsupported.tsx',
@@ -38,6 +40,10 @@ const adapters = {
   'i18n': 'i18n.ts',
   'i18n/index': 'i18n.ts',
   'hooks/useTheme': 'theme.tsx',
+  'contexts/AuthContext': 'auth.ts',
+  'components/sidebar/sidebarNavigationPrefs': 'sidebar-icons.ts',
+  'features/bots/botGroupStore': 'group-store.ts',
+  'features/bots/botGroupPresentation': 'group-presentation.ts',
 };
 fs.writeFileSync(path.join(here, 'aliases.json'), JSON.stringify(adapters, null, 2) + '\n');
 const seen = new Set();
@@ -82,18 +88,37 @@ function add(file, transform) {
   const isText = /\.(tsx?|js|mjs|json|css)$/.test(file);
   if (transform) code=transform(code);
   if (isText) {
+    if(file.endsWith('/BotRosterView.tsx')) code=transformBotRoster(code);
     if(file.endsWith('/styles/globals.css')) code=code
       .replace(/@font-face\s*\{\s*font-family: 'Cindy CJK Punctuation Bundled';[^}]*\}\s*/g,'')
       .replaceAll("'Cindy CJK Punctuation Bundled'", "'HarmonyOS Sans SC'")
       .replace('while the\n   bundled faces cover the punctuation glyphs HarmonyOS actually ships.', 'while the\n   complete original HarmonyOS face is loaded by the Paseo font bridge.')
       .replace('Keep the asset names aligned with the\n   exact-pinned font package.', 'The bridge verifies the full original font bytes before loading.');
     code=code.replaceAll("'../../../../resources/", "'@cindy-assets/");
+    if(file.endsWith('/BotMarketDialog.tsx')) code=code
+      .replace('onClose, initialPackageId, api =','onClose, initialPackageId, onOpenBot, api =')
+      .replace('onClose(): void; initialPackageId?: string; api?: BotMarketApi;','onClose(): void; initialPackageId?: string; onOpenBot?(botId: string): Promise<void>; api?: BotMarketApi;')
+      .replace("    onClose(); navigate('/bots/' + encodeURIComponent(botId));", "    if (onOpenBot) {\n      try { await onOpenBot(botId); }\n      catch { if (alive.current && isDataOwnerGenerationCurrent(generation)) setError(t('bots.market.installFailed')); }\n    } else { onClose(); navigate('/bots/' + encodeURIComponent(botId)); }");
+    if(file.endsWith('/BotGroupCreateDialog.tsx')) code=code
+      .replace('  const busyRef = useRef(false);', `  const busyRef = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    const close = () => { if (!busyRef.current) onOpenChange(false); };
+    window.addEventListener('cindy-request-close', close);
+    return () => { alive.current = false; window.removeEventListener('cindy-request-close', close); };
+  }, [onOpenChange]);`)
+      .replace('if (!isDataOwnerGenerationCurrent(owner)) return;', 'if (!alive.current || !isDataOwnerGenerationCurrent(owner)) return;')
+      .replaceAll('if (isDataOwnerGenerationCurrent(owner))', 'if (alive.current && isDataOwnerGenerationCurrent(owner))');
+    const relocatedGroupExport = file.endsWith('/botGroupMentions.ts') || file.endsWith('/shared/botGroupChat.ts');
+    if(file.endsWith('/botGroupMentions.ts')) code="export * from '../../../../shared/vendor/botGroupMentions';\n";
+    if(file.endsWith('/shared/botGroupChat.ts')) code="export * from '../../shared/vendor/botGroupChat';\n";
     if(file.endsWith('/BotAvatar.tsx')) code=code.replace("value?.startsWith('https://')", "(value?.startsWith('https://') || /^data:image\\/(?:png|jpeg|webp);base64,/i.test(value ?? ''))");
     if(file.endsWith('/CompanionVoiceSettings.tsx')) code="import { HostServiceNotice } from '@/features/bots/paseoHostStatus';\n"+code.replaceAll('<div className="space-y-4 pt-3">','<div className="space-y-4 pt-3"><HostServiceNotice op="voice.models" service="voice" />');
     if(file.endsWith('/BotChannelsPage.tsx')) code=code.replace("{t('bots.channels.empty', { name: bot.name })}","{t(im ? 'bots.channels.empty' : 'paseoIntegration.channelsUnavailable', { name: bot.name })}").replace('size="md" onClick={() => setAdding(true)}','size="md" disabled={!im} onClick={() => setAdding(true)}');
     if(file.endsWith('/speechVoiceLabelCache.ts')) code="import { frameStorage } from '@paseo/frame-storage';\n"+code.replaceAll('window.localStorage','frameStorage');
     if(file.endsWith('/confirm-dialog-provider.tsx')) code="import { frameStorage as localStorage } from '@paseo/frame-storage';\n"+code;
-    for (const spec of deps(file,code)) {
+    for (const spec of relocatedGroupExport ? [] : deps(file,code)) {
       let target;
       if (spec.startsWith('@/') && adapters[spec.slice(2)]) continue;
       if (spec.startsWith('@/')) target=resolve(path.join(renderer,spec.slice(2)));
@@ -161,10 +186,16 @@ add(path.join(renderer,'features/bots/BotSettingsDrawer.tsx'),source=>source.rep
   });
   if (!bot && !remoteBot) return null;`
 ));
-for(const rel of ['components/ui/effort-slider.tsx','components/new-chat/FastModeToggle.tsx','themes/colors.ts','themes/theme-service.ts','themes/builtin/default-light.ts','themes/builtin/default-dark.ts','styles/globals.css','components/ui/confirm-dialog-provider.tsx','components/ui/tooltip.tsx','components/ui/toast/index.ts','features/bots/botSettingsTarget.ts']) {
+for(const rel of ['features/bots/BotMarketDialog.tsx','features/bots/BotRosterView.tsx','features/bots/BotGroupCreateDialog.tsx','features/bots/BotGroupAvatars.tsx','features/bots/botGroupComposerChrome.ts','features/bots/useBotGroupMentionPicker.tsx','components/new-chat/SendButton.tsx','components/ui/effort-slider.tsx','components/new-chat/FastModeToggle.tsx','themes/colors.ts','themes/theme-service.ts','themes/builtin/default-light.ts','themes/builtin/default-dark.ts','styles/globals.css','components/ui/confirm-dialog-provider.tsx','components/ui/tooltip.tsx','components/ui/toast/index.ts','features/bots/botSettingsTarget.ts']) {
  const file=resolve(path.join(renderer,rel)); if(file)add(file);else missing.add(rel);
 }
 for(const locale of ['en','zh-CN']) add(path.join(renderer,`i18n/locales/${locale}/common.json`));
+add(path.join(shared,'botGroupChat.ts'));
+// The desktop uses this pure formatter through maker-shared. Its complete implementation is reused.
+const timelineSource='packages/maker-shared/src/botTimeline.ts';
+const timelineBytes=fs.readFileSync(path.join(upstream,timelineSource));
+fs.writeFileSync(path.join(plugin,'vendor/shared/botTimeline.ts'),timelineBytes);
+records.push({source:timelineSource,destination:'vendor/shared/botTimeline.ts',sha256:crypto.createHash('sha256').update(timelineBytes).digest('hex'),modified:false});
 for(const [source, filename, extract] of [
  ['packages/maker-shared/src/modelRoute.ts','modelRoute.ts',null],
  ['packages/maker-scheduler/src/engine/cron.ts','cron.ts',null],

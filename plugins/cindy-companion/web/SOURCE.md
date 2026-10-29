@@ -3,7 +3,7 @@
 Upstream: https://github.com/makecindy/cindy
 Commit: `118767c987f518286ae10a506a54287c3dc2a560`
 
-This is a settings-only extraction, not a reimplementation of the Cindy desktop application. `import-upstream.mjs` reproduces the slice from a checkout at the pinned commit. SHA-256 below identifies the original file before any listed adapter modification.
+This is an extraction of the original settings, teammate catalog and selected group surfaces, not the whole Cindy desktop application. `import-upstream.mjs` reproduces the copied components from a checkout at the pinned commit; host adapters under `web/` are maintained locally. SHA-256 below identifies the original file before any listed adapter modification.
 
 ## Source changes
 
@@ -148,3 +148,23 @@ Bundled npm notices: `licenses/THIRD-PARTY.md`. Font/image SHA-256 inventory: `a
 | `apps/desktop/tailwind.config.ts` | `web/tailwind.config.ts` | `3ae0e4f2b6e69895a0ca884652ffd1983b9654facf64b8b8f2356ea40d91bab2` | yes |
 
 `styles/globals.css` has one additional font adaptation: its four npm punctuation subset faces are removed, and the same fallback slot uses the complete original HarmonyOS Sans SC face loaded through verified font chunks. No subset/font conversion remains.
+
+## Original preset catalog extension
+
+`BotMarketDialog.tsx`, `BotMarketModules.tsx` and `botMarketDisplay.ts` are copied from the same pinned source. List/detail JSX, layout, tokens, item names, partial-save state and invitation semantics are retained. The dialog accepts an optional `onOpenBot` callback so the Paseo bridge opens the actual native companion session. Auth reads the iframe host scope, plugin names remain authored names without inventing installed status, and sidebar plugin icons use the original Plug icon. `web/upstream-files.json` includes the source hashes. Package bytes and the non-code rights evidence are documented in [`server/presets/SOURCE.md`](../server/presets/SOURCE.md).
+
+## Original group surfaces and implementation boundary
+
+[`group-upstream-files.json`](group-upstream-files.json) records the exact original hashes and extraction boundaries. `BotGroupCreateDialog`, `BotGroupAvatars`, `useBotGroupMentionPicker`, `botGroupComposerChrome`, `SendButton` and `botTimeline` retain the upstream implementation. The creation dialog adds the host close event and late-result guards. The pure mention parser and group contract re-exports point to the original shared modules already used by the server.
+
+`group-chat.tsx` adapts the original header, date divider, message grouping/bubble JSX, avatar stack, composer and mention picker to the local Paseo group snapshot. `group-settings.tsx` adapts the original drawer header, name/member fields and reply-mode segmented control. These are extracts, not the full upstream group page: plans, threads, reactions, attachments, quote/share actions, cloud members, organizer/project-directory/speaking-mode controls and streaming tool cards are not currently implemented. They remain tracked in `CORE_FEATURES.md`, not represented by fake empty service responses.
+
+Group creation and user messages retain their operation IDs across a failed acknowledgement. Reads are single-flight with bounded retry and stop on unmount. A stop receipt renders its actual returned round state; accepted is not treated as stopped. Settings close waits for the current save, preserves drafts after errors, and sends optimistic revisions. Permission requests open the actual native task identified by the host. Unit/component checks do not replace installed visual acceptance.
+
+The composer follows the upstream `showStop = running && draft is empty` rule. During a discussion, an explicit mention may enqueue an independent reply; its receipt appears in the pending queue and does not replace the active speaker/Stop target. A supplementary message with deferred delivery is labeled explicitly: the host has recorded it for later speakers and has not confirmed delivery to the current speaker. That notice clears only when a subsequent host snapshot records actual delivery.
+
+## Original custom teammate creation
+
+`BotRosterView.tsx` retains the original 520px dialog, name field, random initial portrait, full 17-portrait picker/upload crop, first-model selection and original duplicate-name validation. The original creation page has no description field: it sends an empty description, later editable in Profile. `transform-roster.mjs` reproduces the host close, data-owner, portrait-preparation and asynchronous navigation guards. The external import button stays in its authored position but is disabled with an explicit unavailable-service label; the providers detour reports the unconnected host settings entry. Neither action fabricates an imported teammate or a provider connection.
+
+The bridge sends `{operationId,name,description,avatarImageBase64?,capabilities?:{modelChainOverride}}` to `profile.create`, preserving the same intent on retry. It checks for an actual usable inherited or explicit model and waits for the committed profile before opening the native conversation. Portrait bytes and the model override belong to the same host creation transaction. Original gallery/license provenance is unchanged.

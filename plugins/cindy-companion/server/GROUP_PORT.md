@@ -1,0 +1,37 @@
+# Cindy group runtime source map
+
+Pinned source: `makecindy/cindy@118767c987f518286ae10a506a54287c3dc2a560` (Apache-2.0 code; original notices are retained in `server/vendor`). This map distinguishes implemented source from product rules. The external Chat Server implementation is not present in this repository.
+
+| Behavior | Original implementation / rule | Paseo adapter |
+| --- | --- | --- |
+| Real entry | `apps/desktop/src/main/maker-ipc/register.ts:13494` wraps local service in `withChatServer`; IPCs at 13805–13837 | `settings.invoke` `groups.*`, contract in `shared/groups.ts` |
+| Current ordered discussions | `chatServer.ts:425,852`; `docs/product-rules/bot-group-chat.md:130` capability `groupSingleSpeaker:1` | One native turn per ordered step; first five auto, later each requires Continue |
+| Legacy parallel circles | `botGroupChatService.ts:1080` first circle parallel, max three circles/ten posts | Deliberately not represented as the current server behavior |
+| Mentions | `packages/maker-shared/src/botGroupMentions.ts` | Unmodified vendored parser, including picked-token disambiguation, stale target rejection, CJK/Latin boundaries |
+| Main lane continuity | `apps/desktop/src/main/localDb/ipc/bots.ts:330`; `chatServer.ts:2279` | Stable bot × group native background lane for one-recipient main replies; separate from canonical DM |
+| Talk isolation | `localDb/ipc/bots.ts:327,344`; `chatServer.ts:2134,2188` | Independent bot × talk-round lane; only this request and earlier step answers are passed |
+| Prompt context | `chatServer.ts:248–280,2267–2304` | Adapted original prompt text/context rules: latest 12 main messages at 600 chars; talk last answer 2000 chars, earlier answers 600; escaped untrusted-data envelope |
+| Member removal | `botGroupChatService.ts` / `localDb/worker/opHandlers/botGroupsTx.ts` | Historical author names remain snapshots; member lanes archive, rejoin starts a new lane |
+| NO_REPLY | `packages/maker-shared/src/botGroupChat.ts:25` | Exact trimmed sentinel suppresses a visible message but completes the step |
+| Stop/restart | `botGroupChatService.ts:2162,2178`; product rule §4.4 | Persisted stopping receipt; interrupt exact owned native IDs, drain create/send races, suppress late replies; unknown stop prevents new dispatch; plugin restart interrupts uncertain active work without replay and preserves durable waiting rounds for explicit Continue |
+| Member failure | `docs/product-rules/bot-group-chat.md:209` | After this member's native stop is confirmed, record its failed step and continue the remaining queue; an unknown stop blocks further dispatch |
+| Completion | Original dispatch associates `clientId` with terminal result (`botGroupChatService.ts:1028`) | Public native `turn_started` / same-turn `turn_completed` plus canonical timeline input `clientMessageId` and assistant answer; idle/ACK alone never complete |
+| Identity/memory | `bot-group-chat.md:51–59`; `botSystemPrompt.ts`; `localDb/ipc/bots.ts:330` | Same verified companion SOUL/USER, model, permission and per-bot authenticated memory server; group transcripts never enter DM session lists |
+
+The one-recipient lane retains native context across turns. If selected model/instructions change, the adapter uses public `setModel`, `setThinkingOption`, `setFeature`, and `updateInstructions` when available. An older host receives `HOST_UPGRADE_REQUIRED`; the adapter does not silently replace its long-lived lane or report unapplied settings as applied. Each new discussion-card lane starts with current profile settings.
+
+The original lane uses the companion's Home working directory (`localDb/ipc/bots.ts:317`). Paseo 0.13.2 background visibility belongs to a workspace, so the adapter currently gives each hidden main/talk lane an owned background workspace. The companion identity, memory endpoint and verified absolute skill paths are shared, but relative filesystem working-directory behavior differs. This is a host-adapter gap, not exact Home-workspace parity.
+
+## Remaining source functionality, not claimed implemented
+
+- **In-flight additions**: source `bot-group-chat.md:151` steers requester additions to the active step. The plugin durably stores additions and includes them for subsequent speakers, with explicit `deferred` delivery until a successful native turn actually contained them. It does not claim the current speaker received them: public SDK 0.13.2 lacks an atomic expected-turn send. Directed replies are durably queued separately, run on ordinary main lanes between current talk steps, then resume the original talk. They do not become extra steps on its card. The exact server scheduler is external; this FIFO interleave is the local adapter's explicit policy.
+- **Work arrangements**: `botGroupDivision.ts` parses validated organizer JSON and creates step briefs; `botGroupPlanDecider.ts:33`, `botGroupWorkDir.ts:108`, `chatServer.ts:2296` dispatch one step at a time with a project folder/worktree, artifact handoff, edit/retry/continue. Must be a separate persisted work plan, not an extra discussion prompt.
+- **Threads, quotes, attachments and reactions**: `chatServer.ts:2165` isolates each thread lane; shared `botGroupQuote.ts` and `botGroupTask.ts` preserve typed metadata. The pure shared modules are vendored, but copying these types alone does not expose these runtime features.
+- **Background task delegation and task cards**: `botDelegationService.ts`, `botDelegationLifecycle.ts`, `botDelegationDispatchOutcome.ts`, `botTaskResponsibility.ts`, `botGroupTaskPostSnapshot.ts`. A generic Paseo child link is insufficient: retained task ownership, acceptance, completion, follow-up, cancellation and group result routing must be ported together.
+- **Bot-to-bot messaging**: `botDirectMessageService.ts:216` is asynchronous communication, distinct from delegated tasks. It has persistent receipts, scoped channels and a 12-message thread ceiling (`:37`), including unknown outcomes which must not resend. Not the same operation as group send.
+- **History scopes**: Cindy conversation history is mediated by `chatServer.ts` and its scoped history store. The similarly named `mcp-integrations/groupHistoryMcpServer.ts:152` and `hook-control/groupHistoryScope.ts` are specifically Telegram group/topic history, not the Cindy group conversation service. They must not be mistaken for a ready-made Cindy group history tool. Current plugin UI reads durable local group history; a scoped agent history tool is not yet exposed.
+- **Autonomous follow-up / nightly learning**: `shared/botAutonomy.ts`, `main/bot-autonomy/nightlyLearningRoutine.ts`, responsibility/task-action authority services. Existing cron adapters and imported disabled definitions do not implement session-event subscriptions, entrusted/autonomous identity or nightly learning policy.
+- **Capability selection**: receipt-verified bundled skills are available as original local files with explicit skill paths; provider-native skills can be inspected. Arbitrary external MCP/toolset/per-companion capability selection remains unsupported until a verified host adapter exists.
+- **Cross-account/cloud groups**: server room membership, owner/admin stop scopes, chat-only grants, remote devices and realtime room reconciliation depend on Chat Server. Current plugin groups are local-owner groups (2–6 existing companions), not cloud room interoperability.
+
+No production daemon was reloaded and no live group fixture was run during backend unit verification. Root-owned live verification remains required.

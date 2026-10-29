@@ -26,7 +26,7 @@ async function loadComponent(path, sidebar = false) {
       if (sidebar) builder.onResolve({ filter: /^\.\/(data|settings|web)$/ }, ({ path }) => ({ path, namespace: 'host-mock' }));
       builder.onLoad({ filter: /.*/, namespace: 'host-mock' }, ({ path }) => ({ contents: path === 'rn'
         ? `export const Platform={OS:'web'}; export const ActivityIndicator='ActivityIndicator',Image='Image',Pressable='Pressable',Text='Text',TextInput='TextInput',View='View';`
-        : path === './data' ? `export const useCompanions=id=>globalThis.__CINDY_HOST_TEST__.rosters[id]; export const useSettingsInvoke=id=>globalThis.__CINDY_HOST_TEST__.invokes[id];`
+        : path === './data' ? `export const useCompanions=id=>globalThis.__CINDY_HOST_TEST__.rosters[id]; export const useGroups=id=>globalThis.__CINDY_HOST_TEST__.groups?.[id]??{data:[]}; export const useSettingsInvoke=id=>globalThis.__CINDY_HOST_TEST__.invokes[id];`
         : path === './settings' ? `import {createElement} from 'react'; export const CompanionSettings=props=>createElement('Settings',props);`
         : `import {createElement} from 'react'; export const canRenderSettingsFrame=true; export const AvatarContext=({children,onOpen})=>createElement('AvatarContext',{onOpen},children);`,
       }));
@@ -44,6 +44,7 @@ const theme = { colors: { foreground: '#fff', foregroundMuted: '#888', surface0:
 const bot = { id: 'cindy', name: 'Cindy', avatar: 'cindy://avatar/preset/dash', avatarColor: 'violet', status: 'active' };
 function setupSidebar() {
   const calls = [], navigations = [], popovers = [];
+  data.groups = {};
   data.rosters = Object.fromEntries(['a', 'b'].map(id => [id, { data: { profiles: [bot] }, isPending: false }]));
   data.invokes = Object.fromEntries(['a', 'b'].map(id => [id, (op, args) => {
     const pending = deferred(); calls.push({ host: id, op, args, ...pending }); return pending.promise;
@@ -105,27 +106,47 @@ test('the teammate ring follows native navigation when the host provides current
   act(() => renderer.unmount());
 });
 
-test('create uses one operation id for retries, blocks double submit and drops callbacks after host change/unmount', async () => {
-  const state = setupSidebar(); let renderer, editor; let closes = 0;
+test('original create menu opens the selected surface and cannot act after switching hosts', async () => {
+  const state = setupSidebar(); let renderer, menu; let closes = 0;
   await act(async () => { renderer = create(React.createElement(Teammates, state.props('a'))); });
   act(() => button(renderer, 'Create teammate').props.onPress());
-  const Content = state.popovers[0]; const props = id => ({ host: { id }, theme, close() { closes++; } });
-  await act(async () => { editor = create(React.createElement(Content, props('a'))); });
-  act(() => editor.root.findByType('TextInput').props.onChangeText('  Alice  '));
-  act(() => { const press = textButton(editor, 'Create').props.onPress; press(); press(); });
-  assert.equal(state.calls.length, 1); assert.equal(state.calls[0].args.name, 'Alice');
-  await act(async () => { state.calls[0].reject(new Error('Temporary offline')); });
-  act(() => textButton(editor, 'Create').props.onPress());
-  assert.equal(state.calls[1].args.operationId, state.calls[0].args.operationId);
-  act(() => editor.update(React.createElement(Content, props('b'))));
-  await act(async () => { state.calls[1].resolve(success('old')); });
-  assert.equal(closes, 0);
-  act(() => textButton(editor, 'Create').props.onPress());
-  assert.equal(state.calls[2].host, 'b');
-  assert.notEqual(state.calls[2].args.operationId, state.calls[1].args.operationId);
-  act(() => editor.unmount());
-  await act(async () => { state.calls[2].resolve(success('new')); });
-  assert.equal(closes, 0);
+  await act(async () => { menu = create(React.createElement(state.popovers[0], { theme, close() { closes++; } })); });
+  act(() => textButton(menu, 'Discover Teammates').props.onPress());
+  assert.equal(renderer.root.findByType('Settings').props.view, 'presets');
+  act(() => renderer.root.findByType('Settings').props.onClose());
+  act(() => textButton(menu, 'New teammate').props.onPress());
+  assert.equal(renderer.root.findByType('Settings').props.view, 'teammate-create');
+  act(() => renderer.root.findByType('Settings').props.onClose());
+  act(() => textButton(menu, 'New Group Chat').props.onPress());
+  assert.equal(renderer.root.findByType('Settings').props.view, 'group-create');
+  act(() => renderer.update(React.createElement(Teammates, state.props('b'))));
+  for (const label of ['Discover Teammates', 'New teammate', 'New Group Chat']) {
+    act(() => textButton(menu, label).props.onPress());
+  }
+  assert.equal(renderer.root.findAllByType('Settings').length, 0);
+  assert.equal(state.popovers.length, 1);
+  assert.equal(state.calls.length, 0);
+  assert.equal(closes, 6);
+  act(() => { menu.unmount(); renderer.unmount(); });
+});
+
+test('group entries mix by activity, open the shared screen and follow its selected route', async () => {
+  const state = setupSidebar(); let renderer; const routes = [];
+  data.rosters.a.data.profiles = [{ ...bot, createdAt: 1, sessions: [] }];
+  data.groups.a = { data: [{ id: 'group-1', name: 'Planning', updatedAt: 2, members: [
+    { ...bot, botId: 'cindy' }, { ...bot, botId: 'alice' },
+  ], round: null }] };
+  const props = currentScreen => ({ ...state.props('a'), currentScreen, openScreen: route => routes.push(route) });
+  await act(async () => { renderer = create(React.createElement(Teammates, props(undefined))); });
+  const labels = renderer.root.findAllByType('Pressable').map(node => node.props.accessibilityLabel);
+  assert.ok(labels.indexOf('Planning') < labels.indexOf('Cindy'));
+  act(() => button(renderer, 'Planning').props.onPress());
+  assert.deepEqual(routes, [{ screenId: 'group', params: { groupId: 'group-1' } }]);
+  assert.equal(state.calls.length, 0);
+  act(() => renderer.update(React.createElement(Teammates, props(routes[0]))));
+  assert.equal(button(renderer, 'Planning').props.accessibilityState.selected, true);
+  act(() => renderer.update(React.createElement(Teammates, props({ screenId: 'group', params: { groupId: 'other' } }))));
+  assert.equal(button(renderer, 'Planning').props.accessibilityState.selected, false);
   act(() => renderer.unmount());
 });
 
@@ -185,6 +206,31 @@ test('frame captures the request invoke and cancels requests that have not start
   });
   await flush(); assert.equal(state.calls.length, 1); assert.equal(state.calls[0].host, 'b');
   await act(async () => state.calls[0].resolve(success('new')));
+  act(() => renderer.unmount());
+});
+
+test('switching group or view replaces the frame and drops stale navigation and requests', async () => {
+  const state = setupFrame(); let renderer; const groups = [];
+  const props = (view, groupId) => ({ ...state.props('a'),
+    init: { ...state.props('a').init, view, groupId }, onNavigateGroup: id => groups.push(id) });
+  await act(async () => { renderer = create(React.createElement(SettingsFrame, props('group', 'one')), { createNodeMock: state.createNodeMock }); });
+  const old = state.nodes.at(-1);
+  act(() => state.send(old, { type: 'request', id: 'save', op: 'groups.send', args: { groupId: 'one' } }));
+  await flush();
+  act(() => renderer.update(React.createElement(SettingsFrame, props('group', 'two'))));
+  const next = state.nodes.at(-1); assert.notEqual(old, next);
+  act(() => {
+    state.send(old, { type: 'navigate-group', groupId: 'one' });
+    state.send(old, { type: 'groups-changed' });
+    state.send(next, { type: 'navigate-group', groupId: 'two' });
+    state.send(next, { type: 'groups-changed' });
+  });
+  await act(async () => state.calls[0].resolve({ ok: true }));
+  assert.deepEqual(groups, ['two']);
+  assert.equal(state.events.filter(event => event === 'changed').length, 1);
+  assert.equal(old.messages.length, 0); assert.equal(next.messages.length, 0);
+  act(() => renderer.update(React.createElement(SettingsFrame, props('presets', undefined))));
+  assert.notEqual(state.nodes.at(-1), next);
   act(() => renderer.unmount());
 });
 

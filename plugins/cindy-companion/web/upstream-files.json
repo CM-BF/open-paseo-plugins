@@ -30,6 +30,12 @@
     "modified": false
   },
   {
+    "source": "apps/desktop/src/renderer/components/settings/DefaultOverrideControls.tsx",
+    "destination": "vendor/renderer/components/settings/DefaultOverrideControls.tsx",
+    "sha256": "208b71323d5ca6c9380e08e2dd7e25cfbab6d1a2f809f2b08c2d2a651aabf950",
+    "modified": false
+  },
+  {
     "source": "apps/desktop/src/renderer/components/settings/avatarCropGeometry.ts",
     "destination": "vendor/renderer/components/settings/avatarCropGeometry.ts",
     "sha256": "86e5459103d007e00d948577bd28d44141346df31e64a79d6dccfd1bcd295cee",
@@ -39,12 +45,6 @@
     "source": "apps/desktop/src/renderer/components/settings/avatarCropImage.ts",
     "destination": "vendor/renderer/components/settings/avatarCropImage.ts",
     "sha256": "d3769519ec114f9d901f09ab3760216e4a51904db79f3e5a4830057b20d3eca9",
-    "modified": false
-  },
-  {
-    "source": "apps/desktop/src/renderer/components/settings/DefaultOverrideControls.tsx",
-    "destination": "vendor/renderer/components/settings/DefaultOverrideControls.tsx",
-    "sha256": "208b71323d5ca6c9380e08e2dd7e25cfbab6d1a2f809f2b08c2d2a651aabf950",
     "modified": false
   },
   {
@@ -204,12 +204,6 @@
     "modified": false
   },
   {
-    "source": "apps/desktop/src/renderer/components/ui/toast/index.ts",
-    "destination": "vendor/renderer/components/ui/toast/index.ts",
-    "sha256": "d56c3197ec7e9e5d953223abadc3c9a3b30fa304f73c8db999cbbd728c450817",
-    "modified": false
-  },
-  {
     "source": "apps/desktop/src/renderer/components/ui/toast/Toast.tsx",
     "destination": "vendor/renderer/components/ui/toast/Toast.tsx",
     "sha256": "a85e9eefa4b840dc1728e278ae7ed9da39437120c712c8f829256bb8e096ee58",
@@ -219,6 +213,12 @@
     "source": "apps/desktop/src/renderer/components/ui/toast/ToastContainer.tsx",
     "destination": "vendor/renderer/components/ui/toast/ToastContainer.tsx",
     "sha256": "d1439eb8ffcbc6f8c54af5572810b7493b0dff6e5a92ca7014db66d1f6bc757c",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/components/ui/toast/index.ts",
+    "destination": "vendor/renderer/components/ui/toast/index.ts",
+    "sha256": "d56c3197ec7e9e5d953223abadc3c9a3b30fa304f73c8db999cbbd728c450817",
     "modified": false
   },
   {
@@ -246,12 +246,6 @@
     "modified": true
   },
   {
-    "source": "apps/desktop/src/renderer/features/bots/botAvatarIdentity.ts",
-    "destination": "vendor/renderer/features/bots/botAvatarIdentity.ts",
-    "sha256": "3d0d47f2c9b3d6076164f9a354f47e97bf007de2b600016bd106a750cf0b0b71",
-    "modified": false
-  },
-  {
     "source": "apps/desktop/src/renderer/features/bots/BotBasicProfileFields.tsx",
     "destination": "vendor/renderer/features/bots/BotBasicProfileFields.tsx",
     "sha256": "376fe6b96d766209f134504f63c398679f79d159a8e534a0db489148dbeb1e19",
@@ -276,18 +270,6 @@
     "modified": false
   },
   {
-    "source": "apps/desktop/src/renderer/features/bots/botGroupLane.ts",
-    "destination": "vendor/renderer/features/bots/botGroupLane.ts",
-    "sha256": "e67bc2a780e06904115734aae0d61e5ccbd779a58a212b6291d63aa162473cba",
-    "modified": false
-  },
-  {
-    "source": "apps/desktop/src/renderer/features/bots/botImConnectionClient.ts",
-    "destination": "vendor/renderer/features/bots/botImConnectionClient.ts",
-    "sha256": "c9c2360c996e2a79c2f361721a9c27aed3406a7d05c26e57f2099eff7b33aa68",
-    "modified": false
-  },
-  {
     "source": "apps/desktop/src/renderer/features/bots/BotInvitationWelcome.tsx",
     "destination": "vendor/renderer/features/bots/BotInvitationWelcome.tsx",
     "sha256": "0dc93718371dfabac5e3dc61cef53c40fe4f93df0defe45c8823f8fb7c7ed7f7",
@@ -297,6 +279,18 @@
     "source": "apps/desktop/src/renderer/features/bots/BotLifecycleSettings.tsx",
     "destination": "vendor/renderer/features/bots/BotLifecycleSettings.tsx",
     "sha256": "52b17964d2ed38321c0bdba1f4e538481cedba5b77ea62b6574164882410262d",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotMarketDialog.tsx",
+    "destination": "vendor/renderer/features/bots/BotMarketDialog.tsx",
+    "sha256": "d7aabfd7086dc98cb8e5729a525225e04aecf8abcb12e34d4f30a52dceb9a3b8",
+    "modified": true
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotMarketModules.tsx",
+    "destination": "vendor/renderer/features/bots/BotMarketModules.tsx",
+    "sha256": "4d4e1735195218dbf523d7f945de5e7dd0806901a387c77728e7d1b258fb2d6e",
     "modified": false
   },
   {
@@ -324,21 +318,9 @@
     "modified": true
   },
   {
-    "source": "apps/desktop/src/renderer/features/bots/botPronounContext.tsx",
-    "destination": "vendor/renderer/features/bots/botPronounContext.tsx",
-    "sha256": "3eff8fefc2315b6d25417b1b05dfabcf30e7d5149d8662ead67f32922ce2d9da",
-    "modified": false
-  },
-  {
     "source": "apps/desktop/src/renderer/features/bots/BotRoutines.tsx",
     "destination": "vendor/renderer/features/bots/BotRoutines.tsx",
     "sha256": "1a53c691cbd0ca07a4fa8758c8d341b56d56c8f17a3abf8726db98edd2a5e72f",
-    "modified": false
-  },
-  {
-    "source": "apps/desktop/src/renderer/features/bots/botSettingsAutosave.ts",
-    "destination": "vendor/renderer/features/bots/botSettingsAutosave.ts",
-    "sha256": "f9e6fafec648d889557fcb83eb4ee17989ea4f6e21a7bceb9a97fbb190d5a982",
     "modified": false
   },
   {
@@ -346,6 +328,54 @@
     "destination": "vendor/renderer/features/bots/BotSettingsDrawer.tsx",
     "sha256": "d57c4ddf10c23b99da1e43e7f9865acded0d19ef99f6923144e907d2450daaa9",
     "modified": true
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotTaskModelEditor.tsx",
+    "destination": "vendor/renderer/features/bots/BotTaskModelEditor.tsx",
+    "sha256": "f388e5b868a5241333ad718ab17fa91ef34aa38defe632e29c747b2784d056d7",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotsHomeView.tsx",
+    "destination": "vendor/renderer/features/bots/BotsHomeView.tsx",
+    "sha256": "7cfca17e5e6528346809f0d769e2837c4e834cf27f1350ba37d1511a90a7e291",
+    "modified": true
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/botAvatarIdentity.ts",
+    "destination": "vendor/renderer/features/bots/botAvatarIdentity.ts",
+    "sha256": "3d0d47f2c9b3d6076164f9a354f47e97bf007de2b600016bd106a750cf0b0b71",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/botGroupLane.ts",
+    "destination": "vendor/renderer/features/bots/botGroupLane.ts",
+    "sha256": "e67bc2a780e06904115734aae0d61e5ccbd779a58a212b6291d63aa162473cba",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/botImConnectionClient.ts",
+    "destination": "vendor/renderer/features/bots/botImConnectionClient.ts",
+    "sha256": "c9c2360c996e2a79c2f361721a9c27aed3406a7d05c26e57f2099eff7b33aa68",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/botMarketDisplay.ts",
+    "destination": "vendor/renderer/features/bots/botMarketDisplay.ts",
+    "sha256": "0850386e0a392377c447a5b514510c89a763338c479917187721f7bbc007b3d5",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/botPronounContext.tsx",
+    "destination": "vendor/renderer/features/bots/botPronounContext.tsx",
+    "sha256": "3eff8fefc2315b6d25417b1b05dfabcf30e7d5149d8662ead67f32922ce2d9da",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/botSettingsAutosave.ts",
+    "destination": "vendor/renderer/features/bots/botSettingsAutosave.ts",
+    "sha256": "f9e6fafec648d889557fcb83eb4ee17989ea4f6e21a7bceb9a97fbb190d5a982",
+    "modified": false
   },
   {
     "source": "apps/desktop/src/renderer/features/bots/botSettingsIcons.ts",
@@ -357,18 +387,6 @@
     "source": "apps/desktop/src/renderer/features/bots/botSettingsTarget.ts",
     "destination": "vendor/renderer/features/bots/botSettingsTarget.ts",
     "sha256": "fbbbd1d56a922791944e6d9864e0b990fb71b73a0ca4dd939135c2c71179d4fd",
-    "modified": false
-  },
-  {
-    "source": "apps/desktop/src/renderer/features/bots/BotsHomeView.tsx",
-    "destination": "vendor/renderer/features/bots/BotsHomeView.tsx",
-    "sha256": "7cfca17e5e6528346809f0d769e2837c4e834cf27f1350ba37d1511a90a7e291",
-    "modified": true
-  },
-  {
-    "source": "apps/desktop/src/renderer/features/bots/BotTaskModelEditor.tsx",
-    "destination": "vendor/renderer/features/bots/BotTaskModelEditor.tsx",
-    "sha256": "f388e5b868a5241333ad718ab17fa91ef34aa38defe632e29c747b2784d056d7",
     "modified": false
   },
   {
@@ -390,12 +408,6 @@
     "modified": false
   },
   {
-    "source": "apps/desktop/src/renderer/features/bots/voice/speechVoiceLabelCache.ts",
-    "destination": "vendor/renderer/features/bots/voice/speechVoiceLabelCache.ts",
-    "sha256": "b13454d9f1fc32df195347fb0f88c4c78914ba234c677f4d30a5fcb0738d3d28",
-    "modified": true
-  },
-  {
     "source": "apps/desktop/src/renderer/features/bots/voice/SpeechVoiceMenu.tsx",
     "destination": "vendor/renderer/features/bots/voice/SpeechVoiceMenu.tsx",
     "sha256": "ac9182b87bc2ca84b245ac276a67dc02aa40ad75a3055de8a302efbc56a064b7",
@@ -408,15 +420,21 @@
     "modified": false
   },
   {
-    "source": "apps/desktop/src/renderer/features/bots/voice/voiceConfiguration.ts",
-    "destination": "vendor/renderer/features/bots/voice/voiceConfiguration.ts",
-    "sha256": "a9f362f145d4faa38b851545036ee42373484dee712d74f7ebab5414e9813903",
-    "modified": false
-  },
-  {
     "source": "apps/desktop/src/renderer/features/bots/voice/VoicePreviewController.ts",
     "destination": "vendor/renderer/features/bots/voice/VoicePreviewController.ts",
     "sha256": "ba6e62a12d62eadd7b7e18c086ce711e4ccc7e26fef461216ef27c8722f6e29f",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/voice/speechVoiceLabelCache.ts",
+    "destination": "vendor/renderer/features/bots/voice/speechVoiceLabelCache.ts",
+    "sha256": "b13454d9f1fc32df195347fb0f88c4c78914ba234c677f4d30a5fcb0738d3d28",
+    "modified": true
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/voice/voiceConfiguration.ts",
+    "destination": "vendor/renderer/features/bots/voice/voiceConfiguration.ts",
+    "sha256": "a9f362f145d4faa38b851545036ee42373484dee712d74f7ebab5414e9813903",
     "modified": false
   },
   {
@@ -694,5 +712,63 @@
     "destination": "web/tailwind.config.ts",
     "sha256": "3ae0e4f2b6e69895a0ca884652ffd1983b9654facf64b8b8f2356ea40d91bab2",
     "modified": true
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupCreateDialog.tsx",
+    "destination": "vendor/renderer/features/bots/BotGroupCreateDialog.tsx",
+    "sha256": "564cd570239a47785dc8f395e8050ea23d17d6ab99ec8fdf75feb6edbd0326e8",
+    "modified": true,
+    "changes": "Add host close and unmount/data-owner guards; original form JSX and validation retained."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupAvatars.tsx",
+    "destination": "vendor/renderer/features/bots/BotGroupAvatars.tsx",
+    "sha256": "788c4a3f63b1434edd38fe14d276a204fc26350c5eb3e328b4fac2c59d10a8e9",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/botGroupComposerChrome.ts",
+    "destination": "vendor/renderer/features/bots/botGroupComposerChrome.ts",
+    "sha256": "c97edf39cf509024adb65eae6dad618467bd86e37a8c7465cd8b21e6ae6d6e66",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/useBotGroupMentionPicker.tsx",
+    "destination": "vendor/renderer/features/bots/useBotGroupMentionPicker.tsx",
+    "sha256": "0ba9df37c9d404d80318ede7f9c7e4ff8e03f92fbca25d5e598ff7071b9350a7",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/components/new-chat/SendButton.tsx",
+    "destination": "vendor/renderer/components/new-chat/SendButton.tsx",
+    "sha256": "6d00ee27b0dcb0ca206b3b6721f3488e595cd0f066fc5f57c1790251d32b2f58",
+    "modified": false
+  },
+  {
+    "source": "packages/maker-shared/src/botTimeline.ts",
+    "destination": "vendor/shared/botTimeline.ts",
+    "sha256": "e4152f4ef96dfbbc8a0ea7595491096115c590e2c873059ed8bce9e38317ee05",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/botGroupMentions.ts",
+    "destination": "vendor/renderer/features/bots/botGroupMentions.ts",
+    "sha256": "ae0d91853c2f2763b5317dc8c7e08ff4f429c3d4e6ccde9dec59aa4fc89dad33",
+    "modified": true,
+    "changes": "Re-export relocated to shared/vendor original pure function module."
+  },
+  {
+    "source": "apps/desktop/src/shared/botGroupChat.ts",
+    "destination": "vendor/shared/botGroupChat.ts",
+    "sha256": "009a26f6fb0b81e977d9b83995e2b7652b754cdbcc6c7963eb49d9fede985d83",
+    "modified": true,
+    "changes": "Re-export relocated to shared/vendor original shared contract."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotRosterView.tsx",
+    "destination": "vendor/renderer/features/bots/BotRosterView.tsx",
+    "sha256": "e7fc988314e4fe019f44a65d70e2437e74b78221bed7b50e2e9553769cb0b38e",
+    "modified": true,
+    "changes": "Original custom teammate form; host close/generation guards, async native navigation, portrait preparation guard and unavailable import/provider entries."
   }
 ]

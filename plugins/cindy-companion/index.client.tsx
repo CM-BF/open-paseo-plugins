@@ -1,8 +1,11 @@
-import type { PluginButtonContentProps, PluginClientContext, PluginSidebarItemProps } from "@getpaseo/plugin/client";
+import type { PluginButtonContentProps, PluginClientContext, PluginSidebarItemProps, PluginScreenProps } from "@getpaseo/plugin/client";
 import type { CompanionProfile } from "./shared/contracts";
 import { CompanionConversation } from "./client/conversation";
 import { Teammates } from "./client/sidebar";
 import { CompanionSettings } from "./client/settings";
+import { CompanionGroup } from './client/group';
+import { PresetOpening } from './client/opening';
+import { OPENING_KIND, openingSchema } from './shared/opening';
 
 export default function contribute(client: PluginClientContext) {
   const headers = new Map<string, { workspaceId: string; remove(): void }>();
@@ -31,11 +34,16 @@ export default function contribute(client: PluginClientContext) {
   }
   const removeSidebar = client.addSidebarHeaderItem({ id: "teammates", title: "Teammates", Component: TeammatesItem });
   const removeConversation = client.addScreen({ id: "conversation", title: "Teammate", Component: CompanionConversation });
+  function GroupScreen(props: PluginScreenProps) {
+    return <CompanionGroup {...props} onOpenGroup={groupId => client.openScreen({ screenId: 'group', params: { groupId } })} />;
+  }
+  const removeGroup = client.addScreen({ id: 'group', title: 'Group chat', Component: GroupScreen });
+  const removeOpening = client.addTimelineRenderer({ kind: OPENING_KIND, version: 1, schema: openingSchema, Component: PresetOpening });
   const removeCommand = client.addCommandCenterItem({ id: "open-cindy", title: "Chat with Cindy", icon: "MessagesSquare", context: "global",
     onSelect({ openScreen }) { openScreen({ screenId: "conversation", params: { botId: "cindy" } }); },
   });
   return () => {
-    removeSidebar(); removeConversation(); removeCommand();
+    removeSidebar(); removeConversation(); removeGroup(); removeOpening(); removeCommand();
     for (const header of headers.values()) header.remove();
     headers.clear();
   };

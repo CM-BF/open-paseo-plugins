@@ -5,6 +5,7 @@ import type { CompanionProfile, RuntimeState } from '../shared/contracts';
 import type { BotModelRoute } from '../shared/vendor/botModelChain';
 import { CompanionStore, type Binding } from './store';
 import { CompanionError, throwIpcError } from './errors';
+import { verifyPackagedSkills } from './presets/skills';
 
 export type Paseo = PluginHandlerContext['paseo'];
 export const COMPANION_CONTEXT_GUIDANCE = 'Discover the MCP tool by server cindy_memory and tool basename companion_context, then call its actual registered name. Hosts may expose it as cindy_memory.companion_context or mcp__cindy_memory__companion_context. When a tool registry such as ALL_TOOLS is available, match both cindy_memory and companion_context in its name or metadata; do not require a dot separator. A failed exact-name search does not establish that the plugin is disabled. If discovery or the actual call fails, stop and report that specific failure.';
@@ -46,7 +47,32 @@ export class CompanionRuntime {
   async instructionsFor(id: string) {
     await this.store.reconcile(id);
     const profile = await this.store.get(id);
-    return { systemPrompt: this.systemPrompt(profile), ...(this.mcpFactory ? { mcpServers: { cindy_memory: await this.mcpFactory(id) } } : {}) };
+    const skills = await verifyPackagedSkills(this.store, profile);
+    return { systemPrompt: [this.systemPrompt(profile), skills.systemPromptSuffix].filter(Boolean).join('\n\n'), ...(this.mcpFactory ? { mcpServers: { cindy_memory: await this.mcpFactory(id) } } : {}) };
+  }
+  /** Native lane config shared by group and owned background work. */
+  async nativeConfigFor(paseo: Paseo, id: string, cwd: string): Promise<Record<string, unknown>> {
+    await this.store.reconcile(id); const profile = await this.store.get(id);
+    const skills = await verifyPackagedSkills(this.store, profile);
+    if (profile.skills.some(skill => !skills.supportedSkillIds.includes(skill)) || profile.capabilities.mcpServers.length || profile.capabilities.toolsets.length)
+      throwIpcError('CAPABILITY_NOT_APPLIED', 'Selected external skills, MCP servers or toolsets are not attached by this host');
+    const route = selectedRoute(profile) ?? await this.defaultRoute(paseo, id);
+    if (route.agentDeviceId) throwIpcError('UNSUPPORTED', 'Remote model routes require a companion host transfer');
+    if ((profile.capabilities.modelChainOverride ?? profile.capabilities.modelChain).length > 1) throwIpcError('FALLBACK_UNSUPPORTED', 'Automatic model fallback is unavailable');
+    if (profile.capabilities.allowSchedulerFollow) throwIpcError('AUTONOMY_UNSUPPORTED', 'Autonomous follow-up is not connected');
+    const provider = routeProvider(route); const mode = provider === 'codex' ? 'auto' : provider === 'claude' ? 'default' : null;
+    const catalog = await this.catalog(paseo, id);
+    if (profile.capabilities.permissions !== 'ask' || !mode || !catalog.entries.find(entry => entry.provider === provider)?.modes?.some(candidate => candidate.id === mode))
+      throwIpcError('PERMISSION_MODE_UNAVAILABLE', 'The provider does not advertise a supported ask-permission mode');
+    let featureValues: Record<string, unknown> | undefined;
+    if (route.fastMode) {
+      const features = await paseo.providers.listFeatures({ provider: `${provider}/${route.model}`, cwd });
+      if (features.error) throwIpcError('PROVIDER_FEATURES_UNAVAILABLE', features.error);
+      const feature = resolveFastFeature(features.features ?? [], route.fastMode); featureValues = { [feature.id]: feature.value };
+    }
+    return { provider: `${provider}/${route.model}`, modeId: mode, ...await this.instructionsFor(id),
+      ...(provider === 'codex' ? { options: { approval_policy: 'on-request', sandbox_mode: 'workspace-write' } } : {}),
+      ...(route.effort ? { thinkingOptionId: route.effort } : {}), ...(featureValues ? { featureValues } : {}) };
   }
   async close(): Promise<void> { this.disposed = true; await Promise.allSettled([...this.ensureJobs.values(), ...this.applyJobs.values()]); }
   private assertOpen() { if (this.disposed) throwIpcError('PLUGIN_CLOSED', 'Companion plugin is closing'); }
@@ -116,7 +142,8 @@ export class CompanionRuntime {
       this.assertOpen();
       if (route.agentDeviceId) throwIpcError('UNSUPPORTED', 'Remote model routes require a companion host transfer');
       // Do not silently grant requested but unimplemented runtime capabilities.
-      if (profile.skills.length || profile.capabilities.mcpServers.length || profile.capabilities.toolsets.length)
+      const packagedSkills = await verifyPackagedSkills(this.store, profile);
+      if (profile.skills.some(skill => !packagedSkills.supportedSkillIds.includes(skill)) || profile.capabilities.mcpServers.length || profile.capabilities.toolsets.length)
         throwIpcError('CAPABILITY_NOT_APPLIED', 'Selected skills, MCP servers or toolsets are not attached by this host yet');
       if ((profile.capabilities.modelChainOverride ?? profile.capabilities.modelChain).length > 1) throwIpcError('FALLBACK_UNSUPPORTED', 'Automatic fallback between multiple models is not implemented by this host');
       if (profile.capabilities.allowSchedulerFollow) throwIpcError('AUTONOMY_UNSUPPORTED', 'Autonomous follow-up is not connected on this host');
@@ -126,9 +153,7 @@ export class CompanionRuntime {
         if (catalog.error) throwIpcError('PROVIDER_FEATURES_UNAVAILABLE', catalog.error);
         const feature = resolveFastFeature(catalog.features ?? [], route.fastMode); featureValues = { [feature.id]: feature.value };
       }
-      const prompt = this.systemPrompt(profile);
-      const config: Record<string, unknown> = { provider: `${routeProvider(route)}/${route.model}`, systemPrompt: prompt,
-        ...(this.mcpFactory ? { mcpServers: { cindy_memory: await this.mcpFactory(id) } } : {}),
+      const config: Record<string, unknown> = { provider: `${routeProvider(route)}/${route.model}`, ...await this.instructionsFor(id),
         ...(featureValues ? { featureValues } : {}),
         ...(route.effort ? { thinkingOptionId: route.effort } : {}) };
       const intent: Binding = { agentId: randomUUID(), operationId: `cindy-companion:${id}:${randomUUID()}`, phase: 'creating',
@@ -181,7 +206,7 @@ export class CompanionRuntime {
     if (!agent.updateInstructions) return modelState;
     await agent.refresh();
     if (agent.activeTurn || agent.status === 'running' || agent.status === 'initializing' || agent.pendingPermissions?.length) return { ...modelState, code: 'AGENT_BUSY', message: 'Saved; instructions will apply after the active turn and pending permissions are settled.' };
-    const instructions = { systemPrompt: this.systemPrompt(p), ...(this.mcpFactory ? { mcpServers: { cindy_memory: await this.mcpFactory(id) } } : {}) };
+    const instructions = await this.instructionsFor(id);
     this.assertOpen(); await agent.updateInstructions(instructions);
     await this.store.transaction(draft => {
       const current = draft.bindings[id]!;

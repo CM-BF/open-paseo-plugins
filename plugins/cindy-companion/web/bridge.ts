@@ -1,5 +1,5 @@
 export const CHANNEL = 'cindy-companion';
-export type Init = { botId: string; host: { id: string; label: string }; theme: 'dark' | 'light'; locale: 'en' | 'zh-CN' };
+export type Init = { botId: string; host: { id: string; label: string }; theme: 'dark' | 'light'; locale: 'en' | 'zh-CN'; view?: 'settings' | 'presets' | 'teammate-create' | 'group-create' | 'group'; packageId?: string; groupId?: string };
 type Pending = { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> };
 const pending = new Map<string, Pending>();
 const initListeners = new Set<(value: Init) => void>();
@@ -44,7 +44,8 @@ window.addEventListener('message', event => {
     const value = message.init ?? message;
     if (typeof value.botId !== 'string' || !value.botId || value.botId.length > 256) return;
     if (value.theme !== 'dark' && value.theme !== 'light') return;
-    currentInit = { botId: value.botId, host: value.host ?? { id: '', label: '' }, theme: value.theme, locale: value.locale === 'zh-CN' ? 'zh-CN' : 'en' };
+    currentInit = { botId: value.botId, host: value.host ?? { id: '', label: '' }, theme: value.theme, locale: value.locale === 'zh-CN' ? 'zh-CN' : 'en',
+      view: ['presets', 'teammate-create', 'group-create', 'group'].includes(value.view) ? value.view : 'settings', ...(typeof value.groupId === 'string' && value.groupId.length <= 256 ? { groupId: value.groupId } : {}), ...(typeof value.packageId === 'string' && value.packageId.length <= 100 ? { packageId: value.packageId } : {}) };
     initListeners.forEach(listener => listener(currentInit!));
   } else if (message.type === 'request-close') {
     window.dispatchEvent(new Event('cindy-request-close'));

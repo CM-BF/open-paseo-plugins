@@ -10,5 +10,6 @@ export function providerRows(raw: unknown): ProviderRow[] {
   });
 }
 export function useDeviceProviders() { return { providers: providerRows(useSnapshot()?.models), loading: false, loaded: true }; }
+export const useProviders = useDeviceProviders;
 export function providerDisplayName(provider: { name?:string; id?:string }) { return provider.name ?? provider.id ?? ''; }
 export function providerAccountLabel(name: string, identity?: string) { return identity ? `${name} · ${identity}` : name; }

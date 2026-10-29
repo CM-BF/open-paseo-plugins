@@ -24,6 +24,12 @@ const result=await build({entryPoints:[new URL('../app.tsx',import.meta.url).pat
   return {path:args.path,namespace:'app-mock'};
  });
  builder.onLoad({filter:/.*/,namespace:'app-mock'},({path})=>({contents:mocks[path]??(
+  path.endsWith('/group-chat')?`export const GroupChat=()=>null;`:
+  path.endsWith('/BotGroupCreateDialog')?`export const BotGroupCreateDialog=()=>null;`:
+  path.endsWith('/BotRosterView')?`export const BotRosterView=()=>null;`:
+  path.endsWith('/BotMarketDialog')?`export const BotMarketDialog=()=>null;`:
+  path.endsWith('/presets')?`export const presetApi={};export const openPresetCompanion=async()=>{};`:
+  path.endsWith('/dataOwnerGeneration')?`export const setDataOwnerGeneration=()=>{};`:
   path.endsWith('/BotSettingsDrawer')?`import {createElement} from 'react';export const BotSettingsDrawer=()=>createElement('original-drawer');`:
   path.endsWith('/confirm-dialog-provider')?`export const ConfirmDialogProvider=({children})=>children;`:
   path.endsWith('/tooltip')?`export const Tooltip={Provider:({children})=>children};`:

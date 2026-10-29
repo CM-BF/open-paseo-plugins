@@ -13,6 +13,7 @@
   "components/chat/MarkdownRenderer": "memory-markdown.tsx",
   "components/new-chat/ModelRouteSelector": "model-picker.tsx",
   "hooks/useDeviceProviders": "catalog.ts",
+  "hooks/useProviders": "catalog.ts",
   "lib/makerChatStore": "voice-session.ts",
   "components/settings/HookConnectionsSection": "unsupported.tsx",
   "components/settings/WechatBotSection": "unsupported.tsx",
@@ -21,5 +22,9 @@
   "lib/orcaSessionIdentity": "navigation.ts",
   "i18n": "i18n.ts",
   "i18n/index": "i18n.ts",
-  "hooks/useTheme": "theme.tsx"
+  "hooks/useTheme": "theme.tsx",
+  "contexts/AuthContext": "auth.ts",
+  "components/sidebar/sidebarNavigationPrefs": "sidebar-icons.ts",
+  "features/bots/botGroupStore": "group-store.ts",
+  "features/bots/botGroupPresentation": "group-presentation.ts"
 }

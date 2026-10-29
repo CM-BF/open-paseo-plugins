@@ -16,6 +16,12 @@ import { defaultDark } from '../vendor/renderer/themes/builtin/default-dark';
 import { defaultLight } from '../vendor/renderer/themes/builtin/default-light';
 import { toast } from '../vendor/renderer/lib/toast';
 import { loadOriginalFonts } from './font-loader';
+import { GroupChat } from './group-chat';
+import { BotGroupCreateDialog } from '../vendor/renderer/features/bots/BotGroupCreateDialog';
+import { BotRosterView } from '../vendor/renderer/features/bots/BotRosterView';
+import { BotMarketDialog } from '../vendor/renderer/features/bots/BotMarketDialog';
+import { presetApi, openPresetCompanion } from './adapters/presets';
+import { setDataOwnerGeneration } from '../vendor/renderer/contexts/dataOwnerGeneration';
 
 function SettingsRoute() {
   const location=useLocation();
@@ -27,6 +33,31 @@ function SettingsRoute() {
     }
   },[location.pathname,location.search]);
   return <BotSettingsDrawer/>;
+}
+function PresetsRoute({ packageId }: { packageId?: string }) {
+  const alive = useRef(true);
+  const close = () => { alive.current = false; post('close'); };
+  useEffect(() => {
+    alive.current = true;
+    window.addEventListener('cindy-request-close', close);
+    return () => { alive.current = false; window.removeEventListener('cindy-request-close', close); };
+  }, []);
+  return <BotMarketDialog api={presetApi} initialPackageId={packageId} onClose={close} onOpenBot={botId => openPresetCompanion(botId, () => alive.current)}/>;
+}
+function CreateGroupRoute() {
+  return <BotGroupCreateDialog onOpenChange={open => { if (!open) post('close'); }} onCreated={groupId => { post('groups-changed'); post('navigate-group', { groupId }); }}/>;
+}
+function CreateTeammateRoute() {
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  return <BotRosterView onClose={() => { alive.current = false; post('close'); }} onCreated={bot => openPresetCompanion(bot.id, () => alive.current)}/>;
+}
+function initialRoute(init: Init) {
+  if (init.view === 'presets') return <PresetsRoute packageId={init.packageId}/>;
+  if (init.view === 'teammate-create') return <CreateTeammateRoute/>;
+  if (init.view === 'group-create') return <CreateGroupRoute/>;
+  if (init.view === 'group' && init.groupId) return <GroupChat key={init.groupId} groupId={init.groupId}/>;
+  return <SettingsRoute/>;
 }
 function App() {
   const [status,setStatus]=useState<'waiting'|'loading'|'ready'|'error'>('waiting');
@@ -42,6 +73,7 @@ function App() {
       const controller=new AbortController();active=controller;
       const own=++generation;
       cancelLoading.current=()=>{generation++;controller.abort();};
+      setDataOwnerGeneration(init.host.id);
       themeService.applyTheme(init.theme==='light'?defaultLight:defaultDark);
       document.documentElement.dataset.platform='darwin';
       void i18n.changeLanguage(init.locale);
@@ -53,7 +85,7 @@ function App() {
       ]).then(([data,defaults])=>{
         if(own!==generation||controller.signal.aborted)return;
         setBootstrap({...data,defaultModelChain:defaults.modelChain});
-        setRouter(createMemoryRouter([{path:'*',element:<SettingsRoute/>}],{initialEntries:[`/bots/${encodeURIComponent(data.bot.id)}?settings=1`]}));
+        setRouter(createMemoryRouter([{path:'*',element:initialRoute(init)}],{initialEntries:[`/bots/${encodeURIComponent(data.bot.id)}?settings=1`]}));
         setStatus('ready');
       }).catch(reason=>{controller.abort();if(own===generation){setError(reason instanceof Error?reason.message:String(reason));setStatus('error');}});
     });

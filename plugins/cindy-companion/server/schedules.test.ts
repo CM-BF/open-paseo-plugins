@@ -33,6 +33,27 @@ async function setup() {
   return { root, service, store, driver, data, paseo };
 }
 const input = () => ({ name: 'Daily review', prompt: 'Review the work', enabled: true, sessionMode: 'fresh', triggers: [{ id: 't1', kind: 'cron', expression: '0 9 * * *', timezone: 'America/Los_Angeles' }] });
+it('keeps bundled disabled routine drafts entirely local until explicitly enabled', async () => {
+  const { service, store, paseo, driver } = await setup();
+  const data = { ...input(), enabled: false, id: 'preset-draft', botId: 'cindy', revision: 1, createdAt: 1, updatedAt: 1 };
+  await store.transaction(state => { state.presetRoutineDrafts = { [data.id]: { botId: 'cindy', data: data as never } }; });
+  expect(await service.routines.list('cindy', paseo)).toMatchObject([{ id: data.id, enabled: false, backendState: 'draft' }]);
+  expect(await service.routines.history('cindy', data.id, paseo)).toEqual([]);
+  expect(driver.list).not.toHaveBeenCalled(); expect(driver.create).not.toHaveBeenCalled();
+  await service.routines.save(paseo, 'cindy', { ...input(), enabled: false, prompt: 'Edited locally' }, data.id);
+  expect(driver.create).not.toHaveBeenCalled(); expect((await store.snapshot()).presetRoutineDrafts![data.id]!.data.prompt).toBe('Edited locally');
+  const enabled = await service.routines.save(paseo, 'cindy', input(), data.id);
+  expect(enabled.id).toBe(data.id); expect(driver.create).toHaveBeenCalledOnce();
+  expect((await store.snapshot()).presetRoutineDrafts![data.id]).toBeUndefined();
+});
+it('deletes an imported routine draft without touching native schedules and refuses cross-companion access', async () => {
+  const { service, store, paseo, driver } = await setup();
+  const data = { ...input(), enabled: false, id: 'preset-draft', botId: 'cindy', revision: 1, createdAt: 1, updatedAt: 1 };
+  await store.transaction(state => { state.presetRoutineDrafts = { [data.id]: { botId: 'cindy', data: data as never } }; });
+  await expect(service.routines.remove('other', data.id, paseo)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  await service.routines.remove('cindy', data.id, paseo);
+  expect(driver.remove).not.toHaveBeenCalled(); expect((await store.snapshot()).presetRoutineDrafts).toEqual({});
+});
 it('runs real routine operations through an injected native schedule driver and persists the binding', async () => {
   const { root, service, driver, paseo, data } = await setup();
   const saved = await service.routines.save(paseo, 'cindy', input());

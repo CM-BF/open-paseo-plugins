@@ -19,11 +19,13 @@ export const canRenderSettingsFrame = Platform.OS === "web" && Boolean(browser.w
 export interface SettingsFrameHandle { requestClose(): void }
 export interface SettingsFrameProps {
   document: string;
-  init: { botId: string; host: { id: string; label: string }; theme: "dark" | "light"; locale: string };
+  init: { botId: string; host: { id: string; label: string }; theme: "dark" | "light"; locale: string;
+    view?: 'settings' | 'presets' | 'teammate-create' | 'group-create' | 'group'; packageId?: string; groupId?: string };
   invoke(op: string, args: Record<string, unknown>): Promise<unknown>;
   onClose(): void;
   onChanged(): void;
   onNavigateAgent(agentId: string): void;
+  onNavigateGroup?(groupId: string): void;
   onHandle(handle: SettingsFrameHandle | null): void;
   onReady(): void;
 }
@@ -56,8 +58,9 @@ export function SettingsFrame(props: SettingsFrameProps): ReactElement | null {
         post({ type: "init", ...latest.current.init });
         latest.current.onReady();
       } else if (message.type === "close") latest.current.onClose();
-      else if (message.type === "changed" || message.type === "profile-changed") latest.current.onChanged();
+      else if (message.type === "changed" || message.type === "profile-changed" || message.type === "groups-changed") latest.current.onChanged();
       else if (message.type === "navigate-agent") latest.current.onNavigateAgent(message.agentId);
+      else if (message.type === "navigate-group") latest.current.onNavigateGroup?.(message.groupId);
       else if (message.type === "request") {
         if (seen.has(message.id) || seen.size >= 10000 || inFlight >= 16) {
           post({ type: "response", id: message.id, error: "Duplicate or excessive settings request" });
@@ -88,12 +91,12 @@ export function SettingsFrame(props: SettingsFrameProps): ReactElement | null {
       owner.removeEventListener("keydown", keydown);
       latest.current.onHandle(null);
     };
-  }, [props.document, props.init.botId, props.init.host.id]);
+  }, [props.document, props.init.botId, props.init.host.id, props.init.view, props.init.groupId]);
   if (!canRenderSettingsFrame) return null;
   return createElement("iframe", {
-    key: `${props.init.host.id}:${props.init.botId}`,
+    key: `${props.init.host.id}:${props.init.botId}:${props.init.view ?? 'settings'}:${props.init.groupId ?? ''}`,
     ref: frame,
-    title: "Cindy teammate settings",
+    title: props.init.view === 'teammate-create' ? 'Create Cindy teammate' : props.init.view === 'group' ? 'Cindy group chat' : props.init.view === 'presets' ? 'Cindy preset teammates' : props.init.view === 'group-create' ? 'Create Cindy group chat' : 'Cindy teammate settings',
     srcDoc: props.document,
     sandbox: "allow-scripts",
     referrerPolicy: "no-referrer",

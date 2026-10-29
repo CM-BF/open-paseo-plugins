@@ -12,6 +12,10 @@ import { botProfileDir, ensureBotContentDirs, writeBotProfileFolder, readBotProf
 import { syncBotProfileFromFolder } from './vendor/botProfileFolderSync';
 import { botId, CompanionError, record, string, throwIpcError } from './errors';
 import type { SavedRoutine } from './schedules';
+import type { SavedGroup } from './groups';
+import type { SavedPresetReceipt, PresetRoutineDraft } from './presets/install-state';
+import { avatarDataUrl } from './avatar';
+import type { SavedPresetOpening } from './presets/opening';
 
 export interface Binding {
   agentId: string; workspaceId?: string; operationId: string; phase: 'creating' | 'ready' | 'unknown';
@@ -24,9 +28,14 @@ export interface SavedState {
   format: 1; profiles: Record<string, CompanionProfile>; versions: Record<string, ProfileVersion[]>;
   bindings: Record<string, Binding>; createKeys: Record<string, string>;
   voice: Record<string, unknown>; routines: Record<string, SavedRoutine>;
+  groups?: Record<string, SavedGroup>;
+  groupCreateKeys?: Record<string, { groupId: string; fingerprint: string }>;
+  presetImports?: Record<string, SavedPresetReceipt>;
+  presetRoutineDrafts?: Record<string, PresetRoutineDraft>;
+  presetOpenings?: Record<string, SavedPresetOpening>;
   folderPending?: string[];
   createPayloads?: Record<string, string>;
-  deletedProfiles?: Record<string, { profile: CompanionProfile; versions: ProfileVersion[]; binding?: Binding; deletedAt: number }>;
+  deletedProfiles?: Record<string, { profile: CompanionProfile; versions: ProfileVersion[]; binding?: Binding; deletedAt: number; presetRoutineDrafts?: PresetRoutineDraft[]; presetOpenings?: SavedPresetOpening[] }>;
 }
 const initial = (): SavedState => ({ format: 1, profiles: {}, versions: {}, bindings: {}, createKeys: {}, voice: {}, routines: {} });
 export function defaultCapabilities(): CompanionCapabilities {
@@ -100,10 +109,28 @@ export class CompanionStore {
   private makeProfile(id: string, input: Record<string, unknown>): CompanionProfile {
     const name = string(input.name, 'name', 200).trim();
     const description = string(input.description ?? '', 'description', 65536, true).trim();
+    const capabilities = defaultCapabilities();
+    if (input.capabilities !== undefined) {
+      const requested = record(input.capabilities);
+      if (Object.keys(requested).some(key => key !== 'modelChainOverride') || !Array.isArray(requested.modelChainOverride) || requested.modelChainOverride.length !== 1)
+        throwIpcError('INVALID_PARAMS', 'Creation accepts exactly one explicit model route');
+      const route = record(requested.modelChainOverride[0]);
+      if (Object.keys(route).some(key => !['harness', 'providerId', 'model', 'effort', 'fastMode', 'agentDeviceId'].includes(key)) ||
+        !['claude', 'codex', 'pi'].includes(String(route.harness)) || typeof route.effort !== 'string' ||
+        (typeof route.fastMode !== 'boolean' && route.fastMode !== 'ultrafast') ||
+        (route.providerId !== null && typeof route.providerId !== 'string') ||
+        (route.agentDeviceId !== undefined && route.agentDeviceId !== null)) throwIpcError('INVALID_PARAMS', 'Invalid local model route');
+      string(route.model, 'model', 500); string(route.effort, 'effort', 100, true);
+      if (route.providerId !== null) string(route.providerId, 'providerId', 200);
+      const normalized = normalizeBotModelChain([route]);
+      if (normalized.length !== 1) throwIpcError('INVALID_PARAMS', 'Invalid model route');
+      capabilities.modelChainOverride = normalized;
+    }
+    if (input.avatar !== undefined && input.avatarImageBase64 !== undefined) throwIpcError('INVALID_PARAMS', 'Specify only one avatar source');
     return { id, name, description, identitySource: string(input.identitySource ?? buildDefaultBotIdentity(name, description), 'identitySource', 65536, true).trim(),
       userContextSource: string(input.userContextSource ?? '', 'userContextSource', 65536, true).trim(),
-      avatar: typeof input.avatar === 'string' ? input.avatar : id === 'cindy' ? 'cindy://avatar/preset/cindy' : '🤖', avatarColor: typeof input.avatarColor === 'string' ? input.avatarColor : '#8b7cf8',
-      enabled: true, status: 'active', currentVersion: 1, skills: [], capabilities: defaultCapabilities(),
+      avatar: input.avatarImageBase64 !== undefined ? avatarDataUrl(input.avatarImageBase64) : typeof input.avatar === 'string' ? input.avatar : id === 'cindy' ? 'cindy://avatar/preset/cindy' : '🤖', avatarColor: typeof input.avatarColor === 'string' ? input.avatarColor : '#8b7cf8',
+      enabled: true, status: 'active', currentVersion: 1, skills: [], capabilities,
       homeDir: botProfileDir(this.root, id), createdAt: Date.now(), sessions: [] };
   }
   private version(state: SavedState, profile: CompanionProfile) {
@@ -114,12 +141,13 @@ export class CompanionStore {
       throwIpcError('CONFLICT', 'A companion with this name already exists');
   }
   async create(input: Record<string, unknown>): Promise<CompanionProfile> {
-    const allowed = ['operationId', 'name', 'description', 'identitySource', 'userContextSource', 'avatar', 'avatarColor'];
+    const allowed = ['operationId', 'name', 'description', 'identitySource', 'userContextSource', 'avatar', 'avatarColor', 'avatarImageBase64', 'capabilities'];
     if (Object.keys(input).some(key => !allowed.includes(key))) throwIpcError('INVALID_PARAMS', 'Unsupported creation field');
     const requestKey = input.operationId === undefined ? randomUUID() : string(input.operationId, 'operationId', 200);
     const key = createHash('sha256').update(requestKey).digest('hex');
     const candidate = this.makeProfile(randomUUID(), input);
-    const payload = createHash('sha256').update(JSON.stringify([candidate.name, candidate.description, candidate.identitySource, candidate.userContextSource, candidate.avatar, candidate.avatarColor])).digest('hex');
+    const payload = createHash('sha256').update(JSON.stringify([candidate.name, candidate.description, candidate.identitySource, candidate.userContextSource, candidate.avatar, candidate.avatarColor,
+      ...(input.capabilities !== undefined ? [candidate.capabilities.modelChainOverride] : [])])).digest('hex');
     const profile = await this.transaction(state => {
       if (Object.hasOwn(state.createKeys, key)) {
         if (state.createPayloads?.[key] !== payload) throwIpcError('IDEMPOTENCY_CONFLICT', 'This creation key belongs to a different request');
@@ -174,7 +202,12 @@ export class CompanionStore {
       const profile = state.profiles[id]; if (!profile) throwIpcError('NOT_FOUND', 'Companion not found');
       if (id === 'cindy') throwIpcError('DEFAULT_COMPANION', 'The default Cindy companion cannot be deleted');
       if (profile.name !== confirmName) throwIpcError('PRECONDITION_FAILED', 'Companion name changed; confirm again');
-      (state.deletedProfiles ??= {})[id] = { profile, versions: state.versions[id] ?? [], binding: state.bindings[id], deletedAt: Date.now() };
+      const presetRoutineDrafts = Object.values(state.presetRoutineDrafts ?? {}).filter(draft => draft.botId === id);
+      const presetOpenings = Object.values(state.presetOpenings ?? {}).filter(opening => opening.botId === id);
+      (state.deletedProfiles ??= {})[id] = { profile, versions: state.versions[id] ?? [], binding: state.bindings[id], deletedAt: Date.now(),
+        ...(presetRoutineDrafts.length ? { presetRoutineDrafts } : {}), ...(presetOpenings.length ? { presetOpenings } : {}) };
+      for (const draft of presetRoutineDrafts) delete state.presetRoutineDrafts![draft.data.id];
+      for (const opening of presetOpenings) delete state.presetOpenings![opening.agentId];
       delete state.profiles[id]; delete state.versions[id]; delete state.bindings[id];
       for (const [key, value] of Object.entries(state.createKeys)) if (value === id) { delete state.createKeys[key]; delete state.createPayloads?.[key]; }
     });

@@ -39,6 +39,34 @@ const unwrap = <T = Record<string, unknown>>(result: Awaited<ReturnType<Companio
 };
 
 describe('durable companion profiles', () => {
+  it('atomically saves a custom avatar/model on the first version and deduplicates double clicks across reopen', async () => {
+    const { root, store } = await setup();
+    const avatarImageBase64 = Buffer.from([137,80,78,71,13,10,26,10,0]).toString('base64');
+    const route = { harness: 'codex', providerId: 'codex', model: 'custom-model', effort: 'low', fastMode: false };
+    const input = { operationId: 'custom-model-avatar', name: 'Custom', avatarImageBase64, capabilities: { modelChainOverride: [route] } };
+    const [a,b] = await Promise.all([store.create(input), store.create(input)]); expect(a.id).toBe(b.id);
+    expect(a).toMatchObject({ currentVersion: 1, avatar: `data:image/png;base64,${avatarImageBase64}`, capabilities: { modelChainOverride: [route] } });
+    const reopened = new CompanionStore(root); expect((await reopened.create(input)).id).toBe(a.id);
+    const saved = await reopened.snapshot(); expect(saved.versions[a.id]).toHaveLength(1);
+    expect(saved.versions[a.id]![0]!.profile.capabilities.modelChainOverride).toEqual([route]);
+    await expect(reopened.create({ ...input, capabilities: { modelChainOverride: [{ ...route, model: 'different-model' }] } })).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    await expect(reopened.create({ ...input, avatarImageBase64: Buffer.from([255,216,255,0]).toString('base64') })).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+  });
+  it('rejects malformed avatar bytes, invalid or silently-normalizable routes, and unauthorized creation capability fields without creating a profile', async () => {
+    const { store } = await setup(); const route = { harness: 'codex', providerId: null, model: 'model', effort: '', fastMode: false };
+    for (const capabilities of [{ permissions: 'trusted' }, { modelChainOverride: [] }, { modelChainOverride: [{ ...route, harness: 'wrong' }] }, { modelChainOverride: [{ ...route, fastMode: 'true' }] }, { modelChainOverride: [{ ...route, agentDeviceId: 'remote' }] }])
+      await expect(store.create({ name: 'Invalid', capabilities })).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
+    await expect(store.create({ name: 'Invalid', avatarImageBase64: 'data:image/png;base64,bm90IGFuIGltYWdl' })).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
+    expect(await store.list()).toHaveLength(1);
+  });
+  it('moves only the deleted companion’s disabled preset routines into its tombstone atomically', async () => {
+    const { store } = await setup(); const p = await store.create({ name: 'Preset fixture' });
+    const draft = { botId: p.id, data: { id: 'own-draft', botId: p.id, enabled: false } as never };
+    await store.transaction(state => { state.presetRoutineDrafts = { 'own-draft': draft, 'other-draft': { botId: 'cindy', data: { id: 'other-draft' } as never } }; });
+    await store.deleteProfile(p.id, p.name);
+    const state = await store.snapshot(); expect(Object.keys(state.presetRoutineDrafts!)).toEqual(['other-draft']);
+    expect(state.deletedProfiles![p.id]!.presetRoutineDrafts).toEqual([draft]);
+  });
   it('creates Cindy once and preserves SOUL, USER and version history across reopen', async () => {
     const { root, store } = await setup();
     expect((await store.list()).map(p => p.id)).toEqual(['cindy']);

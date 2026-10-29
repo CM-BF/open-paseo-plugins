@@ -35,6 +35,14 @@ export function adoptProfile(result: { profile: CompanionProfile; runtime?: Runt
   return profile;
 }
 export function supports(op: string) { return state?.caps.ops.includes(op) === true; }
+export async function refreshProfiles() {
+  const previous = state;
+  const result = await invoke<{ profiles: CompanionProfile[] }>('profile.list');
+  if (!state || state !== previous) return;
+  state = { ...state, profiles: result.profiles, bot: result.profiles.find(profile => profile.id === state!.bot.id) ?? state.bot };
+  listeners.forEach(fn => fn());
+  post('profile-changed');
+}
 export async function updateProfile(botId: string, patch: Record<string, unknown>) {
   return adoptProfile(await invoke('profile.update', { botId, patch }));
 }

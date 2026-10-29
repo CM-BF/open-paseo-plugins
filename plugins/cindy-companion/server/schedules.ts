@@ -11,6 +11,8 @@ import { CompanionRuntime, COMPANION_CONTEXT_GUIDANCE, resolveFastFeature, route
 import { parseRoutineInput, type Routine, type RoutineInput } from './vendor/scheduler/routines';
 import { CompanionError, record, string, throwIpcError } from './errors';
 import { ScheduleSdk, scheduleCadence } from './schedule-sdk';
+import { verifyPackagedSkills } from './presets/skills';
+import { publicPaseoCli } from './host-cli';
 
 export interface NativeSchedule { id: string; name?: string | null; status?: string; runs?: Array<Record<string, unknown>>; [key: string]: unknown }
 export interface ScheduleDriver {
@@ -28,8 +30,7 @@ export class ScheduleCli implements ScheduleDriver {
   private readonly home: string;
   constructor(options: { execute?: Execute; file?: string; home?: string } = {}) {
     this.execute = options.execute ?? ((file, args) => promisify(execFile)(file, args, { timeout: 30000, maxBuffer: 4 * 1024 * 1024 }));
-    this.file = options.file ?? process.env.PASEO_CLI ?? (process.platform === 'darwin' ? '/Applications/Paseo.app/Contents/Resources/bin/paseo' : 'paseo');
-    this.home = options.home ?? process.env.PASEO_HOME ?? join(homedir(), '.paseo');
+    const cli = publicPaseoCli(); this.file = options.file ?? cli.file; this.home = options.home ?? cli.home;
   }
   private async call(action: string, args: string[] = []): Promise<unknown> {
     const { stdout } = await this.execute(this.file, ['--home', this.home, 'schedule', action, ...args, '--json']);
@@ -168,7 +169,8 @@ export class CompanionRoutines {
       throwIpcError('ROUTINE_BINDING_MISMATCH', 'The scheduled agent does not match its immutable companion binding');
     await this.store.safePath(execution.cwd);
     if (!profile.enabled || profile.status !== 'active') throwIpcError('COMPANION_PAUSED', 'This companion is not active');
-    if (profile.skills.length || profile.capabilities.mcpServers.length || profile.capabilities.toolsets.length)
+    const packaged = await verifyPackagedSkills(this.store, profile);
+    if (profile.skills.some(skill => !packaged.supportedSkillIds.includes(skill)) || profile.capabilities.mcpServers.length || profile.capabilities.toolsets.length)
       throwIpcError('CAPABILITY_NOT_APPLIED', 'This routine cannot apply selected skills, external MCP servers or toolsets');
     const instructions = await this.runtime.instructionsFor(saved.botId);
     const featureValues = await this.features(paseo, execution.route, execution.cwd);
@@ -179,8 +181,11 @@ export class CompanionRoutines {
   }
   async list(botId: string, paseo?: Paseo) {
     return this.serial(async () => {
-      const local = Object.values((await this.store.snapshot()).routines).filter(r => r.botId === botId);
-      if (!local.length) return [];
+      const state = await this.store.snapshot();
+      const local = Object.values(state.routines).filter(r => r.botId === botId);
+      const drafts = Object.values(state.presetRoutineDrafts ?? {}).filter(draft => draft.botId === botId && !state.routines[draft.data.id])
+        .map(draft => ({ ...draft.data, enabled: false, backendState: 'draft', manualPending: false }));
+      if (!local.length) return drafts;
       const driver = this.driverFor(paseo); const errors = new Map<string, string>();
       for (let i = 0; i < local.length; i++) if (local[i]!.phase !== 'ready') {
         try { local[i] = await this.recover(local[i]!, driver); }
@@ -191,21 +196,29 @@ export class CompanionRoutines {
         try { local[i] = await this.refreshManual(local[i]!, await driver.inspect(local[i]!.scheduleId!)); }
         catch (error) { errors.set(local[i]!.data.id, error instanceof Error ? error.message : String(error)); }
       }
-      return local.map(r => { const actual = native.find(s => s.id === r.scheduleId);
+      return [...drafts, ...local.map(r => { const actual = native.find(s => s.id === r.scheduleId);
         const error = errors.get(r.data.id) ?? (actual ? undefined : 'Native schedule is missing');
         return { ...r.data, enabled: actual ? actual.status === 'active' : false,
-          ...this.manualActivity(r), ...(error ? { error } : {}), backendState: r.phase }; });
+          ...this.manualActivity(r), ...(error ? { error } : {}), backendState: r.phase }; })];
     });
   }
   save(paseo: Paseo, botId: string, raw: unknown, existingId?: string) {
     return this.serial(async () => {
       let input: RoutineInput;
       try { input = parseRoutineInput(raw); } catch (error) { throwIpcError('INVALID_PARAMS', error instanceof Error ? error.message : 'Invalid routine'); }
+      const existingState = await this.store.snapshot();
+      const draft = existingId && !Object.hasOwn(existingState.routines, existingId) ? existingState.presetRoutineDrafts?.[existingId] : undefined;
+      if (draft && draft.botId !== botId) throwIpcError('NOT_FOUND', 'Routine not found');
+      if (draft && !input.enabled) {
+        const data: Routine = { ...input, id: existingId!, botId, revision: draft.data.revision + 1, createdAt: draft.data.createdAt, updatedAt: Date.now() };
+        await this.store.transaction(state => { state.presetRoutineDrafts![existingId!] = { botId, data }; }); return data;
+      }
       if (input.sessionMode !== 'fresh') throwIpcError('UNSUPPORTED_SESSION_MODE', 'This host currently supports fresh-session routines. Choose a new session for each run.');
       if (input.preRunHook || input.silentWhenIdle || input.modelOverride?.agentDeviceId) throwIpcError('UNSUPPORTED_ROUTINE_OPTION', 'This host cannot execute event checks, silent idle hooks or remote model routes');
       const cadence = this.cadence(input); scheduleCadence(cadence);
       const profile = await this.store.get(botId); const driver = this.driverFor(paseo);
-      if (profile.skills.length || profile.capabilities.mcpServers.length || profile.capabilities.toolsets.length)
+      const packaged = await verifyPackagedSkills(this.store, profile);
+      if (profile.skills.some(skill => !packaged.supportedSkillIds.includes(skill)) || profile.capabilities.mcpServers.length || profile.capabilities.toolsets.length)
         throwIpcError('CAPABILITY_NOT_APPLIED', 'This routine cannot apply selected skills, external MCP servers or toolsets');
       const route = input.modelOverride ? { harness: input.modelOverride.agentKind === 'claude-code' ? 'claude' as const : input.modelOverride.agentKind,
         model: input.modelOverride.model, providerId: input.modelOverride.providerId ?? null, effort: input.modelOverride.effort ?? '', fastMode: input.modelOverride.fastMode ?? false } : selectedRoute(profile) ?? await this.runtime.defaultRoute(paseo, botId);
@@ -213,7 +226,7 @@ export class CompanionRoutines {
       // The fallback CLI cannot store MCP config. The owned creation hook supplies it before launch.
       const prompt = routinePrompt(input.prompt);
       const id = existingId ?? randomUUID(); let saved: SavedRoutine | undefined;
-      if (existingId) saved = await this.recover(await this.own(botId, existingId), driver);
+      if (existingId && !draft) saved = await this.recover(await this.own(botId, existingId), driver);
       const now = Date.now();
       const data: Routine = { ...input, id, botId, revision: (saved?.data.revision ?? 0) + 1, createdAt: saved?.data.createdAt ?? now, updatedAt: now };
       if (!saved) {
@@ -240,7 +253,7 @@ export class CompanionRoutines {
           await this.store.transaction(state => { state.routines[id]!.scheduleId = created.id; });
           if (!input.enabled) await driver.pause(created.id);
           saved.phase = 'ready';
-          await this.store.transaction(state => { state.routines[id] = saved!; }); return data;
+          await this.store.transaction(state => { state.routines[id] = saved!; if (state.presetRoutineDrafts) delete state.presetRoutineDrafts[id]; }); return data;
         } catch (error) {
           await this.store.transaction(state => { state.routines[id]!.phase = 'unknown'; });
           throw new CompanionError('SCHEDULE_OUTCOME_UNKNOWN', `Routine creation needs reconciliation: ${error instanceof Error ? error.message : String(error)}`);
@@ -256,6 +269,8 @@ export class CompanionRoutines {
   }
   async history(botId: string, id: string, paseo?: Paseo) {
     return this.serial(async () => {
+      const state = await this.store.snapshot(); const draft = !Object.hasOwn(state.routines, id) ? state.presetRoutineDrafts?.[id] : undefined;
+      if (draft) { if (draft.botId !== botId) throwIpcError('NOT_FOUND', 'Routine not found'); return []; }
       let saved = await this.own(botId, id); if (!saved.scheduleId) throwIpcError('SCHEDULE_OUTCOME_UNKNOWN', 'The schedule ID is not confirmed');
       const native = await this.driverFor(paseo).inspect(saved.scheduleId); saved = await this.refreshManual(saved, native);
       const actual = (native.runs ?? []).map(run => {
@@ -314,11 +329,13 @@ export class CompanionRoutines {
     });
   }
   remove(botId: string, id: string, paseo?: Paseo) { return this.serial(async () => {
+    const state = await this.store.snapshot(); const draft = !Object.hasOwn(state.routines, id) ? state.presetRoutineDrafts?.[id] : undefined;
+    if (draft) { if (draft.botId !== botId) throwIpcError('NOT_FOUND', 'Routine not found'); await this.store.transaction(state => { delete state.presetRoutineDrafts![id]; }); return; }
     const driver = this.driverFor(paseo); let saved = await this.recover(await this.own(botId, id), driver, true);
     if (!saved.scheduleId) throwIpcError('SCHEDULE_OUTCOME_UNKNOWN', 'The schedule ID is not confirmed');
     const native = await driver.inspect(saved.scheduleId); saved = await this.refreshManual(saved, native);
     if (native.runs?.some(run => run.status === 'running') || saved.manualRuns?.some(run => pending(run) || this.launches.has(`${saved.data.id}:${run.operationId}`)))
       throwIpcError('ROUTINE_RUN_PENDING', 'Wait for this routine run to finish and its outcome to be confirmed before deleting it');
-    await driver.remove(saved.scheduleId!); await this.store.transaction(state => { delete state.routines[id]; });
+    await driver.remove(saved.scheduleId!); await this.store.transaction(state => { delete state.routines[id]; if (state.presetRoutineDrafts) delete state.presetRoutineDrafts[id]; });
   }); }
 }

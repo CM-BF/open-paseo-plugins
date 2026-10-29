@@ -1,0 +1,644 @@
+[
+  {
+    "source": "apps/desktop/src/shared/botMarket.ts",
+    "destination": "shared/presets.ts",
+    "sha256": "105fb5ba02006a77691d557bcf9f07104c20b72f1ac61309b31857ad7c1200da",
+    "modified": true
+  },
+  {
+    "source": "packages/maker-shared/src/companionImport.ts",
+    "destination": "shared/vendor/presetImport.ts",
+    "sha256": "d76fe36dfe5f5f10974df316f4e5d9800ffca51af39a1f97d707a7489c9dcd7d",
+    "modified": true
+  },
+  {
+    "source": "apps/desktop/src/main/bot-import/types.ts",
+    "destination": "server/presets/types.ts",
+    "sha256": "804c119da9676bd038ac4c1c9d8374a3dbe29b3c8babafd1d0e2ec34942cd76b",
+    "modified": true
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/ad-spend-watch/0.5.1/assets/avatar.webp",
+    "destination": "server/presets/packages/ad-spend-watch/0.5.1/assets/avatar.webp",
+    "sha256": "ddc3bb04bf0fd04bf2712b601aaef6bcbacd6e6117fbd1239d6fda53a60098a9",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/ad-spend-watch/0.5.1/knowledge/method.md",
+    "destination": "server/presets/packages/ad-spend-watch/0.5.1/knowledge/method.md",
+    "sha256": "d53519408f665393a63408baee663fdee4afa1c410306b5749356dd1b8150790",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/ad-spend-watch/0.5.1/manifest.json",
+    "destination": "server/presets/packages/ad-spend-watch/0.5.1/manifest.json",
+    "sha256": "0b7dd40963402dafa3368dac552ea1c78daa5442fb35a214d82449a5b34e9738",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/ad-spend-watch/0.5.1/skills/ad-spend-watch-evidence/SKILL.md",
+    "destination": "server/presets/packages/ad-spend-watch/0.5.1/skills/ad-spend-watch-evidence/SKILL.md",
+    "sha256": "4c79c2b6a3b5ed9815913e647e8b3f822a8c772899016dc5671e8b23a5c03275",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/ad-spend-watch/0.5.1/skills/ad-spend-watch-evidence/scripts/spend_ledger.py",
+    "destination": "server/presets/packages/ad-spend-watch/0.5.1/skills/ad-spend-watch-evidence/scripts/spend_ledger.py",
+    "sha256": "06e99f7de144792cbd59c00323ce950ce5301201346c80d582f08a665debaeef",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/ad-spend-watch/0.5.1/skills/ad-spend-watch-evidence/templates/contract.md",
+    "destination": "server/presets/packages/ad-spend-watch/0.5.1/skills/ad-spend-watch-evidence/templates/contract.md",
+    "sha256": "f421e444b4a1c21e441bbab4cc1e6e581e9f82d21b89b744c014318c34fe6452",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/ad-spend-watch/0.5.1/skills/ad-spend-watch-evidence/templates/input.json",
+    "destination": "server/presets/packages/ad-spend-watch/0.5.1/skills/ad-spend-watch-evidence/templates/input.json",
+    "sha256": "2984437d933dd13a9a5858f758757a8e699478fba1e4111ec7865f9f60424c80",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/ad-spend-watch/0.5.1/skills/ad-spend-watch-getting-started/SKILL.md",
+    "destination": "server/presets/packages/ad-spend-watch/0.5.1/skills/ad-spend-watch-getting-started/SKILL.md",
+    "sha256": "c4c1e935ba90f2e4a1698d5ac12e754d09ca163fc183dc4a35e89db967e755c2",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/ad-spend-watch/0.5.1/skills/ad-spend-watch-ops/SKILL.md",
+    "destination": "server/presets/packages/ad-spend-watch/0.5.1/skills/ad-spend-watch-ops/SKILL.md",
+    "sha256": "7c1359a01948c75f7b06b8570f090b17b48255290d609a968ce880f349ddb0b3",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/ad-spend-watch/0.5.1/skills/ad-spend-watch-ops/templates/delivery.md",
+    "destination": "server/presets/packages/ad-spend-watch/0.5.1/skills/ad-spend-watch-ops/templates/delivery.md",
+    "sha256": "58969ff887260a364002bb0409f8cfe27e5a633150d24e3fa83b2b787ae5bba7",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/apple-search-ads-review/0.5.1/assets/avatar.webp",
+    "destination": "server/presets/packages/apple-search-ads-review/0.5.1/assets/avatar.webp",
+    "sha256": "5a52ba83e04742cf76bf81d23afd60c9744d39a12834049892f070554d2282fa",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/apple-search-ads-review/0.5.1/knowledge/method.md",
+    "destination": "server/presets/packages/apple-search-ads-review/0.5.1/knowledge/method.md",
+    "sha256": "d5e770cccc63ee601882fee6d86d43371f0ba5ea8b0e95f2c081daf2475d93f9",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/apple-search-ads-review/0.5.1/manifest.json",
+    "destination": "server/presets/packages/apple-search-ads-review/0.5.1/manifest.json",
+    "sha256": "b1428ff85f915d1bdf3e7ee02ee20e9d5c6ab228df794c52e9700e614e7dda2d",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/apple-search-ads-review/0.5.1/skills/apple-search-ads-review-evidence/SKILL.md",
+    "destination": "server/presets/packages/apple-search-ads-review/0.5.1/skills/apple-search-ads-review-evidence/SKILL.md",
+    "sha256": "c3d329e30aef7c6eb37334d5daafb6dc9bbd7978add9a667807585a26b21bc63",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/apple-search-ads-review/0.5.1/skills/apple-search-ads-review-evidence/scripts/asa_terms.py",
+    "destination": "server/presets/packages/apple-search-ads-review/0.5.1/skills/apple-search-ads-review-evidence/scripts/asa_terms.py",
+    "sha256": "de3120b4973ad44a43a1780c79ebd424bd56222f7bac0223ef656c5e3f1a4d5c",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/apple-search-ads-review/0.5.1/skills/apple-search-ads-review-evidence/templates/contract.md",
+    "destination": "server/presets/packages/apple-search-ads-review/0.5.1/skills/apple-search-ads-review-evidence/templates/contract.md",
+    "sha256": "a38cb7031dbf3f0936b7258756459b2fd6db6c46a345e9eaa7974a2e77f70fa7",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/apple-search-ads-review/0.5.1/skills/apple-search-ads-review-evidence/templates/input.json",
+    "destination": "server/presets/packages/apple-search-ads-review/0.5.1/skills/apple-search-ads-review-evidence/templates/input.json",
+    "sha256": "5af624a223f94fa06882df3fd5be57d9bf725a678aa2116dcb02553f71dcb7c6",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/apple-search-ads-review/0.5.1/skills/apple-search-ads-review-getting-started/SKILL.md",
+    "destination": "server/presets/packages/apple-search-ads-review/0.5.1/skills/apple-search-ads-review-getting-started/SKILL.md",
+    "sha256": "d07ca9a14bf90f4e12b1af319cf69423ec4361e9482196b732e7c65c58e6c0a6",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/apple-search-ads-review/0.5.1/skills/apple-search-ads-review-ops/SKILL.md",
+    "destination": "server/presets/packages/apple-search-ads-review/0.5.1/skills/apple-search-ads-review-ops/SKILL.md",
+    "sha256": "2d784d80dc20d8f36cc49c3f065b29d9c4b3bbe388444c9eae6c945727cd9ffd",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/apple-search-ads-review/0.5.1/skills/apple-search-ads-review-ops/templates/delivery.md",
+    "destination": "server/presets/packages/apple-search-ads-review/0.5.1/skills/apple-search-ads-review-ops/templates/delivery.md",
+    "sha256": "ce4f9672eda4d7908417c6383797d45dddb2c9ae8057fe1d3d1ee1b66202507d",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/cooper/0.5.1/assets/avatar.webp",
+    "destination": "server/presets/packages/cooper/0.5.1/assets/avatar.webp",
+    "sha256": "bc46d3c28d17102636eac416468edb2e60316fa02e97030afa11a218f62f7d4c",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/cooper/0.5.1/knowledge/method.md",
+    "destination": "server/presets/packages/cooper/0.5.1/knowledge/method.md",
+    "sha256": "7c6fd4a2b1a904f17a98bd6d0a154d42866785cb30f34014dc0db9112c11617b",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/cooper/0.5.1/manifest.json",
+    "destination": "server/presets/packages/cooper/0.5.1/manifest.json",
+    "sha256": "4291e0a060354d60f609193ea683335b8daa264738764f43ba4f8766cced44d3",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/cooper/0.5.1/skills/cooper-evidence/SKILL.md",
+    "destination": "server/presets/packages/cooper/0.5.1/skills/cooper-evidence/SKILL.md",
+    "sha256": "fd473d831b59b94043220c25beeebe73921787c8a2597697d85a72358c406998",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/cooper/0.5.1/skills/cooper-evidence/scripts/source_dedup.py",
+    "destination": "server/presets/packages/cooper/0.5.1/skills/cooper-evidence/scripts/source_dedup.py",
+    "sha256": "1dad8363d86489646c69f1ab51071e4119b85478efdb639164e331736d9ae3c0",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/cooper/0.5.1/skills/cooper-evidence/templates/contract.md",
+    "destination": "server/presets/packages/cooper/0.5.1/skills/cooper-evidence/templates/contract.md",
+    "sha256": "1b72076f9455125cf094745caf8d7567a321ebc09ea655e73f27adeb866bec11",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/cooper/0.5.1/skills/cooper-evidence/templates/input.json",
+    "destination": "server/presets/packages/cooper/0.5.1/skills/cooper-evidence/templates/input.json",
+    "sha256": "aa61fbf1027aefd39f50efcd717761f9d21fdcf640539def1b4031f29c4c94aa",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/cooper/0.5.1/skills/cooper-getting-started/SKILL.md",
+    "destination": "server/presets/packages/cooper/0.5.1/skills/cooper-getting-started/SKILL.md",
+    "sha256": "db9c9235b07f6134c0d834a01b7d8d825768d8de30de68d276bb29115f379df9",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/cooper/0.5.1/skills/cooper-ops/SKILL.md",
+    "destination": "server/presets/packages/cooper/0.5.1/skills/cooper-ops/SKILL.md",
+    "sha256": "8f82942214dda7d6ef6c43c6093a4ca9a0287e4023244ac5b977f861345e6d56",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/cooper/0.5.1/skills/cooper-ops/templates/delivery.md",
+    "destination": "server/presets/packages/cooper/0.5.1/skills/cooper-ops/templates/delivery.md",
+    "sha256": "e2885098dc0d1f65112ee0847764f0d77b5dc0c07e0578862351db258fa1ecd7",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/engineer-bot/0.5.1/assets/avatar.webp",
+    "destination": "server/presets/packages/engineer-bot/0.5.1/assets/avatar.webp",
+    "sha256": "06a8b9d38be201ef49e004d58432093630ae3cfa43e57b770aca2fdabef64b61",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/engineer-bot/0.5.1/knowledge/method.md",
+    "destination": "server/presets/packages/engineer-bot/0.5.1/knowledge/method.md",
+    "sha256": "055283ac244be30479dab12c31573bb9c18db956b99bb756300739b984e8899b",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/engineer-bot/0.5.1/manifest.json",
+    "destination": "server/presets/packages/engineer-bot/0.5.1/manifest.json",
+    "sha256": "ff6226984a7c94b5d03fde3c5b68994564ca2040629b03a711b45055936084a9",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/engineer-bot/0.5.1/skills/engineer-bot-evidence/SKILL.md",
+    "destination": "server/presets/packages/engineer-bot/0.5.1/skills/engineer-bot-evidence/SKILL.md",
+    "sha256": "d8c74bf17e57f9e266b1c73c320a32da316ca0b98cf3aa79b1aa5dfdedbab754",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/engineer-bot/0.5.1/skills/engineer-bot-evidence/scripts/evidence_check.py",
+    "destination": "server/presets/packages/engineer-bot/0.5.1/skills/engineer-bot-evidence/scripts/evidence_check.py",
+    "sha256": "93a75767ecc568c1e5a52ad3cc4d6f2e83023661990900efb8d81d891ffff4c0",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/engineer-bot/0.5.1/skills/engineer-bot-evidence/templates/contract.md",
+    "destination": "server/presets/packages/engineer-bot/0.5.1/skills/engineer-bot-evidence/templates/contract.md",
+    "sha256": "a71ccfb0a19859c2845051a1ee83a5826fcc5c89d4e81ee24fa44246af1cf553",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/engineer-bot/0.5.1/skills/engineer-bot-evidence/templates/input.json",
+    "destination": "server/presets/packages/engineer-bot/0.5.1/skills/engineer-bot-evidence/templates/input.json",
+    "sha256": "d2c07855590572812db59749a8d53daea50c0155f5ec8f5753b35e780cbe2db3",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/engineer-bot/0.5.1/skills/engineer-bot-getting-started/SKILL.md",
+    "destination": "server/presets/packages/engineer-bot/0.5.1/skills/engineer-bot-getting-started/SKILL.md",
+    "sha256": "905b4a04bd7ad6ced42542c46e6ecc53d2495812aaf1fc95ffbd82561f23837d",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/engineer-bot/0.5.1/skills/engineer-bot-ops/SKILL.md",
+    "destination": "server/presets/packages/engineer-bot/0.5.1/skills/engineer-bot-ops/SKILL.md",
+    "sha256": "1fcac6a87de7436031e08fc3e69458d15023c88dacf6b6caff69c4fda8d61380",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/engineer-bot/0.5.1/skills/engineer-bot-ops/templates/delivery.md",
+    "destination": "server/presets/packages/engineer-bot/0.5.1/skills/engineer-bot-ops/templates/delivery.md",
+    "sha256": "799e38a49673310c960225a11e31af6622e916f2812f8ffd184e241cca650c2a",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/nightly-audit-engineer/0.5.1/assets/avatar.webp",
+    "destination": "server/presets/packages/nightly-audit-engineer/0.5.1/assets/avatar.webp",
+    "sha256": "e5a1447b2b99e44e2f33fda43c611173c74fb971e9c28aea0fb8cb0ccbbf5daf",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/nightly-audit-engineer/0.5.1/knowledge/method.md",
+    "destination": "server/presets/packages/nightly-audit-engineer/0.5.1/knowledge/method.md",
+    "sha256": "13331131c3c22f7234b6be82e52402cf0f8dc85faa49b7e0e34269c777abe86a",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/nightly-audit-engineer/0.5.1/manifest.json",
+    "destination": "server/presets/packages/nightly-audit-engineer/0.5.1/manifest.json",
+    "sha256": "9937274e2b5dfa91bf851cad017f98757819671a05cbe7149888b98e7c6bb791",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/nightly-audit-engineer/0.5.1/skills/nightly-audit-engineer-evidence/SKILL.md",
+    "destination": "server/presets/packages/nightly-audit-engineer/0.5.1/skills/nightly-audit-engineer-evidence/SKILL.md",
+    "sha256": "29106ab8b38b0dfe1422e56cc9254640ea3f4b6105193ae8bc3d23a3fe0f38f4",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/nightly-audit-engineer/0.5.1/skills/nightly-audit-engineer-evidence/scripts/finding_keys.py",
+    "destination": "server/presets/packages/nightly-audit-engineer/0.5.1/skills/nightly-audit-engineer-evidence/scripts/finding_keys.py",
+    "sha256": "4e2c637106a77ea327da5ec05eb3ffa9098fb51e00aeaf4778edbeb00f0575f1",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/nightly-audit-engineer/0.5.1/skills/nightly-audit-engineer-evidence/templates/contract.md",
+    "destination": "server/presets/packages/nightly-audit-engineer/0.5.1/skills/nightly-audit-engineer-evidence/templates/contract.md",
+    "sha256": "7ba7d000e26355cf590f6261dd8fc79fd52c51e1a62b416a909378498aaa0c5d",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/nightly-audit-engineer/0.5.1/skills/nightly-audit-engineer-evidence/templates/input.json",
+    "destination": "server/presets/packages/nightly-audit-engineer/0.5.1/skills/nightly-audit-engineer-evidence/templates/input.json",
+    "sha256": "648f17e535b637d4f271943133cc25b2a96fc4bb3cc5b4f7eee3c2c8069e56c0",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/nightly-audit-engineer/0.5.1/skills/nightly-audit-engineer-getting-started/SKILL.md",
+    "destination": "server/presets/packages/nightly-audit-engineer/0.5.1/skills/nightly-audit-engineer-getting-started/SKILL.md",
+    "sha256": "c66b78834f02d683b16c5d7d55762de8c0eddf5b757e69265781937e91bc85bf",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/nightly-audit-engineer/0.5.1/skills/nightly-audit-engineer-ops/SKILL.md",
+    "destination": "server/presets/packages/nightly-audit-engineer/0.5.1/skills/nightly-audit-engineer-ops/SKILL.md",
+    "sha256": "3d27b94ddec4ec2e431f8bc0dff6a8246ac678b5a7fe8bac1c2c6157e0c71917",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/nightly-audit-engineer/0.5.1/skills/nightly-audit-engineer-ops/templates/delivery.md",
+    "destination": "server/presets/packages/nightly-audit-engineer/0.5.1/skills/nightly-audit-engineer-ops/templates/delivery.md",
+    "sha256": "7c69aa92d900bcd2f2d6e30e771d41079312b50217181b6c569ea52324887f86",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/proto-bot/0.5.1/assets/avatar.webp",
+    "destination": "server/presets/packages/proto-bot/0.5.1/assets/avatar.webp",
+    "sha256": "8e2cfa64306cb94105a3dbb0039880e1e83cc398fa1754d1bea5abf4ccd6f3fb",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/proto-bot/0.5.1/knowledge/method.md",
+    "destination": "server/presets/packages/proto-bot/0.5.1/knowledge/method.md",
+    "sha256": "a1be8bf2a7d2971e019c5e7dc31036ab3e4313030cf6031448edcc119975ced1",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/proto-bot/0.5.1/manifest.json",
+    "destination": "server/presets/packages/proto-bot/0.5.1/manifest.json",
+    "sha256": "ccb69b3839f4024aa26a17826f29b3eb8ad9392c32fa1ace1c71ced9d4c2456c",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/proto-bot/0.5.1/skills/proto-bot-evidence/SKILL.md",
+    "destination": "server/presets/packages/proto-bot/0.5.1/skills/proto-bot-evidence/SKILL.md",
+    "sha256": "cafd6f94ade5d1d64b3313707f23ec54408fffc9bac0dfc0fbc697c0e1437abd",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/proto-bot/0.5.1/skills/proto-bot-evidence/scripts/acceptance_check.py",
+    "destination": "server/presets/packages/proto-bot/0.5.1/skills/proto-bot-evidence/scripts/acceptance_check.py",
+    "sha256": "ed7ce637a0f1a4de4d03be3318bff6a0ca997414a2fb22adab49cc17e1b0d50f",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/proto-bot/0.5.1/skills/proto-bot-evidence/templates/contract.md",
+    "destination": "server/presets/packages/proto-bot/0.5.1/skills/proto-bot-evidence/templates/contract.md",
+    "sha256": "86b3df6eb5f5e9a595c75868d54ca631952b6a827aae553d680beecb625d56d6",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/proto-bot/0.5.1/skills/proto-bot-evidence/templates/input.json",
+    "destination": "server/presets/packages/proto-bot/0.5.1/skills/proto-bot-evidence/templates/input.json",
+    "sha256": "2e75786cf4fad4e0bbb4e07ffd62159784b081e706c1d638ce8e8adeb66b92ca",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/proto-bot/0.5.1/skills/proto-bot-getting-started/SKILL.md",
+    "destination": "server/presets/packages/proto-bot/0.5.1/skills/proto-bot-getting-started/SKILL.md",
+    "sha256": "5b191121952e44edd03f27108a0cf1fc36f8c70cef9171b7fcac9d539e1c6404",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/proto-bot/0.5.1/skills/proto-bot-ops/SKILL.md",
+    "destination": "server/presets/packages/proto-bot/0.5.1/skills/proto-bot-ops/SKILL.md",
+    "sha256": "9cc76162daace6bbd9235712ee49a04a5a490f72d32474a124ff0f56757ec538",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/proto-bot/0.5.1/skills/proto-bot-ops/templates/delivery.md",
+    "destination": "server/presets/packages/proto-bot/0.5.1/skills/proto-bot-ops/templates/delivery.md",
+    "sha256": "ce4784e1856aa5393b4fb110704ed3c913ccedeb10efcc2a52fa4006cd71d56a",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/sable-game-art/0.5.1/assets/avatar.webp",
+    "destination": "server/presets/packages/sable-game-art/0.5.1/assets/avatar.webp",
+    "sha256": "b44997f4f6a11ee4750b3a8d8d1f7694a6a9c4aa64cc0238067bf633a858d874",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/sable-game-art/0.5.1/knowledge/method.md",
+    "destination": "server/presets/packages/sable-game-art/0.5.1/knowledge/method.md",
+    "sha256": "f84f81c456e4a227a1d20150b3ddf21a5b3e3a9bdf4fcd9ba8af6ca9f804ea44",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/sable-game-art/0.5.1/manifest.json",
+    "destination": "server/presets/packages/sable-game-art/0.5.1/manifest.json",
+    "sha256": "e2154e3edaa92d38172630cd9ca5b103dbf09697c72354017d4d83bd2f0e6270",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/sable-game-art/0.5.1/skills/sable-game-art-evidence/SKILL.md",
+    "destination": "server/presets/packages/sable-game-art/0.5.1/skills/sable-game-art-evidence/SKILL.md",
+    "sha256": "1ee7eb36675e2e5f3155089f6190dfd7c7c36f4d886b19e6f7454bac76aae8f2",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/sable-game-art/0.5.1/skills/sable-game-art-evidence/scripts/sprite_audit.py",
+    "destination": "server/presets/packages/sable-game-art/0.5.1/skills/sable-game-art-evidence/scripts/sprite_audit.py",
+    "sha256": "5740bc2f58569d082c1e1a5e1c63ebafac48b3d3622ac593025f1c9c877a8904",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/sable-game-art/0.5.1/skills/sable-game-art-evidence/templates/contract.md",
+    "destination": "server/presets/packages/sable-game-art/0.5.1/skills/sable-game-art-evidence/templates/contract.md",
+    "sha256": "ec77dc3e1612c8668f72d7983d8b282063afa01c35b726327f3274a784c4e8ff",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/sable-game-art/0.5.1/skills/sable-game-art-evidence/templates/input.json",
+    "destination": "server/presets/packages/sable-game-art/0.5.1/skills/sable-game-art-evidence/templates/input.json",
+    "sha256": "6cc0a6efea7a19ed83777e0aeb749cec731b6434376393d4e2e5d9f16179e713",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/sable-game-art/0.5.1/skills/sable-game-art-getting-started/SKILL.md",
+    "destination": "server/presets/packages/sable-game-art/0.5.1/skills/sable-game-art-getting-started/SKILL.md",
+    "sha256": "a48ee5645f604b570e7011f3c8aa20b3b2af3afed34977beb84bb12d68203051",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/sable-game-art/0.5.1/skills/sable-game-art-ops/SKILL.md",
+    "destination": "server/presets/packages/sable-game-art/0.5.1/skills/sable-game-art-ops/SKILL.md",
+    "sha256": "9f32c6d8765efd46d76890eae09ef387384b9355421e5a122b6318c285b55c57",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/sable-game-art/0.5.1/skills/sable-game-art-ops/templates/delivery.md",
+    "destination": "server/presets/packages/sable-game-art/0.5.1/skills/sable-game-art-ops/templates/delivery.md",
+    "sha256": "e68a505e1d5d79155ca9175f4828c4951e9af50c33b1bd824c917cf8367f36fd",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/seo-aeo-desk/0.5.1/assets/avatar.webp",
+    "destination": "server/presets/packages/seo-aeo-desk/0.5.1/assets/avatar.webp",
+    "sha256": "de1a0ecd134ef813f13820c37dfd8630698512c998dc7124da3376e13a8ab381",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/seo-aeo-desk/0.5.1/knowledge/method.md",
+    "destination": "server/presets/packages/seo-aeo-desk/0.5.1/knowledge/method.md",
+    "sha256": "7d2604f47138a8efe4669cb86a9b6fb4d2637d7903dbb504f64b93b871835737",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/seo-aeo-desk/0.5.1/manifest.json",
+    "destination": "server/presets/packages/seo-aeo-desk/0.5.1/manifest.json",
+    "sha256": "61cb37daeb06f77f87687f6bb143b0ab5cc0090211dd31d206ed969b8a167bac",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/seo-aeo-desk/0.5.1/skills/seo-aeo-desk-evidence/SKILL.md",
+    "destination": "server/presets/packages/seo-aeo-desk/0.5.1/skills/seo-aeo-desk-evidence/SKILL.md",
+    "sha256": "a055b15f7e1c848cbfa6fb927d296295ceb1d8ab047b8f5c4580524bd3332174",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/seo-aeo-desk/0.5.1/skills/seo-aeo-desk-evidence/scripts/keyword_board.py",
+    "destination": "server/presets/packages/seo-aeo-desk/0.5.1/skills/seo-aeo-desk-evidence/scripts/keyword_board.py",
+    "sha256": "f476d108165a57be66300a7bf329ddeac566118f6f3e125589ed0806ee7a98e0",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/seo-aeo-desk/0.5.1/skills/seo-aeo-desk-evidence/templates/contract.md",
+    "destination": "server/presets/packages/seo-aeo-desk/0.5.1/skills/seo-aeo-desk-evidence/templates/contract.md",
+    "sha256": "971546f442afff5ac80e739e46682ba640cede4d86d9f950027cfcb7048ee332",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/seo-aeo-desk/0.5.1/skills/seo-aeo-desk-evidence/templates/input.json",
+    "destination": "server/presets/packages/seo-aeo-desk/0.5.1/skills/seo-aeo-desk-evidence/templates/input.json",
+    "sha256": "9737458f4d40b06847853e953f6554ee7c557d894744379f470713180f5b39ae",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/seo-aeo-desk/0.5.1/skills/seo-aeo-desk-getting-started/SKILL.md",
+    "destination": "server/presets/packages/seo-aeo-desk/0.5.1/skills/seo-aeo-desk-getting-started/SKILL.md",
+    "sha256": "c02d62061dd836c689c28a0b9dde0ace33a004c7608fbd06828df7b2dbea9e43",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/seo-aeo-desk/0.5.1/skills/seo-aeo-desk-ops/SKILL.md",
+    "destination": "server/presets/packages/seo-aeo-desk/0.5.1/skills/seo-aeo-desk-ops/SKILL.md",
+    "sha256": "6933c1aa257b08cdcdefecf971cfbb6dfea5f67a5628f6362f67efaba8cc8680",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/seo-aeo-desk/0.5.1/skills/seo-aeo-desk-ops/templates/delivery.md",
+    "destination": "server/presets/packages/seo-aeo-desk/0.5.1/skills/seo-aeo-desk-ops/templates/delivery.md",
+    "sha256": "9a29ac7aafa2a321c67ea563d703fca8e5d416ba38e32609411c84854f6ef641",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/startup-qa-bot/0.5.1/assets/avatar.webp",
+    "destination": "server/presets/packages/startup-qa-bot/0.5.1/assets/avatar.webp",
+    "sha256": "d000e60047b78c011289c2b21d2283f09bdbeaec741998f4980140bb1bf4beef",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/startup-qa-bot/0.5.1/knowledge/method.md",
+    "destination": "server/presets/packages/startup-qa-bot/0.5.1/knowledge/method.md",
+    "sha256": "3e016fe3d017702f1636d9975fdc2b42cbdf96de340ab719e162db521a9643f3",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/startup-qa-bot/0.5.1/manifest.json",
+    "destination": "server/presets/packages/startup-qa-bot/0.5.1/manifest.json",
+    "sha256": "029ada430364626b8077d0281f49ba38dc6049d591662a3cd5a85a5236c92331",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/startup-qa-bot/0.5.1/skills/startup-qa-bot-evidence/SKILL.md",
+    "destination": "server/presets/packages/startup-qa-bot/0.5.1/skills/startup-qa-bot-evidence/SKILL.md",
+    "sha256": "8b1163b3f91d155c061a1fe66f1105595c68dd1dc01b8a68366015024debfaac",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/startup-qa-bot/0.5.1/skills/startup-qa-bot-evidence/scripts/page_diff.py",
+    "destination": "server/presets/packages/startup-qa-bot/0.5.1/skills/startup-qa-bot-evidence/scripts/page_diff.py",
+    "sha256": "35888e96d24bc9cf41f782740d2de84d6d5c7db6916e22dee3ca87b395aa994c",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/startup-qa-bot/0.5.1/skills/startup-qa-bot-evidence/templates/contract.md",
+    "destination": "server/presets/packages/startup-qa-bot/0.5.1/skills/startup-qa-bot-evidence/templates/contract.md",
+    "sha256": "0686cd4d34c4a1d88914dab943dcbc03203fc257949ad750286c27bf2e60b7d7",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/startup-qa-bot/0.5.1/skills/startup-qa-bot-evidence/templates/input.json",
+    "destination": "server/presets/packages/startup-qa-bot/0.5.1/skills/startup-qa-bot-evidence/templates/input.json",
+    "sha256": "d44621a8b2cce91850198b748bf0ac4fe0f04bbebf017c3fd5c4cd1c0847e886",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/startup-qa-bot/0.5.1/skills/startup-qa-bot-getting-started/SKILL.md",
+    "destination": "server/presets/packages/startup-qa-bot/0.5.1/skills/startup-qa-bot-getting-started/SKILL.md",
+    "sha256": "d3b063f8e2422d106812e66853857e225829d9e3a93a1a0828c568ce66a435de",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/startup-qa-bot/0.5.1/skills/startup-qa-bot-ops/SKILL.md",
+    "destination": "server/presets/packages/startup-qa-bot/0.5.1/skills/startup-qa-bot-ops/SKILL.md",
+    "sha256": "a156ca6d449773ddd47fbe110ffac24caa353cb360a4299830f011e5935e9176",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/startup-qa-bot/0.5.1/skills/startup-qa-bot-ops/templates/delivery.md",
+    "destination": "server/presets/packages/startup-qa-bot/0.5.1/skills/startup-qa-bot-ops/templates/delivery.md",
+    "sha256": "a8f0494118d37aa7891fdbef2fbd744c0788d530ac091fc6bc93e7bf96398aec",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/video-editor/0.5.1/assets/avatar.webp",
+    "destination": "server/presets/packages/video-editor/0.5.1/assets/avatar.webp",
+    "sha256": "d9f24f2f8770c569a278547d1d4ad5ca70bf71d9f1b481707327f7c2d983f906",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/video-editor/0.5.1/knowledge/method.md",
+    "destination": "server/presets/packages/video-editor/0.5.1/knowledge/method.md",
+    "sha256": "9adf8a5bc7e5254a9a7ff26408f79492f24dbf8df2b11b16d985a3c7f3897723",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/video-editor/0.5.1/manifest.json",
+    "destination": "server/presets/packages/video-editor/0.5.1/manifest.json",
+    "sha256": "bda0f9c3ab74ca5389226a7ee66a185507d2524c8ab5498334f821dfc3654f09",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/video-editor/0.5.1/skills/video-editor-evidence/SKILL.md",
+    "destination": "server/presets/packages/video-editor/0.5.1/skills/video-editor-evidence/SKILL.md",
+    "sha256": "d99ab5703e74bfd202453bc0183cfe0418a06739395148ffd00f025ec61d252b",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/video-editor/0.5.1/skills/video-editor-evidence/scripts/timeline_check.py",
+    "destination": "server/presets/packages/video-editor/0.5.1/skills/video-editor-evidence/scripts/timeline_check.py",
+    "sha256": "1ded88b238c7443b7fbed147de237118489721ff8d7a520992173b78515cc7bb",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/video-editor/0.5.1/skills/video-editor-evidence/templates/contract.md",
+    "destination": "server/presets/packages/video-editor/0.5.1/skills/video-editor-evidence/templates/contract.md",
+    "sha256": "a302655efed23d565958423da79222e08ef875c1d1176df27c34f4ab0cc19b3b",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/video-editor/0.5.1/skills/video-editor-evidence/templates/input.json",
+    "destination": "server/presets/packages/video-editor/0.5.1/skills/video-editor-evidence/templates/input.json",
+    "sha256": "fe3b2e1728b2ad868db3acbcc228607a50202b0a4bf28be9d30810c2237a9f0f",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/video-editor/0.5.1/skills/video-editor-getting-started/SKILL.md",
+    "destination": "server/presets/packages/video-editor/0.5.1/skills/video-editor-getting-started/SKILL.md",
+    "sha256": "d5706d2de186ef4e97a702f4924f1b3fd764584f50c6fe58e7557968687746ca",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/video-editor/0.5.1/skills/video-editor-ops/SKILL.md",
+    "destination": "server/presets/packages/video-editor/0.5.1/skills/video-editor-ops/SKILL.md",
+    "sha256": "a178feb3928dd54a23b9a2f3fe256479c2c58c396aa1feab14fc91507ec9bd97",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/resources/bot-packages/video-editor/0.5.1/skills/video-editor-ops/templates/delivery.md",
+    "destination": "server/presets/packages/video-editor/0.5.1/skills/video-editor-ops/templates/delivery.md",
+    "sha256": "2f3095593c5fce7b06830de1b2fee2a72fc9eb30037ee9bfa5ccad5f991c32e8",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/main/bot-import/nativePackage.ts",
+    "destination": "server/presets/catalog.ts",
+    "sha256": "64bf98cda4898e4b448b7f75a01f3cad9fb345853111340c12b13fc4d6aa7f59",
+    "modified": true
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotMarketDialog.tsx",
+    "destination": "vendor/renderer/features/bots/BotMarketDialog.tsx",
+    "sha256": "d7aabfd7086dc98cb8e5729a525225e04aecf8abcb12e34d4f30a52dceb9a3b8",
+    "modified": true
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotMarketModules.tsx",
+    "destination": "vendor/renderer/features/bots/BotMarketModules.tsx",
+    "sha256": "4d4e1735195218dbf523d7f945de5e7dd0806901a387c77728e7d1b258fb2d6e",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/botMarketDisplay.ts",
+    "destination": "vendor/renderer/features/bots/botMarketDisplay.ts",
+    "sha256": "0850386e0a392377c447a5b514510c89a763338c479917187721f7bbc007b3d5",
+    "modified": false
+  }
+]

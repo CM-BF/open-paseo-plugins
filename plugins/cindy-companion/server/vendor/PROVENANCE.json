@@ -96,6 +96,36 @@
       "source": "packages/maker-scheduler/src/engine/cron.ts",
       "target": "server/vendor/scheduler/engine/cron.ts",
       "upstreamSha256": "a2f67a030c477e16468e7cbf109b7347a6500f29e9d2bd1065aa39b2f3496da2"
+    },
+    {
+      "source": "packages/maker-shared/src/botGroupChat.ts",
+      "target": "shared/vendor/botGroupChat.ts",
+      "upstreamSha256": "b7b50bbe2ba2e15960af540d6ce7233046ea4b7e2ced91e0779f19598417d1c0"
+    },
+    {
+      "source": "packages/maker-shared/src/botGroupQuote.ts",
+      "target": "shared/vendor/botGroupQuote.ts",
+      "upstreamSha256": "2cf4bcb21a90b95b0f583615841b1cabd17a3e224a33a220d88f37c4df96384f"
+    },
+    {
+      "source": "packages/maker-shared/src/botGroupTask.ts",
+      "target": "shared/vendor/botGroupTask.ts",
+      "upstreamSha256": "87f03a45462bda8a35dbf18910d1a3c5aeba0b19431a8e9c74266623e72b7c88"
+    },
+    {
+      "source": "packages/maker-shared/src/botCollaboration.ts",
+      "target": "shared/vendor/botCollaboration.ts",
+      "upstreamSha256": "f23d75116534a6d52286598f85f9c62e9912570430614727e01fa44c2bf85469"
+    },
+    {
+      "source": "packages/maker-shared/src/botGroupMentions.ts",
+      "target": "shared/vendor/botGroupMentions.ts",
+      "upstreamSha256": "10e0e4fe216961d8da48e97ba5a4ffea65db5e0501e65d0c6e6cecd3faa55a9e"
+    },
+    {
+      "source": "apps/desktop/src/shared/untrustedPrompt.ts",
+      "target": "server/vendor/untrustedPrompt.ts",
+      "upstreamSha256": "480020d3d375f0692a453b91156ae5cd9723a03db641189fa1da9cb8b975247b"
     }
   ]
 }
