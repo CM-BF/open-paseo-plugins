@@ -156,6 +156,23 @@ export function WatchCard({
           。保留上次成功结果。
         </Text>
       ) : null}
+      {watch.reviewState?.error ? (
+        <Body theme={theme}>
+          建议准备失败：{watch.reviewState.error}。未把失败当作已完成报告。
+        </Body>
+      ) : null}
+      {reviewing ? (
+        <Body theme={theme} muted>
+          {watch.review?.autoReview
+            ? "已启用定期只读建议"
+            : "建议 agent 由你手动启动"}
+          。
+          {watch.reviewState?.localRevision
+            ? `最近核对本地提交 ${watch.reviewState.localRevision.slice(0, 8)}。`
+            : ""}
+          创建任务仅表示已开始，报告请打开 agent 查看。
+        </Body>
+      ) : null}
       {observation ? (
         <View
           style={{

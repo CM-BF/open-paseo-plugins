@@ -139,6 +139,7 @@ export function WatchForm({
             value === "review"
               ? {
                   mode: "recommend-only",
+                  autoReview: false,
                   features: [
                     {
                       id: "core",
@@ -158,7 +159,10 @@ export function WatchForm({
         <ReviewEditor
           theme={theme}
           review={draft.review}
-          onChange={(review) => update("review", review)}
+          onChange={(review) => {
+            update("review", review);
+            if (review?.autoReview) setAgentSetup(true);
+          }}
         />
       ) : null}
       <Button
@@ -194,7 +198,11 @@ export function WatchForm({
           disabled={
             !draft.name.trim() ||
             !draft.targetPath.trim() ||
-            !draft.repository.trim()
+            !draft.repository.trim() ||
+            Boolean(
+              draft.review?.autoReview &&
+                (!draft.workspaceId || !draft.provider),
+            )
           }
           onPress={() => mutation.mutate()}
         />

@@ -3,6 +3,7 @@ import { type State, type Watch, type WatchDraft } from "../shared/contracts";
 import { GitHubClient, GitHubError } from "./github";
 import { Store } from "./store";
 import { configurationKey, normalizeDraft } from "./validation";
+import { reviewKey } from "./review-context";
 
 export const OBSERVATION_MAX_AGE = 24 * 60 * 60 * 1000;
 
@@ -14,13 +15,18 @@ export class Monitor {
   private scheduleGeneration = 0;
   private readonly generations = new Map<string, number>();
   private readonly now: () => number;
+  private readonly afterCheck?: (watch: Watch) => Promise<void>;
 
   constructor(
     readonly store: Store,
     readonly github: GitHubClient,
-    options: { now?: () => number } = {},
+    options: {
+      now?: () => number;
+      afterCheck?: (watch: Watch) => Promise<void>;
+    } = {},
   ) {
     this.now = options.now ?? Date.now;
+    this.afterCheck = options.afterCheck;
   }
   get checking(): boolean {
     return Boolean(this.flight);
@@ -55,6 +61,11 @@ export class Monitor {
         next.error = previous.error;
         next.retryAt = previous.retryAt;
         next.observation = previous.observation;
+        if (
+          reviewKey(previous, previous.reviewState?.localRevision) ===
+          reviewKey(next, previous.reviewState?.localRevision)
+        )
+          next.reviewState = previous.reviewState;
       }
       if (previous)
         state.watches[
@@ -221,7 +232,7 @@ export class Monitor {
           )
         )
           continue;
-        await this.store.change((current) => {
+        const observed = await this.store.change((current) => {
           const watch = this.currentWatch(
             current,
             snapshot.id,
@@ -235,7 +246,15 @@ export class Monitor {
           watch.checkedAt = new Date(this.now()).toISOString();
           watch.error = undefined;
           watch.retryAt = undefined;
+          return watch;
         });
+        if (observed && !this.disposed && this.afterCheck) {
+          await this.afterCheck(observed).catch(() => {
+            console.error(
+              "[upstream-watch] Review preparation failed; no automatic retry was sent.",
+            );
+          });
+        }
       } catch (error) {
         if (this.disposed) return;
         if (

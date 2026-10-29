@@ -10,6 +10,7 @@ import { admitLaunch } from "../server/admission";
 import { environment, validateTarget } from "../server/workspaces";
 import type { PaseoApi } from "@getpaseo/client";
 import { cindyDraft } from "../shared/cindy";
+import { reviewKey } from "../server/review-context";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -115,6 +116,8 @@ it("rejects changed review scope during preflight, but admits a current review w
   expect(executor).not.toHaveBeenCalled();
   const review = await admitLaunch(store, tasks, watch, input, executor);
   expect(review.intent).toBe("review");
+  const selected = (await store.read()).watches[0];
+  expect(selected.reviewState?.key).toBe(reviewKey(selected));
   await vi.waitFor(async () =>
     expect((await tasks.list())[0].status).toBe("created"),
   );

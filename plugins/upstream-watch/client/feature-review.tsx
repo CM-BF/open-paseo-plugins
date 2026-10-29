@@ -1,4 +1,8 @@
-import { ExternalLink, SettingsSelect } from "@getpaseo/plugin/client/ui";
+import {
+  ExternalLink,
+  SettingsSelect,
+  SettingsSwitch,
+} from "@getpaseo/plugin/client/ui";
 import { Text, View } from "react-native";
 import type { Feature, Watch, WatchDraft } from "../shared/contracts";
 import { adoptionLabels, featureReview } from "../shared/feature-review";
@@ -25,6 +29,15 @@ export function ReviewEditor({
   return (
     <View style={{ gap: 12 }}>
       <Body theme={theme}>核心功能清单 · 仅提出建议</Body>
+      <SettingsSwitch
+        label="定期自动创建只读建议 agent"
+        value={review.autoReview}
+        onValueChange={(autoReview) => onChange({ ...review, autoReview })}
+      />
+      <Body theme={theme} muted>
+        启用后，每次扫描发现新版本、功能清单或本地 Git
+        提交改变时，会使用所选工作区和模型审查一次。同一范围不重复创建；创建中和待确认任务不会自动重发。
+      </Body>
       <Body theme={theme} muted>
         状态是人工登记的评估；定时扫描只核对路径变化。建议 agent
         会读取实际源码复核，不能执行移植。
@@ -102,7 +115,7 @@ export function ReviewEditor({
       <Button
         theme={theme}
         label="添加核心功能"
-        disabled={review.features.length >= 24}
+        disabled={review.features.length >= 40}
         onPress={() =>
           onChange({
             ...review,

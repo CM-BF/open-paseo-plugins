@@ -26,7 +26,8 @@ export type Feature = z.infer<typeof featureSchema>;
 export const reviewSchema = z
   .object({
     mode: z.literal("recommend-only"),
-    features: z.array(featureSchema).min(1).max(24),
+    autoReview: z.boolean().default(false),
+    features: z.array(featureSchema).min(1).max(40),
   })
   .refine(
     (value) =>
@@ -88,6 +89,17 @@ export const watchSchema = watchDraftSchema.extend({
   error: z.string().optional(),
   retryAt: z.string().optional(),
   observation: observationSchema.optional(),
+  reviewState: z
+    .object({
+      key: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/)
+        .optional(),
+      localRevision: revisionSchema.optional(),
+      checkedAt: z.string(),
+      error: z.string().optional(),
+    })
+    .optional(),
 });
 export type Watch = z.infer<typeof watchSchema>;
 export const featureReviewSchema = z.object({
@@ -130,6 +142,11 @@ export const taskSchema = z.object({
   watchId: z.string().uuid(),
   head: revisionSchema,
   intent: z.enum(["adapt", "review"]).default("adapt"),
+  reviewKey: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
+  localRevision: revisionSchema.optional(),
   title: z.string(),
   workspaceId: z.string(),
   targetPath: z.string(),

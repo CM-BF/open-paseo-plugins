@@ -22,11 +22,14 @@ import {
 import { Store } from "./store";
 import { GitHubClient } from "./github";
 import { Monitor } from "./monitor";
-import { TaskManager } from "./tasks";
+import { TaskManager, TaskCreationError } from "./tasks";
 import { discoverSources } from "./discovery";
 import { environment, validateTarget } from "./workspaces";
 import { admitLaunch } from "./admission";
 import { featureReview } from "../shared/feature-review";
+import { LocalPaseo } from "./local-paseo";
+import { localRevision } from "./review-context";
+import { ReviewCoordinator } from "./reviews";
 type PaseoApi = PluginHandlerContext["paseo"];
 
 export function contributeServer(server: PluginServerContext) {
@@ -34,10 +37,20 @@ export function contributeServer(server: PluginServerContext) {
   const folder = join(home, "upstream-watch");
   const store = new Store(join(folder, "state.json"));
   const github = new GitHubClient();
-  const monitor = new Monitor(store, github);
+  const localPaseo = new LocalPaseo(home);
   const tasks = new TaskManager(join(folder, "tasks.json"));
   const ready = Promise.all([store.ready, tasks.ready]);
   let disposed = false;
+  const reviews = new ReviewCoordinator({
+    store,
+    tasks,
+    paseo: () => localPaseo.get(),
+    executor,
+    disposed: () => disposed,
+  });
+  const monitor = new Monitor(store, github, {
+    afterCheck: (watch) => reviews.check(watch),
+  });
   void ready
     .then(() => {
       if (!disposed) monitor.schedule();
@@ -60,9 +73,21 @@ export function contributeServer(server: PluginServerContext) {
           current.projectRootPath,
       );
       if (disposed) throw new Error("插件已停止，任务创建结果待确认");
+      if (
+        task.intent === "review" &&
+        task.localRevision &&
+        (await localRevision(task.targetPath)) !== task.localRevision
+      )
+        throw new TaskCreationError(
+          "本地提交已改变，请重新检查上游生成当前范围的建议。",
+          { definitive: true },
+        );
       const agent = await workspace.agents.create({
         config: {
           provider: task.provider,
+          ...(task.intent === "review" && task.provider === "codex/gpt-6-luna"
+            ? { thinkingOptionId: "low" }
+            : {}),
           ...(task.intent === "review" &&
           task.provider.split("/")[0] === "codex"
             ? {
@@ -163,15 +188,27 @@ export function contributeServer(server: PluginServerContext) {
         current.workspaceDirectory ||
         current.projectRootPath,
     );
-    return admitLaunch(store, tasks, watch, input, executor(paseo));
+    const revision = watch.review
+      ? await localRevision(watch.targetPath)
+      : undefined;
+    return admitLaunch(
+      store,
+      tasks,
+      watch,
+      { ...input, localRevision: revision },
+      executor(paseo),
+    );
   });
   server.handle(retryTaskRpc, async ({ taskId }, { paseo }) => {
     await ready;
     return tasks.retry(taskId, executor(paseo));
   });
 
-  return () => {
+  return async () => {
     disposed = true;
     monitor.dispose();
+    await monitor.waitForIdle();
+    await tasks.waitForIdle();
+    await localPaseo.dispose();
   };
 }

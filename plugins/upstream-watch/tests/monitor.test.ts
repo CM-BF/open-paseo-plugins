@@ -101,10 +101,10 @@ describe("Monitor", () => {
     await monitor.waitForIdle();
     const current = (await new Store(path).read()).watches[0];
     expect(current.review?.mode).toBe("recommend-only");
-    expect(current.review?.features).toHaveLength(9);
+    expect(current.review?.features).toHaveLength(28);
     expect(current.baseline).toBe(BASE);
     expect(
-      featureReview(current)?.features.find((item) => item.id === "voice-im")
+      featureReview(current)?.features.find((item) => item.id === "voice")
         ?.adoption,
     ).toBe("missing");
     expect((await store.read()).settings).toEqual({

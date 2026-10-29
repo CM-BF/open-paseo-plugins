@@ -206,6 +206,8 @@ export function UpstreamScreen(props: PluginScreenProps) {
                 (task) =>
                   task.watchId === watch.id &&
                   task.intent === taskIntent(watch) &&
+                  (!watch.reviewState?.key ||
+                    task.reviewKey === watch.reviewState.key) &&
                   task.head === watch.observation?.head,
               )}
               edit={(draft) => setForm(draft)}
@@ -216,7 +218,9 @@ export function UpstreamScreen(props: PluginScreenProps) {
               {overview.data.settings.enabled
                 ? `后台每 ${overview.data.settings.intervalHours} 小时检查一次`
                 : "定时检查已暂停"}
-              。检查不调用模型；只有你点按钮才创建 agent。
+              。GitHub
+              比对不调用模型；已启用自动建议的关联会在范围变化时创建只读审查
+              agent，其余关联由你手动启动。
             </Body>
           ) : null}
         </View>
