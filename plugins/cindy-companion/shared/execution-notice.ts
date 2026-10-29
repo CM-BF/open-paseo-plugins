@@ -1,8 +1,9 @@
 /** Host admission and stop facts shared by native and original DOM cards. */
 const keys = {
-  HOST_UPGRADE_REQUIRED: 'upgrade', unsupported_capability: 'upgrade', PROVIDER_ADMISSION_UNAVAILABLE: 'upgrade',
+  HOST_UPGRADE_REQUIRED: 'upgrade', unsupported_capability: 'upgrade', PROVIDER_ADMISSION_UNAVAILABLE: 'upgrade', PROVIDER_QUEUE_UNAVAILABLE: 'upgrade',
   GROUP_LANE_BUSY: 'busy', TASK_BUSY: 'busy',
   ADMISSION_OUTCOME_UNKNOWN: 'admissionUnknown',
+  QUEUE_ITEM_REMOVED: 'queueRemoved',
   GROUP_STOP_REQUIRES_NATIVE: 'nativeStop', TASK_STOP_REQUIRES_NATIVE: 'nativeStop', STOP_REQUIRES_NATIVE: 'nativeStop',
   STOP_NOT_CONFIRMED: 'stopUnknown', STOP_REQUESTED: 'stopping', USER_STOPPED: 'stopped',
   HOST_RESTARTED: 'interrupted', PLUGIN_CLOSED: 'interrupted',
@@ -16,6 +17,7 @@ const messages = {
     upgrade: 'This input has not been sent. The current runtime cannot safely start this work. Your request is kept; you can try again later.',
     busy: 'This input has not been sent because the task session is busy. Its current work has not been interrupted.',
     admissionUnknown: 'This input may have been sent, but the host has not confirmed it. Open the task to check; do not send another copy.',
+    queueRemoved: 'The queued item was removed, but whether it already started is not confirmed. Open the task to check; do not send another copy.',
     nativeStop: 'This host cannot safely stop the exact task turn. Open the task session and stop it there, then return and press Stop again to confirm. It is not yet confirmed stopped.',
     stopUnknown: 'The stop is not yet confirmed. Open the task to check, then press Stop again to confirm.',
     stopping: 'Stop requested; waiting for confirmation.',
@@ -31,6 +33,7 @@ const messages = {
     upgrade: '这条内容尚未发送。当前运行环境尚未提供安全启动能力；请求已保留，可稍后重试。',
     busy: '这条内容尚未发送，因为任务会话正在忙。会话中原有的工作没有被打断。',
     admissionUnknown: '这条内容可能已经发送，但主机尚未确认。请打开任务核对，不要重复发送。',
+    queueRemoved: '排队条目已移除，但是否已经开始执行尚未确认。请打开任务核对，不要重复发送。',
     nativeStop: '这台主机暂时无法安全停止任务对应的那一轮。请打开任务会话，在那里手动停止，再回来点“停止”确认。目前尚未确认已停止。',
     stopUnknown: '尚未确认已停止。请打开任务核对，再点“停止”确认。',
     stopping: '已请求停止，等待确认。',

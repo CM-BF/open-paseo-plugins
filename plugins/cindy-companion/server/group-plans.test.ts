@@ -50,7 +50,7 @@ it('deduplicates actions, rejects changed payloads and stale revisions, and limi
 });
 it('queues additions for the same step and publishes one final handoff only after all admitted notes run',async()=>{
   const t=await setup();const started=barrier<void>(),release=barrier<string>();let n=0;
-  vi.mocked(t.driver.reply).mockImplementation(async(lane,input)=>{t.calls.push({lane,prompt:input.prompt,messageId:input.messageId});if(n++===0){started.resolve();return release.promise;}return'Final amended result';});
+  vi.mocked(t.driver.reply).mockImplementation(async(lane,input)=>{await input.queued?.(false);t.calls.push({lane,prompt:input.prompt,messageId:input.messageId});if(n++===0){started.resolve();return release.promise;}return'Final amended result';});
   await t.create({start:true});await started.promise;
   const note=await t.action('note',{text:'Also include tests'});expect(note.delivery).toBe('queued');release.resolve('Initial result');
   const p=await t.wait('waiting');expect(t.calls).toHaveLength(2);expect(t.calls[1]!.prompt).toContain('Also include tests');expect(t.calls[0]!.lane.agentId).toBe(t.calls[1]!.lane.agentId);
@@ -115,20 +115,47 @@ it('autoContinue advances only completed steps and stops on a failure',async()=>
 });
 it('persists exact work admission and stable cancellation across restart without interrupting another native turn',async()=>{
  const t=await setup();const {nativeLaneFixture}=await import('./testing/native-lane');const f=nativeLaneFixture();Object.assign(t.driver,{ensure:f.driver.ensure.bind(f.driver),reply:f.driver.reply.bind(f.driver),stop:f.driver.stop.bind(f.driver),archive:f.driver.archive.bind(f.driver)});
- f.sendIfIdle.mockImplementation(async()=>{f.patch({status:'running',activeTurn:{turnId:'owned-turn'}});f.event({type:'turn_started',turnId:'owned-turn',provider:'codex'});return{status:'accepted',turnId:'owned-turn'};});
+ f.admission.mockImplementation(async()=>{f.patch({status:'running',activeTurn:{turnId:'owned-turn'}});f.event({type:'turn_started',turnId:'owned-turn',provider:'codex'});return{status:'accepted',turnId:'owned-turn'};});
  await t.create({start:true});await vi.waitFor(async()=>expect(Object.values((await new CompanionStore(t.root).snapshot()).groupPlans!)[0]!.attempts[0]!.dispatch?.phase).toBe('accepted'));
  await t.action('stop');await vi.waitFor(async()=>expect((await t.current()).execution).toMatchObject({state:'unknown',code:'GROUP_STOP_REQUIRES_NATIVE'}));
  const saved=Object.values((await t.store.snapshot()).groupPlans!)[0]!,receipt=saved.attempts[0]!.dispatch!;await t.plans.close();
  f.patch({status:'running',activeTurn:{turnId:'human'}});f.agent.cancelTurn.mockResolvedValue({status:'changed'});
  const recovered=new GroupPlans(new CompanionStore(t.root),{driver:f.driver,configFor:t.configFor,workDirectories:t.dirs});managers.push(recovered);
  const p=(await recovered.list('team')).plans[0]!;expect(p.execution.state).toBe('idle');expect(f.agent.cancelTurn.mock.calls.every(call=>(call as any[])[0].messageId===receipt.cancelMessageId&&(call as any[])[0].expectedTurnId==='owned-turn')).toBe(true);
- expect(f.agent.activeTurn).toEqual({turnId:'human'});expect(f.agent.interrupt).not.toHaveBeenCalled();expect(f.sendIfIdle).toHaveBeenCalledOnce();
+ expect(f.agent.activeTurn).toEqual({turnId:'human'});expect(f.agent.interrupt).not.toHaveBeenCalled();expect(f.admission).toHaveBeenCalledOnce();
 });
 it('distinguishes provider rejection from unknown work admission and never replays unknown on recovery',async()=>{
  const t=await setup();const {nativeLaneFixture}=await import('./testing/native-lane');const f=nativeLaneFixture();Object.assign(t.driver,{ensure:f.driver.ensure.bind(f.driver),reply:f.driver.reply.bind(f.driver),stop:f.driver.stop.bind(f.driver),archive:f.driver.archive.bind(f.driver)});
- f.sendIfIdle.mockResolvedValueOnce({status:'unavailable'} as never).mockRejectedValueOnce(new Error('lost ACK'));
- await t.create({start:true});let p=await t.wait('waiting');expect(p.execution).toEqual({state:'idle',code:'PROVIDER_ADMISSION_UNAVAILABLE'});expect(f.agent.cancelTurn).not.toHaveBeenCalled();
+ f.admission.mockResolvedValueOnce({status:'unavailable'} as never).mockRejectedValueOnce(new Error('lost ACK'));
+ await t.create({start:true});let p=await t.wait('waiting');expect(p.execution).toEqual({state:'idle',code:'PROVIDER_QUEUE_UNAVAILABLE'});expect(f.agent.cancelTurn).not.toHaveBeenCalled();
  await t.action('retry');await vi.waitFor(async()=>expect((await t.current()).execution).toEqual({state:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN'}));await t.plans.close();
  const recovered=new GroupPlans(new CompanionStore(t.root),{driver:f.driver,configFor:t.configFor,workDirectories:t.dirs});managers.push(recovered);p=(await recovered.list('team')).plans[0]!;expect(p.execution).toEqual({state:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN'});
- await expect(recovered.action('retry',{groupId:'team',planId:p.id,expectedRevision:p.revision,operationId:'unsafe-retry'})).rejects.toMatchObject({code:'PLAN_BUSY'});expect(f.sendIfIdle).toHaveBeenCalledTimes(2);expect(f.agent.interrupt).not.toHaveBeenCalled();
+ await expect(recovered.action('retry',{groupId:'team',planId:p.id,expectedRevision:p.revision,operationId:'unsafe-retry'})).rejects.toMatchObject({code:'PLAN_BUSY'});expect(f.admission).toHaveBeenCalledTimes(2);expect(f.agent.interrupt).not.toHaveBeenCalled();
+});
+
+it('persists the first step grant and file baseline before creation can call companion tools',async()=>{
+ const t=await setup(),{nativeLaneFixture}=await import('./testing/native-lane'),{validateSessionBinding}=await import('./session-authority');
+ const f=nativeLaneFixture();Object.assign(t.driver,{ensure:f.driver.ensure.bind(f.driver),reply:f.driver.reply.bind(f.driver),stop:f.driver.stop.bind(f.driver),archive:f.driver.archive.bind(f.driver)});
+ vi.mocked(t.dirs.snapshot).mockResolvedValue(new Map([['existing.txt','original']]));
+ f.admission.mockImplementation(async()=>{
+  const state=await new CompanionStore(t.root).snapshot(),saved=Object.values(state.groupPlans!)[0]!,lane=saved.lanes.cindy!,attempt=saved.attempts[0]!;
+  expect(saved.view.steps[0]).toMatchObject({agentId:lane.agentId,status:'pending'});expect(attempt.before).toEqual([['existing.txt','original']]);
+  expect(lane.dispatch).toMatchObject({phase:'dispatching',native:{intent:{admission:'initial',messageId:attempt.messageId,creation:{config:lane.config}}}});
+  await validateSessionBinding(t.store,f.paseo,'cindy',lane.sessionScope!);
+  await writeFile(join(lane.cwd,'first-turn.txt'),'written during the reserved first prompt');
+  f.agent.turns.get.mockResolvedValue({agentId:lane.agentId,clientMessageId:attempt.messageId,turnId:'owned-turn',status:'completed',observedAt:'2026-10-29T01:00:00Z'} as never);
+  f.agent.timeline.refetch.mockResolvedValue({entries:[{turnId:'owned-turn',item:{type:'user_message',clientMessageId:attempt.messageId,text:'first prompt'}},{turnId:'owned-turn',item:{type:'assistant_message',text:'First reserved result'}}],error:null,hasOlder:false} as never);
+  return{status:'accepted',turnId:'owned-turn'};
+ });
+ vi.mocked(t.dirs.artifacts).mockImplementation(async(dir,before)=>{expect(before.get('existing.txt')).toBe('original');expect(await readFile(join(dir.workDir,'first-turn.txt'),'utf8')).toContain('reserved');return[{path:'first-turn.txt',size:44}];});
+ await t.create({start:true});const p=await t.wait('waiting');expect(p.steps[0]!.status).toBe('done');expect(p.steps[0]!.artifacts[0]!.path).toBe('first-turn.txt');
+ expect(f.admission).toHaveBeenCalledOnce();expect(f.agent.inputs.enqueue).not.toHaveBeenCalled();
+});
+
+it('projects native queue waiting separately from a running step and publishes only after the reply resolves',async()=>{
+ const t=await setup(),entered=barrier<void>(),release=barrier<void>();
+ vi.mocked(t.driver.reply).mockImplementationOnce(async(_lane,input)=>{await input.queued?.(true);entered.resolve();await release.promise;await input.queued?.(false);return'After native queue';});
+ await t.create({start:true});await entered.promise;const queued=await t.current();expect(queued.execution.state).toBe('queued');expect(queued.steps[0]).toMatchObject({status:'pending'});expect(queued.steps[0]!.startedAt).toBeUndefined();
+ expect((await t.store.snapshot()).groups!.team!.messages.some(m=>m.authorKind==='bot')).toBe(false);
+ release.resolve();await t.wait('waiting');expect((await t.current()).steps[0]!.status).toBe('done');
 });

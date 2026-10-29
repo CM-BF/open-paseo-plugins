@@ -28,6 +28,13 @@ it('starts one independent native child and freezes identity, context and every 
  const retry=await f.tasks.start(f.owner,args);expect(retry.task.id).toBe(first.id);expect(f.driver.reply).toHaveBeenCalledTimes(2);
  await expect(f.tasks.start(f.owner,{...args,instruction:'different'})).rejects.toMatchObject({code:'IDEMPOTENCY_CONFLICT'});
 });
+it('does not label a queued native input as accepted or running before a turn identity exists',async()=>{
+ const f=await fixture(),entered=barrier<void>(),release=barrier<void>();
+ vi.mocked(f.driver.reply).mockImplementationOnce(async(_lane,input)=>{await input.queued?.(true);entered.resolve();await release.promise;await input.admitted?.('owned-task-turn');await input.queued?.(false);return'Finished own queued input';});
+ const {task}=await f.tasks.start(f.owner,{operationId:'queue-view',instruction:'Wait in the native queue'});await entered.promise;
+ const pending=(await f.tasks.get('cindy',task.id)).task;expect(pending).toMatchObject({status:'queued',activity:'queued',acceptedAt:null,results:[]});
+ release.resolve();await vi.waitFor(async()=>expect((await f.tasks.get('cindy',task.id)).task.status).toBe('completed'));expect((await f.tasks.get('cindy',task.id)).task.acceptedAt).toBeTypeOf('number');
+});
 it('queues additions while busy, permits only pending edits and preserves a paused queue until resume',async()=>{
  const f=await fixture(),entered=barrier<void>();vi.mocked(f.driver.reply).mockImplementationOnce(async(_lane,input)=>{await input.admitted?.('fixture-owned');entered.resolve();return new Promise((_yes,no)=>input.signal.addEventListener('abort',()=>no(new Error('stopped'))));});
  const {task}=await f.tasks.start(f.owner,{operationId:'start',instruction:'Work'});await entered.promise;
@@ -39,7 +46,7 @@ it('queues additions while busy, permits only pending edits and preserves a paus
  expect(vi.mocked(f.driver.reply).mock.calls.map(c=>c[1].prompt)).toEqual(['Work','Updated second']);
 });
 it('drains creation before stopping and never retries an unknown native outcome',async()=>{
- const f=await fixture(),entered=barrier<void>(),release=barrier<{workspaceId:string}>();vi.mocked(f.driver.ensure).mockImplementationOnce(async()=>{entered.resolve();return release.promise;});vi.mocked(f.driver.stop).mockRejectedValueOnce(new Error('offline'));
+ const f=await fixture(),entered=barrier<void>(),release=barrier<{workspaceId:string}>();vi.mocked(f.driver.ensure).mockImplementationOnce(async(lane,input)=>{await input!.recordDispatch({...lane.dispatch!,phase:'accepted',turnId:'creation-owned'});entered.resolve();return release.promise;});vi.mocked(f.driver.stop).mockRejectedValueOnce(new Error('offline'));
  const {task}=await f.tasks.start(f.owner,{operationId:'start',instruction:'Work'});await entered.promise;
  await f.tasks.stop('cindy',task.id);release.resolve({workspaceId:'child'});await vi.waitFor(async()=>expect((await f.tasks.get('cindy',task.id)).task.control).toBe('unknown'));
  expect(f.driver.reply).not.toHaveBeenCalled();await expect(f.tasks.message('cindy',task.id,{operationId:'again',message:'Repeat'})).rejects.toMatchObject({code:'TASK_OUTCOME_UNKNOWN'});

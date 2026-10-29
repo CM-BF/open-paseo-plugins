@@ -1,11 +1,12 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { CompanionStore } from './store';
 import { CompanionRuntime, type Paseo } from './runtime';
-import { NativeGroupDriver, type GroupLane } from './group-driver';
+import { NativeGroupDriver, prepareLaneDispatch, type GroupLane, type LaneDispatch } from './group-driver';
+import type { NativeCreationReceipt } from './native-lane-input';
 import { NATIVE_SKILLS_METADATA, withNativeSkills } from './native-skills';
 
 const roots:string[]=[], runtimes:CompanionRuntime[]=[];
@@ -89,10 +90,33 @@ it('allows current edited preset sources only on the native personal path, retai
 it('refreshes same-directory group projections by token and strips private metadata on both public APIs',async()=>{
   const f=await fixture(),driver=new NativeGroupDriver(f.paseo),snapshot=await f.factory();
   const config=withNativeSkills({provider:'codex/model',systemPrompt:'identity'},snapshot);
-  const lane:GroupLane={agentId:'lane',operationId:'fixed',botId:'cindy',groupId:'group',roundId:'round',phase:'creating',cwd:'/group',title:'group',config};
-  await driver.ensure(lane);expect(f.create.mock.calls[0]![0].config).not.toHaveProperty(NATIVE_SKILLS_METADATA);lane.phase='ready';
+  const lane:GroupLane={agentId:'lane',operationId:'fixed',botId:'cindy',groupId:'group',roundId:'round',phase:'creating',cwd:'/group',title:'group',config,nativeInputVersion:1,dispatch:prepareLaneDispatch('first-input')};
+  const journal=join(f.root,'lane.json'); await writeFile(journal,JSON.stringify(lane));
+  const recordDispatch=async(receipt:LaneDispatch)=>{lane.dispatch=structuredClone(receipt);await writeFile(journal,JSON.stringify(lane));};
+  let creation:NativeCreationReceipt|null=null;
+  Object.assign(f.paseo.agents,{supportsInitialPromptReservation:()=>true,supportsTurnReceipts:()=>true,
+    ref:(id:string)=>Object.assign(f.ref(id),{turns:{get:async({turnId}:{turnId:string})=>({agentId:id,clientMessageId:'first-input',turnId,status:'unknown'})}})});
+  const getCreation=vi.fn(async()=>creation); Object.assign(f.paseo,{creations:{get:getCreation}});
+  const create=f.create.getMockImplementation()!;
+  f.create.mockImplementationOnce(async input=>{
+    const saved=JSON.parse(await readFile(journal,'utf8')) as GroupLane;
+    expect(saved.dispatch).toMatchObject({phase:'dispatching',native:{intent:{admission:'initial',messageId:'first-input',input:{text:'First group prompt'},creation:{idempotencyKey:'fixed',config:{skillMounts:snapshot.mounts}}}}});
+    expect(saved.config).toHaveProperty(NATIVE_SKILLS_METADATA);
+    expect(saved.dispatch!.native!.intent.creation!.config).not.toHaveProperty(NATIVE_SKILLS_METADATA);
+    const agent=await create(input);
+    Object.assign(f.snapshots.get('lane'),{status:'running',activeTurn:{turnId:'first-turn'}});
+    creation={kind:'agent',agentId:'lane',workspaceId:'workspace',idempotencyKey:'fixed',phase:'completed',initialPrompt:{status:'accepted',clientMessageId:input.clientMessageId,turnId:'first-turn'}};
+    return agent;
+  });
+  await expect(driver.ensure(lane,{prompt:'First group prompt',messageId:'first-input',signal:new AbortController().signal,recordDispatch})).resolves.toEqual({workspaceId:'workspace'});
+  expect(f.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({agentId:'lane',idempotencyKey:'fixed',prompt:'First group prompt',clientMessageId:'first-input',requireInitialPromptReservation:true,config:{provider:'codex/model',systemPrompt:'identity',skillMounts:snapshot.mounts}}));
+  expect(lane.phase).toBe('ready');expect(lane.dispatch?.native).toMatchObject({phase:'started',turnId:'first-turn',creationComplete:true});
+  expect(getCreation).toHaveBeenCalledWith({kind:'agent',idempotencyKey:'fixed'});expect(f.updateInstructions).not.toHaveBeenCalled();
   const next=withNativeSkills({provider:'codex/model',systemPrompt:'identity'},{...snapshot,token:'changed'});
-  await driver.configure(lane,next);expect(f.updateInstructions).toHaveBeenCalledOnce();expect(f.updateInstructions.mock.calls[0]![0]).not.toHaveProperty(NATIVE_SKILLS_METADATA);
+  await expect(driver.configure(lane,next)).rejects.toMatchObject({code:'GROUP_LANE_BUSY'});expect(f.updateInstructions).not.toHaveBeenCalled();
+  Object.assign(f.snapshots.get('lane'),{status:'idle',activeTurn:null});
+  await driver.configure(lane,next);expect(f.updateInstructions).toHaveBeenCalledExactlyOnceWith({systemPrompt:'identity',mcpServers:{},skillMounts:snapshot.mounts});expect(f.updateInstructions.mock.calls[0]![0]).not.toHaveProperty(NATIVE_SKILLS_METADATA);
+  expect(f.create).toHaveBeenCalledOnce();
   Object.assign(f.paseo.agents,{supportsNativeSkillMounts:()=>false});await expect(driver.configure(lane,next)).rejects.toMatchObject({code:'NATIVE_SKILL_MOUNTS_UNSUPPORTED'});expect(f.updateInstructions).toHaveBeenCalledOnce();
   await expect(driver.configure(lane,{provider:'codex/model',systemPrompt:'identity'})).rejects.toMatchObject({code:'NATIVE_SKILL_MOUNTS_UNSUPPORTED'});expect(f.updateInstructions).toHaveBeenCalledOnce();
 });

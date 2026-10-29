@@ -5,7 +5,7 @@ import type { GroupMessage } from '../shared/groups';
 import { draftPlanSteps, buildPlanStepBrief } from './vendor/botGroupDivision';
 import type { CompanionStore, SavedState } from './store';
 import type { SavedGroup } from './groups';
-import { prepareLaneDispatch,stopFailureCode,type GroupDriver,type GroupLane,type LaneDispatch } from './group-driver';
+import { prepareLaneDispatch,isNativeAdmissionWrite,stopFailureCode,type GroupDriver,type GroupLane,type LaneDispatch } from './group-driver';
 import { planWorkDirectories, type PlanDirectory, type PlanWorkDirectories } from './group-plan-workdir';
 import { botId, record, string, throwIpcError } from './errors';
 import type { SessionScope } from '../shared/session-scope';
@@ -36,7 +36,7 @@ export interface GroupPlansDependencies {
 }
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const open = (plan: GroupWorkPlan) => ['proposed','running','waiting'].includes(plan.status);
-const active = (plan: GroupWorkPlan) => ['preparing','running','permission','stopping','unknown'].includes(plan.execution.state);
+const active = (plan: GroupWorkPlan) => ['preparing','queued','running','permission','stopping','unknown'].includes(plan.execution.state);
 const defaults = (): GroupPlanSettings => ({revision:1,organizerBotId:null,projectDir:null,autoContinue:false});
 function groupAt(state: GroupPlanState, id: string, readOnly=false): SavedGroup {
   const group=state.groups?.[id]; if (!group || group.deletedAt) throwIpcError('NOT_FOUND','Group not found');if(group.mutation&&!readOnly)throwIpcError('GROUP_BUSY','Group deletion is awaiting cleanup');return group;
@@ -51,7 +51,7 @@ function message(group: SavedGroup, input: Omit<GroupMessage,'id'|'sequence'|'cr
   group.messages.push(value); group.updatedAt=value.createdAt; return value;
 }
 function available(state: GroupPlanState, group: SavedGroup, id: string) {
-  const profile=state.profiles[id]; if(!group.botIds.includes(id)||!profile||!profile.enabled||profile.status!=='active')
+  const profile=state.profiles[id]; if(!group.botIds.includes(id)||!profile||!profile.enabled||profile.status!=='active'||state.profileDeletions?.[id])
     throwIpcError('MEMBER_UNAVAILABLE','The assigned companion is unavailable'); return profile;
 }
 function roomIdle(group: SavedGroup) {
@@ -212,6 +212,14 @@ export class GroupPlans {
       await this.fail(id,error).catch(()=>{});
     }).finally(()=>{if(this.jobs.get(id)===job)this.jobs.delete(id);});
   }
+  private receiptWriter(id:string,lane:GroupLane) {
+    return async (receipt:LaneDispatch)=>{await this.transaction(s=>{const current=s.groupPlans![id]!,last=current.attempts.at(-1)!;
+      if(last.agentId!==lane.agentId||last.messageId!==receipt.messageId)throwIpcError('RESULT_OWNERSHIP_MISMATCH','Work admission changed');
+      if(isNativeAdmissionWrite(current.lanes[last.botId]!.dispatch,receipt)){available(s,groupAt(s,current.view.groupId),last.botId);if(current.view.status!=='running'||current.view.execution.state==='stopping'||current.view.currentStep!==last.position)throwIpcError('PLAN_STOPPED','Work no longer owns this admission');}
+      current.lanes[last.botId]!.dispatch=receipt;last.dispatch=receipt;if(receipt.native?.creationComplete)current.lanes[last.botId]!.phase='ready';
+      if(receipt.native?.workspaceId){current.lanes[last.botId]!.workspaceId=receipt.native.workspaceId;current.view.steps[last.position]!.workspaceId=receipt.native.workspaceId;}
+    });};
+  }
   private async run(id:string,signal:AbortSignal) {
     while(!signal.aborted&&!this.closing){
       let state=await this.snapshot();let saved=state.groupPlans?.[id];if(!saved||saved.view.status!=='running'||saved.view.execution.state==='stopping')return;
@@ -234,16 +242,27 @@ export class GroupPlans {
           const current=s.groupPlans![id]!;if(current.view.execution.state==='stopping')return null;
           available(s,groupAt(s,p.groupId),step.botId);
           const lane=current.lanes[step.botId]??={agentId,sessionScope,operationId:randomUUID(),groupId:p.groupId,roundId:p.id,botId:step.botId,
-            cwd:current.directory!.workDir,title:`${step.botName} · ${groupAt(s,p.groupId).name} · 分工`,config,phase:'creating'};
+            cwd:current.directory!.workDir,title:`${step.botName} · ${groupAt(s,p.groupId).name} · 分工`,config,phase:'creating',nativeInputVersion:1};
           const attempt:PlanAttempt={id:randomUUID(),position,botId:step.botId,agentId:lane.agentId,cwd:lane.cwd,messageId:randomUUID(),noteIds:current.notes.filter(n=>!n.consumed).map(n=>n.id),phase:'preparing',before:[...before]};
+          if(lane.dispatch&&!['prepared','not-sent','completed'].includes(lane.dispatch.phase))throwIpcError('ADMISSION_OUTCOME_UNKNOWN','The previous work input is unsettled');
           lane.dispatch=prepareLaneDispatch(attempt.messageId);attempt.dispatch=lane.dispatch;
+          current.view.steps[position]!.agentId=lane.agentId;current.view.steps[position]!.workspaceId=lane.workspaceId;
           current.attempts.push(attempt);current.view.execution={state:'preparing'};touch(current.view);
           return{lane,attempt};
         });
         if(!prepared||signal.aborted)return;lane=prepared.lane;attempt=prepared.attempt;
-        // A lost creation ACK must replay the immutable original config first.
-        // Updating that config under the old creation key would change its intent.
-        const ensured=await this.deps.driver.ensure(lane);
+        state=await this.snapshot();saved=state.groupPlans![id]!;step=saved.view.steps[position]!;
+        const noteSet=new Set(attempt.noteIds),notes=saved.notes.filter(n=>noteSet.has(n.id));
+        const prompt=buildPlanStepBrief({groupName:groupAt(state,p.groupId).name,botName:step.botName,request:p.request,steps:saved.view.steps,position,
+          handoffs:saved.view.steps.filter(item=>item.position<position&&item.status==='done').map(item=>({position:item.position,botName:item.botName,
+            note:groupAt(state,p.groupId).messages.find(m=>m.id===item.resultMessageId)?.content??'',files:item.artifacts.map(f=>f.path)})),
+          recent:[],workDir:saved.directory!.workDir,branch:saved.directory!.branch,
+          ...(notes.length?{userNotes:{kind:notes[0]!.kind,texts:notes.map(n=>n.text)}}:{}),
+        });
+        const recordDispatch=this.receiptWriter(id,lane);
+        // Reconcile the immutable first-input receipt before applying newer config.
+        // An unknown creation must never be reissued with a changed prompt or config.
+        const ensured=await this.deps.driver.ensure(lane,{prompt,messageId:attempt.messageId,signal,recordDispatch});
         lane=await this.transaction(s=>{const current=s.groupPlans![id]!;const stored=current.lanes[step.botId]!;stored.phase='ready';stored.workspaceId=ensured.workspaceId;
           current.view.steps[position]!.agentId=stored.agentId;current.view.steps[position]!.workspaceId=stored.workspaceId;return stored;});
         if(signal.aborted)return;
@@ -253,20 +272,13 @@ export class GroupPlans {
         }
         lane=await this.transaction(s=>{const stored=s.groupPlans![id]!.lanes[step.botId]!;stored.config=config;stored.sessionScope=sessionScope;return stored;});
         if(signal.aborted)return;
-        state=await this.snapshot();saved=state.groupPlans![id]!;step=saved.view.steps[position]!;
-        const noteSet=new Set(attempt.noteIds),notes=saved.notes.filter(n=>noteSet.has(n.id));
-        const prompt=buildPlanStepBrief({groupName:groupAt(state,p.groupId).name,botName:step.botName,request:p.request,steps:saved.view.steps,position,
-          handoffs:saved.view.steps.filter(item=>item.position<position&&item.status==='done').map(item=>({position:item.position,botName:item.botName,
-            note:groupAt(state,p.groupId).messages.find(m=>m.id===item.resultMessageId)?.content??'',files:item.artifacts.map(f=>f.path)})),
-          recent:[],workDir:saved.directory!.workDir,branch:saved.directory!.branch,
-          ...(notes.length?{userNotes:{kind:notes[0]!.kind,texts:notes.map(n=>n.text)}}:{}),
-        });
         await this.transaction(s=>{const current=s.groupPlans![id]!;if(current.view.execution.state==='stopping')return;
-          current.attempts.at(-1)!.phase='dispatching';current.view.execution={state:'running'};
-          current.view.steps[position]!.status='running';current.view.steps[position]!.startedAt=Date.now();touch(current.view);});
+          current.attempts.at(-1)!.phase='dispatching';touch(current.view);});
         if(signal.aborted)return;
         const result=await this.deps.driver.reply(lane,{prompt,messageId:attempt.messageId,signal,
-          recordDispatch:async receipt=>{await this.transaction(s=>{const current=s.groupPlans![id]!,last=current.attempts.at(-1)!;if(last.id!==attempt!.id||last.agentId!==lane!.agentId)throwIpcError('RESULT_OWNERSHIP_MISMATCH','Work admission changed');current.lanes[step.botId]!.dispatch=receipt;last.dispatch=receipt;});},permission:waiting=>{
+          recordDispatch,queued:async waiting=>{await this.transaction(s=>{const current=s.groupPlans![id]!;if(current.attempts.at(-1)?.id===attempt!.id&&current.view.execution.state!=='stopping'){
+            current.view.execution={state:waiting?'queued':'running'};current.view.steps[position]!.status=waiting?'pending':'running';if(!waiting)current.view.steps[position]!.startedAt??=Date.now();touch(current.view);
+          }});},permission:waiting=>{
           void this.transaction(s=>{const current=s.groupPlans![id]!;if(current.attempts.at(-1)?.id===attempt!.id&&current.view.execution.state!=='stopping')
             current.view.execution={state:waiting?'permission':'running'};}).catch(()=>{});
         }});
@@ -303,7 +315,7 @@ export class GroupPlans {
     const code=raw==='unsupported_capability'?'HOST_UPGRADE_REQUIRED':(error as {dispatchOutcome?:string})?.dispatchOutcome==='unknown'?'ADMISSION_OUTCOME_UNKNOWN':raw;
     const saved=(await this.snapshot()).groupPlans?.[id];if(!saved||saved.view.execution.state==='stopping')return;
     const lane=saved.lanes[saved.view.steps[saved.view.currentStep??0]!.botId];let stopCode:string|undefined;
-    if(lane)try{await this.deps.driver.stop(lane);}catch(error){stopCode=stopFailureCode(error);}
+    if(lane)try{await this.deps.driver.stop(lane,this.receiptWriter(id,lane));}catch(error){stopCode=stopFailureCode(error);}
     const stopped=!stopCode;
     await this.transaction(s=>{const current=s.groupPlans![id]!;if(current.view.execution.state==='stopping')return;
       const last=current.attempts.at(-1);if(last&&last.phase!=='answered'&&last.phase!=='committed'){last.phase=stopped?'failed':'unknown';last.code=code;}
@@ -318,7 +330,7 @@ export class GroupPlans {
   }
   private async reconcileStopped(id:string,code:string,terminal=false) {
     const saved=(await this.snapshot()).groupPlans![id]!;const at=saved.view.currentStep??0;const lane=saved.lanes[saved.view.steps[at]!.botId];
-    let stopCode:string|undefined;if(lane)try{await this.deps.driver.stop(lane);}catch(error){stopCode=stopFailureCode(error);}const confirmed=!stopCode;
+    let stopCode:string|undefined;if(lane)try{await this.deps.driver.stop(lane,this.receiptWriter(id,lane));}catch(error){stopCode=stopFailureCode(error);}const confirmed=!stopCode;
     await this.transaction(state=>{const current=state.groupPlans![id]!;
       current.view.status=confirmed&&terminal?'stopped':'waiting';current.view.execution=confirmed?{state:'idle',code}:{state:'unknown',code:stopCode};
       const step=current.view.steps[at]!;if(step.status!=='done'){step.status='failed';step.code=code;}

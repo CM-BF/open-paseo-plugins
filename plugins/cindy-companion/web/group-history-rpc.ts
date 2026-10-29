@@ -5,7 +5,7 @@ import type { GroupReactors } from '../shared/group-history';
 export function historyError(reason: unknown, language = 'en') {
   const zh = language.startsWith('zh');
   const code = reason instanceof BridgeError ? reason.code : (reason as { code?: string })?.code;
-  if (code && ['HOST_UPGRADE_REQUIRED', 'PROVIDER_ADMISSION_UNAVAILABLE', 'GROUP_LANE_BUSY', 'ADMISSION_OUTCOME_UNKNOWN', 'GROUP_STOP_REQUIRES_NATIVE', 'STOP_NOT_CONFIRMED'].includes(code))
+  if (code && ['HOST_UPGRADE_REQUIRED', 'PROVIDER_ADMISSION_UNAVAILABLE', 'PROVIDER_QUEUE_UNAVAILABLE', 'GROUP_LANE_BUSY', 'ADMISSION_OUTCOME_UNKNOWN', 'QUEUE_ITEM_REMOVED', 'GROUP_STOP_REQUIRES_NATIVE', 'STOP_NOT_CONFIRMED'].includes(code))
     return executionMessage(code, language);
   if (['UNSUPPORTED', 'UNKNOWN_OPERATION', 'NOT_IMPLEMENTED', 'INVALID_OPERATION'].includes(code ?? ''))
     return zh ? '此主机尚未连接群历史与话题服务，操作未完成。' : 'Group history and topics are not connected on this host. The operation was not completed.';

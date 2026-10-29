@@ -5,7 +5,7 @@ import type { CompanionTask, TaskResultReceipt } from '../shared/companion-tasks
 import type { SessionScope } from '../shared/session-scope';
 import type { CompanionStore, SavedState } from './store';
 import type { TaskLane } from './companion-task-driver';
-import {prepareLaneDispatch,type GroupDriver,type LaneDispatch} from './group-driver';
+import {prepareLaneDispatch,isNativeAdmissionWrite,type GroupDriver,type GroupLane,type LaneDispatch} from './group-driver';
 import { planWorkDirectories, type PlanDirectory, type PlanWorkDirectories } from './group-plan-workdir';
 import { sessionBinding } from './session-authority';
 import { string, throwIpcError } from './errors';
@@ -65,7 +65,7 @@ export class CompanionTasks {
   }
   async list(botId:string,groupId?:string){await this.init();const state=await this.store.snapshot();return{tasks:Object.values(state.companionTasks??{}).filter(t=>t.owner.botId===botId&&(groupId===undefined||t.owner.scope.groupId===groupId)).map(project)};}
   async get(botId:string,id:string){await this.init();return{task:project(owned(await this.store.snapshot(),botId,id))};}
-  /** Called only after a native idle observation; sendIfIdle remains the final atomic admission. */
+  /** Legacy busy receipts may wake here; execution still uses the negotiated reservation/queue path. */
   async nativeIdle(agentId:string){
     await this.init();const ids=await this.store.transaction(state=>Object.values(state.companionTasks??{}).filter(t=>t.lane?.agentId===agentId&&t.waitingForNativeIdle&&t.view.control==='active').map(t=>{t.waitingForNativeIdle=false;t.view.activity='queued';touch(t);return t.view.id;}));
     for(const id of ids)this.launch(id);
@@ -137,11 +137,11 @@ export class CompanionTasks {
     if(this.closing||this.jobs.has(id))return;const controller=new AbortController(),job={controller,promise:Promise.resolve()};this.jobs.set(id,job);
     job.promise=this.run(id,controller.signal).catch(async error=>{
       const code=String((error as {code?:string}).code??(error as Error).message);
-      if(['HOST_UPGRADE_REQUIRED','unsupported_capability','PROVIDER_ADMISSION_UNAVAILABLE','TASK_BUSY','GROUP_LANE_BUSY'].includes(code)){
+      if(['HOST_UPGRADE_REQUIRED','unsupported_capability','PROVIDER_ADMISSION_UNAVAILABLE','PROVIDER_QUEUE_UNAVAILABLE','TASK_BUSY','GROUP_LANE_BUSY'].includes(code)){
         await this.store.transaction(s=>{const t=s.companionTasks![id]!,input=t.inputs.find(i=>i.phase==='consuming');
           if(input){input.phase='queued';if(input.nativeMessageId){(input.busyMessageIds??=[]).push(input.nativeMessageId);delete input.nativeMessageId;}t.view.runSequence--;}
           t.view.lastError=code;t.view.activity='idle';t.view.pendingInteraction=null;
-          if(['HOST_UPGRADE_REQUIRED','unsupported_capability','PROVIDER_ADMISSION_UNAVAILABLE'].includes(code)){if(t.view.control==='active'){t.view.status='failed';t.view.control='paused';}t.view.blocked=code==='PROVIDER_ADMISSION_UNAVAILABLE'?{code,message:'任务尚未发送；当前模型提供方无法保证只在空闲时开始，不会插入或中断其他轮次。'}:{code:'HOST_UPGRADE_REQUIRED',message:'任务尚未发送；升级宿主的原子空闲发送能力后可继续。'};}
+          if(['HOST_UPGRADE_REQUIRED','unsupported_capability','PROVIDER_ADMISSION_UNAVAILABLE','PROVIDER_QUEUE_UNAVAILABLE'].includes(code)){if(t.view.control==='active'){t.view.status='failed';t.view.control='paused';}t.view.blocked=['PROVIDER_ADMISSION_UNAVAILABLE','PROVIDER_QUEUE_UNAVAILABLE'].includes(code)?{code:code==='PROVIDER_QUEUE_UNAVAILABLE'?'PROVIDER_QUEUE_UNAVAILABLE':'PROVIDER_ADMISSION_UNAVAILABLE',message:'任务尚未发送；当前模型提供方没有可用的原生排队入口。'}:{code:'HOST_UPGRADE_REQUIRED',message:'任务尚未发送；当前宿主未提供所需的首轮预留、原生队列或持久轮次回执能力。'};}
           else{t.waitingForNativeIdle=true;if(t.view.control==='active')t.view.status='queued';}
           touch(t);
         });return;
@@ -153,6 +153,14 @@ export class CompanionTasks {
       await this.reconcileStop(id,'request-stop',code);
     }).finally(async()=>{if(this.jobs.get(id)===job)this.jobs.delete(id);if(!this.closing){const t=(await this.store.snapshot()).companionTasks?.[id];if(t?.view.control==='active'&&!t.waitingForNativeIdle&&t.inputs.some(i=>i.phase==='queued'))this.launch(id);}});void job.promise.catch(()=>{});
   }
+  private receiptWriter(id:string,lane:GroupLane){return async(receipt:LaneDispatch)=>{await this.store.transaction(s=>{
+    const t=s.companionTasks![id]!,i=t.inputs.find(i=>i.nativeMessageId===receipt.messageId);
+    if(!i||t.lane?.agentId!==lane.agentId)throwIpcError('TASK_OUTCOME_UNKNOWN','Task admission changed');
+    if(isNativeAdmissionWrite(t.lane.dispatch,receipt)){executionOwner(s,t);if(t.view.control!=='active')throwIpcError('TASK_STOPPED','The task no longer owns this admission');}
+    i.dispatch=receipt;t.lane.dispatch=receipt;if(receipt.native?.creationComplete)t.lane.phase='ready';i.admissionUnknown=['dispatching','unknown'].includes(receipt.phase)&&!receipt.turnId;
+    if(receipt.turnId)i.nativeTurnId=receipt.turnId;
+    if(receipt.native?.workspaceId){t.lane.workspaceId=receipt.native.workspaceId;t.view.workspaceId=receipt.native.workspaceId;}
+  });};}
   private async run(id:string,signal:AbortSignal){
     while(!signal.aborted&&!this.closing){
       let task=(await this.store.snapshot()).companionTasks![id]!;if(task.view.control!=='active'||task.waitingForNativeIdle)return;
@@ -167,20 +175,24 @@ export class CompanionTasks {
       if(!task.lane){
         const config=task.config,agentId=task.agentId;
         await this.store.transaction(state=>{const t=state.companionTasks![id]!;executionOwner(state,t);if(t.view.control!=='active')return;
-          t.lane={agentId,operationId:`cindy-task:${id}`,parentAgentId:t.owner.scope.agentId,taskId:id,groupId:t.owner.scope.groupId??'',roundId:id,botId:t.owner.botId,cwd:t.directory!.workDir,title:t.view.title,config,phase:'creating'};t.view.childSessionId=agentId;touch(t);});
+          t.lane={agentId,operationId:`cindy-task:${id}`,parentAgentId:t.owner.scope.agentId,taskId:id,groupId:t.owner.scope.groupId??'',roundId:id,botId:t.owner.botId,cwd:t.directory!.workDir,title:t.view.title,config,phase:'creating',nativeInputVersion:1};t.view.childSessionId=agentId;touch(t);});
         task=(await this.store.snapshot()).companionTasks![id]!;
       }
-      if(signal.aborted||!task.lane)return;const lane=task.lane,native=await this.deps.driver.ensure(lane);
-      await this.store.transaction(s=>{const t=s.companionTasks![id]!;t.lane!.phase='ready';t.lane!.workspaceId=native.workspaceId;t.view.workspaceId=native.workspaceId;t.view.acceptedAt??=Date.now();});
-      if(signal.aborted)return;
+      if(signal.aborted||!task.lane)return;const lane=task.lane;
       const before=await this.directories.snapshot(task.directory!);
       const input=await this.store.transaction(s=>{const t=s.companionTasks![id]!;if(t.view.control!=='active')return null;executionOwner(s,t);const i=t.inputs.find(i=>i.phase==='queued');if(!i)return null;
-        i.phase='consuming';i.nativeMessageId??=randomUUID();i.dispatch=prepareLaneDispatch(i.nativeMessageId);t.lane!.dispatch=i.dispatch;i.before=[...before];t.view.runSequence++;t.view.status='running';t.view.activity='running';t.view.completedAt=null;t.view.lastError=null;touch(t);return i;});
+        i.phase='consuming';i.nativeMessageId??=randomUUID();i.dispatch=prepareLaneDispatch(i.nativeMessageId);t.lane!.dispatch=i.dispatch;i.before=[...before];t.view.runSequence++;t.view.status='queued';t.view.activity='queued';t.view.completedAt=null;t.view.lastError=null;touch(t);return i;});
       if(!input)return;
       lane.dispatch=input.dispatch;
+      const recordDispatch=this.receiptWriter(id,lane);
+      const native=await this.deps.driver.ensure(lane,{prompt:input.text,messageId:input.nativeMessageId!,signal,recordDispatch});
+      await this.store.transaction(s=>{const t=s.companionTasks![id]!;t.lane!.phase='ready';t.lane!.workspaceId=native.workspaceId;t.view.workspaceId=native.workspaceId;});
+      if(signal.aborted)return;
       const text=await this.deps.driver.reply(lane,{prompt:input.text,messageId:input.nativeMessageId!,signal,timeoutMs:task.timeoutMs,
-        recordDispatch:async receipt=>{await this.store.transaction(s=>{const t=s.companionTasks![id]!,i=t.inputs.find(i=>i.id===input.id)!;if(i.nativeMessageId!==receipt.messageId)throwIpcError('TASK_OUTCOME_UNKNOWN','Task admission changed');i.dispatch=receipt;t.lane!.dispatch=receipt;i.admissionUnknown=['dispatching','unknown'].includes(receipt.phase)&&!receipt.turnId;if(receipt.turnId)i.nativeTurnId=receipt.turnId;});},
-        admitted:async turnId=>{await this.store.transaction(s=>{const i=s.companionTasks![id]!.inputs.find(i=>i.id===input.id)!;i.nativeTurnId=turnId;});},
+        recordDispatch,queued:async waiting=>{await this.store.transaction(s=>{const t=s.companionTasks![id]!;if(t.view.control==='active'){
+          t.view.status=waiting?'queued':'running';t.view.activity=waiting?'queued':'running';touch(t);
+        }});},
+        admitted:async turnId=>{await this.store.transaction(s=>{const t=s.companionTasks![id]!,i=t.inputs.find(i=>i.id===input.id)!;i.nativeTurnId=turnId;t.view.acceptedAt??=Date.now();});},
         permission:waiting=>{void this.store.transaction(s=>{const t=s.companionTasks![id]!;if(t.view.control==='active'){t.view.status=waiting?'waiting':'running';t.view.activity=waiting?'permission':'running';t.view.pendingInteraction=waiting?{requestId:'native-session',kind:'permission',summary:'请在该任务的 Paseo 会话中处理权限请求',raisedAt:Date.now()}:null;touch(t);}}).catch(()=>{});}});
       if(signal.aborted)return;
       await this.store.transaction(s=>{const i=s.companionTasks![id]!.inputs.find(i=>i.id===input.id)!;i.phase='answered';i.result=text;});
@@ -209,7 +221,7 @@ export class CompanionTasks {
   }
   private async reconcileStop(id:string,mode:NonNullable<SavedCompanionTask['stopMode']>,code:string){
     const task=(await this.store.snapshot()).companionTasks![id]!;
-    if(task.inputs.some(input=>input.admissionUnknown)){
+    if(task.inputs.some(input=>input.admissionUnknown&&!input.dispatch?.native)){
       await this.store.transaction(s=>{const t=s.companionTasks![id]!;t.view.control='unknown';t.view.activity='unknown';t.view.status='failed';t.view.lastError='ADMISSION_OUTCOME_UNKNOWN';touch(t);});return;
     }
     // A durable busy receipt or capability rejection proves our input was not sent.
@@ -217,7 +229,7 @@ export class CompanionTasks {
     const ownedTurnId=task.inputs.findLast(input=>input.nativeTurnId)?.nativeTurnId;
     const unsent=task.inputs.find(input=>['queued','consuming','unknown'].includes(input.phase)&&!input.nativeTurnId&&input.dispatch&&['prepared','not-sent'].includes(input.dispatch.phase));
     const cancel=ownedTurnId?await this.store.transaction(s=>{const t=s.companionTasks![id]!;return(t.cancelRequests??={})[ownedTurnId]??={expectedTurnId:ownedTurnId,messageId:randomUUID()};}):undefined;
-    let confirmed=true,stopError='STOP_NOT_CONFIRMED';if(task.lane&&!unsent&&!task.view.blocked&&!task.waitingForNativeIdle)try{await this.deps.driver.stop({...task.lane,ownedTurnId,cancelMessageId:cancel?.messageId} as TaskLane);}catch(error){confirmed=false;stopError=String((error as {code?:string}).code??stopError);}
+    let confirmed=true,stopError='STOP_NOT_CONFIRMED';if(task.lane&&!unsent&&!task.view.blocked&&!task.waitingForNativeIdle)try{await this.deps.driver.stop({...task.lane,ownedTurnId,cancelMessageId:cancel?.messageId} as TaskLane,this.receiptWriter(id,task.lane));}catch(error){confirmed=false;stopError=String((error as {code?:string}).code??stopError);}
     await this.store.transaction(s=>{const t=s.companionTasks![id]!;t.view.control=!confirmed?'unknown':mode==='pause'?'paused':'stopped';t.view.activity=confirmed?'idle':'unknown';t.view.pendingInteraction=null;
       mode=t.stopMode??mode;t.view.control=!confirmed?'unknown':mode==='pause'?'paused':'stopped';
       if(unsent&&confirmed&&mode==='pause'){const i=t.inputs.find(i=>i.id===unsent.id)!;if(i.phase!=='queued')t.view.runSequence=Math.max(0,t.view.runSequence-1);i.phase='queued';delete i.nativeMessageId;}

@@ -10,7 +10,7 @@ export interface CompanionTask extends BotDelegationView {
   responsibility:'owned'|'released'; runSequence:number;
   queue:Array<{id:string;text:string;status:'queued'|'consuming'|'unknown';createdAt:number}>;
   results:TaskResultReceipt[];
-  blocked?:{code:'HOST_UPGRADE_REQUIRED'|'PROVIDER_ADMISSION_UNAVAILABLE';message:string};
+  blocked?:{code:'HOST_UPGRADE_REQUIRED'|'PROVIDER_ADMISSION_UNAVAILABLE'|'PROVIDER_QUEUE_UNAVAILABLE';message:string};
 }
 /** settings.invoke envelope. UI authority comes from the host's authenticated plugin RPC.
  * companion.tasks.list {botId,groupId?} -> {tasks:CompanionTask[]}

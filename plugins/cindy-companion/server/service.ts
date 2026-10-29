@@ -37,6 +37,7 @@ import { CompanionTasks, taskNeedsSettlement } from './companion-tasks';
 import { NativeTaskDriver } from './companion-task-driver';
 import { createHash } from 'node:crypto';
 import { CompanionProjects, type ProjectAccess } from './linked-projects';
+import { DmMessageSources } from './dm-message-source';
 
 const OPS = ['caps', 'assets.fontChunk', 'paseo.presets.list', 'paseo.presets.invite', 'paseo.presets.status', 'preset.opening.status', 'preset.opening.choose',
   'groups.list', 'groups.get', 'groups.create', 'groups.update', 'groups.setMembers', 'groups.send', 'groups.continue', 'groups.stop', 'groups.delete','groups.cleanup',
@@ -46,7 +47,7 @@ const OPS = ['caps', 'assets.fontChunk', 'paseo.presets.list', 'paseo.presets.in
   'groups.threads.get', 'groups.threads.reply', 'groups.threads.follow', 'groups.threads.shareToMain', 'groups.threads.stop', 'groups.threads.continue',
   'groups.plans.list','groups.plans.create','groups.plans.start','groups.plans.continue','groups.plans.retry','groups.plans.stop','groups.plans.dismiss','groups.plans.edit','groups.plans.note','groups.plans.revise','groups.plans.cancelRequest','groups.plans.settings','groups.plans.artifact','groups.plans.directories',
   'companion.tasks.list','companion.tasks.get','companion.tasks.start','companion.tasks.message','companion.tasks.stop','companion.tasks.responsibility','companion.tasks.artifact','companion.tasks.owner',
-  'profile.get', 'profile.update', 'profile.chooseAvatar', 'lifecycle.run', 'models.default', 'models.features',
+  'companion.dm.source', 'profile.get', 'profile.update', 'profile.chooseAvatar', 'lifecycle.run', 'models.default', 'models.features',
   'memory.list', 'memory.read', 'memory.update', 'memory.delete', 'capabilities.catalog', 'history.search', 'projects.list', 'projects.set',
   'skills.list', 'skills.read', 'skills.inspect', 'skills.save', 'skills.source', 'skills.enabled', 'skills.delete',
   'paseo.bootstrap', 'profile.list', 'profile.create', 'profile.ensure', 'paseo.conversation.ensure',
@@ -57,6 +58,7 @@ export class CompanionService {
   readonly runtime: CompanionRuntime;
   readonly skills: CompanionSkills;
   readonly projects: CompanionProjects;
+  readonly dmSources: DmMessageSources;
   readonly routines: CompanionRoutines;
   readonly groups: CompanionGroups;
   readonly groupHistory: CompanionGroupHistory;
@@ -80,6 +82,7 @@ export class CompanionService {
   readonly memory: ReturnType<typeof createBotMemoryService>;
   constructor(store = new CompanionStore(), options: { scheduleDriver?: ScheduleDriver; groupDriver?: (paseo: Paseo) => GroupDriver;taskDriver?:(paseo:Paseo)=>GroupDriver;paseoForTools?:()=>Promise<Paseo> } = {}) {
     this.store = store; this.runtime = new CompanionRuntime(store); this.skills = new CompanionSkills(store); this.projects = new CompanionProjects(store);
+    this.dmSources = new DmMessageSources(store);
     this.runtime.setSkillsFactory(id => this.skills.nativeSnapshot(id));
     this.routines = new CompanionRoutines(store, this.runtime, options.scheduleDriver ?? new ScheduleCli());
     this.groups = new CompanionGroups(store, this.runtime, options.groupDriver);
@@ -90,8 +93,8 @@ export class CompanionService {
     this.toolsPaseo=options.paseoForTools??(()=>this.localPaseo.get());
     this.ownedApi=options.groupDriver||options.taskDriver?async fallback=>fallback:()=>this.toolsPaseo();
     const managed=(factory:(api:Paseo)=>GroupDriver):GroupDriver=>({
-      ensure:async lane=>factory(await this.toolsPaseo()).ensure(lane),reply:async(lane,input)=>factory(await this.toolsPaseo()).reply(lane,input),
-      stop:async lane=>factory(await this.toolsPaseo()).stop(lane),archive:async lane=>factory(await this.toolsPaseo()).archive(lane),
+      ensure:async(lane,input)=>factory(await this.toolsPaseo()).ensure(lane,input),reply:async(lane,input)=>factory(await this.toolsPaseo()).reply(lane,input),
+      stop:async(lane,recordDispatch)=>factory(await this.toolsPaseo()).stop(lane,recordDispatch),archive:async lane=>factory(await this.toolsPaseo()).archive(lane),
       configure:async(lane,config)=>factory(await this.toolsPaseo()).configure!(lane,config),
     });
     this.groupDriverFactory=options.groupDriver??(()=>managed(api=>new NativeGroupDriver(api)));
@@ -315,6 +318,7 @@ export class CompanionService {
   private async dispatchUnlocked({ op, args }: InvokeInput, paseo: Paseo): Promise<unknown> {
     if (op === 'caps') return this.caps();
     if (op === 'assets.fontChunk') return readFontChunk(args);
+    if (op === 'companion.dm.source') return this.dmSources.read(paseo, args.source);
     if (op === 'projects.list') return this.projects.list(botId(args.botId), paseo);
     if (op === 'projects.set') return this.projects.set(botId(args.botId), paseo, args);
     if (op === 'paseo.presets.list') return this.presets.list();

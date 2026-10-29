@@ -3,6 +3,7 @@ import type { Paseo } from './runtime';
 import { throwIpcError } from './errors';
 import type { SessionScope } from '../shared/session-scope';
 import { assertNativeSkillsSupport, nativeConfigOnly, skillsIntentFromConfig } from './native-skills';
+import { NativeLaneInput, prepareNativeLaneInput, type NativeLaneInputRecord, type NativeLanePublicApi, type NativeCreationOptions } from './native-lane-input';
 
 export interface GroupLane {
   agentId: string; operationId: string; groupId: string; roundId: string; botId: string;
@@ -11,6 +12,8 @@ export interface GroupLane {
   scope?: 'main' | 'talk' | 'thread'; retired?: boolean;
   threadRootId?: string;
   sessionScope?: SessionScope;
+  /** New lanes persist their first input before native creation; absent on legacy empty creates. */
+  nativeInputVersion?: 1;
   dispatch?: LaneDispatch;
   cleanupPending?:boolean;
   cleanupCode?:string;
@@ -18,37 +21,98 @@ export interface GroupLane {
 /** Persisted before admission; a lost acknowledgement is never inferred from idle. */
 export interface LaneDispatch {
   messageId:string; cancelMessageId:string;
-  phase:'prepared'|'dispatching'|'accepted'|'not-sent'|'unknown'|'completed';
+  phase:'prepared'|'dispatching'|'queued'|'accepted'|'not-sent'|'unknown'|'completed';
   turnId?:string; code?:string;
+  /** Control receipt only: exact Stop confirmed no longer owning a live turn; not native terminal evidence. */
+  stopConfirmed?:boolean;
+  /** Immutable public creation/queue input plus durable observation; no inferred native IDs. */
+  native?:NativeLaneInputRecord;
 }
 export const prepareLaneDispatch=(messageId:string):LaneDispatch=>({messageId,cancelMessageId:randomUUID(),phase:'prepared'});
+/** Revalidate owner admission only before a new native call, not while recording its late ACK. */
+export function isNativeAdmissionWrite(previous:LaneDispatch|undefined,next:LaneDispatch):boolean {
+  return next.native?.phase==='prepared'||(next.native?.phase==='dispatching'&&previous?.native?.phase==='prepared');
+}
 export function stopFailureCode(error:unknown):string {
   const code=(error as {code?:string})?.code;
-  return ['ADMISSION_OUTCOME_UNKNOWN','GROUP_STOP_REQUIRES_NATIVE','GROUP_LANE_MISMATCH'].includes(code??'')?code!:'STOP_NOT_CONFIRMED';
+  return ['ADMISSION_OUTCOME_UNKNOWN','QUEUE_ITEM_REMOVED','GROUP_STOP_REQUIRES_NATIVE','GROUP_LANE_MISMATCH'].includes(code??'')?code!:'STOP_NOT_CONFIRMED';
+}
+export interface GroupFirstInput {
+  prompt:string; messageId:string; signal:AbortSignal;
+  recordDispatch:(receipt:LaneDispatch)=>Promise<void>;
 }
 export interface GroupDriver {
-  ensure(lane: GroupLane): Promise<{ workspaceId?: string }>;
-  reply(lane: GroupLane, input: { prompt: string; messageId: string; signal: AbortSignal; permission: (waiting: boolean) => void;timeoutMs?:number;requireIdleAdmission?:boolean;admitted?:(turnId:string)=>Promise<void>;recordDispatch?:(receipt:LaneDispatch)=>Promise<void> }): Promise<string>;
-  stop(lane: GroupLane): Promise<void>;
+  ensure(lane: GroupLane, firstInput?:GroupFirstInput): Promise<{ workspaceId?: string }>;
+  reply(lane: GroupLane, input: { prompt: string; messageId: string; signal: AbortSignal; permission: (waiting: boolean) => void;queued?:(waiting:boolean)=>Promise<void>;timeoutMs?:number;requireIdleAdmission?:boolean;admitted?:(turnId:string)=>Promise<void>;recordDispatch?:(receipt:LaneDispatch)=>Promise<void> }): Promise<string>;
+  stop(lane: GroupLane, recordDispatch?:(receipt:LaneDispatch)=>Promise<void>): Promise<void>;
   archive(lane: GroupLane): Promise<void>;
   configure?(lane: GroupLane, config: Record<string, unknown>): Promise<void>;
 }
 /** Background lanes are user-accessible: all dispatch and cancellation is turn-bound. */
 export class NativeGroupDriver implements GroupDriver {
   constructor(private readonly paseo: Paseo) {}
-  async ensure(lane: GroupLane) {
-    let agent = this.paseo.agents.ref(lane.agentId);
-    const found = await agent.refresh();
-    if (!found || (lane.phase !== 'ready' && skillsIntentFromConfig(lane.config))) {
-      if (lane.phase === 'ready') throwIpcError('GROUP_LANE_MISSING', 'The group conversation is missing');
-      assertNativeSkillsSupport(this.paseo, lane.config);
-      agent = await this.paseo.agents.create({ agentId: lane.agentId, idempotencyKey: lane.operationId,
-        config: nativeConfigOnly(lane.config) as never, cwd: lane.cwd, title: lane.title, background: true,
-        labels: { 'cindy-companion.groupId': lane.groupId, 'cindy-companion.botId': lane.botId, 'cindy-companion.roundId': lane.roundId,
-          ...(lane.threadRootId ? { 'cindy-companion.threadRootId': lane.threadRootId } : {}) } });
-      if(!await agent.refresh())throwIpcError('GROUP_CREATE_NOT_CONFIRMED','Native creation returned without a readable group session');
+  protected creationOptions(lane: GroupLane): Omit<NativeCreationOptions, 'agentId' | 'prompt' | 'clientMessageId' | 'requireInitialPromptReservation'> {
+    return { idempotencyKey: lane.operationId, config: nativeConfigOnly(lane.config), cwd: lane.cwd, title: lane.title, background: true,
+      labels: { 'cindy-companion.groupId': lane.groupId, 'cindy-companion.botId': lane.botId, 'cindy-companion.roundId': lane.roundId,
+        ...(lane.threadRootId ? { 'cindy-companion.threadRootId': lane.threadRootId } : {}) } };
+  }
+  protected async verifyLane(lane: GroupLane) {
+    const agent = this.paseo.agents.ref(lane.agentId);
+    if (!await agent.refresh()) return null;
+    if (agent.archivedAt || agent.cwd !== lane.cwd || (lane.workspaceId && agent.workspaceId !== lane.workspaceId))
+      throwIpcError('GROUP_LANE_MISMATCH', 'The native conversation no longer matches its binding');
+    return agent;
+  }
+  private executor(lane: GroupLane, record: NativeLaneInputRecord, persist?: (receipt: LaneDispatch) => Promise<void>) {
+    if (!persist) throwIpcError('PERSISTENCE_REQUIRED', 'Native input requires its owner persistence callback');
+    return new NativeLaneInput(this.paseo as unknown as NativeLanePublicApi, record, async native => {
+      const previous = lane.dispatch;
+      if (!previous || previous.messageId !== native.intent.messageId) throwIpcError('GROUP_LANE_MISMATCH', 'The native input binding changed');
+      const phase: LaneDispatch['phase'] = native.phase === 'started' ? 'accepted'
+        : ['completed', 'failed', 'cancelled'].includes(native.phase) ? 'completed'
+        : native.phase as LaneDispatch['phase'];
+      const next: LaneDispatch = { ...previous, phase, native, turnId: native.turnId, code: native.code };
+      await persist(structuredClone(next)); lane.dispatch = next;
+      if (native.creationComplete) lane.phase = 'ready';
+      if (native.workspaceId) lane.workspaceId = native.workspaceId;
+    });
+  }
+  private async inputExecutor(lane: GroupLane, input: GroupFirstInput, admission: 'initial' | 'queue') {
+    let receipt = lane.dispatch;
+    if (receipt && receipt.messageId !== input.messageId && !['prepared', 'not-sent', 'completed'].includes(receipt.phase))
+      throwIpcError('ADMISSION_OUTCOME_UNKNOWN', 'The previous input must be reconciled before another one is admitted');
+    if (!receipt || receipt.messageId !== input.messageId) receipt = prepareLaneDispatch(input.messageId);
+    if(receipt.stopConfirmed)throwIpcError('GROUP_STOPPED','This input was already stopped; a new user action needs its own input identity');
+    if (receipt.native) {
+      if (receipt.native.intent.input.text !== input.prompt || receipt.native.intent.agentId !== lane.agentId)
+        throwIpcError('NATIVE_INPUT_INTENT_CHANGED', 'The persisted input is immutable');
+    } else {
+      if (!['prepared', 'not-sent'].includes(receipt.phase))
+        throwIpcError('ADMISSION_OUTCOME_UNKNOWN', 'This legacy input has no native receipt mapping; do not resend it');
+      receipt = { ...receipt, native: prepareNativeLaneInput({ agentId: lane.agentId, messageId: input.messageId,
+        input: { text: input.prompt }, admission, ...(admission === 'initial' ? { creation: this.creationOptions(lane) } : {}) }) };
+      await input.recordDispatch(structuredClone(receipt)); lane.dispatch = receipt;
     }
-    if (agent.archivedAt || agent.cwd !== lane.cwd) throwIpcError('GROUP_LANE_MISMATCH', 'The group conversation no longer matches its binding');
+    return this.executor(lane, receipt.native!, input.recordDispatch);
+  }
+  private outcome(record: NativeLaneInputRecord): void {
+    if (record.phase === 'not-sent') throwIpcError(record.code ?? 'NATIVE_INPUT_NOT_SENT', 'The native input was not sent');
+    if (record.phase === 'unknown' || record.phase === 'dispatching')
+      throw Object.assign(new Error('Native input outcome is not confirmed; read its receipt without resending'), { code: 'ADMISSION_OUTCOME_UNKNOWN', nativeCode: record.code, dispatchOutcome: 'unknown' });
+  }
+  async ensure(lane: GroupLane, firstInput?: GroupFirstInput) {
+    let agent = await this.verifyLane(lane);
+    if (lane.phase !== 'ready' && firstInput) {
+      if (lane.nativeInputVersion !== 1)
+        throwIpcError('ADMISSION_OUTCOME_UNKNOWN', 'Legacy creation has no immutable first input; reconcile it before starting work');
+      assertNativeSkillsSupport(this.paseo, lane.config);
+      if (firstInput.signal.aborted) throwIpcError('GROUP_STOPPED', 'Group stopped');
+      const execution = await this.inputExecutor(lane, firstInput, 'initial');
+      if (firstInput.signal.aborted) { await execution.cancel(lane.dispatch!.cancelMessageId); throwIpcError('GROUP_STOPPED', 'Group stopped'); }
+      const state = await execution.admit(firstInput.signal); this.outcome(state);
+      agent = await this.verifyLane(lane);
+    }
+    if (!agent) throwIpcError(lane.phase === 'ready' ? 'GROUP_LANE_MISSING' : 'ADMISSION_OUTCOME_UNKNOWN', 'No confirmed native conversation is available');
     return { workspaceId: agent.workspaceId ?? undefined };
   }
   async configure(lane: GroupLane, config: Record<string, unknown>) {
@@ -80,8 +144,25 @@ export class NativeGroupDriver implements GroupDriver {
     if (instructionsChanged) await agent.updateInstructions!({ systemPrompt: String(config.systemPrompt ?? ''), mcpServers: (config.mcpServers ?? {}) as Record<string, unknown>,
       ...(Object.hasOwn(config,'skillMounts') ? {skillMounts:config.skillMounts as Array<{directory:string}>} : {}) });
   }
-  async stop(lane: GroupLane) {
-    const receipt=lane.dispatch;
+  async stop(lane: GroupLane, persist?: (receipt: LaneDispatch) => Promise<void>) {
+    let receipt=lane.dispatch;
+    if(receipt?.stopConfirmed)return;
+    const confirmed=async()=>{if(receipt&&persist){const next:LaneDispatch={...receipt,phase:'completed',stopConfirmed:true};await persist(structuredClone(next));lane.dispatch=next;}};
+    if (receipt?.native) {
+      if (['completed','failed','cancelled','not-sent'].includes(receipt.native.phase)) return;
+      const execution = this.executor(lane, receipt.native, persist);
+      let state = await execution.reconcile();
+      if (!['completed','failed','cancelled','not-sent','prepared'].includes(state.phase) && !state.turnId && state.intent.admission === 'queue' && !await this.verifyLane(lane))
+        throwIpcError('STOP_NOT_CONFIRMED','The native queue is unavailable; do not assume its input was removed');
+      if (!['completed','failed','cancelled','not-sent'].includes(state.phase) && !state.turnId)
+        state = await execution.cancel(receipt.cancelMessageId);
+      if (['completed','failed','cancelled','not-sent'].includes(state.phase)) return;
+      if (!state.turnId && state.phase === 'unknown' && state.cancellation?.code === 'QUEUE_ITEM_REMOVED')
+        throwIpcError('QUEUE_ITEM_REMOVED', 'The queue item was removed, but whether it already executed is not confirmed; read its receipt without resending');
+      if (!state.turnId) throwIpcError('ADMISSION_OUTCOME_UNKNOWN', 'The owned input or withdrawal is not confirmed; read its receipt without resending');
+      if (!await this.verifyLane(lane)) throwIpcError('STOP_NOT_CONFIRMED','The owned native session is unavailable');
+      receipt=lane.dispatch;
+    }
     if(receipt&&['prepared','not-sent','completed'].includes(receipt.phase))return;
     if(receipt&&['dispatching','unknown'].includes(receipt.phase)&&!receipt.turnId)
       throwIpcError('ADMISSION_OUTCOME_UNKNOWN','Native admission is unconfirmed; do not resend or infer cancellation from idle');
@@ -95,11 +176,12 @@ export class NativeGroupDriver implements GroupDriver {
     if(receipt?.turnId&&exact.cancelTurn){
       try{
         const result=await exact.cancelTurn({expectedTurnId:receipt.turnId,messageId:receipt.cancelMessageId});
-        if(result.status==='cancelled'||result.status==='changed')return;
+        if(result.status==='cancelled'||result.status==='changed'){await confirmed();return;}
       }catch(error){if((error as {code?:string}).code!=='unsupported_capability')throw error;}
     }
-    if (agent.activeTurn || agent.status === 'running' || agent.status === 'initializing' || agent.pendingPermissions?.length)
+    if (receipt?.native || agent.activeTurn || agent.status === 'running' || agent.status === 'initializing' || agent.pendingPermissions?.length)
       throwIpcError('GROUP_STOP_REQUIRES_NATIVE','This host cannot stop only the owned turn; stop it in the native session, then retry Stop');
+    await confirmed();
   }
   async archive(lane: GroupLane) {
     await this.stop(lane);
@@ -111,103 +193,41 @@ export class NativeGroupDriver implements GroupDriver {
     if (!agent.archivedAt) throwIpcError('GROUP_ARCHIVE_REQUIRES_NATIVE','Archive this conversation in Paseo, then confirm cleanup here');
   }
   async reply(lane: GroupLane, input: Parameters<GroupDriver['reply']>[1]): Promise<string> {
-    const agent = this.paseo.agents.ref(lane.agentId);
-    let receipt=lane.dispatch?.messageId===input.messageId?{...lane.dispatch}:prepareLaneDispatch(input.messageId);
-    const record=async(patch:Partial<LaneDispatch>)=>{receipt={...receipt,...patch};lane.dispatch=receipt;await input.recordDispatch?.({...receipt});};
-    if(!['prepared','not-sent'].includes(receipt.phase))throwIpcError('ADMISSION_OUTCOME_UNKNOWN','This input already has a native admission receipt; it cannot be resent');
-    await agent.refresh();
-    const busyCode=input.requireIdleAdmission?'TASK_BUSY':'GROUP_LANE_BUSY';
-    if (agent.activeTurn || agent.status === 'running' || agent.status === 'initializing' || agent.pendingPermissions?.length){await record({phase:'not-sent',code:busyCode});throwIpcError(busyCode, 'This native conversation is already running; the input was not sent');}
-    const guarded=agent as typeof agent&{sendIfIdle?:(text:string,options:{messageId:string})=>Promise<{status:'accepted';turnId:string}|{status:'busy'}|{status:'unavailable'}>};
-    if(!guarded.sendIfIdle){await record({phase:'not-sent',code:'HOST_UPGRADE_REQUIRED'});throwIpcError('HOST_UPGRADE_REQUIRED','This host cannot atomically dispatch input to an idle conversation');}
-    if (input.signal.aborted) throwIpcError('GROUP_STOPPED', 'Group stopped');
-    let accepted = false; let settled = false; let waitingPermission = false;
-    let dispatching = false; let started = false; let completed = false; let turnId: string | undefined;let endedTurnId:string|undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined; let remaining = input.timeoutMs??2 * 60 * 60 * 1000; let runningSince = Date.now();
-    let resolve!: () => void; let reject!: (error: unknown) => void;
-    const finished = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
-    // Sending can fail while observation is already active.
-    void finished.catch(() => {});
-    const fail = (code: string) => { if (!settled) { settled = true; reject(Object.assign(new Error(code), { code })); } };
-    const arm = () => { runningSince = Date.now(); timer = setTimeout(() => fail('RUNTIME_TIMEOUT'), remaining); };
-    const inspect = () => {
-      if (!accepted || settled) return;
-      const permission = Boolean(agent.pendingPermissions?.length);
-      if (permission !== waitingPermission) {
-        waitingPermission = permission; input.permission(permission);
-        if (permission) { if (timer) clearTimeout(timer); remaining = Math.max(1, remaining - (Date.now() - runningSince)); }
-        else arm();
-      }
-      if (permission) return;
-      if (agent.status === 'error') { fail('RUNTIME_ERROR'); return; }
-      // An accepted send may still report the pre-dispatch idle snapshot. Only a native
-      // completed event for the observed turn is completion evidence.
-      if (started && completed) { settled = true; resolve(); }
-    };
-    const abort = () => fail('GROUP_STOPPED');
-    const unsubscribe = agent.subscribe(inspect);
-    const timeline = agent.timeline.subscribe(event => {
-      const value = event.event;
-      if (value.type === 'subscription_restored' || value.type === 'replacement' || value.type === 'error') { fail('CONNECTION_LOST'); return; }
-      if (!dispatching || settled) return;
-      if (value.type === 'turn_started') {
-        if (started && value.turnId !== turnId) { fail('REPLY_NOT_CONFIRMED'); return; }
-        started = true; turnId = value.turnId;
-      }
-      if (['turn_completed', 'turn_failed', 'turn_canceled'].includes(value.type)) {
-        if (!started || ('turnId' in value && turnId && value.turnId !== turnId)) { fail('REPLY_NOT_CONFIRMED'); return; }
-        endedTurnId=turnId;
-        if (value.type === 'turn_failed') { fail('RUNTIME_ERROR'); return; }
-        if (value.type === 'turn_canceled') { fail('GROUP_STOPPED'); return; }
-        completed = true; inspect();
-      }
-    });
-    input.signal.addEventListener('abort', abort, { once: true });
+    const agent = await this.verifyLane(lane);
+    if (!agent) throwIpcError('GROUP_LANE_MISSING', 'The native conversation is missing');
+    if (!input.recordDispatch) throwIpcError('PERSISTENCE_REQUIRED', 'Native input requires its owner persistence callback');
+    const execution = await this.inputExecutor(lane, { ...input, recordDispatch: input.recordDispatch }, 'queue');
+    let wake: (() => void) | undefined; const notify = () => wake?.();
+    const unsubscribe = agent.subscribe(notify), timeline = agent.timeline.subscribe(notify);
+    const abort = () => notify(); input.signal.addEventListener('abort', abort, { once: true });
+    let remaining = input.timeoutMs ?? 2 * 60 * 60 * 1000, lastTime = Date.now(), waitingPermission = false;
+    let queued: boolean | undefined, admitted: string | undefined;
     try {
       await timeline.ready;
-      if (settled) await finished;
       if (input.signal.aborted) throwIpcError('GROUP_STOPPED', 'Group stopped');
-      await record({phase:'dispatching'});
-      if(input.signal.aborted) {await record({phase:'not-sent',code:'GROUP_STOPPED'});throwIpcError('GROUP_STOPPED','Group stopped');}
-      dispatching = true;
-      let admission:Awaited<ReturnType<NonNullable<typeof guarded.sendIfIdle>>>;
-      try{admission=await guarded.sendIfIdle(input.prompt,{messageId:input.messageId});}
-      catch(error){
-        // A method/feature rejection happens before dispatch. Every other lost
-        // acknowledgement stays uncertain; an idle snapshot cannot cancel it.
-        if((error as {code?:string}).code==='unsupported_capability'){await record({phase:'not-sent',code:'HOST_UPGRADE_REQUIRED'});throw error;}
-        await record({phase:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN'});
-        throw Object.assign(error instanceof Error?error:new Error(String(error)),{dispatchOutcome:'unknown'});
+      let state = await execution.admit(input.signal);
+      for (;;) {
+        if (input.signal.aborted) throwIpcError('GROUP_STOPPED', 'Group stopped');
+        this.outcome(state);
+        const isQueued = state.phase === 'queued';
+        if (queued !== isQueued) { queued = isQueued; await input.queued?.(isQueued); }
+        if (state.turnId && admitted !== state.turnId) { admitted = state.turnId; await input.admitted?.(state.turnId); }
+        if (state.phase === 'completed') return await execution.readReply();
+        if (state.phase === 'failed') throwIpcError('RUNTIME_ERROR', 'The owned native turn failed');
+        if (state.phase === 'cancelled') throwIpcError('GROUP_STOPPED', 'The owned native input was cancelled');
+        await agent.refresh();
+        const activeId = (agent.activeTurn as { turnId?: string } | null)?.turnId;
+        const permission = Boolean(state.turnId && activeId === state.turnId && agent.pendingPermissions?.length);
+        const now = Date.now(); if (!waitingPermission) remaining -= now - lastTime; lastTime = now;
+        if (permission !== waitingPermission) { waitingPermission = permission; input.permission(permission); }
+        if (remaining <= 0) throwIpcError('RUNTIME_TIMEOUT', 'The owned native turn has not settled');
+        await new Promise<void>(resolve => {
+          const timer = setTimeout(done, Math.min(1000, Math.max(1, remaining)));
+          function done() { clearTimeout(timer); if (wake === done) wake = undefined; resolve(); }
+          wake = done; if (input.signal.aborted) done();
+        });
+        state = await execution.reconcile();
       }
-      if(admission.status==='busy'){await record({phase:'not-sent',code:busyCode});throwIpcError(busyCode,'The conversation has another native turn; this input was not sent');}
-      if(admission.status==='unavailable'){await record({phase:'not-sent',code:'PROVIDER_ADMISSION_UNAVAILABLE'});throwIpcError('PROVIDER_ADMISSION_UNAVAILABLE','This provider cannot guarantee an idle-only turn; the input was not sent');}
-      if(admission.status!=='accepted'||typeof admission.turnId!=='string'||!admission.turnId){await record({phase:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN'});throw Object.assign(new Error('Invalid native admission receipt'),{code:'ADMISSION_OUTCOME_UNKNOWN',dispatchOutcome:'unknown'});}
-      await record({phase:'accepted',turnId:admission.turnId});
-      await input.admitted?.(admission.turnId);
-      if(turnId&&turnId!==admission.turnId)throwIpcError('REPLY_NOT_CONFIRMED','The native turn changed during admission');
-      turnId=admission.turnId;
-      accepted = true; arm(); await agent.refresh(); inspect(); await finished;
-      if (input.signal.aborted) throwIpcError('GROUP_STOPPED', 'Group stopped');
-      // Completion alone is insufficient: bind the answer to this exact persisted input.
-      const entries: Array<{ turnId?: string; item: { type: string; text?: string; clientMessageId?: string; messageId?: string } }> = [];
-      let cursor: unknown;
-      for (let pageNo = 0; pageNo < 50; pageNo++) {
-        const page = await agent.timeline.refetch({ limit: 200, projection: 'canonical', ...(cursor ? { cursor: cursor as never, direction: 'before' as const } : {}) });
-        if (page.error) throwIpcError('REPLY_NOT_CONFIRMED', 'Cannot read the completed group turn');
-        entries.unshift(...page.entries);
-        if (entries.some(entry => entry.item.type === 'user_message' && (entry.item.clientMessageId === input.messageId || entry.item.messageId === input.messageId))) break;
-        if (!page.hasOlder || !page.startCursor) break; cursor = page.startCursor;
-      }
-      const start = entries.findIndex(entry => entry.item.type === 'user_message' && (entry.item.clientMessageId === input.messageId || entry.item.messageId === input.messageId));
-      if (start < 0 || entries.slice(start + 1).some(entry => entry.item.type === 'user_message')) throwIpcError('REPLY_NOT_CONFIRMED', 'Cannot attribute the group answer to its request');
-      const replies = entries.slice(start + 1).filter(entry => entry.item.type === 'assistant_message' && typeof entry.item.text === 'string');
-      if (turnId && replies.some(entry => entry.turnId && entry.turnId !== turnId)) throwIpcError('REPLY_NOT_CONFIRMED', 'The answer belongs to another native turn');
-      const text = replies.at(-1)?.item.text;
-      if (text === undefined) throwIpcError('REPLY_NOT_CONFIRMED', 'The completed turn has no confirmed assistant reply');
-      return text;
-    } finally {
-      if (timer) clearTimeout(timer); unsubscribe(); timeline(); input.signal.removeEventListener('abort', abort);
-      if(receipt.turnId&&endedTurnId===receipt.turnId)await record({phase:'completed'});
-    }
+    } finally { wake?.(); unsubscribe(); timeline(); input.signal.removeEventListener('abort', abort); }
   }
 }

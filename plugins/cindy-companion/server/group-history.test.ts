@@ -205,15 +205,30 @@ it('continues one persisted topic round once and does not let an old Stop receip
   await t.service.groupHistory.action(t.paseo, t.id, input, 'continue'); expect(t.driver.reply).toHaveBeenCalledTimes(6);
   const oldStop = { ...input, operationId: 'old-stop' };
   await t.service.groupHistory.action(t.paseo, t.id, oldStop, 'stop');
-  const entered = barrier(), release = barrier(), original = vi.mocked(t.driver.reply).getMockImplementation()!;
-  vi.mocked(t.driver.reply).mockImplementationOnce(async (lane, request) => { entered.resolve(); await release.promise; return original(lane, request); });
-  const second = await t.service.groupHistory.reply(t.paseo, t.id, { rootId: root.id, text: '@Cindy later turn', clientMessageId: 'later' }); await entered.promise;
-  const stopCount = vi.mocked(t.driver.stop).mock.calls.length;
-  expect((await t.service.groupHistory.action(t.paseo, t.id, oldStop, 'stop')).round.id).toBe(first.round!.id);
-  expect((await t.service.groupHistory.thread(t.paseo, t.id, { rootId: root.id })).round).toMatchObject({ id: second.round!.id, status: 'running' });
-  expect(t.driver.stop).toHaveBeenCalledTimes(stopCount);
-  await expect(t.service.groupHistory.action(t.paseo, t.id, { ...oldStop, roundId: second.round!.id }, 'stop')).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
-  release.resolve(); await finished(t, root.id);
+  const queued = barrier(), start = barrier(), started = barrier(), release = barrier();
+  vi.mocked(t.driver.reply).mockImplementationOnce(async (lane, request) => {
+    await request.recordDispatch?.({ ...lane.dispatch!, phase: 'queued' });
+    await request.queued?.(true); queued.resolve(); await start.promise;
+    await request.recordDispatch?.({ ...lane.dispatch!, phase: 'accepted', turnId: 'later-native-turn' });
+    await request.queued?.(false); started.resolve(); await release.promise;
+    await request.recordDispatch?.({ ...lane.dispatch!, phase: 'completed', turnId: 'later-native-turn' });
+    return 'Later native answer';
+  });
+  try {
+    const second = await t.service.groupHistory.reply(t.paseo, t.id, { rootId: root.id, text: '@Cindy later turn', clientMessageId: 'later' }); await queued.promise;
+    const stopCount = vi.mocked(t.driver.stop).mock.calls.length;
+    for (const status of ['queued', 'running'] as const) {
+      if (status === 'running') { start.resolve(); await started.promise; }
+      expect((await t.service.groupHistory.action(t.paseo, t.id, oldStop, 'stop')).round.id).toBe(first.round!.id);
+      expect((await t.service.groupHistory.thread(t.paseo, t.id, { rootId: root.id })).round).toMatchObject({ id: second.round!.id, status, steps: [{ status }] });
+      expect(t.driver.stop).toHaveBeenCalledTimes(stopCount);
+    }
+    await expect(t.service.groupHistory.action(t.paseo, t.id, { ...oldStop, roundId: second.round!.id }, 'stop')).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+  } finally {
+    // A failed assertion must release both provider phases so service.close can drain.
+    start.resolve(); release.resolve();
+  }
+  await finished(t, root.id);
 });
 
 it('preserves deleted-root history and committed reply replay while allowing Stop but rejecting new sends', async () => {

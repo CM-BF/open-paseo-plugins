@@ -1,0 +1,28 @@
+{
+  "repository": "https://github.com/makecindy/cindy",
+  "revision": "118767c987f518286ae10a506a54287c3dc2a560",
+  "files": [
+    {
+      "path": "apps/desktop/src/main/maker-ipc/botDmThreadContext.ts",
+      "blob": "fcc5bde122713522448bc1ed4c33240e45435190",
+      "sha256": "34e4b2e47e5ca7909d925e314d86bcd8af0301057fd3584211d12d0744ce96c6",
+      "bytes": 3384,
+      "url": "https://github.com/makecindy/cindy/blob/118767c987f518286ae10a506a54287c3dc2a560/apps/desktop/src/main/maker-ipc/botDmThreadContext.ts",
+      "localPath": "server/vendor/dm/botDmThreadContext.ts",
+      "extraction": "unchanged exported pure builder and original 4000-character bound; database imports/read path excluded",
+      "functionSha256": "a1ecc154b04323ba609822588f5b0081c6a47ef04f74d51139e1e34e83d16b72",
+      "localSha256": "b429fc527b4c6eb5eedfabb34c95cd8b0f134f3e1920bc11eae2648d8ff4536c"
+    },
+    {
+      "path": "apps/desktop/src/main/maker-ipc/chatReplyQuoteNote.ts",
+      "blob": "b3e6c808388bb512706391d981180df47e601371",
+      "sha256": "fd794d0550b6ececd528cbe214177bac50fa0172bbe624bea3341d418eb7cfa5",
+      "bytes": 4537,
+      "url": "https://github.com/makecindy/cindy/blob/118767c987f518286ae10a506a54287c3dc2a560/apps/desktop/src/main/maker-ipc/chatReplyQuoteNote.ts",
+      "localPath": "server/vendor/dm/chatReplyQuoteNote.ts",
+      "extraction": "unchanged exported pure builder and original 4000-character bound; database imports/read path excluded",
+      "functionSha256": "c2ffa8112e772f164ff5dcf9e35c1e32f1fde00b9fcf901467ad71508d043802",
+      "localSha256": "82a56af97061f94ce51f296249a1f47439c8869e61567be04ca2d50964b0ba1b"
+    }
+  ]
+}

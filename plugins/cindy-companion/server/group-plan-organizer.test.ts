@@ -94,18 +94,18 @@ it('persists utility cleanup before creation and retries archive after publicati
  expect((await new CompanionStore(t.root).snapshot()).groupPlanRequests![saved.view.id]!.cleanupPending).toBe(false);
 });
 it('keeps unsupported provider input unsent without ordinary-discussion fallback and exposes manual cleanup',async()=>{
- const t=await setup();const {nativeLaneFixture}=await import('./testing/native-lane');const f=nativeLaneFixture();Object.assign(t.driver,{ensure:f.driver.ensure.bind(f.driver),reply:f.driver.reply.bind(f.driver),stop:f.driver.stop.bind(f.driver),archive:f.driver.archive.bind(f.driver)});f.sendIfIdle.mockResolvedValue({status:'unavailable'} as never);
+ const t=await setup();const {nativeLaneFixture}=await import('./testing/native-lane');const f=nativeLaneFixture();Object.assign(t.driver,{ensure:f.driver.ensure.bind(f.driver),reply:f.driver.reply.bind(f.driver),stop:f.driver.stop.bind(f.driver),archive:f.driver.archive.bind(f.driver)});f.admission.mockResolvedValue({status:'unavailable'} as never);
  await t.organizer.create('team',{operationId:'unavailable',request:'Arrange work'});
- await vi.waitFor(async()=>expect((await t.organizer.list('team'))[0]!).toMatchObject({status:'failed',code:'PROVIDER_ADMISSION_UNAVAILABLE',cleanupPending:true,cleanupCode:'GROUP_ARCHIVE_REQUIRES_NATIVE'}));
+ await vi.waitFor(async()=>expect((await t.organizer.list('team'))[0]!).toMatchObject({status:'failed',code:'PROVIDER_QUEUE_UNAVAILABLE',cleanupPending:true,cleanupCode:'GROUP_ARCHIVE_REQUIRES_NATIVE'}));
  const request=(await t.organizer.list('team'))[0]!;expect(request.agentId).toBeTypeOf('string');expect(t.fallback).not.toHaveBeenCalled();expect(f.agent.send).not.toHaveBeenCalled();expect(f.agent.archive).not.toHaveBeenCalled();
- f.patch({archivedAt:'native-confirmed'});const confirmed=await t.organizer.cancel('team',request.id);expect(confirmed.request.cleanupPending).toBe(false);expect(confirmed.request.code).toBe('PROVIDER_ADMISSION_UNAVAILABLE');expect(f.agent.archive).not.toHaveBeenCalled();
+ f.patch({archivedAt:'native-confirmed'});const confirmed=await t.organizer.cancel('team',request.id);expect(confirmed.request.cleanupPending).toBe(false);expect(confirmed.request.code).toBe('PROVIDER_QUEUE_UNAVAILABLE');expect(f.agent.archive).not.toHaveBeenCalled();
 });
 it('persists organizer lost acknowledgement and keeps it unknown on restart and cancel without model replay',async()=>{
- const t=await setup();const {nativeLaneFixture}=await import('./testing/native-lane');const f=nativeLaneFixture();Object.assign(t.driver,{ensure:f.driver.ensure.bind(f.driver),reply:f.driver.reply.bind(f.driver),stop:f.driver.stop.bind(f.driver),archive:f.driver.archive.bind(f.driver)});f.sendIfIdle.mockRejectedValue(new Error('lost ACK'));
+ const t=await setup();const {nativeLaneFixture}=await import('./testing/native-lane');const f=nativeLaneFixture();Object.assign(t.driver,{ensure:f.driver.ensure.bind(f.driver),reply:f.driver.reply.bind(f.driver),stop:f.driver.stop.bind(f.driver),archive:f.driver.archive.bind(f.driver)});f.admission.mockRejectedValue(new Error('lost ACK'));
  await t.organizer.create('team',{operationId:'unknown',request:'Arrange work'});await vi.waitFor(async()=>expect((await t.organizer.list('team'))[0]!).toMatchObject({status:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN'}));
  const saved=Object.values((await new CompanionStore(t.root).snapshot()).groupPlanRequests!)[0]!;expect(saved.lane!.dispatch?.phase).toBe('unknown');await t.organizer.close();
  const recovered=new GroupPlanOrganizer(new CompanionStore(t.root),t.plans,{driver:f.driver,configFor:t.configFor,fallback:t.fallback});cleanups.push(()=>recovered.close());await recovered.cancel('team',saved.view.id);
- await vi.waitFor(async()=>expect((await recovered.list('team'))[0]!).toMatchObject({status:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN'}));expect(f.sendIfIdle).toHaveBeenCalledOnce();expect(t.fallback).not.toHaveBeenCalled();expect(f.agent.cancelTurn).not.toHaveBeenCalled();expect(f.agent.interrupt).not.toHaveBeenCalled();
+ await vi.waitFor(async()=>expect((await recovered.list('team'))[0]!).toMatchObject({status:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN'}));expect(f.admission).toHaveBeenCalledOnce();expect(t.fallback).not.toHaveBeenCalled();expect(f.agent.cancelTurn).not.toHaveBeenCalled();expect(f.agent.interrupt).not.toHaveBeenCalled();
 });
 it('migrates a legacy unknown organizer dispatch before allowing cancellation to reconcile',async()=>{
  const t=await setup();await t.organizer.create('team',{operationId:'legacy',request:'Arrange'});await vi.waitFor(async()=>expect((await t.organizer.list('team'))[0]!.status).toBe('complete'));await t.organizer.close();
@@ -113,5 +113,5 @@ it('migrates a legacy unknown organizer dispatch before allowing cancellation to
  await t.store.transaction(state=>{const saved=state.groupPlanRequests![id]!;saved.view.status='unknown';saved.phase='dispatching';delete saved.lane!.dispatch;});
  const {nativeLaneFixture}=await import('./testing/native-lane');const f=nativeLaneFixture();const recovered=new GroupPlanOrganizer(new CompanionStore(t.root),t.plans,{driver:f.driver,configFor:t.configFor,fallback:t.fallback});cleanups.push(()=>recovered.close());
  expect((await recovered.list('team'))[0]!).toMatchObject({status:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN'});await recovered.cancel('team',id);
- await vi.waitFor(async()=>expect((await recovered.list('team'))[0]!).toMatchObject({status:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN'}));expect(f.sendIfIdle).not.toHaveBeenCalled();expect(f.agent.cancelTurn).not.toHaveBeenCalled();
+ await vi.waitFor(async()=>expect((await recovered.list('team'))[0]!).toMatchObject({status:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN'}));expect(f.admission).not.toHaveBeenCalled();expect(f.agent.cancelTurn).not.toHaveBeenCalled();
 });

@@ -10,7 +10,7 @@ export interface GroupPlanStep extends BotGroupPlanStepView {
 export interface GroupWorkPlan extends Omit<BotGroupPlanView, 'steps'> {
   groupId: string; revision: number; request: string; sourceMessageId: string;
   kind: 'work'; steps: GroupPlanStep[];
-  execution: { state: 'idle' | 'preparing' | 'running' | 'permission' | 'stopping' | 'unknown'; code?: string };
+  execution: { state: 'idle' | 'preparing' | 'queued' | 'running' | 'permission' | 'stopping' | 'unknown'; code?: string };
 }
 export interface GroupPlanSettings {
   revision: number; organizerBotId: string | null; projectDir: string | null; autoContinue: boolean;

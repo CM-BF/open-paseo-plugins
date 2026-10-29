@@ -47,7 +47,7 @@ test('native Stop is singleflight and accepted-but-unconfirmed remains unknown w
  await act(async()=>pending.resolve(ok(task)));assert.match(text(tree),/stop is not yet confirmed/);assert.ok(press(tree,'Stop'));act(()=>tree.unmount());
 });
 test('native task explains exact-stop and admission uncertainty without exposing codes or claiming completion',async t=>{
- for(const [code,expected] of [['TASK_STOP_REQUIRES_NATIVE',/Open the task session and stop it there/],['ADMISSION_OUTCOME_UNKNOWN',/may have been sent/]]){
+ for(const [code,expected] of [['TASK_STOP_REQUIRES_NATIVE',/Open the task session and stop it there/],['ADMISSION_OUTCOME_UNKNOWN',/may have been sent/],['QUEUE_ITEM_REMOVED',/queued item was removed, but whether it already started is not confirmed/]]){
   const task={...base,status:'failed',control:'unknown',activity:'unknown',lastError:code};setup(task);
   const tree=await render();t.after(()=>act(()=>tree.unmount()));assert.match(text(tree),expected);assert.doesNotMatch(text(tree),new RegExp(code));
   assert.equal(tree.root.findByProps({testID:'cindy-task-card'}).props.accessibilityLabel,'Task status unavailable');
@@ -56,9 +56,9 @@ test('native task explains exact-stop and admission uncertainty without exposing
  }
 });
 test('Chinese native task recovery distinguishes an unsent input from an uncertain send',async t=>{
- for(const [task,expected] of [[{...base,status:'failed',control:'paused',activity:'idle',blocked:{code:'HOST_UPGRADE_REQUIRED',message:'raw backend fallback'}},/这条内容尚未发送/],[{...base,status:'failed',control:'paused',activity:'idle',blocked:{code:'PROVIDER_ADMISSION_UNAVAILABLE',message:'raw backend fallback'}},/这条内容尚未发送/],[{...base,status:'failed',control:'unknown',activity:'unknown',lastError:'ADMISSION_OUTCOME_UNKNOWN'},/这条内容可能已经发送/]]){
+ for(const [task,expected] of [[{...base,status:'failed',control:'paused',activity:'idle',blocked:{code:'HOST_UPGRADE_REQUIRED',message:'raw backend fallback'}},/这条内容尚未发送/],[{...base,status:'failed',control:'paused',activity:'idle',blocked:{code:'PROVIDER_ADMISSION_UNAVAILABLE',message:'raw backend fallback'}},/这条内容尚未发送/],[{...base,status:'failed',control:'paused',activity:'idle',blocked:{code:'PROVIDER_QUEUE_UNAVAILABLE',message:'raw backend fallback'}},/这条内容尚未发送/],[{...base,status:'failed',control:'unknown',activity:'unknown',lastError:'ADMISSION_OUTCOME_UNKNOWN'},/这条内容可能已经发送/],[{...base,status:'failed',control:'unknown',activity:'unknown',lastError:'QUEUE_ITEM_REMOVED'},/排队条目已移除，但是否已经开始执行尚未确认/]]){
   setup(task);state.locale='zh-CN';const tree=await render();t.after(()=>act(()=>tree.unmount()));
-  assert.match(text(tree),expected);assert.doesNotMatch(text(tree),/HOST_UPGRADE_REQUIRED|PROVIDER_ADMISSION_UNAVAILABLE|ADMISSION_OUTCOME_UNKNOWN|raw backend fallback|升级/);
+  assert.match(text(tree),expected);assert.doesNotMatch(text(tree),/HOST_UPGRADE_REQUIRED|PROVIDER_ADMISSION_UNAVAILABLE|PROVIDER_QUEUE_UNAVAILABLE|ADMISSION_OUTCOME_UNKNOWN|QUEUE_ITEM_REMOVED|raw backend fallback|升级/);
   assert.ok(press(tree,'停止'));assert.equal(Boolean(press(tree,'继续任务')),task.control==='paused');act(()=>tree.unmount());
  }
 });

@@ -5,7 +5,7 @@ import type { GroupPlanRequest } from '../shared/group-plans';
 import { splitBotGroupRelaySteps } from '../shared/vendor/botGroupMentions';
 import { buildPlanDecisionPrompt, parsePlanDecision, PLAN_DECISION_SYSTEM_PROMPT, type PlanDecisionInput, type PlanStepDraft } from './vendor/botGroupDivision';
 import type { CompanionStore } from './store';
-import { prepareLaneDispatch,stopFailureCode,type GroupDriver,type GroupLane } from './group-driver';
+import { prepareLaneDispatch,isNativeAdmissionWrite,stopFailureCode,type GroupDriver,type LaneDispatch, type GroupLane } from './group-driver';
 import type { GroupPlans, GroupPlanState } from './group-plans';
 import { record, string, throwIpcError } from './errors';
 import { nativeConfigOnly } from './native-skills';
@@ -41,7 +41,7 @@ export class GroupPlanOrganizer {
           saved.lane.dispatch={...prepareLaneDispatch(`organize:${saved.view.id}`),phase:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN'};
           await this.transaction(s=>{s.groupPlanRequests![saved.view.id]!.lane!.dispatch=saved.lane!.dispatch;});
         }
-        let stopCode:string|undefined;if(saved.lane)try{await this.deps.driver.stop(saved.lane);}catch(error){stopCode=stopFailureCode(error);}
+        let stopCode:string|undefined;if(saved.lane)try{await this.deps.driver.stop(saved.lane,this.receiptWriter(saved.view.id,saved.lane));}catch(error){stopCode=stopFailureCode(error);}
         await this.transaction(s=>{const current=s.groupPlanRequests![saved.view.id]!;current.view.status=stopCode?'unknown':'failed';current.view.code=stopCode??'HOST_RESTARTED';current.view.updatedAt=Date.now();});
       }
       for(const saved of Object.values((await this.snapshot()).groupPlanRequests??{}).filter(r=>r.cleanupPending&&['complete','failed'].includes(r.view.status)))await this.cleanup(saved.view.id);
@@ -87,15 +87,20 @@ export class GroupPlanOrganizer {
   private launch(id:string){
     if(this.jobs.has(id)||this.closing)return;const controller=new AbortController();const job={controller,promise:Promise.resolve()};this.jobs.set(id,job);
     job.promise=this.run(id,controller.signal).catch(async error=>{
-      const saved=(await this.snapshot()).groupPlanRequests![id]!;let stopCode:string|undefined;if(saved.lane)try{await this.deps.driver.stop(saved.lane);}catch(error){stopCode=stopFailureCode(error);}
+      const saved=(await this.snapshot()).groupPlanRequests![id]!;let stopCode:string|undefined;if(saved.lane)try{await this.deps.driver.stop(saved.lane,this.receiptWriter(saved.view.id,saved.lane));}catch(error){stopCode=stopFailureCode(error);}
       const stopped=!stopCode,raw=typeof(error as {code?:unknown})?.code==='string'?(error as {code:string}).code:'PLAN_UNAVAILABLE';
       const code=stopCode??(raw==='unsupported_capability'?'HOST_UPGRADE_REQUIRED':(error as {dispatchOutcome?:string})?.dispatchOutcome==='unknown'?'ADMISSION_OUTCOME_UNKNOWN':raw);
       await this.transaction(state=>{const item=state.groupPlanRequests![id]!;item.view.status=stopped?'failed':'unknown';item.view.code=code;item.view.updatedAt=Date.now();});
       if(stopped)await this.cleanup(id);
       // Confirmed execution failure falls back through ordinary routing; never replay an unknown send.
-      if(stopped&&!['HOST_UPGRADE_REQUIRED','PROVIDER_ADMISSION_UNAVAILABLE','GROUP_LANE_BUSY','ADMISSION_OUTCOME_UNKNOWN'].includes(code)&&!controller.signal.aborted&&saved.phase!=='answered'&&!saved.supersedesPlanId)try{await this.deps.fallback(saved.view.groupId,saved.view.request,`plan-fallback:${id}`,saved.view.sourceMessageId);}catch{await this.transaction(state=>{state.groupPlanRequests![id]!.view.code='FALLBACK_NOT_CONFIRMED';});}
+      if(stopped&&saved.lane?.dispatch?.phase!=='not-sent'&&!['HOST_UPGRADE_REQUIRED','PROVIDER_ADMISSION_UNAVAILABLE','PROVIDER_QUEUE_UNAVAILABLE','GROUP_LANE_BUSY','ADMISSION_OUTCOME_UNKNOWN'].includes(code)&&!controller.signal.aborted&&saved.phase!=='answered'&&!saved.supersedesPlanId)try{await this.deps.fallback(saved.view.groupId,saved.view.request,`plan-fallback:${id}`,saved.view.sourceMessageId);}catch{await this.transaction(state=>{state.groupPlanRequests![id]!.view.code='FALLBACK_NOT_CONFIRMED';});}
     }).finally(()=>{if(this.jobs.get(id)===job)this.jobs.delete(id);});
   }
+  private receiptWriter(id:string,lane:GroupLane){return async(receipt:LaneDispatch)=>{await this.transaction(state=>{
+    const current=state.groupPlanRequests![id]!;if(current.lane?.agentId!==lane.agentId||current.lane.dispatch?.messageId!==receipt.messageId)throwIpcError('GROUP_LANE_MISMATCH','Organizer admission changed');
+    if(isNativeAdmissionWrite(current.lane.dispatch,receipt)){const group=state.groups?.[current.view.groupId],profile=state.profiles[lane.botId];if(current.view.status!=='planning'||!group||group.deletedAt||group.mutation||!group.botIds.includes(lane.botId)||!profile?.enabled||profile.status!=='active'||state.profileDeletions?.[lane.botId])throwIpcError('SESSION_SCOPE_REVOKED','The organizer no longer owns this admission');}
+    current.lane.dispatch=receipt;if(receipt.native?.creationComplete)current.lane.phase='ready';if(receipt.native?.workspaceId)current.lane.workspaceId=receipt.native.workspaceId;
+  });};}
   private async run(id:string,signal:AbortSignal){
     let saved=(await this.snapshot()).groupPlanRequests![id]!;
     const cwd=join(this.store.root,'group-organizers',id);await this.store.safePath(cwd);await mkdir(cwd,{recursive:true});
@@ -106,17 +111,18 @@ export class GroupPlanOrganizer {
     const provider=String(base.provider).split('/')[0];
     const config={...base,systemPrompt:PLAN_DECISION_SYSTEM_PROMPT,mcpServers:{},
       ...(provider==='codex'?{options:{...record(base.options??{}),sandbox_mode:'read-only',approval_policy:'on-request'}}:{})};
-    const lane:GroupLane={agentId:randomUUID(),operationId:randomUUID(),groupId:saved.view.groupId,roundId:id,botId:saved.view.organizerBotId,cwd,title:'Cindy · Arrange work',config,phase:'creating',dispatch:prepareLaneDispatch(`organize:${id}`)};
-    await this.transaction(state=>{const current=state.groupPlanRequests![id]!;current.lane=lane;current.cleanupPending=true;});
+    const lane:GroupLane={agentId:randomUUID(),operationId:randomUUID(),groupId:saved.view.groupId,roundId:id,botId:saved.view.organizerBotId,cwd,title:'Cindy · Arrange work',config,phase:'creating',nativeInputVersion:1,dispatch:prepareLaneDispatch(`organize:${id}`)};
+    await this.transaction(state=>{const current=state.groupPlanRequests![id]!;current.lane=lane;current.phase='dispatching';current.view.agentId=lane.agentId;current.cleanupPending=true;});
     if(signal.aborted)return;
-    const ensured=await this.deps.driver.ensure(lane);lane.phase='ready';lane.workspaceId=ensured.workspaceId;
+    const prompt=buildPlanDecisionPrompt(saved.input),recordDispatch=this.receiptWriter(id,lane);
+    const ensured=await this.deps.driver.ensure(lane,{prompt,messageId:`organize:${id}`,signal,recordDispatch});lane.phase='ready';lane.workspaceId=ensured.workspaceId;
     await this.transaction(state=>{const current=state.groupPlanRequests![id]!;current.lane=lane;current.phase='dispatching';current.view.agentId=lane.agentId;});
     if(signal.aborted)return;
     const limit=new AbortController();const abort=()=>limit.abort();signal.addEventListener('abort',abort,{once:true});
     const timer=setTimeout(abort,20_000);
     let result:string;
-    try{result=await this.deps.driver.reply(lane,{prompt:buildPlanDecisionPrompt(saved.input),messageId:`organize:${id}`,signal:limit.signal,
-      recordDispatch:async receipt=>{await this.transaction(state=>{const current=state.groupPlanRequests![id]!;if(current.lane?.agentId!==lane.agentId)throwIpcError('GROUP_LANE_MISMATCH','Organizer admission changed');current.lane.dispatch=receipt;});},
+    try{result=await this.deps.driver.reply(lane,{prompt,messageId:`organize:${id}`,signal:limit.signal,
+      recordDispatch,
       permission:waiting=>{if(waiting)limit.abort();}});}
     finally{clearTimeout(timer);signal.removeEventListener('abort',abort);}
     const decision=parsePlanDecision(result,saved.input.mode,new Set(saved.input.members.map(m=>m.botId)));
@@ -153,7 +159,7 @@ export class GroupPlanOrganizer {
     if(request.code==='STOP_REQUESTED'&&!this.cancellations.has(id)){
       const job=this.jobs.get(id);job?.controller.abort();
       const cancellation=(async()=>{await job?.promise;const saved=(await this.snapshot()).groupPlanRequests![id]!;let stopCode:string|undefined;
-        if(saved.lane)try{await this.deps.driver.stop(saved.lane);}catch(error){stopCode=stopFailureCode(error);}const confirmed=!stopCode;
+        if(saved.lane)try{await this.deps.driver.stop(saved.lane,this.receiptWriter(saved.view.id,saved.lane));}catch(error){stopCode=stopFailureCode(error);}const confirmed=!stopCode;
         await this.transaction(state=>{const current=state.groupPlanRequests![id]!;if(current.view.status==='complete')return;
           current.view.status=confirmed?'failed':'unknown';current.view.code=confirmed?'USER_STOPPED':stopCode;current.view.updatedAt=Date.now();});
         if(confirmed)await this.cleanup(id);
@@ -165,7 +171,7 @@ export class GroupPlanOrganizer {
   async close(){
     if(this.closing)return;this.closing=true;await this.initialized?.catch(()=>{});const jobs=[...this.jobs.values()];for(const job of jobs)job.controller.abort();await Promise.allSettled(jobs.map(job=>job.promise));await Promise.allSettled([...this.cancellations.values()]);
     const pending=Object.values((await this.snapshot()).groupPlanRequests??{}).filter(r=>r.view.status==='planning');
-    for(const saved of pending){let stopCode:string|undefined;if(saved.lane)try{await this.deps.driver.stop(saved.lane);}catch(error){stopCode=stopFailureCode(error);}
+    for(const saved of pending){let stopCode:string|undefined;if(saved.lane)try{await this.deps.driver.stop(saved.lane,this.receiptWriter(saved.view.id,saved.lane));}catch(error){stopCode=stopFailureCode(error);}
       await this.transaction(state=>{const current=state.groupPlanRequests![saved.view.id]!;current.view.status=stopCode?'unknown':'failed';current.view.code=stopCode??'HOST_RESTARTED';});}
   }
 }

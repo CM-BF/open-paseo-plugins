@@ -64,7 +64,7 @@ export interface GroupSendInput {
  * groups.delete {groupId,expectedRevision} -> {deleted:true,groupId}
  * groups.cleanup {groupId} -> GroupSnapshot; verifies manual native archives only, including deleting groups.
  * Native permission requests are answered in the returned step.agentId's Paseo session.
- * HOST_UPGRADE_REQUIRED / PROVIDER_ADMISSION_UNAVAILABLE / GROUP_LANE_BUSY mean not sent.
+ * HOST_UPGRADE_REQUIRED / PROVIDER_ADMISSION_UNAVAILABLE / PROVIDER_QUEUE_UNAVAILABLE / GROUP_LANE_BUSY mean not sent.
  * ADMISSION_OUTCOME_UNKNOWN is retained across restart; an idle snapshot cannot confirm it.
  * GROUP_STOP_REQUIRES_NATIVE requires native stop then the same Stop action; cleanup is separate.
  */

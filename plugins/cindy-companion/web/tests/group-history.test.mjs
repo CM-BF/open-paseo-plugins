@@ -45,6 +45,20 @@ const thread=extra=>render(GroupHistoryThread,{groupId:'g',rootId:state.root,mem
 const text=tree=>JSON.stringify(tree.toJSON());
 const button=(tree,key)=>tree.root.findAllByType('button').find(v=>v.props.children===key||v.props['aria-label']===key);
 
+test('native queue unavailability remains explicitly unsent in thread error presentation',()=>{
+ const failure={code:'PROVIDER_QUEUE_UNAVAILABLE',message:'raw provider failure'};
+ assert.match(historyError(failure,'en'),/has not been sent/);
+ assert.match(historyError(failure,'zh-CN'),/这条内容尚未发送/);
+ assert.doesNotMatch(historyError(failure,'en'),/PROVIDER_QUEUE_UNAVAILABLE|raw provider failure/);
+});
+
+test('removing a queue item does not present an unconfirmed execution as cancelled',()=>{
+ const failure={code:'QUEUE_ITEM_REMOVED',message:'raw native deletion acknowledgement'};
+ assert.match(historyError(failure,'en'),/queued item was removed, but whether it already started is not confirmed/);
+ assert.match(historyError(failure,'zh-CN'),/排队条目已移除，但是否已经开始执行尚未确认/);
+ for(const language of ['en','zh-CN'])assert.doesNotMatch(historyError(failure,language),/QUEUE_ITEM_REMOVED|raw native|has not been sent|was stopped|尚未发送|任务已停止/);
+});
+
 test('lost mutation ACK retries immutable identity after newer reads and coalesces double clicks',async()=>{
  const calls=[],first=deferred();let n=0;const controller=createHistoryIntents((op,args)=>{calls.push({op,args});return ++n===1?first.promise:Promise.resolve({revision:4})});
  const args={groupId:'g',rootId:'r',following:true};const a=controller.run('follow','groups.threads.follow',args),b=controller.run('follow','groups.threads.follow',args);assert.equal(a,b);assert.equal(calls.length,1);

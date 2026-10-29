@@ -1,26 +1,29 @@
 import type { Paseo } from './runtime';
-import { NativeGroupDriver, type GroupDriver, type GroupLane } from './group-driver';
+import { NativeGroupDriver, type GroupDriver, type GroupLane, type LaneDispatch } from './group-driver';
 import { throwIpcError } from './errors';
+import { nativeConfigOnly } from './native-skills';
 export interface TaskLane extends GroupLane { parentAgentId:string;taskId:string;ownedTurnId?:string;cancelMessageId?:string }
 /** A delegation is a visible native child, not a teammate or a hidden discussion lane. */
 export class NativeTaskDriver extends NativeGroupDriver implements GroupDriver {
   constructor(private readonly api:Paseo){super(api);}
-  override async ensure(input:GroupLane){
-    const lane=input as TaskLane;let agent=this.api.agents.ref(lane.agentId);
-    if(typeof (agent as unknown as {sendIfIdle?:unknown}).sendIfIdle!=='function')throwIpcError('HOST_UPGRADE_REQUIRED','Delegated tasks require the public atomic sendIfIdle capability');
-    if(!await agent.refresh()){
-      if(lane.phase==='ready')throwIpcError('TASK_SESSION_MISSING','The delegated session is missing');
-      agent=await this.api.agents.create({agentId:lane.agentId,idempotencyKey:lane.operationId,parent:lane.parentAgentId,
-        config:lane.config as never,cwd:lane.cwd,title:lane.title,
-        labels:{'cindy-companion.taskId':lane.taskId,'cindy-companion.requestingBotId':lane.botId,'cindy-companion.parentAgentId':lane.parentAgentId}});
-      await agent.refresh();
-    }
-    if(agent.archivedAt||agent.cwd!==lane.cwd||agent.current()?.labels?.['cindy-companion.taskId']!==lane.taskId||agent.current()?.labels?.['cindy-companion.parentAgentId']!==lane.parentAgentId)
-      throwIpcError('TASK_SESSION_MISMATCH','The native child no longer matches this task');
-    return{workspaceId:agent.workspaceId??undefined};
+  protected override creationOptions(input:GroupLane) {
+    const lane=input as TaskLane;
+    return { idempotencyKey:lane.operationId,parent:lane.parentAgentId,config:nativeConfigOnly(lane.config),cwd:lane.cwd,title:lane.title,
+      labels:{'cindy-companion.taskId':lane.taskId,'cindy-companion.requestingBotId':lane.botId,'cindy-companion.parentAgentId':lane.parentAgentId} };
   }
-  override reply(lane:GroupLane,input:Parameters<GroupDriver['reply']>[1]){return super.reply(lane,{...input,requireIdleAdmission:true});}
-  override async stop(input:GroupLane|TaskLane){
+  protected override async verifyLane(input:GroupLane) {
+    const lane=input as TaskLane,agent=this.api.agents.ref(lane.agentId);
+    if(!await agent.refresh())return null;
+    if(agent.archivedAt||agent.cwd!==lane.cwd||(lane.workspaceId&&agent.workspaceId!==lane.workspaceId)
+      ||agent.current()?.labels?.['cindy-companion.taskId']!==lane.taskId||agent.current()?.labels?.['cindy-companion.parentAgentId']!==lane.parentAgentId)
+      throwIpcError('TASK_SESSION_MISMATCH','The native child no longer matches this task');
+    return agent;
+  }
+  override async stop(input:GroupLane|TaskLane,persist?:(receipt:LaneDispatch)=>Promise<void>){
+    if(input.dispatch?.native){
+      try{return await super.stop(input,persist);}
+      catch(error){if((error as {code?:string}).code==='GROUP_STOP_REQUIRES_NATIVE')throwIpcError('TASK_STOP_REQUIRES_NATIVE','Stop the owned turn in the native task session, then retry cancellation');throw error;}
+    }
     const lane=input as TaskLane,agent=this.api.agents.ref(lane.agentId);
     if(!await agent.refresh()){
       if(lane.phase!=='ready')throwIpcError('STOP_NOT_CONFIRMED','Agent creation outcome is still unknown');return;

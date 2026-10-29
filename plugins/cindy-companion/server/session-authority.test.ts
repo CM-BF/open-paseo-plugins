@@ -6,6 +6,8 @@ import {CompanionStore} from './store';
 import {sessionBinding,validateSessionBinding} from './session-authority';
 import type {Paseo} from './runtime';
 import type {SessionScope} from '../shared/session-scope';
+import {prepareLaneDispatch} from './group-driver';
+import {prepareNativeLaneInput} from './native-lane-input';
 const roots:string[]=[];afterEach(async()=>{for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
 async function fixture(){
  const root=await mkdtemp(join(tmpdir(),'cindy-session-auth-'));roots.push(root);const store=new CompanionStore(root);await store.load();const profile=await store.get('cindy');
@@ -42,4 +44,27 @@ it('rejects removed members, retired lanes, deleted groups and closed work plans
  expect(sessionBinding(state,'cindy',planScope).cwd).toBe(f.cwd);
  state.groupPlans.plan!.view.currentStep=1;state.groupPlans.plan!.view.steps.push({position:1,botId:'other',botName:'Other',task:'Next',status:'running',agentId:'another-lane',artifacts:[]});
  expect(()=>sessionBinding(state,'cindy',planScope)).toThrow();
+});
+it('authorizes only the durably reserved first plan input before the step is marked running',async()=>{
+ const f=await fixture(),scope:SessionScope={agentId:'owned-agent',role:'plan',groupId:'group',planId:'plan'};
+ const native=prepareNativeLaneInput({agentId:scope.agentId,messageId:'input',admission:'initial',input:{text:'First work'},creation:{idempotencyKey:'create',cwd:f.cwd,config:{provider:'codex/test'}}});native.phase='dispatching';
+ const dispatch={...prepareLaneDispatch('input'),phase:'dispatching' as const,native};
+ await f.store.transaction(s=>{
+  s.groups={group:{id:'group',name:'G',description:'',botIds:['cindy'],replyMode:'all',revision:1,createdAt:1,updatedAt:1,messages:[],rounds:[],receipts:{},continueKeys:{},lanes:{}}};
+  s.groupPlans={plan:{view:{id:'plan',groupId:'group',status:'running',execution:{state:'preparing'},currentStep:0,steps:[{position:0,botId:'cindy',botName:'Cindy',task:'Work',status:'pending',agentId:scope.agentId,artifacts:[]}]} as never,
+   projectDir:null,notes:[],lanes:{cindy:{agentId:scope.agentId,botId:'cindy',groupId:'group',roundId:'plan',operationId:'create',cwd:f.cwd,title:'First',phase:'creating',nativeInputVersion:1,config:{},sessionScope:scope,dispatch}},
+   attempts:[{id:'attempt',position:0,botId:'cindy',agentId:scope.agentId,cwd:f.cwd,messageId:'input',phase:'preparing',noteIds:[],before:[],dispatch}]}};
+ });
+ await validateSessionBinding(f.store,f.api,'cindy',scope);const base=await f.store.snapshot();
+ for(const change of [
+  (s:typeof base)=>{s.groupPlans!.plan!.attempts[0]!.dispatch!.native!.intent.messageId='other';},
+  (s:typeof base)=>{s.groupPlans!.plan!.attempts[0]!.dispatch!.phase='unknown';},
+  (s:typeof base)=>{s.groupPlans!.plan!.lanes.cindy!.dispatch!.messageId='other';},
+  (s:typeof base)=>{s.groupPlans!.plan!.view.execution={state:'stopping'};},
+  (s:typeof base)=>{s.groupPlans!.plan!.view.currentStep=1;},
+  (s:typeof base)=>{s.groups!.group!.botIds=[];},
+  (s:typeof base)=>{s.groupPlans!.plan!.lanes.cindy!.retired=true;},
+ ]){const state=structuredClone(base);change(state);expect(()=>sessionBinding(state,'cindy',scope)).toThrow();}
+ f.native.refresh.mockImplementation(async()=>{await f.store.transaction(s=>{s.groupPlans!.plan!.view.execution={state:'stopping'};});return{};});
+ await expect(validateSessionBinding(f.store,f.api,'cindy',scope)).rejects.toMatchObject({code:'SESSION_SCOPE_REVOKED'});
 });

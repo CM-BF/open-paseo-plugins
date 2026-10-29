@@ -108,6 +108,15 @@ test('an unknown organizer request retains an exact Stop recovery action even wh
   assert.match(JSON.stringify(tree.toJSON()), /stop is not yet confirmed/);assert.equal(tree.root.findByType('textarea').props.value, 'An unconfirmed request');
   act(() => tree.unmount());
 });
+
+test('a queued work step retains exact-plan Stop without claiming it has started',async()=>{
+ reset();const calls=[],p={id:'queued-work',groupId:'group-1',revision:2,status:'running',kind:'work',organizerName:'A',organizerBotId:'a',currentStep:0,execution:{state:'queued'},steps:[{position:0,botId:'a',botName:'A',task:'Build',status:'pending',agentId:'queued-native',artifacts:[]}]};
+ state.work={data:{plans:[p],settings:{revision:1,autoContinue:false}},pending:null,error:'',action:async(...args)=>{calls.push(args);return{accepted:true,plan:p}},refresh(){}};
+ const tree=await render(GroupChat,{groupId:'group-1'}),stop=tree.root.findByType('send-button');
+ assert.equal(stop.props.isStreaming,true);assert.equal(stop.props.disabled,false);
+ await act(async()=>stop.props.onClick());assert.equal(calls.length,1);assert.equal(calls[0][0].id,'queued-work');assert.equal(calls[0][1],'stop');
+ assert.equal(p.steps[0].startedAt,undefined);assert.equal(p.execution.state,'queued');act(()=>tree.unmount());
+});
 test('organizer native-stop recovery explains the state, opens the exact lane and retains Stop',async()=>{
  reset();const cancellations=[];
  state.work={data:{plans:[],requests:[{id:'organizer-request',organizerName:'A',agentId:'organizer-native',status:'unknown',code:'GROUP_STOP_REQUIRES_NATIVE'}],settings:{revision:1,autoContinue:false}},pending:null,error:'',refresh(){},cancelRequest:async id=>cancellations.push(id)};

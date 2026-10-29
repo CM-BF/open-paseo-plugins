@@ -10,7 +10,7 @@ globalThis.window = { setInterval, clearInterval };
 const state = globalThis.__WORK_TEST__ = { generation: 1, calls: [], posts: [] };
 const web = new URL('..', import.meta.url).pathname;
 const mocks = {
-  translation: `export const useTranslation=()=>({t:(key)=>key,i18n:{language:'en'}});`,
+  translation: `import {workEnglish} from '${web}/work-i18n.ts';export const useTranslation=()=>({t:(key)=>key==='paseoWork.execution.queued'?workEnglish.execution.queued:key,i18n:{language:'en'}});`,
   controls: `import {createElement} from 'react';const c=tag=>({children,...props})=>createElement(tag,props,children);export const Button=c('button'),Switch=c('switch'),Tip=c('tip'),DropdownMenu=c('menu'),DropdownMenuContent=c('menu-content'),DropdownMenuItem=c('menu-item'),DropdownMenuLabel=c('menu-label'),DropdownMenuSeparator=c('separator'),DropdownMenuTrigger=c('menu-trigger');`,
   avatar: `export const BotAvatar=()=>null;`,
   toast: `export const toast={error:value=>globalThis.__WORK_TEST__.posts.push({error:value})};`,
@@ -28,7 +28,7 @@ const built = await build({ stdin: { contents: `export {GroupTaskCard} from './g
       if(p.startsWith('@/'))return{path:web+'/../vendor/renderer/'+p.slice(2)+(/menuStyles|utils/.test(p)?'.ts':'.tsx')};
       if(p==='@cindy/maker-shared/botTimeline')return{path:web+'/../vendor/shared/botTimeline.ts'};
     });
-    builder.onLoad({filter:/.*/,namespace:'mock'},args=>({contents:mocks[args.path]}));
+    builder.onLoad({filter:/.*/,namespace:'mock'},args=>({contents:mocks[args.path],resolveDir:web}));
   }}] });
 const module={exports:{}};new Function('require','module','exports',built.outputFiles[0].text)(createRequire(import.meta.url),module,module.exports);
 const {GroupTaskCard,CompanionTaskCard,WorkPlanMessage,WorkHandoffFiles,WorkProjectDirectory,useGroupPlans,observeGroupPlans}=module.exports;
@@ -65,7 +65,7 @@ test('original waiting card chooses real next/retry; unknown execution never exp
   act(()=>tree.unmount());
 });
 test('work cards explain unsent and exact-stop states and open only the recorded native lane',async()=>{
- for(const [code,stateName,expected] of [['HOST_UPGRADE_REQUIRED','idle',/has not been sent/],['PROVIDER_ADMISSION_UNAVAILABLE','idle',/has not been sent/],['GROUP_LANE_BUSY','idle',/has not been sent/],['GROUP_STOP_REQUIRES_NATIVE','unknown',/Open the task session and stop it there/]]){
+ for(const [code,stateName,expected] of [['HOST_UPGRADE_REQUIRED','idle',/has not been sent/],['PROVIDER_ADMISSION_UNAVAILABLE','idle',/has not been sent/],['PROVIDER_QUEUE_UNAVAILABLE','idle',/has not been sent/],['GROUP_LANE_BUSY','idle',/has not been sent/],['GROUP_STOP_REQUIRES_NATIVE','unknown',/Open the task session and stop it there/],['QUEUE_ITEM_REMOVED','unknown',/queued item was removed, but whether it already started is not confirmed/]]){
   state.posts=[];const first=plan().steps[0],p=plan({status:'waiting',currentStep:0,execution:{state:stateName,code},steps:[{...first,status:'failed',agentId:'exact-work-lane'}]});
   const tree=await render(WorkPlanMessage,{plan:p,members,settings,control:control([]),locale:'en',onOpenArtifact:async()=>{}});
   assert.match(texts(tree),expected);assert.doesNotMatch(texts(tree),new RegExp(code));
@@ -213,4 +213,15 @@ test('group tasks read only their persisted exact parent and group, preserve fro
  assert.deepEqual(state.calls.at(-1),{op:'paseo.openTaskArtifact',args:{botId:'a',taskId:'task',parentAgentId:'parent',receiptId:'receipt',groupId:'group',path:'old.md'}});
  const open=tree.root.findAllByType('button').find(b=>b.props.title)?.props.onClick;
  state.generation++;act(()=>open());assert.deepEqual(state.posts,[]);act(()=>tree.unmount());
+});
+
+test('queued native work remains pending and uses an explicit not-started notice without retry or completion controls',async()=>{
+ const p=plan({status:'running',currentStep:0,execution:{state:'queued'},steps:[{...plan().steps[0],status:'pending',agentId:'queued-lane'}]});
+ const tree=await render(WorkPlanMessage,{plan:p,members,settings,control:control([]),locale:'en',onOpenArtifact:async()=>{}});
+ assert.match(texts(tree),/Queued in the task session; this step has not started/);
+ assert.doesNotMatch(texts(tree),/paseoWork.execution.queued/);
+ assert.equal(button(tree,'bots.groupChat.plan.start'),undefined);assert.equal(button(tree,'bots.groupChat.timeline.retryStep'),undefined);
+ assert.equal(tree.root.findAllByProps({'data-testid':'bot-group-plan-end'}).length,0);
+ act(()=>button(tree,'paseoGroups.openTask').props.onClick());assert.equal(state.posts.at(-1).agentId,'queued-lane');
+ act(()=>tree.unmount());
 });

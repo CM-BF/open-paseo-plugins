@@ -36,6 +36,29 @@ async function until(service: CompanionService, paseo: Paseo, id: string, status
   await vi.waitFor(async () => expect((await service.groups.get(paseo, id)).group.round?.status).toBe(status), { timeout: 3000 });
   return service.groups.get(paseo, id);
 }
+it('keeps a native queued speaker queued until its owned turn starts and finishes',async()=>{
+ const t=await setup(),entered=barrier<void>(),release=barrier<void>();
+ vi.mocked(t.driver.reply).mockImplementationOnce(async(_lane,input)=>{await input.queued?.(true);entered.resolve();await release.promise;await input.queued?.(false);return'Owned queue result';});
+ await t.service.groups.send(t.paseo,t.id,{text:'@Cindy queued discussion',clientMessageId:'queued-view'});await entered.promise;
+ const snapshot=await t.service.groups.get(t.paseo,t.id);expect(snapshot.group.round).toMatchObject({status:'queued',steps:[{status:'queued'}]});expect(snapshot.messages.some(m=>m.authorKind==='bot')).toBe(false);
+ release.resolve();const done=await until(t.service,t.paseo,t.id,'completed');expect(done.messages.filter(m=>m.authorKind==='bot').map(m=>m.content)).toEqual(['Owned queue result']);
+});
+it('reports provider queue rejection as definitely unsent without dispatching a fallback discussion',async()=>{
+ const t=await setup(),{nativeLaneFixture}=await import('./testing/native-lane'),f=nativeLaneFixture();Object.assign(t.driver,{ensure:f.driver.ensure.bind(f.driver),reply:f.driver.reply.bind(f.driver),stop:f.driver.stop.bind(f.driver),archive:f.driver.archive.bind(f.driver)});
+ f.admission.mockResolvedValue({status:'unavailable'} as never);
+ await t.service.groups.send(t.paseo,t.id,{text:'@Cindy hello',clientMessageId:'provider-no-queue'});
+ const result=await until(t.service,t.paseo,t.id,'failed');expect(result.group.round!.steps[0]).toMatchObject({status:'failed',code:'PROVIDER_QUEUE_UNAVAILABLE'});
+ expect(f.admission).toHaveBeenCalledOnce();expect(f.agent.inputs.enqueue).not.toHaveBeenCalled();expect(f.agent.interrupt).not.toHaveBeenCalled();
+});
+it('rechecks durable owner admission after preparation and before the first native creation',async()=>{
+ const t=await setup(),{nativeLaneFixture}=await import('./testing/native-lane'),f=nativeLaneFixture();
+ Object.assign(t.driver,{ensure:async(lane:GroupLane,input:Parameters<GroupDriver['ensure']>[1])=>f.driver.ensure(lane,{...input!,recordDispatch:async receipt=>{
+  await input!.recordDispatch(receipt);if(receipt.native?.phase==='prepared')await t.store.transaction(s=>{s.profiles.cindy!.enabled=false;});
+ }}),reply:f.driver.reply.bind(f.driver),stop:f.driver.stop.bind(f.driver),archive:f.driver.archive.bind(f.driver)});
+ await t.service.groups.send(t.paseo,t.id,{text:'@Cindy reserved prompt',clientMessageId:'revoked-admission'});await until(t.service,t.paseo,t.id,'failed');
+ expect(f.paseo.agents.create).not.toHaveBeenCalled();expect(f.agent.inputs.enqueue).not.toHaveBeenCalled();expect(f.admission).not.toHaveBeenCalled();
+ const lane=Object.values((await t.store.snapshot()).groups![t.id]!.lanes)[0]!;expect(lane.dispatch?.native?.phase).toBe('cancelled');
+});
 it('persists delete admission across native cleanup failure and keeps read-only recovery reachable',async()=>{
  const t=await setup();await t.service.groups.send(t.paseo,t.id,{text:'@Cindy hello',clientMessageId:'old'});await until(t.service,t.paseo,t.id,'completed');
  const entered=barrier<void>(),release=barrier<void>();vi.mocked(t.driver.archive).mockImplementationOnce(async()=>{entered.resolve();await release.promise;throw new Error('offline');});
@@ -243,7 +266,7 @@ it('deletes only group lanes, preserving companions and their private conversati
 it('persists the owned group turn before Stop and reuses the same cancellation after restart without touching a human successor',async()=>{
  const t=await setup();const {nativeLaneFixture}=await import('./testing/native-lane');const f=nativeLaneFixture();
  Object.assign(t.driver,{ensure:f.driver.ensure.bind(f.driver),reply:f.driver.reply.bind(f.driver),stop:f.driver.stop.bind(f.driver),archive:f.driver.archive.bind(f.driver)});
- f.sendIfIdle.mockImplementation(async()=>{f.patch({status:'running',activeTurn:{turnId:'owned-turn'}});f.event({type:'turn_started',turnId:'owned-turn',provider:'codex'});return{status:'accepted',turnId:'owned-turn'};});
+ f.admission.mockImplementation(async()=>{f.patch({status:'running',activeTurn:{turnId:'owned-turn'}});f.event({type:'turn_started',turnId:'owned-turn',provider:'codex'});return{status:'accepted',turnId:'owned-turn'};});
  const sent=await t.service.groups.send(t.paseo,t.id,{text:'@Cindy work',clientMessageId:'owned'});
  await vi.waitFor(async()=>expect(Object.values((await new CompanionStore(t.root).snapshot()).groups![t.id]!.lanes)[0]!.dispatch?.phase).toBe('accepted'));
  const receipt=Object.values((await t.store.snapshot()).groups![t.id]!.lanes)[0]!.dispatch!;expect(receipt.turnId).toBe('owned-turn');
@@ -252,14 +275,14 @@ it('persists the owned group turn before Stop and reuses the same cancellation a
  const recovered=new CompanionService(new CompanionStore(t.root),{groupDriver:()=>f.driver});services.push(recovered);f.patch({status:'running',activeTurn:{turnId:'human-next'}});f.agent.cancelTurn.mockResolvedValue({status:'changed'});
  await recovered.groups.stop(t.paseo,t.id,sent.round!.id);await until(recovered,t.paseo,t.id,'stopped');
  expect(f.agent.cancelTurn.mock.calls.every(call=>(call as any[])[0].expectedTurnId==='owned-turn'&&(call as any[])[0].messageId===receipt.cancelMessageId)).toBe(true);
- expect(f.agent.activeTurn).toEqual({turnId:'human-next'});expect(f.agent.interrupt).not.toHaveBeenCalled();expect(f.agent.send).not.toHaveBeenCalled();expect(f.sendIfIdle).toHaveBeenCalledOnce();
+ expect(f.agent.activeTurn).toEqual({turnId:'human-next'});expect(f.agent.interrupt).not.toHaveBeenCalled();expect(f.agent.send).not.toHaveBeenCalled();expect(f.admission).toHaveBeenCalledOnce();
 });
 it('preserves a lost group admission across disk reopen and blocks Stop from pretending idle confirmed it',async()=>{
  const t=await setup();const {nativeLaneFixture}=await import('./testing/native-lane');const f=nativeLaneFixture();Object.assign(t.driver,{ensure:f.driver.ensure.bind(f.driver),reply:f.driver.reply.bind(f.driver),stop:f.driver.stop.bind(f.driver),archive:f.driver.archive.bind(f.driver)});
- f.sendIfIdle.mockRejectedValue(new Error('lost ACK'));const sent=await t.service.groups.send(t.paseo,t.id,{text:'@Cindy work',clientMessageId:'lost'});const unknown=await until(t.service,t.paseo,t.id,'unknown');expect(unknown.group.round!.code).toBe('ADMISSION_OUTCOME_UNKNOWN');
+ f.admission.mockRejectedValue(new Error('lost ACK'));const sent=await t.service.groups.send(t.paseo,t.id,{text:'@Cindy work',clientMessageId:'lost'});const unknown=await until(t.service,t.paseo,t.id,'unknown');expect(unknown.group.round!.code).toBe('ADMISSION_OUTCOME_UNKNOWN');
  await t.service.close();const recovered=new CompanionService(new CompanionStore(t.root),{groupDriver:()=>f.driver});services.push(recovered);
  await recovered.groups.stop(t.paseo,t.id,sent.round!.id);await until(recovered,t.paseo,t.id,'unknown');
- expect((await recovered.groups.get(t.paseo,t.id)).group.round!.code).toBe('ADMISSION_OUTCOME_UNKNOWN');expect(f.sendIfIdle).toHaveBeenCalledOnce();expect(f.agent.cancelTurn).not.toHaveBeenCalled();expect(f.agent.interrupt).not.toHaveBeenCalled();
+ expect((await recovered.groups.get(t.paseo,t.id)).group.round!.code).toBe('ADMISSION_OUTCOME_UNKNOWN');expect(f.admission).toHaveBeenCalledOnce();expect(f.agent.cancelTurn).not.toHaveBeenCalled();expect(f.agent.interrupt).not.toHaveBeenCalled();
 });
 it('returns committed membership with visible cleanup pending and only clears it after verified native archive',async()=>{
  const t=await setup(3);await t.service.groups.send(t.paseo,t.id,{text:'@Partner2 hello',clientMessageId:'member'});await until(t.service,t.paseo,t.id,'completed');
@@ -272,7 +295,7 @@ it.each(['running','unknown'] as const)('migrates legacy %s without a receipt to
  const t=await setup();await t.service.groups.send(t.paseo,t.id,{text:'@Cindy legacy',clientMessageId:'legacy'});await until(t.service,t.paseo,t.id,'completed');await t.service.close();
  await t.store.transaction(state=>{const group=state.groups![t.id]!,round=group.rounds[0]!;round.status=status;round.position=0;round.steps[0]!.status='running';delete Object.values(group.lanes)[0]!.dispatch;});
  const {nativeLaneFixture}=await import('./testing/native-lane');const f=nativeLaneFixture();const recovered=new CompanionService(new CompanionStore(t.root),{groupDriver:()=>f.driver});services.push(recovered);
- const value=await recovered.groups.get(t.paseo,t.id);expect(value.group.round).toMatchObject({status:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN',steps:[{status:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN'}]});expect(f.agent.interrupt).not.toHaveBeenCalled();expect(f.sendIfIdle).not.toHaveBeenCalled();
+ const value=await recovered.groups.get(t.paseo,t.id);expect(value.group.round).toMatchObject({status:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN',steps:[{status:'unknown',code:'ADMISSION_OUTCOME_UNKNOWN'}]});expect(f.agent.interrupt).not.toHaveBeenCalled();expect(f.admission).not.toHaveBeenCalled();
 });
 it('keeps a durable unknown recovery fence while native stop is pending, so a second restart cannot skip it',async()=>{
  const t=await setup();await t.service.groups.send(t.paseo,t.id,{text:'@Cindy work',clientMessageId:'before-crash'});await until(t.service,t.paseo,t.id,'completed');await t.service.close();
@@ -282,5 +305,5 @@ it('keeps a durable unknown recovery fence while native stop is pending, so a se
  const persisted=(await new CompanionStore(t.root).snapshot()).groups![t.id]!;expect(persisted.rounds[0]!.status).toBe('unknown');expect(persisted.messages.some(m=>m.code==='HOST_RESTARTED'&&m.content.includes('ended'))).toBe(false);
  const {nativeLaneFixture}=await import('./testing/native-lane');const f=nativeLaneFixture();f.patch({cwd:Object.values(persisted.lanes)[0]!.cwd,workspaceId:Object.values(persisted.lanes)[0]!.workspaceId,status:'running',activeTurn:{turnId:'owned-turn'}});
  const second=new CompanionService(new CompanionStore(t.root),{groupDriver:()=>f.driver});services.push(second);expect((await second.groups.get(t.paseo,t.id)).group.round).toMatchObject({status:'unknown',code:'GROUP_STOP_REQUIRES_NATIVE'});expect(f.agent.cancelTurn).toHaveBeenCalledWith({expectedTurnId:'owned-turn',messageId:'fixed'});
- release.resolve();await reopening;expect(f.sendIfIdle).not.toHaveBeenCalled();expect(f.agent.interrupt).not.toHaveBeenCalled();
+ release.resolve();await reopening;expect(f.admission).not.toHaveBeenCalled();expect(f.agent.interrupt).not.toHaveBeenCalled();
 });

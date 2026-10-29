@@ -8,7 +8,7 @@ import { resolveBotGroupMentions, type BotGroupTrackedMention } from '../shared/
 import { BOT_GROUP_MAX_MEMBERS, BOT_GROUP_MIN_MEMBERS, BOT_GROUP_NO_REPLY_SENTINEL } from '../shared/vendor/botGroupChat';
 import { CompanionStore, type SavedState } from './store';
 import { CompanionRuntime, type Paseo } from './runtime';
-import { NativeGroupDriver, prepareLaneDispatch, stopFailureCode, type GroupDriver, type GroupLane } from './group-driver';
+import { NativeGroupDriver, prepareLaneDispatch, isNativeAdmissionWrite, stopFailureCode, type GroupDriver, type LaneDispatch, type GroupLane } from './group-driver';
 import { botId, CompanionError, record, string, throwIpcError } from './errors';
 import { untrustedJsonBlock } from './vendor/untrustedPrompt';
 import { botGroupQuoteExcerpt } from '../shared/vendor/botGroupQuote';
@@ -53,7 +53,7 @@ function publicFailure(error: unknown): string {
   if(code==='unsupported_capability')return 'HOST_UPGRADE_REQUIRED';
   if((error as {dispatchOutcome?:string})?.dispatchOutcome==='unknown')return 'ADMISSION_OUTCOME_UNKNOWN';
   return ['RUNTIME_TIMEOUT', 'GROUP_LANE_BUSY', 'GROUP_LANE_MISSING', 'GROUP_LANE_MISMATCH', 'REPLY_NOT_CONFIRMED', 'STOP_NOT_CONFIRMED',
-    'ATTACHMENT_INPUT_UNAVAILABLE','ADMISSION_OUTCOME_UNKNOWN','PROVIDER_ADMISSION_UNAVAILABLE','GROUP_STOP_REQUIRES_NATIVE', 'CONNECTION_LOST', 'CAPABILITY_NOT_APPLIED', 'PERMISSION_MODE_UNAVAILABLE', 'PROVIDER_UNAVAILABLE', 'BACKGROUND_UNSUPPORTED', 'HOST_UPGRADE_REQUIRED', 'MEMBER_UNAVAILABLE'].includes(code ?? '') ? code! : 'RUNTIME_ERROR';
+    'ATTACHMENT_INPUT_UNAVAILABLE','ADMISSION_OUTCOME_UNKNOWN','PROVIDER_ADMISSION_UNAVAILABLE','PROVIDER_QUEUE_UNAVAILABLE','GROUP_STOP_REQUIRES_NATIVE', 'CONNECTION_LOST', 'CAPABILITY_NOT_APPLIED', 'PERMISSION_MODE_UNAVAILABLE', 'PROVIDER_UNAVAILABLE', 'BACKGROUND_UNSUPPORTED', 'HOST_UPGRADE_REQUIRED', 'MEMBER_UNAVAILABLE'].includes(code ?? '') ? code! : 'RUNTIME_ERROR';
 }
 function groupLanes(state:SavedState,id:string):GroupLane[]{return [...Object.values(execution(state,id)!.lanes),...Object.values(state.groupThreads??{}).filter(thread=>thread.groupId===id).flatMap(thread=>Object.values(thread.execution.lanes)),...Object.values(state.groupPlans??{}).filter(plan=>plan.view.groupId===id).flatMap(plan=>[...Object.values(plan.lanes),...plan.retiredLanes??[]]),...Object.values(state.groupPlanRequests??{}).filter(request=>request.view.groupId===id&&request.lane).map(request=>request.lane!)];}
 function roundOf(group: SavedGroup) { return (group.activeRoundId ? group.rounds.find(round => round.id === group.activeRoundId) : group.rounds.at(-1)) ?? null; }
@@ -156,7 +156,7 @@ export class CompanionGroups {
         const group = execution(await this.store.snapshot(),id)!; const round = roundOf(group)!;
         let stopCode:string|undefined;
         for (const lane of Object.values(group.lanes).filter(lane => lane.roundId === round.id)) {
-          try { await driver.stop(lane); }
+          try { await driver.stop(lane, this.receiptWriter(id,lane)); }
           catch(error) { stopCode=stopFailureCode(error); }
         }
         await this.store.transaction(state=>{const group=execution(state,id)!,current=roundOf(group);if(current?.id!==round.id)return;
@@ -323,6 +323,19 @@ export class CompanionGroups {
     if (round.status === 'queued') this.launch(paseo, id, round.id);
     return { accepted: true as const, round };
   }
+  private receiptWriter(id: string, lane: GroupLane) {
+    return async (receipt: LaneDispatch) => { await this.store.transaction(state => {
+      const stored = Object.values(execution(state, id)?.lanes ?? {}).find(value => value.agentId === lane.agentId);
+      if (!stored || stored.dispatch?.messageId !== receipt.messageId) throwIpcError('GROUP_LANE_MISMATCH', 'Discussion admission changed');
+      if(isNativeAdmissionWrite(stored.dispatch,receipt)){
+        const group=groupIn(state,id),round=roundOf(group),profile=state.profiles[lane.botId];
+        if(!profile?.enabled||profile.status!=='active'||state.profileDeletions?.[lane.botId]||!group.botIds.includes(lane.botId))throwIpcError('MEMBER_UNAVAILABLE','The companion is no longer available');
+        if(!round||round.id!==lane.roundId||round.status==='stopping'||round.stopRequested)throwIpcError('GROUP_STOPPED','The discussion no longer owns this admission');
+      }
+      stored.dispatch = receipt; if(receipt.native?.creationComplete)stored.phase='ready';
+      if (receipt.native?.workspaceId) stored.workspaceId = receipt.native.workspaceId;
+    }); };
+  }
   private launch(paseo: Paseo, id: string, roundId: string) {
     if (this.closed) return;
     const previous = this.jobs.get(id);
@@ -378,11 +391,27 @@ export class CompanionGroups {
           if (signal.aborted) return;
           const intent: GroupLane = { agentId, sessionScope, operationId: `cindy-group:${id}:${roundId}:${p.id}`, groupId: group.threadContext?.groupId ?? id, roundId, botId: p.id,
             ...(group.threadContext ? { threadRootId: group.threadContext.rootId } : {}),
-            cwd, title: `${group.name} · ${p.name}`, config, scope: main ? laneScope : 'talk', phase: 'creating' };
+            cwd, title: `${group.name} · ${p.name}`, config, scope: main ? laneScope : 'talk', phase: 'creating', nativeInputVersion: 1 };
           lane = await this.store.transaction(state => { const g = groupIn(state, id); return g.lanes[laneKey] ?? (g.lanes[laneKey] = intent); });
         }
+        const current = groupIn(await this.store.snapshot(), id);
+        const includedNotes = [...(roundOf(current)?.noteMessageIds ?? [])];
+        const messageId = `cindy-group-${roundId}-${index}`;
+        const prompt = lane.dispatch?.messageId === messageId && lane.dispatch.native
+          ? lane.dispatch.native.intent.input.text : groupTurnPrompt(current, roundOf(current)!, index);
+        lane = await this.store.transaction(state => {
+          const g = groupIn(state, id), l = g.lanes[laneKey]!, r = roundOf(g)!;
+          if (r.id !== roundId || signal.aborted || r.status === 'stopping') throwIpcError('GROUP_STOPPED', 'Discussion stopped');
+          if (!l.dispatch || l.dispatch.messageId !== messageId) {
+            if (l.dispatch && !['prepared','not-sent','completed'].includes(l.dispatch.phase)) throwIpcError('ADMISSION_OUTCOME_UNKNOWN', 'The previous input is unsettled');
+            l.dispatch = prepareLaneDispatch(messageId);
+          }
+          l.roundId = roundId; r.status = 'queued'; r.steps[index]!.status = 'queued';
+          Object.assign(r.steps[index]!, { agentId: l.agentId, workspaceId: l.workspaceId }); r.updatedAt = Date.now(); return l;
+        });
+        const recordDispatch = this.receiptWriter(id, lane);
         let native: { workspaceId?: string };
-        try { native = await driver.ensure(lane); }
+        try { native = await driver.ensure(lane, { prompt, messageId, signal, recordDispatch }); }
         catch (error) {
           if (lane.phase !== 'ready') await this.store.transaction(state => { groupIn(state, id).lanes[laneKey]!.phase = 'unknown'; });
           throw error;
@@ -392,18 +421,12 @@ export class CompanionGroups {
           await driver.configure(lane, config);
         }
         lane=await this.store.transaction(state => {
-          const g = groupIn(state, id); const l = g.lanes[laneKey]!; l.phase = 'ready'; l.workspaceId = native.workspaceId; l.config = config; l.roundId = roundId;l.sessionScope=sessionScope;
-          l.dispatch=prepareLaneDispatch(`cindy-group-${roundId}-${index}`);
-          const r = roundOf(g)!; if (r.id === roundId) Object.assign(r.steps[index]!, { agentId: lane.agentId, workspaceId: native.workspaceId });
-          return l;
+          const g = groupIn(state, id); const l = g.lanes[laneKey]!; l.phase = 'ready'; l.workspaceId = native.workspaceId; l.config = config;l.sessionScope=sessionScope;
+          const r = roundOf(g)!; if (r.id === roundId) Object.assign(r.steps[index]!, { workspaceId: native.workspaceId }); return l;
         });
-        if (signal.aborted || this.closed) { await driver.stop(lane); return; }
-        await this.store.transaction(state => { const r = roundOf(groupIn(state, id))!; if (r.id === roundId && !signal.aborted && r.status !== 'stopping') { r.status = 'running'; r.steps[index]!.status = 'running'; r.updatedAt = Date.now(); } });
-        if (signal.aborted || this.closed) return;
-        const current = groupIn(await this.store.snapshot(), id);
-        const includedNotes = [...(roundOf(current)?.noteMessageIds ?? [])];
-        const reply = await driver.reply(lane, { prompt: groupTurnPrompt(current, roundOf(current)!, index), messageId: `cindy-group-${roundId}-${index}`, signal,
-          recordDispatch:async receipt=>{await this.store.transaction(state=>{const stored=execution(state,id)!.lanes[laneKey]!;if(stored.agentId!==lane.agentId||stored.dispatch?.messageId!==receipt.messageId)throwIpcError('GROUP_LANE_MISMATCH','Discussion admission changed');stored.dispatch=receipt;});},
+        if (signal.aborted || this.closed) { await driver.stop(lane, this.receiptWriter(id,lane)); return; }
+        const reply = await driver.reply(lane, { prompt, messageId, signal, recordDispatch,
+          queued: async waiting => { await this.store.transaction(state => { const r = roundOf(execution(state,id)!); if (r?.id === roundId && !signal.aborted && active(r.status) && r.status !== 'stopping') { r.status = waiting ? 'queued' : 'running'; r.steps[index]!.status = waiting ? 'queued' : 'running'; } }); },
           permission: waiting => { void this.store.transaction(state => { const r = roundOf(execution(state,id)!); if (r?.id === roundId && !signal.aborted && active(r.status) && r.status !== 'stopping') { r.status = waiting ? 'permission' : 'running'; r.steps[index]!.status = waiting ? 'permission' : 'running'; } }).catch(() => {}); } });
         if (signal.aborted || this.closed) return;
         await this.store.transaction(state => {
@@ -423,7 +446,7 @@ export class CompanionGroups {
         if (signal.aborted || this.closed) return;
         const latest = groupIn(await this.store.snapshot(), id); const lane = Object.values(latest.lanes).find(lane => lane.roundId === roundId && lane.botId === step.botId);
         let stopCode:string|undefined;
-        if (lane) { try { await driver.stop(lane); } catch(error) { stopCode=stopFailureCode(error); } }
+        if (lane) { try { await driver.stop(lane, this.receiptWriter(id,lane)); } catch(error) { stopCode=stopFailureCode(error); } }
         const stopped=!stopCode;
         const proceed = await this.store.transaction(state => {
           const g = groupIn(state, id); const r = roundOf(g)!; if (r.id !== roundId || signal.aborted) return;
@@ -492,7 +515,7 @@ export class CompanionGroups {
     if (job) await job.promise;
     const group = groupIn(await this.store.snapshot(), id); const driver = job?.driver ?? this.makeDriver(paseo);
     let failure:string|undefined;
-    for (const lane of Object.values(group.lanes).filter(lane => lane.roundId === roundId)) { try { await driver.stop(lane); } catch(error) { failure=stopFailureCode(error); } }
+    for (const lane of Object.values(group.lanes).filter(lane => lane.roundId === roundId)) { try { await driver.stop(lane, this.receiptWriter(id,lane)); } catch(error) { failure=stopFailureCode(error); } }
     await this.store.transaction(state => {
       const r = roundOf(groupIn(state, id))!; if (r.id !== roundId) return;
       r.status = failure ? 'unknown' : 'stopped'; r.code = failure; r.updatedAt = Date.now();
@@ -544,7 +567,7 @@ export class CompanionGroups {
     for (const [id, job] of jobs) {
       const group = execution(await this.store.snapshot(),id); const round = group && roundOf(group); if (!group || !round) continue;
       let failed:string|undefined;
-      for (const lane of Object.values(group.lanes).filter(lane => lane.roundId === round.id)) { try { await job.driver.stop(lane); } catch(error) { failed=stopFailureCode(error); } }
+      for (const lane of Object.values(group.lanes).filter(lane => lane.roundId === round.id)) { try { await job.driver.stop(lane, this.receiptWriter(id,lane)); } catch(error) { failed=stopFailureCode(error); } }
       await this.store.transaction(state => {
         const r = roundOf(execution(state,id)!); if (r?.id === round.id && active(r.status)) { r.status = failed ? 'unknown' : 'interrupted'; r.code = failed??'PLUGIN_CLOSED';
           for (const step of r.steps) if (['queued', 'running', 'permission'].includes(step.status)) step.status = failed ? 'unknown' : 'stopped'; }

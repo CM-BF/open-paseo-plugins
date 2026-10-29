@@ -14,10 +14,16 @@ export function sessionBinding(state:SavedState,botId:string,input:SessionScope)
     const group=scope.groupId?state.groups?.[scope.groupId]:undefined;
     if(!group||group.deletedAt||group.mutation||!group.botIds.includes(botId))throwIpcError('SESSION_SCOPE_REVOKED','This companion no longer belongs to the group');
     const plan=scope.planId?state.groupPlans?.[scope.planId]:undefined;
-    if(scope.role==='plan'&&(!plan||plan.view.groupId!==group.id||plan.view.status!=='running'||!['running','permission'].includes(plan.view.execution.state)))throwIpcError('SESSION_SCOPE_REVOKED','This work step is no longer executing');
+    if(scope.role==='plan'&&(!plan||plan.view.groupId!==group.id||plan.view.status!=='running'||!['preparing','queued','running','permission'].includes(plan.view.execution.state)))throwIpcError('SESSION_SCOPE_REVOKED','This work step is no longer executing');
     if(scope.role==='plan'){
       const step=plan!.view.currentStep===null?undefined:plan!.view.steps[plan!.view.currentStep];
-      if(!step||step.botId!==botId||step.agentId!==scope.agentId||step.status!=='running')throwIpcError('SESSION_SCOPE_REVOKED','This work session no longer owns the active step');
+      const attempt=plan!.attempts.at(-1),lane=plan!.lanes[botId];
+      const reserved=Boolean(attempt&&attempt.position===plan!.view.currentStep&&attempt.botId===botId&&attempt.agentId===scope.agentId
+        &&['preparing','dispatching'].includes(attempt.phase)&&attempt.dispatch?.messageId===attempt.messageId
+        &&lane?.dispatch?.messageId===attempt.messageId&&lane.nativeInputVersion===1
+        &&attempt.dispatch.native?.intent.agentId===scope.agentId&&attempt.dispatch.native.intent.messageId===attempt.messageId
+        &&['dispatching','queued','accepted'].includes(attempt.dispatch.phase));
+      if(!step||step.botId!==botId||step.agentId!==scope.agentId||(!reserved&&step.status!=='running'))throwIpcError('SESSION_SCOPE_REVOKED','This work session no longer owns the active step');
     }
     const lanes=scope.role==='group'?Object.values(group.lanes):Object.values(plan!.lanes);
     binding=lanes.find(lane=>lane.botId===botId&&lane.agentId===scope.agentId&&!lane.retired);
