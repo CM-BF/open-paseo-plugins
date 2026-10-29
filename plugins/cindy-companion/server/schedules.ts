@@ -7,7 +7,7 @@ import { mkdir } from 'node:fs/promises';
 import type { PluginBeforeRequests } from '@getpaseo/plugin/server';
 import type { BotModelRoute } from '../shared/vendor/botModelChain';
 import { CompanionStore } from './store';
-import { CompanionRuntime, resolveFastFeature, routeProvider, selectedRoute, type Paseo } from './runtime';
+import { CompanionRuntime, COMPANION_CONTEXT_GUIDANCE, resolveFastFeature, routeProvider, selectedRoute, type Paseo } from './runtime';
 import { parseRoutineInput, type Routine, type RoutineInput } from './vendor/scheduler/routines';
 import { CompanionError, record, string, throwIpcError } from './errors';
 import { ScheduleSdk, scheduleCadence } from './schedule-sdk';
@@ -55,6 +55,7 @@ export interface SavedRoutine {
   botId: string; scheduleId?: string; operationName: string; phase: 'creating' | 'ready' | 'unknown'; data: Routine;
   execution?: { cwd: string; route: BotModelRoute; mode: string; profileVersion: number; providerOptions?: Record<string, unknown> };
   manualRuns?: ManualRun[];
+  nativePrompt?: string;
 }
 interface ManualRun {
   operationId: string; requestedAt: number; baselineRunIds: string[];
@@ -63,6 +64,10 @@ interface ManualRun {
 }
 function pending(run: ManualRun) { return ['queued', 'running', 'unknown'].includes(run.status); }
 function routinePrompt(prompt: string): string {
+  return `Before doing this routine, read the companion context and use its current identity and preferences. ${COMPANION_CONTEXT_GUIDANCE}\n\nStanding instruction:\n${prompt}`;
+}
+// Existing uncertain creation intents must still match the exact prompt they originally sent.
+function legacyRoutinePrompt(prompt: string): string {
   return `Before doing this routine, call cindy_memory.companion_context and use its current identity and preferences. If that tool is unavailable, stop and report that the companion plugin must be enabled.\n\nStanding instruction:\n${prompt}`;
 }
 export class CompanionRoutines {
@@ -94,7 +99,7 @@ export class CompanionRoutines {
     const execution = saved.execution;
     if (actual.id !== candidates[0]!.id || actual.name !== saved.operationName || target?.type !== 'new-agent' ||
       target.config?.cwd !== execution.cwd || target.config?.provider !== routeProvider(execution.route) || target.config?.model !== execution.route.model ||
-      target.config?.modeId !== execution.mode || actual.prompt !== routinePrompt(saved.data.prompt) ||
+      target.config?.modeId !== execution.mode || actual.prompt !== (saved.nativePrompt ?? legacyRoutinePrompt(saved.data.prompt)) ||
       cadence?.type !== 'cron' || cadence.expression !== expectedCadence.expression || (cadence.timezone ?? 'UTC') !== expectedCadence.timezone)
       throwIpcError('ROUTINE_BINDING_MISMATCH', 'The native schedule differs from its recorded creation intent');
     await this.store.safePath(execution.cwd);
@@ -223,7 +228,7 @@ export class CompanionRoutines {
         const providerOptions = provider === 'codex' ? { approval_policy: 'on-request', sandbox_mode: 'workspace-write' } : undefined;
         const instructions = await this.runtime.instructionsFor(botId);
         const featureValues = await this.features(paseo, route, cwd);
-        saved = { botId, operationName: `cindy:${botId}:${id}`, phase: 'creating', data,
+        saved = { botId, operationName: `cindy:${botId}:${id}`, phase: 'creating', data, nativePrompt: prompt,
           execution: { cwd, route, mode, profileVersion: profile.currentVersion, ...(providerOptions ? { providerOptions } : {}) } };
         await this.store.transaction(state => { state.routines[id] = saved!; });
         try {
@@ -246,7 +251,7 @@ export class CompanionRoutines {
       if (JSON.stringify(input.modelOverride) !== JSON.stringify(saved.data.modelOverride)) throwIpcError('UNSUPPORTED_ROUTINE_OPTION', 'Changing an existing routine model requires an upgraded host');
       await driver.update(saved.scheduleId, { prompt, cadence });
       if (input.enabled !== saved.data.enabled) await (input.enabled ? driver.resume(saved.scheduleId) : driver.pause(saved.scheduleId));
-      await this.store.transaction(state => { state.routines[id] = { ...saved!, data }; }); return data;
+      await this.store.transaction(state => { state.routines[id] = { ...saved!, data, nativePrompt: prompt }; }); return data;
     });
   }
   async history(botId: string, id: string, paseo?: Paseo) {

@@ -7,6 +7,7 @@ import { CompanionStore, type Binding } from './store';
 import { CompanionError, throwIpcError } from './errors';
 
 export type Paseo = PluginHandlerContext['paseo'];
+export const COMPANION_CONTEXT_GUIDANCE = 'Discover the MCP tool by server cindy_memory and tool basename companion_context, then call its actual registered name. Hosts may expose it as cindy_memory.companion_context or mcp__cindy_memory__companion_context. When a tool registry such as ALL_TOOLS is available, match both cindy_memory and companion_context in its name or metadata; do not require a dot separator. A failed exact-name search does not establish that the plugin is disabled. If discovery or the actual call fails, stop and report that specific failure.';
 type Agent = ReturnType<Paseo['agents']['ref']>;
 type EvolvingAgent = Agent & {
   setModel?: (modelId: string | null) => Promise<void>;
@@ -50,7 +51,7 @@ export class CompanionRuntime {
   async close(): Promise<void> { this.disposed = true; await Promise.allSettled([...this.ensureJobs.values(), ...this.applyJobs.values()]); }
   private assertOpen() { if (this.disposed) throwIpcError('PLUGIN_CLOSED', 'Companion plugin is closing'); }
   private systemPrompt(profile: CompanionProfile): string {
-    return [this.mcpFactory ? 'At the start of every user turn, call cindy_memory.companion_context. It contains the current companion identity, user preferences and memory-enabled setting; use those current values in place of the initial profile below. Read and write durable memories only through the memory_list, memory_read, memory_write, memory_update and memory_delete tools. Do not edit memory files directly. Respect memoryEnabled=false.' : '',
+    return [this.mcpFactory ? `At the start of every user turn, read the companion context. ${COMPANION_CONTEXT_GUIDANCE} It contains the current companion identity, user preferences and memory-enabled setting; use those current values in place of the initial profile below. Read and write durable memories only through this server's memory_list, memory_read, memory_write, memory_update and memory_delete tools, using their actual registered names in the same way. Do not edit memory files directly. Respect memoryEnabled=false.` : '',
       profile.identitySource, profile.userContextSource ? `Initial user preferences:\n${profile.userContextSource}` : ''].filter(Boolean).join('\n\n');
   }
   async state(id: string): Promise<RuntimeState> {

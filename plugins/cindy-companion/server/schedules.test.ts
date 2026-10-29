@@ -61,6 +61,9 @@ it('injects current identity and memory only into the immutable owned routine di
     mcpServers: { other: { type: 'http' as const, url: 'http://127.0.0.1/other' } } } };
   const result = await service.routines.beforeCreate(owned, paseo);
   expect(result.config.systemPrompt).toContain('Updated after schedule creation'); expect(result.config.systemPrompt).toContain('Current preferences');
+  expect(result.config.systemPrompt).toContain('mcp__cindy_memory__companion_context');
+  expect(result.config.systemPrompt).toContain('do not require a dot separator');
+  expect(saved.nativePrompt).toContain('mcp__cindy_memory__companion_context');
   expect(result.config.mcpServers).toMatchObject({ other: owned.config.mcpServers.other, cindy_memory: { url: 'http://127.0.0.1/fake/cindy' } });
   expect(result.config.modeId).toBe('auto'); expect(result.config.providerOptions).toMatchObject({ approval_policy: 'on-request', sandbox_mode: 'workspace-write', web_search: 'disabled' });
   expect(result.config.toolPolicy).toBeUndefined(); expect(owned.config.modeId).toBe('full-access');
@@ -131,6 +134,16 @@ it('does not recover a same-name foreign schedule or delete it', async () => {
   await expect(service.routines.reconcile('cindy', uncertain.data.id, paseo)).rejects.toMatchObject({ code: 'ROUTINE_BINDING_MISMATCH' });
   await expect(service.routines.remove('cindy', uncertain.data.id, paseo)).rejects.toMatchObject({ code: 'ROUTINE_BINDING_MISMATCH' });
   expect(driver.remove).not.toHaveBeenCalled(); expect((await store.snapshot()).routines[uncertain.data.id]!.phase).toBe('unknown');
+});
+it('preserves exact legacy prompt ownership when recovering an intent created before normalized tool discovery', async () => {
+  const { service, store, driver, paseo, data } = await setup(); const create = vi.mocked(driver.create).getMockImplementation()!;
+  vi.mocked(driver.create).mockImplementation(async input => { await create(input); throw new Error('lost reply'); });
+  await expect(service.routines.save(paseo, 'cindy', input())).rejects.toMatchObject({ code: 'SCHEDULE_OUTCOME_UNKNOWN' });
+  const uncertain = Object.values((await store.snapshot()).routines)[0]!;
+  await store.transaction(state => { delete state.routines[uncertain.data.id]!.nativePrompt; });
+  data.get('schedule-1')!.prompt = `Before doing this routine, call cindy_memory.companion_context and use its current identity and preferences. If that tool is unavailable, stop and report that the companion plugin must be enabled.\n\nStanding instruction:\n${input().prompt}`;
+  expect(await service.routines.reconcile('cindy', uncertain.data.id, paseo)).toMatchObject({ backendState: 'ready' });
+  expect(driver.create).toHaveBeenCalledTimes(1);
 });
 it('public CLI invocation uses arguments, explicit home and a fake executor in tests', async () => {
   const execute = vi.fn(async () => ({ stdout: '{"id":"schedule-test","status":"active"}' }));
