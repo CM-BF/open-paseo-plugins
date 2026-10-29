@@ -91,7 +91,8 @@ export class DmMessageSources {
           return { status: 'unsupported', reason: 'merged-message' };
         const item = entry.item;
         if (item.type !== 'user_message' && item.type !== 'assistant_message') throwIpcError('DM_SOURCE_INVALID', 'Invalid source');
-        if (item.type === 'assistant_message' && (!entry.turnId || agent.activeTurn?.turnId === entry.turnId))
+        // Missing turn identity is not evidence that an older message is still streaming.
+        if (item.type === 'assistant_message' && entry.turnId && agent.activeTurn?.turnId === entry.turnId)
           return { status: 'unavailable', reason: 'active-message' };
         // A replacement between historical lookup and delivery invalidates the old snapshot.
         checkOpen(signal);
@@ -102,7 +103,7 @@ export class DmMessageSources {
         if (probe.error) return { status: 'unavailable', reason: 'history-error' };
         if (probe.agentId !== source.agentId || !['canonical', 'projected'].includes(probe.projection)) return { status: 'unavailable', reason: 'invalid-page' };
         if (probe.epoch !== epoch || probe.gap || probe.staleCursor) return { status: 'unavailable', reason: 'history-changed' };
-        if (item.type === 'assistant_message' && agent.activeTurn?.turnId === entry.turnId)
+        if (item.type === 'assistant_message' && entry.turnId && agent.activeTurn?.turnId === entry.turnId)
           return { status: 'unavailable', reason: 'active-message' };
         const result: DmSourceResult = { status: 'available', snapshot: { botId: owner.botId,
           source: { agentId: source.agentId, reference: referenceOf(entry), position: { epoch, seq: entry.seqStart } },

@@ -127,6 +127,34 @@ test('a running assistant source stays unavailable, and an inactive source does 
   f.native.activeTurn = null;
   expect(await f.read.read(f.paseo, requested)).toMatchObject({ status: 'available', snapshot: { evidence: { sealed: 'unavailable' } } });
 });
+test.each(['idle', 'later-turn'] as const)('an older assistant without turn identity remains readable during %s without inventing provenance', async state => {
+  const f = await fixture(), assistant: Entry = { ...message(), turnId: undefined,
+    item: { type: 'assistant_message', messageId: 'legacy-assistant', text: 'Earlier reply without a recorded turn' } };
+  f.refetch.mockResolvedValue(page([assistant]));
+  f.native.activeTurn = state === 'later-turn' ? { turnId: 'later-human-turn', startedAt: 'now' } : null;
+  const before = await readFile(join(f.path, 'state.json'));
+  const result = await f.read.read(f.paseo, { ...source,
+    reference: { role: 'assistant', providerMessageId: 'legacy-assistant' } });
+  expect(result).toEqual({ status: 'available', snapshot: {
+    botId: 'cindy', text: 'Earlier reply without a recorded turn', createdAt: assistant.timestamp,
+    source: { agentId: source.agentId, reference: { role: 'assistant', providerMessageId: 'legacy-assistant' },
+      position: { epoch: 'epoch', seq: 5 } },
+    evidence: { projection: 'unmerged-native-message', provenance: 'unavailable', attachments: 'unavailable', sealed: 'unavailable' },
+  } });
+  expect(f.refetch).toHaveBeenCalledTimes(2);
+  expect(await readFile(join(f.path, 'state.json'))).toEqual(before);
+});
+test('an assistant that explicitly matches the active turn at the final probe stays unavailable', async () => {
+  const f = await fixture(), assistant: Entry = { ...message(),
+    item: { type: 'assistant_message', messageId: 'assistant', text: 'Still streaming' } };
+  f.refetch.mockResolvedValueOnce(page([assistant])).mockImplementationOnce(async () => {
+    f.native.activeTurn = { turnId: 'turn-root', startedAt: 'now' };
+    return page([assistant]);
+  });
+  expect(await f.read.read(f.paseo, { ...source, reference: { role: 'assistant', providerMessageId: 'assistant' } }))
+    .toEqual({ status: 'unavailable', reason: 'active-message' });
+  expect(f.refetch).toHaveBeenCalledTimes(2);
+});
 test('transport errors remain unknown and cannot become a successful empty history', async () => {
   const f = await fixture(); f.refetch.mockRejectedValueOnce(new Error('Disconnected'));
   expect(await f.read.read(f.paseo, source)).toEqual({ status: 'unavailable', reason: 'history-error' });
