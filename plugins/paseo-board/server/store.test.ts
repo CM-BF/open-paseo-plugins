@@ -98,9 +98,22 @@ describe("BoardStore", () => {
     await writeFile(path, JSON.stringify(legacy));
     expect((await new BoardStore(root).read("test"))!).toMatchObject({ updates: [], seenUpdateIds: [] });
     expect((await store.list())[0]).toMatchObject({ unreadUpdateCount: 0, latestUpdateRevision: 0 });
-    for (let n = 0; n < 82; n++) {
+    for (let n = 0; n < 2; n++) {
       await store.emit({ boardId: "test", eventId: `location-${n}`, source: "shell", summary: "progress", data: { count: n } });
-      if (n < 2) await store.markUpdatesSeen({ boardId: "test", updateIds: [`location-${n}`] });
+      await store.markUpdatesSeen({ boardId: "test", updateIds: [`location-${n}`] });
+    }
+    // Seed a full retained backlog, then exercise actual writes across the boundary.
+    // Rebuilding 80 unrelated historical transactions makes this storage check depend
+    // on disk contention from concurrent browser tests without testing another behavior.
+    const full = JSON.parse(await readFile(path, "utf8"));
+    full.board.updates = Array.from({ length: 80 }, (_, n) => ({ ...full.board.updates[0], id: `location-${n}`, eventId: `location-${n}`, boardRevision: n + 2, canvasRevision: n + 2 }));
+    full.board.revision = 81;
+    full.board.canvas.revision = 81;
+    full.board.canvas.data.count = 79;
+    for (let n = 2; n < 80; n++) full.history.push({ revision: n + 2, at: full.board.updatedAt, operation: "emit", payload: { boardId: "test", eventId: `location-${n}`, source: "shell", summary: "progress", data: { count: n } } });
+    await writeFile(path, JSON.stringify(full));
+    for (let n = 80; n < 82; n++) {
+      await store.emit({ boardId: "test", eventId: `location-${n}`, source: "shell", summary: "progress", data: { count: n } });
     }
     const current = (await new BoardStore(root).read("test"))!;
     expect(current.updates).toHaveLength(80); expect(current.updates[0].id).toBe("location-2"); expect(current.updates.at(-1)!.id).toBe("location-81");
