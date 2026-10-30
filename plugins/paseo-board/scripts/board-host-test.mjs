@@ -113,7 +113,7 @@ try {
   const submitCount = () => evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').length");
   const noPopover = () => until(`!document.querySelector(${JSON.stringify(popover)})`);
   const closePopover = async () => {
-    await hostClick('[data-testid="board-reference-bar"]');
+    const bar = await hostLocation('[data-testid="board-reference-bar"]'); await clickPoint(bar.x+20,bar.y+bar.height/2);
     await noPopover();
   };
   const openAt = async (x = 155, y = 170) => {
@@ -664,6 +664,109 @@ try {
   assert.equal(await evaluate('hostFixture.ready'), beforeRailReady);
   await closePopover();
   check('compact desktop keeps a 52px numbered rail and all threads accessible without changing the canvas when a thread opens');
+
+  await command('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
+  await until(`document.querySelector(${JSON.stringify(rail)}).getBoundingClientRect().width===168`);
+  const navigation = '[data-testid="board-update-navigation"]';
+  const navPosition = '[data-testid="board-update-position"]';
+  const nextUpdate = `${navigation} button[aria-label="下一处更新"]`;
+  const prevUpdate = `${navigation} button[aria-label="上一处更新"]`;
+  const seenUpdate = id => `hostFixture.board().seenUpdateIds.includes(${JSON.stringify(id)})`;
+  const beforeUpdatesReady = await evaluate('hostFixture.ready');
+  const beforeUpdatesRect = await canvasRect();
+  const beforeUpdatesSends = await submitCount();
+  await frame(`(()=>{const target=document.createElement('div');target.id='update-far';target.textContent='A remote two-dimensional change';target.style='position:absolute;left:1700px;top:1600px;width:240px;height:100px;background:#ddf1e7';document.body.append(target);document.querySelector('#field').value='updates preserve this input';scrollTo(0,0)})()`);
+  await evaluate(`hostFixture.addUpdate({id:'update-old',targets:[{selector:'#words'}]});hostFixture.addUpdate({id:'update-latest',targets:[{selector:'#update-far'}],actorAgentId:'side-agent'});hostFixture.refetch()`);
+  await until(seenUpdate('update-latest'));
+  assert.equal(await evaluate(seenUpdate('update-old')), false);
+  assert.equal(await evaluate('hostFixture.updateRequests.length'), 1);
+  await untilFrame("scrollX>0&&scrollY>0&&(()=>{const r=document.querySelector('#update-far').getBoundingClientRect();return r.left>=0&&r.top>=0&&r.left<innerWidth&&r.top<innerHeight})()");
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('更新 2/2')`), true);
+  assert.deepEqual(await canvasRect(), beforeUpdatesRect);
+  assert.equal(await evaluate('hostFixture.ready'), beforeUpdatesReady);
+  assert.equal(await frame("document.querySelector('#field').value"), 'updates preserve this input');
+  check('new updates locate only the latest unread place across both canvas axes; only its confirmed visible receipt is marked seen, without resizing or rebuilding the frame');
+
+  await evaluate(`hostFixture.addUpdate({id:'update-multiple',targets:[{selector:'#words'},{selector:'#update-far'}]});hostFixture.refetch()`);
+  await until("hostFixture.updatePositions.some(item=>item.id==='update-multiple'&&item.targetIndex===0&&item.status==='focused')");
+  assert.equal(await evaluate(seenUpdate('update-multiple')), false);
+  await hostClick(nextUpdate);
+  await until(seenUpdate('update-multiple'));
+  assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.updates-seen'&&item.input.updateIds.includes('update-multiple')).length"), 1);
+  const readingRequests = await evaluate('hostFixture.updateRequests.length');
+  await evaluate(`hostFixture.addUpdate({id:'update-arrival-a',targets:[{selector:'#point'}],actorAgentId:'owner-fixture'});hostFixture.addUpdate({id:'update-arrival-b',targets:[{selector:'#far'}],actorAgentId:'side-agent'});hostFixture.refetch()`);
+  await until(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('更新 4/6')`);
+  assert.equal(await evaluate('hostFixture.updateRequests.length'), readingRequests);
+  assert.equal(await evaluate(seenUpdate('update-arrival-a')), false);
+  assert.equal(await evaluate(seenUpdate('update-arrival-b')), false);
+  await hostClick(nextUpdate); await until(seenUpdate('update-arrival-a'));
+  await hostClick(nextUpdate); await until(seenUpdate('update-arrival-b'));
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('更新 6/6')`), true);
+  check('multi-target updates wait for every place before one seen receipt; manual browsing keeps its stable position while concurrent agent updates accumulate and remain individually reachable');
+
+  await frame('scrollTo(0,0)');
+  await openAt(); await sendText('Do not move or lose this draft for an update');
+  const draftUpdateRequests = await evaluate('hostFixture.updateRequests.length');
+  await evaluate(`hostFixture.addUpdate({id:'update-draft',targets:[{selector:'#update-far'}]});hostFixture.refetch()`);
+  await until(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('/7')`);
+  await hostClick(nextUpdate);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)}).value`), 'Do not move or lose this draft for an update');
+  assert.equal(await evaluate(`document.activeElement===document.querySelector(${JSON.stringify(input)})`), true);
+  assert.equal(await evaluate('hostFixture.updateRequests.length'), draftUpdateRequests);
+  assert.equal(await frame('scrollX===0&&scrollY===0'), true);
+  await key('Escape'); await noPopover();
+  await hostClick(`${navigation} button[aria-label="继续跟随更新"]`);
+  await until(seenUpdate('update-draft'));
+  await frame('scrollTo(0,0)');
+  const controlBox = await location('#control');
+  await command('Input.dispatchMouseEvent',{type:'mouseMoved',x:controlBox.x+5,y:controlBox.y+5});
+  await command('Input.dispatchMouseEvent',{type:'mousePressed',x:controlBox.x+5,y:controlBox.y+5,button:'left',buttons:1,clickCount:1});
+  await until(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('暂缓')`);
+  const draggingRequests = await evaluate('hostFixture.updateRequests.length');
+  await evaluate(`hostFixture.addUpdate({id:'update-drag-a',targets:[{selector:'#far'}]});hostFixture.addUpdate({id:'update-drag-b',targets:[{selector:'#update-far'}]});hostFixture.refetch()`);
+  await until(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('/9')`);
+  assert.equal(await evaluate('hostFixture.updateRequests.length'), draggingRequests);
+  assert.equal(await frame('scrollX===0&&scrollY===0'), true);
+  await command('Input.dispatchMouseEvent',{type:'mouseReleased',x:controlBox.x+5,y:controlBox.y+5,button:'left',clickCount:1});
+  await until(seenUpdate('update-drag-b'));
+  assert.equal(await evaluate(seenUpdate('update-drag-a')), false);
+  assert.equal(await evaluate('hostFixture.updateRequests.length'), draggingRequests+1);
+  check('a composer retains its draft and focus when updates arrive, and a held canvas gesture pauses following until release, then coalesces the arrivals into one latest jump');
+
+  await evaluate(`hostFixture.addUpdate({id:'update-gone',targets:[{selector:'#missing-component'}]});hostFixture.refetch()`);
+  await until(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('位置不可用')`);
+  assert.equal(await evaluate(seenUpdate('update-gone')), false);
+  const goneRequest = await evaluate('hostFixture.updateRequests.at(-1)');
+  await frame(`parent.postMessage({...${JSON.stringify(goneRequest)},type:'update-position',id:'update-old',documentVersion:1,targetIndex:0,status:'focused',position:{x:1,y:1},location:'target'},'*')`);
+  await frame(`parent.postMessage({...${JSON.stringify(goneRequest)},type:'update-position',id:'update-gone',documentVersion:1,targetIndex:0,status:'focused',position:{x:1,y:1},location:'target',token:999999},'*')`);
+  await frame(`parent.postMessage({...${JSON.stringify(goneRequest)},type:'update-position',id:'update-gone',documentVersion:1,targetIndex:0,status:'focused',position:{x:1,y:1},location:'target'},'*')`);
+  assert.equal(await evaluate(seenUpdate('update-gone')), false);
+  assert.equal(await evaluate(seenUpdate('update-old')), false);
+  await evaluate(`hostFixture.addUpdate({id:'update-old-document',documentVersion:0,targets:[{selector:'#point'}]});hostFixture.refetch()`);
+  await until("hostFixture.updatePositions.some(item=>item.id==='update-old-document'&&item.status==='unavailable')");
+  assert.equal(await evaluate(seenUpdate('update-old-document')), false);
+  await hostClick(prevUpdate);
+  await until(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('更新 10/11')`);
+  assert.equal(await evaluate(seenUpdate('update-gone')), false);
+  assert.equal(await submitCount(), beforeUpdatesSends);
+  assert.equal(await evaluate('hostFixture.ready'), beforeUpdatesReady);
+  assert.deepEqual(await canvasRect(), beforeUpdatesRect);
+  check('deleted and old-document locations remain navigable but unread; stale, mismatched and unsolicited frame acknowledgements cannot mark them seen or dispatch agent messages');
+
+  if (process.env.BOARD_HOST_TEST_SCREENSHOT) {
+    const updatesShot = await command('Page.captureScreenshot',{format:'png'});
+    await writeFile(process.env.BOARD_HOST_TEST_SCREENSHOT+'.updates.png',Buffer.from(updatesShot.data,'base64'));
+  }
+  await evaluate('hostFixture.index()');
+  await until("document.querySelector('[data-testid=board-unread-host-fixture]')&&document.querySelector('[data-testid=board-unread-another-board]')");
+  const actualUnread = await evaluate('hostFixture.board().updates.filter(item=>!hostFixture.board().seenUpdateIds.includes(item.id)).length');
+  assert.equal(await evaluate("document.querySelector('[data-testid=board-unread-host-fixture]').textContent"), `${actualUnread} 更新`);
+  assert.equal(await evaluate("document.querySelector('[data-testid=board-unread-another-board]').textContent"), '3 更新');
+  await hostClick('button[aria-label="打开 Host integration fixture"]');
+  await until('hostFixture.ready>'+beforeUpdatesReady);
+  await until(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('更新 11/11')`);
+  assert.equal(await evaluate(seenUpdate('update-old-document')), false);
+  check('the Board index shows per-project unread badges, and entering a Board focuses its newest unread location once without claiming an unavailable target was seen');
 
   const screenshot = await command('Page.captureScreenshot', { format: 'png' });
   if (process.env.BOARD_HOST_TEST_SCREENSHOT) await writeFile(process.env.BOARD_HOST_TEST_SCREENSHOT, Buffer.from(screenshot.data, 'base64'));

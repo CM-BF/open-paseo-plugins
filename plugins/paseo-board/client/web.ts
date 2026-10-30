@@ -3,7 +3,7 @@ import { createElement, useEffect, useLayoutEffect, useRef, useState, type React
 import { Platform } from "react-native";
 import type { Anchor, Canvas, Interaction, JsonData } from "../shared/contracts";
 import { buildBoardDocument } from "../shared/document";
-import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, type AskRequest, type AskResult, type ComposeRequest, type FrameError, type FramePosition, type FrameSnapshot, type FrameTheme, type InteractionLocation, type SelectionMode } from "../shared/frame-contract";
+import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, type AskRequest, type AskResult, type ComposeRequest, type FrameError, type FramePosition, type FrameSnapshot, type FrameTheme, type InteractionLocation, type FocusUpdateRequest, type UpdatePosition, type SelectionMode } from "../shared/frame-contract";
 
 type FrameWindow = { postMessage(message: unknown, origin: string): void };
 type Frame = { contentWindow: FrameWindow | null };
@@ -35,6 +35,10 @@ export interface CanvasFrameProps extends FrameSnapshot {
   interactions?: Interaction[];
   selectedInteractionId?: string;
   focusInteraction?: { id: string; token: number };
+  focusUpdate?: FocusUpdateRequest;
+  composerActive?: boolean;
+  onUpdatePosition?(position: UpdatePosition): void;
+  onCanvasActivity?(busy: boolean): void;
   onAnchor(anchor: Anchor): void;
   onAsk(request: AskRequest): Promise<AskResult>;
   onCompose?(request: ComposeRequest): void;
@@ -76,6 +80,8 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   if (interactionLock.current?.boardId !== props.boardId) interactionLock.current = null;
   const ready = useRef(false);
   const focused = useRef<string | undefined>(undefined);
+  const updateSent = useRef<string | undefined>(undefined);
+  const updatePending = useRef<{ requestId: string; id: string; token: number; targetIndex: number; documentVersion: number } | undefined>(undefined);
   if (!document.current || document.current.boardId !== props.boardId || (document.current.version !== props.canvas.documentVersion && props.selectionMode === "off" && !interactionLock.current)) {
     document.current = documentFor({ ...props, userState: effectiveState() });
     ready.current = false;
@@ -94,6 +100,17 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
     focused.current = key;
     send({ type: "focus-interaction", id: request.id });
   };
+  const focusRequestedUpdate = () => {
+    const current = latest.current;
+    const request = current.focusUpdate;
+    if (!request) { updatePending.current = undefined; return; }
+    if (!ready.current || current.composerActive || interactionLock.current || current.selectionMode !== "off") return;
+    const requestId = `${document.current!.sessionId}:update:${request.token}`;
+    if (updateSent.current === requestId) return;
+    updateSent.current = requestId;
+    updatePending.current = { requestId, id: request.update.id, token: request.token, targetIndex: request.targetIndex ?? 0, documentVersion: request.update.documentVersion };
+    send({ type: "focus-update", ...request, requestId });
+  };
   useLayoutEffect(() => {
     if (!canRenderFrames || !browser.window) return;
     const waiting = new Set<string>();
@@ -106,7 +123,9 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
       send({ type: "selection", mode: current.selectionMode });
       send({ type: "snapshot", snapshot: { canvas: current.canvas, boardRevision: current.boardRevision, userState: effectiveState(), theme: current.theme } });
       send({ type: "interactions", markers: interactionMarkers(current.interactions || []), selectedId: current.selectedInteractionId });
+      send({ type: "host-activity", composing: Boolean(current.composerActive) });
       focusRequestedInteraction();
+      focusRequestedUpdate();
     };
     const userActing = () => browser.document?.activeElement === frame.current && browser.navigator?.userActivation?.isActive === true;
     const onMessage = (event: MessageEvent) => {
@@ -117,6 +136,15 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
       switch (message.type) {
         case "ready": ready.current = true; sync(); current.onReady?.(); break;
         case "canvas-pointer": if (userActing()) current.onCanvasPointer?.(); break;
+        case "canvas-activity": current.onCanvasActivity?.(message.busy); break;
+        case "update-position": {
+          const expected = updatePending.current;
+          const requested = current.focusUpdate;
+          if (!expected || !requested || requested.token !== expected.token || requested.update.id !== expected.id || current.composerActive || message.requestId !== expected.requestId || message.id !== expected.id || message.token !== expected.token || message.targetIndex !== expected.targetIndex || message.documentVersion !== expected.documentVersion || message.status === "focused" && current.canvas.documentVersion !== expected.documentVersion) break;
+          updatePending.current = undefined;
+          current.onUpdatePosition?.(message);
+          break;
+        }
         case "error": current.onError(message.error); break;
         case "selection-end": current.onSelectionEnd?.(); break;
         case "selection-clear": current.onSelectionClear?.(); break;
@@ -224,6 +252,10 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   }, [props.interactions, props.selectedInteractionId]);
   useEffect(() => { focusRequestedInteraction(); }, [props.focusInteraction, props.selectedInteractionId, props.interactions]);
   useEffect(() => {
+    if (ready.current) send({ type: "host-activity", composing: Boolean(props.composerActive) });
+    focusRequestedUpdate();
+  }, [props.focusUpdate, props.composerActive, props.selectionMode]);
+  useEffect(() => {
     if (ready.current) send({ type: "selection", mode: props.selectionMode });
   }, [props.selectionMode]);
   const cleared = useRef(props.selectionClearToken);
@@ -261,7 +293,7 @@ export function usePopoverDismiss(active: boolean, onDismiss: () => void, preser
     if (!active || !canRenderFrames || !browser.window) return;
     const dismiss = (event: OuterPointerEvent) => {
       if (!event.isTrusted) return;
-      if (event.target?.closest?.('[data-testid="board-discussion-rail"]')) {
+      if (event.target?.closest?.('[data-testid="board-discussion-rail"], [data-testid="board-update-navigation"]')) {
         // A disabled navigation row must not blur an unsent draft: Enter/Escape should
         // still address that input after an incidental rail click.
         if (preserveInput) event.preventDefault();

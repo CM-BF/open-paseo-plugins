@@ -3,7 +3,7 @@ import { Image, Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { Markdown, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
-import { interactBoardRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc, type Anchor, type Board, type Decision, type Interaction, type JsonData } from "../shared/contracts";
+import { interactBoardRpc, markUpdatesSeenRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc, type Anchor, type Board, type Decision, type Interaction, type JsonData } from "../shared/contracts";
 import type { AskRequest, AskResult, ComposeRequest, FrameTheme, InteractionLocation, SelectionMode } from "../shared/frame-contract";
 import { interactionMarkers } from "../shared/frame-contract";
 import { frameThemeFromColors } from "../shared/frame-theme";
@@ -13,6 +13,7 @@ import { useBoard } from "./data";
 import { createStateWriter } from "./state-writer";
 import { DiscussionRail } from "./discussion-rail";
 import { SideAgentPicker } from "./side-agent-picker";
+import { UpdateNavigation, useUpdateNavigation } from "./update-navigation";
 import { anchorPoint, interactionRoot, interactionThread, mergeInteractions, popoverPlacement, visualQuestion, type Point } from "./interaction-layout";
 
 interface Props extends PluginSurfaceProps { boardId: string; onBack(): void }
@@ -32,6 +33,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation }: Props) {
   const save = useRpc(saveStateRpc);
   const record = useRpc(recordDecisionRpc);
   const selectSide = useRpc(selectSideAgentRpc);
+  const markUpdatesSeen = useRpc(markUpdatesSeenRpc);
   const [selectionMode, setSelectionMode] = useState<SelectionMode>("off");
   const [anchor, setAnchor] = useState<Anchor>();
   const [selectionClearToken, setSelectionClearToken] = useState(0);
@@ -56,6 +58,8 @@ function BoardContent({ boardId, host, theme, onBack, navigation }: Props) {
   const [focusInteraction, setFocusInteraction] = useState<{ id: string; token: number }>();
   const [interactionLocation, setInteractionLocation] = useState<{ id: string; location: InteractionLocation }>();
   const [optimistic, setOptimistic] = useState<Interaction[]>([]);
+  const updatesBlocked = Boolean(compose || selectedInteractionId || drawer || sending || selectionMode !== "off");
+  const updateNavigation = useUpdateNavigation(board, updatesBlocked, async id => { query.accept(await markUpdatesSeen({ boardId, updateIds: [id] })); });
   const interactions = useMemo(() => mergeInteractions(board?.interactions ?? [], optimistic), [board?.interactions, optimistic]);
   const markers = useMemo(() => interactionMarkers(interactions), [interactions]);
   const thread = useMemo(() => interactionThread(selectedInteractionId, interactions), [selectedInteractionId, interactions]);
@@ -204,11 +208,12 @@ function BoardContent({ boardId, host, theme, onBack, navigation }: Props) {
     </View>
     <View testID="board-reference-bar" style={{ height: 38, flexShrink: 0, paddingHorizontal: 12, flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: c.surface1 }}>
       <Text numberOfLines={1} style={{ color: c.foregroundMuted, flex: 1, fontSize: 12 }}>{anchor ? `已引用 r${anchor.boardRevision} · ${selectedText}` : selectionMode === "text" ? "拖选文字，直接在旁边提问。Esc 返回交互。" : selectionMode === "region" ? "拖出一个区域，可包含图片、图表或空白。Esc 返回交互。" : selectionMode === "point" ? "点击需要添加或修改内容的位置。Esc 返回交互。" : "右键就地交流 · Option / Alt + 拖动框选"}</Text>
+      {canRenderFrames ? <UpdateNavigation navigation={updateNavigation} /> : null}
       {anchor ? <Action label="清除引用" onPress={() => { setAnchor(undefined); setSelectionClearToken(value => value + 1); }} /> : null}
     </View>
     <View testID="board-stage" style={{ flex: 1, minHeight: 180, flexDirection: "row" }} onLayout={event => setStageWidth(event.nativeEvent.layout.width)}>
     <View testID="board-canvas-container" style={{ flex: 1, minWidth: 0, minHeight: 180, position: "relative", overflow: "hidden" }} onLayout={event => { setHeight(Math.max(180, event.nativeEvent.layout.height)); setWidth(event.nativeEvent.layout.width); }}>
-      {canRenderFrames ? <CanvasFrame boardId={board.id} title={board.title} canvas={board.canvas} boardRevision={board.revision} userState={board.userState} theme={frameTheme} height={height} selectionMode={selectionMode} selectionClearToken={selectionClearToken} interactions={interactions} selectedInteractionId={selectedInteractionId} focusInteraction={focusInteraction} onOpenInteraction={openInteraction} onInteractionPosition={(id, point, location) => { if (id === selectedInteractionId) { if (!composeRef.current) setPopoverPoint(point); setInteractionLocation(location ? { id, location } : undefined); } }} onAnchor={onAnchor} onAsk={onAsk} onCompose={onCompose} onCanvasPointer={closePopover} onState={onState} onError={error => setFrameError(`${error.message}${error.patchId ? `（${error.patchId}）` : ""}`)} onSelectionEnd={() => setSelectionMode("off")} onSelectionClear={() => { setAnchor(undefined); setSelectionMode("off"); }} onOpenLink={url => { void openExternalUrl(url).catch(e => setMessage(errorMessage(e))); }} /> : <ScrollView contentContainerStyle={{ padding: 24, gap: 16 }}><Notice text="手机兼容视图。完整的自由画布、动画和页面交互在桌面版使用；这里可以查看摘要、决策并与 agent 交流。" /><Markdown>{typeof board.canvas.data.summary === "string" ? board.canvas.data.summary : "Agent 尚未提供文字摘要。你可以直接提问，回复会出现在讨论里。"}</Markdown></ScrollView>}
+      {canRenderFrames ? <CanvasFrame boardId={board.id} title={board.title} canvas={board.canvas} boardRevision={board.revision} userState={board.userState} theme={frameTheme} height={height} selectionMode={selectionMode} selectionClearToken={selectionClearToken} interactions={interactions} selectedInteractionId={selectedInteractionId} focusInteraction={focusInteraction} focusUpdate={updateNavigation.request} composerActive={updatesBlocked} onUpdatePosition={updateNavigation.onPosition} onCanvasActivity={updateNavigation.onActivity} onOpenInteraction={openInteraction} onInteractionPosition={(id, point, location) => { if (id === selectedInteractionId) { if (!composeRef.current) setPopoverPoint(point); setInteractionLocation(location ? { id, location } : undefined); } }} onAnchor={onAnchor} onAsk={onAsk} onCompose={onCompose} onCanvasPointer={closePopover} onState={onState} onError={error => setFrameError(`${error.message}${error.patchId ? `（${error.patchId}）` : ""}`)} onSelectionEnd={() => setSelectionMode("off")} onSelectionClear={() => { setAnchor(undefined); setSelectionMode("off"); }} onOpenLink={url => { void openExternalUrl(url).catch(e => setMessage(errorMessage(e))); }} /> : <ScrollView contentContainerStyle={{ padding: 24, gap: 16 }}><Notice text="手机兼容视图。完整的自由画布、动画和页面交互在桌面版使用；这里可以查看摘要、决策并与 agent 交流。" /><Markdown>{typeof board.canvas.data.summary === "string" ? board.canvas.data.summary : "Agent 尚未提供文字摘要。你可以直接提问，回复会出现在讨论里。"}</Markdown></ScrollView>}
       {query.error || frameError || (message && !compose && !selectedInteractionId) ? <View style={{ position: "absolute", left: 8, right: 8, top: 8 }}><Notice error text={query.error ? "连接暂时中断。当前是上次收到的内容，尚未确认最新状态。" : frameError || message || ""} /></View> : null}
       {compose || selectedInteractionId ? <View testID="board-local-popover" accessibilityLabel="原位交流" onLayout={event => setPopoverHeight(event.nativeEvent.layout.height)} style={{ position: "absolute", ...popover, borderWidth: 1, borderColor: c.border, borderRadius: 12, backgroundColor: c.surface0, overflow: "hidden", shadowColor: "#000", shadowOpacity: 0.22, shadowRadius: 16, shadowOffset: { width: 0, height: 5 }, elevation: 10 }}>
         <View style={{ flexDirection: "row", alignItems: "center", padding: 8, gap: 8, borderBottomWidth: 1, borderColor: c.border }}><Text style={{ color: c.foreground, fontWeight: "600", flex: 1 }}>{compose ? "发给 agent" : "这里的讨论"}</Text>{!canRenderFrames ? <Action label="关闭" disabled={sending} onPress={closePopover} /> : null}</View>

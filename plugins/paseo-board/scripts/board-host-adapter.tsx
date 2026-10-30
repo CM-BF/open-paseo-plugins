@@ -45,5 +45,6 @@ export function Modal({ open, title, children, onOpenChange }: any) {
 }
 Modal.Content = ({ children }: any) => createElement("div", null, children);
 export function defineRpc(config: any) { return config; }
+export function usePaseo() { return { agents: { list: async () => ({ entries: [] }) } }; }
 export function useRpc(definition: any) { return useCallback((input: any) => global.hostFixture.rpc(definition.name, input), [definition.name]); }
 export async function openExternalUrl(url: string) { global.hostFixture.links.push(url); }

@@ -5,16 +5,17 @@ import { createElement, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BoardView } from "../client/board";
+import { BoardHome } from "../client/home";
 import { DEFAULT_LIGHT_COLORS } from "../shared/frame-theme";
-import type { Board, Interaction } from "../shared/contracts";
+import type { Board, CanvasUpdate, Interaction } from "../shared/contracts";
 const global = globalThis as any;
 const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 const now = () => new Date().toISOString();
 const fragment = `<style>body{padding:24px;margin:0;font:16px sans-serif}#point{position:absolute;top:140px;left:120px;width:100px;height:70px;background:#ebf5ed}#field{display:block;margin-top:40px}#words{margin-top:100px;width:600px}#far{margin-top:850px}</style><h1>Actual BoardView fixture</h1><button id="control">Keep running</button><output id="count">0</output><input id="field" value="initial"><div id="point">Point here</div><p id="words">A stable sentence for selecting the original location.</p><div id="far">Far below</div><script>
 window.boots=1;window.ticks=0;window.count=0;function tick(){ticks++;requestAnimationFrame(tick)}requestAnimationFrame(tick);document.querySelector('#control').onclick=()=>{count++;document.querySelector('#count').textContent=count};
-window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-interaction')parent.postMessage({channel:'host-fixture-focus',id:e.data.id},'*');if(e.source===parent&&e.data?.channel==='host-fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'host-fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'host-fixture-result',id:e.data.id,error:error.message},'*')}}});
+window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-interaction')parent.postMessage({channel:'host-fixture-focus',id:e.data.id},'*');if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-update')parent.postMessage({channel:'host-fixture-update',request:e.data},'*');if(e.source===parent&&e.data?.channel==='host-fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'host-fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'host-fixture-result',id:e.data.id,error:error.message},'*')}}});
 </script>`;
-let persisted: Board = { schemaVersion: 1, id: "host-fixture", title: "Host integration fixture", ownerAgentId: "owner-fixture", revision: 1, createdAt: now(), updatedAt: now(), canvas: { html: fragment, revision: 1, documentVersion: 1, data: { summary: "Isolated test fixture" }, patches: [] }, decisions: [], interactions: [], events: [], observations: [], userState: {}, extraction: {} };
+let persisted: Board = { schemaVersion: 1, id: "host-fixture", title: "Host integration fixture", ownerAgentId: "owner-fixture", revision: 1, createdAt: now(), updatedAt: now(), canvas: { html: fragment, revision: 1, documentVersion: 1, data: { summary: "Isolated test fixture" }, patches: [] }, decisions: [], interactions: [], updates: [], seenUpdateIds: [], events: [], observations: [], userState: {}, extraction: {} };
 const query = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
 let submitMode: "held" | "accept" | "reject" = "held";
 let sideSequence = 0;
@@ -24,7 +25,7 @@ let pendingChoice: { input: any; resolve(value: Board): void; reject(error: Erro
 const pending = new Map<string, { input: any; resolve(value: Interaction): void; reject(error: Error): void }>();
 const advance = () => { persisted = { ...persisted, revision: persisted.revision + 1, updatedAt: now() }; };
 const fixture: any = global.hostFixture = {
-  calls: [] as any[], links: [] as string[], openedAgents: [] as string[], anchors: [] as any[], focusRequests: [] as string[], ready: 0, responseClicks: 0, responseResults: [] as any[],
+  calls: [] as any[], links: [] as string[], openedAgents: [] as string[], anchors: [] as any[], focusRequests: [] as string[], updateRequests: [] as any[], updatePositions: [] as any[], ready: 0, responseClicks: 0, responseResults: [] as any[],
   board: () => copy(persisted),
   mode: (next: typeof submitMode) => { submitMode = next; },
   choiceMode: (next: typeof choiceMode) => { choiceMode = next; },
@@ -54,12 +55,28 @@ const fixture: any = global.hostFixture = {
   reject: (id = [...pending.keys()][0]) => { const item = pending.get(id); if (!item) throw new Error(`No pending ${id}`); pending.delete(id); item.reject(new Error("Fixture delivery unavailable")); },
   updateInteraction: (id: string, patch: Partial<Interaction>) => { persisted.interactions = persisted.interactions.map(item => item.id === id ? { ...item, ...copy(patch), updatedAt: now() } : item); advance(); },
   updateCanvas: () => { persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, data: { ...persisted.canvas.data, next: true } }; advance(); },
+  addUpdate: (value: Partial<CanvasUpdate> & { id: string }, patch?: any) => {
+    if (patch) persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, patches: [...persisted.canvas.patches, { id: `patch-${value.id}`, at: now(), source: "agent", ...copy(patch) }] };
+    advance();
+    const update: CanvasUpdate = { eventId: value.id, at: now(), boardRevision: persisted.revision, canvasRevision: persisted.canvas.revision, documentVersion: persisted.canvas.documentVersion, kind: 'patch', targets: [], ...copy(value) };
+    persisted.updates = [...persisted.updates, update].slice(-80);
+    return update;
+  },
   seed: (items: Interaction[]) => { persisted.interactions = copy(items); advance(); },
   refetch: () => query.invalidateQueries({ queryKey: ["paseo-board"] }),
   rpc: async (name: string, input: any) => {
     fixture.calls.push({ name, input: copy(input) });
     if (name === "board.read" && readFails) throw new Error("Fixture read unavailable");
     if (name === "board.read") return input.sinceRevision === persisted.revision ? { board: null, unchanged: true } : { board: copy(persisted), unchanged: false };
+    if (name === "board.list") return { boards: [
+      { id: persisted.id, title: persisted.title, updatedAt: persisted.updatedAt, decisionCount: 0, pendingCount: 0, unreadUpdateCount: persisted.updates.filter(update => !persisted.seenUpdateIds.includes(update.id)).length, latestUpdateRevision: persisted.updates.at(-1)?.boardRevision ?? 0 },
+      { id: "another-board", title: "Another project", updatedAt: now(), decisionCount: 0, pendingCount: 0, unreadUpdateCount: 3, latestUpdateRevision: 4 },
+    ] };
+    if (name === "board.updates-seen") {
+      const live = new Set(persisted.updates.map(item => item.id));
+      persisted.seenUpdateIds = [...new Set([...persisted.seenUpdateIds, ...input.updateIds])].filter((id: any) => live.has(id));
+      return copy(persisted);
+    }
     if (name === "board.state") { persisted.userState = copy(input.state); return { saved: true }; }
     if (name === "board.side-agent") {
       if (!persisted.interactions.some(item => item.kind === 'fork' && item.agentId === input.agentId)) throw new Error('Fixture side agent is unrelated');
@@ -87,6 +104,8 @@ const fixture: any = global.hostFixture = {
 let requestId = 0;
 const frameRequests = new Map<number, { resolve(value: any): void; reject(error: Error): void }>();
 global.addEventListener("message", (event: any) => {
+  if (event.data?.channel === "host-fixture-update") fixture.updateRequests.push(event.data.request);
+  if (event.data?.channel === "paseo-board-frame-v1" && event.data.type === "update-position") fixture.updatePositions.push(event.data);
   if (event.data?.channel === "host-fixture-focus") fixture.focusRequests.push(event.data.id);
   if (event.data?.channel === "host-response-fixture" && event.data.clicked) fixture.responseClicks++;
   if (event.data?.channel === "host-response-fixture" && event.data.result) fixture.responseResults.push(event.data.result);
@@ -102,7 +121,9 @@ global.fixtureCall = (code: string) => new Promise((resolve, reject) => {
 });
 function App() {
   const [mount, setMount] = useState(0);
+  const [index, setIndex] = useState(false);
+  fixture.index = () => { query.clear(); setIndex(true); };
   fixture.remount = () => { query.clear(); setMount(value => value + 1); };
-  return createElement(QueryClientProvider, { client: query }, createElement(BoardView, { key: mount, boardId: "host-fixture", onBack: () => {}, host: { id: "fixture-host" }, theme: { colors: DEFAULT_LIGHT_COLORS }, navigation: { openAgent: ({ agentId }: any) => fixture.openedAgents.push(agentId) } } as any));
+  return createElement(QueryClientProvider, { client: query }, createElement(index ? BoardHome : BoardView, { key: mount, boardId: "host-fixture", onBack: () => {}, host: { id: "fixture-host" }, theme: { colors: DEFAULT_LIGHT_COLORS }, navigation: { openAgent: ({ agentId }: any) => fixture.openedAgents.push(agentId) } } as any));
 }
 createRoot(global.document.getElementById("app")).render(createElement(App));

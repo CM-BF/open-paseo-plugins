@@ -45,7 +45,7 @@ function BoardIndex({ host, workspaceId, agentId, onSelect }: Props & { onSelect
       {boards.isPending ? <Copy muted>正在读取…</Copy> : null}
       {boards.data?.boards.length === 0 ? <View style={{ paddingVertical: 60, gap: 14 }}><Copy>还没有 Board。</Copy><Copy muted>你可以让 agent 为当前任务建立一块持续更新的自由画布，或先关联一个 agent 开始。</Copy></View> : null}
       {boards.data?.boards.map(board => <Pressable key={board.id} accessibilityRole="button" accessibilityLabel={`打开 ${board.title}`} onPress={() => onSelect(board.id)} style={({ pressed }) => ({ paddingVertical: 20, paddingHorizontal: 18, borderWidth: 1, borderColor: c.border, borderRadius: 10, backgroundColor: pressed ? c.surface2 : c.surface1, gap: 10 })}>
-        <Text style={{ color: c.foreground, fontSize: 19, fontWeight: "500" }}>{board.title}</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}><Text style={{ color: c.foreground, fontSize: 19, fontWeight: "500", flex: 1 }}>{board.title}</Text>{board.unreadUpdateCount > 0 ? <View testID={`board-unread-${board.id}`} accessibilityLabel={`${board.unreadUpdateCount} 处未看更新`} style={{ backgroundColor: c.accent, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 }}><Text style={{ color: c.accentForeground, fontSize: 12, fontWeight: "600" }}>{board.unreadUpdateCount} 更新</Text></View> : null}</View>
         <Copy muted small>{board.decisionCount} 个 agent 决策 · {board.pendingCount} 个待落实交流</Copy>
         <Copy muted small>更新于 {timeLabel(board.updatedAt)}</Copy>
       </Pressable>)}
