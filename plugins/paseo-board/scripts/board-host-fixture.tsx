@@ -17,16 +17,37 @@ window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channe
 let persisted: Board = { schemaVersion: 1, id: "host-fixture", title: "Host integration fixture", ownerAgentId: "owner-fixture", revision: 1, createdAt: now(), updatedAt: now(), canvas: { html: fragment, revision: 1, documentVersion: 1, data: { summary: "Isolated test fixture" }, patches: [] }, decisions: [], interactions: [], events: [], observations: [], userState: {}, extraction: {} };
 const query = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
 let submitMode: "held" | "accept" | "reject" = "held";
+let sideSequence = 0;
+let choiceMode: "held" | "accept" | "reject" | "lost-response" = "accept";
+let readFails = false;
+let pendingChoice: { input: any; resolve(value: Board): void; reject(error: Error): void } | undefined;
 const pending = new Map<string, { input: any; resolve(value: Interaction): void; reject(error: Error): void }>();
 const advance = () => { persisted = { ...persisted, revision: persisted.revision + 1, updatedAt: now() }; };
 const fixture: any = global.hostFixture = {
   calls: [] as any[], links: [] as string[], openedAgents: [] as string[], anchors: [] as any[], focusRequests: [] as string[], ready: 0, responseClicks: 0, responseResults: [] as any[],
   board: () => copy(persisted),
   mode: (next: typeof submitMode) => { submitMode = next; },
+  choiceMode: (next: typeof choiceMode) => { choiceMode = next; },
+  readFails: (next: boolean) => { readFails = next; },
+  pendingChoice: () => pendingChoice?.input,
+  acceptChoice: () => {
+    if (!pendingChoice) throw new Error('No pending side choice');
+    const request = pendingChoice; pendingChoice = undefined;
+    if (request.input.expectedRevision !== persisted.revision) { request.reject(new Error('Fixture side choice revision conflict')); return; }
+    persisted.sideAgentId = request.input.agentId; delete persisted.pendingSideInteractionId; advance(); request.resolve(copy(persisted));
+  },
+  setPendingSide: (id: string) => { persisted.pendingSideInteractionId = id; advance(); },
   pending: () => [...pending.keys()],
   accept: (id = [...pending.keys()][0], status: Interaction["status"] = "delivered") => {
     const item = pending.get(id); if (!item) throw new Error(`No pending ${id}`);
-    const time = now(); const result: Interaction = { ...item.input, status, agentId: "discussion-fixture", resultReferences: [], createdAt: time, updatedAt: time };
+    const destination = item.input.destination;
+    let kind = item.input.kind;
+    let agentId = "owner-fixture";
+    if (destination === "new-side" || destination === "side" && !persisted.sideAgentId || !destination && kind === "fork") {
+      kind = "fork"; agentId = `discussion-fixture-${++sideSequence}`; persisted.sideAgentId = agentId;
+    } else if (destination === "side") { kind = "reply"; agentId = persisted.sideAgentId!; }
+    else if (destination === "main") kind = "question";
+    const time = now(); const result: Interaction = { ...item.input, kind, status, agentId, resultReferences: [], createdAt: time, updatedAt: time };
     delete (result as any).boardId; (result as any).id = item.input.intentId; delete (result as any).intentId;
     persisted.interactions = [...persisted.interactions.filter(entry => entry.id !== result.id), result]; advance(); pending.delete(id); item.resolve(copy(result)); return result;
   },
@@ -37,8 +58,21 @@ const fixture: any = global.hostFixture = {
   refetch: () => query.invalidateQueries({ queryKey: ["paseo-board"] }),
   rpc: async (name: string, input: any) => {
     fixture.calls.push({ name, input: copy(input) });
+    if (name === "board.read" && readFails) throw new Error("Fixture read unavailable");
     if (name === "board.read") return input.sinceRevision === persisted.revision ? { board: null, unchanged: true } : { board: copy(persisted), unchanged: false };
     if (name === "board.state") { persisted.userState = copy(input.state); return { saved: true }; }
+    if (name === "board.side-agent") {
+      if (!persisted.interactions.some(item => item.kind === 'fork' && item.agentId === input.agentId)) throw new Error('Fixture side agent is unrelated');
+      return new Promise<Board>((resolve, reject) => {
+        if (choiceMode === 'reject') { reject(new Error('Fixture side selection unavailable')); return; }
+        if (choiceMode === 'lost-response') {
+          persisted.sideAgentId = input.agentId; delete persisted.pendingSideInteractionId; advance();
+          reject(new Error('Fixture side selection response lost')); return;
+        }
+        pendingChoice = { input, resolve, reject };
+        if (choiceMode === 'accept') fixture.acceptChoice();
+      });
+    }
     if (name === "board.interact") {
       if (input.sourceInteractionId && !persisted.interactions.some(item => item.id === input.sourceInteractionId)) throw new Error("Fixture source interaction does not exist");
       return new Promise<Interaction>((resolve, reject) => {

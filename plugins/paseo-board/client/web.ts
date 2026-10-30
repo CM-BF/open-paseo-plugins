@@ -245,11 +245,12 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
 export interface WebMessageInputProps {
   value: string;
   onChange(value: string): void;
-  onSubmit(fork: boolean): void;
+  onSubmit(destination: "main" | "side" | "new-side"): void;
   onClose(): void;
   disabled?: boolean;
   placeholder?: string;
   style?: Record<string, unknown>;
+  focusToken?: number;
 }
 
 /** Host clicks outside the floating conversation dismiss it; iframe clicks arrive via the bridge. */
@@ -275,11 +276,13 @@ export function usePopoverDismiss(active: boolean, onDismiss: () => void, preser
 
 /** Native DOM composition events preserve IME confirmation; RNW onKeyPress drops that detail. */
 export function WebMessageInput(props: WebMessageInputProps): ReactElement | null {
+  const input = useRef<{ focus(): void } | null>(null);
   const composing = useRef(false);
   const compositionEnded = useRef(0);
+  useEffect(() => { if (!props.disabled) input.current?.focus(); }, [props.focusToken]);
   if (!canRenderFrames) return null;
   return createElement("textarea", {
-    value: props.value, autoFocus: true, disabled: props.disabled, placeholder: props.placeholder, maxLength: 24000,
+    ref: input, value: props.value, autoFocus: true, disabled: props.disabled, placeholder: props.placeholder, maxLength: 24000,
     "aria-label": "发给 agent 的消息", "data-testid": "board-message-input",
     onChange: (event: { target: { value: string } }) => props.onChange(event.target.value),
     onCompositionStart: () => { composing.current = true; },
@@ -287,7 +290,12 @@ export function WebMessageInput(props: WebMessageInputProps): ReactElement | nul
     onKeyDown: (event: { key: string; keyCode: number; nativeEvent?: { isComposing?: boolean; keyCode?: number }; shiftKey: boolean; altKey: boolean; ctrlKey: boolean; metaKey: boolean; preventDefault(): void; stopPropagation(): void }) => {
       if (composing.current || event.nativeEvent?.isComposing || event.keyCode === 229 || event.nativeEvent?.keyCode === 229 || Date.now() - compositionEnded.current < 50) return;
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); props.onClose(); }
-      else if (event.key === "Enter" && !event.shiftKey && !event.altKey) { event.preventDefault(); event.stopPropagation(); if (!props.disabled) props.onSubmit(event.ctrlKey || event.metaKey); }
+      else if (event.key === "Enter" && !event.shiftKey) {
+        const side = event.ctrlKey || event.metaKey;
+        if (event.altKey && !side) return;
+        event.preventDefault(); event.stopPropagation();
+        if (!props.disabled) props.onSubmit(side ? event.altKey ? "new-side" : "side" : "main");
+      }
     },
     style: { boxSizing: "border-box", width: "100%", minHeight: 88, maxHeight: 220, resize: "vertical", font: "inherit", lineHeight: 1.5, padding: 10, borderRadius: 8, ...props.style },
   });
