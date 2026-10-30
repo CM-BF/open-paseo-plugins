@@ -1,0 +1,37 @@
+{
+  "repository": "https://github.com/makecindy/cindy",
+  "commit": "118767c987f518286ae10a506a54287c3dc2a560",
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "source": "apps/desktop/src/main/maker-ipc/botGroupDivision.ts",
+      "target": "server/vendor/botGroupDivision.ts",
+      "sourceSha256": "61dbea897add4ffd4d4a4a0d38bc009021544474ed2bcd4d0e8479d1e3627a54",
+      "changes": "Only relative import paths adapted; business functions unchanged."
+    },
+    {
+      "source": "apps/desktop/src/main/maker-ipc/botGroupWorkDir.ts",
+      "target": "server/vendor/botGroupWorkDir.ts",
+      "sourceSha256": "cd7b491755aab0895dae444694bcced4563291f75977694ee8c5dd3c37535367",
+      "changes": "Only relative import paths adapted; business functions unchanged."
+    },
+    {
+      "source": "apps/desktop/src/main/maker-ipc/botDelegationCompletionMessage.ts",
+      "target": "server/vendor/botDelegationCompletionMessage.ts",
+      "sourceSha256": "017ea9ee923aae3b90e315f7053af5a3d068a0a3f0708d3c78ad466a80184400",
+      "changes": "Only relative import paths adapted; business functions unchanged."
+    },
+    {
+      "source": "packages/maker-shared/src/botDelegation.ts",
+      "target": "shared/vendor/botDelegation.ts",
+      "sourceSha256": "67b6258a9cbc846877324336b78748bdaadd4bf3c14107e73edb26c7cf76efa1",
+      "changes": "none"
+    },
+    {
+      "source": "packages/maker-shared/src/botDirectMessage.ts",
+      "target": "shared/vendor/botDirectMessage.ts",
+      "sourceSha256": "b12dc91d77d71d05700c3a19142f7747cd4dbe1d2fdd0fd360980cbcc573570f",
+      "changes": "none"
+    }
+  ]
+}

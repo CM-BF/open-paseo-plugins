@@ -1,0 +1,9 @@
+[
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotCapabilitySettings.tsx",
+    "destination": "web/adapters/bot-capability-settings.tsx",
+    "sha256": "2331d626e4371654792981bcad3785236e36cada6bdb4c69db62f3b867a183e1",
+    "modified": true,
+    "notes": "Original layout and disabled personal rows retained; host-scoped catalog metadata, full-index search, explicit bounded pagination, provider errors and loading-unconfirmed wording are adapted. Original vendor file remains unchanged."
+  }
+]

@@ -1,0 +1,23 @@
+{
+  "repository": "makecindy/cindy",
+  "revision": "118767c987f518286ae10a506a54287c3dc2a560",
+  "files": [
+    {
+      "path": "apps/desktop/src/renderer/features/bots/BotGroupQuote.tsx",
+      "sha256": "be3522b61157ba7e0c82c9c7a04cffd000391e13bba56df4309f06e411cadb5e"
+    },
+    {
+      "path": "apps/desktop/src/renderer/features/bots/BotChatQuoteViews.tsx",
+      "sha256": "f7fcab867d8fad7319db0617cb1e7862516be4d23ebbaa72e9ec257582a31eb2"
+    },
+    {
+      "path": "apps/desktop/src/renderer/features/bots/botDmQuote.ts",
+      "sha256": "ee82a921ae5dc8adc1af5c728ebc8dfb10c8f761480d632897e30642e61ab208"
+    },
+    {
+      "path": "apps/desktop/src/renderer/components/chat/ChatReplyIcon.tsx",
+      "sha256": "b26053af6e52c72617fca8433a8e85719cf1ecf1ba0c717b610388b82165037f"
+    }
+  ],
+  "adaptation": "Native host message/composer slots; original SVG path, rail geometry, compact/two-line excerpt and localized quote labels. Native text uses host font rendering; DOM tooltips/focus rings require native equivalents. No automatic reply target or topic creation is claimed. Compact preview authors keep the original non-shrinking single-line treatment but are capped at 50% of the native text area, so long names cannot collapse the excerpt to zero on narrow hosts. This width cap is a host adaptation, not an upstream rule; short-name desktop geometry, icons, rail, remove control, spacing and sent two-line blocks are unchanged."
+}

@@ -1,0 +1,74 @@
+[
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupCreateDialog.tsx",
+    "destination": "vendor/renderer/features/bots/BotGroupCreateDialog.tsx",
+    "sha256": "564cd570239a47785dc8f395e8050ea23d17d6ab99ec8fdf75feb6edbd0326e8",
+    "modified": true,
+    "changes": "Add host close and unmount/data-owner guards; original form JSX and validation retained."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupAvatars.tsx",
+    "destination": "vendor/renderer/features/bots/BotGroupAvatars.tsx",
+    "sha256": "788c4a3f63b1434edd38fe14d276a204fc26350c5eb3e328b4fac2c59d10a8e9",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/botGroupComposerChrome.ts",
+    "destination": "vendor/renderer/features/bots/botGroupComposerChrome.ts",
+    "sha256": "c97edf39cf509024adb65eae6dad618467bd86e37a8c7465cd8b21e6ae6d6e66",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/useBotGroupMentionPicker.tsx",
+    "destination": "vendor/renderer/features/bots/useBotGroupMentionPicker.tsx",
+    "sha256": "0ba9df37c9d404d80318ede7f9c7e4ff8e03f92fbca25d5e598ff7071b9350a7",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/components/new-chat/SendButton.tsx",
+    "destination": "vendor/renderer/components/new-chat/SendButton.tsx",
+    "sha256": "6d00ee27b0dcb0ca206b3b6721f3488e595cd0f066fc5f57c1790251d32b2f58",
+    "modified": false
+  },
+  {
+    "source": "packages/maker-shared/src/botTimeline.ts",
+    "destination": "vendor/shared/botTimeline.ts",
+    "sha256": "e4152f4ef96dfbbc8a0ea7595491096115c590e2c873059ed8bce9e38317ee05",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupChatView.tsx",
+    "destination": "web/group-chat.tsx",
+    "sha256": "f1664ea0f47a936135770ffd5c51454a87d955bb8711f0f8b91f6be73ff64e5a",
+    "modified": true,
+    "changes": "Header JSX around line 728; original full-view cloud/plans/thread orchestration is not copied."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupTimelineItem.tsx",
+    "destination": "web/group-chat.tsx",
+    "sha256": "da97ec499a0396d88b04f1cfd69d5b63aac3ed88703642bb40d17fa80e642823",
+    "modified": true,
+    "changes": "Timeline row/date divider and user/bot bubble geometry around lines 291, 410 and 486; local text-only adapter."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupSettingsDrawer.tsx",
+    "destination": "web/group-settings.tsx",
+    "sha256": "59b4e59f7c32b20cc58498b566f546744ffffcb75bd95e5a64ee9c9976fa7ca3",
+    "modified": true,
+    "changes": "Header, fields, members rows and reply-mode segmented control; supported host operations only."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/botGroupMentions.ts",
+    "destination": "vendor/renderer/features/bots/botGroupMentions.ts",
+    "sha256": "ae0d91853c2f2763b5317dc8c7e08ff4f429c3d4e6ccde9dec59aa4fc89dad33",
+    "modified": true,
+    "changes": "Re-export relocated to shared/vendor original pure function module."
+  },
+  {
+    "source": "apps/desktop/src/shared/botGroupChat.ts",
+    "destination": "vendor/shared/botGroupChat.ts",
+    "sha256": "009a26f6fb0b81e977d9b83995e2b7652b754cdbcc6c7963eb49d9fede985d83",
+    "modified": true,
+    "changes": "Re-export relocated to shared/vendor original shared contract."
+  }
+]

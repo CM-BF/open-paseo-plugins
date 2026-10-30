@@ -1,0 +1,6 @@
+# Preserve the exact third-party license and font bytes in Git exports.
+web/licenses/** -text
+web/assets/fonts/*.ttf -text
+
+# Preserve the unchanged upstream function extraction, including its final blank line.
+server/vendor/attachmentFileName.ts whitespace=-blank-at-eof

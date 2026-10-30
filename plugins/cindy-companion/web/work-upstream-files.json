@@ -1,0 +1,123 @@
+[
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupPlan.tsx",
+    "destination": "vendor/renderer/features/bots/BotGroupPlan.tsx",
+    "sha256": "882cb893efedcf225a41a4d6f9b851e209f6fdc9072996119812f2ca5dee8d39",
+    "modified": true,
+    "changes": "Relocate pure presentation/timeline imports; add optional promise-returning file opener so the host revalidates plan/step ownership. Original component layout and actions are retained."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupElapsed.tsx",
+    "destination": "vendor/renderer/features/bots/BotGroupElapsed.tsx",
+    "sha256": "00e1af20a31e4ecc2a99fb4eeca8ad0ea87b5d4e90daffa71ada252a5c62c502",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotCollaborationCard.tsx",
+    "destination": "vendor/renderer/features/bots/BotCollaborationCard.tsx",
+    "sha256": "0ad235be76dddcf55b5b6452c3f6f6fb2d5ab45524178d98822863e37b4d6c9a",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupTaskCard.tsx",
+    "destination": "vendor/renderer/features/bots/BotGroupTaskCard.tsx",
+    "sha256": "e983a7a578824f704b672615086539f48d8d06de90fa85768564b50d8bcccd1f",
+    "modified": false
+  },
+  {
+    "source": "apps/desktop/src/renderer/components/ui/file-type-icon.tsx",
+    "destination": "vendor/renderer/components/ui/file-type-icon.tsx",
+    "sha256": "c1678f70377e115484af68a43892f110161ed0990b3dfb79cfffa1e53db1c5f4",
+    "modified": true,
+    "changes": "Relocate original pure filePresentation import; icon mapping unchanged."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/cc-agent/sidebar/menuStyles.ts",
+    "destination": "vendor/renderer/features/cc-agent/sidebar/menuStyles.ts",
+    "sha256": "b39b68437b96bac6b574800c1b1db9ee13684e56742a43f82a6662b34a2b5503",
+    "modified": false
+  },
+  {
+    "source": "packages/maker-shared/src/filePresentation.ts",
+    "destination": "vendor/shared/filePresentation.ts",
+    "sha256": "27352c7983a7fa3dc69b1987bb127c13cc7aa0562c1ec62bd4e02dfe42d175ed",
+    "modified": false
+  },
+  {
+    "source": "packages/maker-shared/src/botGroupPresentation.ts",
+    "destination": "vendor/shared/botGroupWorkPresentation.ts",
+    "sha256": "3147abcac90d727c7b334418c1d24ba0d33e176033715e31e376c5d427fa2afb",
+    "modified": true,
+    "changes": "Extract original current-step, follow-up, composer-plan state and file-path functions; retain original function bodies. Active member predicate matches existing host projection."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupComposer.tsx",
+    "destination": "web/work-composer.tsx",
+    "sha256": "5a7b9bb460d2c9a3fff413bea1e820e4af1389a4a0662686d6e1b5099df0a0fe",
+    "modified": true,
+    "changes": "Extract original division tag and arrangement menu item; behavior supplied by the actual group plan controller."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupTimelineItem.tsx",
+    "destination": "web/work-plan.tsx",
+    "sha256": "da97ec499a0396d88b04f1cfd69d5b63aac3ed88703642bb40d17fa80e642823",
+    "modified": true,
+    "changes": "Retain original organizer bubble geometry and original plan widgets; durable Paseo plan projection supplies states and callbacks."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupSettingsDrawer.tsx",
+    "destination": "web/work-directory.tsx",
+    "sha256": "59b4e59f7c32b20cc58498b566f546744ffffcb75bd95e5a64ee9c9976fa7ca3",
+    "modified": true,
+    "changes": "Retain original project-folder row; replace Electron directory picker with a bounded real host directory browser. Saving requires explicit selection."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotCollaborationCard.tsx",
+    "destination": "web/companion-task-card.tsx",
+    "sha256": "0ad235be76dddcf55b5b6452c3f6f6fb2d5ab45524178d98822863e37b4d6c9a",
+    "modified": true,
+    "changes": "Extract original duration/chip/status functions and task-card JSX. Replace Electron task/session/PR stores with explicit host projection and awaited actions; retain frozen receipts. PR chips await an actual host PR catalog and are not fabricated. Host ownership, duplicate submission and unknown delivery guards added."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotCollaborationCard.tsx",
+    "destination": "client/task-card.tsx",
+    "sha256": "0ad235be76dddcf55b5b6452c3f6f6fb2d5ab45524178d98822863e37b4d6c9a",
+    "modified": true,
+    "changes": "Recreate original card geometry, 560px width, controls and status semantics with React Native primitives and host theme tokens. Read exact owned tasks and frozen receipts; optional host navigation opens validated files. Native result text is selectable plain text because public SDK has no rich Markdown renderer."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupTaskCard.tsx",
+    "destination": "web/group-task.tsx",
+    "sha256": "e983a7a578824f704b672615086539f48d8d06de90fa85768564b50d8bcccd1f",
+    "modified": true,
+    "changes": "Retain owned group-task placement and inset original card. Bind every read and action to the actual group message author, task, parent session and frozen result ID."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotGroupTimelineItem.tsx",
+    "destination": "web/group-chat.tsx",
+    "sha256": "da97ec499a0396d88b04f1cfd69d5b63aac3ed88703642bb40d17fa80e642823",
+    "modified": true,
+    "changes": "Original step-number tag and handoff placement; file chips use the historical message artifact snapshot and messageId. Actual task cards stay inside their persisted author bubble."
+  },
+  {
+    "source": "apps/desktop/src/renderer/i18n/locales/en/common.json",
+    "destination": "client/task-messages.ts",
+    "sha256": "c16f96d7e8c823e2343c8df695ac3ac71545e47953d4c488353b55436caa6ea4",
+    "modified": true,
+    "changes": "Extract original bots.collab strings; add explicit host loading, stopping, unknown and capability-gap text. Other locale recorded below."
+  },
+  {
+    "source": "apps/desktop/src/renderer/i18n/locales/zh-CN/common.json",
+    "destination": "client/task-messages.ts",
+    "sha256": "d06f18254fadfc33d372eb7904213d31e494fe8045c4dc13619479f8ef54f387",
+    "modified": true,
+    "changes": "Extract original Chinese bots.collab strings; add explicit host loading, stopping, unknown and capability-gap text."
+  },
+  {
+    "source": "apps/desktop/src/renderer/features/bots/BotTaskOwnerChip.tsx",
+    "destination": "client/task-owner.tsx",
+    "sha256": "e89d7f1978eab0b61a5068329863e7332d17f34020021e7fd923d1062b444085",
+    "modified": true,
+    "changes": "Original 24px pill, 200px max, 20px round avatar, 12px label and canonical companion navigation recreated with native primitives. Ownership comes only from the exact current child/workspace RPC. Uses optional generic agent-header slot; no workspace-toolbar fallback."
+  }
+]

@@ -1,0 +1,131 @@
+{
+  "repository": "https://github.com/makecindy/cindy",
+  "commit": "118767c987f518286ae10a506a54287c3dc2a560",
+  "license": "Apache-2.0 (code); see upstream license scope for non-code assets",
+  "modifications": [
+    "botModelChain.ts: import location only",
+    "botMemoryService.ts: dependency imports only; storage facade excludes SQLite FTS"
+  ],
+  "files": [
+    {
+      "source": "apps/desktop/src/shared/botRemoteSettings.ts",
+      "target": "shared/vendor/botRemoteSettings.ts",
+      "upstreamSha256": "25e9bba654b2a05353a26639d9a481db0fc51a3e7eb4b0611ad5b60c07c88ea1"
+    },
+    {
+      "source": "apps/desktop/src/shared/botMemory.ts",
+      "target": "shared/vendor/botMemory.ts",
+      "upstreamSha256": "1aca08db9f9234e14e6e2ffb7d8f97d1938fb9d204f311fbe4016d7ff2b28afc"
+    },
+    {
+      "source": "apps/desktop/src/shared/botCreation.ts",
+      "target": "shared/vendor/botCreation.ts",
+      "upstreamSha256": "9bc659e66ec46ac7391d58ff6c00c50553de24a3745792b71aed3e482bf59393"
+    },
+    {
+      "source": "apps/desktop/src/shared/botProfileDefaults.ts",
+      "target": "shared/vendor/botProfileDefaults.ts",
+      "upstreamSha256": "7855353775e13cfaefe3fa15626ee8534b73d14853c6d167de4c40c899c76798"
+    },
+    {
+      "source": "apps/desktop/src/shared/botCapabilitySelection.ts",
+      "target": "shared/vendor/botCapabilitySelection.ts",
+      "upstreamSha256": "1e200e6bf583179a80dde5c0e91f53a044d694794d3a272ed08bd00967b10cc2"
+    },
+    {
+      "source": "apps/desktop/src/shared/featureRetirements.ts",
+      "target": "shared/vendor/featureRetirements.ts",
+      "upstreamSha256": "0ea26b4394ae11ce1d302882ee622082f0b17d9cf082fb04cedd1569a7d019f5"
+    },
+    {
+      "source": "apps/desktop/src/shared/botModelChain.ts",
+      "target": "shared/vendor/botModelChain.ts",
+      "upstreamSha256": "20a1cf741928cd53a5999e480982e8338f8dc7e01bbdc09fe31cd95d47b98cfa"
+    },
+    {
+      "source": "packages/maker-shared/src/modelRoute.ts",
+      "target": "shared/vendor/modelRoute.ts",
+      "upstreamSha256": "c2f006a6e113bc8f58abe344bdea028f4e0a295a47761007699c2638148b899b"
+    },
+    {
+      "source": "apps/desktop/src/main/maker-ipc/botProfileFolder.ts",
+      "target": "server/vendor/botProfileFolder.ts",
+      "upstreamSha256": "2f95acc4288694b4cd3ebe1445b329840be54fd3b50cb2cf2ab8562fbb7559a2"
+    },
+    {
+      "source": "apps/desktop/src/main/maker-ipc/botProfileFolderSync.ts",
+      "target": "server/vendor/botProfileFolderSync.ts",
+      "upstreamSha256": "b77252526c942f70baca0a6caa73aa5ad062f3b69a2da1ed5e2ab86a26fdcb5e"
+    },
+    {
+      "source": "packages/maker-core/src/memory/storage.ts",
+      "target": "server/vendor/memory/storage.ts",
+      "upstreamSha256": "fe59a7aada53f3496505bdf9e627c500a99b50212189a7b750d082bb8b22b089"
+    },
+    {
+      "source": "packages/maker-core/src/memory/types.ts",
+      "target": "server/vendor/memory/types.ts",
+      "upstreamSha256": "2b23aac5ba9164c0ddc4a64ea97b59598e9646eea468fb3a1c95d79c14ee8497"
+    },
+    {
+      "source": "apps/desktop/src/main/maker-ipc/botMemoryService.ts",
+      "target": "server/vendor/botMemoryService.ts",
+      "upstreamSha256": "150e0f0c120ed2f070d688976b8d0c5e068c3545ff2d5d8b037ccdcb4aa01d10"
+    },
+    {
+      "source": "LICENSE",
+      "target": "server/vendor/LICENSE",
+      "upstreamSha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "source": "NOTICE",
+      "target": "server/vendor/NOTICE",
+      "upstreamSha256": "77ad73b2535cd4011ed8b509aa51d7c745ae5a6f411370d8f94337562c03cd97"
+    },
+    {
+      "source": "packages/maker-scheduler/src/routines.ts",
+      "target": "server/vendor/scheduler/routines.ts",
+      "upstreamSha256": "b41735e089f831886c968a9a8887af90a1d650ae5aac97e1de4cb2debdd41a7f"
+    },
+    {
+      "source": "packages/maker-scheduler/src/types.ts",
+      "target": "server/vendor/scheduler/types.ts",
+      "upstreamSha256": "9f7e20c2ec205b1a666812a9620c642d98b1c6ba0ce71b34dc247e9430101858"
+    },
+    {
+      "source": "packages/maker-scheduler/src/engine/cron.ts",
+      "target": "server/vendor/scheduler/engine/cron.ts",
+      "upstreamSha256": "a2f67a030c477e16468e7cbf109b7347a6500f29e9d2bd1065aa39b2f3496da2"
+    },
+    {
+      "source": "packages/maker-shared/src/botGroupChat.ts",
+      "target": "shared/vendor/botGroupChat.ts",
+      "upstreamSha256": "b7b50bbe2ba2e15960af540d6ce7233046ea4b7e2ced91e0779f19598417d1c0"
+    },
+    {
+      "source": "packages/maker-shared/src/botGroupQuote.ts",
+      "target": "shared/vendor/botGroupQuote.ts",
+      "upstreamSha256": "2cf4bcb21a90b95b0f583615841b1cabd17a3e224a33a220d88f37c4df96384f"
+    },
+    {
+      "source": "packages/maker-shared/src/botGroupTask.ts",
+      "target": "shared/vendor/botGroupTask.ts",
+      "upstreamSha256": "87f03a45462bda8a35dbf18910d1a3c5aeba0b19431a8e9c74266623e72b7c88"
+    },
+    {
+      "source": "packages/maker-shared/src/botCollaboration.ts",
+      "target": "shared/vendor/botCollaboration.ts",
+      "upstreamSha256": "f23d75116534a6d52286598f85f9c62e9912570430614727e01fa44c2bf85469"
+    },
+    {
+      "source": "packages/maker-shared/src/botGroupMentions.ts",
+      "target": "shared/vendor/botGroupMentions.ts",
+      "upstreamSha256": "10e0e4fe216961d8da48e97ba5a4ffea65db5e0501e65d0c6e6cecd3faa55a9e"
+    },
+    {
+      "source": "apps/desktop/src/shared/untrustedPrompt.ts",
+      "target": "server/vendor/untrustedPrompt.ts",
+      "upstreamSha256": "480020d3d375f0692a453b91156ae5cd9723a03db641189fa1da9cb8b975247b"
+    }
+  ]
+}

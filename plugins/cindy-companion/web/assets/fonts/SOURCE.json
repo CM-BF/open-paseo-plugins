@@ -1,0 +1,14 @@
+{
+  "archive": "https://developer.huawei.com/images/download/next/HarmonyOS-Sans-v2.zip",
+  "archiveSha256": "ba7ddf71fc4dee33a7170869564ad76d421a2ed5c58e5aac9a573c39945ef654",
+  "version": "2.400",
+  "copyright": "Copyright 2021-2025 Huawei Device Co., Ltd. All Rights Reserved.",
+  "licenseSource": "https://raw.githubusercontent.com/openharmony/utils_system_resources/a52632e5d3901cc860b87fe923142077de194b42/LICENSE_Fonts",
+  "licenseSha256": "327e0147d4a3ca2d89e81abce45b210576b0f9fe2b29d900f64b58039f12a102",
+  "licenseNote": "The official ZIP contains no agreement. The unchanged agreement was obtained separately from the official OpenHarmony repository; this does not assert a ZIP-specific v2 license.",
+  "files": {
+    "HarmonyOS_SansSC_Regular.ttf": "984cf609545acee8ef060780fb70fc3099b058c0553416331b6e863fdf7c26fa",
+    "HarmonyOS_SansSC_Medium.ttf": "7aa97804da2fc3802d116011b73ee25791303598718cc58dc49fedc9d63e5d2a",
+    "HarmonyOS_SansSC_Semibold.ttf": "794eaca447316607a98d46b9d3269271c285a19dfd26cad608e3e52368eb855e"
+  }
+}
