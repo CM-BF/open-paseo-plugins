@@ -58,6 +58,12 @@ export function inspectBoard(board: Board, input: z.output<typeof ReadInputSchem
     missingInteractionIds: input.interactionIds?.filter(id => !selected.some(item => item.id === id)) ?? [],
     updates: board.updates.slice(-limit), retainedUpdateCount: board.updates.length,
     unreadUpdateCount: board.updates.filter(item => !board.seenUpdateIds.includes(item.id)).length,
+    feeds: [...(board.feeds ?? [])].sort((a, b) => (b.lastAcceptedAt ?? b.openedAt).localeCompare(a.lastAcceptedAt ?? a.openedAt)).slice(0, limit).map(source => ({
+      sourceId: source.sourceId, path: source.path, generation: source.generation, actorAgentId: source.actorAgentId,
+      closed: source.closed, seq: source.seq, openedAt: source.openedAt, lastAcceptedAt: source.lastAcceptedAt,
+      lastAck: source.lastAck, lastError: source.lastError,
+    })),
+    feedCount: board.feeds?.length ?? 0,
     decisionCount: board.decisions.length,
     source: source ? {
       selector: input.selector, canvasBase: source.canvasBase, replay: { complete: source.replay.complete, appliedPatchCount: source.replay.appliedPatchIds.length, failedPatch: source.replay.failedPatch },

@@ -22,7 +22,7 @@ Decision records describe choices made by the agent, with three distinct sources
 
 ## Agent interface
 
-New agents receive `board_create`, `board_list`, `board_read`, `board_publish`, `board_respond`, `board_decision`, and `board_emit` MCP tools. Existing sessions can use:
+New agents receive `board_create`, `board_list`, `board_read`, `board_publish`, `board_respond`, `board_decision`, `board_emit`, and `board_feed` MCP tools. Existing sessions can use:
 
 ```sh
 ~/.paseo/paseo-board/bin/paseo-board read --file /absolute/request.json
@@ -82,6 +82,28 @@ Network access is limited to HTTPS resources on `unpkg.com`, `cdn.jsdelivr.net`,
 Visual verification needs the actual Board renderer. A raw HTML file lacks its injected styles and runtime, and there is no `board_preview` tool. Use an owned test Board in Paseo, or an isolated development harness built with `buildBoardDocument` for explicit light/dark palettes without changing the user's global theme. Clearly distinguish renderer checks from native UI verification; the repository's browser tests cover their fixtures, not every authored design.
 
 The [interactive diff example](examples/interactive-diff.html) uses the injected palette and controls, with split/unified views and editable bounded line comparisons. Append its self-contained section to a Board; its controls remain local and save only their own state field. It is illustrative content, not a mandatory Board layout or a publication-history diff.
+
+## Latest-state feeds
+
+Use a feed when a background process reports successive arbitrary JSON values. The installed dependency-free Node helper handles sequence IDs, identical retries and a durable pending operation; the canvas decides how to render the data.
+
+```js
+import { createFeed } from '/absolute/paseo-home/paseo-board/lib/feed.mjs';
+const feed = await createFeed({
+  boardId: 'my-project', sourceId: 'source-a', path: '/live/a',
+  stateFile: '/absolute/private-task-directory/source-a.json',
+  focusSelectors: ['#source-a-view']
+});
+await feed.set({ value: 42 }); // Quiet: data updates without an unread/highlight item.
+await feed.set({ value: 43 }, { attention: 'milestone' });
+// Canvas: const off = board.watch('/live/a', value => render(value));
+```
+
+The installed skill supplies the actual import path and the equivalent CLI/MCP `feed` actions (`open`, `set`, `status`, `close`). The process inherits its owning agent's binding; do not copy that binding into code or prompts. Use a unique durable `stateFile`, await each operation, and keep sources on disjoint object paths. A set replaces that source's complete value. Missing object parents are created; overlapping sources and scalar/array parents are rejected.
+
+Unknown outcomes retain exactly one pending request; restarting with the same configuration replays it before accepting new work. Confirmed conflicts need inspection and explicit reconciliation. A changed generation fences older producers; changing the same path through normal publication also stops a stale feed. `feed.retry()`, `feed.status()`, explicit `feed.reopen({discardRejected:true})`, and `feed.close()` expose recovery rather than silently overwriting another writer.
+
+Quiet and milestone affect attention, not durability or model wakeups. Neither wakes an agent. Values are limited to 256,000 bytes, one pending request per local journal, 64 retained source identities per Board and 32 recent replay receipts per source. Keep large artifacts outside Board and publish references or summaries. This first version is latest state with bounded requests, not a telemetry database or arbitrary event-stream replay. It retains existing whole-snapshot frame transport and atomic Board storage. Async-shell remains the process supervisor.
 
 ## Multiple writers
 
