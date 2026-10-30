@@ -4,12 +4,23 @@
 
 Scope: replace the overflowing workspace menu with a searchable, bounded inline list and add explicit Workspace creation from a registered Project. New workspaces use the Project's existing directory; source containment checks and agent launch remain separate. Projects without workspaces are included; background-only projects and hidden/archiving workspaces are excluded from new choices.
 
-- [ ] Implement and verify catalog filtering and creation retry behavior.
-- [ ] Typecheck, full offline tests, client rebuild, clean production compile and Hermes.
-- [ ] Install on the existing daemon after an idle check and backup; verify desktop, compact and short viewport UI, actual Project-to-Workspace creation and fixture cleanup.
+- [x] Implement and verify catalog filtering and creation retry behavior.
+- [x] Typecheck, full offline tests, client rebuild, clean production compile and Hermes.
+- [x] Install on the existing daemon after an idle check and backup; verify desktop, compact and short viewport UI, actual Project-to-Workspace creation and fixture cleanup.
 - [ ] Publish the verified plugin and repair to remote main, preserving unrelated plugins.
 
 Existing historical review-quality limitations below remain unchanged. This task's acceptance concerns the workspace picker and Project creation only.
+
+2026-10-29 verification, source `e8c46ec2ab70242dbbe5810e10f41aa8f7dae77f`, main daemon 0.13.2:
+
+- Clean Git export: `npm ci`, typecheck and all 144 tests passed. Rebuilding the client matched the committed bundle byte-for-byte. A second `npm ci --omit=dev` passed the installed Paseo compiler and Hermes; the actual served bundle also passed after installation.
+- Existing Web UI, same local daemon: 1440×900 and 420×860 lists stayed at 280px maximum height with no horizontal overflow; 320×540 reduced the list to 189px. An actual wheel scroll reached the final row. Name/path search, no-results state, Project selection, and the creation control were exercised.
+- A registered empty fixture Project created exactly one visible Workspace from a double click and automatically selected it. After page reload, search found the persisted Workspace and selecting it worked. No fixture agent was created. Deleting the fixture Project before another creation produced a visible `Unknown project` error with the same-request retry control. Native Project/Workspace inventories and the owned directory were then verified absent.
+- Both source and state were backed up before replacement; all six watches and the complete task journal remained unchanged. The retained installation is `~/Projects/upstream-watch-workspace-picker/plugins/upstream-watch`, with its own production dependencies. The previous directory remains `~/Projects/upstream-watch-cindy/plugins/upstream-watch`; after a fresh idle check, rollback is remove/reinstall from that directory with the saved state/settings retained. No daemon restart or unrelated plugin reload occurred.
+- Private evidence: `~/.paseo/verification/upstream-watch/workspace-picker-20261029/` contains `compact-list.png`, `short-list.png`, `short-project-create.png`, `deleted-project-error.png`, `geometry.json`, and exact fixture before/created/cleanup records. Desktop rendering was inspected live and its geometry retained; the full desktop screenshot was not saved because the sidebar contained unrelated private content.
+- Limits: visual checks used the existing dark theme in Web UI; native iOS/Android rendering and a light theme were not exercised. Host-change/unmount and uncertain-response behavior were reviewed in source; request reuse/remount semantics have offline behavior coverage. Existing review-quality gaps are outside this picker repair.
+
+The concurrent upstream main changes through `4a37b67` affected only Paseo Board. They were merged intact; the net publication delta outside `plugins/upstream-watch` is the single README catalog row.
 
 ## Goal and existing behavior
 
