@@ -38,7 +38,7 @@ A standalone Paseo plugin that discovers GitHub issues authored by the authentic
 
 ## Known issues and next step
 
-Core implementation, live UI verification, cleanup and stable installation are complete. Publication review found a reserved-retry issue-state refresh gap; its focused fix and regression verification are being integrated before publication.
+Implementation, live UI verification, cleanup, stable installation and publication review are complete. The reserved-retry issue-state refresh gap is fixed; no known release blocker remains.
 
 ## Review fixes
 
@@ -61,10 +61,13 @@ Core implementation, live UI verification, cleanup and stable installation are c
 - Runtime defaults: `codex/gpt-6-astra`, `ultra`, `full-access`, `service_tier=priority`; verified against actual provider capabilities. Fixture used `gpt-6-luna/low` only.
 - Use the **本人 issues** sidebar entry. The installed scope is `cm-bf/open-paseo-plugins`, historical backfill 0, polling enabled every 180 seconds. #3 is explicitly claimed and excluded.
 - [Verification report](docs/verification/2026-10-29-live.md) contains screenshot links and recovery/source notes. No original installation existed before this task.
-- Work remains on `sw/paseo-owner-issue-triage`; no push or main merge performed. The coordinating agent owns integration.
+- Integrated into the authorized main publication branch. Initial plugin implementation is recorded in `8fe0d2e`; final reserved-retry fix is `63f7268`. The final documentation commit in public main records delivery.
 
 ### 2026-10-29 — reserved retry eligibility
 
 - Fixed a retry-before-scan race: every reserved GitHub retry now checks the pinned account, repository allowlist and fresh API issue eligibility before another delivery attempt. A closed, missing, foreign-authored or PR response stops the reservation; a 404 affects only that issue.
 - Changed content supersedes the old reservation only after its worker is confirmed stopped. Its original run ID, fingerprint and snapshot remain in history; the current content uses the existing queue/dedup path and a new run identity.
 - TypeScript passed; all 126 unit tests across four files passed, including seven new retry-boundary cases. No daemon installation or UI changes were made for this follow-up; the coordinating agent owns runtime replacement.
+
+- 2026-10-29: Coordinating-agent publication review checked all seven real screenshots and removed private host identity from public documentation. The cleanup screenshot shows an empty fixture workspace, while archive status is recorded separately through the SDK.
+- 2026-10-29: Installed final server fix `63f7268` into the retained stable source after stopping only this plugin and backing up source/data under `~/.paseo/plugin-backups/paseo-owner-issue-triage/final-retry-fix-20261029-185913/`. Source hash matches; plugin running; owner, worker settings, enabled polling and the claimed issue remain unchanged. No active worker existed, no model was launched by the update, and the shared daemon was not restarted. Client code and bundle are unchanged from the live UI verification.
