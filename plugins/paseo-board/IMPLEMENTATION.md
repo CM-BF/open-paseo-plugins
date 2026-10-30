@@ -15,7 +15,7 @@ The plugin is installed and running on Paseo daemon 0.13.2 as paseo-board, from 
 - One validated storage service behind typed RPC, agent MCP tools and the standalone CLI. Existing async-shell scripts can emit facts without waking an agent; there is no second task supervisor.
 - Durable intent records, optimistic revisions, immutable retry IDs, owner-scoped agent access, ordered delivery, history recovery and explicit uncertain outcomes.
 
-## Final automated verification
+## Earlier automated verification
 
 | Check | Result |
 | --- | --- |
@@ -62,7 +62,7 @@ Both fixture agents are archived. Test boards and delivery records were backed u
 - Local CLI access trusts the operating-system user. Agent bindings scope Board tools, but do not sandbox an otherwise unrestricted shell running as that same user.
 - HTML remains in the restricted frame runtime. External resources follow the renderer's allowed network policy; unavailable resources and failed capture cannot be treated as complete visual context. The current per-board store and shared delivery journal each enforce a 64 MiB limit rather than silently deleting history.
 
-This is a local installed delivery on feat/paseo-board, not a public package release. The original workspace and other plugin installations remain unchanged.
+The original delivery was installed from feat/paseo-board; subsequent public repository commits are recorded in PROGRESS.md. The original workspace and other plugin installations remain unchanged.
 
 ## First user-facing conversation canvas
 
@@ -70,10 +70,20 @@ The user requested moving subsequent discussion to the Board. The existing board
 
 ## Contextual actions on the desktop canvas
 
-Option/Alt + left drag temporarily selects a region; release opens a menu beside the selection. Normal right-click selects its point, or reuses a same-version text/region selection containing that point. The menu offers question, change and fork, each opening a blank host-owned composer with focus. Sending still requires the user's explicit Send action. Esc dismisses selection, native editors retain their context menu, and Shift + right-click bypasses the Board menu.
+Option/Alt + left drag temporarily selects a region; release opens a menu beside the selection. Normal right-click selects its point, or reuses a same-version text/region selection containing that point. The menu offers question, change and fork, each opening a blank host-owned composer with focus. This original modal workflow is superseded by the in-place conversation changes recorded below. Esc dismisses selection, native editors retain their context menu, and Shift + right-click bypasses the Board menu.
 
 Selection owns a versioned interaction lease through capture and menu action. Local updates and whole-document replacement wait, late cancelled screenshots cannot publish anchors, and screenshot jobs serialize temporary canvas prototype hooks. Dragging out of the iframe and releasing over the host cancels the unfinished gesture; completed references remain available to the original toolbar. The ordinary curve controls and draft state remain independent.
 
 Browser checks use an isolated Chrome profile and local fixture. They cover the gestures, all three composer actions, no automatic send, ordinary drag/input behavior, editor and Shift bypasses, cancellation during delayed capture, data/patch/document deferral, first input after iframe focus changes, cross-frame release, and the original host toolbar. Independent review also checked screenshot replacement, hook restoration and rejection of stale frame messages. Physical-phone behavior is outside this verification.
 
 The final copied runtime passed Hermes evaluation and was enabled without restarting the daemon. Native Paseo checks verified the in-canvas right-click menu, a blank focused change composer, and the original top question button retaining the selected point. Both previews were cancelled; no test intent was created. The final reload and reply/guide patches preserved the latest pre-reload curve, speed and draft exactly. The request is applied on the development Board with concrete code and canvas references. Backups are under ~/.paseo/backups/paseo-board-context-actions-20261029-014059 (final reload) and the earlier 013738 directory.
+
+## Issue #3 — in-place conversations
+
+The reference row now keeps a constant height. Its contents and selection hints change without inserting layout above the canvas. Question, change and fork inputs live in a host-owned popover beside the pointer; Enter sends, Shift+Enter adds a newline and IME composition is guarded. No modal is opened for entering a question. The overview, history and decision lists remain optional navigation.
+
+Durable interactions are projected into an isolated marker layer. Replies and returns share their root marker, whose latest status updates independently of the canvas and does not restart its JavaScript. Markers stay at their original coordinates when their frozen anchor is stale, with a visible old-version label. They are excluded from reference screenshots. Opening a marker reveals its questions, statuses, answers and follow-up actions locally.
+
+Forks inherit the source session's public mode, model, reasoning and feature values. A new scoped respond operation stores text and a separate optional free HTML canvas on the assigned interaction. It does not grant write access to the source canvas. Its response revision supports conflict checking and retry deduplication. Explicit responses are not overwritten by automatic timeline collection. Stream terminal events and late canonical transcript refreshes repair a race in which a finished fork could previously lose its final answer.
+
+Verification for these changes is recorded separately in PROGRESS.md; earlier counts above describe the earlier runtime.
