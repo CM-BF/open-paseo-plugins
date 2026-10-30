@@ -235,6 +235,10 @@ function (initial) {
   };
   const queueMarkerPositions = () => { if (!markerPositionFrame) markerPositionFrame = requestAnimationFrame(positionMarkers); };
   const renderMarkers = (markers, selectedId) => {
+    // A host overview can reopen a thread using its captured viewport as a fallback. Always
+    // send this document's current position on re-selection, even if it has not moved since
+    // the previous opening (the host may have discarded that position while closed).
+    if (selectedMarkerId !== selectedId) lastSelectedPosition = undefined;
     selectedMarkerId = selectedId;
     if (!markerHost) {
       markerHost = document.createElement("div");

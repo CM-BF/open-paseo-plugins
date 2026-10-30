@@ -503,6 +503,12 @@ try {
   await untilFrame('scrollY===130');
   await until(`results.interactionPositions.some(p=>p.id==='spatial-question'&&p.position.y===${markerAnchor.rect.y - 130})`);
   assert.equal((await location('[data-board-interaction=spatial-question]')).y, markerAnchor.rect.y - 130);
+  await update('{selectedInteractionId:undefined}');
+  await settleFrame();
+  const closedPositionCount = await evaluate('results.interactionPositions.length');
+  await update("{selectedInteractionId:'spatial-question'}");
+  await until(`results.interactionPositions.length===${closedPositionCount + 1}`);
+  assert.equal(await evaluate('results.interactionPositions.at(-1).position.y'), markerAnchor.rect.y - 130);
   await update("{interactions:hostProps.interactions.map(i=>({...i,status:'answered'})),boardRevision:hostProps.boardRevision+1,canvas:{...hostProps.canvas,revision:hostProps.canvas.revision+1}} ");
   await untilFrame("document.querySelector('[data-board-markers]').shadowRoot.querySelector('button').dataset.stale==='true'");
   assert.ok((await frame("document.querySelector('[data-board-markers]').shadowRoot.querySelector('button').textContent")).includes('旧位置'));
