@@ -12,6 +12,12 @@ const global = globalThis as any;
 const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 const now = () => new Date().toISOString();
 const fragment = `<style>body{padding:24px;margin:0;font:16px sans-serif}#point{position:absolute;top:140px;left:120px;width:100px;height:70px;background:#ebf5ed}#field{display:block;margin-top:40px}#words{margin-top:100px;width:600px}#far{margin-top:850px}</style><h1>Actual BoardView fixture</h1><button id="control">Keep running</button><output id="count">0</output><input id="field" value="initial"><div id="point">Point here</div><p id="words">A stable sentence for selecting the original location.</p><div id="far">Far below</div><script>
+const NativeImage=window.Image;const imageSrc=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'src');
+window.captureGate=null;window.captureCompleted=0;
+window.pauseNextCapture=()=>{if(window.captureGate)throw new Error('capture already held');window.captureGate={held:false,release:null};return true};
+window.Image=function(...args){const image=new NativeImage(...args);Object.defineProperty(image,'src',{configurable:true,get(){return imageSrc.get.call(image)},set(value){const gate=window.captureGate;if(gate&&!gate.held&&String(value).startsWith('data:image/svg+xml')){gate.held=true;gate.release=()=>new Promise((resolve,reject)=>{image.addEventListener('load',()=>{window.captureCompleted++;resolve(true)},{once:true});image.addEventListener('error',reject,{once:true});window.captureGate=null;imageSrc.set.call(image,value)})}else imageSrc.set.call(image,value)}});return image};window.Image.prototype=NativeImage.prototype;
+window.releaseCapture=()=>{if(!window.captureGate?.release)throw new Error('capture has not reached image decode');return window.captureGate.release()};
+
 window.boots=1;window.ticks=0;window.count=0;function tick(){ticks++;requestAnimationFrame(tick)}requestAnimationFrame(tick);document.querySelector('#control').onclick=()=>{count++;document.querySelector('#count').textContent=count};
 window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-interaction')parent.postMessage({channel:'host-fixture-focus',id:e.data.id},'*');if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-update')parent.postMessage({channel:'host-fixture-update',request:e.data},'*');if(e.source===parent&&e.data?.channel==='host-fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'host-fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'host-fixture-result',id:e.data.id,error:error.message},'*')}}});
 </script>`;
@@ -25,7 +31,7 @@ let pendingChoice: { input: any; resolve(value: Board): void; reject(error: Erro
 const pending = new Map<string, { input: any; resolve(value: Interaction): void; reject(error: Error): void }>();
 const advance = () => { persisted = { ...persisted, revision: persisted.revision + 1, updatedAt: now() }; };
 const fixture: any = global.hostFixture = {
-  calls: [] as any[], links: [] as string[], openedAgents: [] as string[], anchors: [] as any[], focusRequests: [] as string[], updateRequests: [] as any[], updatePositions: [] as any[], ready: 0, responseClicks: 0, responseResults: [] as any[],
+  raw: [] as any[], calls: [] as any[], links: [] as string[], openedAgents: [] as string[], anchors: [] as any[], focusRequests: [] as string[], updateRequests: [] as any[], updatePositions: [] as any[], ready: 0, responseClicks: 0, responseResults: [] as any[],
   board: () => copy(persisted),
   mode: (next: typeof submitMode) => { submitMode = next; },
   choiceMode: (next: typeof choiceMode) => { choiceMode = next; },
@@ -104,6 +110,7 @@ const fixture: any = global.hostFixture = {
 let requestId = 0;
 const frameRequests = new Map<number, { resolve(value: any): void; reject(error: Error): void }>();
 global.addEventListener("message", (event: any) => {
+  if (event.data?.channel === "paseo-board-frame-v1") fixture.raw.push(event.data);
   if (event.data?.channel === "host-fixture-update") fixture.updateRequests.push(event.data.request);
   if (event.data?.channel === "paseo-board-frame-v1" && event.data.type === "update-position") fixture.updatePositions.push(event.data);
   if (event.data?.channel === "host-fixture-focus") fixture.focusRequests.push(event.data.id);

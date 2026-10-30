@@ -797,13 +797,11 @@ function (initial) {
   };
   const beginSelection = (position, dragging = false) => {
     window.focus();
-    const previousId = selectionSession?.id;
     cancelSelection({ release: false, drainUpdates: false });
-    const session = { id: previousId || `selection-${++sequence}`, abort: new AbortController(), indicator: null, anchor: null, position };
+    const session = { id: `${scope.sessionId}:selection-${++sequence}`, abort: new AbortController(), indicator: null, anchor: null, position };
     selectionSession = session;
     reportCanvasActivity();
-    // Replacing one local selection keeps the same host lease, so a queued document replacement
-    // cannot slip into a release/acquire gap while the next capture starts.
+    // Replace the lease atomically, with a fresh generation so old pixels cannot match it.
     post({ type: "selection-lock", id: session.id, active: true, dragging });
     return session;
   };
@@ -823,35 +821,44 @@ function (initial) {
     releasePointer();
     selectionMode = "off";
     paintSelectionMode();
-    showCaptureStatus(session);
+    const needsCapture = !reuse && imageRegion && imageRegion.width > 0 && imageRegion.height > 0;
+    // This immutable reference is available immediately; capture adds only pixels later.
+    session.anchor = anchor;
+    lastAnchor = anchor;
+    captureBusy = Boolean(needsCapture);
     post({ type: "selection-lock", id: session.id, active: true, dragging: false });
     post({ type: "selection-end" });
-    captureBusy = true;
+    post({ type: "anchor", anchor, selectionId: session.id });
+    post({ type: "compose", automatic: true, selectionId: session.id, request: { kind: "question", anchor, position: session.position, ...(needsCapture ? { captureStatus: "pending" } : {}) } });
+    if (!needsCapture) { cancelSelection({ clear: false }); return; }
+    showCaptureStatus(session);
+    // Promise microtasks do not permit painting or input. Give the host its messages, React
+    // commit and a painted frame before DOM capture begins. The capture implementation must
+    // also yield during its work to keep input responsive throughout.
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0))));
+    if (selectionSession !== session || session.abort.signal.aborted) return;
     let timer;
     let abortListener;
+    let captured;
     try {
-      if (!reuse && imageRegion && imageRegion.width > 0 && imageRegion.height > 0) {
-        anchor.image = await Promise.race([
-          queuedCapture(imageRegion, session.abort.signal),
-          new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new Error("选区截图超时，仍可使用位置和文字上下文。")), 15000);
-            abortListener = () => reject(new DOMException("选区已取消", "AbortError"));
-            session.abort.signal.addEventListener("abort", abortListener, { once: true });
-          }),
-        ]);
-      }
-    } catch (e) {
-      if (selectionSession === session && !session.abort.signal.aborted) error("capture-failed", e.message);
+      const image = await Promise.race([
+        queuedCapture(imageRegion, session.abort.signal),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Selection capture timed out")), 15000);
+          abortListener = () => reject(new DOMException("选区已取消", "AbortError"));
+          session.abort.signal.addEventListener("abort", abortListener, { once: true });
+        }),
+      ]);
+      captured = { ...anchor, image };
+    } catch {
+      // A failed image leaves the already-open input and its text/geometry usable.
     } finally {
       clearTimeout(timer);
       if (abortListener) session.abort.signal.removeEventListener("abort", abortListener);
     }
     if (selectionSession !== session || session.abort.signal.aborted) return;
-    captureBusy = false;
-    lastAnchor = anchor;
-    session.anchor = anchor;
-    post({ type: "anchor", anchor, selectionId: session.id });
-    post({ type: "compose", automatic: true, selectionId: session.id, request: { kind: "question", anchor, position: session.position } });
+    lastAnchor = captured || anchor;
+    post({ type: "selection-capture", selectionId: session.id, anchor: lastAnchor, status: captured ? "ready" : "failed" });
     cancelSelection({ clear: false });
   };
   const setSelectionMode = (mode) => {
@@ -985,10 +992,9 @@ function (initial) {
   }, true);
   window.addEventListener("blur", () => {
     if (!selectionSession) return;
-    // Clicking a host toolbar action closes this menu, but must retain its completed anchor
-    // until that action's click handler consumes it. An unfinished gesture/capture is cancelled.
-    const completed = Boolean(selectionSession.anchor);
-    cancelSelection({ clear: !completed, notify: !completed });
+    // The host input takes focus before capture finishes. Keep its completed reference alive;
+    // host dismissal/submission sends a generation-scoped cancellation explicitly.
+    if (!selectionSession.anchor) cancelSelection({ notify: true });
   });
   window.addEventListener("contextmenu", (event) => {
     if (!event.isTrusted) return;
@@ -1002,7 +1008,7 @@ function (initial) {
     if (point.x === 0 && point.y === 0 && event.target instanceof Element) {
       const r = event.target.getBoundingClientRect(); point = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
     }
-    const previous = containsAnchor(lastAnchor, point, event.target) ? copy(lastAnchor) : null;
+    const previous = lastAnchor?.image && containsAnchor(lastAnchor, point, event.target) ? copy(lastAnchor) : null;
     const text = !previous ? selectedText(point) : null;
     const selected = previous ? { anchor: previous, region: null } : text || pointSelection(point, event.target);
     const session = beginSelection(point);
@@ -1071,6 +1077,7 @@ function (initial) {
     else if (message.type === "host-activity" && typeof message.composing === "boolean") { hostComposing = message.composing; reportCanvasActivity(); }
     else if (message.type === "focus-interaction" && typeof message.id === "string") focusInteraction(message.id);
     else if (message.type === "selection") setSelectionMode(message.mode);
+    else if (message.type === "cancel-capture" && message.selectionId === selectionSession?.id) cancelSelection({ clear: false });
     else if (message.type === "clear-selection") { selectionMode = "off"; cancelSelection(); }
     else if (message.type === "ask-result") {
       const pending = pendingAsks.get(message.id);

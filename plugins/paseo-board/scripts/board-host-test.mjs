@@ -89,7 +89,16 @@ try {
     if (modifiers & 1) await command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Alt', code: 'AltLeft', windowsVirtualKeyCode: 18 });
   };
   const hostLocation = (selector) => evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height}})()`);
-  const hostClick = async (selector) => { await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))'); const r = await hostLocation(selector); await clickPoint(r.x + r.width / 2, r.y + r.height / 2); };
+  const hostClick = async (selector) => {
+    // Input focus can scroll a tall thread's popover. Like a user, reveal the actual
+    // control first; DOM existence alone does not establish a clickable hit target.
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'nearest',inline:'nearest'})`);
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    const r = await hostLocation(selector);
+    const hit = await evaluate(`(()=>{const target=document.querySelector(${JSON.stringify(selector)});const hit=document.elementFromPoint(${r.x+r.width/2},${r.y+r.height/2});return {matches:target===hit||target.contains(hit),hit:hit?.outerHTML?.slice(0,250),rect:target.getBoundingClientRect()}})()`);
+    assert.ok(hit.matches, `Host click must hit its visible control: ${selector} ${JSON.stringify(hit)}`);
+    await clickPoint(r.x + r.width / 2, r.y + r.height / 2);
+  };
   const marker = (id) => `[data-board-interaction="${id}"]`;
   const untilMarker = (id, status) => untilFrame(`document.querySelector('[data-board-markers]')?.shadowRoot?.querySelector(${JSON.stringify(marker(id))})?.dataset.status===${JSON.stringify(status)}`);
   const canvasRect = () => hostLocation('iframe[data-board-id="host-fixture"]');
@@ -154,7 +163,7 @@ try {
   const nearby = await hostLocation(popover);
   assert.ok(Math.abs(nearby.x - point.x) <= 24, `Popover x ${nearby.x} should be beside pointer ${point.x}`);
   assert.ok(Math.abs(nearby.y - point.y) <= 30, `Popover ${JSON.stringify(nearby)} should be beside pointer ${JSON.stringify(point)}; canvas ${JSON.stringify(original)}`);
-  assert.equal(await evaluate(`document.activeElement===document.querySelector(${JSON.stringify(input)})`), true);
+  assert.equal(await evaluate(`document.activeElement===document.querySelector(${JSON.stringify(input)})`), true, await evaluate(`JSON.stringify({active:document.activeElement?.outerHTML?.slice(0,250),input:document.querySelector(${JSON.stringify(input)})?.getBoundingClientRect()})`));
   await key('Escape'); await noPopover();
   await hostClick('button[aria-label="清除引用"]');
   assert.deepEqual(await canvasRect(), original);
@@ -190,7 +199,54 @@ try {
   assert.deepEqual(await canvasRect(), original);
   check('ordinary text selection and Alt-drag open the focused input immediately; clicks inside keep it open, and clicking the canvas outside closes it without sending');
 
+  await frame('pauseNextCapture()');
+  const captureStart = await evaluate('performance.now()');
   await openAt();
+  const inputVisibleMs = await evaluate(`performance.now()-${captureStart}`);
+  await untilFrame('captureGate?.held===true');
+  assert.ok(inputVisibleMs < 1000, `Input must open before slow capture, measured ${inputVisibleMs}ms`);
+  assert.ok(await evaluate(`document.querySelector(${JSON.stringify(popover)}).textContent.includes('截图准备中')`));
+  await sendText('Draft written while capture is held');
+  await evaluate(`window.originalInput=document.querySelector(${JSON.stringify(input)});originalInput.setSelectionRange(6,11)`);
+  const frozenMessage = await evaluate("hostFixture.raw.filter(item=>item.type==='compose').at(-1)");
+  const sendButtonBeforePixels = await hostLocation(popover+' button[aria-label="主会话发送"]');
+  const inputBeforePixels = await hostLocation(input);
+  // Valid PNG syntax cannot retarget a capture to a different anchor or generation.
+  for (const change of [{ selectionId: 'older-selection' }, { anchor: { ...frozenMessage.request.anchor, canvasRevision: frozenMessage.request.anchor.canvasRevision + 1 } }]) {
+    const message = { ...frozenMessage, type: 'selection-capture', status: 'ready', anchor: { ...frozenMessage.request.anchor, image: { mimeType: 'image/png', data: 'iVBORw0KGgoAAAA' } }, ...change };
+    if (change.anchor) message.anchor.image = { mimeType: 'image/png', data: 'iVBORw0KGgoAAAA' };
+    await frame(`parent.postMessage(${JSON.stringify(message)},'*')`);
+  }
+  assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(popover+' img')})`), false);
+  await frame('releaseCapture()');
+  await until(`document.querySelector(${JSON.stringify(popover+' img')})`);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)})===originalInput && document.activeElement===originalInput`), true);
+  assert.equal(await evaluate('originalInput.value'), 'Draft written while capture is held');
+  assert.deepEqual(await hostLocation(popover+' button[aria-label="主会话发送"]'), sendButtonBeforePixels);
+  assert.deepEqual(await hostLocation(input), inputBeforePixels);
+  assert.deepEqual(await evaluate('({start:originalInput.selectionStart,end:originalInput.selectionEnd})'), { start: 6, end: 11 });
+  console.log(`MEASURE selection-to-input upper bound ${inputVisibleMs.toFixed(1)}ms; actual screenshot decode deliberately held until after typing`);
+  await key('Escape'); await noPopover();
+  await hostClick('button[aria-label="清除引用"]');
+  check('the focused input appears before held capture, accepts typing, validates image identity, and adds the real PNG without remounting or moving its caret');
+
+  await frame('pauseNextCapture()'); await openAt(); await untilFrame('captureGate?.held===true');
+  const oldSelection = await evaluate("hostFixture.raw.filter(item=>item.type==='compose').at(-1).selectionId");
+  await sendText('Cancelled slow screenshot'); await key('Escape'); await noPopover();
+  await openAt(175,190); await sendText('New draft stays here');
+  const newSelection = await evaluate("hostFixture.raw.filter(item=>item.type==='compose').at(-1).selectionId");
+  assert.notEqual(oldSelection,newSelection);
+  await frame('releaseCapture()');
+  await until(`document.querySelector(${JSON.stringify(popover+' img')})`);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)}).value`), 'New draft stays here');
+  assert.equal(await evaluate(`document.activeElement===document.querySelector(${JSON.stringify(input)})`), true);
+  assert.equal(await submitCount(),0);
+  await key('Escape'); await noPopover();
+  await hostClick('button[aria-label="清除引用"]');
+  check('Escape cancels one capture generation; a new input remains focused and receives only its own eventual screenshot');
+
+  await frame('pauseNextCapture()');
+  await openAt(); await untilFrame('captureGate?.held===true');
   await sendText('First line');
   await key('Enter', 'Enter', 8);
   await sendText('Second line');
@@ -212,6 +268,13 @@ try {
   await key('Enter');
   await until("hostFixture.pending().length===1");
   const id = await evaluate('hostFixture.pending()[0]');
+  const sentBeforePixels = await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input");
+  assert.equal(sentBeforePixels.anchor.image, undefined);
+  assert.ok(sentBeforePixels.anchor.rect);
+  await frame('releaseCapture()');
+  await untilFrame("!document.querySelector('[data-board-capture-status]')");
+  assert.deepEqual(await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input"), sentBeforePixels);
+
   assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input.kind"), 'question');
   await untilMarker(id, 'sending');
   await until(`document.querySelector(${JSON.stringify(railItem(id))})?.getAttribute('aria-label').includes('发送中')`);
@@ -347,8 +410,8 @@ try {
   await closePopover();
   await openAt(850, 300);
   await sendText('Choose the fork button only after writing');
-  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover + ' button[aria-label="主会话发送"]')})!==null`), true);
-  await hostClick(`${popover} button[aria-label="Side 发送"]`);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover + ' button[aria-label$="主会话发送"]')})!==null`), true);
+  await hostClick(`${popover} button[aria-label$="Side 发送"]`);
   await until('hostFixture.pending().length===1');
   const buttonFork = await evaluate('hostFixture.pending()[0]');
   const buttonCall = await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input");
@@ -361,8 +424,9 @@ try {
   await closePopover();
   check('Ctrl+Enter and Side Send both reuse the chosen Side with the exact draft instead of creating another agent');
 
-  await openAt(480, 190);
-  await sendText('A message that fails'); await hostClick(`${popover} button[aria-label="主会话发送"]`);
+  await frame('pauseNextCapture()');
+  await openAt(480, 190); await untilFrame('captureGate?.held===true');
+  await sendText('A message that fails'); await hostClick(`${popover} button[aria-label$="主会话发送"]`);
   await until('hostFixture.pending().length===1');
   const failed = await evaluate('hostFixture.pending()[0]');
   assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input.kind"), 'question');
@@ -372,7 +436,7 @@ try {
   await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('Fixture delivery unavailable')`);
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)}).value`), 'A message that fails');
   assert.deepEqual(await canvasRect(), original);
-  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover + ' button[aria-label="Side 发送"]')})!==null`), false);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover + ' button[aria-label$="Side 发送"]')})!==null`), false);
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover + ' button[aria-label="重试原发送"]')})!==null`), true);
   const attemptsAfterFailure = await submitCount();
   await hostClick(input); await key('Enter', 'Enter', 4);
@@ -381,6 +445,9 @@ try {
   check('the Send button targets the current chat; a failed send preserves its draft and immutable route without shifting the canvas');
 
   const originalFailedCall = await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input");
+  assert.equal(originalFailedCall.anchor.image, undefined);
+  await frame('releaseCapture()');
+  await untilFrame("!document.querySelector('[data-board-capture-status]')");
   await key('Escape'); await noPopover();
   await click(marker(failed));
   await until(`document.querySelector(${JSON.stringify(popover + ' button[aria-label="重试发送"]')})`);

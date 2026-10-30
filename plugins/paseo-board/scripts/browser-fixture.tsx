@@ -62,6 +62,11 @@ function App() {
   return createElement(Fragment, null, createElement(CanvasFrame, { ...props, key: mount,
     onAsk: async (request: any) => { host.results.asks.push(request); return { status: "submitted" as const, outcome: "saved" }; },
     onCompose: (request: any) => { host.results.composes.push(request); setProps((p) => ({ ...p, selectionMode: "off" })); },
+    onSelectionCapture: (capture: any) => {
+      const index = host.results.composes.findIndex((request: any) => request.selectionId === capture.selectionId);
+      if (index >= 0) host.results.composes[index] = { ...host.results.composes[index], anchor: capture.anchor, captureStatus: capture.status };
+      host.results.anchors.push(capture.anchor); setSelectedAnchor(capture.anchor);
+    },
     onCanvasPointer: () => host.results.canvasPointers++,
     onOpenInteraction: (id, position) => { host.results.openedInteractions.push({ id, position }); setProps(p => ({ ...p, selectedInteractionId: id })); },
     onInteractionPosition: (id, position) => host.results.interactionPositions.push({ id, position }),

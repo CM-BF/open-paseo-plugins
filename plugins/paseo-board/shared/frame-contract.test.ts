@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, validAnchor } from "./frame-contract";
+import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, sameSelectionAnchor, validAnchor } from "./frame-contract";
 import { AnchorSchema, type Interaction } from "./contracts";
 const scope = { boardId: "board", sessionId: "session" };
 const message = (fields: object) => ({ channel: FRAME_CHANNEL, ...scope, ...fields });
@@ -16,6 +16,20 @@ describe("frame bridge validation", () => {
     expect(readFrameMessage(message({ type: "selection-lock", id: "selected", active: true, dragging: true }), scope)).not.toBeNull();
     expect(readFrameMessage(message({ type: "selection-lock", id: "selected", active: true, dragging: "true" }), scope)).toBeNull();
     expect(readFrameMessage(message({ type: "selection-lock", id: "selected", active: "true" }), scope)).toBeNull();
+  });
+  it("accepts image completion only as a scoped, finite result and preserves legacy composition", () => {
+    const anchor = { boardRevision: 1, canvasRevision: 1, kind: "point" as const, rect: { x: 20, y: 30, width: 0, height: 0 } };
+    const image = { mimeType: "image/png" as const, data: "iVBORw0KGgoAAAA" };
+    expect(readFrameMessage(message({ type: "compose", selectionId: "one", request: { kind: "question", anchor, captureStatus: "pending" } }), scope)).not.toBeNull();
+    expect(readFrameMessage(message({ type: "compose", selectionId: "one", request: { kind: "question", anchor: { ...anchor, image }, captureStatus: "pending" } }), scope)).toBeNull();
+    expect(readFrameMessage(message({ type: "selection-capture", selectionId: "one", anchor: { ...anchor, image }, status: "ready" }), scope)).not.toBeNull();
+    expect(readFrameMessage(message({ type: "selection-capture", selectionId: "one", anchor, status: "failed" }), scope)).not.toBeNull();
+    for (const bad of [{ selectionId: "" }, { status: "pending" }, { anchor }]) {
+      expect(readFrameMessage(message({ type: "selection-capture", selectionId: "one", anchor: { ...anchor, image }, status: "ready", ...bad }), scope)).toBeNull();
+    }
+    expect(sameSelectionAnchor(anchor, { ...anchor, image })).toBe(true);
+    expect(sameSelectionAnchor(anchor, { ...anchor, canvasRevision: 2, image })).toBe(false);
+    expect(sameSelectionAnchor(anchor, { ...anchor, rect: { ...anchor.rect, x: 21 }, image })).toBe(false);
   });
   it("limits the frame to the selected board and document session", () => {
     expect(readFrameMessage(message({ type: "ready" }), scope)).not.toBeNull();

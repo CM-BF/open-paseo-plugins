@@ -3,7 +3,7 @@ import { createElement, useEffect, useLayoutEffect, useRef, useState, type React
 import { Platform } from "react-native";
 import type { Anchor, Canvas, Interaction, JsonData } from "../shared/contracts";
 import { buildBoardDocument } from "../shared/document";
-import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, type AskRequest, type AskResult, type ComposeRequest, type FrameError, type FramePosition, type FrameSnapshot, type FrameTheme, type InteractionLocation, type FocusUpdateRequest, type UpdatePosition, type SelectionMode } from "../shared/frame-contract";
+import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, sameSelectionAnchor, type SelectionCapture, type AskRequest, type AskResult, type ComposeRequest, type FrameError, type FramePosition, type FrameSnapshot, type FrameTheme, type InteractionLocation, type FocusUpdateRequest, type UpdatePosition, type SelectionMode } from "../shared/frame-contract";
 
 type FrameWindow = { postMessage(message: unknown, origin: string): void };
 type Frame = { contentWindow: FrameWindow | null };
@@ -32,6 +32,7 @@ export interface CanvasFrameProps extends FrameSnapshot {
   height: number;
   selectionMode: SelectionMode;
   selectionClearToken?: number;
+  selectionCaptureCancelId?: string;
   interactions?: Interaction[];
   selectedInteractionId?: string;
   focusInteraction?: { id: string; token: number };
@@ -42,6 +43,7 @@ export interface CanvasFrameProps extends FrameSnapshot {
   onAnchor(anchor: Anchor): void;
   onAsk(request: AskRequest): Promise<AskResult>;
   onCompose?(request: ComposeRequest): void;
+  onSelectionCapture?(capture: SelectionCapture): void;
   onCanvasPointer?(): void;
   onOpenInteraction?(id: string, position: FramePosition, location?: InteractionLocation): void;
   onInteractionPosition?(id: string, position: FramePosition, location?: InteractionLocation): void;
@@ -75,7 +77,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   if (localState.current?.boardId === props.boardId && JSON.stringify(localState.current.state) === JSON.stringify(props.userState)) localState.current.dirty = false;
   const effectiveState = () => localState.current?.boardId === latest.current.boardId && localState.current.dirty ? localState.current.state : latest.current.userState;
   const document = useRef<ReturnType<typeof documentFor> | null>(null);
-  const interactionLock = useRef<{ boardId: string; sessionId: string; id: string; dragging: boolean; anchor?: Anchor } | null>(null);
+  const interactionLock = useRef<{ boardId: string; sessionId: string; id: string; dragging: boolean; anchor?: Anchor; capturePending?: boolean } | null>(null);
   const [, redraw] = useState(0);
   if (interactionLock.current?.boardId !== props.boardId) interactionLock.current = null;
   const ready = useRef(false);
@@ -155,7 +157,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
             // A long drag can outlive transient activation. Updating its existing lease is
             // allowed; acquiring a new lease still requires a real current user gesture.
             if (interactionLock.current?.id !== message.id && !userActing()) break;
-            interactionLock.current = { boardId: current.boardId, sessionId: document.current.sessionId, id: message.id, dragging: message.dragging === true };
+            interactionLock.current = { ...(interactionLock.current?.id === message.id ? interactionLock.current : {}), boardId: current.boardId, sessionId: document.current.sessionId, id: message.id, dragging: message.dragging === true };
           } else {
             if (interactionLock.current?.id !== message.id) break;
             interactionLock.current = null;
@@ -168,6 +170,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
           // local selection must still own its lease. Legacy anchors without a lease require
           // an explicit host selection mode; cancelling a lease rejects late captures at once.
           if ((message.selectionId !== undefined ? message.selectionId === interactionLock.current?.id : current.selectionMode !== "off") && message.anchor.boardRevision <= current.boardRevision && message.anchor.canvasRevision <= current.canvas.revision) {
+            if (interactionLock.current?.anchor) break;
             if (interactionLock.current) interactionLock.current.anchor = message.anchor;
             current.onAnchor(message.anchor);
           }
@@ -181,8 +184,17 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
           const automatic = message.automatic === true && browser.document?.activeElement === frame.current && lock?.dragging === false && lock.anchor && JSON.stringify(lock.anchor) === JSON.stringify(message.request.anchor);
           if ((userActing() || automatic) && message.selectionId === lock?.id && !composedSelections.has(key) && message.request.anchor.boardRevision <= current.boardRevision && message.request.anchor.canvasRevision <= current.canvas.revision) {
             composedSelections.add(key);
-            current.onCompose?.(message.request);
+            lock.capturePending = message.request.captureStatus === "pending";
+            current.onCompose?.({ ...message.request, selectionId: message.selectionId });
           }
+          break;
+        }
+        case "selection-capture": {
+          const lock = interactionLock.current;
+          const key = document.current.sessionId + ":" + message.selectionId;
+          if (lock?.id !== message.selectionId || !lock.capturePending || !lock.anchor || !composedSelections.has(key) || !sameSelectionAnchor(lock.anchor, message.anchor)) break;
+          lock.capturePending = false;
+          current.onSelectionCapture?.(message);
           break;
         }
         case "open-interaction":
@@ -262,8 +274,17 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   useEffect(() => {
     if (cleared.current === props.selectionClearToken) return;
     cleared.current = props.selectionClearToken;
+    interactionLock.current = null;
     send({ type: "clear-selection" });
+    redraw(n => n + 1);
   }, [props.selectionClearToken]);
+  useEffect(() => {
+    const selectionId = props.selectionCaptureCancelId;
+    if (!selectionId || selectionId !== interactionLock.current?.id) return;
+    interactionLock.current = null;
+    send({ type: "cancel-capture", selectionId });
+    redraw(n => n + 1);
+  }, [props.selectionCaptureCancelId]);
   if (!canRenderFrames) return null;
   return createElement("iframe", {
     ref: frame, title: props.title, srcDoc: rendered.html,

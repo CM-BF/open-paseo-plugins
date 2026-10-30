@@ -227,7 +227,7 @@ try {
   assert.equal(png.readUInt32BE(16), 135); assert.equal(png.readUInt32BE(20), 65);
   await untilFrame('board.getData().n===3');
   assert.equal(await evaluate('results.asks.length'), before);
-  check('region release opens one blank composer with its frozen PNG and releases queued updates without a menu or submission');
+  check('region release opens one blank composer and then adds its frozen PNG and releases queued updates without a menu or submission');
 
   const words = await location('#words');
   const nativeText = await composeAfter(() => drag({x:words.x+1,y:words.y+10},{x:words.x+190,y:words.y+10}));
@@ -305,11 +305,13 @@ try {
   assert.equal(await frame('board.getData().n'),3);
   assert.equal(await frame("Boolean(document.querySelector('#after-capture'))"),false);
   await frame('new Promise(resolve=>{const check=()=>navigator.userActivation.isActive?setTimeout(check,20):resolve();check()})');
-  const delayed = await composeAfter(() => frame('releaseCapture()'));
+  const delayed = await evaluate('results.composes.at(-1)');
+  assert.equal(delayed.captureStatus, 'pending');
+  await frame('releaseCapture()'); await noMenu();
   assert.equal(delayed.anchor.canvasRevision,frozen.canvasRevision);
   assert.equal(delayed.anchor.boardRevision,frozen.boardRevision);
   await untilFrame("board.getData().n===4 && Boolean(document.querySelector('#after-capture'))");
-  check('a slow capture freezes data, patches and revision; its original gesture opens input after activation expires without another click');
+  check('a slow capture freezes data, patches and revision; its original gesture opens input before capture and accepts pixels after activation expires');
 
   await frame('pauseNextCapture()'); await rightClick('#target'); await untilFrame('captureGate?.held===true');
   const clearedCount = await evaluate('results.composes.length');
@@ -326,7 +328,9 @@ try {
   assert.equal(await evaluate('results.ready'),readyBefore);
   // Automatic composition releases the old iframe immediately. Do not await a fixture reply
   // from that soon-to-be-replaced window; observe the real host composition and ready events.
-  const replacedCompose = await composeAfter(() => evaluate("fixtureCall('releaseCapture()'); true"));
+  const replacedCompose = await evaluate('results.composes.at(-1)');
+  assert.equal(replacedCompose.captureStatus, 'pending');
+  await evaluate("fixtureCall('releaseCapture()'); true");
   assert.equal(replacedCompose.anchor.canvasRevision,beforeDocument.canvasRevision);
   await until(`results.ready===${readyBefore+1}`);
   assert.equal(await frame('board.getContext().documentVersion'),beforeDocument.documentVersion+1);

@@ -14,7 +14,9 @@ export interface UpdatePosition {
   position?: FramePosition; location?: "target" | "ancestor" | "document"; reason?: string;
 }
 export interface AskRequest { prompt: string; anchor?: Anchor; kind?: "question" | "change" | "fork"; position?: FramePosition }
-export interface ComposeRequest { kind: "question" | "change" | "fork"; anchor: Anchor; position?: FramePosition }
+export type CaptureStatus = "pending" | "ready" | "failed";
+export interface SelectionCapture { selectionId: string; anchor: Anchor; status: "ready" | "failed" }
+export interface ComposeRequest { selectionId?: string; captureStatus?: CaptureStatus; kind: "question" | "change" | "fork"; anchor: Anchor; position?: FramePosition }
 export interface InteractionMarker { id: string; text: string; status: Interaction["status"]; anchor?: Anchor; number: number }
 export interface AskResult { status: "submitted" | "cancelled"; outcome?: string | null }
 export interface FrameScope { channel: typeof FRAME_CHANNEL; boardId: string; sessionId: string }
@@ -25,6 +27,7 @@ export type FrameMessage = FrameScope & (
   | { type: "canvas-activity"; busy: boolean }
   | ({ type: "update-position" } & UpdatePosition)
   | { type: "anchor"; anchor: Anchor; selectionId?: string }
+  | ({ type: "selection-capture" } & SelectionCapture)
   | { type: "selection-lock"; id: string; active: boolean; dragging?: boolean }
   | { type: "compose"; selectionId: string; automatic?: boolean; request: ComposeRequest }
   | { type: "open-interaction"; id: string; position: FramePosition; location?: InteractionLocation }
@@ -81,11 +84,17 @@ export function readFrameMessage(value: unknown, scope: Pick<FrameScope, "boardI
       if (value.status === "focused" && (!position(value.position) || !value.location)) return null;
       break;
     case "anchor": if (!validAnchor(value.anchor) || (value.selectionId !== undefined && !short(value.selectionId, 160))) return null; break;
+    case "selection-capture":
+      if (!short(value.selectionId, 160) || !validAnchor(value.anchor) || !["ready", "failed"].includes(value.status as string)) return null;
+      if (value.status === "ready" ? !value.anchor.image : value.anchor.image !== undefined) return null;
+      break;
     case "selection-lock": if (!short(value.id, 160) || typeof value.active !== "boolean" || (value.dragging !== undefined && typeof value.dragging !== "boolean")) return null; break;
     case "compose": {
       const request = value.request;
       if (!short(value.selectionId, 160) || !record(request) || !["question", "change", "fork"].includes(request.kind as string) || !validAnchor(request.anchor)) return null;
       if (request.position !== undefined && !position(request.position)) return null;
+      if (request.captureStatus !== undefined && !["pending", "ready", "failed"].includes(request.captureStatus as string)) return null;
+      if (request.captureStatus === "pending" && request.anchor.image !== undefined) return null;
       if (value.automatic !== undefined && typeof value.automatic !== "boolean") return null;
       break;
     }
@@ -140,4 +149,9 @@ export function validAnchor(value: unknown): value is Anchor {
     if (!record(i) || i.mimeType !== "image/png" || !short(i.data, 3000000) || !/^iVBORw0KGgo[A-Za-z0-9+/=]*$/.test(i.data)) return false;
   }
   return true;
+}
+
+/** Late pixels may add only an image to the exact reference opened by the user. */
+export function sameSelectionAnchor(a: Anchor, b: Anchor): boolean {
+  return JSON.stringify({ ...a, image: undefined }) === JSON.stringify({ ...b, image: undefined });
 }
