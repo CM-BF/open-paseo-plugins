@@ -114,6 +114,47 @@ describe("BoardService SDK adapter", () => {
     expect((await store.read("board"))!.interactions[0].status).toBe("answered");
   });
 
+  it("settles queued intents explicitly taken over by publish or respond while keeping their async work and FIFO alive", async () => {
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status: "running" });
+    for (const intentId of ["taken-publish", "taken-respond", "next-unhandled"]) await service.interact({ boardId: "board", intentId, kind: "question", text: intentId });
+    await service.drain(); expect(sdk.sends).toHaveLength(0);
+    await service.execute("publish", { boardId: "board", expectedRevision: (await store.read("board"))!.revision, eventId: "take-publish", interactionResult: { id: "taken-publish", status: "processing", response: "Already working from the Board" } }, { agentId: "owner", cwd: dir });
+    await service.execute("respond", { boardId: "board", interactionId: "taken-respond", expectedResponseRevision: 0, eventId: "take-respond", status: "processing", response: "Background work has started" }, { agentId: "owner", cwd: dir });
+    await store.updateInteraction("board", "taken-publish", { error: "Obsolete error from an older runtime" });
+    await service.reconcile(); await service.drain();
+    for (const id of ["taken-publish", "taken-respond"]) {
+      expect(journal.get(`board/${id}`)).toMatchObject({ state: "settled", awaitingTurn: false });
+      const item = (await store.read("board"))!.interactions.find(item => item.id === id)!;
+      expect(item.status).toBe("processing"); expect(item.error).toBeUndefined();
+    }
+    await service.dispose(); journal = new ServiceJournal(join(dir, "service.json")); await journal.init();
+    service = new BoardService(store, journal, () => undefined); service.capture(sdk.api);
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status: "idle" });
+    await service.onTurnEnded("owner"); await service.drain();
+    expect(sdk.sends).toHaveLength(1); expect(sdk.sends[0].text).toContain("intent=next-unhandled]");
+    expect((await store.read("board"))!.interactions.slice(0, 2).map(item => item.status)).toEqual(["processing", "processing"]);
+    await service.execute("publish", { boardId: "board", expectedRevision: (await store.read("board"))!.revision, eventId: "take-finished", interactionResult: { id: "taken-publish", status: "applied", response: "Now implemented", resultReferences: ["#target"] } }, { agentId: "owner", cwd: dir });
+    expect((await store.read("board"))!.interactions[0].status).toBe("applied");
+  });
+
+  it("accepts explicit takeover during a prepared sending write without failing or sending the obsolete request", async () => {
+    const put = journal.put.bind(journal); let held = false; let resume!: () => void;
+    const gate = new Promise<void>(resolve => { resume = resolve; });
+    vi.spyOn(journal, "put").mockImplementation(async delivery => {
+      if (delivery.interactionId === "take-race" && delivery.state === "sending") { held = true; await gate; }
+      return put(delivery);
+    });
+    await service.interact({ boardId: "board", intentId: "take-race", kind: "question", text: "Take over during preparation" });
+    await vi.waitFor(() => expect(held).toBe(true));
+    await service.execute("publish", { boardId: "board", expectedRevision: (await store.read("board"))!.revision, eventId: "race-takeover", interactionResult: { id: "take-race", status: "processing", response: "The existing turn is handling this" } }, { agentId: "owner", cwd: dir });
+    await service.interact({ boardId: "board", intentId: "after-race", kind: "question", text: "Next unresolved request" });
+    resume(); await service.drain();
+    expect(journal.get("board/take-race")).toMatchObject({ state: "settled", awaitingTurn: false, needsRecovery: false });
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "processing", response: "The existing turn is handling this" });
+    expect((await store.read("board"))!.interactions[0].error).toBeUndefined();
+    expect(sdk.sends).toHaveLength(1); expect(sdk.sends[0].text).toContain("intent=after-race]");
+  });
+
   it("forks with frozen selection and PNG while leaving full board context available on demand", async () => {
     let board = (await store.read("board"))!;
     await store.recordDecision({ boardId: board.id, expectedRevision: board.revision, eventId: "choice", decision: { id: "scope", choice: "Only support current clients", basis: "explicit", rationale: "Initial scope", evidence: [], related: [] } });

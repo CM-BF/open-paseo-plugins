@@ -115,11 +115,13 @@ export class ServiceJournal {
     await this.change(() => { const current = this.data.deliveries[key]; if (!current) throw new Error("Delivery record not found"); this.data.deliveries[key] = { ...current, ...structuredClone(update) }; });
     return this.get(key)!;
   }
-  /** An already resolved intent needs no message; this is not a delivery acknowledgement. */
-  async settleUnsent(key: string): Promise<void> {
+  /** A handled intent needs no message; this is not delivery or task completion. */
+  async settleUnsent(key: string, beforeNativeSend = false): Promise<void> {
     await this.change(() => {
       const current = this.data.deliveries[key];
-      if (!current || !["saved", "creating"].includes(current.state)) return;
+      // Only the dispatcher before its native send may release a prepared sending record.
+      // Unknown or acknowledged native deliveries are never guessed to be unsent.
+      if (!current || (!["saved", "creating"].includes(current.state) && !(beforeNativeSend && current.state === "sending"))) return;
       this.data.deliveries[key] = { ...current, state: "settled", awaitingTurn: false, needsRecovery: false, error: undefined };
     });
   }

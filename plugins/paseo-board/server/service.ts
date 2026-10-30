@@ -14,6 +14,7 @@ import { extractCandidates } from "./extraction";
 
 export type Operation = "list" | "read" | "create" | "publish" | "decision" | "emit" | "respond";
 const terminal = new Set<Interaction["status"]>(["applied", "rejected", "answered"]);
+const alreadyHandled = (interaction: Interaction) => terminal.has(interaction.status) || (interaction.status === "processing" && interaction.responseSource === "explicit");
 const describe = (error: unknown) => error instanceof Error ? error.message : String(error);
 const marker = (boardId: string, intentId: string) => `[paseo-board board=${boardId} intent=${intentId}]`;
 
@@ -257,7 +258,7 @@ export class BoardService {
     let board = await this.requireBoard(delivery.boardId);
     const interaction = board.interactions.find((item) => item.id === delivery.interactionId);
     if (!interaction) return;
-    if (terminal.has(interaction.status)) { await this.journal.settleUnsent(key); return; }
+    if (await this.settleHandled(key, board.id, interaction)) return;
     if (board.ownerAgentId !== delivery.ownerAgentId) { await this.fail(delivery, "负责人已变更，旧请求未自动发给其他 agent。"); return; }
     let claimedAgent: string | undefined;
     try {
@@ -314,14 +315,23 @@ export class BoardService {
       await this.watch(delivery.targetAgentId);
       board = await this.requireBoard(delivery.boardId);
       if (this.stopped || board.ownerAgentId !== delivery.ownerAgentId) return;
-      if (board.interactions.some(item => item.id === interaction.id && terminal.has(item.status))) { await this.journal.settleUnsent(key); return; }
+      if (await this.settleHandled(key, board.id, board.interactions.find(item => item.id === interaction.id))) return;
       delivery.state = "sending";
       delivery.awaitingTurn = true;
       await this.journal.put(delivery);
-      await this.store.updateInteraction(board.id, interaction.id, { status: "sending", agentId: delivery.targetAgentId });
+      try {
+        await this.store.updateInteraction(board.id, interaction.id, { status: "sending", agentId: delivery.targetAgentId });
+      } catch (error) {
+        // A current turn can acknowledge this request while the sending journal write is
+        // in flight. Its explicit progress is stronger than our obsolete status claim.
+        const acknowledged = (await this.requireBoard(board.id)).interactions.find(item => item.id === interaction.id);
+        if (await this.settleHandled(key, board.id, acknowledged, true)) return;
+        throw error;
+      }
       const finalBoard = await this.requireBoard(board.id);
       if (this.stopped) return;
       if (finalBoard.ownerAgentId !== delivery.ownerAgentId) { await this.fail(delivery, "发送前负责人已变更；旧请求未投递。"); return; }
+      if (await this.settleHandled(key, board.id, finalBoard.interactions.find(item => item.id === interaction.id), true)) return;
       try {
         // SDK has no atomic idle-only enqueue; steer minimizes the refresh/send race.
         await target.send(delivery.prompt, { messageId: `paseo-board:${board.id}:${interaction.id}`, activeTurnBehavior: "steer", images: delivery.images });
@@ -348,6 +358,14 @@ export class BoardService {
         await this.store.updateInteraction(delivery.boardId, delivery.interactionId, { status: "failed", error: delivery.error });
       } else await this.fail(delivery, describe(error));
     } finally { if (claimedAgent) this.agentClaims.delete(claimedAgent); }
+  }
+  private async settleHandled(key: string, boardId: string, interaction: Interaction | undefined, beforeNativeSend = false): Promise<boolean> {
+    if (!interaction || !alreadyHandled(interaction)) return false;
+    // Explicit processing means the assigned agent took over through the Board during an
+    // existing turn. Settle only message delivery; its background work remains processing.
+    await this.journal.settleUnsent(key, beforeNativeSend);
+    if (interaction.status === "processing" && interaction.error) await this.store.updateInteraction(boardId, interaction.id, { error: undefined });
+    return true;
   }
   private async fail(delivery: Delivery, error: string): Promise<void> {
     delivery.state = "failed"; delivery.error = error;
@@ -562,8 +580,8 @@ export class BoardService {
         board = await this.requireBoard(delivery.boardId);
       }
       if (interaction && delivery.targetAgentId && interaction.agentId !== delivery.targetAgentId) interaction = await this.store.updateInteraction(board.id, interaction.id, { agentId: delivery.targetAgentId });
-      if (interaction && terminal.has(interaction.status) && ["saved", "creating"].includes(delivery.state)) {
-        await this.journal.settleUnsent(deliveryKey(delivery.boardId, delivery.interactionId));
+      if (interaction && alreadyHandled(interaction) && ["saved", "creating"].includes(delivery.state)) {
+        await this.settleHandled(deliveryKey(delivery.boardId, delivery.interactionId), board.id, interaction);
         continue;
       }
       if (delivery.outcome) await this.applyOutcome(delivery);
