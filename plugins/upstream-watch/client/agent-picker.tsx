@@ -50,6 +50,8 @@ export function AgentPicker({
         workspaces={environment.data?.workspaces || []}
         projects={environment.data?.projects || []}
         loading={environment.isLoading}
+        refreshing={environment.isFetching}
+        onRefresh={() => { void environment.refetch(); }}
         onChange={(workspaceId) => {
           const current = latestSelection.current;
           current.onChange({ ...current.value, workspaceId });

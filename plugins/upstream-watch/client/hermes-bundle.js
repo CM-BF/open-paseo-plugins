@@ -575,8 +575,10 @@ function WorkspacePicker({
   workspaces,
   projects,
   loading,
+  refreshing,
   onChange,
-  onCreated
+  onCreated,
+  onRefresh
 }) {
   var paseo = usePaseo();
   var {
@@ -766,7 +768,12 @@ ${choice.directory}`.toLocaleLowerCase().includes(query));
           muted: true,
           children: loading ? "\u6B63\u5728\u8BFB\u53D6\u2026" : query ? "\u6CA1\u6709\u5339\u914D\u7ED3\u679C" : tab === "workspace" ? "\u8FD8\u6CA1\u6709\u5DE5\u4F5C\u533A\uFF0C\u53EF\u4ECE Project \u65B0\u5EFA\u3002" : "\u8FD8\u6CA1\u6709 Project\uFF0C\u8BF7\u5148\u5728 Paseo \u4E2D\u6DFB\u52A0\u9879\u76EE\u3002"
         }) : null]
-      }), tab === "project" ? /* @__PURE__ */jsxs2(View2, {
+      }), tab === "workspace" ? /* @__PURE__ */jsx2(Button, {
+        theme,
+        label: "\u5237\u65B0\u5DE5\u4F5C\u533A",
+        busy: refreshing,
+        onPress: onRefresh
+      }) : null, tab === "project" ? /* @__PURE__ */jsxs2(View2, {
         style: {
           minWidth: 0,
           gap: 8
@@ -915,6 +922,10 @@ function AgentPicker({
       workspaces: environment.data?.workspaces || [],
       projects: environment.data?.projects || [],
       loading: environment.isLoading,
+      refreshing: environment.isFetching,
+      onRefresh: () => {
+        void environment.refetch();
+      },
       onChange: workspaceId => {
         var current = latestSelection.current;
         current.onChange({

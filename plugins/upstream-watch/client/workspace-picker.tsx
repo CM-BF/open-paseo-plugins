@@ -16,15 +16,19 @@ export function WorkspacePicker({
   workspaces,
   projects,
   loading,
+  refreshing,
   onChange,
   onCreated,
+  onRefresh,
 }: Themed & {
   value: string;
   workspaces: WorkspaceChoice[];
   projects: WorkspaceChoice[];
   loading: boolean;
+  refreshing: boolean;
   onChange(workspaceId: string): void;
   onCreated(workspace: WorkspaceChoice, isCurrent: () => boolean): Promise<boolean>;
+  onRefresh(): void;
 }) {
   const paseo = usePaseo();
   const { height } = useWindowDimensions();
@@ -177,6 +181,9 @@ export function WorkspacePicker({
               </Body>
             ) : null}
           </ScrollView>
+          {tab === "workspace" ? (
+            <Button theme={theme} label="刷新工作区" busy={refreshing} onPress={onRefresh} />
+          ) : null}
           {tab === "project" ? (
             <View style={{ minWidth: 0, gap: 8 }}>
               <Body theme={theme} muted>在所选 Project 的现有目录中新建 Workspace，使用当前分支，不创建新分支。</Body>
