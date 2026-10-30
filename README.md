@@ -4,6 +4,7 @@ Paseo plugins, one directory each under `plugins/`.
 
 | Plugin | What it does |
 | --- | --- |
+| [upstream-watch](plugins/upstream-watch) | Tracks adopted upstream revisions and feature paths, then opens a scoped review or adaptation task. |
 | [paseo-owner-issue-triage](plugins/paseo-owner-issue-triage) | Automatically triage only your verified GitHub issues into a persistent queue, with strict numeric author filtering, configurable workers, results and agent links. |
 | [paseo-board](plugins/paseo-board) | Persistent, fully interactive canvases authored by agents, with live updates, contextual questions and forks, and records of the agent's default decisions. |
 | [paseo-dynamic-workflow](plugins/paseo-dynamic-workflow) | Claude Code style dynamic workflows for any Paseo agent: a script fans out, verifies and synthesizes across Paseo agents of any provider. |
