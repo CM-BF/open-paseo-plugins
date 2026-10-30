@@ -15,7 +15,7 @@ import { anchorPoint, interactionRoot, interactionThread, mergeInteractions, pop
 interface Props extends PluginSurfaceProps { boardId: string; onBack(): void }
 type Compose = { kind: Interaction["kind"]; text: string; intentId?: string; anchor?: Anchor; sourceInteractionId?: string; resolve?: (result: AskResult) => void };
 const statusNames: Record<Interaction["status"], string> = { saved: "已保存", sending: "发送中", delivered: "已送达", processing: "处理中", answered: "已有回复", applied: "已落实", rejected: "未采用", failed: "失败" };
-const kindNames: Record<Interaction["kind"], string> = { question: "提问", change: "修改这里", fork: "独立讨论", return: "带回主线", reply: "继续讨论" };
+const kindNames: Record<Interaction["kind"], string> = { question: "消息", change: "消息", fork: "Fork", return: "转给主会话", reply: "Fork 回复" };
 
 export function BoardView(props: Props) {
   return <ColorContext.Provider value={props.theme.colors}><BoardContent {...props} /></ColorContext.Provider>;
@@ -52,13 +52,13 @@ function BoardContent({ boardId, host, theme, onBack, navigation }: Props) {
   const onAsk = useCallback((request: AskRequest): Promise<AskResult> => new Promise(resolve => {
     // A generated document cannot send a message. It can request this host-owned preview.
     if (composeRef.current || pending.current) { resolve({ status: "cancelled", outcome: "Another question is open" }); return; }
-    const next = { kind: request.kind ?? "question", text: request.prompt, anchor: request.anchor, resolve };
+    const next: Compose = { kind: "question", text: request.prompt, anchor: request.anchor, resolve };
     setPopoverPoint(request.position ?? anchorPoint(request.anchor)); setSelectedInteractionId(undefined); setMessage(null);
     composeRef.current = next; setCompose(next);
   }), []);
   const onCompose = useCallback((request: ComposeRequest) => {
     if (composeRef.current || pending.current) return;
-    const next: Compose = { kind: request.kind, text: "", anchor: request.anchor };
+    const next: Compose = { kind: "question", text: "", anchor: request.anchor };
     setPopoverPoint(request.position ?? anchorPoint(request.anchor)); setSelectedInteractionId(undefined); setMessage(null);
     setAnchor(request.anchor); setSelectionMode("off"); setDrawer(null);
     composeRef.current = next; setCompose(next);
@@ -85,7 +85,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation }: Props) {
   const openCompose = (kind: Compose["kind"], source?: Interaction, text?: string, resolve?: Compose["resolve"]) => {
     if (pending.current || composeRef.current) { resolve?.({ status: "cancelled", outcome: "另一条输入尚未关闭" }); return; }
     setDrawer(null);
-    const draft: Compose = { kind, text: text ?? (kind === "return" ? "请考虑这段讨论的结论，并把适用的修改落实到主线。说明采纳了哪些内容，以及未采纳的理由。" : ""), anchor: source?.anchor ?? anchor ?? (board ? { kind: "board", boardRevision: board.revision, canvasRevision: board.canvas.revision } : undefined), sourceInteractionId: source?.id, resolve };
+    const draft: Compose = { kind: kind === "change" || kind === "fork" ? "question" : kind, text: text ?? (kind === "return" ? "请考虑这段讨论的结论，并把适用的修改落实到主线。说明采纳了哪些内容，以及未采纳的理由。" : ""), anchor: source?.anchor ?? anchor ?? (board ? { kind: "board", boardRevision: board.revision, canvasRevision: board.canvas.revision } : undefined), sourceInteractionId: source?.id, resolve };
     if (!source || !selectedInteractionId) setPopoverPoint(anchorPoint(draft.anchor));
     setSelectedInteractionId(source ? interactionRoot(source.id, interactions) : undefined); setMessage(null);
     composeRef.current = draft; setCompose(draft);
@@ -95,9 +95,13 @@ function BoardContent({ boardId, host, theme, onBack, navigation }: Props) {
     const draft: Compose = { kind: item.kind, text: item.text, intentId: item.id, anchor: item.anchor, sourceInteractionId: item.sourceInteractionId };
     composeRef.current = draft; setCompose(draft); setMessage(null);
   };
-  const submit = async () => {
+  const submit = async (fork = false) => {
     const draft = composeRef.current;
     if (!draft?.text.trim() || pending.current || !board?.ownerAgentId) return;
+    const kind = fork ? "fork" : draft.kind;
+    // An uncertain send retries its immutable route and ID. Changing text starts a new intent.
+    if (draft.intentId && kind !== draft.kind) return;
+    draft.kind = kind;
     pending.current = true; setSending(true); setMessage(null);
     draft.intentId ??= localId("intent");
     const now = new Date().toISOString();
@@ -142,9 +146,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation }: Props) {
       <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
         {canRenderFrames && ([ ["off", "交互", "MousePointer2"], ["text", "选文字", "TextSelect"], ["region", "框选", "Scan"], ["point", "指定位置", "MapPin"] ] as const).map(([mode, label, icon]) => <Action key={mode} label={label} icon={icon} active={selectionMode === mode} onPress={() => setSelectionMode(mode)} />)}
         <View style={{ flex: 1 }} />
-        <Action label="提问" icon="MessageCircle" onPress={() => openCompose("question")} />
-        <Action label="修改这里" icon="Pencil" onPress={() => openCompose("change")} />
-        <Action label="开 fork" icon="GitBranch" onPress={() => openCompose("fork")} />
+        <Action label="发消息" icon="MessageCircle" onPress={() => openCompose("question")} />
       </View>
     </View>
     <View testID="board-reference-bar" style={{ height: 38, flexShrink: 0, paddingHorizontal: 12, flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: c.surface1 }}>
@@ -155,23 +157,28 @@ function BoardContent({ boardId, host, theme, onBack, navigation }: Props) {
       {canRenderFrames ? <CanvasFrame boardId={board.id} title={board.title} canvas={board.canvas} boardRevision={board.revision} userState={board.userState} theme={frameTheme} height={height} selectionMode={selectionMode} selectionClearToken={selectionClearToken} interactions={interactions} selectedInteractionId={selectedInteractionId} onOpenInteraction={openInteraction} onInteractionPosition={(id, point) => { if (id === selectedInteractionId && !composeRef.current) setPopoverPoint(point); }} onAnchor={onAnchor} onAsk={onAsk} onCompose={onCompose} onState={onState} onError={error => setFrameError(`${error.message}${error.patchId ? `（${error.patchId}）` : ""}`)} onSelectionEnd={() => setSelectionMode("off")} onSelectionClear={() => { setAnchor(undefined); setSelectionMode("off"); }} onOpenLink={url => { void openExternalUrl(url).catch(e => setMessage(errorMessage(e))); }} /> : <ScrollView contentContainerStyle={{ padding: 24, gap: 16 }}><Notice text="手机兼容视图。完整的自由画布、动画和页面交互在桌面版使用；这里可以查看摘要、决策并与 agent 交流。" /><Markdown>{typeof board.canvas.data.summary === "string" ? board.canvas.data.summary : "Agent 尚未提供文字摘要。你可以直接提问，回复会出现在讨论里。"}</Markdown></ScrollView>}
       {query.error || frameError || (message && !compose && !selectedInteractionId) ? <View style={{ position: "absolute", left: 8, right: 8, top: 8 }}><Notice error text={query.error ? "连接暂时中断。当前是上次收到的内容，尚未确认最新状态。" : frameError || message || ""} /></View> : null}
       {compose || selectedInteractionId ? <View testID="board-local-popover" accessibilityLabel="原位交流" onLayout={event => setPopoverHeight(event.nativeEvent.layout.height)} style={{ position: "absolute", ...popover, borderWidth: 1, borderColor: c.border, borderRadius: 12, backgroundColor: c.surface0, overflow: "hidden", shadowColor: "#000", shadowOpacity: 0.22, shadowRadius: 16, shadowOffset: { width: 0, height: 5 }, elevation: 10 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", padding: 8, gap: 8, borderBottomWidth: 1, borderColor: c.border }}><Text style={{ color: c.foreground, fontWeight: "600", flex: 1 }}>{compose ? kindNames[compose.kind] : "这里的讨论"}</Text><Action label="关闭" disabled={sending} onPress={closePopover} /></View>
+        <View style={{ flexDirection: "row", alignItems: "center", padding: 8, gap: 8, borderBottomWidth: 1, borderColor: c.border }}><Text style={{ color: c.foreground, fontWeight: "600", flex: 1 }}>{compose ? compose.kind === "reply" ? "继续这个 Fork" : "发给 agent" : "这里的讨论"}</Text><Action label="关闭" disabled={sending} onPress={closePopover} /></View>
         <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ padding: 12, gap: 16 }} keyboardShouldPersistTaps="handled">
           {thread.map(item => <InteractionContent key={item.id} item={item} board={board} frameTheme={frameTheme} unconfirmed={!board.interactions.some(saved => saved.id === item.id)} onRetry={() => retryUnconfirmed(item)} onFollow={(kind, text, resolve) => openCompose(kind, item, text, resolve)} onOpenAgent={() => { if (item.agentId && navigation) navigation.openAgent({ agentId: item.agentId }); }} />)}
           {compose ? <View style={{ gap: 10 }}>
             {!thread.length ? <AnchorPreview anchor={compose.anchor} compact /> : null}
             {compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? <Copy small muted>引用来自旧画布版本；agent 会对照原来的位置和快照。</Copy> : null}
-            {compose.kind === "fork" ? <Copy small muted>另开讨论，回答留在这里；不会自动改写主线。</Copy> : compose.kind === "return" ? <Copy small muted>把所选结论发给主线，等待 agent 提供落实依据。</Copy> : null}
-            {canRenderFrames ? <WebMessageInput value={compose.text} disabled={sending} onChange={text => { const previous = composeRef.current; if (previous) { const next = { ...previous, text, intentId: undefined }; composeRef.current = next; setCompose(next); } }} onSubmit={() => { void submit(); }} onClose={closePopover} placeholder="想了解什么？或希望这里发生什么变化？" style={{ color: c.foreground, background: c.surface1, border: `1px solid ${c.border}`, borderRadius: 8, padding: 10, minHeight: 80, fontSize: 14 }} /> : <TextInput autoFocus accessibilityLabel="发给 agent 的消息" value={compose.text} editable={!sending} multiline maxLength={24000} onChangeText={text => { const previous = composeRef.current; if (previous) { const next = { ...previous, text, intentId: undefined }; composeRef.current = next; setCompose(next); } }} placeholder="想了解什么？或希望这里发生什么变化？" placeholderTextColor={c.foregroundMuted} style={{ color: c.foreground, backgroundColor: c.surface1, borderColor: c.border, borderWidth: 1, borderRadius: 8, padding: 10, minHeight: 80, textAlignVertical: "top" }} />}
+            {compose.kind === "reply" ? <Copy small muted>继续当前 Fork；需要修改时，会直接更新这块 Board。</Copy> : null}
+            {canRenderFrames ? <WebMessageInput value={compose.text} disabled={sending} onChange={text => { const previous = composeRef.current; if (previous) { const next = { ...previous, text, intentId: undefined }; composeRef.current = next; setCompose(next); } }} onSubmit={fork => { void submit(fork); }} onClose={closePopover} placeholder="想了解什么？或希望这里发生什么变化？" style={{ color: c.foreground, background: c.surface1, border: `1px solid ${c.border}`, borderRadius: 8, padding: 10, minHeight: 80, fontSize: 14 }} /> : <TextInput autoFocus accessibilityLabel="发给 agent 的消息" value={compose.text} editable={!sending} multiline maxLength={24000} onChangeText={text => { const previous = composeRef.current; if (previous) { const next = { ...previous, text, intentId: undefined }; composeRef.current = next; setCompose(next); } }} placeholder="想了解什么？或希望这里发生什么变化？" placeholderTextColor={c.foregroundMuted} style={{ color: c.foreground, backgroundColor: c.surface1, borderColor: c.border, borderWidth: 1, borderRadius: 8, padding: 10, minHeight: 80, textAlignVertical: "top" }} />}
             {!board.ownerAgentId ? <Notice error text="这块 Board 尚未关联负责的 agent。请让 agent 接管后再发送。" /> : null}
             {message ? <Notice error text={message} /> : null}
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}><Text style={{ flex: 1, color: c.foregroundMuted, fontSize: 11 }}>Enter 发送 · Shift+Enter 换行</Text><Action label={sending ? "发送中…" : "发送"} disabled={sending || !compose.text.trim() || !board.ownerAgentId} primary onPress={() => { void submit(); }} /></View>
+            <Copy small muted>Enter 发给{compose.kind === "reply" || compose.kind === "fork" ? "当前 Fork" : "主会话"} · Shift+Enter 换行</Copy>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <Action label="Fork 发送" icon="GitBranch" disabled={sending || !compose.text.trim() || !board.ownerAgentId || Boolean(compose.intentId && compose.kind !== "fork")} onPress={() => { void submit(true); }} />
+              <Action label={sending ? "发送中…" : "发送"} disabled={sending || !compose.text.trim() || !board.ownerAgentId} primary onPress={() => { void submit(); }} />
+            </View>
+            <Copy small muted>⌘ / Ctrl + Enter 开 Fork · 隔开话题，也能直接改 Board</Copy>
           </View> : null}
         </ScrollView>
       </View> : null}
     </View>
     <View style={{ paddingHorizontal: 12, paddingVertical: 5, borderTopWidth: 1, borderColor: c.border, flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
-      {canRenderFrames ? <Copy small muted>Option / Alt + 拖动框选 · 右键提问或修改 · Esc 取消</Copy> : null}
+      {canRenderFrames ? <Copy small muted>选中文字 / Option + 拖动 / 右键，即可输入 · Esc 取消</Copy> : null}
       <Copy small muted>{query.error ? "离线快照" : "持续更新"} · r{board.revision} · {timeLabel(board.updatedAt)}</Copy>
     </View>
     <Modal title={drawer === "decisions" ? "Agent 做过的默认决策" : drawer === "threads" ? "围绕画布的讨论" : "发生了什么变化"} open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }}><Modal.Content>
@@ -207,7 +214,7 @@ function InteractionContent({ item, board, frameTheme, onFollow, onOpenAgent, un
     {showSnapshot ? <AnchorPreview anchor={item.anchor} /> : null}
     {item.response ? <Markdown>{item.response}</Markdown> : null}
     {item.responseCanvas && canRenderFrames ? <View style={{ height: 260, borderWidth: 1, borderColor: c.border, borderRadius: 8, overflow: "hidden" }}>
-      <CanvasFrame boardId={`${board.id}.response.${item.id}`} title="Agent 的可交互回答" canvas={item.responseCanvas} boardRevision={board.revision} userState={visualState} theme={frameTheme} height={260} selectionMode="off" onAnchor={() => undefined} onAsk={request => new Promise(resolve => onFollow(request.kind === "fork" ? "fork" : discussion ? "reply" : "question", visualQuestion(item, request), resolve))} onCompose={request => onFollow(request.kind === "fork" ? "fork" : discussion ? "reply" : "question", visualQuestion(item, request))} onState={setVisualState} onError={error => setVisualError(error.message)} onOpenLink={url => { void openExternalUrl(url).catch(error => setVisualError(errorMessage(error))); }} />
+      <CanvasFrame boardId={`${board.id}.response.${item.id}`} title="Agent 的可交互回答" canvas={item.responseCanvas} boardRevision={board.revision} userState={visualState} theme={frameTheme} height={260} selectionMode="off" onAnchor={() => undefined} onAsk={request => new Promise(resolve => onFollow(discussion ? "reply" : "question", visualQuestion(item, request), resolve))} onCompose={request => onFollow(discussion ? "reply" : "question", visualQuestion(item, request))} onState={setVisualState} onError={error => setVisualError(error.message)} onOpenLink={url => { void openExternalUrl(url).catch(error => setVisualError(errorMessage(error))); }} />
     </View> : null}
     {item.responseCanvas && !canRenderFrames ? <Copy small muted>这条回复包含可交互图解，请在桌面查看。</Copy> : null}
     {item.error || visualError ? <Notice error text={item.error || visualError || ""} /> : null}
@@ -215,8 +222,7 @@ function InteractionContent({ item, board, frameTheme, onFollow, onOpenAgent, un
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
       {item.anchor ? <Action label={showSnapshot ? "收起原始引用" : "原始引用"} onPress={() => setShowSnapshot(value => !value)} /> : null}
       {unconfirmed && item.status === "failed" ? <Action label="重试发送" onPress={onRetry} /> : null}
-      {!unconfirmed && (!discussion || item.agentId) ? <Action label="继续追问" onPress={() => follow()} /> : null}
-      {discussion && item.response ? <Action label="带回主线" onPress={() => onFollow("return")} /> : null}
+      {!unconfirmed && (!discussion || item.agentId) ? <Action label="继续交流" onPress={() => follow()} /> : null}
       {item.agentId ? <Action label="会话" onPress={onOpenAgent} /> : null}
     </View>
   </View>;

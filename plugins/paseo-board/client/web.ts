@@ -218,7 +218,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
 export interface WebMessageInputProps {
   value: string;
   onChange(value: string): void;
-  onSubmit(): void;
+  onSubmit(fork: boolean): void;
   onClose(): void;
   disabled?: boolean;
   placeholder?: string;
@@ -239,7 +239,7 @@ export function WebMessageInput(props: WebMessageInputProps): ReactElement | nul
     onKeyDown: (event: { key: string; keyCode: number; nativeEvent?: { isComposing?: boolean; keyCode?: number }; shiftKey: boolean; altKey: boolean; ctrlKey: boolean; metaKey: boolean; preventDefault(): void; stopPropagation(): void }) => {
       if (composing.current || event.nativeEvent?.isComposing || event.keyCode === 229 || event.nativeEvent?.keyCode === 229 || Date.now() - compositionEnded.current < 50) return;
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); props.onClose(); }
-      else if (event.key === "Enter" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) { event.preventDefault(); event.stopPropagation(); if (!props.disabled) props.onSubmit(); }
+      else if (event.key === "Enter" && !event.shiftKey && !event.altKey) { event.preventDefault(); event.stopPropagation(); if (!props.disabled) props.onSubmit(event.ctrlKey || event.metaKey); }
     },
     style: { boxSizing: "border-box", width: "100%", minHeight: 88, maxHeight: 220, resize: "vertical", font: "inherit", lineHeight: 1.5, padding: 10, borderRadius: 8, ...props.style },
   });
