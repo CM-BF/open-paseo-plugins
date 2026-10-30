@@ -20,7 +20,7 @@ let submitMode: "held" | "accept" | "reject" = "held";
 const pending = new Map<string, { input: any; resolve(value: Interaction): void; reject(error: Error): void }>();
 const advance = () => { persisted = { ...persisted, revision: persisted.revision + 1, updatedAt: now() }; };
 const fixture: any = global.hostFixture = {
-  calls: [] as any[], links: [] as string[], openedAgents: [] as string[], ready: 0, responseClicks: 0,
+  calls: [] as any[], links: [] as string[], openedAgents: [] as string[], ready: 0, responseClicks: 0, responseResults: [] as any[],
   board: () => copy(persisted),
   mode: (next: typeof submitMode) => { submitMode = next; },
   pending: () => [...pending.keys()],
@@ -40,6 +40,7 @@ const fixture: any = global.hostFixture = {
     if (name === "board.read") return input.sinceRevision === persisted.revision ? { board: null, unchanged: true } : { board: copy(persisted), unchanged: false };
     if (name === "board.state") { persisted.userState = copy(input.state); return { saved: true }; }
     if (name === "board.interact") {
+      if (input.sourceInteractionId && !persisted.interactions.some(item => item.id === input.sourceInteractionId)) throw new Error("Fixture source interaction does not exist");
       return new Promise<Interaction>((resolve, reject) => {
         pending.set(input.intentId, { input, resolve, reject });
         if (submitMode === "accept") fixture.accept(input.intentId);
@@ -53,6 +54,7 @@ let requestId = 0;
 const frameRequests = new Map<number, { resolve(value: any): void; reject(error: Error): void }>();
 global.addEventListener("message", (event: any) => {
   if (event.data?.channel === "host-response-fixture" && event.data.clicked) fixture.responseClicks++;
+  if (event.data?.channel === "host-response-fixture" && event.data.result) fixture.responseResults.push(event.data.result);
   if (event.data?.channel === "paseo-board-frame-v1" && event.data.type === "ready") fixture.ready++;
   if (event.data?.channel !== "host-fixture-result") return;
   const entry = frameRequests.get(event.data.id); if (!entry) return; frameRequests.delete(event.data.id);

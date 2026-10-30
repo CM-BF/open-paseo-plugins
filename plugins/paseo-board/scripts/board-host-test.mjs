@@ -170,7 +170,7 @@ try {
   await until(`!document.querySelector(${JSON.stringify(input)})`);
   await evaluate(`hostFixture.updateInteraction(${JSON.stringify(id)},{status:'processing'})`);
   await untilMarker(id, 'processing');
-  const answer = { status: 'answered', response: 'The original question is answered here.', responseRevision: 1, responseSource: 'explicit', responseCanvas: { revision: 1, documentVersion: 1, data: {}, patches: [], html: `<style>body{margin:0}button{position:absolute;left:20px;top:20px;width:150px;height:36px}</style><button id="visual-answer" onclick="this.textContent='Animation started';parent.postMessage({channel:'host-response-fixture',clicked:true},'*')">Start animation</button>` } };
+  const answer = { status: 'answered', response: 'The original question is answered here.', responseRevision: 1, responseSource: 'explicit', responseCanvas: { revision: 1, documentVersion: 1, data: {}, patches: [], html: `<style>body{margin:0}button{position:absolute;left:20px;top:20px;width:150px;height:36px}</style><button id="visual-answer" onclick="this.textContent='Animation started';parent.postMessage({channel:'host-response-fixture',clicked:true},'*')">Start animation</button><button id="visual-ask" style="left:190px" onclick="board.ask({prompt:'Explain the selected figure',anchor:{kind:'region',boardRevision:board.getContext().boardRevision,canvasRevision:board.getContext().canvasRevision,text:'Fixture visual selection',rect:{x:12,y:24,width:50,height:40}}}).then(result=>parent.postMessage({channel:'host-response-fixture',result},'*'))">Ask about figure</button>` } };
   await evaluate(`hostFixture.updateInteraction(${JSON.stringify(id)},${JSON.stringify(answer)})`);
   await untilMarker(id, 'answered');
   await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('The original question is answered here.')`);
@@ -190,6 +190,31 @@ try {
   await click(marker(id));
   await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('The original question is answered here.')`);
   check('polling updates the original marker through delivered, processing and answered; clicking it reopens text and a working sandboxed visual response at that location');
+
+  await evaluate("[...document.querySelectorAll('iframe')].find(frame=>frame.dataset.boardId!=='host-fixture').scrollIntoView({block:'nearest'})");
+  await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+  const figure = await evaluate("(()=>{const rect=[...document.querySelectorAll('iframe')].find(frame=>frame.dataset.boardId!=='host-fixture').getBoundingClientRect();return{x:rect.x,y:rect.y}})()");
+  const beforeGeneratedAsk = await submitCount();
+  await clickPoint(figure.x + 265, figure.y + 38);
+  await until(`document.querySelector(${JSON.stringify(input)})?.value.includes('Explain the selected figure')`);
+  assert.equal(await submitCount(), beforeGeneratedAsk);
+  assert.equal(await evaluate('hostFixture.responseResults.length'), 0);
+  await key('Enter');
+  await until('hostFixture.pending().length===1');
+  const visualFollowup = await evaluate('hostFixture.pending()[0]');
+  const visualCall = await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input");
+  assert.equal(visualCall.sourceInteractionId, id);
+  assert.deepEqual(visualCall.anchor, await evaluate(`hostFixture.board().interactions.find(item=>item.id===${JSON.stringify(id)}).anchor`));
+  assert.ok(visualCall.text.includes('"responseRevision":1'));
+  assert.ok(visualCall.text.includes('"quote":"Fixture visual selection"'));
+  assert.ok(visualCall.text.includes('"rect":{"x":12,"y":24,"width":50,"height":40}'));
+  assert.equal(await evaluate('hostFixture.responseResults.length'), 0);
+  await evaluate('hostFixture.accept()');
+  await until('hostFixture.responseResults.length===1');
+  assert.equal(await evaluate('hostFixture.responseResults[0].status'), 'submitted');
+  await evaluate(`hostFixture.updateInteraction(${JSON.stringify(visualFollowup)},{status:'answered',response:'Figure follow-up answered in this original thread.'})`);
+  await untilMarker(id, 'answered');
+  check('generated visual questions wait for explicit send and RPC acceptance; their callback resolves once and retains response-version context alongside the original main-canvas anchor');
 
   await closePopover();
   const priorReady = await evaluate('hostFixture.ready');
@@ -245,7 +270,26 @@ try {
   assert.deepEqual(await canvasRect(), original);
   check('transport rejection leaves a failed marker, preserves the draft, and displays the error without shifting the canvas');
 
+  const originalFailedCall = await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input");
   await key('Escape'); await noPopover();
+  await click(marker(failed));
+  await until(`document.querySelector(${JSON.stringify(popover + ' button[aria-label="重试发送"]')})`);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover + ' button[aria-label="继续追问"]')})!==null`), false);
+  await hostClick(`${popover} button[aria-label="重试发送"]`);
+  await until(`document.querySelector(${JSON.stringify(input)})?.value==='A message that fails'`);
+  await key('Enter');
+  await until('hostFixture.pending().length===1');
+  assert.equal(await evaluate('hostFixture.pending()[0]'), failed);
+  const retried = await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input");
+  assert.deepEqual(retried, originalFailedCall);
+  assert.equal(retried.sourceInteractionId, undefined);
+  assert.equal(await evaluate(`hostFixture.board().interactions.some(item=>item.id===${JSON.stringify(failed)})`), false);
+  await evaluate('hostFixture.accept()');
+  await untilMarker(failed, 'delivered');
+  assert.equal(await evaluate(`hostFixture.board().interactions.filter(item=>item.id===${JSON.stringify(failed)}).length`), 1);
+  check('reopening a failed unsaved marker offers retry, reuses the original intent ID and anchor, and never references that missing intent as a parent');
+
+  await closePopover();
   await command('Emulation.setDeviceMetricsOverride', { width: 900, height: 650, deviceScaleFactor: 1, mobile: false });
   await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   const smallerCanvas = await canvasRect();
