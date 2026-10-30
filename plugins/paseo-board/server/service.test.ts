@@ -432,6 +432,79 @@ describe("BoardService SDK adapter", () => {
     expect(await store.read("board")).toEqual(updated);
   });
 
+  it("rechecks publish authority after asynchronous input preparation, including an already committed receipt", async () => {
+    const actor = { agentId: "owner", cwd: dir };
+    const htmlFile = join(dir, "revoked-owner.html"); await writeFile(htmlFile, '<main id="target">Old owner replacement</main>');
+    const requests: Array<{ id: string; input: Record<string, unknown> }> = [];
+    for (const kind of ["patch", "html", "data", "replay"]) {
+      const id = `revoke-publish-${kind}`;
+      const original = await store.create({ id, title: kind, ownerAgentId: actor.agentId, html: '<main id="target">Keep current content</main>', data: { temperature: 10 } });
+      const content = kind === "patch" ? { patch: { id: "old-owner-patch", selector: "#target", operation: "replace", html: '<main id="target">Old owner patch</main>' } }
+        : kind === "html" ? { htmlFile, replaceDocument: true } : { data: { temperature: 20 } };
+      const input = { boardId: id, expectedRevision: original.revision, canvasBase: canvasBase(original), eventId: `old-owner-${kind}`, ...content };
+      if (kind === "replay") await service.execute("publish", input, actor);
+      requests.push({ id, input });
+    }
+    // Hold the real service after requireBoard/canWrite but before the disk-backed
+    // mutation. A read result is not an enduring grant to the former owner.
+    const preparation = service as unknown as { withHtmlFile(input: Record<string, unknown>): Promise<Record<string, unknown>> };
+    const withHtmlFile = preparation.withHtmlFile.bind(service);
+    let reached = 0; let entered!: () => void; let release!: () => void;
+    const allEntered = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const held = vi.spyOn(preparation, "withHtmlFile").mockImplementation(async input => {
+      if (++reached === requests.length) entered();
+      await gate; return withHtmlFile(input);
+    });
+    const outcomes = requests.map(({ input }) => service.execute("publish", input, actor).then(value => ({ value }), error => ({ error })));
+    try {
+      await allEntered;
+      const rebound = [];
+      for (const { id } of requests) {
+        const before = (await store.read(id))!;
+        const after = await store.publish({ boardId: id, expectedRevision: before.revision, eventId: "user-rebind", ownerAgentId: "new-owner" });
+        expect(after.canvas).toEqual(before.canvas); rebound.push(after);
+      }
+      release();
+      for (const outcome of await Promise.all(outcomes)) expect(outcome).toMatchObject({ error: { code: "forbidden" } });
+      for (const board of rebound) expect(await store.read(board.id)).toEqual(board);
+    } finally { release(); await Promise.all(outcomes); held.mockRestore(); }
+  });
+
+  it("rechecks emit authority at the final mutation boundary before writing or replaying a receipt", async () => {
+    const actor = { agentId: "owner", cwd: dir };
+    const requests = [];
+    for (const replay of [false, true]) {
+      const id = replay ? "revoke-emit-replay" : "revoke-emit-new";
+      const original = await store.create({ id, title: id, ownerAgentId: actor.agentId, data: { temperature: 10 } });
+      const input = { boardId: id, canvasBase: canvasBase(original), eventId: "old-background-event", source: "background", summary: "Old owner result", data: { temperature: 20 } };
+      if (replay) await service.execute("emit", input, actor);
+      requests.push({ id, input });
+    }
+    const emit = store.emit.bind(store);
+    let reached = 0; let entered!: () => void; let release!: () => void;
+    const allEntered = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const held = vi.spyOn(store, "emit").mockImplementation(async (...args) => {
+      if (++reached === requests.length) entered();
+      await gate; return emit(...args);
+    });
+    const outcomes = requests.map(({ input }) => service.execute("emit", input, actor).then(value => ({ value }), error => ({ error })));
+    try {
+      await allEntered;
+      const rebound = [];
+      for (const { id } of requests) {
+        const before = (await store.read(id))!;
+        const after = await store.publish({ boardId: id, expectedRevision: before.revision, eventId: "user-rebind", ownerAgentId: "new-owner" });
+        expect(after.canvas).toEqual(before.canvas); rebound.push(after);
+      }
+      release();
+      for (const outcome of await Promise.all(outcomes)) expect(outcome).toMatchObject({ error: { code: "forbidden" } });
+      for (const board of rebound) expect(await store.read(board.id)).toEqual(board);
+      expect(sdk.sends).toHaveLength(0);
+    } finally { release(); await Promise.all(outcomes); held.mockRestore(); }
+  });
+
   it("does not grant shared mutation rights from an ordinary assigned question", async () => {
     await store.addInteraction({ boardId: "board", intentId: "legacy-question", kind: "question", text: "Prior assignee" }, "previous-owner");
     const actor = { agentId: "previous-owner", cwd: dir };
