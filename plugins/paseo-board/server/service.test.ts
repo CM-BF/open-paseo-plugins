@@ -8,6 +8,10 @@ import { ServiceJournal, deliveryKey } from "./journal";
 import type { Paseo, Snapshot, TimelineEntry, TimelinePage } from "./sdk";
 import { extractCandidates } from "./extraction";
 
+function canvasBase(board: { canvas: { revision: number; documentVersion: number } }) {
+  return { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion };
+}
+
 function fakeSdk() {
   const histories = new Map<string, TimelineEntry[]>();
   const snapshots = new Map<string, Snapshot>();
@@ -58,10 +62,12 @@ describe("BoardService SDK adapter", () => {
   it("attributes canvas locations to the bound writer and keeps seen metadata out of agent mutations", async () => {
     await store.addInteraction({ boardId: "board", intentId: "existing-fork", kind: "fork", text: "Shared canvas" }, "fork-agent");
     const owner = { agentId: "owner", cwd: dir }; const fork = { agentId: "fork-agent", cwd: dir };
-    const request = { boardId: "board", expectedRevision: (await store.read("board"))!.revision, eventId: "bound-patch", patch: { id: "bound-patch-id", selector: "#target", operation: "append", html: "<p>New</p>" }, actorAgentId: "forged" };
+    const base = (await store.read("board"))!;
+    const request = { boardId: "board", expectedRevision: base.revision, canvasBase: canvasBase(base), eventId: "bound-patch", patch: { id: "bound-patch-id", selector: "#target", operation: "append", html: "<p>New</p>" }, actorAgentId: "forged" };
     await service.execute("publish", request, owner);
     await service.execute("publish", request, fork);
-    await service.execute("emit", { boardId: "board", eventId: "bound-emit", source: "background", summary: "data", data: { temperature: 11 }, focusSelectors: ["#target"], actorAgentId: "forged" }, fork);
+    const afterPatch = (await store.read("board"))!;
+    await service.execute("emit", { boardId: "board", canvasBase: canvasBase(afterPatch), eventId: "bound-emit", source: "background", summary: "data", data: { temperature: 11 }, focusSelectors: ["#target"], actorAgentId: "forged" }, fork);
     const current = (await store.read("board"))!;
     expect(current.updates.map(update => ({ id: update.id, actor: update.actorAgentId, targets: update.targets }))).toEqual([
       { id: "bound-patch", actor: "owner", targets: [{ selector: "#target", operation: "append", patchId: "bound-patch-id" }] },
@@ -203,7 +209,7 @@ describe("BoardService SDK adapter", () => {
 
   it("sends compact immutable prompts with selection evidence instead of whole-board code, data and decisions", async () => {
     let board = (await store.read("board"))!;
-    await store.publish({ boardId: "board", expectedRevision: board.revision, eventId: "large-context", html: '<div>' + 'UNRELATED_CANVAS '.repeat(12000) + '</div>', data: { unrelated: 'UNRELATED_DATA '.repeat(3000) }, decisions: [{ id: "irrelevant", basis: "explicit", choice: "UNRELATED_DECISION", evidence: [] }] });
+    await store.publish({ boardId: "board", expectedRevision: board.revision, canvasBase: canvasBase(board), eventId: "large-context", replaceDocument: true, html: '<div>' + 'UNRELATED_CANVAS '.repeat(12000) + '</div>', data: { unrelated: 'UNRELATED_DATA '.repeat(3000) }, decisions: [{ id: "irrelevant", basis: "explicit", choice: "UNRELATED_DECISION", evidence: [] }] });
     const anchor = { kind: "text" as const, text: "The selected claim", selector: "#claim", boardRevision: 1, canvasRevision: 1, image: { mimeType: "image/png" as const, data: "cG5n" } };
     await service.interact({ boardId: "board", intentId: "compact-main", kind: "question", destination: "main", text: "Explain the selected claim", anchor }); await service.drain();
     const prompt = sdk.sends[0].text;
@@ -212,7 +218,7 @@ describe("BoardService SDK adapter", () => {
     expect(prompt).toContain('"selectionMayBeStale":true'); expect(prompt).toContain('"text":"The selected claim"'); expect(prompt).toContain("board_read");
     expect(sdk.sends[0].id).toBe("owner"); expect(sdk.sends[0].options.images).toEqual([anchor.image]);
     board = (await store.read("board"))!;
-    await store.publish({ boardId: "board", expectedRevision: board.revision, eventId: "changed-after-send", data: { changed: true } });
+    await store.publish({ boardId: "board", expectedRevision: board.revision, canvasBase: canvasBase(board), eventId: "changed-after-send", data: { changed: true } });
     await service.interact({ boardId: "board", intentId: "compact-main", kind: "question", destination: "main", text: "Explain the selected claim", anchor }); await service.drain();
     expect(sdk.sends).toHaveLength(1); expect(journal.get("board/compact-main")!.prompt).toBe(prompt);
     await expect(service.interact({ boardId: "board", intentId: "compact-main", kind: "question", destination: "side", text: "Explain the selected claim", anchor })).rejects.toHaveProperty("code", "idempotency_conflict");
@@ -315,7 +321,7 @@ describe("BoardService SDK adapter", () => {
     sdk.create.mockImplementation(async () => sdk.api.agents.ref("fork-agent"));
     sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, model: "changed-model", currentModeId: "changed-mode" });
     let board = (await store.read("board"))!;
-    await store.publish({ boardId: "board", expectedRevision: board.revision, eventId: "changed-title", title: "A different title", html: "New unrelated canvas" });
+    await store.publish({ boardId: "board", expectedRevision: board.revision, canvasBase: canvasBase(board), eventId: "changed-title", replaceDocument: true, title: "A different title", html: "New unrelated canvas" });
     journal = new ServiceJournal(join(dir, "service.json")); await journal.init(); service = new BoardService(store, journal, () => undefined); service.capture(sdk.api);
     await service.reconcile(); await service.drain();
     expect(sdk.create.mock.calls[beforeRestartCreates][0]).toEqual(original);
@@ -359,7 +365,7 @@ describe("BoardService SDK adapter", () => {
     await service.interact({ boardId: "board", intentId: "fork-1", kind: "fork", text: "Add an animation here" }); await service.drain();
     const actor = { agentId: "fork-agent", cwd: dir };
     const original = (await store.read("board"))!;
-    const input = { boardId: "board", expectedRevision: original.revision, eventId: "fork-patch", ownerAgentId: "owner", patch: { id: "animation", selector: "#target", operation: "append" as const, html: '<canvas id="animation"></canvas>' }, interactionResult: { id: "fork-1", status: "applied" as const, response: "Added the animation directly to this Board.", resultReferences: ["#animation"] } };
+    const input = { boardId: "board", expectedRevision: original.revision, canvasBase: canvasBase(original), eventId: "fork-patch", ownerAgentId: "owner", patch: { id: "animation", selector: "#target", operation: "append" as const, html: '<canvas id="animation"></canvas>' }, interactionResult: { id: "fork-1", status: "applied" as const, response: "Added the animation directly to this Board.", resultReferences: ["#animation"] } };
     const updated = await service.execute("publish", input, actor);
     expect(updated).toMatchObject({ ownerAgentId: "owner", canvas: { revision: original.canvas.revision + 1, patches: [input.patch] }, interactions: [{ id: "fork-1", status: "applied", resultReferences: ["#animation"] }] });
     expect(sdk.sends).toHaveLength(1); expect(sdk.sends[0].id).toBe("fork-agent");
@@ -372,7 +378,7 @@ describe("BoardService SDK adapter", () => {
     service = new BoardService(store, journal, () => undefined); service.capture(sdk.api); await service.reconcile(); await service.drain();
     expect((await store.read("board"))!.interactions[0].status).toBe("applied");
     const restored = (await store.read("board"))!;
-    expect(await service.execute("publish", { boardId: "board", expectedRevision: restored.revision, eventId: "after-restart", data: { restoredFork: true } }, actor)).toHaveProperty("canvas.data.restoredFork", true);
+    expect(await service.execute("publish", { boardId: "board", expectedRevision: restored.revision, canvasBase: canvasBase(restored), eventId: "after-restart", data: { restoredFork: true } }, actor)).toHaveProperty("canvas.data.restoredFork", true);
   });
 
   it("allows fork decisions and external updates but keeps ownership and unrelated boards isolated", async () => {
@@ -381,7 +387,7 @@ describe("BoardService SDK adapter", () => {
     const board = (await store.read("board"))!;
     const decided = await service.execute("decision", { boardId: "board", expectedRevision: board.revision, eventId: "fork-choice", decision: { id: "animation-speed", choice: "Use adjustable playback", basis: "explicit", rationale: "Keep the explanation inspectable", authorAgentId: "owner" } }, actor);
     expect(decided).toHaveProperty("decisions.0.authorAgentId", "fork-agent");
-    expect(await service.execute("emit", { boardId: "board", eventId: "fork-event", source: "fork-async-shell", summary: "Result ready", data: { result: 42 } }, actor)).toHaveProperty("canvas.data.result", 42);
+    expect(await service.execute("emit", { boardId: "board", canvasBase: canvasBase(board), eventId: "fork-event", source: "fork-async-shell", summary: "Result ready", data: { result: 42 } }, actor)).toHaveProperty("canvas.data.result", 42);
     for (const nextOwner of ["fork-agent", "someone-else"]) {
       await expect(service.execute("publish", { boardId: "board", expectedRevision: (await store.read("board"))!.revision, eventId: `steal-${nextOwner}`, ownerAgentId: nextOwner }, actor)).rejects.toThrow("Only the user");
     }
@@ -398,14 +404,32 @@ describe("BoardService SDK adapter", () => {
     await store.addInteraction({ boardId: "board", intentId: "owner-question", kind: "question", text: "For the owner" }, "owner");
     const actor = { agentId: "fork-agent", cwd: dir };
     const original = (await store.read("board"))!;
-    await service.execute("publish", { boardId: "board", expectedRevision: original.revision, eventId: "owner-edit", data: { owner: true } }, { agentId: "owner", cwd: dir });
-    await expect(service.execute("publish", { boardId: "board", expectedRevision: original.revision, eventId: "fork-stale", data: { fork: true } }, actor)).rejects.toHaveProperty("code", "revision_conflict");
+    await service.execute("publish", { boardId: "board", expectedRevision: original.revision, canvasBase: canvasBase(original), eventId: "owner-edit", data: { owner: true } }, { agentId: "owner", cwd: dir });
+    await expect(service.execute("publish", { boardId: "board", expectedRevision: original.revision, canvasBase: canvasBase(original), eventId: "fork-stale", data: { fork: true } }, actor)).rejects.toHaveProperty("code", "revision_conflict");
     const current = (await store.read("board"))!;
     await expect(service.execute("decision", { boardId: "board", expectedRevision: original.revision, eventId: "fork-stale-choice", decision: { id: "stale", choice: "Stale choice", basis: "explicit" } }, actor)).rejects.toHaveProperty("code", "revision_conflict");
-    await expect(service.execute("publish", { boardId: "board", expectedRevision: current.revision, eventId: "wrong-receipt", data: { wrong: true }, interactionResult: { id: "owner-question", status: "applied", resultReferences: ["#target"] } }, actor)).rejects.toThrow("assigned");
+    await expect(service.execute("publish", { boardId: "board", expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "wrong-receipt", data: { wrong: true }, interactionResult: { id: "owner-question", status: "applied", resultReferences: ["#target"] } }, actor)).rejects.toThrow("assigned");
     await expect(service.execute("respond", { boardId: "board", interactionId: "owner-question", expectedResponseRevision: 0, eventId: "wrong-response", response: "Impersonated answer" }, actor)).rejects.toThrow("assigned");
     expect((await store.read("board"))!.revision).toBe(current.revision);
-    expect(await service.execute("publish", { boardId: "board", expectedRevision: current.revision, eventId: "fork-current", data: { fork: true } }, actor)).toHaveProperty("canvas.data", { temperature: 10, owner: true, fork: true });
+    expect(await service.execute("publish", { boardId: "board", expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "fork-current", data: { fork: true } }, actor)).toHaveProperty("canvas.data", { temperature: 10, owner: true, fork: true });
+  });
+
+  it("allows an unchanged canvas baseline across metadata changes while keeping mixed metadata writes atomic", async () => {
+    await store.addInteraction({ boardId: "board", intentId: "owner-edit", kind: "change", text: "Update the value" }, "owner");
+    const original = (await store.read("board"))!;
+    await store.publish({ boardId: "board", expectedRevision: original.revision, eventId: "retitle", title: "A newer user title" });
+    const actor = { agentId: "owner", cwd: dir };
+    await service.execute("publish", {
+      boardId: "board", expectedRevision: original.revision, canvasBase: canvasBase(original), eventId: "canvas-after-title", data: { temperature: 11 },
+      interactionResult: { id: "owner-edit", status: "applied", response: "Updated the requested value", resultReferences: ["data:/temperature"] },
+    }, actor);
+    const updated = (await store.read("board"))!;
+    expect(updated).toMatchObject({ title: "A newer user title", canvas: { data: { temperature: 11 } }, interactions: [{ id: "owner-edit", status: "applied" }] });
+    await expect(service.execute("publish", {
+      boardId: "board", expectedRevision: original.revision, eventId: "stale-metadata-and-leaf", title: "An obsolete title",
+      dataPatch: [{ path: "/newField", operation: "set", expected: { exists: false }, value: "must not leak" }],
+    }, actor)).rejects.toHaveProperty("code", "revision_conflict");
+    expect(await store.read("board")).toEqual(updated);
   });
 
   it("does not grant shared mutation rights from an ordinary assigned question", async () => {
@@ -553,9 +577,9 @@ describe("BoardService SDK adapter", () => {
   it("loads HTML from files and preserves conflict validation through the agent adapter", async () => {
     const path = join(dir, "canvas.html"); await writeFile(path, '<input value="working">');
     const board = (await store.read("board"))!;
-    const updated = await service.execute("publish", { boardId: "board", expectedRevision: board.revision, eventId: "html-file", htmlFile: path });
+    const updated = await service.execute("publish", { boardId: "board", expectedRevision: board.revision, canvasBase: canvasBase(board), replaceDocument: true, eventId: "html-file", htmlFile: path });
     expect(updated).toHaveProperty("canvas.html", '<input value="working">');
-    await expect(service.execute("publish", { boardId: "board", expectedRevision: 1, eventId: "stale", data: { value: 1 } })).rejects.toHaveProperty("code", "revision_conflict");
+    await expect(service.execute("publish", { boardId: "board", expectedRevision: board.revision, canvasBase: canvasBase(board), eventId: "stale", data: { value: 1 } })).rejects.toHaveProperty("code", "revision_conflict");
   });
 
   it("recovers a saved interaction whose legacy delivery journal write was interrupted", async () => {
