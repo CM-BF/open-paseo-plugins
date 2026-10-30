@@ -8,6 +8,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { build } from 'esbuild';
 const directory = dirname(fileURLToPath(import.meta.url));
 const profile = await mkdtemp(join(tmpdir(), 'paseo-board-browser-'));
@@ -746,6 +747,56 @@ try {
   assert.equal(await frame('scrollY'),0);
   await untilFrame("!document.querySelector('[data-board-update-highlight]')",5000);
   check('reduced-motion updates use a short static ring; explicit document replacement can indicate the whole canvas, with all highlight timers ending');
+
+  // Use the production disk-backed store and authored-source replay in Node. Only
+  // snapshots actually accepted by that store are handed to the real CanvasFrame.
+  const storeBundle = await build({ stdin: { contents: 'export { BoardStore } from "./server/store"; export { describeAuthoring } from "./server/authored-source";', resolveDir: join(directory, '..'), sourcefile: 'concurrent-browser-store.ts' }, bundle: true, platform: 'node', format: 'cjs', write: false, external: ['canvas'] });
+  const storeModule = join(profile, 'concurrent-store.cjs');
+  await writeFile(storeModule, storeBundle.outputFiles[0].text);
+  const { BoardStore, describeAuthoring } = createRequire(import.meta.url)(storeModule);
+  const concurrentStore = new BoardStore(join(profile, 'concurrent-board-data')); await concurrentStore.init();
+  const concurrentHtml = await evaluate('hostProps.canvas.html') + '<section id="shared-regions"><article id="shared-left">Left original</article><article id="shared-right">Right original</article></section>';
+  const originalConcurrent = await concurrentStore.create({ id: 'concurrent-browser', title: 'Real store concurrency', ownerAgentId: 'writer-a', html: concurrentHtml, data: { n: 0 } });
+  const storedProps = (stored) => ({ boardId: stored.id, boardRevision: stored.revision, canvas: stored.canvas, interactions: [], selectionMode: 'off', selectedInteractionId: null });
+  const displayStored = async (stored) => {
+    await update(JSON.stringify(storedProps(stored)));
+    await untilFrame(`board.getContext().boardId==='concurrent-browser' && board.getContext().canvasRevision===${stored.canvas.revision}`);
+  };
+  const initialReady = await evaluate('results.ready');
+  await update(JSON.stringify(storedProps(originalConcurrent))); await until(`results.ready===${initialReady + 1}`);
+  await frame("document.querySelector('#field').value='draft during concurrent editing';window.concurrentSentinel={value:'same heap'};window.concurrentReference=window.concurrentSentinel;document.querySelector('#increment').click();document.querySelector('#increment').click()");
+  await evaluate('window.concurrentFrame=document.querySelector("iframe");window.concurrentWindow=window.concurrentFrame.contentWindow');
+  const concurrentReady = await evaluate('results.ready'); const concurrentTicks = await frame('window.ticks');
+  const frozenBase = describeAuthoring(originalConcurrent.canvas).canvasBase;
+  const firstWrite = { boardId: originalConcurrent.id, expectedRevision: originalConcurrent.revision, canvasBase: frozenBase, eventId: 'writer-a-first', patch: { id: 'writer-a-first', selector: '#shared-left', operation: 'replace', html: '<article id="shared-left">Writer A preserved</article><script>window.firstWriterRuns=(window.firstWriterRuns||0)+1</script>' } };
+  const secondWrite = { boardId: originalConcurrent.id, expectedRevision: originalConcurrent.revision, canvasBase: frozenBase, eventId: 'writer-b-stale', patch: { id: 'writer-b-stale', selector: '#shared-right', operation: 'replace', html: '<article id="shared-right">Writer B from old snapshot</article>' } };
+  const simultaneous = await Promise.allSettled([concurrentStore.publish(firstWrite, 'writer-a'), concurrentStore.publish(secondWrite, 'writer-b')]);
+  assert.equal(simultaneous[0].status, 'fulfilled');
+  assert.equal(simultaneous[1].status, 'rejected'); assert.equal(simultaneous[1].reason.code, 'revision_conflict');
+  const afterConcurrent = await concurrentStore.read(originalConcurrent.id);
+  await displayStored(afterConcurrent); await untilFrame("document.querySelector('#shared-left').textContent==='Writer A preserved' && window.firstWriterRuns===1");
+  assert.equal(await frame("document.querySelector('#shared-right').textContent"), 'Right original');
+  await assert.rejects(concurrentStore.publish({ ...secondWrite, expectedRevision: afterConcurrent.revision, eventId: 'writer-b-new-board-old-canvas' }, 'writer-b'), error => error.code === 'revision_conflict');
+  await assert.rejects(concurrentStore.publish({ boardId: originalConcurrent.id, expectedRevision: afterConcurrent.revision, canvasBase: frozenBase, eventId: 'stale-parent', patch: { id: 'stale-parent', selector: '#shared-regions', operation: 'replace', html: '<section id="shared-regions"><article id="shared-left">Left original</article><article id="shared-right">Old parent copy</article></section>' } }, 'writer-b'), error => error.code === 'revision_conflict');
+  const rejectedSnapshot = await concurrentStore.read(originalConcurrent.id);
+  assert.deepEqual(rejectedSnapshot, afterConcurrent); await displayStored(rejectedSnapshot);
+  assert.equal(await frame("document.querySelector('#shared-left').textContent"), 'Writer A preserved');
+  const currentAuthoring = describeAuthoring(rejectedSnapshot.canvas, '#shared-right');
+  assert.equal(currentAuthoring.replay.complete, true);
+  assert.ok(currentAuthoring.materializedAuthoredHtml.includes('Writer A preserved'));
+  const mergedHtml = currentAuthoring.target.html.replace('Right original', 'Writer B merged');
+  assert.notEqual(mergedHtml, currentAuthoring.target.html);
+  const mergedSnapshot = await concurrentStore.publish({ boardId: originalConcurrent.id, expectedRevision: rejectedSnapshot.revision, canvasBase: currentAuthoring.canvasBase, eventId: 'writer-b-merged', patch: { id: 'writer-b-merged', selector: currentAuthoring.target.selector, operation: 'replace', html: mergedHtml } }, 'writer-b');
+  await displayStored(mergedSnapshot); await untilFrame("document.querySelector('#shared-right').textContent==='Writer B merged'");
+  assert.equal(await frame("document.querySelector('#shared-left').textContent"), 'Writer A preserved');
+  assert.equal(await frame("document.querySelector('#field').value"), 'draft during concurrent editing');
+  assert.equal(await frame('window.count'), 2); assert.equal(await frame("document.querySelector('#count').textContent"), '2');
+  assert.equal(await frame('window.concurrentSentinel===window.concurrentReference && window.concurrentSentinel.value==="same heap"'), true);
+  assert.equal(await frame('window.firstWriterRuns'), 1); assert.ok(await frame('window.ticks') > concurrentTicks);
+  assert.equal(await evaluate('results.ready'), concurrentReady);
+  assert.equal(await evaluate('document.querySelector("iframe")===window.concurrentFrame && window.concurrentFrame.contentWindow===window.concurrentWindow'), true);
+  assert.deepEqual(mergedSnapshot.canvas.patches.map(patch => patch.id), ['writer-a-first', 'writer-b-merged']);
+  check('real BoardStore rejects competing stale edits and parent replacement even with a fresh board revision; authored-source retry preserves both regions, typed input, counters, iframe identity and JS heap');
 
   const screenshot = await command('Page.captureScreenshot', { format: 'png' });
   const artifact = process.env.BOARD_TEST_SCREENSHOT;

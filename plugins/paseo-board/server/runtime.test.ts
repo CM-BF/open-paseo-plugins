@@ -122,7 +122,7 @@ describe("installed CLI and stdio MCP transport", () => {
     await invoke("emit", { boardId: original.id, eventId: "fact-only", source: "background", summary: "Observed without changing the canvas" }, "fork-agent");
     const final = await invoke("read", { boardId: original.id });
     expect(final.canvas).toEqual(afterFirst.canvas); expect(final.updates).toEqual(afterFirst.updates);
-    expect(final.events.map((event: { id: string }) => event.id)).toEqual(["fact-only"]);
+    expect(final.events.map((event: { id: string }) => event.id)).toEqual([...afterFirst.events.map((event: { id: string }) => event.id), "fact-only"]);
     expect(final.interactions).toEqual(afterFirst.interactions); // No event wakes an agent or creates an interaction.
   });
 
