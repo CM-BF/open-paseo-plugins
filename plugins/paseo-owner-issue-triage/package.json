@@ -1,0 +1,35 @@
+{
+  "name": "paseo-owner-issue-triage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Automatically triage only your GitHub issues into a durable, observable Paseo queue.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build:client": "node scripts/build-client.mjs ."
+  },
+  "devDependencies": {
+    "@babel/core": "^7.28.0",
+    "@babel/plugin-transform-async-generator-functions": "^7.28.0",
+    "@babel/plugin-transform-block-scoping": "^7.28.0",
+    "@babel/plugin-transform-classes": "^7.28.0",
+    "@getpaseo/plugin": "0.13.2",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/node": "^22.15.0",
+    "@types/react": "~19.2.0",
+    "esbuild": "0.28.2",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^5.9.3",
+    "vitest": "4.1.12",
+    "zod": "^4.4.3"
+  },
+  "dependencies": {
+    "@getpaseo/client": "0.13.2"
+  }
+}
