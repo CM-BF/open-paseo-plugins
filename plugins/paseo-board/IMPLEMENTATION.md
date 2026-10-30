@@ -4,7 +4,7 @@ User authorized implementation and autonomous design decisions. The product defi
 
 Plugin directory: `plugins/paseo-board`. The original locally tested source is commit `4fc08fc`; publication changes and fresh-checkout verification are recorded in `PROGRESS.md`.
 
-The plugin is installed and running on Paseo daemon 0.13.2 as paseo-board, from a copied source snapshot at ~/.paseo/local-plugins/paseo-board/dev. Only this new plugin was reloaded; no daemon restart or unrelated plugin reload was required. Desktop is the complete interactive runtime. The user explicitly permits a mobile compatibility interface without reducing desktop functionality.
+The original delivery was installed on Paseo daemon 0.13.2 as paseo-board, from a copied source snapshot at ~/.paseo/local-plugins/paseo-board/dev. Current installation and verification status are recorded in PROGRESS.md. Only this plugin was reloaded; no daemon restart or unrelated plugin reload was required. Desktop is the complete interactive runtime. The user explicitly permits a mobile compatibility interface without reducing desktop functionality.
 
 ## Implemented
 
