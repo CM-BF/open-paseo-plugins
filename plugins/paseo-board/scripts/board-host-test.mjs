@@ -267,7 +267,7 @@ try {
   await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('First line')`);
   await evaluate('hostFixture.updateCanvas()');
   await untilFrame("board.getData().next===true");
-  await untilFrame(`document.querySelector('[data-board-markers]')?.shadowRoot?.querySelector(${JSON.stringify(marker(id))})?.textContent.includes('旧位置')`);
+  await untilFrame(`document.querySelector('[data-board-markers]')?.shadowRoot?.querySelector(${JSON.stringify(marker(id))})?.dataset.stale==='true'`);
   await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('旧位置')`);
   check('durable interactions recover after remount, and a newer canvas marks the original anchor as stale');
 
