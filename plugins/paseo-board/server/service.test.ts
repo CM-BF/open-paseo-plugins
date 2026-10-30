@@ -55,6 +55,23 @@ describe("BoardService SDK adapter", () => {
   });
   afterEach(async () => { await service.dispose(); await rm(dir, { recursive: true, force: true }); });
 
+  it("attributes canvas locations to the bound writer and keeps seen metadata out of agent mutations", async () => {
+    await store.addInteraction({ boardId: "board", intentId: "existing-fork", kind: "fork", text: "Shared canvas" }, "fork-agent");
+    const owner = { agentId: "owner", cwd: dir }; const fork = { agentId: "fork-agent", cwd: dir };
+    const request = { boardId: "board", expectedRevision: (await store.read("board"))!.revision, eventId: "bound-patch", patch: { id: "bound-patch-id", selector: "#target", operation: "append", html: "<p>New</p>" }, actorAgentId: "forged" };
+    await service.execute("publish", request, owner);
+    await service.execute("publish", request, fork);
+    await service.execute("emit", { boardId: "board", eventId: "bound-emit", source: "background", summary: "data", data: { temperature: 11 }, focusSelectors: ["#target"], actorAgentId: "forged" }, fork);
+    const current = (await store.read("board"))!;
+    expect(current.updates.map(update => ({ id: update.id, actor: update.actorAgentId, targets: update.targets }))).toEqual([
+      { id: "bound-patch", actor: "owner", targets: [{ selector: "#target", operation: "append", patchId: "bound-patch-id" }] },
+      { id: "bound-emit", actor: "fork-agent", targets: [{ selector: "#target" }] },
+    ]);
+    for (const field of ["updates", "seenUpdateIds"]) await expect(service.execute("publish", { boardId: "board", expectedRevision: current.revision, eventId: `forged-${field}`, [field]: [] }, owner)).rejects.toThrow("server-owned");
+    expect((await store.read("board"))!.seenUpdateIds).toEqual([]);
+    expect(sdk.sends).toHaveLength(0); expect(sdk.create).not.toHaveBeenCalled();
+  });
+
   it("persists a user intent before send, deduplicates replay and never calls completion application", async () => {
     const input = { boardId: "board", intentId: "ask-1", kind: "question" as const, text: "Explain this curve" };
     const result = await service.interact(input); expect(result.status).toBe("saved");

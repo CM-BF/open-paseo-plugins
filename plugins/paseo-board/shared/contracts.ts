@@ -61,6 +61,14 @@ export const CanvasSchema = z.object({
   data: JsonDataSchema,
   patches: z.array(CanvasPatchSchema),
 });
+export const FocusSelectorsSchema = z.array(z.string().min(1).max(1000)).max(12);
+export const CanvasUpdateSchema = z.object({
+  id: IdSchema, eventId: IdSchema, at: z.string(),
+  boardRevision: z.number().int().nonnegative(), canvasRevision: z.number().int().nonnegative(), documentVersion: z.number().int().nonnegative(),
+  kind: z.enum(["patch", "data", "document"]),
+  targets: z.array(z.object({ selector: z.string().min(1).max(1000), operation: CanvasPatchSchema.shape.operation.optional(), patchId: IdSchema.optional() })).max(12),
+  actorAgentId: z.string().optional(),
+});
 export const DestinationSchema = z.enum(["main", "side", "new-side"]);
 export const SourceSnapshotSchema = z.object({
   id: IdSchema, text: z.string().max(24000), response: z.string().max(64000).optional(),
@@ -95,16 +103,18 @@ export const BoardSchema = z.object({
   sideAgentId: z.string().optional(), pendingSideInteractionId: IdSchema.optional(), sideAgentRevision: z.number().int().nonnegative().optional(),
   revision: z.number().int().nonnegative(), createdAt: z.string(), updatedAt: z.string(),
   canvas: CanvasSchema,
+  updates: z.array(CanvasUpdateSchema).max(80).default([]), seenUpdateIds: z.array(IdSchema).max(80).default([]),
   decisions: z.array(DecisionSchema), interactions: z.array(InteractionSchema), events: z.array(EventSchema), observations: z.array(ObservationSchema),
   userState: JsonDataSchema,
   extraction: z.object({ lastCheckedAt: z.string().optional(), agentId: z.string().optional(), cursor: z.string().optional(), note: z.string().optional() }),
 });
-export const BoardSummarySchema = BoardSchema.pick({ id: true, title: true, projectId: true, workspaceId: true, ownerAgentId: true, revision: true, createdAt: true, updatedAt: true }).extend({ decisionCount: z.number(), pendingCount: z.number() });
+export const BoardSummarySchema = BoardSchema.pick({ id: true, title: true, projectId: true, workspaceId: true, ownerAgentId: true, revision: true, createdAt: true, updatedAt: true }).extend({ decisionCount: z.number(), pendingCount: z.number(), unreadUpdateCount: z.number().int().nonnegative().default(0), latestUpdateRevision: z.number().int().nonnegative().default(0) });
 export const CreateInputSchema = z.object({ id: IdSchema.optional(), title: z.string().min(1).max(200), projectId: z.string().optional(), workspaceId: z.string().optional(), ownerAgentId: z.string().optional(), html: z.string().max(4000000).default(""), data: JsonDataSchema.default({}) });
 export const PublishInputSchema = z.object({
   boardId: IdSchema, expectedRevision: z.number().int().nonnegative(), eventId: IdSchema,
   title: z.string().min(1).max(200).optional(), ownerAgentId: z.string().optional(),
   html: z.string().max(4000000).optional(), patch: CanvasPatchSchema.optional(), data: JsonDataSchema.optional(),
+  focusSelectors: FocusSelectorsSchema.optional(),
   decisions: z.array(DecisionInputSchema).max(50).optional(), summary: z.string().max(4000).default("Board updated"),
   interactionResult: z.object({ id: IdSchema, status: z.enum(["processing", "applied", "rejected", "failed"]), response: z.string().max(64000).optional(), resultReferences: z.array(z.string()).default([]) }).optional(),
 });
@@ -116,16 +126,18 @@ export const RespondInputSchema = z.object({
   html: z.string().max(4000000).optional(), patch: CanvasPatchSchema.optional(), data: JsonDataSchema.optional(),
   resultReferences: z.array(z.string().max(4000)).max(100).optional(),
 });
-export const EmitInputSchema = z.object({ boardId: IdSchema, eventId: IdSchema, source: z.string().min(1).max(200), kind: z.string().max(200).default("update"), summary: z.string().max(4000), data: JsonDataSchema.optional(), observation: z.object({ id: IdSchema, name: z.string().max(200), value: z.unknown(), evidence: EvidenceSchema }).optional() });
+export const EmitInputSchema = z.object({ boardId: IdSchema, eventId: IdSchema, source: z.string().min(1).max(200), kind: z.string().max(200).default("update"), summary: z.string().max(4000), data: JsonDataSchema.optional(), focusSelectors: FocusSelectorsSchema.optional(), observation: z.object({ id: IdSchema, name: z.string().max(200), value: z.unknown(), evidence: EvidenceSchema }).optional() });
 export const InteractInputSchema = z.object({ boardId: IdSchema, intentId: IdSchema, kind: z.enum(["question", "change", "fork", "return", "reply"]), destination: DestinationSchema.optional(), text: z.string().min(1).max(24000), anchor: AnchorSchema.optional(), sourceInteractionId: IdSchema.optional() });
 export const SelectSideAgentInputSchema = z.object({ boardId: IdSchema, agentId: z.string().min(1).max(160), expectedRevision: z.number().int().nonnegative(), eventId: IdSchema });
 export const DecisionUpdateInputSchema = z.object({ boardId: IdSchema, expectedRevision: z.number().int().nonnegative(), eventId: IdSchema, decision: DecisionInputSchema });
 export const StateInputSchema = z.object({ boardId: IdSchema, state: JsonDataSchema });
+export const MarkUpdatesSeenInputSchema = z.object({ boardId: IdSchema, updateIds: z.array(IdSchema).max(80) });
 export type Board = z.infer<typeof BoardSchema>;
 export type BoardSummary = z.infer<typeof BoardSummarySchema>;
 export type Anchor = z.infer<typeof AnchorSchema>;
 export type Canvas = z.infer<typeof CanvasSchema>;
 export type CanvasPatch = z.infer<typeof CanvasPatchSchema>;
+export type CanvasUpdate = z.infer<typeof CanvasUpdateSchema>;
 export type Decision = z.infer<typeof DecisionSchema>;
 export type DecisionInput = z.infer<typeof DecisionInputSchema>;
 export type Interaction = z.infer<typeof InteractionSchema>;
@@ -136,6 +148,7 @@ export type EmitInput = z.input<typeof EmitInputSchema>;
 export type InteractInput = z.input<typeof InteractInputSchema>;
 export type SelectSideAgentInput = z.input<typeof SelectSideAgentInputSchema>;
 export type JsonData = z.infer<typeof JsonDataSchema>;
+export type MarkUpdatesSeenInput = z.input<typeof MarkUpdatesSeenInputSchema>;
 
 export const listBoardsRpc = defineRpc({ name: "board.list", input: z.object({ workspaceId: z.string().optional() }), output: z.object({ boards: z.array(BoardSummarySchema) }) });
 export const readBoardRpc = defineRpc({ name: "board.read", input: z.object({ boardId: IdSchema, sinceRevision: z.number().optional() }), output: z.object({ board: BoardSchema.nullable(), unchanged: z.boolean().default(false) }) });
@@ -146,3 +159,4 @@ export const interactBoardRpc = defineRpc({ name: "board.interact", input: Inter
 export const selectSideAgentRpc = defineRpc({ name: "board.side-agent", input: SelectSideAgentInputSchema, output: BoardSchema });
 export const recordDecisionRpc = defineRpc({ name: "board.decision", input: DecisionUpdateInputSchema, output: BoardSchema });
 export const saveStateRpc = defineRpc({ name: "board.state", input: StateInputSchema, output: z.object({ saved: z.boolean() }) });
+export const markUpdatesSeenRpc = defineRpc({ name: "board.updates-seen", input: MarkUpdatesSeenInputSchema, output: BoardSchema });

@@ -33,10 +33,13 @@ describe("installed CLI and stdio MCP transport", () => {
     expect(created).toMatchObject({ id: "cli-board", revision: 1 }); expect(created.canvas).toBeUndefined();
     const html = join(dir, "animation.html"); await writeFile(html, "<input id='free'><script>globalThis.count=0</script>");
     await invoke("publish", { boardId: "cli-board", expectedRevision: 1, eventId: "html1", htmlFile: html });
-    const update = { boardId: "cli-board", eventId: "event1", source: "async-shell-test", summary: "New result", data: { result: 42 } };
+    const update = { boardId: "cli-board", eventId: "event1", source: "async-shell-test", summary: "New result", data: { result: 42 }, focusSelectors: ["#free"] };
     const first = await invoke("emit", update); const repeated = await invoke("emit", update); expect(repeated.revision).toBe(first.revision);
     const board = await invoke("read", { boardId: "cli-board" }); expect(board.canvas.html).toContain("globalThis.count=0"); expect(board.canvas.data).toEqual({ result: 42 });
     expect(board.interactions).toEqual([]); // Emits do not enqueue messages or wake agents.
+    expect(board.updates).toMatchObject([{ kind: "document", targets: [] }, { id: "event1", kind: "data", targets: [{ selector: "#free" }] }]);
+    await expect(invoke("updates-seen", { boardId: "cli-board", updateIds: ["event1"] })).rejects.toThrow();
+    expect((await service.store.read("cli-board"))!.seenUpdateIds).toEqual([]); // User RPC only, not an agent CLI/MCP operation.
     await service.store.addInteraction({ boardId: "cli-board", intentId: "visual-question", kind: "question", text: "Explain this" }, "owner");
     const answered = await invoke("respond", { boardId: "cli-board", interactionId: "visual-question", expectedResponseRevision: 0, eventId: "visual-answer", response: "Interactive reply", htmlFile: html });
     expect(answered).toMatchObject({ id: "visual-question", status: "answered", responseRevision: 1, responseCanvas: { html: expect.stringContaining("globalThis.count=0") } });
@@ -52,7 +55,7 @@ describe("installed CLI and stdio MCP transport", () => {
     const input = join(dir, "fork-publish.json");
     await writeFile(input, JSON.stringify({ boardId: "shared", expectedRevision: current.revision, eventId: "fork-visual", patch: { id: "visual", selector: "#target", operation: "append", html: '<svg id="visual"></svg>' }, interactionResult: { id: "fork-request", status: "applied", response: "Added directly", resultReferences: ["#visual"] } }));
     await exec(paths.cli, ["publish", "--file", input], { env: { ...process.env, PASEO_BOARD_BINDING: "token-fork" }, timeout: 5000 });
-    expect((await service.store.read("shared"))!).toMatchObject({ ownerAgentId: "owner", canvas: { patches: [{ id: "visual" }] }, interactions: [{ id: "fork-request", status: "applied" }] });
+    expect((await service.store.read("shared"))!).toMatchObject({ ownerAgentId: "owner", canvas: { patches: [{ id: "visual" }] }, interactions: [{ id: "fork-request", status: "applied" }], updates: [{ actorAgentId: "fork-agent", kind: "patch", targets: [{ selector: "#target", patchId: "visual" }] }] });
     expect(await readFile(paths.skill, "utf8")).toContain("carry it out and publish a revision-checked patch directly to this Board");
   });
 

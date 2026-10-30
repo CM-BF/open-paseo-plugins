@@ -4,9 +4,9 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 import {
   BoardSchema, CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, InteractInputSchema,
-  InteractionSchema, PublishInputSchema, RespondInputSchema, StateInputSchema,
-  type Board, type BoardSummary, type CreateInput, type DecisionInput, type EmitInput,
-  type InteractInput, type Interaction, type PublishInput, type RespondInput,
+  InteractionSchema, PublishInputSchema, RespondInputSchema, StateInputSchema, MarkUpdatesSeenInputSchema,
+  type Board, type BoardSummary, type CreateInput, type DecisionInput, type EmitInput, type CanvasUpdate,
+  type InteractInput, type Interaction, type PublishInput, type RespondInput, type MarkUpdatesSeenInput,
 } from "../shared/contracts";
 import { assertId, assertJson, BoardStoreError, canonicalJson, ensureDirectory, fingerprint, parseInput, readEnvelope, serialized, writeEnvelope, type Envelope } from "./store-format";
 
@@ -56,10 +56,12 @@ export class BoardStore {
     await this.init();
     const boards = await Promise.all((await readdir(this.directory)).filter(name => name.endsWith(".json")).map(name => this.read(name.slice(0, -5))));
     return boards.filter((board): board is Board => board !== null && (filter.workspaceId === undefined || board.workspaceId === filter.workspaceId))
-      .map(({ id, title, projectId, workspaceId, ownerAgentId, revision, createdAt, updatedAt, decisions, interactions }) => ({
+      .map(({ id, title, projectId, workspaceId, ownerAgentId, revision, createdAt, updatedAt, decisions, interactions, updates, seenUpdateIds }) => ({
         id, title, projectId, workspaceId, ownerAgentId, revision, createdAt, updatedAt,
         decisionCount: decisions.filter(item => item.status !== "dismissed" && item.status !== "superseded").length,
         pendingCount: interactions.filter(item => !["answered", "applied", "rejected"].includes(item.status)).length,
+        unreadUpdateCount: updates.filter(item => !seenUpdateIds.includes(item.id)).length,
+        latestUpdateRevision: updates.at(-1)?.boardRevision ?? 0,
       })).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
   }
 
@@ -96,9 +98,10 @@ export class BoardStore {
     });
   }
 
-  async publish(raw: PublishInput): Promise<Board> {
+  async publish(raw: PublishInput, actorAgentId?: string): Promise<Board> {
     const input = parseInput(PublishInputSchema, raw);
     if (input.html !== undefined && input.patch !== undefined) throw new BoardStoreError("invalid_input", "Publish accepts either a full document or a patch, not both");
+    if (input.focusSelectors !== undefined && (input.data === undefined || input.html !== undefined || input.patch !== undefined)) throw new BoardStoreError("invalid_input", "focusSelectors describe data-only canvas updates");
     if (input.data !== undefined) assertJson(input.data, "Canvas data");
     return this.mutate(input.boardId, "publish", input, (board, at) => {
       this.expectRevision(board, input.expectedRevision);
@@ -113,8 +116,15 @@ export class BoardStore {
         if (board.canvas.patches.some(patch => patch.id === input.patch!.id)) throw new BoardStoreError("idempotency_conflict", `Patch ${input.patch.id} already exists in this document`);
         board.canvas.patches.push(input.patch);
       }
-      if (input.data !== undefined) board.canvas.data = { ...board.canvas.data, ...input.data };
-      if (input.html !== undefined || input.patch !== undefined || input.data !== undefined) board.canvas.revision++;
+      const nextData = input.data === undefined ? board.canvas.data : { ...board.canvas.data, ...input.data };
+      const dataChanged = canonicalJson(nextData) !== canonicalJson(board.canvas.data);
+      board.canvas.data = nextData;
+      if (input.html !== undefined || input.patch !== undefined || dataChanged) {
+        board.canvas.revision++;
+        const kind = input.html !== undefined ? "document" : input.patch ? "patch" : "data";
+        const targets = input.patch ? [{ selector: input.patch.selector, operation: input.patch.operation, patchId: input.patch.id }] : kind === "data" ? [...new Set(input.focusSelectors ?? [])].map(selector => ({ selector })) : [];
+        this.canvasUpdate(board, input.eventId, at, kind, targets, actorAgentId);
+      }
       for (const decision of input.decisions ?? []) this.putDecision(board, decision, at);
       if (input.interactionResult) {
         const { id, ...update } = input.interactionResult;
@@ -156,14 +166,19 @@ export class BoardStore {
     return board.interactions.find(item => item.id === input.interactionId)!;
   }
 
-  async emit(raw: EmitInput): Promise<Board> {
+  async emit(raw: EmitInput, actorAgentId?: string): Promise<Board> {
     const input = parseInput(EmitInputSchema, raw);
+    if (input.focusSelectors !== undefined && input.data === undefined) throw new BoardStoreError("invalid_input", "focusSelectors require canvas data");
     if (input.data !== undefined) assertJson(input.data, "Event data");
     if (input.observation) assertJson(input.observation.value, "Observation value");
     return this.mutate(input.boardId, "emit", input, (board, at) => {
       if (input.data !== undefined) {
-        board.canvas.data = { ...board.canvas.data, ...input.data };
-        board.canvas.revision++;
+        const nextData = { ...board.canvas.data, ...input.data };
+        if (canonicalJson(nextData) !== canonicalJson(board.canvas.data)) {
+          board.canvas.data = nextData;
+          board.canvas.revision++;
+          this.canvasUpdate(board, input.eventId, at, "data", [...new Set(input.focusSelectors ?? [])].map(selector => ({ selector })), actorAgentId);
+        }
       }
       if (input.observation) this.observe(board, input, at);
       this.event(board, input.eventId, input.source, input.kind, input.summary, at, input.data);
@@ -185,6 +200,24 @@ export class BoardStore {
     return this.mutate(input.boardId, "state", input, board => {
       board.userState = { ...board.userState, ...input.state };
       assertJson(board.userState, "User state");
+    });
+  }
+
+  /** User attention state is independent of author state and content revisions. */
+  async markUpdatesSeen(raw: MarkUpdatesSeenInput): Promise<Board> {
+    const input = parseInput(MarkUpdatesSeenInputSchema, raw);
+    const path = this.path(input.boardId);
+    await this.init();
+    return serialized(path, async () => {
+      const envelope = await readEnvelope(path, input.boardId);
+      if (!envelope) throw new BoardStoreError("not_found", `Board ${input.boardId} does not exist`);
+      const seen = new Set([...envelope.board.seenUpdateIds, ...input.updateIds]);
+      // Unknown/pruned IDs never acknowledge future updates; repeats are a no-op.
+      const next = envelope.board.updates.filter(update => seen.has(update.id)).map(update => update.id);
+      if (canonicalJson(next) === canonicalJson(envelope.board.seenUpdateIds)) return envelope.board;
+      envelope.board.seenUpdateIds = next;
+      await writeEnvelope(path, envelope);
+      return envelope.board;
     });
   }
 
@@ -273,6 +306,13 @@ export class BoardStore {
   private event(board: Board, id: string, source: string, kind: string, summary: string, at: string, data?: Board["canvas"]["data"]): void {
     if (board.events.some(event => event.id === id)) throw new BoardStoreError("idempotency_conflict", `Event ID ${id} already exists`);
     board.events.push({ id, source, kind, summary, at, revision: board.revision + 1, ...(data === undefined ? {} : { data }) });
+  }
+
+  private canvasUpdate(board: Board, eventId: string, at: string, kind: CanvasUpdate["kind"], targets: CanvasUpdate["targets"], actorAgentId?: string): void {
+    board.updates.push({ id: eventId, eventId, at, boardRevision: board.revision + 1, canvasRevision: board.canvas.revision, documentVersion: board.canvas.documentVersion, kind, targets, ...(actorAgentId ? { actorAgentId } : {}) });
+    board.updates = board.updates.slice(-80);
+    const retained = new Set(board.updates.map(update => update.id));
+    board.seenUpdateIds = board.seenUpdateIds.filter(id => retained.has(id));
   }
 
   private putDecision(board: Board, input: DecisionInput, at: string): void {

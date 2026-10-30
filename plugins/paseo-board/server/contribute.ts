@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { setInterval, clearInterval } from "node:timers";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { createBoardRpc, emitBoardRpc, interactBoardRpc, listBoardsRpc, publishBoardRpc, readBoardRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc } from "../shared/contracts";
+import { createBoardRpc, emitBoardRpc, interactBoardRpc, listBoardsRpc, publishBoardRpc, readBoardRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc, markUpdatesSeenRpc } from "../shared/contracts";
 import { BoardStore } from "./store";
 import { BoardService } from "./service";
 import { ServiceJournal } from "./journal";
@@ -62,6 +62,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   server.handle(interactBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return service.interact(input); });
   server.handle(selectSideAgentRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return service.selectSideAgent(input); });
   server.handle(saveStateRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); await store.saveState(input); return { saved: true }; });
+  server.handle(markUpdatesSeenRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.markUpdatesSeen(input); });
 
   removers.push(server.before("agent.create", async ({ request }, { paseo }) => {
     capture(paseo);

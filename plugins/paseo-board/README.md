@@ -46,6 +46,10 @@ All commands also accept `--json` or JSON on stdin. Prefer an input file for HTM
 
 Use stable event IDs for retries. Conflicting versions reject rather than overwrite a newer change. A data update or local patch keeps the existing iframe and unrelated DOM, input values and animation state. A full document replacement is explicit and rebuilds the frame; use the state API to restore selected controls. Patch scripts execute once per document instance and are replayed when that document is reopened.
 
+Canvas changes also retain their locations so the user can jump to and highlight recent work. Patch targets are recorded automatically, including their patch IDs; full replacement is a document-level update. For a **data-only** publish or emit, add `focusSelectors: ["#comparison", "#summary"]` (at most 12 actual affected elements). Do not include this field with HTML/patch or without data. Missing hints remain unlocated rather than guessing. Unchanged data values, decisions, responses and operational checkpoints do not create canvas updates.
+
+Each Board persists its latest 80 canvas updates with their versions and the bound writer's identity when available. The user-facing `markUpdatesSeenRpc` acknowledges specific update IDs without modifying content revisions, history or authored user state. Visiting the newest change does not acknowledge older ones. `board_list` exposes `unreadUpdateCount` and `latestUpdateRevision`; agent tools cannot mark updates seen.
+
 Canvas API:
 
 ```js

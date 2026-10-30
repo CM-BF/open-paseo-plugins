@@ -18,6 +18,96 @@ describe("BoardStore", () => {
     return store.create({ id: "test", title: "A free canvas", html: "<main id='a'>Hello</main>", data: { count: 1 } });
   }
 
+  it("records only committed main canvas changes with exact versions and explicit data locations", async () => {
+    let current = await board();
+    expect(current.updates).toEqual([]);
+    current = await store.publish({ boardId: "test", expectedRevision: current.revision, eventId: "patch-located", patch: { id: "patch-target", selector: "#a", operation: "remove" } }, "owner");
+    expect(current.updates).toEqual([{ id: "patch-located", eventId: "patch-located", at: current.updatedAt, boardRevision: current.revision, canvasRevision: current.canvas.revision, documentVersion: 1, kind: "patch", targets: [{ selector: "#a", operation: "remove", patchId: "patch-target" }], actorAgentId: "owner" }]);
+    current = await store.publish({ boardId: "test", expectedRevision: current.revision, eventId: "data-located", data: { count: 2 }, focusSelectors: ["#graph", "#caption", "#graph"] }, "fork");
+    expect(current.updates.at(-1)).toMatchObject({ kind: "data", targets: [{ selector: "#graph" }, { selector: "#caption" }], actorAgentId: "fork" });
+    current = await store.emit({ boardId: "test", eventId: "data-unlocated", source: "shell", summary: "silent", data: { count: 3 } });
+    expect(current.updates.at(-1)).toMatchObject({ kind: "data", targets: [] });
+    expect(current.updates.at(-1)).not.toHaveProperty("actorAgentId");
+    current = await store.publish({ boardId: "test", expectedRevision: current.revision, eventId: "new-document", html: "<main>New</main>" });
+    expect(current.updates.at(-1)).toMatchObject({ kind: "document", targets: [], documentVersion: 2, canvasRevision: current.canvas.revision, boardRevision: current.revision });
+    const updates = current.updates;
+    const canvasRevision = current.canvas.revision;
+    current = await store.publish({ boardId: "test", expectedRevision: current.revision, eventId: "unchanged-data-publish", data: { count: 3 }, focusSelectors: ["#graph"] });
+    current = await store.emit({ boardId: "test", eventId: "unchanged-data-emit", source: "shell", summary: "same reading", data: { count: 3 }, focusSelectors: ["#graph"] });
+    expect(current.canvas.revision).toBe(canvasRevision); expect(current.updates).toEqual(updates);
+    await store.addInteraction({ boardId: "test", intentId: "question", kind: "question", text: "Explain" }, "owner");
+    current = (await store.read("test"))!;
+    await store.publish({ boardId: "test", expectedRevision: current.revision, eventId: "receipt", interactionResult: { id: "question", status: "processing" }, decisions: [{ id: "choice", basis: "explicit", choice: "Use a stable reference" }] });
+    await store.respond({ boardId: "test", interactionId: "question", eventId: "answer", expectedResponseRevision: 1, response: "Local answer", html: "<svg></svg>" });
+    await store.emit({ boardId: "test", eventId: "fact-only", source: "shell", summary: "No data change" });
+    await store.saveState({ boardId: "test", state: { draft: "keep" } });
+    await store.updateExtraction("test", { cursor: "checked" });
+    expect((await store.read("test"))!.updates).toEqual(updates);
+    current = (await store.read("test"))!;
+    await expect(store.publish({ boardId: "test", expectedRevision: current.revision, eventId: "rolled-back", data: { count: 99 }, interactionResult: { id: "missing", status: "processing" } })).rejects.toMatchObject({ code: "not_found" });
+    expect((await store.read("test"))!.updates).toEqual(updates);
+    for (const request of [{ focusSelectors: ["#a"] }, { data: {}, focusSelectors: Array(13).fill("#a") }, { data: {}, html: "new", focusSelectors: ["#a"] }]) {
+      await expect(store.publish({ boardId: "test", expectedRevision: current.revision, eventId: "bad-focus", ...request })).rejects.toHaveProperty("code", "invalid_input");
+    }
+    await expect(store.emit({ boardId: "test", eventId: "bad-emit-focus", source: "shell", summary: "bad", focusSelectors: ["#a"] })).rejects.toHaveProperty("code", "invalid_input");
+  });
+
+  it("serializes canvas locations, deduplicates retries and preserves per-update attention across restart", async () => {
+    let current = await board();
+    const request = { boardId: "test", expectedRevision: current.revision, eventId: "original", data: { count: 2 }, focusSelectors: ["#a"] };
+    const results = await Promise.allSettled([store.publish(request, "writer-a"), store.publish({ ...request, eventId: "competitor" }, "writer-b")]);
+    expect(results.filter(item => item.status === "fulfilled")).toHaveLength(1);
+    expect(results.find(item => item.status === "rejected")).toMatchObject({ reason: { code: "revision_conflict" } });
+    current = (await store.read("test"))!;
+    const first = current.updates[0];
+    await store.publish(request, "writer-b"); // A replay must not rewrite the first committer's attribution.
+    const emit = { boardId: "test", eventId: "second", source: "shell", summary: "new", data: { count: 3 }, focusSelectors: ["#a"] };
+    await Promise.all([store.emit(emit, "writer-b"), store.emit(emit, "writer-b")]);
+    current = (await store.read("test"))!;
+    expect(current.updates).toHaveLength(2);
+    expect(current.updates[0]).toEqual(first);
+    expect(current.updates.map(item => item.boardRevision)).toEqual([2, 3]);
+    const path = join(root, "boards", "test.json");
+    const before = JSON.parse(await readFile(path, "utf8"));
+    const marked = await store.markUpdatesSeen({ boardId: "test", updateIds: ["second", "second", "future"] });
+    expect(marked.seenUpdateIds).toEqual(["second"]);
+    expect(marked.revision).toBe(current.revision); expect(marked.updatedAt).toBe(current.updatedAt);
+    expect(marked.canvas).toEqual(current.canvas); expect(marked.userState).toEqual(current.userState);
+    const after = JSON.parse(await readFile(path, "utf8"));
+    expect(after.history).toEqual(before.history); expect(after.receipts).toEqual(before.receipts);
+    const file = await readFile(path, "utf8");
+    await store.markUpdatesSeen({ boardId: "test", updateIds: ["second"] });
+    expect(await readFile(path, "utf8")).toBe(file);
+    const reopened = new BoardStore(root);
+    expect((await reopened.read("test"))!.seenUpdateIds).toEqual(["second"]);
+    expect((await reopened.list())[0]).toMatchObject({ unreadUpdateCount: 1, latestUpdateRevision: 3 });
+    // A mark cannot invalidate a publisher's CAS or pre-acknowledge an unknown future ID.
+    current = await reopened.publish({ boardId: "test", expectedRevision: current.revision, eventId: "future", data: { count: 4 } });
+    await Promise.all([store.markUpdatesSeen({ boardId: "test", updateIds: ["original"] }), reopened.markUpdatesSeen({ boardId: "test", updateIds: ["second"] })]);
+    expect((await store.read("test"))!.seenUpdateIds).toEqual(["original", "second"]);
+    expect((await reopened.list())[0]).toMatchObject({ unreadUpdateCount: 1, latestUpdateRevision: current.revision });
+    await store.create({ id: "other", title: "Separate" });
+    await store.markUpdatesSeen({ boardId: "other", updateIds: ["future"] });
+    expect((await store.read("test"))!.seenUpdateIds).toEqual(["original", "second"]);
+  });
+
+  it("bounds retained locations and seen IDs together and loads legacy boards without a synthetic update", async () => {
+    await board();
+    const path = join(root, "boards", "test.json");
+    const legacy = JSON.parse(await readFile(path, "utf8")); delete legacy.board.updates; delete legacy.board.seenUpdateIds;
+    await writeFile(path, JSON.stringify(legacy));
+    expect((await new BoardStore(root).read("test"))!).toMatchObject({ updates: [], seenUpdateIds: [] });
+    expect((await store.list())[0]).toMatchObject({ unreadUpdateCount: 0, latestUpdateRevision: 0 });
+    for (let n = 0; n < 82; n++) {
+      await store.emit({ boardId: "test", eventId: `location-${n}`, source: "shell", summary: "progress", data: { count: n } });
+      if (n < 2) await store.markUpdatesSeen({ boardId: "test", updateIds: [`location-${n}`] });
+    }
+    const current = (await new BoardStore(root).read("test"))!;
+    expect(current.updates).toHaveLength(80); expect(current.updates[0].id).toBe("location-2"); expect(current.updates.at(-1)!.id).toBe("location-81");
+    expect(current.seenUpdateIds).toEqual([]);
+    expect((await store.list())[0]).toMatchObject({ unreadUpdateCount: 80, latestUpdateRevision: current.revision });
+  });
+
   it("recovers canvas, patches, data, user state, history and dedup after restart", async () => {
     const initial = await board();
     const request = { boardId: initial.id, expectedRevision: initial.revision, eventId: "patch-1", patch: { id: "patch-one", selector: "#a", operation: "append" as const, html: "<input>" } };

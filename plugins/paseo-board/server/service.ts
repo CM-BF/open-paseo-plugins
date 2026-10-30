@@ -105,18 +105,19 @@ export class BoardService {
       case "read": return board;
       case "publish": {
         if (actor && ["sideAgentId", "pendingSideInteractionId", "sideAgentRevision"].some(field => input[field] !== undefined)) throw new Error("Only the user can select the Board's side conversation");
+        if (actor && ["updates", "seenUpdateIds"].some(field => input[field] !== undefined)) throw new Error("Canvas update history is server-owned; only the user may mark updates seen");
         const parsed = PublishInputSchema.parse(await this.withHtmlFile(input));
         if (actor && parsed.ownerAgentId !== undefined && parsed.ownerAgentId !== board.ownerAgentId) throw new Error("Only the user can rebind board ownership");
         if (actor && parsed.interactionResult && board.interactions.find(item => item.id === parsed.interactionResult!.id)?.agentId !== actor.agentId) throw new Error("Only the agent assigned to this interaction may respond");
         if (actor && parsed.decisions) parsed.decisions = parsed.decisions.map((item) => ({ ...item, authorAgentId: actor.agentId }));
-        return this.store.publish(parsed);
+        return this.store.publish(parsed, actor?.agentId);
       }
       case "decision": {
         const parsed = DecisionUpdateInputSchema.parse(input);
         if (actor) parsed.decision.authorAgentId = actor.agentId;
         return this.store.recordDecision(parsed);
       }
-      case "emit": return this.store.emit(EmitInputSchema.parse(input));
+      case "emit": return this.store.emit(EmitInputSchema.parse(input), actor?.agentId);
     }
   }
   private async withHtmlFile(input: Record<string, unknown>): Promise<Record<string, unknown>> {
