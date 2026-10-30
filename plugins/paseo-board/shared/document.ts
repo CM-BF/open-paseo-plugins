@@ -17,7 +17,7 @@ export function buildBoardDocument(input: FrameSnapshot & { boardId: string; ses
   const { html, ...canvas } = input.canvas;
   const initial = { channel: FRAME_CHANNEL, boardId: input.boardId, sessionId: input.sessionId, canvas, boardRevision: input.boardRevision, userState: input.userState, theme: input.theme, captureModule: htmlToImage };
   const bootstrap = `<script>(${runtime})(${scriptJson(initial)});</script>`;
-  return `<!doctype html><html lang="en" data-surface="page" data-palette="custom" data-theme="${input.theme.scheme}" style="${escapeHtml(tokens)}"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${BOARD_CSP}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(input.title)}</title><style>${stylesheet}</style></head><body>${bootstrap}${html.replace(/^\uFEFF/, "")}\n${/data-tooltip|dataset\.tooltip|floatingui/i.test(html) ? tooltips : ""}${/lucide/i.test(html) ? icons : ""}</body></html>`;
+  return `<!doctype html><html lang="en" data-surface="page" data-palette="custom" data-theme="${input.theme.scheme}" style="${escapeHtml(tokens)}"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${BOARD_CSP}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(input.title)}</title><style>@layer paseo-board-defaults {${stylesheet}\n}</style></head><body>${bootstrap}${html.replace(/^\uFEFF/, "")}\n${/data-tooltip|dataset\.tooltip|floatingui/i.test(html) ? tooltips : ""}${/lucide/i.test(html) ? icons : ""}</body></html>`;
 }
 
 function scriptJson(value: unknown): string { return JSON.stringify(value).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029"); }

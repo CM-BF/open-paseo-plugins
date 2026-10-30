@@ -6,6 +6,7 @@ export interface FrameTheme { scheme: "light" | "dark"; tokens: Record<string, s
 export interface FrameError { code: string; message: string; patchId?: string }
 /** CSS pixels relative to the iframe viewport (not document coordinates). */
 export interface FramePosition { x: number; y: number }
+export type InteractionLocation = "component" | "collapsed" | "ancestor" | "snapshot";
 export interface AskRequest { prompt: string; anchor?: Anchor; kind?: "question" | "change" | "fork"; position?: FramePosition }
 export interface ComposeRequest { kind: "question" | "change" | "fork"; anchor: Anchor; position?: FramePosition }
 export interface InteractionMarker { id: string; text: string; status: Interaction["status"]; anchor?: Anchor; number: number }
@@ -18,8 +19,8 @@ export type FrameMessage = FrameScope & (
   | { type: "anchor"; anchor: Anchor; selectionId?: string }
   | { type: "selection-lock"; id: string; active: boolean; dragging?: boolean }
   | { type: "compose"; selectionId: string; automatic?: boolean; request: ComposeRequest }
-  | { type: "open-interaction"; id: string; position: FramePosition }
-  | { type: "interaction-position"; id: string; position: FramePosition }
+  | { type: "open-interaction"; id: string; position: FramePosition; location?: InteractionLocation }
+  | { type: "interaction-position"; id: string; position: FramePosition; location?: InteractionLocation }
   | { type: "ask"; id: string; request: AskRequest }
   | { type: "state"; state: JsonData }
   | { type: "error"; error: FrameError }
@@ -70,6 +71,7 @@ export function readFrameMessage(value: unknown, scope: Pick<FrameScope, "boardI
     }
     case "open-interaction": case "interaction-position":
       if (!short(value.id, 160) || !position(value.position)) return null;
+      if (value.location !== undefined && !["component", "collapsed", "ancestor", "snapshot"].includes(value.location as string)) return null;
       break;
     case "ask": {
       const request = value.request;
@@ -96,6 +98,15 @@ export function validAnchor(value: unknown): value is Anchor {
   if (!["board", "text", "region", "point", "element"].includes(value.kind as string)) return false;
   if (value.text !== undefined && (typeof value.text !== "string" || value.text.length > 12000)) return false;
   if (value.selector !== undefined && !short(value.selector, 1000)) return false;
+  if (value.binding !== undefined) {
+    const b = value.binding;
+    const identity = (v: unknown): boolean => record(v) && short(v.selector, 1000) && short(v.tag, 100)
+      && (v.id === undefined || short(v.id, 1000)) && typeof v.fingerprint === "string" && /^[a-f0-9]{8}$/.test(v.fingerprint);
+    if (!record(b) || !Number.isInteger(b.documentVersion) || Number(b.documentVersion) < 0 || !short(b.key, 160)
+      || !identity(b.target) || !Array.isArray(b.ancestors) || b.ancestors.length > 8 || !b.ancestors.every(identity)
+      || !record(b.relative) || !finite(b.relative.x) || !finite(b.relative.y)
+      || b.relative.x < 0 || b.relative.x > 1 || b.relative.y < 0 || b.relative.y > 1) return false;
+  }
   if (value.rect !== undefined) {
     const r = value.rect;
     if (!record(r) || !finite(r.x) || !finite(r.y) || !finite(r.width) || !finite(r.height) || r.width < 0 || r.height < 0) return false;

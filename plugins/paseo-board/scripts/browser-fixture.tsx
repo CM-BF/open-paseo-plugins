@@ -3,7 +3,7 @@ import { createElement, Fragment, useState } from "react";
 // @ts-expect-error react-dom is only needed by this browser fixture.
 import { createRoot } from "react-dom/client";
 import { CanvasFrame, WebMessageInput } from "../client/web";
-import { frameThemeFromColors, DEFAULT_LIGHT_COLORS } from "../shared/frame-theme";
+import { frameThemeFromColors, DEFAULT_LIGHT_COLORS, DEFAULT_DARK_COLORS } from "../shared/frame-theme";
 const host = globalThis as any;
 const fragment = `<style>body{padding:24px;margin:0}#target{min-height:120px}button{margin:5px}#words{display:block;font:20px sans-serif;width:600px}#paint{display:block}#dragbox{position:absolute;left:740px;top:90px;width:220px;height:68px;touch-action:none}#editing{position:absolute;left:740px;top:185px;width:220px}#editing textarea,#editable{display:block;width:200px;margin-bottom:12px}#editable{min-height:32px;border:1px solid #888}</style>
 <h1>Live canvas fixture</h1><input id="field" value="initial"><button id="increment">Increment</button><output id="count">0</output>
@@ -57,6 +57,7 @@ function App() {
   const [props, setProps] = useState({ boardId: "test-board", title: "Test board", canvas: { html: fragment, data: { n: 0 }, patches: [], revision: 1, documentVersion: 1 }, boardRevision: 1, userState: { saved: "original" }, theme: frameThemeFromColors(DEFAULT_LIGHT_COLORS), height: 700, selectionMode: "off" as any, interactions: [] as any[], selectedInteractionId: undefined as string | undefined });
   host.hostProps = props;
   host.update = (next: any) => setProps((previous) => ({ ...previous, ...next }));
+  host.setTheme = (scheme: "light" | "dark") => setProps(p => ({ ...p, theme: frameThemeFromColors(scheme === "dark" ? DEFAULT_DARK_COLORS : DEFAULT_LIGHT_COLORS) }));
   host.replaceDocument = () => setProps((p) => ({ ...p, selectionMode: "off", boardRevision: p.boardRevision + 1, canvas: { ...p.canvas, patches: [], revision: p.canvas.revision + 1, documentVersion: p.canvas.documentVersion + 1 } }));
   return createElement(Fragment, null, createElement(CanvasFrame, { ...props, key: mount,
     onAsk: async (request: any) => { host.results.asks.push(request); return { status: "submitted" as const, outcome: "saved" }; },

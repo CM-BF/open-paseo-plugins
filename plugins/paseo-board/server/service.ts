@@ -4,38 +4,36 @@ import { z } from "zod";
 import { setTimeout, clearTimeout } from "node:timers";
 import {
   CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, IdSchema, InteractInputSchema,
-  PublishInputSchema, RespondInputSchema, type Board, type Interaction, type InteractInput,
+  PublishInputSchema, RespondInputSchema, SelectSideAgentInputSchema, type Board, type Interaction, type InteractInput, type SelectSideAgentInput,
 } from "../shared/contracts";
 import { BoardStore, BoardStoreError } from "./store";
+import { canonicalJson } from "./store-format";
 import { ServiceJournal, deliveryKey, type Binding, type Delivery } from "./journal";
 import { discussionConfig, isBusy, type Agent, type Paseo, type TimelinePage } from "./sdk";
 import { extractCandidates } from "./extraction";
 
 export type Operation = "list" | "read" | "create" | "publish" | "decision" | "emit" | "respond";
 const terminal = new Set<Interaction["status"]>(["applied", "rejected", "answered"]);
+const alreadyHandled = (interaction: Interaction) => terminal.has(interaction.status) || (interaction.status === "processing" && interaction.responseSource === "explicit");
 const describe = (error: unknown) => error instanceof Error ? error.message : String(error);
 const marker = (boardId: string, intentId: string) => `[paseo-board board=${boardId} intent=${intentId}]`;
 
-export function interactionPrompt(board: Board, input: InteractInput): string {
+export function interactionPrompt(board: Board, input: InteractInput, frozenSource?: Interaction["sourceSnapshot"]): string {
   const anchor = input.anchor ? { ...input.anchor, image: input.anchor.image ? { mimeType: "image/png", attached: true } : undefined } : undefined;
-  const source = input.sourceInteractionId ? board.interactions.find((item) => item.id === input.sourceInteractionId) : undefined;
+  const source = frozenSource ?? (input.sourceInteractionId ? board.interactions.find(item => item.id === input.sourceInteractionId) : undefined);
   const context = {
-    boardId: board.id, interactionId: input.intentId, responseRevision: board.interactions.find(item => item.id === input.intentId)?.responseRevision ?? 0, title: board.title, ownerAgentId: board.ownerAgentId,
+    boardId: board.id, interactionId: input.intentId, title: board.title,
     boardRevision: board.revision, canvasRevision: board.canvas.revision,
-    anchor,
-    selectionMayBeStale: !!anchor && anchor.canvasRevision !== board.canvas.revision,
-    relatedDecisions: board.decisions.filter((item) => item.status !== "dismissed").slice(-12),
-    data: JSON.stringify(board.canvas.data).slice(0, 24000),
-    visibleText: board.canvas.html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 12000),
-    sourceDiscussion: source ? { id: source.id, question: source.text, response: source.response, responseRevision: source.responseRevision ?? 0, resultReferences: source.resultReferences, anchor: source.anchor ? { ...source.anchor, image: source.anchor.image ? { mimeType: "image/png", attached: true } : undefined } : undefined, responseCanvas: source.responseCanvas ? { revision: source.responseCanvas.revision, documentVersion: source.responseCanvas.documentVersion, readPath: `board_read({boardId:"${board.id}"}).interactions.find(i => i.id === "${source.id}").responseCanvas` } : undefined } : undefined,
+    responseRevision: board.interactions.find(item => item.id === input.intentId)?.responseRevision ?? 0,
+    anchor, selectionMayBeStale: !!anchor && anchor.canvasRevision !== board.canvas.revision,
+    sourceDiscussion: source ? { id: source.id, question: source.text.slice(0, 1200), response: source.response?.slice(0, 1800), responseRevision: source.responseRevision ?? 0, readPath: `board_read({boardId:"${board.id}"}).interactions.find(i => i.id === "${frozenSource ? input.intentId : source.id}")${frozenSource ? ".sourceSnapshot" : ""}` } : undefined,
   };
   return `${marker(board.id, input.intentId)}
 User intent (${input.kind}): ${input.text}
 
-You are responding on a persistent, fully interactive Paseo Board. The free HTML/JS canvas is the main conversation surface. You may answer with a local animation, simulator, figure, explanation or control where the user pointed. Do not require a task template or fixed component types.
-Read the board using board_read / paseo-board read before publishing. For a local edit, publish a patch with a stable selector; data-only updates should preserve running controls. Whole-document replacement is explicit and may reset runtime state. Record meaningful default choices using board_decision with actual evidence and your stated reason.
-${input.kind === "fork" || input.kind === "reply" ? "This fork is a separate conversation context on the same shared Board, like /btw. Follow the user's request directly: if they ask for a change, perform it and update this Board without requiring a return to the owner. The branch does not replace the Board's owner or authorize changes beyond the user's request.\n" : ""}For an explanation, use board_respond with boardId="${board.id}", interactionId="${input.intentId}", expectedResponseRevision (missing means 0), eventId, response text, and optional html/htmlFile for a visual answer at the question marker. For requested shared-canvas changes, use board_publish with boardId="${board.id}" and interactionResult.id=${input.intentId}. Read the current revision first; publish a local patch and record meaningful defaults with board_decision. Mark processing while working; mark applied only with concrete resultReferences (new canvas change, file or verified result) and an explanation of what changed. Mere receipt, a generic final reply or a completed turn is not application. If you decline, use rejected with a reason.
-If the anchor's content version is old, compare its frozen quote/image/coordinates to the current board. Do not guess a replacement location when it cannot be matched. A PNG is attached when available; a selection without a PNG has limited visual context. Related decisions are source-labelled claims, not hidden reasoning or extra authorization.
+Reply on this interactive Board. Read board_read / paseo-board read when context is needed and before editing; the full canvas, data and decisions are available there rather than repeated in this message.
+${input.kind === "fork" || input.kind === "reply" ? "This side conversation shares the same Board. If the user asks for a change, perform it and update this Board without requiring a return to the owner.\n" : ""}For an explanation use board_respond with boardId="${board.id}", interactionId="${input.intentId}", expectedResponseRevision, eventId, response and optional html/htmlFile. For shared-canvas changes use board_publish with interactionResult.id="${input.intentId}", a revision-checked local patch and concrete resultReferences. Mark processing while work continues (including background work); applied requires a real result. Turn completion alone is not application. Record meaningful agent defaults with board_decision.
+The frozen anchor/PNG is reference evidence, not current content or extra authorization. Compare old selections to the current board; do not guess a new target. Component binding only tracks display placement. A PNG is attached when available.
 <board-context-untrusted-json>
 ${JSON.stringify(context)}
 </board-context-untrusted-json>`;
@@ -47,7 +45,7 @@ export class BoardService {
   private paseo?: Paseo;
   private stopped = false;
   private flights = new Map<string, Promise<void>>();
-  private preparations = new Map<string, Promise<Interaction>>();
+  private preparations = new Map<string, Promise<unknown>>();
   private agentClaims = new Set<string>();
   private histories = new Map<string, Promise<void>>();
   private outcomes = new Set<Promise<void>>();
@@ -106,6 +104,7 @@ export class BoardService {
     switch (operation) {
       case "read": return board;
       case "publish": {
+        if (actor && ["sideAgentId", "pendingSideInteractionId", "sideAgentRevision"].some(field => input[field] !== undefined)) throw new Error("Only the user can select the Board's side conversation");
         const parsed = PublishInputSchema.parse(await this.withHtmlFile(input));
         if (actor && parsed.ownerAgentId !== undefined && parsed.ownerAgentId !== board.ownerAgentId) throw new Error("Only the user can rebind board ownership");
         if (actor && parsed.interactionResult && board.interactions.find(item => item.id === parsed.interactionResult!.id)?.agentId !== actor.agentId) throw new Error("Only the agent assigned to this interaction may respond");
@@ -129,48 +128,109 @@ export class BoardService {
     return { ...input, html: content.toString("utf8") };
   }
 
-  async interact(raw: InteractInput): Promise<Interaction> {
-    const input = InteractInputSchema.parse(raw);
-    const key = deliveryKey(input.boardId, input.intentId);
-    const previous = this.preparations.get(key) ?? Promise.resolve();
-    const work = previous.catch(() => undefined).then(() => this.prepareInteraction(input)).finally(() => { if (this.preparations.get(key) === work) this.preparations.delete(key); });
-    this.preparations.set(key, work);
+  private serializeBoard<T>(boardId: string, run: () => Promise<T>): Promise<T> {
+    const previous = this.preparations.get(boardId) ?? Promise.resolve();
+    const work = previous.catch(() => undefined).then(run).finally(() => { if (this.preparations.get(boardId) === work) this.preparations.delete(boardId); });
+    this.preparations.set(boardId, work);
     return work;
   }
-  private async prepareInteraction(input: InteractInput): Promise<Interaction> {
-    if (this.stopped) throw new Error("Board service stopped");
-    const board = await this.requireBoard(input.boardId);
-    if (!board.ownerAgentId) throw new Error("请先为这张 board 绑定负责人，再发送问题。");
-    const source = input.sourceInteractionId ? board.interactions.find((item) => item.id === input.sourceInteractionId) : undefined;
-    const isDiscussion = (item: Interaction | undefined): boolean => {
-      const seen = new Set<string>();
-      while (item && !seen.has(item.id)) {
-        if (item.kind === "fork") return true;
-        seen.add(item.id);
-        if (item.kind !== "reply" || !item.sourceInteractionId) return false;
-        const sourceId = item.sourceInteractionId;
-        item = board.interactions.find((original) => original.id === sourceId);
+  async interact(raw: InteractInput): Promise<Interaction> {
+    const input = InteractInputSchema.parse(raw);
+    return this.serializeBoard(input.boardId, () => this.prepareInteraction(input));
+  }
+  private async projectSideAgent(boardId: string): Promise<Board> {
+    const route = this.journal.sideRoute(boardId);
+    // Repair a crash between native creation assignment and its Board projection before
+    // exposing the selected side or checking association on a subsequent user request.
+    if (route?.agentId) {
+      const origin = this.journal.all().find(item => item.boardId === boardId && item.kind === "fork" && item.targetAgentId === route.agentId);
+      if (origin?.input) {
+        const current = (await this.requireBoard(boardId)).interactions.find(item => item.id === origin.interactionId);
+        if (!current) await this.store.addInteraction(origin.input, route.agentId, origin.sourceSnapshot);
+        else if (current.agentId !== route.agentId) await this.store.updateInteraction(boardId, current.id, { agentId: route.agentId });
       }
-      return false;
-    };
-    if (input.kind === "return" && (!isDiscussion(source) || !source?.response)) throw new Error("先选择有回复的讨论分支或后续回复，再将所选建议带回主线。");
-    if (input.kind === "reply" && (!isDiscussion(source) || !source?.agentId)) throw new Error("继续讨论需要一个已创建的 fork。");
-    if (!input.anchor && source?.anchor && ["reply", "return"].includes(input.kind)) input = { ...input, anchor: source.anchor };
-    const targetAgentId = input.kind === "reply" ? source!.agentId : input.kind === "fork" ? undefined : board.ownerAgentId;
-    const key = deliveryKey(board.id, input.intentId);
-    const existing = this.journal.get(key);
-    if (existing?.input && JSON.stringify(existing.input) !== JSON.stringify(input)) throw new BoardStoreError("idempotency_conflict", "Intent ID already belongs to a different request");
-    // The full immutable intent (including the selection snapshot and message payload) is the
-    // write-ahead record. The board interaction is a recoverable user-facing projection.
-    if (!existing) {
-      const delivery: Delivery = {
-        boardId: board.id, interactionId: input.intentId, ownerAgentId: board.ownerAgentId,
-        targetAgentId, kind: input.kind, input, prompt: interactionPrompt(board, input), state: "saved",
-        ...(input.anchor?.image ? { images: [{ mimeType: input.anchor.image.mimeType, data: input.anchor.image.data }] } : {}),
-      };
-      await this.journal.put(delivery);
     }
-    const interaction = await this.store.addInteraction(input, targetAgentId);
+    return route ? this.store.projectSideAgent(boardId, route) : this.requireBoard(boardId);
+  }
+  async selectSideAgent(raw: SelectSideAgentInput): Promise<Board> {
+    const input = SelectSideAgentInputSchema.parse(raw);
+    return this.serializeBoard(input.boardId, async () => {
+      if (this.stopped) throw new Error("Board service stopped");
+      // Replaying a confirmed selection must not override a later user selection.
+      if (this.journal.sideSelection(input)) return this.projectSideAgent(input.boardId);
+      const board = await this.projectSideAgent(input.boardId);
+      if (board.revision !== input.expectedRevision) throw new BoardStoreError("revision_conflict", `Board changed: expected revision ${input.expectedRevision}, current revision ${board.revision}`);
+      if (!board.interactions.some(item => item.kind === "fork" && item.agentId === input.agentId)) throw new BoardStoreError("forbidden", "Only an existing fork associated with this Board can be selected");
+      await this.journal.selectSide(input);
+      return this.projectSideAgent(input.boardId);
+    });
+  }
+  private async prepareInteraction(request: InteractInput): Promise<Interaction> {
+    if (this.stopped) throw new Error("Board service stopped");
+    const key = deliveryKey(request.boardId, request.intentId);
+    const existing = this.journal.get(key);
+    const board = await this.projectSideAgent(request.boardId);
+    if (existing) {
+      let retry = request;
+      // Old versions stored the inherited anchor in input without a separate original request.
+      if (!existing.request && !retry.anchor && ["reply", "return"].includes(retry.kind) && existing.input?.anchor) retry = { ...retry, anchor: existing.input.anchor };
+      if (existing.input && canonicalJson(existing.request ?? existing.input) !== canonicalJson(retry)) throw new BoardStoreError("idempotency_conflict", "Intent ID already belongs to a different request");
+      const interaction = existing.input ? await this.store.addInteraction(existing.input, existing.targetAgentId, existing.sourceSnapshot) : board.interactions.find(item => item.id === request.intentId);
+      if (!interaction) throw new Error("The original interaction is unavailable");
+      this.kick(key);
+      return interaction;
+    }
+    if (!board.ownerAgentId) throw new Error("请先为这张 board 绑定负责人，再发送问题。");
+    const source = request.sourceInteractionId ? board.interactions.find(item => item.id === request.sourceInteractionId) : undefined;
+    if (request.sourceInteractionId && !source) throw new BoardStoreError("not_found", "Source interaction does not exist on this Board");
+    if (request.anchor && (request.anchor.boardRevision > board.revision || request.anchor.canvasRevision > board.canvas.revision)) throw new BoardStoreError("invalid_input", "Selection refers to a future board or canvas revision");
+    let input = { ...request };
+    let targetAgentId: string | undefined;
+    let waitForSideInteractionId: string | undefined;
+    let reserveSide = false;
+    if (input.destination) {
+      if (!input.anchor && source?.anchor) input.anchor = source.anchor;
+      if (input.destination === "main") { input.kind = input.kind === "change" ? "change" : "question"; targetAgentId = board.ownerAgentId; }
+      else {
+        const route = this.journal.sideRoute(board.id);
+        if (input.destination === "side" && route?.pendingInteractionId) {
+          const pending = this.journal.get(deliveryKey(board.id, route.pendingInteractionId));
+          if (!pending || pending.ownerAgentId !== board.ownerAgentId) throw new Error("待创建的 side 已失效，请选择已有分支或新建 side。");
+          input.kind = "reply"; waitForSideInteractionId = pending.interactionId; targetAgentId = pending.targetAgentId;
+        } else if (input.destination === "side" && route?.agentId) {
+          if (!board.interactions.some(item => item.kind === "fork" && item.agentId === route.agentId)) throw new Error("当前 side 不属于这张 Board，请重新选择。");
+          input.kind = "reply"; targetAgentId = route.agentId;
+        } else { input.kind = "fork"; reserveSide = true; }
+      }
+    } else {
+      // Compatibility for older clients: their kind/source pair still determines the route.
+      const isDiscussion = (item: Interaction | undefined): boolean => {
+        const seen = new Set<string>();
+        while (item && !seen.has(item.id)) {
+          if (item.kind === "fork") return true;
+          seen.add(item.id);
+          if (item.kind !== "reply" || !item.sourceInteractionId) return false;
+          const sourceId = item.sourceInteractionId;
+          item = board.interactions.find(original => original.id === sourceId);
+        }
+        return false;
+      };
+      if (input.kind === "return" && (!isDiscussion(source) || !source?.response)) throw new Error("先选择有回复的讨论分支或后续回复，再将所选建议带回主线。");
+      if (input.kind === "reply" && (!isDiscussion(source) || !source?.agentId)) throw new Error("继续讨论需要一个已创建的 fork。");
+      if (!input.anchor && source?.anchor && ["reply", "return"].includes(input.kind)) input.anchor = source.anchor;
+      targetAgentId = input.kind === "reply" ? source!.agentId : input.kind === "fork" ? undefined : board.ownerAgentId;
+    }
+    // The resolved target (or exact pending creation), source, prompt and screenshot are immutable.
+    // Routing reservation and delivery share one atomic journal commit before their UI projections.
+    const sourceSnapshot: Interaction["sourceSnapshot"] = source ? { id: source.id, text: source.text, response: source.response, responseRevision: source.responseRevision ?? 0, resultReferences: source.resultReferences, responseCanvasRevision: source.responseCanvas?.revision } : undefined;
+    const delivery: Delivery = {
+      boardId: board.id, interactionId: input.intentId, ownerAgentId: board.ownerAgentId,
+      targetAgentId, waitForSideInteractionId, kind: input.kind, request, input, sourceSnapshot, prompt: interactionPrompt(board, input, sourceSnapshot), state: "saved",
+      ...(input.anchor?.image ? { images: [{ mimeType: input.anchor.image.mimeType, data: input.anchor.image.data }] } : {}),
+    };
+    await this.journal.prepare(delivery, reserveSide);
+    const interaction = await this.store.addInteraction(input, targetAgentId, sourceSnapshot);
+    await this.projectSideAgent(board.id);
     this.kick(key);
     return interaction;
   }
@@ -180,6 +240,9 @@ export class BoardService {
     const work = this.dispatch(key).catch((error) => this.log(`board delivery: ${describe(error)}`)).finally(() => {
       this.flights.delete(key);
       const settled = this.journal.get(key);
+      if (settled && (settled.targetAgentId || ["failed", "settled"].includes(settled.state))) {
+        for (const waiting of this.journal.all()) if (waiting.boardId === settled.boardId && waiting.waitForSideInteractionId === settled.interactionId && !waiting.targetAgentId && waiting.state === "saved") this.kick(deliveryKey(waiting.boardId, waiting.interactionId));
+      }
       if (settled?.targetAgentId && !["saved", "creating"].includes(settled.state)) {
         const next = this.journal.all().find((item) => item.targetAgentId === settled.targetAgentId && item.state === "saved");
         if (next) this.kick(deliveryKey(next.boardId, next.interactionId));
@@ -189,36 +252,52 @@ export class BoardService {
   }
   private async dispatch(key: string): Promise<void> {
     const paseo = this.paseo;
-    const delivery = this.journal.get(key);
-    if (!paseo || !delivery || this.stopped || !["saved", "creating"].includes(delivery.state)) return;
+    const saved = this.journal.get(key);
+    if (!paseo || !saved || this.stopped || !["saved", "creating"].includes(saved.state)) return;
+    let delivery: Delivery = saved;
     let board = await this.requireBoard(delivery.boardId);
     const interaction = board.interactions.find((item) => item.id === delivery.interactionId);
     if (!interaction) return;
-    if (terminal.has(interaction.status)) { await this.journal.settleUnsent(key); return; }
+    if (await this.settleHandled(key, board.id, interaction)) return;
     if (board.ownerAgentId !== delivery.ownerAgentId) { await this.fail(delivery, "负责人已变更，旧请求未自动发给其他 agent。"); return; }
     let claimedAgent: string | undefined;
     try {
+      if (delivery.waitForSideInteractionId && !delivery.targetAgentId) {
+        const origin = this.journal.get(deliveryKey(board.id, delivery.waitForSideInteractionId));
+        if (!origin || origin.kind !== "fork" || origin.ownerAgentId !== delivery.ownerAgentId) throw new Error("关联 side 创建请求已失效；此消息没有改投其他 agent。");
+        if (!origin.targetAgentId) {
+          if (["failed", "settled"].includes(origin.state)) throw new Error("关联 side 没有创建成功；此消息没有改投其他 agent。");
+          this.kick(deliveryKey(origin.boardId, origin.interactionId)); return;
+        }
+        delivery = await this.journal.patch(key, { targetAgentId: origin.targetAgentId });
+        await this.store.updateInteraction(board.id, interaction.id, { agentId: origin.targetAgentId });
+      }
       if (delivery.kind === "fork" && !delivery.targetAgentId) {
-        const source = await paseo.agents.ref(delivery.ownerAgentId).refresh();
-        if (!source || source.agent.archivedAt) throw new Error("负责人已归档或不可用，无法创建讨论分支。");
-        const config = await discussionConfig(paseo, source.agent);
-        if (this.stopped) return;
+        if (!delivery.creationSpec) {
+          const source = await paseo.agents.ref(delivery.ownerAgentId).refresh();
+          if (!source || source.agent.archivedAt) throw new Error("负责人已归档或不可用，无法创建讨论分支。");
+          const config = await discussionConfig(paseo, source.agent);
+          if (this.stopped) return;
+          delivery.creationSpec = {
+            config, title: `Board · ${board.title.slice(0, 80)}`, workspaceId: board.workspaceId, cwd: source.agent.cwd,
+            idempotencyKey: `paseo-board-fork:${board.id}:${interaction.id}`,
+            labels: { "paseo-board.id": board.id, "paseo-board.interaction": interaction.id, "paseo-board.role": "discussion" },
+          };
+        }
         delivery.state = "creating";
+        // Persist the complete native creation payload before calling the SDK. A restart or
+        // lost response reuses the same payload even if owner settings or title later change.
         await this.journal.put(delivery);
         await this.store.updateInteraction(board.id, interaction.id, { status: "sending" });
-        const options = {
-          config, title: `Board · ${board.title.slice(0, 80)}`,
-          idempotencyKey: `paseo-board-fork:${board.id}:${interaction.id}`,
-          labels: { "paseo-board.id": board.id, "paseo-board.interaction": interaction.id, "paseo-board.role": "discussion" },
-        };
+        if (this.stopped) return;
+        const { workspaceId, cwd, ...options } = delivery.creationSpec;
         // A source link is sufficient; actual parent relationships cause cascade archival.
-        const fork = board.workspaceId
-          ? await paseo.workspaces.ref(board.workspaceId).agents.create(options)
-          : await paseo.agents.create({ ...options, cwd: source.agent.cwd });
-        delivery.targetAgentId = fork.id;
-        delivery.state = "saved";
-        await this.journal.put(delivery);
+        const fork = workspaceId
+          ? await paseo.workspaces.ref(workspaceId).agents.create(options)
+          : await paseo.agents.create({ ...options, cwd });
+        delivery = await this.journal.assignFork(key, fork.id);
         await this.store.updateInteraction(board.id, interaction.id, { agentId: fork.id });
+        await this.projectSideAgent(board.id);
       }
       if (!delivery.targetAgentId) throw new Error("No agent is assigned to this interaction");
       // Object insertion order is the persisted journal order (keys are board/id, never numeric).
@@ -236,14 +315,23 @@ export class BoardService {
       await this.watch(delivery.targetAgentId);
       board = await this.requireBoard(delivery.boardId);
       if (this.stopped || board.ownerAgentId !== delivery.ownerAgentId) return;
-      if (board.interactions.some(item => item.id === interaction.id && terminal.has(item.status))) { await this.journal.settleUnsent(key); return; }
+      if (await this.settleHandled(key, board.id, board.interactions.find(item => item.id === interaction.id))) return;
       delivery.state = "sending";
       delivery.awaitingTurn = true;
       await this.journal.put(delivery);
-      await this.store.updateInteraction(board.id, interaction.id, { status: "sending", agentId: delivery.targetAgentId });
+      try {
+        await this.store.updateInteraction(board.id, interaction.id, { status: "sending", agentId: delivery.targetAgentId });
+      } catch (error) {
+        // A current turn can acknowledge this request while the sending journal write is
+        // in flight. Its explicit progress is stronger than our obsolete status claim.
+        const acknowledged = (await this.requireBoard(board.id)).interactions.find(item => item.id === interaction.id);
+        if (await this.settleHandled(key, board.id, acknowledged, true)) return;
+        throw error;
+      }
       const finalBoard = await this.requireBoard(board.id);
       if (this.stopped) return;
       if (finalBoard.ownerAgentId !== delivery.ownerAgentId) { await this.fail(delivery, "发送前负责人已变更；旧请求未投递。"); return; }
+      if (await this.settleHandled(key, board.id, finalBoard.interactions.find(item => item.id === interaction.id), true)) return;
       try {
         // SDK has no atomic idle-only enqueue; steer minimizes the refresh/send race.
         await target.send(delivery.prompt, { messageId: `paseo-board:${board.id}:${interaction.id}`, activeTurnBehavior: "steer", images: delivery.images });
@@ -270,6 +358,14 @@ export class BoardService {
         await this.store.updateInteraction(delivery.boardId, delivery.interactionId, { status: "failed", error: delivery.error });
       } else await this.fail(delivery, describe(error));
     } finally { if (claimedAgent) this.agentClaims.delete(claimedAgent); }
+  }
+  private async settleHandled(key: string, boardId: string, interaction: Interaction | undefined, beforeNativeSend = false): Promise<boolean> {
+    if (!interaction || !alreadyHandled(interaction)) return false;
+    // Explicit processing means the assigned agent took over through the Board during an
+    // existing turn. Settle only message delivery; its background work remains processing.
+    await this.journal.settleUnsent(key, beforeNativeSend);
+    if (interaction.status === "processing" && interaction.error) await this.store.updateInteraction(boardId, interaction.id, { error: undefined });
+    return true;
   }
   private async fail(delivery: Delivery, error: string): Promise<void> {
     delivery.state = "failed"; delivery.error = error;
@@ -410,8 +506,10 @@ export class BoardService {
     if (delivery.outcome === "completed" && interaction.responseSource !== "explicit" && ["question", "fork", "reply"].includes(delivery.kind) && interaction.response?.trim()) {
       if (interaction.status === "failed") await this.store.updateInteraction(board.id, interaction.id, { status: "processing", error: undefined });
       await this.store.updateInteraction(board.id, interaction.id, { status: "answered", error: undefined });
-    } else if (delivery.outcome === "completed" && interaction.responseMethod === "respond" && interaction.status === "processing") {
-      await this.store.updateInteraction(board.id, interaction.id, { status: "failed", error: "对应回合已结束，但只提交了处理中回复，尚未提交最终回答。已保留现有说明；可以继续提问。" });
+    } else if (delivery.outcome === "completed" && interaction.responseSource === "explicit" && interaction.status === "processing") {
+      // An explicit progress receipt can outlive this model turn (for example async-shell).
+      // Turn completion neither completes nor fails the user's longer-running request.
+      return;
     } else if (delivery.outcome === "completed" && ["question", "fork", "reply"].includes(delivery.kind) && !interaction.response?.trim() && interaction.status !== "failed") {
       await this.store.updateInteraction(board.id, interaction.id, { status: "failed", error: "对应回合已结束，但没有收到可显示的回答。可以在这个位置继续提问。" });
     } else if (delivery.outcome !== "completed" && interaction.status !== "failed") {
@@ -467,22 +565,23 @@ export class BoardService {
       const board = await this.requireBoard(summary.id);
       for (const interaction of board.interactions) {
         if (interaction.status !== "saved" || this.journal.get(deliveryKey(board.id, interaction.id))) continue;
-        const input = { boardId: board.id, intentId: interaction.id, kind: interaction.kind, text: interaction.text, anchor: interaction.anchor, sourceInteractionId: interaction.sourceInteractionId };
+        const input = { boardId: board.id, intentId: interaction.id, kind: interaction.kind, text: interaction.text, anchor: interaction.anchor, sourceInteractionId: interaction.sourceInteractionId, destination: interaction.destination };
         if (!board.ownerAgentId) { await this.store.updateInteraction(board.id, interaction.id, { status: "failed", error: "请求已保存，但未绑定负责人。" }); continue; }
         const ownerAgentId = ["question", "change", "return"].includes(interaction.kind) ? interaction.agentId ?? board.ownerAgentId : board.ownerAgentId;
         const targetAgentId = interaction.agentId ?? (["question", "change", "return"].includes(interaction.kind) ? ownerAgentId : undefined);
-        await this.journal.put({ boardId: board.id, interactionId: interaction.id, kind: interaction.kind, ownerAgentId, targetAgentId, input, prompt: interactionPrompt(board, input), state: "saved", ...(interaction.anchor?.image ? { images: [interaction.anchor.image] } : {}) });
+        await this.journal.put({ boardId: board.id, interactionId: interaction.id, kind: interaction.kind, ownerAgentId, targetAgentId, input, sourceSnapshot: interaction.sourceSnapshot, prompt: interactionPrompt(board, input, interaction.sourceSnapshot), state: "saved", ...(interaction.anchor?.image ? { images: [interaction.anchor.image] } : {}) });
       }
     }
     for (const delivery of this.journal.all()) {
       let board = await this.requireBoard(delivery.boardId);
       let interaction = board.interactions.find((item) => item.id === delivery.interactionId);
       if (!interaction && delivery.input) {
-        interaction = await this.store.addInteraction(delivery.input, delivery.targetAgentId);
+        interaction = await this.store.addInteraction(delivery.input, delivery.targetAgentId, delivery.sourceSnapshot);
         board = await this.requireBoard(delivery.boardId);
       }
-      if (interaction && terminal.has(interaction.status) && ["saved", "creating"].includes(delivery.state)) {
-        await this.journal.settleUnsent(deliveryKey(delivery.boardId, delivery.interactionId));
+      if (interaction && delivery.targetAgentId && interaction.agentId !== delivery.targetAgentId) interaction = await this.store.updateInteraction(board.id, interaction.id, { agentId: delivery.targetAgentId });
+      if (interaction && alreadyHandled(interaction) && ["saved", "creating"].includes(delivery.state)) {
+        await this.settleHandled(deliveryKey(delivery.boardId, delivery.interactionId), board.id, interaction);
         continue;
       }
       if (delivery.outcome) await this.applyOutcome(delivery);
@@ -495,6 +594,7 @@ export class BoardService {
       }
       if (delivery.state === "saved" || delivery.state === "creating") this.kick(deliveryKey(delivery.boardId, delivery.interactionId));
     }
+    for (const board of boards) await this.projectSideAgent(board.id);
     for (const agentId of [...wanted].slice(0, 100)) {
       try { await this.watch(agentId); } catch (error) { this.log(`board subscribe ${agentId}: ${describe(error)}`); }
     }

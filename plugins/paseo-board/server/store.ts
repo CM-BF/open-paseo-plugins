@@ -22,7 +22,7 @@ const transitions: Record<Interaction["status"], readonly Interaction["status"][
   sending: ["delivered", "processing", "answered", "applied", "rejected", "failed"],
   delivered: ["processing", "answered", "applied", "rejected", "failed"],
   processing: ["answered", "applied", "rejected", "failed"],
-  failed: ["sending", "processing", "answered", "rejected"],
+  failed: ["sending", "processing", "answered", "applied", "rejected"],
   answered: ["applied"], applied: [], rejected: [],
 };
 
@@ -119,7 +119,7 @@ export class BoardStore {
       if (input.interactionResult) {
         const { id, ...update } = input.interactionResult;
         const current = board.interactions.find(item => item.id === id);
-        this.changeInteraction(board, id, { ...update, ...(update.response !== undefined ? { responseSource: "explicit", responseMethod: "publish", responseRevision: (current?.responseRevision ?? 0) + 1 } : {}) }, at);
+        this.changeInteraction(board, id, { ...update, error: undefined, responseSource: "explicit", responseMethod: "publish", responseRevision: (current?.responseRevision ?? 0) + 1 }, at);
       }
       this.event(board, input.eventId, "agent", "publish", input.summary, at);
     }, input.eventId);
@@ -188,12 +188,13 @@ export class BoardStore {
     });
   }
 
-  async addInteraction(raw: InteractInput, agentId?: string): Promise<Interaction> {
+  async addInteraction(raw: InteractInput, agentId?: string, sourceSnapshot?: Interaction["sourceSnapshot"]): Promise<Interaction> {
     const input = parseInput(InteractInputSchema, raw);
-    const board = await this.mutate(input.boardId, "interaction", input, (board, at) => {
+    const payload = sourceSnapshot ? { ...input, sourceSnapshot } : input;
+    const board = await this.mutate(input.boardId, "interaction", payload, (board, at) => {
       if (input.anchor && (input.anchor.boardRevision > board.revision || input.anchor.canvasRevision > board.canvas.revision)) throw new BoardStoreError("invalid_input", "Selection refers to a future board or canvas revision");
       if (input.sourceInteractionId && !board.interactions.some(item => item.id === input.sourceInteractionId)) throw new BoardStoreError("not_found", "Source interaction does not exist");
-      board.interactions.push(InteractionSchema.parse({ ...input, id: input.intentId, agentId, status: "saved", createdAt: at, updatedAt: at }));
+      board.interactions.push(InteractionSchema.parse({ ...payload, id: input.intentId, agentId, status: "saved", createdAt: at, updatedAt: at }));
       this.event(board, input.intentId, "user", input.kind, input.text.slice(0, 4000), at);
     }, input.intentId);
     return board.interactions.find(item => item.id === input.intentId)!;
@@ -204,6 +205,17 @@ export class BoardStore {
     const update = parseInput(InteractionUpdateSchema, raw);
     const board = await this.mutate(boardId, "interaction-update", { id, ...update }, (board, at) => this.changeInteraction(board, id, update, at));
     return board.interactions.find(item => item.id === id)!;
+  }
+
+  /** Side routing is owned by the service journal; this is its versioned UI projection. */
+  async projectSideAgent(boardId: string, route: { agentId?: string; pendingInteractionId?: string; version: number }): Promise<Board> {
+    return this.mutate(boardId, "side-agent", route, (board, at) => {
+      if ((board.sideAgentRevision ?? 0) >= route.version) return;
+      board.sideAgentId = route.agentId;
+      board.pendingSideInteractionId = route.pendingInteractionId;
+      board.sideAgentRevision = route.version;
+      this.event(board, `side-agent:${route.version}`, "user", "side-agent", route.pendingInteractionId ? "Creating a side conversation" : "Side conversation selected", at);
+    });
   }
 
   async updateExtraction(boardId: string, raw: Partial<Board["extraction"]>): Promise<Board> {
