@@ -756,7 +756,10 @@ try {
   const { BoardStore, describeAuthoring } = createRequire(import.meta.url)(storeModule);
   const concurrentStore = new BoardStore(join(profile, 'concurrent-board-data')); await concurrentStore.init();
   const concurrentHtml = await evaluate('hostProps.canvas.html') + '<section id="shared-regions"><article id="shared-left">Left original</article><article id="shared-right">Right original</article></section>';
-  const originalConcurrent = await concurrentStore.create({ id: 'concurrent-browser', title: 'Real store concurrency', ownerAgentId: 'writer-a', html: concurrentHtml, data: { n: 0 } });
+  await concurrentStore.create({ id: 'concurrent-browser', title: 'Real store concurrency', ownerAgentId: 'writer-a', html: concurrentHtml, data: { n: 0 } });
+  await concurrentStore.addInteraction({ boardId: 'concurrent-browser', intentId: 'writer-b-shared-edit', kind: 'fork', text: 'Edit the other region on this shared Board' }, 'writer-b');
+  const originalConcurrent = await concurrentStore.read('concurrent-browser');
+  assert.ok(originalConcurrent.interactions.some(interaction => interaction.kind === 'fork' && interaction.agentId === 'writer-b'));
   const storedProps = (stored) => ({ boardId: stored.id, boardRevision: stored.revision, canvas: stored.canvas, interactions: [], selectionMode: 'off', selectedInteractionId: null });
   const displayStored = async (stored) => {
     await update(JSON.stringify(storedProps(stored)));
@@ -796,6 +799,7 @@ try {
   assert.equal(await evaluate('results.ready'), concurrentReady);
   assert.equal(await evaluate('document.querySelector("iframe")===window.concurrentFrame && window.concurrentFrame.contentWindow===window.concurrentWindow'), true);
   assert.deepEqual(mergedSnapshot.canvas.patches.map(patch => patch.id), ['writer-a-first', 'writer-b-merged']);
+  assert.deepEqual(mergedSnapshot.updates.map(change => ({ id: change.id, actor: change.actorAgentId })), [{ id: 'writer-a-first', actor: 'writer-a' }, { id: 'writer-b-merged', actor: 'writer-b' }]);
   check('real BoardStore rejects competing stale edits and parent replacement even with a fresh board revision; authored-source retry preserves both regions, typed input, counters, iframe identity and JS heap');
 
   const screenshot = await command('Page.captureScreenshot', { format: 'png' });
