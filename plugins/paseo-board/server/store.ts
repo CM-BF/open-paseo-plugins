@@ -4,25 +4,25 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 import {
   BoardSchema, CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, InteractInputSchema,
-  InteractionSchema, PublishInputSchema, StateInputSchema,
+  InteractionSchema, PublishInputSchema, RespondInputSchema, StateInputSchema,
   type Board, type BoardSummary, type CreateInput, type DecisionInput, type EmitInput,
-  type InteractInput, type Interaction, type PublishInput,
+  type InteractInput, type Interaction, type PublishInput, type RespondInput,
 } from "../shared/contracts";
 import { assertId, assertJson, BoardStoreError, canonicalJson, ensureDirectory, fingerprint, parseInput, readEnvelope, serialized, writeEnvelope, type Envelope } from "./store-format";
 
 export { BoardStoreError } from "./store-format";
-export type InteractionUpdate = Partial<Pick<Interaction, "status" | "agentId" | "response" | "resultReferences" | "error">>;
+export type InteractionUpdate = Partial<Pick<Interaction, "status" | "agentId" | "response" | "responseRevision" | "responseSource" | "responseMethod" | "responseCanvas" | "resultReferences" | "error">>;
 type DecisionUpdateInput = z.input<typeof DecisionUpdateInputSchema>;
 type StateInput = z.input<typeof StateInputSchema>;
 type Mutation = (board: Board, at: string) => void;
 
-const InteractionUpdateSchema = InteractionSchema.pick({ status: true, agentId: true, response: true, resultReferences: true, error: true }).partial();
+const InteractionUpdateSchema = InteractionSchema.pick({ status: true, agentId: true, response: true, responseRevision: true, responseSource: true, responseMethod: true, responseCanvas: true, resultReferences: true, error: true }).partial();
 const transitions: Record<Interaction["status"], readonly Interaction["status"][]> = {
   saved: ["sending", "delivered", "processing", "answered", "applied", "rejected", "failed"],
   sending: ["delivered", "processing", "answered", "applied", "rejected", "failed"],
   delivered: ["processing", "answered", "applied", "rejected", "failed"],
   processing: ["answered", "applied", "rejected", "failed"],
-  failed: ["sending", "processing", "rejected"],
+  failed: ["sending", "processing", "answered", "rejected"],
   answered: ["applied"], applied: [], rejected: [],
 };
 
@@ -118,10 +118,42 @@ export class BoardStore {
       for (const decision of input.decisions ?? []) this.putDecision(board, decision, at);
       if (input.interactionResult) {
         const { id, ...update } = input.interactionResult;
-        this.changeInteraction(board, id, update, at);
+        const current = board.interactions.find(item => item.id === id);
+        this.changeInteraction(board, id, { ...update, ...(update.response !== undefined ? { responseSource: "explicit", responseMethod: "publish", responseRevision: (current?.responseRevision ?? 0) + 1 } : {}) }, at);
       }
       this.event(board, input.eventId, "agent", "publish", input.summary, at);
     }, input.eventId);
+  }
+
+  async respond(raw: RespondInput, actorAgentId?: string): Promise<Interaction> {
+    const input = parseInput(RespondInputSchema, raw);
+    if (input.html !== undefined && input.patch !== undefined) throw new BoardStoreError("invalid_input", "Respond accepts either a full document or a patch, not both");
+    if (input.data !== undefined) assertJson(input.data, "Response data");
+    const board = await this.mutate(input.boardId, "respond", input, (board, at) => {
+      const interaction = board.interactions.find(item => item.id === input.interactionId);
+      if (!interaction) throw new BoardStoreError("not_found", "Interaction does not exist");
+      // Check assignment inside the serialized mutation as well as at the transport boundary.
+      if (actorAgentId && interaction.agentId !== actorAgentId) throw new BoardStoreError("forbidden", "Only the agent assigned to this interaction may respond");
+      const currentRevision = interaction.responseRevision ?? 0;
+      if (currentRevision !== input.expectedResponseRevision) throw new BoardStoreError("revision_conflict", `Response changed: expected revision ${input.expectedResponseRevision}, current revision ${currentRevision}`, { currentResponseRevision: currentRevision });
+      const update: InteractionUpdate = { status: input.status, response: input.response, responseSource: "explicit", responseMethod: "respond", responseRevision: currentRevision + 1, error: undefined };
+      if (input.resultReferences !== undefined) update.resultReferences = input.resultReferences;
+      if (input.html !== undefined || input.patch !== undefined || input.data !== undefined) {
+        if (input.patch && !interaction.responseCanvas) throw new BoardStoreError("invalid_input", "Publish response HTML before applying a response patch");
+        const canvas = structuredClone(interaction.responseCanvas ?? { revision: 0, documentVersion: 0, html: "", data: {}, patches: [] });
+        if (input.html !== undefined) { canvas.html = input.html; canvas.documentVersion++; canvas.patches = []; }
+        if (input.patch) {
+          if (canvas.patches.some(patch => patch.id === input.patch!.id)) throw new BoardStoreError("idempotency_conflict", `Response patch ${input.patch.id} already exists`);
+          canvas.patches.push(input.patch);
+        }
+        if (input.data !== undefined) canvas.data = { ...canvas.data, ...input.data };
+        canvas.revision++;
+        update.responseCanvas = canvas;
+      }
+      this.changeInteraction(board, input.interactionId, update, at);
+      this.event(board, input.eventId, "agent", "response", input.response.slice(0, 4000), at);
+    }, input.eventId);
+    return board.interactions.find(item => item.id === input.interactionId)!;
   }
 
   async emit(raw: EmitInput): Promise<Board> {
@@ -273,6 +305,8 @@ export class BoardStore {
   private changeInteraction(board: Board, id: string, update: InteractionUpdate, at: string): void {
     const interaction = board.interactions.find(item => item.id === id);
     if (!interaction) throw new BoardStoreError("not_found", `Interaction ${id} does not exist`);
+    // A later chat/history projection must not replace an explicit, versioned Board answer.
+    if (interaction.responseSource === "explicit" && update.responseSource === "timeline") return;
     const next = { ...interaction, ...update };
     if (next.status === "answered" && !next.response?.trim()) throw new BoardStoreError("invalid_input", "Answered requires a non-empty response");
     if (next.status === "applied" && !next.resultReferences.some(reference => reference.trim().length > 0)) throw new BoardStoreError("invalid_input", "Applied requires at least one non-empty result reference; this records an agent claim, not independent verification");

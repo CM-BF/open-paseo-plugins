@@ -37,6 +37,9 @@ describe("installed CLI and stdio MCP transport", () => {
     const first = await invoke("emit", update); const repeated = await invoke("emit", update); expect(repeated.revision).toBe(first.revision);
     const board = await invoke("read", { boardId: "cli-board" }); expect(board.canvas.html).toContain("globalThis.count=0"); expect(board.canvas.data).toEqual({ result: 42 });
     expect(board.interactions).toEqual([]); // Emits do not enqueue messages or wake agents.
+    await service.store.addInteraction({ boardId: "cli-board", intentId: "visual-question", kind: "question", text: "Explain this" }, "owner");
+    const answered = await invoke("respond", { boardId: "cli-board", interactionId: "visual-question", expectedResponseRevision: 0, eventId: "visual-answer", response: "Interactive reply", htmlFile: html });
+    expect(answered).toMatchObject({ id: "visual-question", status: "answered", responseRevision: 1, responseCanvas: { html: expect.stringContaining("globalThis.count=0") } });
     expect((await stat(paths.socket)).mode & 0o777).toBe(0o600);
   });
 
@@ -53,9 +56,13 @@ describe("installed CLI and stdio MCP transport", () => {
     });
     try {
       expect(await call("initialize", { protocolVersion: "2024-11-05" })).toHaveProperty("result.serverInfo.name", "paseo-board");
-      const list = await call("tools/list"); expect((list.result as { tools: unknown[] }).tools).toHaveLength(6);
+      const list = await call("tools/list"); expect((list.result as { tools: unknown[] }).tools).toHaveLength(7);
       const created = await call("tools/call", { name: "board_create", arguments: { id: "bound-board", title: "bound" } }); expect(created).not.toHaveProperty("result.isError", true);
       expect((await service.store.read("bound-board"))!.ownerAgentId).toBe("owner");
+      await service.store.addInteraction({ boardId: "bound-board", intentId: "owner-question", kind: "question", text: "Explain" }, "owner");
+      const answered = await call("tools/call", { name: "board_respond", arguments: { boardId: "bound-board", interactionId: "owner-question", eventId: "response", expectedResponseRevision: 0, response: "Explicit answer", html: "<canvas></canvas>" } });
+      expect(answered).not.toHaveProperty("result.isError", true);
+      expect((await service.store.read("bound-board"))!.interactions[0]).toMatchObject({ responseSource: "explicit", response: "Explicit answer" });
       const forbidden = await call("tools/call", { name: "board_create", arguments: { id: "foreign", title: "foreign", ownerAgentId: "someone-else" } }); expect(forbidden).toHaveProperty("result.isError", true);
     } finally { child.kill(); }
   });

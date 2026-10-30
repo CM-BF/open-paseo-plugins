@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, IdSchema, PublishInputSchema } from "../shared/contracts";
+import { CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, IdSchema, PublishInputSchema, RespondInputSchema } from "../shared/contracts";
 import { RUNTIME_SOURCE } from "./runtime-source";
 import { skillMarkdown } from "./prompts";
 
@@ -20,6 +20,7 @@ export function toolDefinitions() {
     ["read", "Read the free canvas, latest revision, decisions and user interactions. Read before publishing.", z.object({ boardId: IdSchema })],
     ["create", "Create your persistent, fully interactive HTML/JS board. Task content and layout are completely free.", CreateInputSchema.extend({ htmlFile: withFile.htmlFile.optional() })],
     ["publish", "Update data, insert/replace a local HTML/JS component, or explicitly replace a full document. Preserve other controls with a patch. Link fulfilled user intents to real results.", PublishInputSchema.extend({ htmlFile: withFile.htmlFile.optional() })],
+    ["respond", "Answer your assigned interaction at its original question marker with text and optional fully interactive HTML/JS. This cannot change the source canvas or another agent's answer. Read the interaction responseRevision first (missing means 0).", RespondInputSchema.extend({ htmlFile: withFile.htmlFile.optional() })],
     ["decision", "Record a consequential default decision YOU made, with stated rationale, impact and evidence. Never misattribute user requirements or guess hidden reasons.", DecisionUpdateInputSchema],
     ["emit", "Save an external fact/data update without waking any agent. Use a stable eventId for retry; optionally track an observation whose value changes become evidenced candidates.", EmitInputSchema],
   ] as const;
