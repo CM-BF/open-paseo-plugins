@@ -24,7 +24,7 @@ var __async = (__this, __arguments, generator) => {
 import { useRpc as useRpc5 } from "@getpaseo/plugin/client";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { useQuery as useQuery3 } from "@tanstack/react-query";
-import { Text as Text5 } from "react-native";
+import { Text as Text6 } from "react-native";
 
 // shared/contracts.ts
 import { defineRpc } from "@getpaseo/plugin";
@@ -219,6 +219,11 @@ var environmentRpc = defineRpc({
       name: z.string(),
       directory: z.string()
     })),
+    projects: z.array(z.object({
+      id: z.string(),
+      name: z.string(),
+      directory: z.string()
+    })),
     providers: z.array(z.object({
       id: z.string(),
       label: z.string()
@@ -264,9 +269,9 @@ function pendingCount(watches) {
 // client/screen.tsx
 import { useRpc as useRpc4 } from "@getpaseo/plugin/client";
 import { SettingsSelect as SettingsSelect4, SettingsSwitch as SettingsSwitch2 } from "@getpaseo/plugin/client/ui";
-import { useMutation as useMutation3, useQuery as useQuery2, useQueryClient as useQueryClient3 } from "@tanstack/react-query";
-import { useState as useState4 } from "react";
-import { ActivityIndicator as ActivityIndicator2, ScrollView, Text as Text4, View as View6 } from "react-native";
+import { useMutation as useMutation3, useQuery as useQuery2, useQueryClient as useQueryClient4 } from "@tanstack/react-query";
+import { useState as useState5 } from "react";
+import { ActivityIndicator as ActivityIndicator2, ScrollView as ScrollView2, Text as Text5, View as View7 } from "react-native";
 
 // client/kit.tsx
 import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
@@ -460,21 +465,413 @@ function Tabs({
     }, item.id))
   });
 }
+function ErrorText({
+  theme,
+  error
+}) {
+  return error ? /* @__PURE__ */jsx(Text, {
+    selectable: true,
+    accessibilityRole: "alert",
+    style: {
+      color: theme.colors.statusDanger,
+      fontSize: 13,
+      lineHeight: 20
+    },
+    children: error instanceof Error ? error.message : String(error)
+  }) : null;
+}
 
 // client/watch-form.tsx
 import { useRpc as useRpc2 } from "@getpaseo/plugin/client";
 import { SettingsSelect as SettingsSelect3 } from "@getpaseo/plugin/client/ui";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState as useState2 } from "react";
-import { View as View4 } from "react-native";
+import { useMutation, useQueryClient as useQueryClient2 } from "@tanstack/react-query";
+import { useState as useState3 } from "react";
+import { View as View5 } from "react-native";
 
 // client/agent-picker.tsx
 import { useRpc } from "@getpaseo/plugin/client";
 import { SettingsSelect } from "@getpaseo/plugin/client/ui";
-import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
-import { View as View2 } from "react-native";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRef as useRef2, useState as useState2 } from "react";
+import { View as View3 } from "react-native";
+
+// client/workspace-picker.tsx
+import { usePaseo } from "@getpaseo/plugin/client";
+import { useEffect, useRef, useState } from "react";
+import { Pressable as Pressable2, ScrollView, Text as Text2, View as View2, useWindowDimensions } from "react-native";
+
+// client/workspace-creation.ts
+var creations = /* @__PURE__ */new WeakMap();
+function findWorkspaceCreation(client, projectId) {
+  return creations.get(client)?.get(projectId);
+}
+function prepareWorkspaceCreation(client, project) {
+  var previous = findWorkspaceCreation(client, project.id);
+  if (previous) return previous;
+  var frozenProject = {
+    ...project
+  };
+  var request = {
+    title: `${frozenProject.name} \xB7 \u4E0A\u6E38\u66F4\u65B0`,
+    source: {
+      kind: "directory",
+      path: frozenProject.directory,
+      projectId: frozenProject.id
+    },
+    background: false,
+    idempotencyKey: `upstream-watch:workspace:${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}`
+  };
+  var pending;
+  var result;
+  var operation = {
+    project: frozenProject,
+    request,
+    error: null,
+    run() {
+      if (result) return Promise.resolve(result);
+      if (pending) return pending;
+      operation.error = null;
+      pending = Promise.resolve().then(() => client.workspaces.create(request)).then(workspace => {
+        result = {
+          id: workspace.id,
+          name: workspace.name || request.title || frozenProject.name,
+          directory: workspace.directory || frozenProject.directory
+        };
+        return result;
+      }).catch(error => {
+        operation.error = error;
+        throw error;
+      }).finally(() => {
+        pending = void 0;
+      });
+      return pending;
+    }
+  };
+  var hostCreations = creations.get(client);
+  if (!hostCreations) {
+    hostCreations = /* @__PURE__ */new Map();
+    creations.set(client, hostCreations);
+  }
+  hostCreations.set(project.id, operation);
+  return operation;
+}
+function completeWorkspaceCreation(client, operation) {
+  var hostCreations = creations.get(client);
+  if (hostCreations?.get(operation.project.id) === operation) hostCreations.delete(operation.project.id);
+}
+
+// client/workspace-picker.tsx
 import { jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
+var pickerTabs = [{
+  id: "workspace",
+  label: "\u5DF2\u6709 Workspace"
+}, {
+  id: "project",
+  label: "\u4ECE Project \u65B0\u5EFA"
+}];
+function WorkspacePicker({
+  theme,
+  value,
+  workspaces,
+  projects,
+  loading,
+  onChange,
+  onCreated
+}) {
+  var paseo = usePaseo();
+  var {
+    height
+  } = useWindowDimensions();
+  var [expanded, setExpanded] = useState(false);
+  var [tab, setTab] = useState("workspace");
+  var [search, setSearch] = useState("");
+  var [projectId, setProjectId] = useState("");
+  var [creatingOwner, setCreatingOwner] = useState(null);
+  var [error, setError] = useState(null);
+  var mounted = useRef(true);
+  var currentOwner = useRef({
+    paseo,
+    inFlight: false
+  });
+  if (currentOwner.current.paseo !== paseo) currentOwner.current = {
+    paseo,
+    inFlight: false
+  };
+  var owner = currentOwner.current;
+  var currentValue = useRef(value);
+  currentValue.current = value;
+  var creating = creatingOwner === owner;
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    setProjectId("");
+    setError(null);
+    setExpanded(false);
+    setSearch("");
+  }, [paseo]);
+  var selected = workspaces.find(workspace => workspace.id === value);
+  var previous = findWorkspaceCreation(paseo, projectId);
+  var selectedProject = previous?.project || projects.find(project => project.id === projectId);
+  var creationError = error || previous?.error;
+  var query = search.trim().toLocaleLowerCase();
+  var choices = (tab === "workspace" ? workspaces : projects).filter(choice => `${choice.name}
+${choice.directory}`.toLocaleLowerCase().includes(query));
+  function createWorkspace() {
+    return __async(this, null, function* () {
+      if (owner.inFlight || !selectedProject) return;
+      owner.inFlight = true;
+      setCreatingOwner(owner);
+      setError(null);
+      var operation = prepareWorkspaceCreation(paseo, selectedProject);
+      var ownsSurface = () => mounted.current && currentOwner.current === owner;
+      var isCurrent = () => ownsSurface() && currentValue.current === value;
+      try {
+        var workspace = yield operation.run();
+        if (!isCurrent()) return;
+        var applied = yield onCreated(workspace, isCurrent);
+        if (!applied) return;
+        completeWorkspaceCreation(paseo, operation);
+        if (!ownsSurface()) return;
+        setExpanded(false);
+        setSearch("");
+        setTab("workspace");
+      } catch (cause) {
+        if (isCurrent()) setError(cause);
+      } finally {
+        owner.inFlight = false;
+        if (ownsSurface()) setCreatingOwner(null);
+      }
+    });
+  }
+  return /* @__PURE__ */jsxs2(View2, {
+    style: {
+      minWidth: 0,
+      maxWidth: "100%",
+      gap: 8
+    },
+    children: [/* @__PURE__ */jsx2(Body, {
+      theme,
+      children: "\u66F4\u65B0\u4EFB\u52A1\u5DE5\u4F5C\u533A"
+    }), /* @__PURE__ */jsxs2(Pressable2, {
+      accessibilityRole: "button",
+      accessibilityLabel: "\u9009\u62E9\u66F4\u65B0\u4EFB\u52A1\u5DE5\u4F5C\u533A",
+      accessibilityState: {
+        expanded
+      },
+      onPress: () => setExpanded(current => !current),
+      style: {
+        minWidth: 0,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 7,
+        backgroundColor: theme.colors.surface0,
+        padding: 11,
+        gap: 3
+      },
+      children: [/* @__PURE__ */jsx2(Text2, {
+        numberOfLines: 1,
+        style: {
+          minWidth: 0,
+          color: theme.colors.foreground,
+          fontSize: 13.5
+        },
+        children: selected?.name || (value ? "\u5DF2\u9009\u62E9\u7684\u5DE5\u4F5C\u533A\u6682\u4E0D\u53EF\u7528" : "\u9009\u62E9\u5DE5\u4F5C\u533A\uFF0C\u6216\u4ECE Project \u65B0\u5EFA")
+      }), selected ? /* @__PURE__ */jsx2(Text2, {
+        numberOfLines: 2,
+        ellipsizeMode: "middle",
+        style: {
+          minWidth: 0,
+          color: theme.colors.foregroundMuted,
+          fontSize: 12
+        },
+        children: selected.directory
+      }) : null, /* @__PURE__ */jsx2(Text2, {
+        style: {
+          color: theme.colors.foregroundMuted,
+          fontSize: 12
+        },
+        children: expanded ? "\u6536\u8D77\u9009\u62E9" : "\u5C55\u5F00\u9009\u62E9"
+      })]
+    }), expanded ? /* @__PURE__ */jsxs2(View2, {
+      style: {
+        minWidth: 0,
+        maxWidth: "100%",
+        overflow: "hidden",
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 7,
+        backgroundColor: theme.colors.surface0,
+        padding: 10,
+        gap: 10
+      },
+      children: [/* @__PURE__ */jsx2(Tabs, {
+        theme,
+        items: pickerTabs,
+        value: tab,
+        onChange: next => {
+          setTab(next);
+          setSearch("");
+        }
+      }), /* @__PURE__ */jsx2(Field, {
+        theme,
+        value: search,
+        onChange: setSearch,
+        placeholder: tab === "workspace" ? "\u641C\u7D22\u5DE5\u4F5C\u533A\u540D\u79F0\u6216\u8DEF\u5F84" : "\u641C\u7D22 Project \u540D\u79F0\u6216\u8DEF\u5F84"
+      }), /* @__PURE__ */jsxs2(ScrollView, {
+        testID: "upstream-workspace-picker-list",
+        nestedScrollEnabled: true,
+        keyboardShouldPersistTaps: "handled",
+        style: {
+          minWidth: 0,
+          maxHeight: Math.min(280, Math.max(96, height * 0.35)),
+          flexGrow: 0
+        },
+        contentContainerStyle: {
+          gap: 4
+        },
+        children: [tab === "workspace" && !query ? /* @__PURE__ */jsx2(ChoiceRow, {
+          theme,
+          choice: {
+            id: "",
+            name: "\u6682\u4E0D\u9009\u62E9\u5DE5\u4F5C\u533A",
+            directory: ""
+          },
+          selected: !value,
+          disabled: creating,
+          onPress: () => {
+            onChange("");
+            setExpanded(false);
+          }
+        }) : null, choices.map(choice => /* @__PURE__ */jsx2(ChoiceRow, {
+          theme,
+          choice,
+          selected: choice.id === (tab === "workspace" ? value : selectedProject?.id),
+          disabled: creating,
+          onPress: () => {
+            if (tab === "project") {
+              setProjectId(choice.id);
+              setError(null);
+            } else {
+              onChange(choice.id);
+              setExpanded(false);
+              setSearch("");
+            }
+          }
+        }, choice.id)), !choices.length ? /* @__PURE__ */jsx2(Body, {
+          theme,
+          muted: true,
+          children: loading ? "\u6B63\u5728\u8BFB\u53D6\u2026" : query ? "\u6CA1\u6709\u5339\u914D\u7ED3\u679C" : tab === "workspace" ? "\u8FD8\u6CA1\u6709\u5DE5\u4F5C\u533A\uFF0C\u53EF\u4ECE Project \u65B0\u5EFA\u3002" : "\u8FD8\u6CA1\u6709 Project\uFF0C\u8BF7\u5148\u5728 Paseo \u4E2D\u6DFB\u52A0\u9879\u76EE\u3002"
+        }) : null]
+      }), tab === "project" ? /* @__PURE__ */jsxs2(View2, {
+        style: {
+          minWidth: 0,
+          gap: 8
+        },
+        children: [/* @__PURE__ */jsx2(Body, {
+          theme,
+          muted: true,
+          children: "\u5728\u6240\u9009 Project \u7684\u73B0\u6709\u76EE\u5F55\u4E2D\u65B0\u5EFA Workspace\uFF0C\u4F7F\u7528\u5F53\u524D\u5206\u652F\uFF0C\u4E0D\u521B\u5EFA\u65B0\u5206\u652F\u3002"
+        }), selectedProject ? /* @__PURE__ */jsxs2(View2, {
+          style: {
+            minWidth: 0,
+            gap: 3
+          },
+          children: [/* @__PURE__ */jsxs2(Text2, {
+            numberOfLines: 2,
+            style: {
+              color: theme.colors.foreground,
+              fontSize: 13
+            },
+            children: ["\u5DF2\u9009 Project\uFF1A", selectedProject.name]
+          }), /* @__PURE__ */jsx2(Text2, {
+            numberOfLines: 2,
+            ellipsizeMode: "middle",
+            style: {
+              minWidth: 0,
+              color: theme.colors.foregroundMuted,
+              fontSize: 12
+            },
+            children: selectedProject.directory
+          })]
+        }) : null, /* @__PURE__ */jsx2(Button, {
+          theme,
+          label: creating ? "\u6B63\u5728\u521B\u5EFA\u2026" : creationError ? "\u91CD\u8BD5\u540C\u4E00\u6B21\u521B\u5EFA" : previous ? "\u7EE7\u7EED\u4E0A\u6B21\u521B\u5EFA" : "\u65B0\u5EFA Workspace",
+          busy: creating,
+          disabled: !selectedProject,
+          onPress: () => void createWorkspace()
+        }), creationError ? /* @__PURE__ */jsxs2(View2, {
+          style: {
+            gap: 4
+          },
+          children: [/* @__PURE__ */jsx2(ErrorText, {
+            theme,
+            error: creationError
+          }), /* @__PURE__ */jsx2(Body, {
+            theme,
+            muted: true,
+            children: "\u521B\u5EFA\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u8BF7\u5148\u67E5\u770B\u5DF2\u6709 Workspace\u3002\u91CD\u8BD5\u4F1A\u6CBF\u7528\u540C\u4E00\u6B21\u8BF7\u6C42\uFF1B\u53E6\u9009 Project \u4E0D\u4F1A\u53D6\u6D88\u8FD9\u6B21\u8BF7\u6C42\u3002"
+          })]
+        }) : null]
+      }) : null]
+    }) : null]
+  });
+}
+function ChoiceRow({
+  theme,
+  choice,
+  selected,
+  disabled,
+  onPress
+}) {
+  return /* @__PURE__ */jsxs2(Pressable2, {
+    accessibilityRole: "button",
+    accessibilityLabel: `${choice.name}${choice.directory ? `\uFF0C${choice.directory}` : ""}`,
+    accessibilityState: {
+      selected,
+      disabled
+    },
+    disabled,
+    onPress,
+    style: ({
+      pressed
+    }) => ({
+      minWidth: 0,
+      maxWidth: "100%",
+      padding: 10,
+      gap: 4,
+      borderRadius: 6,
+      borderWidth: 1,
+      borderColor: selected ? theme.colors.accent : "transparent",
+      backgroundColor: selected || pressed ? theme.colors.surface2 : theme.colors.surface0,
+      opacity: disabled ? 0.5 : 1
+    }),
+    children: [/* @__PURE__ */jsx2(Text2, {
+      numberOfLines: 1,
+      style: {
+        minWidth: 0,
+        fontSize: 13.5,
+        color: theme.colors.foreground
+      },
+      children: choice.name
+    }), choice.directory ? /* @__PURE__ */jsx2(Text2, {
+      numberOfLines: 2,
+      ellipsizeMode: "middle",
+      style: {
+        minWidth: 0,
+        fontSize: 12,
+        color: theme.colors.foregroundMuted
+      },
+      children: choice.directory
+    }) : null]
+  });
+}
+
+// client/agent-picker.tsx
+import { jsx as jsx3, jsxs as jsxs3 } from "react/jsx-runtime";
 function AgentPicker({
   theme,
   value,
@@ -482,7 +879,16 @@ function AgentPicker({
 }) {
   var getEnvironment = useRpc(environmentRpc);
   var getModels = useRpc(modelsRpc);
-  var [family, setFamily] = useState(value.provider.split("/")[0] || "");
+  var queryClient = useQueryClient();
+  var latestSelection = useRef2({
+    value,
+    onChange
+  });
+  latestSelection.current = {
+    value,
+    onChange
+  };
+  var [family, setFamily] = useState2(value.provider.split("/")[0] || "");
   var environment = useQuery({
     queryKey: ["upstream-watch", "environment"],
     queryFn: () => getEnvironment({}),
@@ -498,25 +904,45 @@ function AgentPicker({
     enabled: Boolean(family),
     staleTime: 6e4
   });
-  return /* @__PURE__ */jsxs2(View2, {
+  return /* @__PURE__ */jsxs3(View3, {
     style: {
+      minWidth: 0,
       gap: 8
     },
-    children: [/* @__PURE__ */jsx2(SettingsSelect, {
-      label: "\u66F4\u65B0\u4EFB\u52A1\u5DE5\u4F5C\u533A",
+    children: [/* @__PURE__ */jsx3(WorkspacePicker, {
+      theme,
       value: value.workspaceId,
-      options: [{
-        value: "",
-        label: "\u9009\u62E9\u5305\u542B\u63D2\u4EF6\u6E90\u7801\u7684\u5DE5\u4F5C\u533A"
-      }, ...(environment.data?.workspaces || []).map(workspace => ({
-        value: workspace.id,
-        label: `${workspace.name} \u2014 ${workspace.directory}`
-      }))],
-      onValueChange: workspaceId => onChange({
-        ...value,
-        workspaceId
+      workspaces: environment.data?.workspaces || [],
+      projects: environment.data?.projects || [],
+      loading: environment.isLoading,
+      onChange: workspaceId => {
+        var current = latestSelection.current;
+        current.onChange({
+          ...current.value,
+          workspaceId
+        });
+      },
+      onCreated: (workspace, isCurrent) => __async(null, null, function* () {
+        if (!isCurrent()) return false;
+        yield queryClient.cancelQueries({
+          queryKey: ["upstream-watch", "environment"]
+        });
+        if (!isCurrent()) return false;
+        queryClient.setQueryData(["upstream-watch", "environment"], current2 => current2 ? {
+          ...current2,
+          workspaces: [...current2.workspaces.filter(item => item.id !== workspace.id), workspace]
+        } : current2);
+        var current = latestSelection.current;
+        current.onChange({
+          ...current.value,
+          workspaceId: workspace.id
+        });
+        void queryClient.invalidateQueries({
+          queryKey: ["upstream-watch", "environment"]
+        });
+        return true;
       })
-    }), /* @__PURE__ */jsx2(SettingsSelect, {
+    }), /* @__PURE__ */jsx3(SettingsSelect, {
       label: "Agent provider",
       value: family,
       options: [{
@@ -533,7 +959,7 @@ function AgentPicker({
           provider: ""
         });
       }
-    }), family ? /* @__PURE__ */jsx2(SettingsSelect, {
+    }), family ? /* @__PURE__ */jsx3(SettingsSelect, {
       label: "\u66F4\u65B0\u4EFB\u52A1\u6A21\u578B",
       value: value.provider,
       options: [{
@@ -547,10 +973,10 @@ function AgentPicker({
         ...value,
         provider
       })
-    }) : null, environment.error || models.error ? /* @__PURE__ */jsx2(Body, {
+    }) : null, environment.error || models.error ? /* @__PURE__ */jsx3(Body, {
       theme,
       children: String(environment.error || models.error)
-    }) : null, /* @__PURE__ */jsx2(Body, {
+    }) : null, /* @__PURE__ */jsx3(Body, {
       theme,
       muted: true,
       children: "\u53EA\u5728\u4F60\u70B9\u201C\u5F00\u66F4\u65B0 agent\u201D\u540E\u521B\u5EFA\u4F1A\u8BDD\uFF0C\u4F7F\u7528 provider \u539F\u6709\u7684\u6743\u9650\u8BBE\u7F6E\u3002"
@@ -560,7 +986,7 @@ function AgentPicker({
 
 // client/feature-review.tsx
 import { ExternalLink, SettingsSelect as SettingsSelect2, SettingsSwitch } from "@getpaseo/plugin/client/ui";
-import { Text as Text2, View as View3 } from "react-native";
+import { Text as Text3, View as View4 } from "react-native";
 
 // shared/feature-review.ts
 var adoptionLabels = {
@@ -616,7 +1042,7 @@ function featureReview(watch) {
 }
 
 // client/feature-review.tsx
-import { jsx as jsx3, jsxs as jsxs3 } from "react/jsx-runtime";
+import { jsx as jsx4, jsxs as jsxs4 } from "react/jsx-runtime";
 var adoptionOptions = Object.entries(adoptionLabels).map(([value, label]) => ({
   value,
   label
@@ -633,39 +1059,39 @@ function ReviewEditor({
       ...patch
     } : feature)
   });
-  return /* @__PURE__ */jsxs3(View3, {
+  return /* @__PURE__ */jsxs4(View4, {
     style: {
       gap: 12
     },
-    children: [/* @__PURE__ */jsx3(Body, {
+    children: [/* @__PURE__ */jsx4(Body, {
       theme,
       children: "\u6838\u5FC3\u529F\u80FD\u6E05\u5355 \xB7 \u4EC5\u63D0\u51FA\u5EFA\u8BAE"
-    }), /* @__PURE__ */jsx3(SettingsSwitch, {
+    }), /* @__PURE__ */jsx4(SettingsSwitch, {
       label: "\u5B9A\u671F\u81EA\u52A8\u521B\u5EFA\u53EA\u8BFB\u5EFA\u8BAE agent",
       value: review.autoReview,
       onValueChange: autoReview => onChange({
         ...review,
         autoReview
       })
-    }), /* @__PURE__ */jsx3(Body, {
+    }), /* @__PURE__ */jsx4(Body, {
       theme,
       muted: true,
       children: "\u542F\u7528\u540E\uFF0C\u6BCF\u6B21\u626B\u63CF\u53D1\u73B0\u65B0\u7248\u672C\u3001\u529F\u80FD\u6E05\u5355\u6216\u672C\u5730 Git \u63D0\u4EA4\u6539\u53D8\u65F6\uFF0C\u4F1A\u4F7F\u7528\u6240\u9009\u5DE5\u4F5C\u533A\u548C\u6A21\u578B\u5BA1\u67E5\u4E00\u6B21\u3002\u540C\u4E00\u8303\u56F4\u4E0D\u91CD\u590D\u521B\u5EFA\uFF1B\u521B\u5EFA\u4E2D\u548C\u5F85\u786E\u8BA4\u4EFB\u52A1\u4E0D\u4F1A\u81EA\u52A8\u91CD\u53D1\u3002"
-    }), /* @__PURE__ */jsx3(Body, {
+    }), /* @__PURE__ */jsx4(Body, {
       theme,
       muted: true,
       children: "\u72B6\u6001\u662F\u4EBA\u5DE5\u767B\u8BB0\u7684\u8BC4\u4F30\uFF1B\u5B9A\u65F6\u626B\u63CF\u53EA\u6838\u5BF9\u8DEF\u5F84\u53D8\u5316\u3002\u5EFA\u8BAE agent \u4F1A\u8BFB\u53D6\u5B9E\u9645\u6E90\u7801\u590D\u6838\uFF0C\u4E0D\u80FD\u6267\u884C\u79FB\u690D\u3002"
-    }), review.features.map((feature, index) => /* @__PURE__ */jsxs3(View3, {
+    }), review.features.map((feature, index) => /* @__PURE__ */jsxs4(View4, {
       style: {
         gap: 6,
         padding: 10,
         backgroundColor: theme.colors.surface1
       },
-      children: [/* @__PURE__ */jsxs3(Row, {
-        children: [/* @__PURE__ */jsx3(Body, {
+      children: [/* @__PURE__ */jsxs4(Row, {
+        children: [/* @__PURE__ */jsx4(Body, {
           theme,
           children: feature.title
-        }), /* @__PURE__ */jsx3(Button, {
+        }), /* @__PURE__ */jsx4(Button, {
           theme,
           label: "\u79FB\u9664\u6B64\u529F\u80FD",
           disabled: review.features.length === 1,
@@ -674,25 +1100,25 @@ function ReviewEditor({
             features: review.features.filter((_, i) => i !== index)
           })
         })]
-      }), /* @__PURE__ */jsx3(Field, {
+      }), /* @__PURE__ */jsx4(Field, {
         theme,
         value: feature.title,
         placeholder: "\u529F\u80FD\u540D\u79F0",
         onChange: title => update(index, {
           title
         })
-      }), /* @__PURE__ */jsx3(SettingsSelect2, {
+      }), /* @__PURE__ */jsx4(SettingsSelect2, {
         label: "\u767B\u8BB0\u7684\u79FB\u690D\u72B6\u6001",
         value: feature.adoption,
         options: adoptionOptions,
         onValueChange: adoption => update(index, {
           adoption
         })
-      }), /* @__PURE__ */jsx3(Body, {
+      }), /* @__PURE__ */jsx4(Body, {
         theme,
         muted: true,
         children: "\u4E0A\u6E38\u76F8\u5BF9\u8DEF\u5F84\uFF08\u6BCF\u884C\u4E00\u4E2A\uFF09"
-      }), /* @__PURE__ */jsx3(Field, {
+      }), /* @__PURE__ */jsx4(Field, {
         theme,
         multiline: true,
         placeholder: "\u4F8B\u5982 src/memory",
@@ -700,11 +1126,11 @@ function ReviewEditor({
         onChange: value => update(index, {
           upstreamPaths: value.split(/\r?\n/)
         })
-      }), /* @__PURE__ */jsx3(Body, {
+      }), /* @__PURE__ */jsx4(Body, {
         theme,
         muted: true,
         children: "\u672C\u5730\u8BC1\u636E\u8DEF\u5F84\uFF0C\u76F8\u5BF9\u63D2\u4EF6\u76EE\u5F55\uFF08\u6BCF\u884C\u4E00\u4E2A\uFF0C\u53EF\u7A7A\uFF09"
-      }), /* @__PURE__ */jsx3(Field, {
+      }), /* @__PURE__ */jsx4(Field, {
         theme,
         multiline: true,
         placeholder: "\u4F8B\u5982 server/memory.ts",
@@ -712,7 +1138,7 @@ function ReviewEditor({
         onChange: value => update(index, {
           localPaths: value ? value.split(/\r?\n/) : []
         })
-      }), /* @__PURE__ */jsx3(Field, {
+      }), /* @__PURE__ */jsx4(Field, {
         theme,
         multiline: true,
         value: feature.notes,
@@ -721,7 +1147,7 @@ function ReviewEditor({
           notes
         })
       })]
-    }, index)), /* @__PURE__ */jsx3(Button, {
+    }, index)), /* @__PURE__ */jsx4(Button, {
       theme,
       label: "\u6DFB\u52A0\u6838\u5FC3\u529F\u80FD",
       disabled: review.features.length >= 40,
@@ -745,72 +1171,72 @@ function ReviewReport({
 }) {
   var report = featureReview(watch);
   if (!report) return null;
-  return /* @__PURE__ */jsxs3(View3, {
+  return /* @__PURE__ */jsxs4(View4, {
     style: {
       gap: 10
     },
-    children: [/* @__PURE__ */jsx3(Body, {
+    children: [/* @__PURE__ */jsx4(Body, {
       theme,
       children: "\u6838\u5FC3\u529F\u80FD\u5BF9\u7167 \xB7 \u4EC5\u5EFA\u8BAE\uFF0C\u4E0D\u81EA\u52A8\u79FB\u690D"
-    }), /* @__PURE__ */jsx3(Body, {
+    }), /* @__PURE__ */jsx4(Body, {
       theme,
       muted: true,
       children: "\u79FB\u690D\u72B6\u6001\u6765\u81EA\u767B\u8BB0\u6E05\u5355\uFF0C\u987B\u6309\u5B9E\u9645\u4EE3\u7801\u548C\u9A8C\u6536\u590D\u6838\u3002\u65E0\u8DEF\u5F84\u53D8\u5316\u4E0D\u4EE3\u8868\u529F\u80FD\u5DF2\u7ECF\u5B8C\u6210\u3002"
-    }), !report.complete ? /* @__PURE__ */jsxs3(Body, {
+    }), !report.complete ? /* @__PURE__ */jsxs4(Body, {
       theme,
       children: ["\u5F53\u524D\u5DEE\u5F02\u8BC1\u636E\u672A\u5B8C\u6574\u786E\u8BA4\uFF1A", report.error || "\u9996\u6B21\u626B\u63CF\u672A\u5B8C\u6210\u3001\u5386\u53F2\u5206\u6B67\u6216\u6587\u4EF6\u5217\u8868\u622A\u65AD", "\u3002"]
-    }) : null, report.features.map(feature => /* @__PURE__ */jsxs3(View3, {
+    }) : null, report.features.map(feature => /* @__PURE__ */jsxs4(View4, {
       style: {
         gap: 5
       },
-      children: [/* @__PURE__ */jsxs3(Row, {
-        children: [/* @__PURE__ */jsx3(Body, {
+      children: [/* @__PURE__ */jsxs4(Row, {
+        children: [/* @__PURE__ */jsx4(Body, {
           theme,
           children: feature.title
-        }), /* @__PURE__ */jsx3(Badge, {
+        }), /* @__PURE__ */jsx4(Badge, {
           theme,
           label: adoptionLabels[feature.adoption],
           warning: feature.adoption === "missing" || feature.adoption === "partial"
         })]
-      }), /* @__PURE__ */jsxs3(Body, {
+      }), /* @__PURE__ */jsxs4(Body, {
         theme,
         children: [feature.changedFiles.length ? `${feature.changedFiles.length} \u4E2A\u76F8\u5173\u6587\u4EF6\u53D8\u5316\u3002` : feature.evidence === "unknown" ? "\u8DEF\u5F84\u53D8\u5316\u5C1A\u4E0D\u80FD\u786E\u8BA4\u3002" : "\u672C\u6B21\u8303\u56F4\u65E0\u8DEF\u5F84\u53D8\u5316\u3002", feature.recommendation]
-      }), /* @__PURE__ */jsx3(Body, {
+      }), /* @__PURE__ */jsx4(Body, {
         theme,
         muted: true,
         children: feature.notes
-      }), feature.localPaths.length ? /* @__PURE__ */jsxs3(Body, {
+      }), feature.localPaths.length ? /* @__PURE__ */jsxs4(Body, {
         theme,
         mono: true,
         children: ["\u672C\u5730\uFF1A", feature.localPaths.join("\u3001")]
-      }) : null, feature.sources.map(source => /* @__PURE__ */jsxs3(Row, {
-        children: [/* @__PURE__ */jsx3(Body, {
+      }) : null, feature.sources.map(source => /* @__PURE__ */jsxs4(Row, {
+        children: [/* @__PURE__ */jsx4(Body, {
           theme,
           mono: true,
           children: source.path
-        }), source.baselineUrl ? /* @__PURE__ */jsx3(ExternalLink, {
+        }), source.baselineUrl ? /* @__PURE__ */jsx4(ExternalLink, {
           href: source.baselineUrl,
-          children: /* @__PURE__ */jsx3(Text2, {
+          children: /* @__PURE__ */jsx4(Text3, {
             style: {
               color: theme.colors.accent
             },
             children: "\u57FA\u7EBF\u6E90\u7801"
           })
-        }) : null, source.headUrl ? /* @__PURE__ */jsx3(ExternalLink, {
+        }) : null, source.headUrl ? /* @__PURE__ */jsx4(ExternalLink, {
           href: source.headUrl,
-          children: /* @__PURE__ */jsx3(Text2, {
+          children: /* @__PURE__ */jsx4(Text3, {
             style: {
               color: theme.colors.accent
             },
             children: "\u626B\u63CF\u7248\u672C"
           })
         }) : null]
-      }, source.path)), feature.changedFiles.slice(0, 8).map(file => /* @__PURE__ */jsxs3(Body, {
+      }, source.path)), feature.changedFiles.slice(0, 8).map(file => /* @__PURE__ */jsxs4(Body, {
         theme,
         mono: true,
         children: [file.status, " ", file.previousPath ? `${file.previousPath} \u2192 ` : "", file.path]
       }, file.path))]
-    }, feature.id)), report.unclassifiedFiles.length ? /* @__PURE__ */jsxs3(Body, {
+    }, feature.id)), report.unclassifiedFiles.length ? /* @__PURE__ */jsxs4(Body, {
       theme,
       children: ["\u53E6\u6709 ", report.unclassifiedFiles.length, " ", "\u4E2A\u53D8\u66F4\u6587\u4EF6\u5C1A\u672A\u5F52\u5165\u529F\u80FD\u6E05\u5355\u3002\u5EFA\u8BAE agent \u4E5F\u4F1A\u68C0\u67E5\u662F\u5426\u51FA\u73B0\u65B0\u7684\u6838\u5FC3\u529F\u80FD\u3002"]
     }) : null]
@@ -818,13 +1244,13 @@ function ReviewReport({
 }
 
 // client/watch-form.tsx
-import { jsx as jsx4, jsxs as jsxs4 } from "react/jsx-runtime";
+import { jsx as jsx5, jsxs as jsxs5 } from "react/jsx-runtime";
 function WatchForm({
   theme,
   initial,
   close
 }) {
-  var [draft, setDraft] = useState2({
+  var [draft, setDraft] = useState3({
     name: "",
     pluginId: "",
     targetPath: "",
@@ -837,10 +1263,10 @@ function WatchForm({
     provider: "",
     ...initial
   });
-  var [baseline, setBaseline] = useState2(initial?.baseline || "");
-  var [paths, setPaths] = useState2(initial?.paths?.join("\n") || "");
-  var [agentSetup, setAgentSetup] = useState2(Boolean(initial?.workspaceId));
-  var client = useQueryClient();
+  var [baseline, setBaseline] = useState3(initial?.baseline || "");
+  var [paths, setPaths] = useState3(initial?.paths?.join("\n") || "");
+  var [agentSetup, setAgentSetup] = useState3(Boolean(initial?.workspaceId));
+  var client = useQueryClient2();
   var save = useRpc2(saveRpc);
   var mutation = useMutation({
     mutationFn: () => save({
@@ -859,46 +1285,46 @@ function WatchForm({
     ...current,
     [key]: value
   }));
-  return /* @__PURE__ */jsxs4(Panel, {
+  return /* @__PURE__ */jsxs5(Panel, {
     theme,
-    children: [/* @__PURE__ */jsxs4(Row, {
-      children: [/* @__PURE__ */jsx4(Title, {
+    children: [/* @__PURE__ */jsxs5(Row, {
+      children: [/* @__PURE__ */jsx5(Title, {
         theme,
         children: draft.id ? "\u7F16\u8F91\u4E0A\u6E38\u5173\u8054" : "\u6DFB\u52A0\u4E0A\u6E38\u5173\u8054"
-      }), /* @__PURE__ */jsx4(Button, {
+      }), /* @__PURE__ */jsx5(Button, {
         theme,
         label: "\u6536\u8D77\u8868\u5355",
         onPress: close
       })]
-    }), /* @__PURE__ */jsx4(Body, {
+    }), /* @__PURE__ */jsx5(Body, {
       theme,
       muted: true,
       children: "\u540C\u4E00\u4E2A\u63D2\u4EF6\u53EF\u4EE5\u6DFB\u52A0\u591A\u6761\u5173\u8054\uFF0C\u5206\u522B\u8DDF\u8E2A fork\u3001\u53C2\u8003\u9879\u76EE\u548C\u53C2\u8003\u529F\u80FD\u3002"
-    }), /* @__PURE__ */jsx4(Body, {
+    }), /* @__PURE__ */jsx5(Body, {
       theme,
       children: "\u5173\u8054\u540D\u79F0"
-    }), /* @__PURE__ */jsx4(Field, {
+    }), /* @__PURE__ */jsx5(Field, {
       theme,
       placeholder: "\u4F8B\u5982\uFF1ALearning Loop / Hermes \u590D\u76D8\u673A\u5236",
       value: draft.name,
       onChange: value => update("name", value)
-    }), /* @__PURE__ */jsx4(Body, {
+    }), /* @__PURE__ */jsx5(Body, {
       theme,
       children: "\u672C\u5730\u63D2\u4EF6\u5F00\u53D1\u76EE\u5F55"
-    }), /* @__PURE__ */jsx4(Field, {
+    }), /* @__PURE__ */jsx5(Field, {
       theme,
       placeholder: "\u63D2\u4EF6\u6E90\u7801\u7684\u7EDD\u5BF9\u8DEF\u5F84",
       value: draft.targetPath,
       onChange: value => update("targetPath", value)
-    }), /* @__PURE__ */jsx4(Body, {
+    }), /* @__PURE__ */jsx5(Body, {
       theme,
       children: "\u4E0A\u6E38 GitHub \u4ED3\u5E93"
-    }), /* @__PURE__ */jsx4(Field, {
+    }), /* @__PURE__ */jsx5(Field, {
       theme,
       placeholder: "owner/repo \u6216 https://github.com/owner/repo",
       value: draft.repository,
       onChange: value => update("repository", value)
-    }), /* @__PURE__ */jsx4(SettingsSelect3, {
+    }), /* @__PURE__ */jsx5(SettingsSelect3, {
       label: "\u5173\u8054\u7C7B\u578B",
       value: draft.relationship,
       options: [{
@@ -912,45 +1338,45 @@ function WatchForm({
         label: "\u53C2\u8003\u529F\u80FD"
       }],
       onValueChange: value => update("relationship", value)
-    }), /* @__PURE__ */jsx4(Body, {
+    }), /* @__PURE__ */jsx5(Body, {
       theme,
       children: "\u8DDF\u8E2A\u5206\u652F / tag\uFF08\u7559\u7A7A\u4F7F\u7528\u9ED8\u8BA4\u5206\u652F\uFF09"
-    }), /* @__PURE__ */jsx4(Field, {
+    }), /* @__PURE__ */jsx5(Field, {
       theme,
       placeholder: "\u4F8B\u5982 main\uFF1B\u5206\u652F\u540D\u542B / \u65F6\u4E5F\u53EF\u76F4\u63A5\u586B\u5199",
       value: draft.ref,
       onChange: value => update("ref", value)
-    }), /* @__PURE__ */jsx4(Body, {
+    }), /* @__PURE__ */jsx5(Body, {
       theme,
       children: "\u5DF2\u91C7\u7528\u6216\u5DF2\u5904\u7406\u7684 commit"
-    }), /* @__PURE__ */jsx4(Field, {
+    }), /* @__PURE__ */jsx5(Field, {
       theme,
       placeholder: "40 \u4F4D SHA\uFF1B\u7559\u7A7A\u4ECE\u5F53\u524D\u7248\u672C\u5F00\u59CB\u8DDF\u8E2A",
       value: baseline,
       onChange: setBaseline
-    }), /* @__PURE__ */jsx4(Body, {
+    }), /* @__PURE__ */jsx5(Body, {
       theme,
       children: "\u5173\u6CE8\u6587\u4EF6\u6216\u76EE\u5F55\uFF08\u6BCF\u884C\u4E00\u4E2A\uFF0C\u7559\u7A7A\u5173\u6CE8\u5168\u4ED3\u5E93\uFF09"
-    }), /* @__PURE__ */jsx4(Field, {
+    }), /* @__PURE__ */jsx5(Field, {
       theme,
       placeholder: "\u4F8B\u5982 agent/background_review.py",
       multiline: true,
       value: paths,
       onChange: setPaths
-    }), /* @__PURE__ */jsx4(Body, {
+    }), /* @__PURE__ */jsx5(Body, {
       theme,
       muted: true,
       children: "\u6309\u6587\u4EF6\u540D\u6216\u76EE\u5F55\u524D\u7F00\u5339\u914D\uFF0C\u4E0D\u4F7F\u7528 glob\u3002\u76EE\u5F55\u542B\u5B50\u76EE\u5F55\uFF1B\u91CD\u547D\u540D\u524D\u540E\u7684\u8DEF\u5F84\u90FD\u4F1A\u68C0\u67E5\u3002"
-    }), /* @__PURE__ */jsx4(Body, {
+    }), /* @__PURE__ */jsx5(Body, {
       theme,
       children: "\u53C2\u8003\u4E86\u4EC0\u4E48\u3001\u9002\u914D\u65F6\u5E94\u4FDD\u7559\u4EC0\u4E48"
-    }), /* @__PURE__ */jsx4(Field, {
+    }), /* @__PURE__ */jsx5(Field, {
       theme,
       placeholder: "\u53EF\u9009\uFF1A\u8981\u4EA4\u7ED9\u66F4\u65B0 agent \u7684\u8BF4\u660E",
       multiline: true,
       value: draft.notes,
       onChange: value => update("notes", value)
-    }), /* @__PURE__ */jsx4(SettingsSelect3, {
+    }), /* @__PURE__ */jsx5(SettingsSelect3, {
       label: "\u70B9\u51FB\u521B\u5EFA agent \u540E\u7684\u4EFB\u52A1\u8303\u56F4",
       value: draft.review ? "review" : "adapt",
       options: [{
@@ -972,18 +1398,18 @@ function WatchForm({
           notes: ""
         }]
       } : void 0)
-    }), draft.review ? /* @__PURE__ */jsx4(ReviewEditor, {
+    }), draft.review ? /* @__PURE__ */jsx5(ReviewEditor, {
       theme,
       review: draft.review,
       onChange: review => {
         update("review", review);
         if (review?.autoReview) setAgentSetup(true);
       }
-    }) : null, /* @__PURE__ */jsx4(Button, {
+    }) : null, /* @__PURE__ */jsx5(Button, {
       theme,
       label: agentSetup ? "\u6536\u8D77 agent \u9ED8\u8BA4\u8BBE\u7F6E" : "\u8BBE\u7F6E agent \u7684\u5DE5\u4F5C\u533A\u4E0E\u6A21\u578B",
       onPress: () => setAgentSetup(value => !value)
-    }), agentSetup ? /* @__PURE__ */jsx4(AgentPicker, {
+    }), agentSetup ? /* @__PURE__ */jsx5(AgentPicker, {
       theme,
       value: {
         workspaceId: draft.workspaceId || "",
@@ -994,14 +1420,14 @@ function WatchForm({
         workspaceId: value.workspaceId || void 0,
         provider: value.provider
       }))
-    }) : null, mutation.error ? /* @__PURE__ */jsx4(Body, {
+    }) : null, mutation.error ? /* @__PURE__ */jsx5(Body, {
       theme,
       children: String(mutation.error)
-    }) : null, /* @__PURE__ */jsx4(View4, {
+    }) : null, /* @__PURE__ */jsx5(View5, {
       style: {
         alignItems: "flex-start"
       },
-      children: /* @__PURE__ */jsx4(Button, {
+      children: /* @__PURE__ */jsx5(Button, {
         theme,
         label: "\u4FDD\u5B58\u5E76\u68C0\u67E5",
         primary: true,
@@ -1016,10 +1442,10 @@ function WatchForm({
 // client/watch-card.tsx
 import { useRpc as useRpc3 } from "@getpaseo/plugin/client";
 import { ExternalLink as ExternalLink2 } from "@getpaseo/plugin/client/ui";
-import { useMutation as useMutation2, useQueryClient as useQueryClient2 } from "@tanstack/react-query";
-import { useEffect, useState as useState3 } from "react";
-import { Text as Text3, View as View5 } from "react-native";
-import { jsx as jsx5, jsxs as jsxs5 } from "react/jsx-runtime";
+import { useMutation as useMutation2, useQueryClient as useQueryClient3 } from "@tanstack/react-query";
+import { useEffect as useEffect2, useState as useState4 } from "react";
+import { Text as Text4, View as View6 } from "react-native";
+import { jsx as jsx6, jsxs as jsxs6 } from "react/jsx-runtime";
 var relationships = {
   fork: "Fork \u4E0A\u6E38",
   reference: "\u53C2\u8003\u9879\u76EE",
@@ -1033,21 +1459,21 @@ function WatchCard({
   host,
   edit
 }) {
-  var client = useQueryClient2();
+  var client = useQueryClient3();
   var acknowledge = useRpc3(acknowledgeRpc),
     check = useRpc3(checkRpc),
     launch = useRpc3(launchRpc),
     remove = useRpc3(removeRpc),
     save = useRpc3(saveRpc),
     retry = useRpc3(retryTaskRpc);
-  var [action, setAction] = useState3(null);
-  var [ackHead, setAckHead] = useState3();
-  var [details, setDetails] = useState3(false);
-  var [selection, setSelection] = useState3({
+  var [action, setAction] = useState4(null);
+  var [ackHead, setAckHead] = useState4();
+  var [details, setDetails] = useState4(false);
+  var [selection, setSelection] = useState4({
     workspaceId: watch.workspaceId || "",
     provider: watch.provider
   });
-  useEffect(() => {
+  useEffect2(() => {
     setSelection({
       workspaceId: watch.workspaceId || "",
       provider: watch.provider
@@ -1102,46 +1528,46 @@ function WatchCard({
       serverId: host.id
     });
   };
-  return /* @__PURE__ */jsxs5(View5, {
+  return /* @__PURE__ */jsxs6(View6, {
     style: {
       paddingVertical: 20,
       gap: 10,
       borderBottomWidth: 1,
       borderBottomColor: theme.colors.border
     },
-    children: [/* @__PURE__ */jsxs5(Row, {
-      children: [/* @__PURE__ */jsx5(Title, {
+    children: [/* @__PURE__ */jsxs6(Row, {
+      children: [/* @__PURE__ */jsx6(Title, {
         theme,
         children: watch.name
-      }), /* @__PURE__ */jsx5(Badge, {
+      }), /* @__PURE__ */jsx6(Badge, {
         theme,
         label: status,
         warning: Boolean(watch.error || pending)
-      }), /* @__PURE__ */jsx5(Badge, {
+      }), /* @__PURE__ */jsx6(Badge, {
         theme,
         label: relationships[watch.relationship]
-      }), reviewing ? /* @__PURE__ */jsx5(Badge, {
+      }), reviewing ? /* @__PURE__ */jsx6(Badge, {
         theme,
         label: "\u4EC5\u5EFA\u8BAE"
       }) : null]
-    }), /* @__PURE__ */jsx5(ExternalLink2, {
+    }), /* @__PURE__ */jsx6(ExternalLink2, {
       href: `https://github.com/${watch.repository}`,
-      children: /* @__PURE__ */jsxs5(Text3, {
+      children: /* @__PURE__ */jsxs6(Text4, {
         style: {
           color: theme.colors.accent,
           fontSize: 14
         },
         children: [watch.repository, " / ", observation?.ref || watch.ref || "\u9ED8\u8BA4\u5206\u652F"]
       })
-    }), /* @__PURE__ */jsx5(Body, {
+    }), /* @__PURE__ */jsx6(Body, {
       theme,
       muted: true,
       children: watch.targetPath
-    }), /* @__PURE__ */jsxs5(Body, {
+    }), /* @__PURE__ */jsxs6(Body, {
       theme,
       muted: true,
       children: ["\u5173\u6CE8\uFF1A", watch.paths.length ? watch.paths.join("\u3001") : "\u6574\u4E2A\u4ED3\u5E93", "\u3000", "\u4E0A\u6B21\u68C0\u67E5\uFF1A", watch.checkedAt ? new Date(watch.checkedAt).toLocaleString() : "\u5C1A\u672A\u68C0\u67E5"]
-    }), watch.error ? /* @__PURE__ */jsxs5(Text3, {
+    }), watch.error ? /* @__PURE__ */jsxs6(Text4, {
       selectable: true,
       style: {
         color: theme.colors.statusDanger,
@@ -1149,28 +1575,28 @@ function WatchCard({
         lineHeight: 20
       },
       children: [watch.error, watch.retryAt ? `\uFF1B\u53EF\u91CD\u8BD5\u65F6\u95F4 ${new Date(watch.retryAt).toLocaleString()}` : "", "\u3002\u4FDD\u7559\u4E0A\u6B21\u6210\u529F\u7ED3\u679C\u3002"]
-    }) : null, watch.reviewState?.error ? /* @__PURE__ */jsxs5(Body, {
+    }) : null, watch.reviewState?.error ? /* @__PURE__ */jsxs6(Body, {
       theme,
       children: ["\u5EFA\u8BAE\u51C6\u5907\u5931\u8D25\uFF1A", watch.reviewState.error, "\u3002\u672A\u628A\u5931\u8D25\u5F53\u4F5C\u5DF2\u5B8C\u6210\u62A5\u544A\u3002"]
-    }) : null, reviewing ? /* @__PURE__ */jsxs5(Body, {
+    }) : null, reviewing ? /* @__PURE__ */jsxs6(Body, {
       theme,
       muted: true,
       children: [watch.review?.autoReview ? "\u5DF2\u542F\u7528\u5B9A\u671F\u53EA\u8BFB\u5EFA\u8BAE" : "\u5EFA\u8BAE agent \u7531\u4F60\u624B\u52A8\u542F\u52A8", "\u3002", watch.reviewState?.localRevision ? `\u6700\u8FD1\u6838\u5BF9\u672C\u5730\u63D0\u4EA4 ${watch.reviewState.localRevision.slice(0, 8)}\u3002` : "", "\u521B\u5EFA\u4EFB\u52A1\u4EC5\u8868\u793A\u5DF2\u5F00\u59CB\uFF0C\u62A5\u544A\u8BF7\u6253\u5F00 agent \u67E5\u770B\u3002"]
-    }) : null, observation ? /* @__PURE__ */jsxs5(View5, {
+    }) : null, observation ? /* @__PURE__ */jsxs6(View6, {
       style: {
         padding: 12,
         gap: 7,
         backgroundColor: theme.colors.surface1,
         borderRadius: 7
       },
-      children: [/* @__PURE__ */jsxs5(Row, {
-        children: [/* @__PURE__ */jsxs5(Body, {
+      children: [/* @__PURE__ */jsxs6(Row, {
+        children: [/* @__PURE__ */jsxs6(Body, {
           theme,
           mono: true,
           children: [watch.baseline?.slice(0, 8) || "\u672A\u8BBE\u57FA\u7EBF", " \u2192", " ", observation.head.slice(0, 8)]
-        }), /* @__PURE__ */jsx5(ExternalLink2, {
+        }), /* @__PURE__ */jsx6(ExternalLink2, {
           href: observation.compareUrl || observation.url,
-          children: /* @__PURE__ */jsx5(Text3, {
+          children: /* @__PURE__ */jsx6(Text4, {
             style: {
               color: theme.colors.accent,
               fontSize: 13
@@ -1178,95 +1604,95 @@ function WatchCard({
             children: "\u67E5\u770B\u4E0A\u6E38\u5DEE\u5F02"
           })
         })]
-      }), /* @__PURE__ */jsx5(Body, {
+      }), /* @__PURE__ */jsx6(Body, {
         theme,
         children: observation.needsReview ? "\u4E0A\u6E38\u5386\u53F2\u6216\u6587\u4EF6\u5217\u8868\u4E0D\u5B8C\u6574\uFF0C\u9700\u8981\u6838\u5BF9\u540E\u518D\u51B3\u5B9A\u5982\u4F55\u9002\u914D\u3002" : pending ? `${observation.commitsTotal} \u4E2A\u4E0A\u6E38\u63D0\u4EA4\uFF1B${watch.paths.length ? `\u6D89\u53CA\u5173\u6CE8\u8303\u56F4 ${observation.matchedPaths.length} \u4E2A\u6587\u4EF6` : `\u6D89\u53CA ${observation.files.length} \u4E2A\u6587\u4EF6`}` : "\u5F53\u524D\u5173\u6CE8\u8303\u56F4\u5185\u6CA1\u6709\u672A\u5904\u7406\u53D8\u5316\u3002"
-      }), pending ? observation.commits.slice(0, 3).map(commit => /* @__PURE__ */jsxs5(Body, {
+      }), pending ? observation.commits.slice(0, 3).map(commit => /* @__PURE__ */jsxs6(Body, {
         theme,
         muted: true,
         children: [commit.sha.slice(0, 7), "\u3000", commit.title]
-      }, commit.sha)) : null, details ? /* @__PURE__ */jsxs5(View5, {
+      }, commit.sha)) : null, details ? /* @__PURE__ */jsxs6(View6, {
         style: {
           gap: 6
         },
-        children: [/* @__PURE__ */jsx5(Body, {
+        children: [/* @__PURE__ */jsx6(Body, {
           theme,
           muted: true,
           children: watch.notes || "\u672A\u586B\u5199\u9002\u914D\u8BF4\u660E"
-        }), observation.files.slice(0, 30).map(file => /* @__PURE__ */jsxs5(Body, {
+        }), observation.files.slice(0, 30).map(file => /* @__PURE__ */jsxs6(Body, {
           theme,
           mono: true,
           children: [file.status, file.previousPath ? `${file.previousPath} \u2192 ` : "", file.path]
-        }, file.path)), observation.filesTruncated ? /* @__PURE__ */jsx5(Body, {
+        }, file.path)), observation.filesTruncated ? /* @__PURE__ */jsx6(Body, {
           theme,
           children: "\u6587\u4EF6\u5217\u8868\u88AB\u4E0A\u6E38 API \u622A\u65AD\uFF0C\u8BF7\u67E5\u770B\u5B8C\u6574\u5DEE\u5F02\u3002"
         }) : null]
       }) : null]
-    }) : null, reviewing ? /* @__PURE__ */jsx5(Button, {
+    }) : null, reviewing ? /* @__PURE__ */jsx6(Button, {
       theme,
       label: details ? "\u6536\u8D77\u6838\u5FC3\u529F\u80FD\u5BF9\u7167" : `\u67E5\u770B ${watch.review.features.length} \u9879\u6838\u5FC3\u529F\u80FD\u5BF9\u7167`,
       onPress: () => setDetails(value => !value)
-    }) : null, details && reviewing ? /* @__PURE__ */jsx5(ReviewReport, {
+    }) : null, details && reviewing ? /* @__PURE__ */jsx6(ReviewReport, {
       theme,
       watch
-    }) : null, task ? /* @__PURE__ */jsxs5(View5, {
+    }) : null, task ? /* @__PURE__ */jsxs6(View6, {
       style: {
         gap: 7
       },
-      children: [/* @__PURE__ */jsx5(Body, {
+      children: [/* @__PURE__ */jsx6(Body, {
         theme,
         children: task.status === "created" ? `\u5DF2\u521B\u5EFA${agentLabel}\uFF1A${task.title}` : task.status === "preparing" ? `\u6B63\u5728\u521B\u5EFA${agentLabel}\u2026` : `\u4EFB\u52A1\u521B\u5EFA\u5F85\u786E\u8BA4\uFF1A${task.error || "\u8FDE\u63A5\u4E2D\u65AD"}`
-      }), task.agentId && navigation ? /* @__PURE__ */jsx5(Button, {
+      }), task.agentId && navigation ? /* @__PURE__ */jsx6(Button, {
         theme,
         label: `\u67E5\u770B${agentLabel}`,
         icon: "ArrowUpRight",
         onPress: openAgent
-      }) : task.status === "uncertain" || task.status === "failed" ? /* @__PURE__ */jsx5(Button, {
+      }) : task.status === "uncertain" || task.status === "failed" ? /* @__PURE__ */jsx6(Button, {
         theme,
         label: "\u7528\u540C\u4E00\u4EFB\u52A1\u91CD\u8BD5\u521B\u5EFA",
         disabled: mutation.isPending,
         onPress: () => mutation.mutate("retry")
       }) : null]
-    }) : null, /* @__PURE__ */jsxs5(Row, {
-      children: [(pending || reviewing && observation) && watch.enabled && !watch.error && !task ? /* @__PURE__ */jsx5(Button, {
+    }) : null, /* @__PURE__ */jsxs6(Row, {
+      children: [(pending || reviewing && observation) && watch.enabled && !watch.error && !task ? /* @__PURE__ */jsx6(Button, {
         theme,
         label: `\u5F00${agentLabel}`,
         icon: "Bot",
         primary: true,
         busy: mutation.isPending,
         onPress: () => selection.workspaceId && selection.provider ? mutation.mutate("launch") : setAction(action === "launch" ? null : "launch")
-      }) : null, pending && !watch.error ? /* @__PURE__ */jsx5(Button, {
+      }) : null, pending && !watch.error ? /* @__PURE__ */jsx6(Button, {
         theme,
         label: "\u6807\u8BB0\u5DF2\u5904\u7406 / \u8DF3\u8FC7",
         onPress: () => {
           setAckHead(observation?.head);
           setAction("ack");
         }
-      }) : null, /* @__PURE__ */jsx5(Button, {
+      }) : null, /* @__PURE__ */jsx6(Button, {
         theme,
         label: "\u68C0\u67E5\u6B64\u4E0A\u6E38",
         icon: "RefreshCw",
         busy: mutation.isPending,
         onPress: () => mutation.mutate("check")
-      }), /* @__PURE__ */jsx5(Button, {
+      }), /* @__PURE__ */jsx6(Button, {
         theme,
         label: details ? "\u6536\u8D77\u5DEE\u5F02" : "\u53D8\u66F4\u8BE6\u60C5",
         onPress: () => setDetails(value => !value)
-      }), /* @__PURE__ */jsx5(Button, {
+      }), /* @__PURE__ */jsx6(Button, {
         theme,
         label: "\u7F16\u8F91\u5173\u8054",
         onPress: () => edit(watch)
-      }), /* @__PURE__ */jsx5(Button, {
+      }), /* @__PURE__ */jsx6(Button, {
         theme,
         label: watch.enabled ? "\u6682\u505C\u6B64\u8DDF\u8E2A" : "\u6062\u590D\u6B64\u8DDF\u8E2A",
         onPress: () => mutation.mutate("toggle")
-      }), /* @__PURE__ */jsx5(Button, {
+      }), /* @__PURE__ */jsx6(Button, {
         theme,
         label: "\u5220\u9664\u5173\u8054",
         danger: true,
         onPress: () => setAction("remove")
       })]
-    }), action === "launch" ? /* @__PURE__ */jsxs5(View5, {
+    }), action === "launch" ? /* @__PURE__ */jsxs6(View6, {
       style: {
         gap: 10,
         padding: 14,
@@ -1274,64 +1700,64 @@ function WatchCard({
         borderColor: theme.colors.border,
         borderRadius: 8
       },
-      children: [/* @__PURE__ */jsx5(AgentPicker, {
+      children: [/* @__PURE__ */jsx6(AgentPicker, {
         theme,
         value: selection,
         onChange: setSelection
-      }), /* @__PURE__ */jsxs5(Row, {
-        children: [/* @__PURE__ */jsx5(Button, {
+      }), /* @__PURE__ */jsxs6(Row, {
+        children: [/* @__PURE__ */jsx6(Button, {
           theme,
           label: `\u521B\u5EFA${agentLabel}`,
           primary: true,
           disabled: !selection.workspaceId || !selection.provider,
           busy: mutation.isPending,
           onPress: () => mutation.mutate("launch")
-        }), /* @__PURE__ */jsx5(Button, {
+        }), /* @__PURE__ */jsx6(Button, {
           theme,
           label: "\u53D6\u6D88\u521B\u5EFA",
           onPress: () => setAction(null)
         })]
       })]
-    }) : null, action === "ack" ? /* @__PURE__ */jsxs5(View5, {
+    }) : null, action === "ack" ? /* @__PURE__ */jsxs6(View6, {
       style: {
         gap: 8
       },
-      children: [/* @__PURE__ */jsxs5(Body, {
+      children: [/* @__PURE__ */jsxs6(Body, {
         theme,
         children: ["\u5C06 ", ackHead?.slice(0, 8), " ", "\u8BBE\u4E3A\u5DF2\u5904\u7406\u57FA\u7EBF\uFF0C\u4EE5\u540E\u53EA\u63D0\u793A\u8FD9\u4E4B\u540E\u7684\u65B0\u53D8\u5316\u3002\u521B\u5EFA agent \u672C\u8EAB\u4E0D\u4F1A\u63A8\u8FDB\u57FA\u7EBF\u3002"]
-      }), /* @__PURE__ */jsxs5(Row, {
-        children: [/* @__PURE__ */jsx5(Button, {
+      }), /* @__PURE__ */jsxs6(Row, {
+        children: [/* @__PURE__ */jsx6(Button, {
           theme,
           label: "\u786E\u8BA4\u5DF2\u5904\u7406 / \u8DF3\u8FC7",
           busy: mutation.isPending,
           onPress: () => mutation.mutate("ack")
-        }), /* @__PURE__ */jsx5(Button, {
+        }), /* @__PURE__ */jsx6(Button, {
           theme,
           label: "\u53D6\u6D88\u6807\u8BB0",
           onPress: () => setAction(null)
         })]
       })]
-    }) : null, action === "remove" ? /* @__PURE__ */jsxs5(View5, {
+    }) : null, action === "remove" ? /* @__PURE__ */jsxs6(View6, {
       style: {
         gap: 8
       },
-      children: [/* @__PURE__ */jsxs5(Body, {
+      children: [/* @__PURE__ */jsxs6(Body, {
         theme,
         children: ["\u5220\u9664\u201C", watch.name, "\u201D\u7684\u8DDF\u8E2A\u8BB0\u5F55\uFF1F\u6E90\u4ED3\u5E93\u548C\u63D2\u4EF6\u4EE3\u7801\u4E0D\u53D7\u5F71\u54CD\u3002"]
-      }), /* @__PURE__ */jsxs5(Row, {
-        children: [/* @__PURE__ */jsx5(Button, {
+      }), /* @__PURE__ */jsxs6(Row, {
+        children: [/* @__PURE__ */jsx6(Button, {
           theme,
           label: "\u786E\u8BA4\u5220\u9664\u5173\u8054",
           danger: true,
           busy: mutation.isPending,
           onPress: () => mutation.mutate("remove")
-        }), /* @__PURE__ */jsx5(Button, {
+        }), /* @__PURE__ */jsx6(Button, {
           theme,
           label: "\u4FDD\u7559\u5173\u8054",
           onPress: () => setAction(null)
         })]
       })]
-    }) : null, mutation.error ? /* @__PURE__ */jsx5(Text3, {
+    }) : null, mutation.error ? /* @__PURE__ */jsx6(Text4, {
       style: {
         color: theme.colors.statusDanger
       },
@@ -1557,7 +1983,7 @@ function cindyDraft() {
 }
 
 // client/screen.tsx
-import { jsx as jsx6, jsxs as jsxs6 } from "react/jsx-runtime";
+import { jsx as jsx7, jsxs as jsxs7 } from "react/jsx-runtime";
 var tabs = [{
   id: "watches",
   label: "\u5173\u6CE8\u7684\u4E0A\u6E38"
@@ -1574,15 +2000,15 @@ function UpstreamScreen(props) {
     theme,
     layout
   } = props;
-  var [tab, setTab] = useState4(props.params.tab === "settings" ? "settings" : "watches");
-  var [form, setForm] = useState4(null);
-  var [filter, setFilter] = useState4("all");
-  var [root, setRoot] = useState4("");
+  var [tab, setTab] = useState5(props.params.tab === "settings" ? "settings" : "watches");
+  var [form, setForm] = useState5(null);
+  var [filter, setFilter] = useState5("all");
+  var [root, setRoot] = useState5("");
   var getOverview = useRpc4(overviewRpc),
     check = useRpc4(checkRpc),
     discover = useRpc4(discoveryRpc),
     saveSettings = useRpc4(settingsRpc);
-  var client = useQueryClient3();
+  var client = useQueryClient4();
   var overview = useQuery2({
     queryKey: overviewKey,
     queryFn: () => getOverview({}),
@@ -1606,7 +2032,7 @@ function UpstreamScreen(props) {
   });
   var count = pendingCount(overview.data?.watches || []);
   var watches = (overview.data?.watches || []).filter(watch => filter === "all" || watch.enabled && watch.observation?.hasUpdate).sort((a, b) => Number(Boolean(b.observation?.hasUpdate)) - Number(Boolean(a.observation?.hasUpdate)) || a.name.localeCompare(b.name));
-  return /* @__PURE__ */jsxs6(ScrollView, {
+  return /* @__PURE__ */jsxs7(ScrollView2, {
     style: {
       flex: 1,
       backgroundColor: theme.colors.surface0
@@ -1619,29 +2045,29 @@ function UpstreamScreen(props) {
       alignSelf: "center",
       paddingBottom: 60
     },
-    children: [/* @__PURE__ */jsxs6(View6, {
+    children: [/* @__PURE__ */jsxs7(View7, {
       style: {
         gap: 8
       },
-      children: [/* @__PURE__ */jsx6(Text4, {
+      children: [/* @__PURE__ */jsx7(Text5, {
         style: {
           color: theme.colors.foreground,
           fontSize: 26,
           fontWeight: "600"
         },
         children: "\u63D2\u4EF6\u7684\u4E0A\u6E38\u66F4\u65B0"
-      }), /* @__PURE__ */jsx6(Body, {
+      }), /* @__PURE__ */jsx7(Body, {
         theme,
         muted: true,
         children: "\u8DDF\u8E2A fork\u3001\u53C2\u8003\u9879\u76EE\u4E0E\u6838\u5FC3\u529F\u80FD\uFF0C\u8BA9 agent \u63D0\u5EFA\u8BAE\u6216\u6309\u9009\u62E9\u6267\u884C\u9002\u914D\u3002"
-      }), /* @__PURE__ */jsxs6(Row, {
-        children: [/* @__PURE__ */jsx6(Button, {
+      }), /* @__PURE__ */jsxs7(Row, {
+        children: [/* @__PURE__ */jsx7(Button, {
           theme,
           label: overview.data?.checking ? "\u6B63\u5728\u68C0\u67E5\u4E0A\u6E38\u2026" : "\u7ACB\u5373\u68C0\u67E5\u4E0A\u6E38",
           icon: "RefreshCw",
           busy: checkMutation.isPending || overview.data?.checking,
           onPress: () => checkMutation.mutate()
-        }), /* @__PURE__ */jsx6(Button, {
+        }), /* @__PURE__ */jsx7(Button, {
           theme,
           label: "\u6DFB\u52A0\u4E0A\u6E38\u5173\u8054",
           icon: "Plus",
@@ -1650,11 +2076,11 @@ function UpstreamScreen(props) {
             setForm({});
             setTab("watches");
           }
-        }), /* @__PURE__ */jsx6(Badge, {
+        }), /* @__PURE__ */jsx7(Badge, {
           theme,
           label: `${count} \u9879\u5F85\u5904\u7406`,
           warning: count > 0
-        }), /* @__PURE__ */jsx6(Button, {
+        }), /* @__PURE__ */jsx7(Button, {
           theme,
           label: "\u4ECE Cindy \u6838\u5FC3\u6E05\u5355\u5F00\u59CB",
           onPress: () => {
@@ -1664,35 +2090,35 @@ function UpstreamScreen(props) {
           }
         })]
       })]
-    }), /* @__PURE__ */jsx6(Tabs, {
+    }), /* @__PURE__ */jsx7(Tabs, {
       theme,
       items: tabs,
       value: tab,
       onChange: setTab
-    }), overview.error ? /* @__PURE__ */jsxs6(Panel, {
+    }), overview.error ? /* @__PURE__ */jsxs7(Panel, {
       theme,
-      children: [/* @__PURE__ */jsxs6(Body, {
+      children: [/* @__PURE__ */jsxs7(Body, {
         theme,
         children: ["\u65E0\u6CD5\u8BFB\u53D6\u4E0A\u6E38\u8BB0\u5F55\uFF1A", String(overview.error)]
-      }), /* @__PURE__ */jsx6(Button, {
+      }), /* @__PURE__ */jsx7(Button, {
         theme,
         label: "\u91CD\u8BD5\u8BFB\u53D6\u4E0A\u6E38\u8BB0\u5F55",
         onPress: () => overview.refetch()
       })]
-    }) : null, overview.isLoading ? /* @__PURE__ */jsx6(ActivityIndicator2, {
+    }) : null, overview.isLoading ? /* @__PURE__ */jsx7(ActivityIndicator2, {
       color: theme.colors.accent
-    }) : null, checkMutation.error ? /* @__PURE__ */jsx6(Body, {
+    }) : null, checkMutation.error ? /* @__PURE__ */jsx7(Body, {
       theme,
       children: String(checkMutation.error)
-    }) : null, tab === "watches" ? /* @__PURE__ */jsxs6(View6, {
+    }) : null, tab === "watches" ? /* @__PURE__ */jsxs7(View7, {
       style: {
         gap: 12
       },
-      children: [form ? /* @__PURE__ */jsx6(WatchForm, {
+      children: [form ? /* @__PURE__ */jsx7(WatchForm, {
         theme,
         initial: form,
         close: () => setForm(null)
-      }, form.id || form.repository || "new") : null, (overview.data?.watches.length || 0) > 0 ? /* @__PURE__ */jsx6(Tabs, {
+      }, form.id || form.repository || "new") : null, (overview.data?.watches.length || 0) > 0 ? /* @__PURE__ */jsx7(Tabs, {
         theme,
         value: filter,
         items: [{
@@ -1703,16 +2129,16 @@ function UpstreamScreen(props) {
           label: `\u5F85\u5904\u7406 ${count}`
         }],
         onChange: setFilter
-      }) : null, !overview.isLoading && !overview.error && watches.length === 0 ? /* @__PURE__ */jsxs6(Panel, {
+      }) : null, !overview.isLoading && !overview.error && watches.length === 0 ? /* @__PURE__ */jsxs7(Panel, {
         theme,
-        children: [/* @__PURE__ */jsx6(Title, {
+        children: [/* @__PURE__ */jsx7(Title, {
           theme,
           children: filter === "pending" ? "\u5F53\u524D\u6CA1\u6709\u5F85\u5904\u7406\u7684\u4E0A\u6E38\u53D8\u5316" : "\u5148\u4E3A\u63D2\u4EF6\u767B\u8BB0\u4E00\u4E2A\u4E0A\u6E38"
-        }), /* @__PURE__ */jsx6(Body, {
+        }), /* @__PURE__ */jsx7(Body, {
           theme,
           muted: true,
           children: filter === "pending" ? "\u65B0\u53D8\u5316\u4F1A\u4FDD\u7559\u5728\u8FD9\u91CC\uFF0C\u76F4\u5230\u4F60\u660E\u786E\u6807\u8BB0\u5DF2\u5904\u7406\u3002" : "\u53EF\u4EE5\u624B\u52A8\u586B\u5199 GitHub \u4ED3\u5E93\u4E0E\u5DF2\u91C7\u7528\u7684 commit\uFF0C\u4E5F\u53EF\u4EE5\u4ECE\u63D2\u4EF6\u7684\u6765\u6E90\u8BB0\u5F55\u5F00\u59CB\u3002"
-        }), filter === "all" ? /* @__PURE__ */jsx6(Button, {
+        }), filter === "all" ? /* @__PURE__ */jsx7(Button, {
           theme,
           label: "\u53D1\u73B0\u63D2\u4EF6\u6765\u6E90\u8BB0\u5F55",
           icon: "ScanSearch",
@@ -1721,70 +2147,70 @@ function UpstreamScreen(props) {
             discovery.mutate();
           }
         }) : null]
-      }) : null, watches.map(watch => /* @__PURE__ */jsx6(WatchCard, {
+      }) : null, watches.map(watch => /* @__PURE__ */jsx7(WatchCard, {
         ...props,
         watch,
         task: overview.data?.tasks.find(task => task.watchId === watch.id && task.intent === taskIntent(watch) && (!watch.reviewState?.key || task.reviewKey === watch.reviewState.key) && task.head === watch.observation?.head),
         edit: draft => setForm(draft)
-      }, watch.id)), overview.data ? /* @__PURE__ */jsxs6(Body, {
+      }, watch.id)), overview.data ? /* @__PURE__ */jsxs7(Body, {
         theme,
         muted: true,
         children: [overview.data.settings.enabled ? `\u540E\u53F0\u6BCF ${overview.data.settings.intervalHours} \u5C0F\u65F6\u68C0\u67E5\u4E00\u6B21` : "\u5B9A\u65F6\u68C0\u67E5\u5DF2\u6682\u505C", "\u3002GitHub \u6BD4\u5BF9\u4E0D\u8C03\u7528\u6A21\u578B\uFF1B\u5DF2\u542F\u7528\u81EA\u52A8\u5EFA\u8BAE\u7684\u5173\u8054\u4F1A\u5728\u8303\u56F4\u53D8\u5316\u65F6\u521B\u5EFA\u53EA\u8BFB\u5BA1\u67E5 agent\uFF0C\u5176\u4F59\u5173\u8054\u7531\u4F60\u624B\u52A8\u542F\u52A8\u3002"]
       }) : null]
-    }) : null, tab === "discovery" ? /* @__PURE__ */jsxs6(View6, {
+    }) : null, tab === "discovery" ? /* @__PURE__ */jsxs7(View7, {
       style: {
         gap: 14
       },
-      children: [/* @__PURE__ */jsxs6(Panel, {
+      children: [/* @__PURE__ */jsxs7(Panel, {
         theme,
-        children: [/* @__PURE__ */jsx6(Title, {
+        children: [/* @__PURE__ */jsx7(Title, {
           theme,
           children: "\u4ECE\u660E\u786E\u7684\u6765\u6E90\u8BB0\u5F55\u5F00\u59CB"
-        }), /* @__PURE__ */jsx6(Body, {
+        }), /* @__PURE__ */jsx7(Body, {
           theme,
           muted: true,
           children: "\u8BFB\u53D6 UPSTREAM.json\u3001SOURCE.json \u548C Git remote\uFF0C\u4F5C\u4E3A\u5F85\u786E\u8BA4\u5019\u9009\u3002\u6CA1\u6709\u91C7\u7528\u7248\u672C\u7684\u8BB0\u5F55\u4F1A\u660E\u786E\u7559\u7A7A\u3002"
-        }), /* @__PURE__ */jsx6(Field, {
+        }), /* @__PURE__ */jsx7(Field, {
           theme,
           placeholder: "\u53EF\u9009\uFF1A\u540C\u65F6\u626B\u63CF\u672C\u5730\u63D2\u4EF6\u4ED3\u5E93\uFF08\u7EDD\u5BF9\u8DEF\u5F84\uFF09",
           value: root,
           onChange: setRoot
-        }), /* @__PURE__ */jsx6(Button, {
+        }), /* @__PURE__ */jsx7(Button, {
           theme,
           label: "\u626B\u63CF\u63D2\u4EF6\u6765\u6E90",
           icon: "ScanSearch",
           busy: discovery.isPending,
           onPress: () => discovery.mutate()
         })]
-      }), discovery.error ? /* @__PURE__ */jsx6(Body, {
+      }), discovery.error ? /* @__PURE__ */jsx7(Body, {
         theme,
         children: String(discovery.error)
-      }) : null, discovery.data?.map(plugin => /* @__PURE__ */jsxs6(Panel, {
+      }) : null, discovery.data?.map(plugin => /* @__PURE__ */jsxs7(Panel, {
         theme,
-        children: [/* @__PURE__ */jsx6(Title, {
+        children: [/* @__PURE__ */jsx7(Title, {
           theme,
           children: plugin.name
-        }), /* @__PURE__ */jsx6(Body, {
+        }), /* @__PURE__ */jsx7(Body, {
           theme,
           muted: true,
           children: plugin.note
-        }), /* @__PURE__ */jsx6(Body, {
+        }), /* @__PURE__ */jsx7(Body, {
           theme,
           mono: true,
           children: plugin.targetPath || plugin.installedPath
-        }), plugin.sources.length ? plugin.sources.map((source, index) => /* @__PURE__ */jsxs6(View6, {
+        }), plugin.sources.length ? plugin.sources.map((source, index) => /* @__PURE__ */jsxs7(View7, {
           style: {
             gap: 7,
             paddingTop: 8
           },
-          children: [/* @__PURE__ */jsxs6(Body, {
+          children: [/* @__PURE__ */jsxs7(Body, {
             theme,
             children: [source.repository, source.paths.length ? source.paths.join("\u3001") : "\u5168\u4ED3\u5E93"]
-          }), /* @__PURE__ */jsx6(Body, {
+          }), /* @__PURE__ */jsx7(Body, {
             theme,
             muted: true,
             children: source.baseline ? `\u53C2\u8003\u57FA\u7EBF ${source.baseline.slice(0, 12)}` : "\u91C7\u7528\u57FA\u7EBF\u672A\u77E5\uFF1A\u767B\u8BB0\u65F6\u53EF\u586B\u5199\uFF0C\u6216\u4ECE\u5F53\u524D\u7248\u672C\u5F00\u59CB\u8DDF\u8E2A"
-          }), /* @__PURE__ */jsx6(Button, {
+          }), /* @__PURE__ */jsx7(Button, {
             theme,
             label: `\u8DDF\u8E2A ${source.repository}`,
             onPress: () => {
@@ -1799,21 +2225,21 @@ function UpstreamScreen(props) {
               setTab("watches");
             }
           })]
-        }, `${source.repository}-${index}`)) : /* @__PURE__ */jsx6(Body, {
+        }, `${source.repository}-${index}`)) : /* @__PURE__ */jsx7(Body, {
           theme,
           muted: true,
           children: "\u6CA1\u6709\u53D1\u73B0\u53EF\u786E\u8BA4\u7684 GitHub \u4E0A\u6E38\uFF0C\u53EF\u4EE5\u624B\u52A8\u6DFB\u52A0\u3002"
         })]
-      }, plugin.id)), discovery.isSuccess && discovery.data.length === 0 ? /* @__PURE__ */jsx6(Body, {
+      }, plugin.id)), discovery.isSuccess && discovery.data.length === 0 ? /* @__PURE__ */jsx7(Body, {
         theme,
         children: "\u6CA1\u6709\u627E\u5230\u6765\u6E90\u8BB0\u5F55\u3002\u53EF\u6DFB\u52A0\u672C\u5730\u6E90\u7801\u4ED3\u5E93\u8DEF\u5F84\uFF0C\u6216\u624B\u52A8\u767B\u8BB0\u5173\u8054\u3002"
       }) : null]
-    }) : null, tab === "settings" && overview.data ? /* @__PURE__ */jsxs6(Panel, {
+    }) : null, tab === "settings" && overview.data ? /* @__PURE__ */jsxs7(Panel, {
       theme,
-      children: [/* @__PURE__ */jsx6(Title, {
+      children: [/* @__PURE__ */jsx7(Title, {
         theme,
         children: "\u540E\u53F0\u68C0\u67E5"
-      }), /* @__PURE__ */jsx6(SettingsSwitch2, {
+      }), /* @__PURE__ */jsx7(SettingsSwitch2, {
         label: "\u5B9A\u65F6\u68C0\u67E5\u4E0A\u6E38",
         value: overview.data.settings.enabled,
         onValueChange: enabled => settings.mutate({
@@ -1821,7 +2247,7 @@ function UpstreamScreen(props) {
           enabled
         }),
         disabled: settings.isPending
-      }), /* @__PURE__ */jsx6(SettingsSelect4, {
+      }), /* @__PURE__ */jsx7(SettingsSelect4, {
         label: "\u68C0\u67E5\u95F4\u9694",
         value: String(overview.data.settings.intervalHours),
         options: [{
@@ -1842,19 +2268,19 @@ function UpstreamScreen(props) {
           intervalHours: Number(hours)
         }),
         disabled: settings.isPending
-      }), /* @__PURE__ */jsx6(Body, {
+      }), /* @__PURE__ */jsx7(Body, {
         theme,
         muted: true,
         children: "\u68C0\u67E5\u5728 daemon \u4E0A\u6267\u884C\uFF0C\u9875\u9762\u5173\u95ED\u540E\u4E5F\u4F1A\u7EE7\u7EED\u3002\u672A\u5904\u7406\u53D8\u5316\u663E\u793A\u5728\u4FA7\u680F\u6570\u91CF\u4E0E\u5217\u8868\u91CC\u3002"
-      }), /* @__PURE__ */jsxs6(Body, {
+      }), /* @__PURE__ */jsxs7(Body, {
         theme,
         muted: true,
         children: ["GitHub \u8BBF\u95EE\uFF1A", overview.data.authentication === "gh" ? "\u4F7F\u7528\u672C\u673A gh \u7684\u5DF2\u6709\u767B\u5F55" : "\u533F\u540D\u8BBF\u95EE\uFF08\u8BF7\u6C42\u9650\u989D\u8F83\u4F4E\uFF09", "\u3002\u5931\u8D25\u6216\u9650\u6D41\u65F6\u4FDD\u7559\u4E0A\u6B21\u7ED3\u679C\u5E76\u663E\u793A\u539F\u56E0\u3002"]
-      }), /* @__PURE__ */jsx6(Body, {
+      }), /* @__PURE__ */jsx7(Body, {
         theme,
         muted: true,
         children: "\u8FD9\u7248\u652F\u6301 GitHub \u4ED3\u5E93\u3002Paseo 0.12 \u6CA1\u6709\u516C\u5F00\u901A\u7528\u7CFB\u7EDF\u63A8\u9001\u63A5\u53E3\uFF0C\u5F53\u524D\u63D0\u9192\u4E3A\u5E94\u7528\u5185\u5FBD\u6807\u548C\u5217\u8868\u3002"
-      }), settings.error ? /* @__PURE__ */jsx6(Body, {
+      }), settings.error ? /* @__PURE__ */jsx7(Body, {
         theme,
         children: String(settings.error)
       }) : null]
@@ -1863,7 +2289,7 @@ function UpstreamScreen(props) {
 }
 
 // index.client.tsx
-import { jsx as jsx7 } from "react/jsx-runtime";
+import { jsx as jsx8 } from "react/jsx-runtime";
 function UpstreamItem({
   theme,
   currentScreen,
@@ -1877,14 +2303,14 @@ function UpstreamItem({
   });
   var count = pendingCount(overview.data?.watches || []);
   var errors = overview.data?.watches.filter(watch => watch.enabled && watch.error).length || 0;
-  return /* @__PURE__ */jsx7(SidebarRow, {
+  return /* @__PURE__ */jsx8(SidebarRow, {
     icon: "GitCompareArrows",
     label: "\u4E0A\u6E38\u66F4\u65B0",
     active: currentScreen?.screenId === "main",
     onPress: () => openScreen({
       screenId: "main"
     }),
-    trailing: count || errors || overview.error ? /* @__PURE__ */jsx7(Text5, {
+    trailing: count || errors || overview.error ? /* @__PURE__ */jsx8(Text6, {
       style: {
         color: errors || overview.error ? theme.colors.statusWarning : theme.colors.accent,
         fontSize: 12,

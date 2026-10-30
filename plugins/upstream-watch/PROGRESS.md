@@ -1,5 +1,16 @@
 # Upstream Watch
 
+## Workspace picker repair
+
+Scope: replace the overflowing workspace menu with a searchable, bounded inline list and add explicit Workspace creation from a registered Project. New workspaces use the Project's existing directory; source containment checks and agent launch remain separate. Projects without workspaces are included; background-only projects and hidden/archiving workspaces are excluded from new choices.
+
+- [ ] Implement and verify catalog filtering and creation retry behavior.
+- [ ] Typecheck, full offline tests, client rebuild, clean production compile and Hermes.
+- [ ] Install on the existing daemon after an idle check and backup; verify desktop, compact and short viewport UI, actual Project-to-Workspace creation and fixture cleanup.
+- [ ] Publish the verified plugin and repair to remote main, preserving unrelated plugins.
+
+Existing historical review-quality limitations below remain unchanged. This task's acceptance concerns the workspace picker and Project creation only.
+
 ## Goal and existing behavior
 
 Track GitHub forks, reference projects and selected features behind local Paseo plugins. Keep an explicit adopted baseline, run periodic read-only comparisons, and open user-requested adaptation tasks. Native installation-source updates remain Paseo’s responsibility.

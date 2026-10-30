@@ -39,21 +39,18 @@ export async function validateTarget(
   );
 }
 
-export async function environment(paseo: PaseoApi) {
-  const providersPromise = paseo.providers.listAvailable();
-  const workspaces: { id: string; name: string; directory: string }[] = [];
+async function listWorkspaceEntries(paseo: PaseoApi) {
+  const workspaces: Awaited<
+    ReturnType<PaseoApi["workspaces"]["list"]>
+  >["entries"] = [];
   const seen = new Set<string>();
   let cursor: string | undefined;
   do {
     const page = await paseo.workspaces.list({
+      includeBackground: true,
       page: { limit: 200, ...(cursor ? { cursor } : {}) },
     });
-    for (const entry of page.entries)
-      workspaces.push({
-        id: entry.id,
-        name: entry.name,
-        directory: entry.workspaceDirectory || entry.projectRootPath,
-      });
+    workspaces.push(...page.entries);
     if (!page.pageInfo.hasMore) break;
     const next = page.pageInfo.nextCursor;
     if (!next || seen.has(next))
@@ -61,10 +58,43 @@ export async function environment(paseo: PaseoApi) {
     seen.add(next);
     cursor = next;
   } while (true);
-  const available = await providersPromise;
+  return workspaces;
+}
+
+export async function environment(paseo: PaseoApi) {
+  const [entries, projectList, available] = await Promise.all([
+    listWorkspaceEntries(paseo),
+    paseo.projects.list(),
+    paseo.providers.listAvailable(),
+  ]);
   if (available.error) throw new Error(available.error);
+  const backgroundProjects = new Set(
+    entries.filter((entry) => entry.background).map((entry) => entry.projectId),
+  );
+  const visibleProjects = new Set(
+    entries.filter((entry) => !entry.background).map((entry) => entry.projectId),
+  );
   return {
-    workspaces,
+    workspaces: entries
+      .filter((entry) => !entry.background && !entry.archivingAt)
+      .map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        directory: entry.workspaceDirectory || entry.projectRootPath,
+      })),
+    // Empty projects remain selectable, but background automation must not
+    // introduce otherwise hidden projects into the human workspace picker.
+    projects: projectList.projects
+      .filter(
+        (project) =>
+          !backgroundProjects.has(project.projectId) ||
+          visibleProjects.has(project.projectId),
+      )
+      .map((project) => ({
+        id: project.projectId,
+        name: project.projectCustomName?.trim() || project.projectDisplayName,
+        directory: project.projectRootPath,
+      })),
     providers: available.providers
       .filter((item) => item.available)
       .map((item) => ({ id: item.provider, label: item.provider })),

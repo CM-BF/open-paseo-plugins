@@ -159,6 +159,7 @@ it("lists all workspace pages and available providers without creating resources
     });
   const paseo = {
     workspaces: { list },
+    projects: { list: async () => ({ projects: [] }) },
     providers: {
       listAvailable: async () => ({
         providers: [
@@ -173,6 +174,7 @@ it("lists all workspace pages and available providers without creating resources
       { id: "wks_a", name: "A", directory: "/a" },
       { id: "wks_b", name: "B", directory: "/b" },
     ],
+    projects: [],
     providers: [{ id: "claude", label: "claude" }],
   });
   expect(list.mock.calls[1][0].page.cursor).toBe("next");

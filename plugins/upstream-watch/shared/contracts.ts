@@ -217,6 +217,9 @@ export const environmentRpc = defineRpc({
     workspaces: z.array(
       z.object({ id: z.string(), name: z.string(), directory: z.string() }),
     ),
+    projects: z.array(
+      z.object({ id: z.string(), name: z.string(), directory: z.string() }),
+    ),
     providers: z.array(z.object({ id: z.string(), label: z.string() })),
   }),
 });

@@ -1,10 +1,11 @@
 import { useRpc } from "@getpaseo/plugin/client";
 import { SettingsSelect } from "@getpaseo/plugin/client/ui";
-import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRef, useState } from "react";
 import { View } from "react-native";
 import { environmentRpc, modelsRpc } from "../shared/contracts";
 import { Body, type Themed } from "./kit";
+import { WorkspacePicker } from "./workspace-picker";
 
 export interface AgentSelection {
   workspaceId: string;
@@ -17,6 +18,9 @@ export function AgentPicker({
 }: Themed & { value: AgentSelection; onChange(value: AgentSelection): void }) {
   const getEnvironment = useRpc(environmentRpc);
   const getModels = useRpc(modelsRpc);
+  const queryClient = useQueryClient();
+  const latestSelection = useRef({ value, onChange });
+  latestSelection.current = { value, onChange };
   const [family, setFamily] = useState(value.provider.split("/")[0] || "");
   const environment = useQuery({
     queryKey: ["upstream-watch", "environment"],
@@ -39,18 +43,29 @@ export function AgentPicker({
     staleTime: 60_000,
   });
   return (
-    <View style={{ gap: 8 }}>
-      <SettingsSelect
-        label="更新任务工作区"
+    <View style={{ minWidth: 0, gap: 8 }}>
+      <WorkspacePicker
+        theme={theme}
         value={value.workspaceId}
-        options={[
-          { value: "", label: "选择包含插件源码的工作区" },
-          ...(environment.data?.workspaces || []).map((workspace) => ({
-            value: workspace.id,
-            label: `${workspace.name} — ${workspace.directory}`,
-          })),
-        ]}
-        onValueChange={(workspaceId) => onChange({ ...value, workspaceId })}
+        workspaces={environment.data?.workspaces || []}
+        projects={environment.data?.projects || []}
+        loading={environment.isLoading}
+        onChange={(workspaceId) => {
+          const current = latestSelection.current;
+          current.onChange({ ...current.value, workspaceId });
+        }}
+        onCreated={async (workspace, isCurrent) => {
+          if (!isCurrent()) return false;
+          await queryClient.cancelQueries({ queryKey: ["upstream-watch", "environment"] });
+          if (!isCurrent()) return false;
+          queryClient.setQueryData<typeof environment.data>(["upstream-watch", "environment"], (current) =>
+            current ? { ...current, workspaces: [...current.workspaces.filter((item) => item.id !== workspace.id), workspace] } : current,
+          );
+          const current = latestSelection.current;
+          current.onChange({ ...current.value, workspaceId: workspace.id });
+          void queryClient.invalidateQueries({ queryKey: ["upstream-watch", "environment"] });
+          return true;
+        }}
       />
       <SettingsSelect
         label="Agent provider"
