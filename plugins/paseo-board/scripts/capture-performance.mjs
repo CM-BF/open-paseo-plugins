@@ -56,6 +56,24 @@ try {
  }
  if(!process.env.CAPTURE_BASELINE_REV) {
    assert(reports.every(r=>!r.error && r.pixelDiff?.fraction < 0.015), 'long-board crops match native pixels (font rasterization tolerance 1.5%)');
+   await load(`<style>html,body{margin:0;padding:0;width:2066px;min-height:1600px;max-width:none;background:white;color:#17365d}#spacer{height:30px}#static{font:12px system-ui;width:1000px;height:600px;padding:20px;display:grid;grid-template-columns:repeat(10,1fr);gap:8px;background:#e5edf6}#moving{position:absolute;left:1200px;top:1100px;width:600px;height:200px;padding:10px}#moving svg{width:500px;height:100px}body:has(#moving[data-bright="yes"]) #static{color:red}</style><div id="spacer"></div><div id="static">${Array.from({length:120},(_,i)=>`<span>Static ${i}</span>`).join('')}</div><div id="moving"><svg viewBox="0 0 500 100"><path id="animated-path" d="M0 50L500 50" stroke="blue" fill="none"/></svg><output id="animated-count"></output></div><script>window.framesChanged=0;window.animationMode='outside';const animate=()=>{if(window.stopAnimation)return;framesChanged++;document.querySelector('#animated-path').setAttribute('d','M0 50L500 '+(40+framesChanged%20));document.querySelector('#animated-count').textContent=String(framesChanged);if(animationMode==='selected')document.querySelector('#static').textContent=String(framesChanged);if(animationMode==='layout')document.querySelector('#spacer').style.height=(30+framesChanged%2)+'px';requestAnimationFrame(animate)};requestAnimationFrame(animate)</script>`);
+   const animationBefore=await evaluate('framesChanged');
+   const animatedResult=await run('unrelated-svg-and-counter-animation',{x:50,y:70,width:700,height:350});
+   const animationFrames=await evaluate('framesChanged')-animationBefore;
+   assert(!animatedResult.error && animatedResult.pixelDiff.fraction<0.04 && animationFrames>=2,'unrelated real DOM animation continues while a static selection captures correctly');
+   const stablePixels=await evaluate('(async()=>{const before=lastScreenshot.data;stopAnimation=true;captureProbe={};const after=await captureForTest({x:50,y:70,width:700,height:350},new AbortController().signal);return before===after.data})()');
+   assert(stablePixels,'the same static selection has identical pixels with unrelated animation running or stopped');
+   await evaluate('stopAnimation=false;requestAnimationFrame(animate)');
+   reports.at(-1).animationFrames=animationFrames;reports.at(-1).identicalToStoppedAnimation=stablePixels;
+   const cssInvalidation=await evaluate(`(async()=>{captureProbe={};const original=HTMLCanvasElement.prototype.toDataURL;const pending=captureForTest({x:50,y:70,width:700,height:350},new AbortController().signal).then(()=>null,e=>e.message);const change=()=>HTMLCanvasElement.prototype.toDataURL!==original?document.querySelector('#moving').setAttribute('data-bright','yes'):setTimeout(change,0);setTimeout(change,0);return await pending})()`);
+   assert.match(cssInvalidation,/styling changed/,'an outside CSS selector change cannot produce mixed selected styles');
+   await evaluate('document.querySelector("#moving").removeAttribute("data-bright");animationMode="layout"');
+   const layoutInvalidation=await evaluate('(async()=>{captureProbe={};try{await captureForTest({x:50,y:70,width:700,height:350},new AbortController().signal);return null}catch(e){return e.message}})()');
+   assert.match(layoutInvalidation,/changed/,'outside changes that move the selected layout are rejected');
+   await evaluate('animationMode="selected"');
+   const selectedInvalidation=await evaluate('(async()=>{captureProbe={};try{await captureForTest({x:50,y:70,width:700,height:350},new AbortController().signal);return null}catch(e){return e.message}})()');
+   assert.match(selectedInvalidation,/changed/,'DOM animation inside the selected area is rejected');
+   reports.push({name:'animation-scope-invalidation',cssInvalidation,layoutInvalidation,selectedInvalidation,restored:true});
    const base='<style>html,body{padding:0;margin:0;max-width:none;width:2066px;min-height:1600px;background:white;color:#17365d}*{box-sizing:border-box}.box{width:300px;height:180px;padding:12px;border:4px solid #507095;background:#d7e6f6}#grid{display:grid;grid-template-columns:repeat(3,300px);gap:25px;padding:20px;background:linear-gradient(90deg,#f0d0d0,#d0d0f0);border:10px solid #506070;width:1020px}#overflow{position:absolute;left:1600px;top:30px;width:70px;height:70px}#overflow>i{position:absolute;left:-1240px;top:80px;width:75px;height:50px;background:#e64b38}#shadow{position:absolute;left:1150px;top:100px;width:50px;height:80px;box-shadow:-180px 0 12px 3px #14a080}#scroll{position:absolute;top:500px;left:40px;width:420px;height:180px;overflow:auto;border:6px solid #6090b0}#scroll>div{width:700px;height:100px;background:linear-gradient(90deg,#c03,#09c)}#paint{position:absolute;left:520px;top:500px;width:240px;height:160px}#pseudo{position:absolute;left:1500px;top:100px}#pseudo::before{content:"";position:absolute;left:-750px;top:50px;width:60px;height:60px;background:#7654d0}</style>';
    await load(base+'<div id="grid">'+Array.from({length:12},(_,i)=>'<div class="box" style="background:hsl('+i*29+' 60% 80%)"></div>').join('')+'</div><div id="overflow"><i></i></div><div id="shadow"></div><div id="pseudo"></div><div id="scroll">'+Array.from({length:8},()=>'<div></div>').join('')+'</div><canvas id="paint" width="240" height="160"></canvas>');
    let r=await run('overlap-overflow-shadow-pseudo-gradient',{x:30,y:40,width:1000,height:370});
@@ -83,22 +101,26 @@ try {
    await evaluate('document.body.insertAdjacentHTML("beforeend",`<div data-board-overlay style="position:fixed;left:0;top:0;width:240px;height:160px;background:red"></div>`)');
    const noOverlay=await evaluate('(async()=>{captureProbe={};const shot=await captureForTest({x:0,y:0,width:240,height:160},new AbortController().signal);const i=new Image();i.src="data:image/png;base64,"+shot.data;await i.decode();const c=document.createElement("canvas");c.width=240;c.height=160;c.getContext("2d").drawImage(i,0,0);return Array.from(c.getContext("2d").getImageData(100,100,1,1).data)})()');
    assert(noOverlay[1]>150 && noOverlay[0]<50,'selection and marker overlays are excluded');
-   await load('<style>html,body{margin:0;padding:0;max-width:none;background:white}.dense{display:inline-block;width:6px;height:6px;background:#123}</style>'+Array.from({length:2100},()=>'<i class="dense"></i>').join(''));
+   const denseFixture=count=>'<style>html,body{margin:0;padding:0;max-width:none;background:white}.dense{display:inline-block;width:6px;height:6px;background:#123}</style>'+Array.from({length:count},()=>'<i class="dense"></i>').join('');
+   await load(denseFixture(2100));
    r=await run('bounded-complex-selection',{x:0,y:0,width:2000,height:800});
    assert.match(r.error,/too complex to capture promptly/);
+   // Cancellation has its own bounded fixture so it reaches an active clone before abort.
+   await load(denseFixture(500));
    const invalidation=await evaluate(`(async()=>{
      const original=HTMLCanvasElement.prototype.toDataURL;
      const c=new AbortController();window.captureProbe={};
      const animation=document.querySelector('i').animate([{opacity:1},{opacity:0.5}],{duration:1000,iterations:Infinity});
-     const pending=captureForTest({x:0,y:0,width:2000,height:800},c.signal).then(()=>null,e=>e.name);
-     const abort=()=>HTMLCanvasElement.prototype.toDataURL!==original?c.abort():setTimeout(abort,0);setTimeout(abort,0);
+     let settled=false,abortedDuringClone=false;
+     const pending=captureForTest({x:0,y:0,width:2000,height:800},c.signal).then(()=>null,e=>e.name).finally(()=>{settled=true});
+     const abort=()=>{if(settled)return;if(HTMLCanvasElement.prototype.toDataURL!==original){abortedDuringClone=true;c.abort()}else setTimeout(abort,0)};setTimeout(abort,0);
      const error=await pending;const restored=HTMLCanvasElement.prototype.toDataURL===original;
      const resumed=animation.playState==='running';animation.cancel();
      window.captureProbe={};const changing=captureForTest({x:0,y:0,width:2000,height:800},new AbortController().signal).then(()=>null,e=>e.message);
      const change=()=>HTMLCanvasElement.prototype.toDataURL!==original?document.querySelector('i').textContent='changed':setTimeout(change,0);setTimeout(change,0);
-     return {error,restored,resumed,mutationError:await changing,restoredAgain:HTMLCanvasElement.prototype.toDataURL===original};
+     return {error,abortedDuringClone,restored,resumed,mutationError:await changing,restoredAgain:HTMLCanvasElement.prototype.toDataURL===original};
    })()`);
-   assert.equal(invalidation.error,'AbortError');assert(invalidation.restored && invalidation.restoredAgain && invalidation.resumed);assert.match(invalidation.mutationError,/Canvas changed/);
+   assert.equal(invalidation.error,'AbortError');assert(invalidation.abortedDuringClone && invalidation.restored && invalidation.restoredAgain && invalidation.resumed);assert.match(invalidation.mutationError,/Canvas changed/);
    reports.push({name:'cancellation-mutation-animation-restoration',...invalidation});
    console.log('PASS native-pixel comparisons, scrolled/overlapping content, fresh Canvas/WebGL pixels, overlays, bounded complexity and cancellation');
  }
