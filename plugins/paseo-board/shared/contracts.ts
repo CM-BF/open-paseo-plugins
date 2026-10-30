@@ -61,6 +61,18 @@ export const CanvasSchema = z.object({
   data: JsonDataSchema,
   patches: z.array(CanvasPatchSchema),
 });
+export const CanvasBaseSchema = CanvasSchema.pick({ revision: true, documentVersion: true });
+export const DataPatchSchema = z.object({
+  path: z.string().min(1).max(2000),
+  operation: z.enum(["set", "remove"]),
+  expected: z.object({ exists: z.boolean(), value: z.unknown().optional() }),
+  value: z.unknown().optional(),
+}).superRefine((patch, context) => {
+  const has = (object: object, key: string) => Object.prototype.hasOwnProperty.call(object, key);
+  if (has(patch.expected, "value") !== patch.expected.exists) context.addIssue({ code: "custom", path: ["expected", "value"], message: "Expected value is required exactly when expected.exists is true" });
+  if (has(patch, "value") !== (patch.operation === "set")) context.addIssue({ code: "custom", path: ["value"], message: "A value is required only for set operations" });
+});
+export const DataPatchesSchema = z.array(DataPatchSchema).min(1).max(100);
 export const FocusSelectorsSchema = z.array(z.string().min(1).max(1000)).max(12);
 export const CanvasUpdateSchema = z.object({
   id: IdSchema, eventId: IdSchema, at: z.string(),
@@ -112,9 +124,10 @@ export const BoardSummarySchema = BoardSchema.pick({ id: true, title: true, proj
 export const CreateInputSchema = z.object({ id: IdSchema.optional(), title: z.string().min(1).max(200), projectId: z.string().optional(), workspaceId: z.string().optional(), ownerAgentId: z.string().optional(), html: z.string().max(4000000).default(""), data: JsonDataSchema.default({}) });
 export const PublishInputSchema = z.object({
   boardId: IdSchema, expectedRevision: z.number().int().nonnegative(), eventId: IdSchema,
+  canvasBase: CanvasBaseSchema.optional(), replaceDocument: z.boolean().optional(),
   title: z.string().min(1).max(200).optional(), ownerAgentId: z.string().optional(),
   html: z.string().max(4000000).optional(), patch: CanvasPatchSchema.optional(), data: JsonDataSchema.optional(),
-  focusSelectors: FocusSelectorsSchema.optional(),
+  dataPatch: DataPatchesSchema.optional(), focusSelectors: FocusSelectorsSchema.optional(),
   decisions: z.array(DecisionInputSchema).max(50).optional(), summary: z.string().max(4000).default("Board updated"),
   interactionResult: z.object({ id: IdSchema, status: z.enum(["processing", "applied", "rejected", "failed"]), response: z.string().max(64000).optional(), resultReferences: z.array(z.string()).default([]) }).optional(),
 });
@@ -126,7 +139,7 @@ export const RespondInputSchema = z.object({
   html: z.string().max(4000000).optional(), patch: CanvasPatchSchema.optional(), data: JsonDataSchema.optional(),
   resultReferences: z.array(z.string().max(4000)).max(100).optional(),
 });
-export const EmitInputSchema = z.object({ boardId: IdSchema, eventId: IdSchema, source: z.string().min(1).max(200), kind: z.string().max(200).default("update"), summary: z.string().max(4000), data: JsonDataSchema.optional(), focusSelectors: FocusSelectorsSchema.optional(), observation: z.object({ id: IdSchema, name: z.string().max(200), value: z.unknown(), evidence: EvidenceSchema }).optional() });
+export const EmitInputSchema = z.object({ boardId: IdSchema, eventId: IdSchema, source: z.string().min(1).max(200), kind: z.string().max(200).default("update"), summary: z.string().max(4000), canvasBase: CanvasBaseSchema.optional(), data: JsonDataSchema.optional(), dataPatch: DataPatchesSchema.optional(), focusSelectors: FocusSelectorsSchema.optional(), observation: z.object({ id: IdSchema, name: z.string().max(200), value: z.unknown(), evidence: EvidenceSchema }).optional() });
 export const InteractInputSchema = z.object({ boardId: IdSchema, intentId: IdSchema, kind: z.enum(["question", "change", "fork", "return", "reply"]), destination: DestinationSchema.optional(), text: z.string().min(1).max(24000), anchor: AnchorSchema.optional(), sourceInteractionId: IdSchema.optional() });
 export const SelectSideAgentInputSchema = z.object({ boardId: IdSchema, agentId: z.string().min(1).max(160), expectedRevision: z.number().int().nonnegative(), eventId: IdSchema });
 export const DecisionUpdateInputSchema = z.object({ boardId: IdSchema, expectedRevision: z.number().int().nonnegative(), eventId: IdSchema, decision: DecisionInputSchema });
@@ -136,6 +149,8 @@ export type Board = z.infer<typeof BoardSchema>;
 export type BoardSummary = z.infer<typeof BoardSummarySchema>;
 export type Anchor = z.infer<typeof AnchorSchema>;
 export type Canvas = z.infer<typeof CanvasSchema>;
+export type CanvasBase = z.infer<typeof CanvasBaseSchema>;
+export type DataPatch = z.infer<typeof DataPatchSchema>;
 export type CanvasPatch = z.infer<typeof CanvasPatchSchema>;
 export type CanvasUpdate = z.infer<typeof CanvasUpdateSchema>;
 export type Decision = z.infer<typeof DecisionSchema>;

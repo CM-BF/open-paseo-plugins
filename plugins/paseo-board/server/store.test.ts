@@ -3,6 +3,10 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BoardStore } from "./store";
+import type { Board } from "../shared/contracts";
+import { fingerprint } from "./store-format";
+
+const canvasBase = (board: Board) => ({ revision: board.canvas.revision, documentVersion: board.canvas.documentVersion });
 
 describe("BoardStore", () => {
   let root: string;
@@ -18,50 +22,175 @@ describe("BoardStore", () => {
     return store.create({ id: "test", title: "A free canvas", html: "<main id='a'>Hello</main>", data: { count: 1 } });
   }
 
+  it("rejects stale HTML and patches even if a writer refreshes only the Board revision", async () => {
+    const initial = await board();
+    const changed = await store.publish({ boardId: initial.id, expectedRevision: initial.revision, canvasBase: canvasBase(initial), eventId: "first-agent", patch: { id: "first-agent", selector: "#a", operation: "append", html: "<p>A</p>" } }, "agent-a");
+    for (const payload of [{ patch: { id: "stale-patch", selector: "#a", operation: "replace" as const, html: "<main>B</main>" } }, { html: "Old source plus B", replaceDocument: true }]) {
+      await expect(store.publish({ boardId: initial.id, expectedRevision: changed.revision, canvasBase: canvasBase(initial), eventId: "stale-agent", ...payload }, "agent-b")).rejects.toMatchObject({ code: "revision_conflict", details: { scope: "canvas", base: { canvas: canvasBase(initial) }, current: { canvas: canvasBase(changed) }, recentUpdates: [{ actorAgentId: "agent-a", targets: [{ selector: "#a" }] }], coverageComplete: true } });
+    }
+    await expect(store.publish({ boardId: initial.id, expectedRevision: changed.revision, canvasBase: { ...canvasBase(changed), documentVersion: 0 }, eventId: "wrong-document", data: { count: 2 } })).rejects.toMatchObject({ code: "revision_conflict", details: { scope: "canvas" } });
+    expect(await store.read(initial.id)).toEqual(changed);
+  });
+
+  it("requires explicit document replacement and a source canvas base for every legacy canvas write", async () => {
+    const initial = await board();
+    for (const payload of [{ data: { count: 2 } }, { patch: { id: "p", selector: "#a", operation: "remove" as const } }, { html: "new", replaceDocument: true }, { html: "new", canvasBase: canvasBase(initial) }, { replaceDocument: true }]) {
+      await expect(store.publish({ boardId: initial.id, expectedRevision: initial.revision, eventId: "unsafe", ...payload })).rejects.toHaveProperty("code", "invalid_input");
+    }
+    await expect(store.emit({ boardId: initial.id, eventId: "unsafe-emit", source: "shell", summary: "old snapshot", data: { count: 2 } })).rejects.toHaveProperty("code", "invalid_input");
+    expect(await store.read(initial.id)).toEqual(initial);
+  });
+
+  it("replays legacy successful write receipts but refuses fresh unconditional legacy writes", async () => {
+    let current = await board();
+    current = await store.publish({ boardId: current.id, expectedRevision: current.revision, canvasBase: canvasBase(current), replaceDocument: true, eventId: "legacy-html", html: "<main>Previously committed</main>" });
+    await store.emit({ boardId: current.id, canvasBase: canvasBase(current), eventId: "legacy-data", source: "shell", summary: "Previously committed", data: { count: 2 } });
+    const path = join(root, "boards", "test.json");
+    const legacy = JSON.parse(await readFile(path, "utf8"));
+    const requests = [];
+    for (const eventId of ["legacy-html", "legacy-data"]) {
+      const receipt = legacy.receipts.find((item: { key: string }) => item.key === eventId);
+      const entry = legacy.history[receipt.revision - 1];
+      delete entry.payload.canvasBase;
+      delete entry.payload.replaceDocument;
+      receipt.fingerprint = fingerprint(entry.operation, entry.payload);
+      requests.push(entry.payload);
+    }
+    await writeFile(path, JSON.stringify(legacy));
+    const before = await readFile(path, "utf8");
+    expect(await new BoardStore(root).publish(requests[0])).toEqual(legacy.board);
+    expect(await new BoardStore(root).emit(requests[1])).toEqual(legacy.board);
+    await expect(store.publish({ ...requests[0], eventId: "new-unsafe-html" })).rejects.toHaveProperty("code", "invalid_input");
+    await expect(store.emit({ ...requests[1], eventId: "new-unsafe-data" })).rejects.toHaveProperty("code", "invalid_input");
+    expect(await readFile(path, "utf8")).toBe(before);
+  });
+
+  it("allows a source-bound patch and its own result after unrelated interaction and user-state writes", async () => {
+    const initial = await board();
+    await store.addInteraction({ boardId: initial.id, intentId: "mine", kind: "change", text: "Add A" }, "agent-a");
+    await store.saveState({ boardId: initial.id, state: { draft: "still typing" } });
+    await store.addInteraction({ boardId: initial.id, intentId: "other", kind: "question", text: "Explain B" }, "agent-b");
+    const current = await store.publish({ boardId: initial.id, expectedRevision: initial.revision, canvasBase: canvasBase(initial), eventId: "own-result", patch: { id: "a", selector: "#a", operation: "append", html: "<p>A</p>" }, interactionResult: { id: "mine", status: "applied", resultReferences: ["#a"] } }, "agent-a");
+    expect(current.userState).toEqual({ draft: "still typing" });
+    expect(current.interactions.find(item => item.id === "mine")?.status).toBe("applied");
+    expect(current.interactions.find(item => item.id === "other")?.status).toBe("saved");
+    for (const extra of [{ title: "Different" }, { ownerAgentId: "new-owner" }, { decisions: [] }]) {
+      await expect(store.publish({ boardId: initial.id, expectedRevision: initial.revision, canvasBase: canvasBase(current), eventId: "stale-metadata", data: { count: 3 }, ...extra })).rejects.toMatchObject({ code: "revision_conflict", details: { scope: "board" } });
+    }
+    await expect(store.publish({ boardId: initial.id, expectedRevision: initial.revision, eventId: "pure-metadata", interactionResult: { id: "other", status: "processing" } })).rejects.toHaveProperty("code", "revision_conflict");
+    await expect(store.publish({ boardId: initial.id, expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "wrong-assignment", data: { count: 3 }, interactionResult: { id: "other", status: "processing" } }, "agent-a")).rejects.toHaveProperty("code", "forbidden");
+    expect(await store.read(initial.id)).toEqual(current);
+  });
+
+  it("serializes competing conditional emit snapshots and preserves the winner on late retries", async () => {
+    const initial = await store.create({ id: "test", title: "Shared", data: { nested: { left: 0, right: 0 } } });
+    const base = { boardId: initial.id, source: "shell", summary: "progress", canvasBase: canvasBase(initial) };
+    const writes = [
+      { ...base, eventId: "emit-a", data: { nested: { left: 1, right: 0 } } },
+      { ...base, eventId: "emit-b", data: { nested: { left: 0, right: 1 } } },
+    ];
+    const results = await Promise.allSettled(writes.map((input, index) => store.emit(input, `agent-${index}`)));
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.find(result => result.status === "rejected")).toMatchObject({ reason: { code: "revision_conflict", details: { scope: "canvas" } } });
+    const winner = results.findIndex(result => result.status === "fulfilled");
+    const current = (await store.read(initial.id))!;
+    expect(current.canvas.data).toEqual(writes[winner].data);
+    expect(await store.emit(writes[winner])).toEqual(current);
+    expect(current.events.filter(event => event.kind === "update")).toHaveLength(1);
+  });
+
+  it("lets concurrent agents update different nested leaves and rejects conflicting or stale values", async () => {
+    const initial = await store.create({ id: "test", title: "Shared", data: { nested: { left: 0, right: 0 }, untouched: [1, 2] } });
+    const set = (path: string, value: number) => ({ path, operation: "set" as const, expected: { exists: true, value: 0 }, value });
+    await Promise.all([
+      store.publish({ boardId: initial.id, expectedRevision: initial.revision, eventId: "leaf-a", dataPatch: [set("/nested/left", 1)], focusSelectors: ["#left"] }, "agent-a"),
+      store.emit({ boardId: initial.id, eventId: "leaf-b", source: "shell", summary: "right result", dataPatch: [set("/nested/right", 2)], focusSelectors: ["#right"] }, "agent-b"),
+    ]);
+    const current = (await store.read(initial.id))!;
+    expect(current.canvas.data).toEqual({ nested: { left: 1, right: 2 }, untouched: [1, 2] });
+    expect(current.updates.map(update => [update.actorAgentId, update.targets[0].selector])).toEqual([["agent-a", "#left"], ["agent-b", "#right"]]);
+    await expect(store.publish({ boardId: initial.id, expectedRevision: current.revision, eventId: "overwrite-leaf", dataPatch: [set("/nested/left", 3)] })).rejects.toMatchObject({ code: "data_conflict", details: { scope: "data", path: "/nested/left", expected: { exists: true, value: 0 }, actual: { exists: true, value: 1 }, coverageComplete: false } });
+    await expect(store.emit({ boardId: initial.id, eventId: "overwrite-parent", source: "shell", summary: "stale object", dataPatch: [{ path: "/nested", operation: "set", expected: { exists: true, value: { left: 0, right: 0 } }, value: {} }] })).rejects.toHaveProperty("code", "data_conflict");
+    await expect(store.publish({ boardId: initial.id, expectedRevision: current.revision, eventId: "strict-base", canvasBase: canvasBase(initial), dataPatch: [{ path: "/new", operation: "set", expected: { exists: false }, value: 3 }] })).rejects.toHaveProperty("code", "revision_conflict");
+    expect(await store.read(initial.id)).toEqual(current);
+  });
+
+  it("commits one conflicting leaf writer, atomically rejects multi-path failures and deduplicates successful batches", async () => {
+    const initial = await board();
+    const write = { boardId: initial.id, expectedRevision: initial.revision, eventId: "leaf", dataPatch: [{ path: "/count", operation: "set" as const, expected: { exists: true, value: 1 }, value: 2 }] };
+    const results = await Promise.allSettled([store.publish(write), store.publish({ ...write, eventId: "competing-leaf", dataPatch: [{ ...write.dataPatch[0], value: 3 }] })]);
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.find(result => result.status === "rejected")).toMatchObject({ reason: { code: "data_conflict" } });
+    const current = (await store.read(initial.id))!;
+    await expect(store.publish({ boardId: initial.id, expectedRevision: current.revision, eventId: "atomic-batch", dataPatch: [{ path: "/first", operation: "set", expected: { exists: false }, value: "must not commit" }, { path: "/count", operation: "remove", expected: { exists: true, value: 9 } }] })).rejects.toHaveProperty("code", "data_conflict");
+    expect(await store.read(initial.id)).toEqual(current);
+    expect(await new BoardStore(root).publish(write)).toEqual(current);
+    await expect(store.publish({ ...write, data: {} })).rejects.toHaveProperty("code", "invalid_input");
+    await expect(store.emit({ boardId: initial.id, eventId: "mixed", source: "shell", summary: "bad", canvasBase: canvasBase(current), data: {}, dataPatch: write.dataPatch })).rejects.toHaveProperty("code", "invalid_input");
+  });
+
+  it("retains pending interaction, events and receipts when a conditional data batch fails", async () => {
+    const initial = await board();
+    await store.addInteraction({ boardId: initial.id, intentId: "pending", kind: "change", text: "Update two values" }, "owner");
+    const before = await readFile(join(root, "boards", "test.json"), "utf8");
+    await expect(store.publish({ boardId: initial.id, expectedRevision: initial.revision, eventId: "partial-must-not-commit", dataPatch: [{ path: "/new", operation: "set", expected: { exists: false }, value: 3 }, { path: "/count", operation: "set", expected: { exists: true, value: 9 }, value: 4 }], interactionResult: { id: "pending", status: "applied", resultReferences: ["#a"] } }, "owner")).rejects.toHaveProperty("code", "data_conflict");
+    expect(await readFile(join(root, "boards", "test.json"), "utf8")).toBe(before);
+  });
+
+  it("does not claim complete conflict coverage when older updates have been pruned", async () => {
+    const initial = await board();
+    const current = await store.emit({ boardId: initial.id, eventId: "latest", source: "shell", summary: "Result", canvasBase: canvasBase(initial), data: { count: 2 } }, "last-writer");
+    const path = join(root, "boards", "test.json");
+    const incomplete = JSON.parse(await readFile(path, "utf8"));
+    incomplete.board.updates = [];
+    await writeFile(path, JSON.stringify(incomplete));
+    await expect(store.publish({ boardId: initial.id, expectedRevision: current.revision, eventId: "stale-after-prune", canvasBase: canvasBase(initial), data: { count: 3 } })).rejects.toMatchObject({ code: "revision_conflict", details: { recentUpdates: [], coverageComplete: false } });
+  });
+
   it("records only committed main canvas changes with exact versions and explicit data locations", async () => {
     let current = await board();
     expect(current.updates).toEqual([]);
-    current = await store.publish({ boardId: "test", expectedRevision: current.revision, eventId: "patch-located", patch: { id: "patch-target", selector: "#a", operation: "remove" } }, "owner");
+    current = await store.publish({ boardId: "test", expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "patch-located", patch: { id: "patch-target", selector: "#a", operation: "remove" } }, "owner");
     expect(current.updates).toEqual([{ id: "patch-located", eventId: "patch-located", at: current.updatedAt, boardRevision: current.revision, canvasRevision: current.canvas.revision, documentVersion: 1, kind: "patch", targets: [{ selector: "#a", operation: "remove", patchId: "patch-target" }], actorAgentId: "owner" }]);
-    current = await store.publish({ boardId: "test", expectedRevision: current.revision, eventId: "data-located", data: { count: 2 }, focusSelectors: ["#graph", "#caption", "#graph"] }, "fork");
+    current = await store.publish({ boardId: "test", expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "data-located", data: { count: 2 }, focusSelectors: ["#graph", "#caption", "#graph"] }, "fork");
     expect(current.updates.at(-1)).toMatchObject({ kind: "data", targets: [{ selector: "#graph" }, { selector: "#caption" }], actorAgentId: "fork" });
-    current = await store.emit({ boardId: "test", eventId: "data-unlocated", source: "shell", summary: "silent", data: { count: 3 } });
+    current = await store.emit({ boardId: "test", eventId: "data-unlocated", source: "shell", summary: "silent", canvasBase: canvasBase(current), data: { count: 3 } });
     expect(current.updates.at(-1)).toMatchObject({ kind: "data", targets: [] });
     expect(current.updates.at(-1)).not.toHaveProperty("actorAgentId");
-    current = await store.publish({ boardId: "test", expectedRevision: current.revision, eventId: "new-document", html: "<main>New</main>" });
+    current = await store.publish({ boardId: "test", expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "new-document", replaceDocument: true, html: "<main>New</main>" });
     expect(current.updates.at(-1)).toMatchObject({ kind: "document", targets: [], documentVersion: 2, canvasRevision: current.canvas.revision, boardRevision: current.revision });
     const updates = current.updates;
     const canvasRevision = current.canvas.revision;
-    current = await store.publish({ boardId: "test", expectedRevision: current.revision, eventId: "unchanged-data-publish", data: { count: 3 }, focusSelectors: ["#graph"] });
-    current = await store.emit({ boardId: "test", eventId: "unchanged-data-emit", source: "shell", summary: "same reading", data: { count: 3 }, focusSelectors: ["#graph"] });
+    current = await store.publish({ boardId: "test", expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "unchanged-data-publish", data: { count: 3 }, focusSelectors: ["#graph"] });
+    current = await store.emit({ boardId: "test", eventId: "unchanged-data-emit", source: "shell", summary: "same reading", canvasBase: canvasBase(current), data: { count: 3 }, focusSelectors: ["#graph"] });
     expect(current.canvas.revision).toBe(canvasRevision); expect(current.updates).toEqual(updates);
     await store.addInteraction({ boardId: "test", intentId: "question", kind: "question", text: "Explain" }, "owner");
     current = (await store.read("test"))!;
-    await store.publish({ boardId: "test", expectedRevision: current.revision, eventId: "receipt", interactionResult: { id: "question", status: "processing" }, decisions: [{ id: "choice", basis: "explicit", choice: "Use a stable reference" }] });
+    await store.publish({ boardId: "test", expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "receipt", interactionResult: { id: "question", status: "processing" }, decisions: [{ id: "choice", basis: "explicit", choice: "Use a stable reference" }] });
     await store.respond({ boardId: "test", interactionId: "question", eventId: "answer", expectedResponseRevision: 1, response: "Local answer", html: "<svg></svg>" });
     await store.emit({ boardId: "test", eventId: "fact-only", source: "shell", summary: "No data change" });
     await store.saveState({ boardId: "test", state: { draft: "keep" } });
     await store.updateExtraction("test", { cursor: "checked" });
     expect((await store.read("test"))!.updates).toEqual(updates);
     current = (await store.read("test"))!;
-    await expect(store.publish({ boardId: "test", expectedRevision: current.revision, eventId: "rolled-back", data: { count: 99 }, interactionResult: { id: "missing", status: "processing" } })).rejects.toMatchObject({ code: "not_found" });
+    await expect(store.publish({ boardId: "test", expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "rolled-back", data: { count: 99 }, interactionResult: { id: "missing", status: "processing" } })).rejects.toMatchObject({ code: "not_found" });
     expect((await store.read("test"))!.updates).toEqual(updates);
     for (const request of [{ focusSelectors: ["#a"] }, { data: {}, focusSelectors: Array(13).fill("#a") }, { data: {}, html: "new", focusSelectors: ["#a"] }]) {
-      await expect(store.publish({ boardId: "test", expectedRevision: current.revision, eventId: "bad-focus", ...request })).rejects.toHaveProperty("code", "invalid_input");
+      await expect(store.publish({ boardId: "test", expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "bad-focus", ...request })).rejects.toHaveProperty("code", "invalid_input");
     }
     await expect(store.emit({ boardId: "test", eventId: "bad-emit-focus", source: "shell", summary: "bad", focusSelectors: ["#a"] })).rejects.toHaveProperty("code", "invalid_input");
   });
 
   it("serializes canvas locations, deduplicates retries and preserves per-update attention across restart", async () => {
     let current = await board();
-    const request = { boardId: "test", expectedRevision: current.revision, eventId: "original", data: { count: 2 }, focusSelectors: ["#a"] };
+    const request = { boardId: "test", expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "original", data: { count: 2 }, focusSelectors: ["#a"] };
     const results = await Promise.allSettled([store.publish(request, "writer-a"), store.publish({ ...request, eventId: "competitor" }, "writer-b")]);
     expect(results.filter(item => item.status === "fulfilled")).toHaveLength(1);
     expect(results.find(item => item.status === "rejected")).toMatchObject({ reason: { code: "revision_conflict" } });
     current = (await store.read("test"))!;
     const first = current.updates[0];
     await store.publish(request, "writer-b"); // A replay must not rewrite the first committer's attribution.
-    const emit = { boardId: "test", eventId: "second", source: "shell", summary: "new", data: { count: 3 }, focusSelectors: ["#a"] };
+    const emit = { boardId: "test", eventId: "second", source: "shell", summary: "new", canvasBase: canvasBase(current), data: { count: 3 }, focusSelectors: ["#a"] };
     await Promise.all([store.emit(emit, "writer-b"), store.emit(emit, "writer-b")]);
     current = (await store.read("test"))!;
     expect(current.updates).toHaveLength(2);
@@ -82,7 +211,7 @@ describe("BoardStore", () => {
     expect((await reopened.read("test"))!.seenUpdateIds).toEqual(["second"]);
     expect((await reopened.list())[0]).toMatchObject({ unreadUpdateCount: 1, latestUpdateRevision: 3 });
     // A mark cannot invalidate a publisher's CAS or pre-acknowledge an unknown future ID.
-    current = await reopened.publish({ boardId: "test", expectedRevision: current.revision, eventId: "future", data: { count: 4 } });
+    current = await reopened.publish({ boardId: "test", expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "future", data: { count: 4 } });
     await Promise.all([store.markUpdatesSeen({ boardId: "test", updateIds: ["original"] }), reopened.markUpdatesSeen({ boardId: "test", updateIds: ["second"] })]);
     expect((await store.read("test"))!.seenUpdateIds).toEqual(["original", "second"]);
     expect((await reopened.list())[0]).toMatchObject({ unreadUpdateCount: 1, latestUpdateRevision: current.revision });
@@ -99,7 +228,7 @@ describe("BoardStore", () => {
     expect((await new BoardStore(root).read("test"))!).toMatchObject({ updates: [], seenUpdateIds: [] });
     expect((await store.list())[0]).toMatchObject({ unreadUpdateCount: 0, latestUpdateRevision: 0 });
     for (let n = 0; n < 2; n++) {
-      await store.emit({ boardId: "test", eventId: `location-${n}`, source: "shell", summary: "progress", data: { count: n } });
+      await store.emit({ boardId: "test", eventId: `location-${n}`, source: "shell", summary: "progress", canvasBase: canvasBase((await store.read("test"))!), data: { count: n } });
       await store.markUpdatesSeen({ boardId: "test", updateIds: [`location-${n}`] });
     }
     // Seed a full retained backlog, then exercise actual writes across the boundary.
@@ -113,7 +242,7 @@ describe("BoardStore", () => {
     for (let n = 2; n < 80; n++) full.history.push({ revision: n + 2, at: full.board.updatedAt, operation: "emit", payload: { boardId: "test", eventId: `location-${n}`, source: "shell", summary: "progress", data: { count: n } } });
     await writeFile(path, JSON.stringify(full));
     for (let n = 80; n < 82; n++) {
-      await store.emit({ boardId: "test", eventId: `location-${n}`, source: "shell", summary: "progress", data: { count: n } });
+      await store.emit({ boardId: "test", eventId: `location-${n}`, source: "shell", summary: "progress", canvasBase: canvasBase((await store.read("test"))!), data: { count: n } });
     }
     const current = (await new BoardStore(root).read("test"))!;
     expect(current.updates).toHaveLength(80); expect(current.updates[0].id).toBe("location-2"); expect(current.updates.at(-1)!.id).toBe("location-81");
@@ -123,11 +252,11 @@ describe("BoardStore", () => {
 
   it("recovers canvas, patches, data, user state, history and dedup after restart", async () => {
     const initial = await board();
-    const request = { boardId: initial.id, expectedRevision: initial.revision, eventId: "patch-1", patch: { id: "patch-one", selector: "#a", operation: "append" as const, html: "<input>" } };
+    const request = { boardId: initial.id, expectedRevision: initial.revision, canvasBase: canvasBase(initial), eventId: "patch-1", patch: { id: "patch-one", selector: "#a", operation: "append" as const, html: "<input>" } };
     const patched = await store.publish(request);
     expect(patched.canvas.documentVersion).toBe(initial.canvas.documentVersion);
     expect(patched.canvas.html).toBe(initial.canvas.html);
-    await store.emit({ boardId: initial.id, eventId: "shell-result", source: "shell", summary: "count", data: { count: 2 } });
+    await store.emit({ boardId: initial.id, eventId: "shell-result", source: "shell", summary: "count", canvasBase: canvasBase(patched), data: { count: 2 } });
     await store.saveState({ boardId: initial.id, state: { input: "user typing" } });
     const reopened = new BoardStore(root);
     await reopened.init();
@@ -142,14 +271,14 @@ describe("BoardStore", () => {
   it("serializes competing writes and never overwrites concurrent user state", async () => {
     const initial = await board();
     const results = await Promise.allSettled([
-      store.publish({ boardId: initial.id, expectedRevision: initial.revision, eventId: "writer-a", data: { a: 1 } }),
-      store.publish({ boardId: initial.id, expectedRevision: initial.revision, eventId: "writer-b", data: { b: 2 } }),
+      store.publish({ boardId: initial.id, expectedRevision: initial.revision, canvasBase: canvasBase(initial), eventId: "writer-a", data: { a: 1 } }),
+      store.publish({ boardId: initial.id, expectedRevision: initial.revision, canvasBase: canvasBase(initial), eventId: "writer-b", data: { b: 2 } }),
     ]);
     expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
     expect(results.find(result => result.status === "rejected")).toMatchObject({ reason: { code: "revision_conflict" } });
     const current = (await store.read(initial.id))!;
     await store.saveState({ boardId: initial.id, state: { slider: 0.7 } });
-    await expect(store.publish({ boardId: initial.id, expectedRevision: current.revision, eventId: "stale", html: "new" })).rejects.toMatchObject({ code: "revision_conflict" });
+    await store.publish({ boardId: initial.id, expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "state-does-not-conflict", replaceDocument: true, html: "new" });
     expect((await store.read(initial.id))!.userState.slider).toBe(0.7);
   });
 
@@ -158,20 +287,20 @@ describe("BoardStore", () => {
     const second = new BoardStore(root);
     await second.init();
     const results = await Promise.allSettled([
-      store.publish({ boardId: initial.id, expectedRevision: initial.revision, eventId: "a", data: { a: 1 } }),
-      second.publish({ boardId: initial.id, expectedRevision: initial.revision, eventId: "b", data: { b: 2 } }),
+      store.publish({ boardId: initial.id, expectedRevision: initial.revision, canvasBase: canvasBase(initial), eventId: "a", data: { a: 1 } }),
+      second.publish({ boardId: initial.id, expectedRevision: initial.revision, canvasBase: canvasBase(initial), eventId: "b", data: { b: 2 } }),
     ]);
     expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
   });
 
   it("deduplicates concurrent events and rejects altered payload or operation", async () => {
     const initial = await board();
-    const event = { boardId: initial.id, eventId: "one", source: "shell", summary: "done", data: { x: 1, nested: { a: 2, b: 3 } } };
+    const event = { boardId: initial.id, eventId: "one", source: "shell", summary: "done", canvasBase: canvasBase(initial), data: { x: 1, nested: { a: 2, b: 3 } } };
     const [a, b] = await Promise.all([store.emit(event), store.emit(event)]);
     expect(a.revision).toBe(b.revision);
     expect((await store.emit({ ...event, data: { nested: { b: 3, a: 2 }, x: 1 } })).revision).toBe(a.revision);
     await expect(store.emit({ ...event, summary: "different" })).rejects.toMatchObject({ code: "idempotency_conflict" });
-    await expect(store.publish({ boardId: initial.id, expectedRevision: a.revision, eventId: "one", data: {} })).rejects.toMatchObject({ code: "idempotency_conflict" });
+    await expect(store.publish({ boardId: initial.id, expectedRevision: a.revision, canvasBase: canvasBase(a), eventId: "one", data: {} })).rejects.toMatchObject({ code: "idempotency_conflict" });
   });
 
   it("records only actual observation changes and never invents a rationale", async () => {
@@ -194,13 +323,13 @@ describe("BoardStore", () => {
   it("preserves the patch replay journal until an explicit full-document replacement", async () => {
     let current = await board();
     for (const id of ["a", "b"]) {
-      current = await store.publish({ boardId: current.id, expectedRevision: current.revision, eventId: id, patch: { id, selector: "#a", operation: "append", html: id } });
+      current = await store.publish({ boardId: current.id, expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: id, patch: { id, selector: "#a", operation: "append", html: id } });
     }
     const version = current.canvas.documentVersion;
-    current = await store.publish({ boardId: current.id, expectedRevision: current.revision, eventId: "data", data: { count: 3 } });
+    current = await store.publish({ boardId: current.id, expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "data", data: { count: 3 } });
     expect(current.canvas.patches.map(patch => patch.id)).toEqual(["a", "b"]);
     expect(current.canvas.documentVersion).toBe(version);
-    current = await store.publish({ boardId: current.id, expectedRevision: current.revision, eventId: "reset", html: "replacement" });
+    current = await store.publish({ boardId: current.id, expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "reset", replaceDocument: true, html: "replacement" });
     expect(current.canvas.patches).toEqual([]);
     expect(current.canvas.documentVersion).toBe(version + 1);
     const stored = JSON.parse(await readFile(join(root, "boards", "test.json"), "utf8"));
@@ -227,7 +356,7 @@ describe("BoardStore", () => {
     const initial = await board();
     await store.addInteraction({ boardId: initial.id, intentId: "question", kind: "question", text: "Why?" });
     const before = (await store.read(initial.id))!;
-    const input = { boardId: initial.id, expectedRevision: before.revision, eventId: "answer", html: "answer", interactionResult: { id: "question", status: "applied" as const } };
+    const input = { boardId: initial.id, expectedRevision: before.revision, canvasBase: canvasBase(before), eventId: "answer", replaceDocument: true, html: "answer", interactionResult: { id: "question", status: "applied" as const } };
     await expect(store.publish(input)).rejects.toMatchObject({ code: "invalid_input" });
     expect(await store.read(initial.id)).toEqual(before);
     const result = await store.publish({ ...input, interactionResult: { ...input.interactionResult, resultReferences: ["answer.html"] } });
@@ -248,13 +377,13 @@ describe("BoardStore", () => {
     await board();
     await symlink(join(root, "boards", "test.json"), join(root, "boards", "link.json"));
     await expect(store.read("link")).rejects.toMatchObject({ code: "unsafe_path" });
-    await expect(store.emit({ boardId: "test", eventId: "bad-json", source: "test", summary: "bad", data: { value: NaN } })).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(store.emit({ boardId: "test", eventId: "bad-json", source: "test", summary: "bad", canvasBase: canvasBase((await store.read("test"))!), data: { value: NaN } })).rejects.toMatchObject({ code: "invalid_input" });
     await expect(store.saveState({ boardId: "test", state: { huge: "x".repeat(2_100_000) } })).rejects.toMatchObject({ code: "size_limit" });
   });
 
   it("snapshots input before queuing and returns detached values", async () => {
     const initial = await board();
-    const input = { boardId: initial.id, eventId: "snapshot", source: "test", summary: "snapshot", data: { nested: { value: 1 } } };
+    const input = { boardId: initial.id, eventId: "snapshot", source: "test", summary: "snapshot", canvasBase: canvasBase(initial), data: { nested: { value: 1 } } };
     const pending = store.emit(input);
     input.data.nested.value = 99;
     const result = await pending;
@@ -303,7 +432,7 @@ describe("BoardStore", () => {
     const restored = new BoardStore(root);
     await restored.init();
     expect((await restored.read(initial.id))!.extraction).toEqual(checkpoints.at(-1));
-    const publish = { boardId: initial.id, expectedRevision: initial.revision, eventId: "real-update", data: { count: 2 } };
+    const publish = { boardId: initial.id, expectedRevision: initial.revision, canvasBase: canvasBase(initial), eventId: "real-update", data: { count: 2 } };
     const updated = await restored.publish(publish);
     expect(updated.revision).toBe(initial.revision + 1);
     expect(updated.extraction).toEqual(checkpoints.at(-1));
@@ -320,7 +449,7 @@ describe("BoardStore", () => {
     const initial = await board();
     await Promise.all([
       store.updateExtraction(initial.id, { cursor: "before-publication", note: "Checkpoint" }),
-      store.publish({ boardId: initial.id, expectedRevision: initial.revision, eventId: "concurrent-publish", html: "<main>New content</main>" }),
+      store.publish({ boardId: initial.id, expectedRevision: initial.revision, canvasBase: canvasBase(initial), eventId: "concurrent-publish", replaceDocument: true, html: "<main>New content</main>" }),
       store.updateExtraction(initial.id, { cursor: "after-publication" }),
     ]);
     const current = (await new BoardStore(root).read(initial.id))!;
@@ -363,7 +492,7 @@ describe("BoardStore", () => {
     await store.addInteraction({ boardId: initial.id, intentId: "return", kind: "return", sourceInteractionId: "fork", text: "Adopt the original suggestion", anchor });
     await store.updateInteraction(initial.id, "fork", { response: "A later revised suggestion" });
     const current = (await store.read(initial.id))!;
-    await store.publish({ boardId: initial.id, expectedRevision: current.revision, eventId: "new-canvas", html: "A different layout" });
+    await store.publish({ boardId: initial.id, expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "new-canvas", replaceDocument: true, html: "A different layout" });
     const reopened = (await new BoardStore(root).read(initial.id))!;
     const returned = reopened.interactions.find(item => item.id === "return")!;
     expect(returned).toMatchObject({ text: "Adopt the original suggestion", anchor, sourceInteractionId: "fork", status: "saved" });

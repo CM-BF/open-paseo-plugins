@@ -6,9 +6,10 @@ import {
   BoardSchema, CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, InteractInputSchema,
   InteractionSchema, PublishInputSchema, RespondInputSchema, StateInputSchema, MarkUpdatesSeenInputSchema,
   type Board, type BoardSummary, type CreateInput, type DecisionInput, type EmitInput, type CanvasUpdate,
-  type InteractInput, type Interaction, type PublishInput, type RespondInput, type MarkUpdatesSeenInput,
+  type InteractInput, type Interaction, type PublishInput, type RespondInput, type MarkUpdatesSeenInput, type CanvasBase, type DataPatch,
 } from "../shared/contracts";
 import { assertId, assertJson, BoardStoreError, canonicalJson, ensureDirectory, fingerprint, parseInput, readEnvelope, serialized, writeEnvelope, type Envelope } from "./store-format";
+import { applyDataPatch } from "./data-patch";
 
 export { BoardStoreError } from "./store-format";
 export type InteractionUpdate = Partial<Pick<Interaction, "status" | "agentId" | "response" | "responseRevision" | "responseSource" | "responseMethod" | "responseCanvas" | "resultReferences" | "error">>;
@@ -101,10 +102,21 @@ export class BoardStore {
   async publish(raw: PublishInput, actorAgentId?: string): Promise<Board> {
     const input = parseInput(PublishInputSchema, raw);
     if (input.html !== undefined && input.patch !== undefined) throw new BoardStoreError("invalid_input", "Publish accepts either a full document or a patch, not both");
-    if (input.focusSelectors !== undefined && (input.data === undefined || input.html !== undefined || input.patch !== undefined)) throw new BoardStoreError("invalid_input", "focusSelectors describe data-only canvas updates");
+    const legacyCanvasWrite = input.html !== undefined || input.patch !== undefined || input.data !== undefined;
+    if (input.data !== undefined && input.dataPatch !== undefined) throw new BoardStoreError("invalid_input", "Use data or conditional dataPatch, not both");
+    if (input.focusSelectors !== undefined && (input.data === undefined && input.dataPatch === undefined || input.html !== undefined || input.patch !== undefined)) throw new BoardStoreError("invalid_input", "focusSelectors describe data-only canvas updates");
     if (input.data !== undefined) assertJson(input.data, "Canvas data");
     return this.mutate(input.boardId, "publish", input, (board, at) => {
-      this.expectRevision(board, input.expectedRevision);
+      // Existing receipts replay before enforcing new write requirements, so a lost
+      // response from an older installation remains safe to retry unchanged.
+      if (input.html !== undefined && input.replaceDocument !== true) throw new BoardStoreError("invalid_input", "Full HTML publication requires replaceDocument:true; prefer a local patch");
+      if (input.replaceDocument === true && input.html === undefined) throw new BoardStoreError("invalid_input", "replaceDocument:true requires a full HTML document");
+      if (legacyCanvasWrite && !input.canvasBase) throw new BoardStoreError("invalid_input", "HTML, selector patches and legacy data writes require canvasBase from the source snapshot");
+      if (input.canvasBase) this.expectCanvas(board, input.canvasBase, input.expectedRevision);
+      const canvasWrite = legacyCanvasWrite || input.dataPatch !== undefined;
+      if (!canvasWrite || input.title !== undefined || input.ownerAgentId !== undefined || input.decisions !== undefined) this.expectRevision(board, input.expectedRevision);
+      if (actorAgentId && input.interactionResult && board.interactions.find(item => item.id === input.interactionResult!.id)?.agentId !== actorAgentId) throw new BoardStoreError("forbidden", "Only the agent assigned to this interaction may publish its result");
+      const nextData = input.dataPatch ? this.patchData(board, input.dataPatch, input.canvasBase, input.expectedRevision) : input.data === undefined ? board.canvas.data : { ...board.canvas.data, ...input.data };
       if (input.title !== undefined) board.title = input.title;
       if (input.ownerAgentId !== undefined) board.ownerAgentId = input.ownerAgentId;
       if (input.html !== undefined) {
@@ -116,7 +128,6 @@ export class BoardStore {
         if (board.canvas.patches.some(patch => patch.id === input.patch!.id)) throw new BoardStoreError("idempotency_conflict", `Patch ${input.patch.id} already exists in this document`);
         board.canvas.patches.push(input.patch);
       }
-      const nextData = input.data === undefined ? board.canvas.data : { ...board.canvas.data, ...input.data };
       const dataChanged = canonicalJson(nextData) !== canonicalJson(board.canvas.data);
       board.canvas.data = nextData;
       if (input.html !== undefined || input.patch !== undefined || dataChanged) {
@@ -168,12 +179,15 @@ export class BoardStore {
 
   async emit(raw: EmitInput, actorAgentId?: string): Promise<Board> {
     const input = parseInput(EmitInputSchema, raw);
-    if (input.focusSelectors !== undefined && input.data === undefined) throw new BoardStoreError("invalid_input", "focusSelectors require canvas data");
+    if (input.data !== undefined && input.dataPatch !== undefined) throw new BoardStoreError("invalid_input", "Use data or conditional dataPatch, not both");
+    if (input.focusSelectors !== undefined && input.data === undefined && input.dataPatch === undefined) throw new BoardStoreError("invalid_input", "focusSelectors require canvas data or dataPatch");
     if (input.data !== undefined) assertJson(input.data, "Event data");
     if (input.observation) assertJson(input.observation.value, "Observation value");
     return this.mutate(input.boardId, "emit", input, (board, at) => {
-      if (input.data !== undefined) {
-        const nextData = { ...board.canvas.data, ...input.data };
+      if (input.data !== undefined && !input.canvasBase) throw new BoardStoreError("invalid_input", "Legacy event data writes require canvasBase; use conditional dataPatch for independent updates");
+      if (input.canvasBase) this.expectCanvas(board, input.canvasBase);
+      if (input.data !== undefined || input.dataPatch !== undefined) {
+        const nextData = input.dataPatch ? this.patchData(board, input.dataPatch, input.canvasBase) : { ...board.canvas.data, ...input.data };
         if (canonicalJson(nextData) !== canonicalJson(board.canvas.data)) {
           board.canvas.data = nextData;
           board.canvas.revision++;
@@ -300,7 +314,27 @@ export class BoardStore {
   }
 
   private expectRevision(board: Board, expected: number): void {
-    if (board.revision !== expected) throw new BoardStoreError("revision_conflict", `Board changed: expected revision ${expected}, current revision ${board.revision}`, { expectedRevision: expected, currentRevision: board.revision });
+    if (board.revision !== expected) throw new BoardStoreError("revision_conflict", `Board changed: expected revision ${expected}, current revision ${board.revision}`, { scope: "board", expectedRevision: expected, currentRevision: board.revision, ...this.conflictContext(board, undefined, expected) });
+  }
+
+  private conflictContext(board: Board, base?: CanvasBase, boardRevision?: number): Record<string, unknown> {
+    const updates = board.updates.filter(update => base ? update.canvasRevision > base.revision : boardRevision === undefined || update.boardRevision > boardRevision);
+    const recentUpdates = updates.slice(-20);
+    const plausibleBase = base !== undefined && base.revision <= board.canvas.revision && base.documentVersion <= board.canvas.documentVersion && (base.revision !== board.canvas.revision || base.documentVersion === board.canvas.documentVersion);
+    const coverageComplete = plausibleBase && recentUpdates.length === board.canvas.revision - base!.revision && recentUpdates.every((update, index) => update.canvasRevision === base!.revision + index + 1);
+    return { base: { ...(boardRevision === undefined ? {} : { boardRevision }), ...(base ? { canvas: base } : {}) }, current: { boardRevision: board.revision, canvas: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion } }, recentUpdates, coverageComplete };
+  }
+
+  private expectCanvas(board: Board, expected: CanvasBase, boardRevision?: number): void {
+    if (board.canvas.revision !== expected.revision || board.canvas.documentVersion !== expected.documentVersion) throw new BoardStoreError("revision_conflict", "Canvas changed since the source snapshot; reread and reconcile the content, not only its version number", { scope: "canvas", ...this.conflictContext(board, expected, boardRevision) });
+  }
+
+  private patchData(board: Board, patches: DataPatch[], base?: CanvasBase, boardRevision?: number): Board["canvas"]["data"] {
+    try { return applyDataPatch(board.canvas.data, patches); }
+    catch (error) {
+      if (error instanceof BoardStoreError && error.code === "data_conflict") throw new BoardStoreError(error.code, error.message, { scope: "data", ...error.details, ...this.conflictContext(board, base, boardRevision) });
+      throw error;
+    }
   }
 
   private event(board: Board, id: string, source: string, kind: string, summary: string, at: string, data?: Board["canvas"]["data"]): void {
