@@ -3,6 +3,7 @@ import { bootstrapRpc, invokeRpc } from './shared/contracts';
 import { CompanionService } from './server/service';
 import { CompanionMcpServer } from './server/mcp';
 import { registerSessionTools } from './server/session-tools';
+import { registerDmQuoteContext } from './server/dm-quote-context';
 
 export default function contribute(server: PluginServerContext) {
   // New hosts expose their already-connected SDK before the first UI request.
@@ -25,5 +26,9 @@ export default function contribute(server: PluginServerContext) {
     void service.applyPendingForAgent(paseo, agent.id).catch(error => console.error('[cindy-companion] pending profile remains unapplied', error instanceof Error ? error.message : String(error)));
     void service.onNativeTaskTurnEnded(paseo, agent.id).catch(error => console.error('[cindy-companion] queued task remains pending', error instanceof Error ? error.message : String(error)));
   });
-  return async () => { await Promise.all([service.close(), mcp.close()]); };
+  const removeQuoteContext = registerDmQuoteContext(server, service);
+  return async () => {
+    try { removeQuoteContext(); }
+    finally { await Promise.all([service.close(), mcp.close()]); }
+  };
 }

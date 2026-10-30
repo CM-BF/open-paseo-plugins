@@ -23,6 +23,16 @@
       "extraction": "unchanged exported pure builder and original 4000-character bound; database imports/read path excluded",
       "functionSha256": "c2ffa8112e772f164ff5dcf9e35c1e32f1fde00b9fcf901467ad71508d043802",
       "localSha256": "82a56af97061f94ce51f296249a1f47439c8869e61567be04ca2d50964b0ba1b"
+    },
+    {
+      "path": "packages/maker-shared/src/chatReplyQuote.ts",
+      "blob": "f85d77e09f7f587f9cfe2ab006c96f265a26725c",
+      "sha256": "76a2d0e2cfc1bcd3ce87131901d706923bcea806c206f31db5fe755e0bc19d31",
+      "bytes": 1676,
+      "url": "https://github.com/makecindy/cindy/blob/118767c987f518286ae10a506a54287c3dc2a560/packages/maker-shared/src/chatReplyQuote.ts",
+      "localPath": "shared/vendor/chatReplyQuote.ts",
+      "extraction": "unchanged complete shared module; quote adapter uses original whitespace normalization and 280-character excerpt",
+      "localSha256": "76a2d0e2cfc1bcd3ce87131901d706923bcea806c206f31db5fe755e0bc19d31"
     }
   ]
 }

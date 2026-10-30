@@ -8,6 +8,7 @@ import { PresetOpening } from './client/opening';
 import { OPENING_KIND, openingSchema } from './shared/opening';
 import { contributeTaskCards } from './client/task-contribution';
 import { contributeTaskOwner } from './client/task-owner';
+import { contributeDmQuotes } from './client/dm-quotes';
 
 export default function contribute(client: PluginClientContext) {
   const headers = new Map<string, { workspaceId: string; remove(): void }>();
@@ -43,11 +44,12 @@ export default function contribute(client: PluginClientContext) {
   const removeOpening = client.addTimelineRenderer({ kind: OPENING_KIND, version: 1, schema: openingSchema, Component: PresetOpening });
   const removeTaskCards = contributeTaskCards(client);
   const removeTaskOwner = contributeTaskOwner(client);
+  const removeDmQuotes = contributeDmQuotes(client);
   const removeCommand = client.addCommandCenterItem({ id: "open-cindy", title: "Chat with Cindy", icon: "MessagesSquare", context: "global",
     onSelect({ openScreen }) { openScreen({ screenId: "conversation", params: { botId: "cindy" } }); },
   });
   return () => {
-    removeSidebar(); removeConversation(); removeGroup(); removeOpening(); removeTaskCards(); removeTaskOwner(); removeCommand();
+    removeSidebar(); removeConversation(); removeGroup(); removeOpening(); removeTaskCards(); removeTaskOwner(); removeDmQuotes(); removeCommand();
     for (const header of headers.values()) header.remove();
     headers.clear();
   };

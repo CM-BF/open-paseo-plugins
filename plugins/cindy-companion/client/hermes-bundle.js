@@ -2644,15 +2644,473 @@ function contributeTaskOwner(client) {
   });
 }
 
+// client/dm-quotes.tsx
+import { useLayoutEffect as useLayoutEffect8, useMemo as useMemo5, useRef as useRef9, useState as useState8 } from "react";
+import { Pressable as Pressable7, Text as Text8, View as View8 } from "react-native";
+import { useQuery as useQuery2 } from "@tanstack/react-query";
+import { z as z7 } from "zod";
+import { defineTranslations as defineTranslations3, useTranslation as useTranslation3 } from "@getpaseo/plugin/client";
+import { Icon as Icon2 } from "@getpaseo/plugin/client/ui";
+
+// shared/dm-quotes.ts
+import { z as z6 } from "zod";
+
+// shared/dm-conversation.ts
+import { z as z5 } from "zod";
+var id = z5.string().min(1).max(2048).refine(value => value.trim().length > 0);
+var dmMessageReferenceSchema = z5.object({
+  role: z5.enum(["user", "assistant"]),
+  providerMessageId: id.optional(),
+  clientMessageId: id.optional(),
+  turnId: id.optional()
+}).strict().refine(value => Boolean(value.providerMessageId || value.clientMessageId));
+var dmMessageSourceSchema = z5.object({
+  agentId: id,
+  reference: dmMessageReferenceSchema,
+  position: z5.object({
+    epoch: id,
+    seq: z5.number().int().nonnegative()
+  }).strict().optional()
+}).strict();
+
+// shared/dm-quotes.ts
+var DM_QUOTE_CONTEXT_ID = "cindy-dm-quote";
+var dmQuoteSelectionSchema = z6.object({
+  source: dmMessageSourceSchema
+}).strict();
+var dmQuoteDisplaySchema = z6.discriminatedUnion("status", [z6.object({
+  version: z6.literal(1),
+  status: z6.literal("available"),
+  botId: z6.string().min(1),
+  source: dmMessageSourceSchema,
+  excerpt: z6.string().max(280),
+  evidence: z6.object({
+    projection: z6.literal("unmerged-native-message"),
+    provenance: z6.literal("unavailable"),
+    attachments: z6.literal("unavailable"),
+    sealed: z6.literal("unavailable")
+  }).strict()
+}).strict(), z6.object({
+  version: z6.literal(1),
+  status: z6.literal("not-found"),
+  source: dmMessageSourceSchema
+}).strict()]);
+
+// shared/vendor/chatReplyQuote.ts
+var CHAT_REPLY_QUOTE_EXCERPT_MAX = 280;
+function chatReplyQuoteExcerpt(text) {
+  var line = text.replace(/\s+/g, " ").trim();
+  return line.length > CHAT_REPLY_QUOTE_EXCERPT_MAX ? `${line.slice(0, CHAT_REPLY_QUOTE_EXCERPT_MAX - 1)}\u2026` : line;
+}
+
+// client/dm-quote-host.ts
+function quoteHost(client) {
+  var candidate = client;
+  if (!candidate.addMessageAction || !candidate.addMessagePrefix || !candidate.addComposerContext || !candidate.setComposerContext) return null;
+  return {
+    addMessageAction: candidate.addMessageAction.bind(candidate),
+    addMessagePrefix: candidate.addMessagePrefix.bind(candidate),
+    addComposerContext: candidate.addComposerContext.bind(candidate),
+    setComposerContext: candidate.setComposerContext.bind(candidate)
+  };
+}
+
+// client/dm-quotes.tsx
+import { Fragment as Fragment3, jsx as jsx9, jsxs as jsxs7 } from "react/jsx-runtime";
+var messages3 = defineTranslations3({
+  resources: {
+    en: {
+      reply: "Quote reply",
+      owner: "You",
+      companion: "Teammate",
+      replyingTo: "Quoting {{name}}",
+      remove: "Remove quote",
+      jumpLabel: "Go to {{name}}\u2019s original message: {{summary}}",
+      unavailable: "The original message isn\u2019t in the history you can view",
+      loading: "Loading the original message\u2026",
+      readError: "The original message could not be read. Try again later.",
+      selectError: "This conversation cannot accept a quote right now. Your draft has been kept.",
+      locateError: "The original message could not be located.",
+      attachments: "Quoting an attachment-only message is not available yet."
+    },
+    "zh-CN": {
+      reply: "\u5F15\u7528\u56DE\u590D",
+      owner: "\u4F60",
+      companion: "\u4F19\u4F34",
+      replyingTo: "\u5F15\u7528 {{name}}",
+      remove: "\u53D6\u6D88\u5F15\u7528",
+      jumpLabel: "\u67E5\u770B {{name}} \u7684\u539F\u6D88\u606F\uFF1A{{summary}}",
+      unavailable: "\u539F\u6D88\u606F\u4E0D\u5728\u53EF\u67E5\u770B\u7684\u8BB0\u5F55\u91CC",
+      loading: "\u6B63\u5728\u8BFB\u53D6\u539F\u6D88\u606F\u2026",
+      readError: "\u6682\u65F6\u65E0\u6CD5\u8BFB\u53D6\u539F\u6D88\u606F\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002",
+      selectError: "\u5F53\u524D\u4F1A\u8BDD\u6682\u65F6\u65E0\u6CD5\u6DFB\u52A0\u5F15\u7528\uFF0C\u8F93\u5165\u7684\u5185\u5BB9\u5DF2\u4FDD\u7559\u3002",
+      locateError: "\u6682\u65F6\u65E0\u6CD5\u5B9A\u4F4D\u539F\u6D88\u606F\u3002",
+      attachments: "\u6682\u4E0D\u652F\u6301\u5F15\u7528\u53EA\u6709\u9644\u4EF6\u7684\u6D88\u606F\u3002"
+    }
+  }
+});
+var replyIcon = {
+  svg: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4h8a5 5 0 0 1 5 5v3.5a5 5 0 0 1-5 5h-4l-4 3v-3a5 5 0 0 1-5-5V9a5 5 0 0 1 5-5Z"/></svg>'
+};
+var profileList = z7.object({
+  profiles: z7.array(z7.object({
+    id: z7.string(),
+    name: z7.string(),
+    enabled: z7.boolean(),
+    status: z7.enum(["active", "paused", "archived"]),
+    canonicalSessionId: z7.string().optional()
+  }))
+});
+var sourceSnapshot = z7.object({
+  status: z7.literal("available"),
+  snapshot: z7.object({
+    botId: z7.string(),
+    source: dmMessageSourceSchema,
+    text: z7.string()
+  })
+});
+function matchesRequestedSource(requested, returned) {
+  return requested.agentId === returned.agentId && requested.reference.role === returned.reference.role && ["providerMessageId", "clientMessageId", "turnId"].every(key => requested.reference[key] === void 0 || requested.reference[key] === returned.reference[key]);
+}
+function useProfiles(hostId) {
+  var invoke = useSettingsInvoke(hostId);
+  return useQuery2({
+    queryKey: ["cindy-companion", hostId, "dm-quote-profiles"],
+    queryFn: () => __async(null, null, function* () {
+      var result = yield invoke("profile.list", {});
+      if (!result.ok) throw new Error(result.message);
+      return profileList.parse(result.value).profiles;
+    }),
+    staleTime: 5e3
+  }).data ?? [];
+}
+function useCurrentScope(key) {
+  var scope = useMemo5(() => ({
+    active: false
+  }), [key]);
+  var latest = useRef9(scope);
+  latest.current = scope;
+  useLayoutEffect8(() => {
+    scope.active = true;
+    return () => {
+      scope.active = false;
+    };
+  }, [scope]);
+  return useMemo5(() => () => scope.active && latest.current === scope, [scope]);
+}
+function QuoteBlock(props) {
+  var {
+      t
+    } = useTranslation3(messages3),
+    dark = appearanceFromBackground(props.theme.colors.surface0) === "dark";
+  var primary = dark ? "rgba(255,255,255,0.82)" : "rgba(0,0,0,0.88)";
+  var secondary = dark ? "rgba(255,255,255,0.55)" : "rgba(0,0,0,0.56)";
+  var tertiary = dark ? "rgba(255,255,255,0.40)" : "rgba(0,0,0,0.44)";
+  var rail = dark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.08)";
+  var [hovered, setHovered] = useState8(false);
+  var body = /* @__PURE__ */jsxs7(Fragment3, {
+    children: [props.compact && /* @__PURE__ */jsx9(View8, {
+      style: {
+        flexShrink: 0
+      },
+      children: /* @__PURE__ */jsx9(Icon2, {
+        icon: replyIcon,
+        size: 14,
+        color: secondary
+      })
+    }), /* @__PURE__ */jsx9(View8, {
+      style: {
+        width: 2,
+        flexShrink: 0,
+        backgroundColor: rail,
+        ...(props.compact ? {
+          height: 16
+        } : {
+          alignSelf: "stretch"
+        })
+      }
+    }), /* @__PURE__ */jsxs7(View8, {
+      style: {
+        minWidth: 0,
+        flex: 1,
+        flexDirection: props.compact ? "row" : "column",
+        gap: props.compact ? 6 : 0,
+        alignItems: props.compact ? "baseline" : "stretch"
+      },
+      children: [/* @__PURE__ */jsx9(Text8, {
+        numberOfLines: 1,
+        style: {
+          minWidth: 0,
+          maxWidth: props.compact ? "50%" : void 0,
+          color: secondary,
+          fontSize: 12,
+          lineHeight: 18,
+          fontWeight: "500",
+          flexShrink: 0
+        },
+        children: props.compact ? t("replyingTo", {
+          name: props.name
+        }) : props.name
+      }), /* @__PURE__ */jsx9(Text8, {
+        numberOfLines: props.compact ? 1 : 2,
+        style: {
+          minWidth: 0,
+          flexShrink: 1,
+          color: props.unavailable ? tertiary : primary,
+          fontSize: 12,
+          lineHeight: 18
+        },
+        children: props.excerpt
+      })]
+    }), props.onRemove && /* @__PURE__ */jsx9(Pressable7, {
+      accessibilityRole: "button",
+      accessibilityLabel: t("remove"),
+      onPress: props.onRemove,
+      style: {
+        width: 24,
+        height: 24,
+        flexShrink: 0,
+        borderRadius: 12,
+        alignItems: "center",
+        justifyContent: "center"
+      },
+      children: /* @__PURE__ */jsx9(Icon2, {
+        name: "X",
+        size: 12,
+        color: tertiary
+      })
+    })]
+  });
+  var style = {
+    minWidth: 0,
+    maxWidth: "100%",
+    flexDirection: "row",
+    gap: 8,
+    borderRadius: 8,
+    paddingVertical: props.compact ? 8 : 2,
+    paddingHorizontal: props.compact ? 12 : 0,
+    alignItems: props.compact ? "center" : "stretch",
+    opacity: hovered ? 0.75 : 1
+  };
+  return props.onLocate ? /* @__PURE__ */jsx9(Pressable7, {
+    testID: "cindy-dm-quote",
+    accessibilityRole: "button",
+    accessibilityLabel: t("jumpLabel", {
+      name: props.name,
+      summary: props.excerpt
+    }),
+    onPress: props.onLocate,
+    onHoverIn: () => setHovered(true),
+    onHoverOut: () => setHovered(false),
+    style,
+    children: body
+  }) : /* @__PURE__ */jsx9(View8, {
+    testID: props.compact ? "cindy-dm-quote-preview" : "cindy-dm-quote",
+    style,
+    children: body
+  });
+}
+function DmQuoteAction(props) {
+  var {
+      t
+    } = useTranslation3(messages3),
+    profiles = useProfiles(props.host.id);
+  var source = useMemo5(() => dmMessageSourceSchema.safeParse({
+    agentId: props.agentId,
+    reference: props.message.reference,
+    position: props.message.position
+  }), [props.agentId, props.message]);
+  var scopeKey = JSON.stringify([props.host.id, props.agentId, props.message.reference]);
+  var current = useCurrentScope(scopeKey);
+  var busy = useMemo5(() => ({
+      pending: false
+    }), [current]),
+    [errorKey, setErrorKey] = useState8(null);
+  var owner = profiles.find(p => p.canonicalSessionId === props.agentId && p.enabled && p.status === "active");
+  if (!owner || !source.success) return null;
+  var select = () => __async(null, null, function* () {
+    if (!current() || busy.pending) return;
+    busy.pending = true;
+    setErrorKey(null);
+    try {
+      yield props.hostApi.setComposerContext({
+        id: DM_QUOTE_CONTEXT_ID,
+        agentId: props.agentId,
+        value: {
+          source: source.data
+        },
+        focus: true
+      });
+    } catch {
+      if (current()) setErrorKey(scopeKey);
+    } finally {
+      busy.pending = false;
+    }
+  });
+  return /* @__PURE__ */jsxs7(View8, {
+    children: [/* @__PURE__ */jsx9(Pressable7, {
+      accessibilityRole: "button",
+      accessibilityLabel: t("reply"),
+      onPress: () => {
+        void select();
+      },
+      style: {
+        padding: 4
+      },
+      children: /* @__PURE__ */jsx9(Icon2, {
+        icon: replyIcon,
+        size: 14,
+        color: props.theme.colors.foregroundMuted
+      })
+    }), errorKey === scopeKey && /* @__PURE__ */jsx9(Text8, {
+      accessibilityRole: "alert",
+      style: {
+        color: props.theme.colors.foregroundMuted,
+        fontSize: 12
+      },
+      children: t("selectError")
+    })]
+  });
+}
+function DmQuotePreview(props) {
+  var {
+      t
+    } = useTranslation3(messages3),
+    invoke = useSettingsInvoke(props.host.id),
+    profiles = useProfiles(props.host.id);
+  var selection = useMemo5(() => dmQuoteSelectionSchema.safeParse(props.context.value), [props.context.value]);
+  var scopeKey = JSON.stringify([props.host.id, props.agentId, props.context.version]);
+  var current = useCurrentScope(scopeKey);
+  var [view, setView] = useState8(null);
+  useLayoutEffect8(() => {
+    if (!selection.success || selection.data.source.agentId !== props.agentId) return;
+    var active = true;
+    void invoke("companion.dm.source", {
+      source: selection.data.source
+    }).then(result => {
+      if (!active || !current()) return;
+      var parsed = result.ok ? sourceSnapshot.safeParse(result.value) : null;
+      if (parsed?.success && matchesRequestedSource(selection.data.source, parsed.data.snapshot.source)) setView({
+        key: scopeKey,
+        text: chatReplyQuoteExcerpt(parsed.data.snapshot.text),
+        botId: parsed.data.snapshot.botId
+      });else setView({
+        key: scopeKey,
+        text: "",
+        unavailable: true
+      });
+    }).catch(() => {
+      if (active && current()) setView({
+        key: scopeKey,
+        text: "",
+        unavailable: true
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, [selection, invoke, props.agentId, scopeKey, current]);
+  if (!selection.success || selection.data.source.agentId !== props.agentId) return null;
+  var displayed = view?.key === scopeKey ? view : null;
+  var name = selection.data.source.reference.role === "user" ? t("owner") : profiles.find(p => p.id === displayed?.botId)?.name ?? t("companion");
+  return /* @__PURE__ */jsx9(QuoteBlock, {
+    ...props,
+    compact: true,
+    name,
+    excerpt: displayed ? displayed.unavailable ? t("readError") : displayed.text || t("attachments") : t("loading"),
+    unavailable: displayed?.unavailable,
+    onRemove: () => {
+      if (current()) {
+        props.focusInput();
+        props.clear(props.context.version);
+      }
+    }
+  });
+}
+function DmQuotePrefix(props) {
+  var {
+      t
+    } = useTranslation3(messages3),
+    profiles = useProfiles(props.host.id);
+  var entry = props.message.inputContexts?.find(item => item.pluginId === "cindy-companion" && item.id === DM_QUOTE_CONTEXT_ID);
+  var parsed = dmQuoteDisplaySchema.safeParse(entry?.data);
+  var scopeKey = JSON.stringify([props.host.id, props.agentId, props.message.reference, entry?.version]);
+  var current = useCurrentScope(scopeKey);
+  var [errorKey, setErrorKey] = useState8(null);
+  if (props.message.reference.role !== "user" || !parsed.success || parsed.data.source.agentId !== props.agentId) return null;
+  var quote = parsed.data,
+    excerpt = quote.status === "available" ? quote.excerpt : t("unavailable");
+  var name = quote.source.reference.role === "user" ? t("owner") : profiles.find(p => quote.status === "available" && p.id === quote.botId)?.name ?? t("companion");
+  var locate = props.navigation?.locateMessage;
+  var onLocate = locate && quote.status === "available" ? () => {
+    if (!current()) return;
+    setErrorKey(null);
+    void locate(quote.source).then(result => {
+      if (current()) setErrorKey(result.status === "found" ? null : scopeKey);
+    }).catch(() => {
+      if (current()) setErrorKey(scopeKey);
+    });
+  } : void 0;
+  return /* @__PURE__ */jsxs7(View8, {
+    style: {
+      alignSelf: "flex-end",
+      maxWidth: "100%"
+    },
+    children: [/* @__PURE__ */jsx9(QuoteBlock, {
+      ...props,
+      name,
+      excerpt,
+      unavailable: quote.status !== "available",
+      onLocate
+    }), errorKey === scopeKey && /* @__PURE__ */jsx9(Text8, {
+      accessibilityRole: "alert",
+      style: {
+        color: props.theme.colors.foregroundMuted,
+        fontSize: 12
+      },
+      children: t("locateError")
+    })]
+  });
+}
+function contributeDmQuotes(client) {
+  var hostApi = quoteHost(client);
+  if (!hostApi) return () => {};
+  var Action = props => /* @__PURE__ */jsx9(DmQuoteAction, {
+    ...props,
+    hostApi
+  });
+  var removals = [];
+  try {
+    removals.push(hostApi.addComposerContext({
+      id: DM_QUOTE_CONTEXT_ID,
+      Component: DmQuotePreview
+    }));
+    removals.push(hostApi.addMessagePrefix({
+      id: DM_QUOTE_CONTEXT_ID,
+      Component: DmQuotePrefix
+    }));
+    removals.push(hostApi.addMessageAction({
+      id: DM_QUOTE_CONTEXT_ID,
+      Component: Action
+    }));
+  } catch (error) {
+    for (var remove of removals.reverse()) remove();
+    throw error;
+  }
+  return () => {
+    for (var _remove of removals.splice(0).reverse()) _remove();
+  };
+}
+
 // index.client.tsx
-import { jsx as jsx9 } from "react/jsx-runtime";
+import { jsx as jsx10 } from "react/jsx-runtime";
 function contribute(client) {
   var headers = /* @__PURE__ */new Map();
   var synchronizeHeaders = profiles => {
     var live = /* @__PURE__ */new Set();
     var _loop = function (profile) {
         var SettingsContent2 = function (props) {
-          return /* @__PURE__ */jsx9(CompanionSettings, {
+          return /* @__PURE__ */jsx10(CompanionSettings, {
             ...props,
             botId: profile.id,
             onClose: props.close,
@@ -2696,13 +3154,13 @@ function contribute(client) {
       _ret = _loop(profile);
       if (_ret === 0) continue;
     }
-    for (var [id, header] of headers) if (!live.has(id)) {
+    for (var [id2, header] of headers) if (!live.has(id2)) {
       header.remove();
-      headers.delete(id);
+      headers.delete(id2);
     }
   };
   function TeammatesItem(props) {
-    return /* @__PURE__ */jsx9(Teammates, {
+    return /* @__PURE__ */jsx10(Teammates, {
       ...props,
       onProfiles: synchronizeHeaders
     });
@@ -2718,7 +3176,7 @@ function contribute(client) {
     Component: CompanionConversation
   });
   function GroupScreen(props) {
-    return /* @__PURE__ */jsx9(CompanionGroup, {
+    return /* @__PURE__ */jsx10(CompanionGroup, {
       ...props,
       onOpenGroup: groupId => client.openScreen({
         screenId: "group",
@@ -2741,6 +3199,7 @@ function contribute(client) {
   });
   var removeTaskCards = contributeTaskCards(client);
   var removeTaskOwner = contributeTaskOwner(client);
+  var removeDmQuotes = contributeDmQuotes(client);
   var removeCommand = client.addCommandCenterItem({
     id: "open-cindy",
     title: "Chat with Cindy",
@@ -2764,6 +3223,7 @@ function contribute(client) {
     removeOpening();
     removeTaskCards();
     removeTaskOwner();
+    removeDmQuotes();
     removeCommand();
     for (var header of headers.values()) header.remove();
     headers.clear();

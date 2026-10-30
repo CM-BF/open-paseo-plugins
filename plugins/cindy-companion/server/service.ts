@@ -38,6 +38,8 @@ import { NativeTaskDriver } from './companion-task-driver';
 import { createHash } from 'node:crypto';
 import { CompanionProjects, type ProjectAccess } from './linked-projects';
 import { DmMessageSources } from './dm-message-source';
+import { DmQuotes } from './dm-quotes';
+import { dmQuoteSelectionSchema, type DmPreparedQuote } from '../shared/dm-quotes';
 
 const OPS = ['caps', 'assets.fontChunk', 'paseo.presets.list', 'paseo.presets.invite', 'paseo.presets.status', 'preset.opening.status', 'preset.opening.choose',
   'groups.list', 'groups.get', 'groups.create', 'groups.update', 'groups.setMembers', 'groups.send', 'groups.continue', 'groups.stop', 'groups.delete','groups.cleanup',
@@ -59,6 +61,7 @@ export class CompanionService {
   readonly skills: CompanionSkills;
   readonly projects: CompanionProjects;
   readonly dmSources: DmMessageSources;
+  private readonly dmQuotes: DmQuotes;
   readonly routines: CompanionRoutines;
   readonly groups: CompanionGroups;
   readonly groupHistory: CompanionGroupHistory;
@@ -83,6 +86,7 @@ export class CompanionService {
   constructor(store = new CompanionStore(), options: { scheduleDriver?: ScheduleDriver; groupDriver?: (paseo: Paseo) => GroupDriver;taskDriver?:(paseo:Paseo)=>GroupDriver;paseoForTools?:()=>Promise<Paseo> } = {}) {
     this.store = store; this.runtime = new CompanionRuntime(store); this.skills = new CompanionSkills(store); this.projects = new CompanionProjects(store);
     this.dmSources = new DmMessageSources(store);
+    this.dmQuotes = new DmQuotes(this.dmSources);
     this.runtime.setSkillsFactory(id => this.skills.nativeSnapshot(id));
     this.routines = new CompanionRoutines(store, this.runtime, options.scheduleDriver ?? new ScheduleCli());
     this.groups = new CompanionGroups(store, this.runtime, options.groupDriver);
@@ -118,6 +122,11 @@ export class CompanionService {
     const operation = Promise.resolve().then(run); this.operations.add(operation);
     void operation.finally(() => this.operations.delete(operation)).catch(() => {});
     return operation;
+  }
+  async prepareDmQuote(paseo: Paseo, targetAgentId: string, value: unknown, signal: AbortSignal): Promise<DmPreparedQuote> {
+    // Capture the strict identity before the admitted microtask; client excerpts are never accepted.
+    const selection = dmQuoteSelectionSchema.parse(value);
+    return this.admit(() => this.dmQuotes.prepare(paseo, targetAgentId, selection, signal));
   }
   close(): Promise<void> {
     this.disposed = true;
