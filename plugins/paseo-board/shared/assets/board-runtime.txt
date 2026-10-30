@@ -75,7 +75,8 @@ function (initial) {
   const applyTheme = (theme) => {
     if (!theme || !["light", "dark"].includes(theme.scheme) || !theme.tokens || typeof theme.tokens !== "object") return;
     root.setAttribute("data-theme", theme.scheme);
-    root.style.colorScheme = theme.scheme;
+    // The host scheme is a CSS-layer default. An authored fixed light/dark canvas may
+    // override color-scheme without each host refresh overwriting it with inline style.
     for (const name of Array.from(root.style)) if (name.startsWith("--host-")) root.style.removeProperty(name);
     for (const [name, value] of Object.entries(theme.tokens)) if (/^host-[a-z0-9-]+$/.test(name) && typeof value === "string" && /^[#a-zA-Z0-9(),.%+*/ -]{1,200}$/.test(value)) root.style.setProperty("--" + name, value);
     window.dispatchEvent(new CustomEvent("paseo:themechange", { detail: { theme: theme.scheme, palette: "custom" } }));

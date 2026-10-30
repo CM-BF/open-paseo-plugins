@@ -36,6 +36,7 @@
 
 :root {
   color-scheme: light dark;
+  color: var(--foreground);
 
   /* Surfaces and text. Each base token is a surface; -foreground is content on it. */
   --background: light-dark(oklch(99.4% 0.0015 265), #1d1e22);
@@ -166,7 +167,7 @@
 :where(html > body) {
   margin: 0;
   padding: 6px 4px;
-  color: var(--foreground);
+  color: inherit;
   background: transparent;
   font-family: var(--font-sans);
   font-size: var(--font-size-base);
@@ -191,7 +192,7 @@
 
 :where(h1, h2, h3, h4) {
   margin: 0 0 0.5em;
-  color: var(--foreground);
+  color: inherit;
   font-weight: 600;
   letter-spacing: -0.012em;
   text-wrap: balance;

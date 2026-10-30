@@ -602,6 +602,43 @@ try {
   assert.equal(await frame("document.querySelector('[data-board-markers]').shadowRoot.querySelector('button').getAttribute('aria-pressed')"),'false');
   check('clearing the selected discussion cancels a focus deferred by screenshot capture, so its late completion cannot scroll or reopen the old thread');
 
+  await key('Escape');
+  await update('{interactions:[],selectedInteractionId:undefined}');
+  const themeReady = await evaluate('results.ready');
+  const themeTicks = await frame('window.ticks');
+  await frame(`(()=>{
+    document.querySelector('#field').value='theme preserves input';
+    const style=document.createElement('style');style.id='fixed-theme-style';
+    style.textContent=':root{--foreground:#172033;--background:#ffffff;color:#172033;color-scheme:light} body{background:#ffffff} #fixed-theme button,#fixed-theme input{color:inherit;background:#ffffff} #fixed-dark{color:#f4f6fa;background:#121821;color-scheme:dark} #fixed-dark button,#fixed-dark input{color:inherit;background:#121821}';
+    document.head.append(style);
+    const section=document.createElement('section');section.id='fixed-theme';
+    section.innerHTML='<h1 id="fixed-title">Fixed light canvas</h1><p id="fixed-copy">Readable body text</p><button class="btn btn-primary" id="fixed-button">Authored button</button><input id="fixed-input" value="Light input"><article id="fixed-dark"><h2 id="dark-title">Fixed dark component</h2><button id="dark-button">Dark button</button><input id="dark-input" value="Dark input"></article>';
+    document.body.prepend(section);
+  })()`);
+  for (const scheme of ['dark','light','dark']) {
+    await evaluate(`setTheme(${JSON.stringify(scheme)})`);
+    await untilFrame(`document.documentElement.dataset.theme===${JSON.stringify(scheme)}`);
+    const colors=await frame(`(()=>{const get=id=>{const s=getComputedStyle(document.getElementById(id));return {color:s.color,background:s.backgroundColor,scheme:s.colorScheme}};return {body:getComputedStyle(document.body).color,rootScheme:getComputedStyle(document.documentElement).colorScheme,light:['fixed-title','fixed-copy','fixed-button','fixed-input'].map(get),dark:['dark-title','dark-button','dark-input'].map(get)}})()`);
+    assert.equal(colors.body,'rgb(23, 32, 51)');
+    assert.equal(colors.rootScheme,'light');
+    assert.ok(colors.light.every(c=>c.color==='rgb(23, 32, 51)'&&c.scheme==='light'));
+    assert.ok(colors.dark.every(c=>c.color==='rgb(244, 246, 250)'&&c.scheme==='dark'));
+    assert.equal(colors.light[2].background,'rgb(255, 255, 255)');
+    assert.equal(colors.dark[1].background,'rgb(18, 24, 33)');
+  }
+  assert.equal(await evaluate('results.ready'),themeReady);
+  assert.equal(await frame("document.querySelector('#field').value"),'theme preserves input');
+  assert.ok(await frame('window.ticks')>themeTicks);
+  check('authored fixed light and dark colors, inherited headings/body, controls and color-scheme survive repeated host theme changes without rebuilding the canvas');
+  await frame("document.querySelector('#fixed-theme-style').remove();document.querySelector('#fixed-theme').remove()");
+  for (const scheme of ['light','dark']) {
+    await evaluate(`setTheme(${JSON.stringify(scheme)})`);
+    await untilFrame(`document.documentElement.dataset.theme===${JSON.stringify(scheme)}`);
+    assert.equal(await frame('getComputedStyle(document.body).color'),await frame("getComputedStyle(document.documentElement).getPropertyValue('--host-ink').trim() === '' ? '' : (()=>{const node=document.createElement('span');node.style.color='var(--host-ink)';document.body.append(node);const color=getComputedStyle(node).color;node.remove();return color})()"));
+    assert.equal(await frame('getComputedStyle(document.documentElement).colorScheme'),scheme);
+  }
+  check('unstyled canvases still inherit the host palette after fixed author styles are removed');
+
   const screenshot = await command('Page.captureScreenshot', { format: 'png' });
   const artifact = process.env.BOARD_TEST_SCREENSHOT;
   if (artifact) await writeFile(artifact, Buffer.from(screenshot.data, 'base64'));

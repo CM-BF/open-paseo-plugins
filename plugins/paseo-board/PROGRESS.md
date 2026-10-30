@@ -102,3 +102,9 @@ Provide a persistent, fully interactive, task-independent conversation canvas fo
 - Follow-up request: stop repeating the Board context for every main conversation message; Enter targets the main conversation, Command/Control+Enter reuses the selected side agent (creating one if absent), and Command/Control+Option/Alt+Enter forces a new side agent. Previously created Board forks remain selectable.
 - Delivery must freeze its actual target once prepared, even if the user later selects a different side agent. Existing saved intents, direct fork editing, version checks and uncertain-send recovery remain compatible.
 - A live user report identified a false failure: normal turn completion converted an explicit `respond(processing)` receipt to failed while background work was still running. A normal turn ending must preserve explicit processing; a subsequent explicit result must clear any superseded error. Backend regression and final live verification are pending.
+
+### 2026-10-29 — authored canvas colors (in progress)
+
+- Request: prevent a dark Board shell from forcing light text into an authored light canvas. The inherited visualization stylesheet assigned a foreground directly to headings/body, and live theme updates wrote an inline `color-scheme` that could override authored CSS.
+- Moved renderer defaults into a low-priority CSS layer, made body/headings inherit foreground, and left `color-scheme` as an overridable stylesheet default. Host palette tokens and the plugin's own controls still track the host theme. The authoring instructions now require paired surface/text colors and light/dark shell verification; arbitrary custom drawings are not recolored automatically.
+- Added browser checks for fixed light and dark content, explicit control colors, authored color-scheme, repeated host theme changes, live input/runtime preservation and default host-adaptive content. Results are pending.

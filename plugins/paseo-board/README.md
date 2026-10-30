@@ -60,6 +60,8 @@ button.onclick = () => board.ask({ prompt: "Explain this part", kind: "question"
 
 `board.restoreState()`, `board.onState(callback)` and `board.getContext()` are also available. `window.openai.sendFollowUpMessage` is compatible with visualize-style requests. The result is a submission receipt, not the model's answer. Use stable DOM IDs for local edits; selection also works without IDs.
 
+The host supplies a default palette; authored CSS takes precedence through a lower-priority default layer. Headings and body text inherit their surrounding color. For a fixed light or dark design, set its background, foreground and `color-scheme` together, and provide coherent colors for controls and muted text. For an adaptive design, use matching host surface and text tokens. Host theme changes preserve the canvas runtime and do not override an authored `color-scheme`; images and Canvas/WebGL drawings still need the author's own palette handling.
+
 ## Background events
 
 Reuse `register_async_shell` to wait for external events. Its script calls `paseo-board emit` with stable event IDs and open JSON data. The board updates while the owner is idle. `emit` never sends an agent message. If interpretation or action is needed, the same shell can use `paseo-shell sendback` with an idempotency key. Board does not implement a second shell supervisor or read async-shell's private files.
