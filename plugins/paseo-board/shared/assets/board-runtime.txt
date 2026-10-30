@@ -223,7 +223,9 @@ function (initial) {
       button.dataset.active = String(["saved", "sending", "delivered", "processing"].includes(item.marker.status));
       button.setAttribute("aria-pressed", String(item.marker.id === selectedMarkerId));
       const status = markerLabels[item.marker.status] || "已提交";
-      button.textContent = `${item.marker.number} · ${status}${saved ? stale ? " · 旧位置" : "" : " · 整板"}`;
+      let face = button.firstElementChild;
+      if (!face) { face = document.createElement("span"); face.className = "face"; face.setAttribute("aria-hidden", "true"); button.append(face); }
+      face.textContent = String(item.marker.number);
       button.title = `${item.marker.text}\n${status}${!saved ? " · 未指定可定位的局部位置。" : ""}${stale ? ` · 画布已更新；这是 r${anchor.canvasRevision} 的原位置，请核对引用。` : ""}`;
       button.setAttribute("aria-label", `${item.marker.number}. ${item.marker.text}，${status}${saved ? stale ? "，旧版本位置" : "" : "，整板讨论"}`);
       if (item.marker.id === selectedMarkerId) {
@@ -248,7 +250,23 @@ function (initial) {
       markerHost.setAttribute("data-board-overlay", "");
       markerHost.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;width:100%!important;height:100%!important;z-index:2147483645!important;pointer-events:none!important;";
       const shadow = markerHost.attachShadow({ mode: "open" });
-      shadow.innerHTML = `<style>:host{color-scheme:normal}button{all:initial;box-sizing:border-box;position:absolute;pointer-events:auto;max-width:180px;padding:5px 8px;border:1px solid var(--host-iris,#658aeb);border-radius:14px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 2px 8px #0002;font:11px/1.3 system-ui,-apple-system,sans-serif;white-space:nowrap;cursor:pointer}button[hidden]{display:none}button:hover,button:focus-visible,button[aria-pressed=true]{outline:2px solid var(--host-iris,#658aeb);outline-offset:2px}button[data-status=failed],button[data-status=rejected]{border-color:#cc6256}button[data-status=processing],button[data-status=sending]{border-style:dashed}button[data-stale=true]{border-color:#bd8c35;background:var(--host-sheet,#fff)}button[data-active=true]::before{content:"";position:absolute;inset:-5px;border:2px solid var(--host-iris,#658aeb);border-radius:inherit;pointer-events:none;animation:board-halo 2s ease-in-out infinite}button[data-active=true]::after{content:"";position:absolute;right:-5px;top:-5px;width:10px;height:10px;border:2px solid var(--host-iris,#658aeb);border-right-color:transparent;border-bottom-color:transparent;border-radius:50%;background:var(--host-sheet,#fff);pointer-events:none;animation:board-orbit 1.25s linear infinite}@keyframes board-halo{0%,100%{opacity:.14;transform:scale(.98)}50%{opacity:.48;transform:scale(1.05)}}@keyframes board-orbit{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){button[data-active=true]::before,button[data-active=true]::after{animation:none}button[data-active=true]::before{opacity:.3}button[data-active=true]::after{border-style:solid}}</style>`;
+      shadow.innerHTML = `<style>
+        :host{color-scheme:normal}
+        button{all:initial;box-sizing:border-box;position:absolute;display:grid;place-items:center;width:26px;height:26px;padding:0;pointer-events:auto;border-radius:50%;background:transparent;opacity:.5;cursor:pointer;transition:opacity .15s ease}
+        button[hidden]{display:none}
+        .face{box-sizing:border-box;display:grid;place-items:center;width:18px;height:18px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 1px 4px #0002;font:10px/1 system-ui,-apple-system,sans-serif}
+        button:hover,button:focus-visible,button[aria-pressed=true]{opacity:1}
+        button:focus-visible{outline:2px solid var(--host-iris,#658aeb);outline-offset:1px}
+        button[aria-pressed=true] .face{border-width:2px}
+        button[data-status=failed] .face,button[data-status=rejected] .face{border-color:#cc6256}
+        button[data-status=answered] .face,button[data-status=applied] .face{border-color:#46846b}
+        button[data-stale=true] .face{border-color:#bd8c35}
+        button[data-active=true]::before{content:"";position:absolute;inset:1px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;pointer-events:none;animation:board-halo 2s ease-in-out infinite}
+        button[data-active=true]::after{content:"";position:absolute;right:0;top:0;width:6px;height:6px;border:1px solid var(--host-iris,#658aeb);border-right-color:transparent;border-bottom-color:transparent;border-radius:50%;background:var(--host-sheet,#fff);pointer-events:none;animation:board-orbit 1.25s linear infinite}
+        @keyframes board-halo{0%,100%{opacity:.15;transform:scale(.96)}50%{opacity:.55;transform:scale(1.03)}}
+        @keyframes board-orbit{to{transform:rotate(360deg)}}
+        @media(prefers-reduced-motion:reduce){button{transition:none}button[data-active=true]::before,button[data-active=true]::after{animation:none}button[data-active=true]::before{opacity:.3}button[data-active=true]::after{border-style:solid}}
+      </style>`;
       root.append(markerHost);
     }
     // Preserve focused buttons while receiving progress, and never replace author controls.

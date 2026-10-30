@@ -352,11 +352,14 @@ try {
   assert.equal(await evaluate('results.ready'), beforeMarkerReady);
   assert.ok(await frame('ticks') > markerTicks);
   const markerBounds = await location('[data-board-interaction=spatial-question]');
+  assert.equal(markerBounds.width, 26); assert.equal(markerBounds.height, 26);
+  assert.deepEqual(await frame("(()=>{const button=document.querySelector('[data-board-markers]').shadowRoot.querySelector('button');const face=button.querySelector('.face').getBoundingClientRect();return{width:face.width,height:face.height,opacity:getComputedStyle(button).opacity}})()"), {width:18,height:18,opacity:'0.5'});
   assert.equal(markerBounds.x, markerAnchor.rect.x);
   assert.equal(markerBounds.y, markerAnchor.rect.y);
   const markerPointerCount = await evaluate('results.canvasPointers');
   await click('[data-board-interaction=spatial-question]');
   await until('results.openedInteractions.length===1');
+  await untilFrame("getComputedStyle(document.querySelector('[data-board-markers]').shadowRoot.querySelector('button')).opacity==='1'");
   assert.equal(await evaluate('results.canvasPointers'), markerPointerCount);
   assert.deepEqual(await evaluate('results.openedInteractions[0]'), { id: 'spatial-question', position: { x: markerAnchor.rect.x, y: markerAnchor.rect.y } });
   await frame("document.querySelector('[data-board-markers]').shadowRoot.querySelector('button').click()");
@@ -381,7 +384,7 @@ try {
   assert.equal(await evaluate('results.interactionPositions.at(-1).position.y'), markerAnchor.rect.y - 130);
   await update("{interactions:hostProps.interactions.map(i=>({...i,status:'answered'})),boardRevision:hostProps.boardRevision+1,canvas:{...hostProps.canvas,revision:hostProps.canvas.revision+1}} ");
   await untilFrame("document.querySelector('[data-board-markers]').shadowRoot.querySelector('button').dataset.stale==='true'");
-  assert.ok((await frame("document.querySelector('[data-board-markers]').shadowRoot.querySelector('button').textContent")).includes('旧位置'));
+  assert.ok((await frame("document.querySelector('[data-board-markers]').shadowRoot.querySelector('button').getAttribute('aria-label')")).includes('旧版本位置'));
   assert.equal((await location('[data-board-interaction=spatial-question]')).y, markerAnchor.rect.y - 130);
   await evaluate('reconnect()');
   await until(`results.ready===${beforeMarkerReady + 1}`);
