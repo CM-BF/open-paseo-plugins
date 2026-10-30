@@ -1,5 +1,5 @@
 export const PLUGIN_ID = "learning-loop";
-export const PLUGIN_VERSION = "0.2.0";
+export const PLUGIN_VERSION = "0.2.1";
 
 /** MCP server name in agent configs; Claude Code exposes its tools as mcp__learning__<tool>. */
 export const MCP_SERVER = "learning";

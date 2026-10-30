@@ -39,12 +39,13 @@ import { Bridge } from "./bridge";
 import { appendLine, describeError, readJson, writeJson } from "./files";
 import { resolveRoute, routeErrorText } from "./kit/complete";
 import { MemoryStore, type MemoryChange } from "./memory/store";
-import { defaultStateDir, statePaths } from "./paths";
+import { defaultStateDir, paseoHome, statePaths } from "./paths";
 import { ProjectResolver, resolveProjectWithin } from "./project";
 import { buildSystemBlock, learnPrompt } from "./prompts";
 import { ReviewEngine, type ReviewAgent, type RunContext } from "./review/engine";
 import { SessionIndex, type SessionMeta } from "./sessions/index";
-import { SessionSync, type SyncSource, type TimelinePage } from "./sessions/sync";
+import { SessionSync, type SyncSource } from "./sessions/sync";
+import { NativeHistorySource } from "./sessions/native-history";
 import type { TimelineEntryLike } from "./sessions/transcript";
 import { installShim } from "./shim";
 import { shouldStage } from "./approval";
@@ -118,24 +119,21 @@ export function contributeServer(server: PluginServerContext): () => Promise<voi
 
   const capture = (context: { paseo: PaseoApi }) => gate.capture(context.paseo);
 
+  // timeline.refetch resumes unloaded providers on Paseo 0.13. Never use it for indexing.
+  // The source has no daemon client: startup, manual reindex and lifecycle sync all read files.
+  const history = new NativeHistorySource({ paseoHome: paseoHome(), signal: abort.signal });
   const source: SyncSource = {
-    async fetch(agentId, options) {
-      const paseo = await gate.ready();
-      const page = await paseo.agents.ref(agentId).timeline.refetch({
-        direction: options.direction,
-        ...(options.cursor ? { cursor: options.cursor } : {}),
-        limit: options.limit,
-        projection: "projected",
-      });
-      return page as unknown as TimelinePage;
-    },
+    fetch: (agentId, options) => history.fetch(agentId, options),
+    release: (agentId) => history.release(agentId),
     async listAgents() {
       const paseo = await gate.ready();
       const out: SessionMeta[] = [];
       let cursor: string | undefined;
       for (let page = 0; page < 50; page += 1) {
+        if (abort.signal.aborted || !prefs.indexSessions) break;
         const result = await paseo.agents.list({ includeBackground: true, page: { limit: 200, ...(cursor ? { cursor } : {}) } });
         for (const { agent } of result.entries) {
+          if (abort.signal.aborted || !prefs.indexSessions) return out;
           if ((agent as { internal?: boolean }).internal) continue;
           out.push({
             agentId: agent.id,
@@ -494,8 +492,8 @@ export function contributeServer(server: PluginServerContext): () => Promise<voi
     capture(context);
     if (!sync) return { ok: false, message: "The session index could not be opened on this daemon." };
     if (!prefs.indexSessions) return { ok: false, message: "Session indexing is turned off in settings." };
-    void sync.backfill(abort.signal);
-    return { ok: true, message: "Indexing every agent's conversation in the background." };
+    void sync.backfill(abort.signal).catch(error => console.error(`[learning-loop] reindex failed: ${describeError(error)}`));
+    return { ok: true, message: "Indexing saved Claude and Codex conversations without starting agents." };
   });
 
   server.handle(reviewsListRpc, async (input, context) => {
@@ -534,7 +532,7 @@ export function contributeServer(server: PluginServerContext): () => Promise<voi
   void gate.ready().then(() => {
     if (abort.signal.aborted) return;
     const timer = setTimeout(() => {
-      if (sync && prefs.indexSessions) void sync.backfill(abort.signal);
+      if (sync && prefs.indexSessions) void sync.backfill(abort.signal).catch(error => console.error(`[learning-loop] backfill failed: ${describeError(error)}`));
     }, BACKFILL_DELAY_MS);
     timers.push(timer);
   });
@@ -569,6 +567,7 @@ export function contributeServer(server: PluginServerContext): () => Promise<voi
     await startup;
     await bridge.stop();
     await sync?.stop();
+    history.close();
     index?.close();
   };
 }

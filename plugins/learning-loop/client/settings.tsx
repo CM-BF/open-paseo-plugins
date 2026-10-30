@@ -71,7 +71,7 @@ export function LearningSettings({ theme }: PluginSurfaceProps) {
           {number("memoryCharLimit", "Memory limit (chars)", "Hermes default 2200")}
           {number("projectCharLimit", "Project memory limit (chars)", "Per repository")}
           {number("skillsIndexLimit", "Skills listed in the prompt", "Most recently used first; 0 hides the index")}
-          <SettingsSwitch label="Index sessions for session_search" hint="Stores user, agent and one-line tool summaries in a local SQLite file." value={values.indexSessions} onValueChange={(v) => save({ ...values, indexSessions: v })} />
+          <SettingsSwitch label="Index sessions for session_search" hint="Reads saved Claude and Codex conversations into local SQLite without starting agents." value={values.indexSessions} onValueChange={(v) => save({ ...values, indexSessions: v })} />
           {number("sessionRetentionDays", "Keep indexed messages (days)", "0 keeps all; deletes only index copies, never source sessions")}
           <SettingsSwitch label="Publish Learned catalog" hint="Optional read-only skill content for Skills Center. Disabling removes the export within 15 seconds." value={values.exportCatalog} onValueChange={(v) => save({ ...values, exportCatalog: v })} />
           <SettingsAction label="Numbers above" actionLabel="Save" onPress={saveNumbers} />

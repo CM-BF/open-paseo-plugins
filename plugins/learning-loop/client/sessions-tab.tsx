@@ -109,7 +109,7 @@ export function SessionsTab({ theme, navigation }: Themed & { navigation: Plugin
       ))}
       {!query.trim() && result.data ? (
         result.data.recent.length === 0 ? (
-          <Empty theme={theme} icon="MessagesSquare" text="Nothing indexed yet. Sessions are indexed after each turn and when the plugin starts." />
+          <Empty theme={theme} icon="MessagesSquare" text="Nothing indexed yet. Saved Claude and Codex sessions are indexed after each turn and when the plugin starts." />
         ) : (
           <>
             <Body theme={theme} muted>

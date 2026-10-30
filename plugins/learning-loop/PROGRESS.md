@@ -140,3 +140,15 @@ Parent OMH fixture agents `74fb4edf…`, `7e68df10…`, `4cae8e14…` were archi
 ### Upstream Watch provenance (2026-10-24)
 
 Added packaged `UPSTREAM.json` for explicitly recorded reference commits and feature paths. This is source metadata for the new Upstream Watch discovery flow; plugin runtime code and live installation were not changed. Prior runtime verification remains as recorded above.
+
+
+### Memory exhaustion repair (2026-10-29, 0.2.1)
+
+- Incident: Paseo 0.13.2 `timeline.refetch` resumes unloaded providers. Startup backfill in Learning Loop 0.2.0 resumed 137 agents, with each Codex provider able to spawn MCP children; the app tree reached 2,606 processes and the user saw 120.50 GB. Disabling this plugin and restarting the daemon stopped that cascade. This is provider/process fan-out, not proof of a JavaScript object leak.
+- Replaced indexing's SDK timeline reads with bounded, read-only Claude/Codex native transcript reads. No SDK/provider/process launcher dependency in the source; no fallback that resumes sessions. Stable file snapshots, line/file/text/entry limits, configured provider roots, internal/thinking/tool-output filtering and explicit unsupported/missing/corrupt-file errors preserve old copies on read failure.
+- Serialized startup, manual and lifecycle indexing through one queue. Added cancellation checks after awaited operations, snapshot release, coalesced follow-ups with generation ownership, and one retention prune per session. Review behavior and provider tool catalogs are unchanged.
+- UI now says “Index saved sessions”; version 0.2.1 and documented supported-provider/size limits. User preferences, memories and skills are preserved.
+- Regression baseline: 13 of the first 18 new safety tests fail against the original sync implementation; they pass with the queue/cancellation fix. Additional review caught and fixed clear-then-immediate-same-agent reindex ownership. Final isolated validation: Node 24 typecheck passed; 113 tests passed, 1 opt-in live-review skipped (no paid model execution needed for file-indexing changes).
+- Read-only real-corpus probe: 960 persisted non-internal records, 918 readable; 19 missing transcripts, 17 unsupported providers (13 Pi, 4 OpenCode), 6 missing session IDs. Final channel-filtered probe: 34,090 entries, sampled heap peak 104 MiB; no daemon APIs or provider processes used. Codex analysis/internal assistant channels are excluded.
+- Original runtime: `/Users/citrine/.paseo/local-plugins/learning-loop/477bb9433ee27ab74783135682b3ffb3f8b5a559`. Owner-only pre-fix data/settings backup: `/Users/citrine/Documents/Codex/2026-10-29/bang/work/paseo-memory/pre-fix-state/`. `plugin-data/learning-loop` does not exist; actual data is `~/.paseo/learning-loop` and settings `~/.paseo/plugin-settings/learning-loop`.
+- Pending at this commit: final tests, stable snapshot install, main-daemon backfill and UI acceptance. Never restore the whole data backup over newer user work to revert code.
