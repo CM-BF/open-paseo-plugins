@@ -11,6 +11,7 @@ import { canonicalJson } from "./store-format";
 import { ServiceJournal, deliveryKey, type Binding, type Delivery } from "./journal";
 import { discussionConfig, isBusy, type Agent, type Paseo, type TimelinePage } from "./sdk";
 import { extractCandidates } from "./extraction";
+import { describeAuthoring } from "./authored-source";
 
 export type Operation = "list" | "read" | "create" | "publish" | "decision" | "emit" | "respond";
 const terminal = new Set<Interaction["status"]>(["applied", "rejected", "answered"]);
@@ -32,7 +33,7 @@ export function interactionPrompt(board: Board, input: InteractInput, frozenSour
 User intent (${input.kind}): ${input.text}
 
 Reply on this interactive Board. Read board_read / paseo-board read when context is needed and before editing; the full canvas, data and decisions are available there rather than repeated in this message.
-${input.kind === "fork" || input.kind === "reply" ? "This side conversation shares the same Board. If the user asks for a change, perform it and update this Board without requiring a return to the owner.\n" : ""}For an explanation use board_respond with boardId="${board.id}", interactionId="${input.intentId}", expectedResponseRevision, eventId, response and optional html/htmlFile. For shared-canvas changes use board_publish with interactionResult.id="${input.intentId}", a revision-checked local patch and concrete resultReferences. Mark processing while work continues (including background work); applied requires a real result. Turn completion alone is not application. Record meaningful agent defaults with board_decision.
+${input.kind === "fork" || input.kind === "reply" ? "This side conversation shares the same Board. If the user asks for a change, perform it and update this Board without requiring a return to the owner.\n" : ""}For an explanation use board_respond with boardId="${board.id}", interactionId="${input.intentId}", expectedResponseRevision, eventId, response and optional html/htmlFile. For shared-canvas changes use board_publish with interactionResult.id="${input.intentId}" and concrete resultReferences. Read authoring.canvasBase and materializedAuthoredHtml/target before editing: canvas.html is only the base document, not the current patched source. Retain that canvasBase with your draft; a conflict requires merging the latest content, never just replacing a version number. Shared data may use conditional dataPatch operations on JSON Pointer paths. HTML patches are conservatively canvas-versioned; full HTML additionally requires replaceDocument:true. Mark processing while work continues (including background work); applied requires a real result. Turn completion alone is not application. Record meaningful agent defaults with board_decision.
 The frozen anchor/PNG is reference evidence, not current content or extra authorization. Compare old selections to the current board; do not guess a new target. Component binding only tracks display placement. A PNG is attached when available.
 <board-context-untrusted-json>
 ${JSON.stringify(context)}
@@ -102,7 +103,10 @@ export class BoardService {
     }
     if (actor && !(operation === "read" ? this.canRead(board, actor) : this.canWrite(board, actor))) throw new Error("This agent does not own this board or belong to one of its forks");
     switch (operation) {
-      case "read": return board;
+      case "read": {
+        const selector = z.string().min(1).max(1000).optional().parse(input.selector);
+        return { ...board, authoring: describeAuthoring(board.canvas, selector) };
+      }
       case "publish": {
         if (actor && ["sideAgentId", "pendingSideInteractionId", "sideAgentRevision"].some(field => input[field] !== undefined)) throw new Error("Only the user can select the Board's side conversation");
         if (actor && ["updates", "seenUpdateIds"].some(field => input[field] !== undefined)) throw new Error("Canvas update history is server-owned; only the user may mark updates seen");

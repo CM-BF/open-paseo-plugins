@@ -34,6 +34,7 @@ All commands also accept `--json` or JSON on stdin. Prefer an input file for HTM
 {
   "boardId": "my-project",
   "expectedRevision": 12,
+  "canvasBase": { "revision": 4, "documentVersion": 1 },
   "eventId": "explain-update-1",
   "patch": {
     "id": "explain-update-1",
@@ -44,9 +45,9 @@ All commands also accept `--json` or JSON on stdin. Prefer an input file for HTM
 }
 ```
 
-Use stable event IDs for retries. Conflicting versions reject rather than overwrite a newer change. A data update or local patch keeps the existing iframe and unrelated DOM, input values and animation state. A full document replacement is explicit and rebuilds the frame; use the state API to restore selected controls. Patch scripts execute once per document instance and are replayed when that document is reopened.
+Use stable event IDs for identical retries. Keep the original `authoring.canvasBase` with the draft; substituting a newer Board `expectedRevision` cannot make that stale canvas draft valid. A conflict requires reading and merging the current content before a new event ID is submitted. A data update or local patch keeps the existing iframe and unrelated DOM, input values and animation state. A full document replacement requires `replaceDocument: true` plus its original `canvasBase` and rebuilds the frame; use the state API to restore selected controls. Patch scripts execute once per document instance and are replayed when that document is reopened.
 
-Canvas changes also retain their locations so the user can jump to and highlight recent work. Patch targets are recorded automatically, including their patch IDs; full replacement is a document-level update. For a **data-only** publish or emit, add `focusSelectors: ["#comparison", "#summary"]` (at most 12 actual affected elements). Do not include this field with HTML/patch or without data. Missing hints remain unlocated rather than guessing. Unchanged data values, decisions, responses and operational checkpoints do not create canvas updates.
+Canvas changes also retain their locations so the user can jump to and highlight recent work. Patch targets are recorded automatically, including their patch IDs; full replacement is a document-level update. For a **data-only** publish or emit, add `focusSelectors: ["#comparison", "#summary"]` (at most 12 actual affected elements). Do not include this field with HTML/patch or without data/dataPatch. Missing hints remain unlocated rather than guessing. Unchanged data values, decisions, responses and operational checkpoints do not create canvas updates.
 
 Each Board persists its latest 80 canvas updates with their versions and the bound writer's identity when available. The user-facing `markUpdatesSeenRpc` acknowledges specific update IDs without modifying content revisions, history or authored user state. Visiting the newest change does not acknowledge older ones. `board_list` exposes `unreadUpdateCount` and `latestUpdateRevision`; agent tools cannot mark updates seen.
 
@@ -66,9 +67,33 @@ button.onclick = () => board.ask({ prompt: "Explain this part", kind: "question"
 
 The host supplies a default palette; authored CSS takes precedence through a lower-priority default layer. Headings and body text inherit their surrounding color. For a fixed light or dark design, set its background, foreground and `color-scheme` together, and provide coherent colors for controls and muted text. For an adaptive design, use matching host surface and text tokens. Host theme changes preserve the canvas runtime and do not override an authored `color-scheme`; images and Canvas/WebGL drawings still need the author's own palette handling.
 
+## Multiple writers
+
+`board_read` adds an `authoring` view. `materializedAuthoredHtml` statically replays the ordered patch journal without executing scripts; an optional `selector` returns a composed target fragment. `canvas.html` remains the underlying base document for replay and is **not** the current patched source. An unresolved/ambiguous/dynamic patch stops composition and returns null with its failure location. This view is authored source, not the running DOM, event listeners or Canvas pixels.
+
+HTML patches and traditional `data` require the captured `{revision, documentVersion}` in `canvasBase`. Pure canvas writes tolerate unrelated discussion metadata changes. They conservatively conflict with any newer canvas write: different selectors are not proof of independence when parent replacements, global CSS and arbitrary JS are allowed. Full document replacement also requires `replaceDocument: true`; it clears the patch journal. These controls reject stale bases but cannot infer the author's intent if the author deliberately supplies new conditions with old content.
+
+For independent JSON fields, `publish` and `emit` accept atomic conditional `dataPatch` operations:
+
+```json
+{
+  "dataPatch": [{
+    "path": "/metrics/score",
+    "operation": "set",
+    "expected": { "exists": true, "value": 0.5 },
+    "value": 0.6
+  }],
+  "focusSelectors": ["#comparison"]
+}
+```
+
+Different object leaves can commit concurrently while preserving siblings. All conditions are checked against one snapshot before applying the batch. Existing parent objects are required; duplicate/ancestor paths within one batch are rejected. Use `expected: {exists: false}` to add a field, or `operation: "remove"` without a new value to delete one. JSON Pointer escapes `~` and `/` as `~0` and `~1`. Arrays are compared and replaced as whole values, never edited through unstable indices. Do not combine `dataPatch` with traditional `data`; the latter remains a shallow top-level merge protected by `canvasBase`.
+
+Conflicts carry current/base versions, recent update locations and writer attribution when available, plus whether the bounded history covers the requested range. No tool silently refreshes conditions and retries an old payload. Durable acceptance does not prove arbitrary browser scripts executed successfully; retain rendering error checks before claiming a change is applied.
+
 ## Background events
 
-Reuse `register_async_shell` to wait for external events. Its script calls `paseo-board emit` with stable event IDs and open JSON data. The board updates while the owner is idle. `emit` never sends an agent message. If interpretation or action is needed, the same shell can use `paseo-shell sendback` with an idempotency key. Board does not implement a second shell supervisor or read async-shell's private files.
+Reuse `register_async_shell` to wait for external events. Its script calls `paseo-board emit` with stable event IDs. Shared data uses conditional `dataPatch`, or traditional `data` with the canvas base captured when that payload was prepared. Pure facts/observations need no canvas condition. Delayed data producers must reconcile a conflict instead of overwriting newer results. The board updates while the owner is idle. `emit` never sends an agent message. If interpretation or action is needed, the same shell can use `paseo-shell sendback` with an idempotency key. Board does not implement a second shell supervisor or read async-shell's private files.
 
 An optional `observation` names an input to track. A changed value creates an observed record with supplied evidence and no invented reason. It does not automatically inspect all commands, files or parameters on the machine.
 

@@ -33,7 +33,7 @@ function request(operation, input) {
 }
 function compact(operation, result) {
   if (operation === 'read' || operation === 'list' || !result || !result.canvas) return result;
-  return { id: result.id, title: result.title, revision: result.revision, canvasRevision: result.canvas.revision, updatedAt: result.updatedAt, decisionCount: result.decisions.length, interactions: result.interactions.map(x => ({ id: x.id, status: x.status, agentId: x.agentId, resultReferences: x.resultReferences })) };
+  return { id: result.id, title: result.title, revision: result.revision, canvasRevision: result.canvas.revision, canvasBase: { revision: result.canvas.revision, documentVersion: result.canvas.documentVersion }, publication: { durable: true, browserExecutionVerified: false }, updatedAt: result.updatedAt, decisionCount: result.decisions.length, interactions: result.interactions.map(x => ({ id: x.id, status: x.status, agentId: x.agentId, resultReferences: x.resultReferences })) };
 }
 function write(value) { process.stdout.write(JSON.stringify(value) + '\n'); }
 if (mode === 'mcp') {
@@ -45,7 +45,7 @@ if (mode === 'mcp') {
     if (message.id === undefined) return;
     const respond = result => write({ jsonrpc: '2.0', id: message.id, result });
     try {
-      if (message.method === 'initialize') { respond({ protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'paseo-board', version: '0.1.0' }, instructions: 'Persistent, fully interactive free canvases; read current revision before publish. Ordinary events do not wake agents.' }); return; }
+      if (message.method === 'initialize') { respond({ protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'paseo-board', version: '0.1.0' }, instructions: 'Persistent, fully interactive free canvases. Read authoring source and retain canvasBase when drafting; do not overwrite concurrent edits. Shared data uses conditional dataPatch or canvasBase. Ordinary events do not wake agents.' }); return; }
       if (message.method === 'ping') { respond({}); return; }
       if (message.method === 'tools/list') { respond({ tools: definitions }); return; }
       if (message.method !== 'tools/call') { write({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'Method not found' } }); return; }
@@ -61,7 +61,7 @@ if (mode === 'mcp') {
     const args = process.argv.slice(3);
     const operation = args.shift();
     if (!operation || ['--help', '-h', 'help'].includes(operation)) {
-      process.stdout.write('Usage: paseo-board <list|read|create|publish|respond|decision|emit> [--file /absolute/input.json | --json JSON]\nNo input option reads JSON from stdin. list defaults to {}. create/publish/respond accept htmlFile.\n');
+      process.stdout.write('Usage: paseo-board <list|read|create|publish|respond|decision|emit> [--file /absolute/input.json | --json JSON]\nNo input option reads JSON from stdin. list defaults to {}. create/publish/respond accept htmlFile. read accepts selector. Canvas writes require canvasBase or conditional dataPatch; full publish html also requires replaceDocument:true.\n');
     } else {
       if (!definitions.some(tool => tool.name === 'board_' + operation)) throw new Error('Unknown operation: ' + operation);
       let raw = '{}';
