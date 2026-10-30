@@ -73,7 +73,7 @@ export function OverviewTab({ theme, onOpen, onOpenSettings }: Themed & { onOpen
         </Body>
         <Row wrap>
           <Button theme={theme} icon="Search" label="Search sessions" onPress={() => onOpen("sessions")} />
-          <Button theme={theme} icon="RefreshCw" label="Index all agents" busy={action.isPending && action.variables === "reindex"} onPress={() => action.mutate("reindex")} />
+          <Button theme={theme} icon="RefreshCw" label="Index saved sessions" busy={action.isPending && action.variables === "reindex"} onPress={() => action.mutate("reindex")} />
         </Row>
       </Card>
 

@@ -1,6 +1,5 @@
-// Keeps the session index current: one agent after each of its turns, every listed agent at start.
-// Pages forward through the daemon's projected timeline with an `after` cursor; an epoch change
-// (the daemon rebuilt the timeline) re-indexes that agent from the start.
+// Keeps the session index current from a read-only history source. Reading history must never
+// resume an agent/provider. One queue bounds work across startup, lifecycle and manual requests.
 
 import { describeError } from "../files";
 import type { SessionIndex, SessionMeta } from "./index";
@@ -26,14 +25,17 @@ export interface TimelinePage {
 export interface SyncSource {
   fetch(agentId: string, options: { direction: "tail" | "after"; cursor?: TimelineCursor; limit: number }): Promise<TimelinePage>;
   listAgents(): Promise<SessionMeta[]>;
+  release?(agentId: string): void;
 }
 
 const PAGE = 100;
-const MAX_PAGES = 400;
+// Up to 40,000 entries plus one probe when an existing index changes epoch.
+const MAX_PAGES = 401;
 
 export class SessionSync {
   private running = new Map<string, Promise<number>>();
-  private again = new Set<string>();
+  private again = new Map<string, { meta: SessionMeta; generation: number; signal?: AbortSignal }>();
+  private queue: Promise<void> = Promise.resolve();
   private generation = 0;
   private stopped = false;
   lastSyncAt: string | null = null;
@@ -47,28 +49,39 @@ export class SessionSync {
   ) {}
 
   /** Coalesces concurrent requests for one agent: at most one run plus one follow-up. */
-  sync(meta: SessionMeta): Promise<number> {
-    if (this.stopped || !this.enabled()) return Promise.resolve(0);
+  sync(meta: SessionMeta, signal?: AbortSignal): Promise<number> {
+    if (this.stopped || signal?.aborted || !this.enabled()) return Promise.resolve(0);
     const current = this.running.get(meta.agentId);
     if (current) {
-      this.again.add(meta.agentId);
+      this.again.set(meta.agentId, { meta, generation: this.generation, signal });
       return current;
     }
-    const run = this.syncNow(meta)
+    const generation = this.generation;
+    const run = this.queue.then(() => {
+      if (!this.canContinue(generation, signal)) return 0;
+      return this.syncNow(meta, generation, signal);
+    })
       .catch((error) => {
         console.error(`[learning-loop] indexing ${meta.agentId} failed: ${describeError(error)}`);
         return 0;
       })
       .finally(() => {
+        this.source.release?.(meta.agentId);
         this.running.delete(meta.agentId);
-        if (this.again.delete(meta.agentId)) void this.sync(meta);
+        const next = this.again.get(meta.agentId);
+        this.again.delete(meta.agentId);
+        if (next && this.canContinue(next.generation, next.signal)) void this.sync(next.meta, next.signal);
       });
+    this.queue = run.then(() => undefined);
     this.running.set(meta.agentId, run);
     return run;
   }
 
-  private async syncNow(meta: SessionMeta): Promise<number> {
-    const generation = this.generation;
+  private canContinue(generation: number, signal?: AbortSignal): boolean {
+    return !this.stopped && !signal?.aborted && generation === this.generation && this.enabled();
+  }
+
+  private async syncNow(meta: SessionMeta, generation: number, signal?: AbortSignal): Promise<number> {
     this.index.upsertSession(meta);
     const state = this.index.syncState(meta.agentId);
     let cursor: TimelineCursor | null = state?.epoch ? { epoch: state.epoch, seq: state.lastSeq } : null;
@@ -77,12 +90,15 @@ export class SessionSync {
     let indexed = 0;
     if (!cursor) {
       const head = await this.source.fetch(meta.agentId, { direction: "tail", limit: 1 });
+      if (!this.canContinue(generation, signal)) return 0;
       if (head.error) throw new Error(head.error);
       cursor = { epoch: head.epoch, seq: Math.max(-1, head.window.minSeq - 1) };
       reset = true;
     }
     for (let page = 0; page < MAX_PAGES; page += 1) {
+      if (!this.canContinue(generation, signal)) return indexed;
       const result = await this.source.fetch(meta.agentId, { direction: "after", cursor, limit: PAGE });
+      if (!this.canContinue(generation, signal)) return indexed;
       if (result.error) throw new Error(result.error);
       if (result.reset || result.staleCursor || result.gap) {
         if (restarted) break;
@@ -96,14 +112,13 @@ export class SessionSync {
         return message ? [message] : [];
       });
       const last = result.endCursor?.seq ?? cursor.seq;
-      if (this.stopped || generation !== this.generation || !this.enabled()) return indexed;
       this.index.applyPage(meta.agentId, result.epoch, messages, last, reset);
-      this.index.prune(this.retentionDays());
       indexed += messages.length;
       reset = false;
       if (!result.hasNewer || !result.endCursor || result.endCursor.seq <= cursor.seq) break;
       cursor = result.endCursor;
     }
+    this.index.prune(this.retentionDays());
     this.lastSyncAt = new Date().toISOString();
     return indexed;
   }
@@ -112,16 +127,17 @@ export class SessionSync {
 
   clear(): void { this.generation += 1; this.again.clear(); this.index.clear(); }
 
-  /** Indexes every listed agent, one at a time, so the daemon is never flooded. */
+  /** Scans persisted history sequentially without opening any agent runtime. */
   async backfill(signal?: AbortSignal): Promise<number> {
-    if (this.backfilling || !this.enabled()) return 0;
+    if (this.backfilling || this.stopped || signal?.aborted || !this.enabled()) return 0;
+    const generation = this.generation;
     this.backfilling = true;
     let total = 0;
     try {
       const agents = await this.source.listAgents();
       for (const meta of agents) {
-        if (signal?.aborted) break;
-        total += await this.sync(meta);
+        if (signal?.aborted || !this.canContinue(generation)) break;
+        total += await this.sync(meta, signal);
       }
     } finally {
       this.backfilling = false;
