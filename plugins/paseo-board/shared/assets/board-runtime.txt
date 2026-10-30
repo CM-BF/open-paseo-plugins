@@ -15,6 +15,7 @@ function (initial) {
   let dismissedPointer = null;
   let lastAnchor;
   let pointer = null;
+  let textPointer = null;
   let overlay = null;
   let lastGesture = -Infinity;
   let lastGesturePosition;
@@ -219,9 +220,12 @@ function (initial) {
       button.style.top = top + "px";
       button.dataset.stale = String(stale);
       button.dataset.status = item.marker.status;
+      button.dataset.active = String(["saved", "sending", "delivered", "processing"].includes(item.marker.status));
       button.setAttribute("aria-pressed", String(item.marker.id === selectedMarkerId));
       const status = markerLabels[item.marker.status] || "已提交";
-      button.textContent = `${item.marker.number} · ${status}${saved ? stale ? " · 旧位置" : "" : " · 整板"}`;
+      let face = button.firstElementChild;
+      if (!face) { face = document.createElement("span"); face.className = "face"; face.setAttribute("aria-hidden", "true"); button.append(face); }
+      face.textContent = String(item.marker.number);
       button.title = `${item.marker.text}\n${status}${!saved ? " · 未指定可定位的局部位置。" : ""}${stale ? ` · 画布已更新；这是 r${anchor.canvasRevision} 的原位置，请核对引用。` : ""}`;
       button.setAttribute("aria-label", `${item.marker.number}. ${item.marker.text}，${status}${saved ? stale ? "，旧版本位置" : "" : "，整板讨论"}`);
       if (item.marker.id === selectedMarkerId) {
@@ -246,7 +250,23 @@ function (initial) {
       markerHost.setAttribute("data-board-overlay", "");
       markerHost.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;width:100%!important;height:100%!important;z-index:2147483645!important;pointer-events:none!important;";
       const shadow = markerHost.attachShadow({ mode: "open" });
-      shadow.innerHTML = `<style>:host{color-scheme:normal}button{all:initial;box-sizing:border-box;position:absolute;pointer-events:auto;max-width:180px;padding:5px 8px;border:1px solid var(--host-iris,#658aeb);border-radius:14px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 2px 8px #0002;font:11px/1.3 system-ui,-apple-system,sans-serif;white-space:nowrap;cursor:pointer}button[hidden]{display:none}button:hover,button:focus-visible,button[aria-pressed=true]{outline:2px solid var(--host-iris,#658aeb);outline-offset:2px}button[data-status=failed],button[data-status=rejected]{border-color:#cc6256}button[data-status=processing],button[data-status=sending]{border-style:dashed}button[data-stale=true]{border-color:#bd8c35;background:var(--host-sheet,#fff)}</style>`;
+      shadow.innerHTML = `<style>
+        :host{color-scheme:normal}
+        button{all:initial;box-sizing:border-box;position:absolute;display:grid;place-items:center;width:26px;height:26px;padding:0;pointer-events:auto;border-radius:50%;background:transparent;opacity:.5;cursor:pointer;transition:opacity .15s ease}
+        button[hidden]{display:none}
+        .face{box-sizing:border-box;display:grid;place-items:center;width:18px;height:18px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 1px 4px #0002;font:10px/1 system-ui,-apple-system,sans-serif}
+        button:hover,button:focus-visible,button[aria-pressed=true]{opacity:1}
+        button:focus-visible{outline:2px solid var(--host-iris,#658aeb);outline-offset:1px}
+        button[aria-pressed=true] .face{border-width:2px}
+        button[data-status=failed] .face,button[data-status=rejected] .face{border-color:#cc6256}
+        button[data-status=answered] .face,button[data-status=applied] .face{border-color:#46846b}
+        button[data-stale=true] .face{border-color:#bd8c35}
+        button[data-active=true]::before{content:"";position:absolute;inset:1px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;pointer-events:none;animation:board-halo 2s ease-in-out infinite}
+        button[data-active=true]::after{content:"";position:absolute;right:0;top:0;width:6px;height:6px;border:1px solid var(--host-iris,#658aeb);border-right-color:transparent;border-bottom-color:transparent;border-radius:50%;background:var(--host-sheet,#fff);pointer-events:none;animation:board-orbit 1.25s linear infinite}
+        @keyframes board-halo{0%,100%{opacity:.15;transform:scale(.96)}50%{opacity:.55;transform:scale(1.03)}}
+        @keyframes board-orbit{to{transform:rotate(360deg)}}
+        @media(prefers-reduced-motion:reduce){button{transition:none}button[data-active=true]::before,button[data-active=true]::after{animation:none}button[data-active=true]::before{opacity:.3}button[data-active=true]::after{border-style:solid}}
+      </style>`;
       root.append(markerHost);
     }
     // Preserve focused buttons while receiving progress, and never replace author controls.
@@ -322,8 +342,14 @@ function (initial) {
     captureTail = result.catch(() => {});
     return result;
   };
-  const inMenu = (event) => selectionSession?.menu && event.composedPath().includes(selectionSession.menu);
   const isEditor = (event) => event.composedPath().some(node => node instanceof Element && (node.matches("input,textarea,select") || node.isContentEditable));
+  const startsTextSelection = (event) => {
+    if (isEditor(event) || !(event.target instanceof Element) || event.target.closest("button,a,input,textarea,select,canvas,svg,[draggable=true],[role=button],[role=slider]")) return false;
+    const range = document.caretRangeFromPoint?.(event.clientX, event.clientY);
+    const caret = range ? null : document.caretPositionFromPoint?.(event.clientX, event.clientY);
+    const node = range?.startContainer || caret?.offsetNode;
+    return node?.nodeType === 3 && Boolean(node.textContent?.trim()) && event.target.contains(node);
+  };
   const paintSelectionMode = () => {
     const mode = pointer?.temporary ? "region" : selectionMode;
     root.setAttribute("data-board-selection", mode);
@@ -333,6 +359,7 @@ function (initial) {
   const releasePointer = () => {
     const active = pointer;
     pointer = null;
+    textPointer = null;
     if (active) { try { if (root.hasPointerCapture(active.pointerId)) root.releasePointerCapture(active.pointerId); } catch {} }
   };
   const eventPoint = (event) => ({ x: Math.max(0, Math.min(event.clientX, innerWidth)), y: Math.max(0, Math.min(event.clientY, innerHeight)) });
@@ -345,7 +372,7 @@ function (initial) {
     if (clear) lastAnchor = undefined;
     if (previous) {
       previous.abort.abort();
-      previous.menu?.remove();
+      previous.indicator?.remove();
       if (release) post({ type: "selection-lock", id: previous.id, active: false });
     }
     paintSelectionMode();
@@ -356,40 +383,30 @@ function (initial) {
     window.focus();
     const previousId = selectionSession?.id;
     cancelSelection({ release: false, drainUpdates: false });
-    const session = { id: previousId || `selection-${++sequence}`, abort: new AbortController(), menu: null, anchor: null, position };
+    const session = { id: previousId || `selection-${++sequence}`, abort: new AbortController(), indicator: null, anchor: null, position };
     selectionSession = session;
     // Replacing one local selection keeps the same host lease, so a queued document replacement
     // cannot slip into a release/acquire gap while the next capture starts.
     post({ type: "selection-lock", id: session.id, active: true, dragging });
     return session;
   };
-  const menuButtons = (session) => Array.from(session.menu?.shadowRoot.querySelectorAll("button") || []);
-  const showMenu = (session) => {
-    if (selectionSession !== session) return;
-    if (!session.menu) {
-      const host = document.createElement("div");
-      host.setAttribute("data-board-menu", "");
-      host.setAttribute("data-board-overlay", "");
-      host.style.cssText = `all:initial;position:fixed;z-index:2147483647;left:${Math.max(8, Math.min(session.position.x, innerWidth - 224))}px;top:${Math.max(8, Math.min(session.position.y, innerHeight - 192))}px;width:216px;`;
-      const shadow = host.attachShadow({ mode: "open" });
-      shadow.innerHTML = `<style>
-        :host{color-scheme:normal}.menu{box-sizing:border-box;padding:7px;border:1px solid var(--host-line-strong,#d0d0d0);border-radius:10px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 8px 30px #0003;font:13px/1.5 system-ui,-apple-system,sans-serif}
-        .status{padding:5px 9px;color:var(--host-ink-3,#666);font-size:11px}button{box-sizing:border-box;display:block;width:100%;padding:9px 11px;text-align:left;border:0;border-radius:5px;background:transparent;color:inherit;font:inherit;cursor:pointer}button:hover,button:focus-visible{background:var(--host-iris-soft,#edf1fc);outline:2px solid var(--host-iris,#4c6fc9);outline-offset:-2px}button:disabled{opacity:.5;cursor:wait}
-      </style><div class="menu" role="menu" aria-label="与 agent 交流" tabindex="-1"><div class="status" role="status"></div><button type="button" role="menuitem" data-board-action="question">提问</button><button type="button" role="menuitem" data-board-action="change">修改这里</button><button type="button" role="menuitem" data-board-action="fork">开 fork</button></div>`;
-      session.menu = host;
-      document.body.append(host);
-      shadow.querySelector('[role="menu"]').focus({ preventScroll: true });
-    }
-    session.menu.shadowRoot.querySelector(".status").textContent = session.anchor ? "围绕此处交流 · Esc 取消" : "正在截取选区…";
-    for (const button of menuButtons(session)) button.disabled = !session.anchor;
-    if (session.anchor) menuButtons(session)[0]?.focus({ preventScroll: true });
+  const showCaptureStatus = (session) => {
+    if (selectionSession !== session || session.indicator) return;
+    const host = document.createElement("div");
+    host.setAttribute("data-board-capture-status", "");
+    host.setAttribute("data-board-overlay", "");
+    host.style.cssText = `all:initial;position:fixed;z-index:2147483647;pointer-events:none;left:${Math.max(8, Math.min(session.position.x + 12, innerWidth - 220))}px;top:${Math.max(8, Math.min(session.position.y + 12, innerHeight - 44))}px;`;
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = `<style>div{padding:8px 12px;border:1px solid var(--host-line-strong,#d0d0d0);border-radius:8px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 4px 14px #0002;font:12px/1.5 system-ui,-apple-system,sans-serif}</style><div role="status">正在截取引用… · Esc 取消</div>`;
+    session.indicator = host;
+    document.body.append(host);
   };
   const finishSelection = async (session, anchor, imageRegion, reuse = false) => {
     if (selectionSession !== session) return;
     releasePointer();
     selectionMode = "off";
     paintSelectionMode();
-    showMenu(session);
+    showCaptureStatus(session);
     post({ type: "selection-lock", id: session.id, active: true, dragging: false });
     post({ type: "selection-end" });
     captureBusy = true;
@@ -417,7 +434,8 @@ function (initial) {
     lastAnchor = anchor;
     session.anchor = anchor;
     post({ type: "anchor", anchor, selectionId: session.id });
-    showMenu(session);
+    post({ type: "compose", automatic: true, selectionId: session.id, request: { kind: "question", anchor, position: session.position } });
+    cancelSelection({ clear: false });
   };
   const setSelectionMode = (mode) => {
     if (!["off", "text", "region", "point"].includes(mode)) return;
@@ -452,16 +470,22 @@ function (initial) {
     lastGesture = performance.now();
     lastGesturePosition = eventPoint(event);
     if (inMarkers(event)) { window.focus(); cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); event.stopImmediatePropagation(); return; }
+    if (event.button === 0) { window.focus(); post({ type: "canvas-pointer" }); }
     suppressPointerClick = false;
     dismissedPointer = null;
-    if (inMenu(event)) { event.stopImmediatePropagation(); return; }
     if (event.button !== 0) return;
     const temporary = selectionMode === "off" && event.altKey && !isEditor(event);
     if (selectionMode === "off" && !temporary) {
-      const hadMenu = Boolean(selectionSession);
+      const wasCapturing = captureBusy;
       cancelSelection({ notify: Boolean(selectionSession || lastAnchor) });
-      // Dismissing the context menu must not also activate an underlying canvas control.
-      if (hadMenu) { dismissedPointer = event.pointerId; suppressPointerClick = true; event.preventDefault(); event.stopImmediatePropagation(); }
+      // Cancelling an unfinished capture must not activate a control beneath its preview.
+      if (wasCapturing) { dismissedPointer = event.pointerId; suppressPointerClick = true; event.preventDefault(); event.stopImmediatePropagation(); return; }
+      // Freeze the displayed revision during an ordinary native text drag, but let the
+      // browser perform selection. Editors and author-controlled drags keep native behavior.
+      if (!applying && startsTextSelection(event)) {
+        const position = eventPoint(event);
+        textPointer = { pointerId: event.pointerId, position, beforeText: window.getSelection()?.toString() || "", session: beginSelection(position, true) };
+      }
       return;
     }
     if (applying) return;
@@ -478,7 +502,6 @@ function (initial) {
   window.addEventListener("pointermove", (event) => {
     if (inMarkers(event) && !pointer) { event.stopImmediatePropagation(); return; }
     if (dismissedPointer === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); return; }
-    if (inMenu(event)) { event.stopImmediatePropagation(); return; }
     if (!pointer && selectionMode === "off") return;
     event.stopImmediatePropagation();
     if (!pointer || event.pointerId !== pointer.pointerId) return;
@@ -490,13 +513,26 @@ function (initial) {
     if (!event.isTrusted || event.button !== 0) return;
     if (inMarkers(event)) { event.stopImmediatePropagation(); return; }
     if (dismissedPointer === event.pointerId) { dismissedPointer = null; event.preventDefault(); event.stopImmediatePropagation(); return; }
-    if (inMenu(event)) { event.stopImmediatePropagation(); return; }
+    if (textPointer?.pointerId === event.pointerId) {
+      const start = textPointer;
+      textPointer = null;
+      const position = eventPoint(event);
+      const changed = (window.getSelection()?.toString() || "") !== start.beforeText;
+      const text = changed || Math.hypot(position.x - start.position.x, position.y - start.position.y) >= 3 ? selectedText() : null;
+      if (text) {
+        suppressPointerClick = true;
+        start.session.position = position;
+        void finishSelection(start.session, text.anchor, text.region);
+      } else cancelSelection();
+      return;
+    }
     if (!pointer && selectionMode === "off") return;
     event.stopImmediatePropagation();
     const session = selectionSession;
     if (!session) return;
     if (selectionMode === "text" && !pointer) {
       const text = selectedText();
+      session.position = eventPoint(event);
       if (text) void finishSelection(session, text.anchor, text.region);
       else cancelSelection();
       return;
@@ -536,7 +572,6 @@ function (initial) {
     if (applying) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    if (inMenu(event)) return;
     lastGesture = performance.now();
     let point = { x: event.clientX, y: event.clientY };
     if (point.x === 0 && point.y === 0 && event.target instanceof Element) {
@@ -555,15 +590,6 @@ function (initial) {
       if (!event.isTrusted || !button || !navigator.userActivation?.isActive) return;
       const bounds = button.getBoundingClientRect();
       post({ type: "open-interaction", id: button.getAttribute("data-board-interaction"), position: { x: bounds.left, y: bounds.top } });
-      return;
-    }
-    if (inMenu(event)) {
-      event.preventDefault(); event.stopImmediatePropagation();
-      const action = event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-board-action"));
-      if (!event.isTrusted || !action || action.disabled || !selectionSession.anchor || !navigator.userActivation?.isActive) return;
-      const session = selectionSession;
-      post({ type: "compose", selectionId: session.id, request: { kind: action.getAttribute("data-board-action"), anchor: session.anchor, position: session.position } });
-      cancelSelection({ clear: false });
       return;
     }
     if ((event.detail > 0 && suppressPointerClick) || selectionMode !== "off" || pointer) {
@@ -609,17 +635,6 @@ function (initial) {
     if (event.key === "Escape" && (selectionSession || selectionMode !== "off" || lastAnchor)) {
       event.preventDefault(); event.stopImmediatePropagation();
       selectionMode = "off"; cancelSelection({ notify: true }); post({ type: "selection-end" }); return;
-    }
-    if (inMenu(event) && ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
-      event.preventDefault(); event.stopImmediatePropagation();
-      const buttons = menuButtons(selectionSession).filter(button => !button.disabled);
-      if (!buttons.length) return;
-      const index = buttons.indexOf(selectionSession.menu.shadowRoot.activeElement);
-      const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
-      buttons[next].focus();
-    } else if (inMenu(event)) {
-      event.stopImmediatePropagation();
-      if (event.key === "Tab") cancelSelection({ notify: true });
     }
   }, true);
   window.addEventListener("message", (event) => {

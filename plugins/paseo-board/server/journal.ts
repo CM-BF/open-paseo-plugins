@@ -13,7 +13,7 @@ export interface Delivery {
   prompt: string;
   images?: Array<{ data: string; mimeType: string }>;
   input?: InteractInput;
-  state: "saved" | "creating" | "sending" | "delivered" | "unknown" | "failed";
+  state: "saved" | "creating" | "sending" | "delivered" | "unknown" | "failed" | "settled";
   awaitingTurn?: boolean;
   needsRecovery?: boolean;
   turnId?: string;
@@ -60,6 +60,14 @@ export class ServiceJournal {
   async patch(key: string, update: Partial<Delivery>): Promise<Delivery> {
     await this.change(() => { const current = this.data.deliveries[key]; if (!current) throw new Error("Delivery record not found"); this.data.deliveries[key] = { ...current, ...structuredClone(update) }; });
     return this.get(key)!;
+  }
+  /** An already resolved intent needs no message; this is not a delivery acknowledgement. */
+  async settleUnsent(key: string): Promise<void> {
+    await this.change(() => {
+      const current = this.data.deliveries[key];
+      if (!current || !["saved", "creating"].includes(current.state)) return;
+      this.data.deliveries[key] = { ...current, state: "settled", awaitingTurn: false, needsRecovery: false, error: undefined };
+    });
   }
   async bind(token: string, binding: Binding): Promise<void> {
     await this.change(() => {

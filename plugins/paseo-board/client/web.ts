@@ -8,12 +8,12 @@ import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, type AskRequest, t
 type FrameWindow = { postMessage(message: unknown, origin: string): void };
 type Frame = { contentWindow: FrameWindow | null };
 type MessageEvent = { source: unknown; data: unknown };
-type OuterPointerEvent = { isTrusted: boolean };
+type OuterPointerEvent = { isTrusted: boolean; target?: { closest?(selector: string): unknown } };
 type BrowserWindow = {
   addEventListener(name: "message", fn: (event: MessageEvent) => void): void;
   removeEventListener(name: "message", fn: (event: MessageEvent) => void): void;
-  addEventListener(name: "pointerup" | "pointercancel", fn: (event: OuterPointerEvent) => void, capture: boolean): void;
-  removeEventListener(name: "pointerup" | "pointercancel", fn: (event: OuterPointerEvent) => void, capture: boolean): void;
+  addEventListener(name: "pointerdown" | "pointerup" | "pointercancel", fn: (event: OuterPointerEvent) => void, capture: boolean): void;
+  removeEventListener(name: "pointerdown" | "pointerup" | "pointercancel", fn: (event: OuterPointerEvent) => void, capture: boolean): void;
 };
 const browser = globalThis as unknown as {
   window?: BrowserWindow;
@@ -37,6 +37,7 @@ export interface CanvasFrameProps extends FrameSnapshot {
   onAnchor(anchor: Anchor): void;
   onAsk(request: AskRequest): Promise<AskResult>;
   onCompose?(request: ComposeRequest): void;
+  onCanvasPointer?(): void;
   onOpenInteraction?(id: string, position: FramePosition): void;
   onInteractionPosition?(id: string, position: FramePosition): void;
   onState(state: JsonData): void;
@@ -69,7 +70,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   if (localState.current?.boardId === props.boardId && JSON.stringify(localState.current.state) === JSON.stringify(props.userState)) localState.current.dirty = false;
   const effectiveState = () => localState.current?.boardId === latest.current.boardId && localState.current.dirty ? localState.current.state : latest.current.userState;
   const document = useRef<ReturnType<typeof documentFor> | null>(null);
-  const interactionLock = useRef<{ boardId: string; sessionId: string; id: string; dragging: boolean } | null>(null);
+  const interactionLock = useRef<{ boardId: string; sessionId: string; id: string; dragging: boolean; anchor?: Anchor } | null>(null);
   const [, redraw] = useState(0);
   if (interactionLock.current?.boardId !== props.boardId) interactionLock.current = null;
   const ready = useRef(false);
@@ -86,6 +87,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
     if (!canRenderFrames || !browser.window) return;
     const waiting = new Set<string>();
     const cancelledSelections = new Set<string>();
+    const composedSelections = new Set<string>();
     let disposed = false;
     let lastLink = 0;
     const sync = () => {
@@ -102,6 +104,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
       const current = latest.current;
       switch (message.type) {
         case "ready": ready.current = true; sync(); current.onReady?.(); break;
+        case "canvas-pointer": if (userActing()) current.onCanvasPointer?.(); break;
         case "error": current.onError(message.error); break;
         case "selection-end": current.onSelectionEnd?.(); break;
         case "selection-clear": current.onSelectionClear?.(); break;
@@ -124,13 +127,24 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
           // The picture can take seconds to encode; user activation may have expired, but a
           // local selection must still own its lease. Legacy anchors without a lease require
           // an explicit host selection mode; cancelling a lease rejects late captures at once.
-          if ((message.selectionId !== undefined ? message.selectionId === interactionLock.current?.id : current.selectionMode !== "off") && message.anchor.boardRevision <= current.boardRevision && message.anchor.canvasRevision <= current.canvas.revision) current.onAnchor(message.anchor);
+          if ((message.selectionId !== undefined ? message.selectionId === interactionLock.current?.id : current.selectionMode !== "off") && message.anchor.boardRevision <= current.boardRevision && message.anchor.canvasRevision <= current.canvas.revision) {
+            if (interactionLock.current) interactionLock.current.anchor = message.anchor;
+            current.onAnchor(message.anchor);
+          }
           break;
-        case "compose":
-          // This only opens a host-owned blank composer. It cannot send a message or invoke SDK
-          // methods, and needs a fresh click/key activation after the capture/menu has appeared.
-          if (userActing() && message.selectionId === interactionLock.current?.id && message.request.anchor.boardRevision <= current.boardRevision && message.request.anchor.canvasRevision <= current.canvas.revision) current.onCompose?.(message.request);
+        case "compose": {
+          // A completed trusted selection opens one blank composer. A slow screenshot may
+          // outlive transient activation, but it must retain the lease and exact frozen anchor.
+          // This cannot send a message; the user still submits through the host input.
+          const lock = interactionLock.current;
+          const key = document.current.sessionId + ":" + message.selectionId;
+          const automatic = message.automatic === true && browser.document?.activeElement === frame.current && lock?.dragging === false && lock.anchor && JSON.stringify(lock.anchor) === JSON.stringify(message.request.anchor);
+          if ((userActing() || automatic) && message.selectionId === lock?.id && !composedSelections.has(key) && message.request.anchor.boardRevision <= current.boardRevision && message.request.anchor.canvasRevision <= current.canvas.revision) {
+            composedSelections.add(key);
+            current.onCompose?.(message.request);
+          }
           break;
+        }
         case "open-interaction":
           if (userActing() && interactionMarkers(current.interactions || []).some(item => item.id === message.id)) current.onOpenInteraction?.(message.id, message.position);
           break;
@@ -218,11 +232,25 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
 export interface WebMessageInputProps {
   value: string;
   onChange(value: string): void;
-  onSubmit(): void;
+  onSubmit(fork: boolean): void;
   onClose(): void;
   disabled?: boolean;
   placeholder?: string;
   style?: Record<string, unknown>;
+}
+
+/** Host clicks outside the floating conversation dismiss it; iframe clicks arrive via the bridge. */
+export function usePopoverDismiss(active: boolean, onDismiss: () => void): void {
+  const latest = useRef(onDismiss);
+  latest.current = onDismiss;
+  useEffect(() => {
+    if (!active || !canRenderFrames || !browser.window) return;
+    const dismiss = (event: OuterPointerEvent) => {
+      if (event.isTrusted && !event.target?.closest?.('[data-testid="board-local-popover"]')) latest.current();
+    };
+    browser.window.addEventListener("pointerdown", dismiss, true);
+    return () => browser.window?.removeEventListener("pointerdown", dismiss, true);
+  }, [active]);
 }
 
 /** Native DOM composition events preserve IME confirmation; RNW onKeyPress drops that detail. */
@@ -239,7 +267,7 @@ export function WebMessageInput(props: WebMessageInputProps): ReactElement | nul
     onKeyDown: (event: { key: string; keyCode: number; nativeEvent?: { isComposing?: boolean; keyCode?: number }; shiftKey: boolean; altKey: boolean; ctrlKey: boolean; metaKey: boolean; preventDefault(): void; stopPropagation(): void }) => {
       if (composing.current || event.nativeEvent?.isComposing || event.keyCode === 229 || event.nativeEvent?.keyCode === 229 || Date.now() - compositionEnded.current < 50) return;
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); props.onClose(); }
-      else if (event.key === "Enter" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) { event.preventDefault(); event.stopPropagation(); if (!props.disabled) props.onSubmit(); }
+      else if (event.key === "Enter" && !event.shiftKey && !event.altKey) { event.preventDefault(); event.stopPropagation(); if (!props.disabled) props.onSubmit(event.ctrlKey || event.metaKey); }
     },
     style: { boxSizing: "border-box", width: "100%", minHeight: 88, maxHeight: 220, resize: "vertical", font: "inherit", lineHeight: 1.5, padding: 10, borderRadius: 8, ...props.style },
   });

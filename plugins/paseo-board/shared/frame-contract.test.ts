@@ -7,6 +7,8 @@ describe("frame bridge validation", () => {
   it("separates a blank native composer from nonempty generated asks", () => {
     const anchor = { boardRevision: 1, canvasRevision: 1, kind: "point", rect: { x: 20, y: 30, width: 0, height: 0 } };
     expect(readFrameMessage(message({ type: "compose", selectionId: "selected", request: { kind: "question", anchor } }), scope)).not.toBeNull();
+    expect(readFrameMessage(message({ type: "compose", automatic: true, selectionId: "selected", request: { kind: "question", anchor } }), scope)).not.toBeNull();
+    expect(readFrameMessage(message({ type: "compose", automatic: "true", selectionId: "selected", request: { kind: "question", anchor } }), scope)).toBeNull();
     expect(readFrameMessage(message({ type: "compose", selectionId: "selected", request: { kind: "execute", anchor } }), scope)).toBeNull();
     expect(readFrameMessage(message({ type: "compose", request: { kind: "question", anchor } }), scope)).toBeNull();
     expect(readFrameMessage(message({ type: "ask", id: "blank", request: { prompt: "" } }), scope)).toBeNull();

@@ -39,7 +39,7 @@
       <div class="message-footer"><p id="send-status" role="status" aria-live="polite">先打开发送预览；确认后，我会收到。</p><button id="send-message" type="button" class="send">发给你</button></div>
     </div>
   </section>
-  <p id="conversation-guide" class="footer">Option / Alt + 拖动框选；右键就地提问、修改或开 fork。Esc 取消。“决策”里可以查看 agent 中途自行做出的重要选择。</p>
+  <p id="conversation-guide" class="footer">右键、选中文字或 Option / Alt 框选，直接输入。Enter 发送，⌘ / Ctrl + Enter 开 Fork；点击框外关闭。“决策”里可以查看 agent 中途自行做出的重要选择。</p>
 </main>
 <script>
 (() => {
@@ -75,7 +75,7 @@
     const context=board.getContext();
     const anchor={kind:'element',selector,boardRevision:context.boardRevision,canvasRevision:context.canvasRevision,text:selector==='#playground'?`曲线控制点：${points.map(p=>`(${Math.round(p.x)}, ${Math.round(p.y)})`).join('、')}；速度 ${speed}；${paused?'暂停':'播放中'}`:document.querySelector(selector).innerText.slice(0,3000)};
     sending=true;document.querySelectorAll('.conversation button').forEach(el=>{if(el.id!=='toggle-motion'&&el.id!=='reset-curve')el.disabled=true});
-    board.ask({prompt,kind,anchor}).then(result=>{status.textContent=result.status==='submitted'?'已提交。等我把回答或修改放回画布；可以在顶部“讨论”查看进展。':'没有发送，内容仍保留。';}).catch(()=>{status.textContent='发送未成功，内容仍保留。可以用顶部的提问入口重试。';}).finally(()=>{sending=false;document.querySelectorAll('.conversation button').forEach(el=>el.disabled=false);});
+    board.ask({prompt,kind,anchor}).then(result=>{status.textContent=result.status==='submitted'?'已提交。等我把回答或修改放回画布；可以在顶部“讨论”查看进展。':'没有发送，内容仍保留。';}).catch(()=>{status.textContent='发送未成功，内容仍保留。可以用顶部的“发消息”入口重试。';}).finally(()=>{sending=false;document.querySelectorAll('.conversation button').forEach(el=>el.disabled=false);});
   }
   byId('send-message').onclick=()=>ask(draft.value,'#conversation');
   byId('explain-curve').onclick=()=>ask('请解释这三个点怎样决定这条曲线。在 #reply-content 放一个可以操作的解释；保留左边当前控制点、速度和播放状态。','#playground');

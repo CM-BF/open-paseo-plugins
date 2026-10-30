@@ -70,7 +70,7 @@ try {
     await command('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
   };
   const location = async (selector) => {
-    const box = await frame(`(()=>{const selector=${JSON.stringify(selector)};const element=document.querySelector('[data-board-menu]')?.shadowRoot?.querySelector(selector)||document.querySelector('[data-board-markers]')?.shadowRoot?.querySelector(selector)||document.querySelector(selector);const r=element.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()`);
+    const box = await frame(`(()=>{const selector=${JSON.stringify(selector)};const element=document.querySelector('[data-board-markers]')?.shadowRoot?.querySelector(selector)||document.querySelector(selector);const r=element.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()`);
     const origin = await evaluate(`(()=>{const r=document.querySelector('iframe[data-board-id="host-fixture"]').getBoundingClientRect();return {x:r.x,y:r.y}})()`);
     return { x: origin.x + box.x, y: origin.y + box.y, width: box.width, height: box.height };
   };
@@ -80,7 +80,14 @@ try {
     await command('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'right', buttons: 2, clickCount: 1, modifiers });
     await command('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'right', clickCount: 1, modifiers });
   };
-  const menu = () => untilFrame("document.querySelector('[data-board-menu]')?.shadowRoot?.querySelector('[data-board-action=question]')?.disabled === false", 18000);
+  const drag = async (from, to, modifiers = 0) => {
+    if (modifiers & 1) await command('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Alt', code: 'AltLeft', windowsVirtualKeyCode: 18, modifiers });
+    await command('Input.dispatchMouseEvent', { type: 'mouseMoved', ...from, modifiers });
+    await command('Input.dispatchMouseEvent', { type: 'mousePressed', ...from, button: 'left', clickCount: 1, modifiers });
+    await command('Input.dispatchMouseEvent', { type: 'mouseMoved', ...to, button: 'left', buttons: 1, modifiers });
+    await command('Input.dispatchMouseEvent', { type: 'mouseReleased', ...to, button: 'left', clickCount: 1, modifiers });
+    if (modifiers & 1) await command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Alt', code: 'AltLeft', windowsVirtualKeyCode: 18 });
+  };
   const hostLocation = (selector) => evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height}})()`);
   const hostClick = async (selector) => { await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))'); const r = await hostLocation(selector); await clickPoint(r.x + r.width / 2, r.y + r.height / 2); };
   const marker = (id) => `[data-board-interaction="${id}"]`;
@@ -92,15 +99,14 @@ try {
   const submitCount = () => evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').length");
   const noPopover = () => until(`!document.querySelector(${JSON.stringify(popover)})`);
   const closePopover = async () => {
-    await hostClick(`${popover} button[aria-label="关闭"]`);
+    await hostClick('[data-testid="board-reference-bar"]');
     await noPopover();
   };
-  const openAt = async (x = 155, y = 170, kind = 'question') => {
+  const openAt = async (x = 155, y = 170) => {
     const r = await canvasRect();
     await rightClickPoint(r.x + x, r.y + y);
-    await menu();
-    await click(`[data-board-action=${kind}]`);
-    await until(`document.querySelector(${JSON.stringify(input)})`);
+    await until(`document.querySelector(${JSON.stringify(input)})`, 18000);
+    assert.equal(await frame("!!document.querySelector('[data-board-menu]')"), false);
     return { x: r.x + x, y: r.y + y };
   };
   await command('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/` });
@@ -110,6 +116,8 @@ try {
   await frame('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   assert.equal(await frame('window.boots'), 1);
   assert.equal(await evaluate("document.querySelector('[data-fixture-modal]')!==null"), false);
+  assert.equal(await evaluate("document.querySelectorAll('button[aria-label=\"发消息\"]').length"), 1);
+  assert.equal(await evaluate("['提问','修改这里','开 fork'].some(label=>document.querySelector('button[aria-label=\"'+label+'\"]'))"), false);
   const original = await canvasRect();
   await command('Page.captureScreenshot', { format: 'png' });
   await click('#control');
@@ -124,6 +132,9 @@ try {
   assert.equal(await frame('window.boots'), 1);
   assert.ok(await frame('window.ticks') > beforeTicks);
   assert.equal(await evaluate("document.querySelector('[data-fixture-modal]')!==null"), false);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover + ' button[aria-label="关闭"]')})!==null`), false);
+  await hostClick(input);
+  assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(popover)})`), true);
   const nearby = await hostLocation(popover);
   assert.ok(Math.abs(nearby.x - point.x) <= 24, `Popover x ${nearby.x} should be beside pointer ${point.x}`);
   assert.ok(Math.abs(nearby.y - point.y) <= 30, `Popover ${JSON.stringify(nearby)} should be beside pointer ${JSON.stringify(point)}; canvas ${JSON.stringify(original)}`);
@@ -131,7 +142,7 @@ try {
   await key('Escape'); await noPopover();
   await hostClick('button[aria-label="清除引用"]');
   assert.deepEqual(await canvasRect(), original);
-  check('actual BoardView reference appears/clears without moving or resizing the canvas; live controls and heap survive; context composition is beside the pointer without a modal');
+  check('right-click opens focused pointer-local input directly without an action menu or modal; references preserve the canvas rectangle, live controls and heap');
 
   await hostClick('button[aria-label="框选"]');
   assert.deepEqual(await canvasRect(), original);
@@ -139,6 +150,29 @@ try {
   await hostClick('button[aria-label="交互"]');
   assert.deepEqual(await canvasRect(), original);
   check('selection instructions occupy the existing toolbar and preserve the canvas rectangle');
+
+  const words = await location('#words');
+  await drag({ x: words.x + 2, y: words.y + 10 }, { x: words.x + 240, y: words.y + 10 });
+  await until(`document.querySelector(${JSON.stringify(input)})`, 18000);
+  assert.equal(await frame("!!document.querySelector('[data-board-menu]')"), false);
+  assert.equal(await evaluate(`document.activeElement===document.querySelector(${JSON.stringify(input)})`), true);
+  assert.equal(await submitCount(), 0);
+  assert.ok(await evaluate(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('stable')`));
+  await key('Escape'); await noPopover();
+  await hostClick('button[aria-label="清除引用"]');
+  const regionCanvas = await canvasRect();
+  await drag({ x: regionCanvas.x + 480, y: regionCanvas.y + 140 }, { x: regionCanvas.x + 650, y: regionCanvas.y + 220 }, 1);
+  await until(`document.querySelector(${JSON.stringify(input)})`, 18000);
+  assert.equal(await frame("!!document.querySelector('[data-board-menu]')"), false);
+  assert.equal(await evaluate(`document.activeElement===document.querySelector(${JSON.stringify(input)})`), true);
+  await sendText('An unsent region idea');
+  await hostClick(input);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)}).value`), 'An unsent region idea');
+  await clickPoint(regionCanvas.x + regionCanvas.width - 40, regionCanvas.y + regionCanvas.height - 40);
+  await noPopover();
+  assert.equal(await submitCount(), 0);
+  assert.deepEqual(await canvasRect(), original);
+  check('ordinary text selection and Alt-drag open the focused input immediately; clicks inside keep it open, and clicking the canvas outside closes it without sending');
 
   await openAt();
   await sendText('First line');
@@ -150,6 +184,8 @@ try {
   // CDP key events for the confirmation Enter. This does not mock its key handler.
   await evaluate(`document.querySelector(${JSON.stringify(input)}).dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true,data:'中'}))`);
   await key('Enter');
+  await key('Enter', 'Enter', 4);
+  await key('Enter', 'Enter', 2);
   assert.equal(await submitCount(), 0);
   await evaluate(`document.querySelector(${JSON.stringify(input)}).dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'中文'}))`);
   await key('Enter');
@@ -158,19 +194,24 @@ try {
   await key('Enter');
   await until("hostFixture.pending().length===1");
   const id = await evaluate('hostFixture.pending()[0]');
+  assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input.kind"), 'question');
   await untilMarker(id, 'sending');
   assert.equal(await evaluate('hostFixture.board().interactions.length'), 0);
+  await hostClick('[data-testid="board-reference-bar"]');
+  await clickPoint(original.x + original.width - 40, original.y + original.height - 40);
+  assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(popover)})`), true);
+  assert.deepEqual(await evaluate('hostFixture.pending()'), [id]);
   await key('Enter');
   assert.equal(await submitCount(), 1);
   assert.deepEqual(await canvasRect(), original);
-  check('Shift+Enter inserts a newline, IME confirmation never sends, Enter submits once, and the sending marker exists before RPC acceptance');
+  check('Shift+Enter inserts a newline, IME protects both send shortcuts, Enter submits once, and outside clicks cannot dismiss an in-flight send');
 
   await evaluate('hostFixture.accept()');
   await untilMarker(id, 'delivered');
   await until(`!document.querySelector(${JSON.stringify(input)})`);
   await evaluate(`hostFixture.updateInteraction(${JSON.stringify(id)},{status:'processing'})`);
   await untilMarker(id, 'processing');
-  const answer = { status: 'answered', response: 'The original question is answered here.', responseRevision: 1, responseSource: 'explicit', responseCanvas: { revision: 1, documentVersion: 1, data: {}, patches: [], html: `<style>body{margin:0}button{position:absolute;left:20px;top:20px;width:150px;height:36px}</style><button id="visual-answer" onclick="this.textContent='Animation started';parent.postMessage({channel:'host-response-fixture',clicked:true},'*')">Start animation</button><button id="visual-ask" style="left:190px" onclick="board.ask({prompt:'Explain the selected figure',anchor:{kind:'region',boardRevision:board.getContext().boardRevision,canvasRevision:board.getContext().canvasRevision,text:'Fixture visual selection',rect:{x:12,y:24,width:50,height:40}}}).then(result=>parent.postMessage({channel:'host-response-fixture',result},'*'))">Ask about figure</button>` } };
+  const answer = { status: 'answered', response: 'The original question is answered here.', responseRevision: 1, responseSource: 'explicit', responseCanvas: { revision: 1, documentVersion: 1, data: {}, patches: [], html: `<style>body{margin:0}button{position:absolute;left:20px;top:20px;width:150px;height:36px}</style><button id="visual-answer" onclick="this.textContent='Animation started';parent.postMessage({channel:'host-response-fixture',clicked:true},'*')">Start animation</button><button id="visual-ask" style="left:190px" onclick="board.ask({prompt:'Explain the selected figure',kind:'fork',anchor:{kind:'region',boardRevision:board.getContext().boardRevision,canvasRevision:board.getContext().canvasRevision,text:'Fixture visual selection',rect:{x:12,y:24,width:50,height:40}}}).then(result=>parent.postMessage({channel:'host-response-fixture',result},'*'))">Ask about figure</button>` } };
   await evaluate(`hostFixture.updateInteraction(${JSON.stringify(id)},${JSON.stringify(answer)})`);
   await untilMarker(id, 'answered');
   await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('The original question is answered here.')`);
@@ -204,6 +245,7 @@ try {
   const visualFollowup = await evaluate('hostFixture.pending()[0]');
   const visualCall = await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input");
   assert.equal(visualCall.sourceInteractionId, id);
+  assert.equal(visualCall.kind, 'question'); // Generated route hints cannot preselect the human's destination.
   assert.deepEqual(visualCall.anchor, await evaluate(`hostFixture.board().interactions.find(item=>item.id===${JSON.stringify(id)}).anchor`));
   assert.ok(visualCall.text.includes('"responseRevision":1'));
   assert.ok(visualCall.text.includes('"quote":"Fixture visual selection"'));
@@ -225,22 +267,23 @@ try {
   await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('First line')`);
   await evaluate('hostFixture.updateCanvas()');
   await untilFrame("board.getData().next===true");
-  await untilFrame(`document.querySelector('[data-board-markers]')?.shadowRoot?.querySelector(${JSON.stringify(marker(id))})?.textContent.includes('旧位置')`);
+  await untilFrame(`document.querySelector('[data-board-markers]')?.shadowRoot?.querySelector(${JSON.stringify(marker(id))})?.dataset.stale==='true'`);
   await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('旧位置')`);
   check('durable interactions recover after remount, and a newer canvas marks the original anchor as stale');
 
   await closePopover();
-  await openAt(280, 190, 'fork');
-  await sendText('Discuss this choice'); await key('Enter');
+  await openAt(280, 190);
+  await sendText('Discuss this choice'); await key('Enter', 'Enter', 4);
   await until('hostFixture.pending().length===1');
   const fork = await evaluate('hostFixture.pending()[0]');
+  assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input.kind"), 'fork');
   await untilMarker(fork, 'sending');
   await evaluate('hostFixture.accept()');
   await untilMarker(fork, 'delivered');
   await evaluate(`hostFixture.updateInteraction(${JSON.stringify(fork)},{status:'answered',response:'Fork answer attached to the original marker.'})`);
   await untilMarker(fork, 'answered');
   await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('Fork answer attached')`);
-  await hostClick(`${popover} button[aria-label="继续追问"]`);
+  await hostClick(`${popover} button[aria-label="继续交流"]`);
   await until(`document.querySelector(${JSON.stringify(input)})`);
   await sendText('A follow-up at this point'); await key('Enter');
   await until('hostFixture.pending().length===1');
@@ -255,26 +298,60 @@ try {
   await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('Follow-up response at the same original point.')`);
   await closePopover(); await click(marker(fork));
   await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('A follow-up at this point')`);
-  check('fork follow-ups use the source interaction and update one spatial thread marker; reopening retains both question and later answer');
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover + ' button[aria-label="带回主线"]')})!==null`), false);
+  check('Cmd+Enter opens a fork; plain Enter from its thread continues that fork at the same marker without a return-to-main action');
 
   await closePopover();
+  await openAt(680, 190);
+  await sendText('Control shortcut keeps this exact draft');
+  await key('Enter', 'Enter', 2);
+  await until('hostFixture.pending().length===1');
+  const controlFork = await evaluate('hostFixture.pending()[0]');
+  const controlCall = await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input");
+  assert.equal(controlCall.kind, 'fork');
+  assert.equal(controlCall.text, 'Control shortcut keeps this exact draft');
+  await evaluate('hostFixture.accept()');
+  await untilMarker(controlFork, 'delivered');
+  await until(`!document.querySelector(${JSON.stringify(input)})`);
+  await closePopover();
+  await openAt(850, 300);
+  await sendText('Choose the fork button only after writing');
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover + ' button[aria-label="发送"]')})!==null`), true);
+  await hostClick(`${popover} button[aria-label="Fork 发送"]`);
+  await until('hostFixture.pending().length===1');
+  const buttonFork = await evaluate('hostFixture.pending()[0]');
+  const buttonCall = await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input");
+  assert.equal(buttonCall.kind, 'fork');
+  assert.equal(buttonCall.text, 'Choose the fork button only after writing');
+  await evaluate('hostFixture.accept()');
+  await untilMarker(buttonFork, 'delivered');
+  await until(`!document.querySelector(${JSON.stringify(input)})`);
+  await closePopover();
+  check('Ctrl+Enter and the final Fork send button both create a fork using the existing draft without an earlier mode choice');
+
   await openAt(480, 190);
-  await sendText('A message that fails'); await key('Enter');
+  await sendText('A message that fails'); await hostClick(`${popover} button[aria-label="发送"]`);
   await until('hostFixture.pending().length===1');
   const failed = await evaluate('hostFixture.pending()[0]');
+  assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input.kind"), 'question');
   await untilMarker(failed, 'sending');
   await evaluate('hostFixture.reject()');
   await untilMarker(failed, 'failed');
   await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('Fixture delivery unavailable')`);
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)}).value`), 'A message that fails');
   assert.deepEqual(await canvasRect(), original);
-  check('transport rejection leaves a failed marker, preserves the draft, and displays the error without shifting the canvas');
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover + ' button[aria-label="Fork 发送"]')}).disabled`), true);
+  const attemptsAfterFailure = await submitCount();
+  await hostClick(input); await key('Enter', 'Enter', 4);
+  assert.equal(await submitCount(), attemptsAfterFailure);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)}).value`), 'A message that fails');
+  check('the Send button targets the current chat; a failed send preserves its draft and immutable route without shifting the canvas');
 
   const originalFailedCall = await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input");
   await key('Escape'); await noPopover();
   await click(marker(failed));
   await until(`document.querySelector(${JSON.stringify(popover + ' button[aria-label="重试发送"]')})`);
-  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover + ' button[aria-label="继续追问"]')})!==null`), false);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover + ' button[aria-label="继续交流"]')})!==null`), false);
   await hostClick(`${popover} button[aria-label="重试发送"]`);
   await until(`document.querySelector(${JSON.stringify(input)})?.value==='A message that fails'`);
   await key('Enter');
@@ -293,7 +370,7 @@ try {
   await command('Emulation.setDeviceMetricsOverride', { width: 900, height: 650, deviceScaleFactor: 1, mobile: false });
   await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   const smallerCanvas = await canvasRect();
-  await openAt(smallerCanvas.width - 35, smallerCanvas.height - 45, 'change');
+  await openAt(smallerCanvas.width - 35, smallerCanvas.height - 45);
   const edgePopover = await hostLocation(popover);
   assert.ok(edgePopover.x >= smallerCanvas.x && edgePopover.y >= smallerCanvas.y);
   assert.ok(edgePopover.x + edgePopover.width <= smallerCanvas.x + smallerCanvas.width);
