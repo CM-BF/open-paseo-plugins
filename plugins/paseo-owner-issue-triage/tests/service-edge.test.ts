@@ -154,6 +154,94 @@ describe("service failure boundaries", () => {
     expect(f.worker.start).toHaveBeenCalledTimes(1);
   });
 
+  it("revalidates closure before a reserved retry even when the next scan is not due", async () => {
+    const f = fixture();
+    await f.enable(); f.add();
+    f.worker.start.mockRejectedValueOnce(Object.assign(new Error("Fixture daemon offline"), { name: "WorkerError", retryable: true }));
+    await f.service.tick();
+    f.rows.get(1)!.state = "closed"; f.snapshots.get(1)!.state = "closed";
+    f.advance(31_000); await f.service.tick();
+    expect(f.github.listIssues).toHaveBeenCalledTimes(1);
+    expect(f.github.getIssue).toHaveBeenCalledTimes(2);
+    expect(f.worker.start).toHaveBeenCalledTimes(1);
+    expect(f.worker.stop).toHaveBeenCalledTimes(1);
+    expect(f.store.state.items[0]).toMatchObject({ status: "closed", run: { phase: "failed", snapshot: { state: "open" } } });
+  });
+
+  it("isolates a deleted reserved issue before retry without blocking new intake", async () => {
+    const f = fixture();
+    await f.enable(); f.add();
+    f.worker.start.mockRejectedValueOnce(Object.assign(new Error("Fixture daemon offline"), { name: "WorkerError", retryable: true }));
+    await f.service.tick();
+    f.rows.delete(1);
+    f.advance(31_000); await f.service.tick();
+    expect(f.worker.start).toHaveBeenCalledTimes(1);
+    expect(f.store.state.items[0]).toMatchObject({ status: "failed", unavailable: true, run: { phase: "failed" } });
+    expect(f.store.state.scan.error).toBeNull();
+    f.add(2); await f.service.scanNow(); await f.service.tick();
+    expect(f.worker.start).toHaveBeenCalledTimes(2);
+    expect(f.worker.start.mock.calls[1]![0].snapshot.number).toBe(2);
+  });
+
+  it.each(["author", "pull request"])("rejects a reserved issue whose fresh API %s is no longer eligible", async kind => {
+    const f = fixture();
+    await f.enable(); f.add();
+    f.worker.start.mockRejectedValueOnce(Object.assign(new Error("Fixture daemon offline"), { name: "WorkerError", retryable: true }));
+    await f.service.tick();
+    if (kind === "author") f.rows.get(1)!.user = { id: 77 };
+    else f.rows.get(1)!.pull_request = {};
+    f.advance(31_000); await f.service.tick();
+    expect(f.worker.start).toHaveBeenCalledTimes(1);
+    expect(f.store.state.items[0]).toMatchObject({ status: "failed", run: { phase: "failed" } });
+  });
+
+  it("rejects a restored reservation outside the current repository allowlist", async () => {
+    const f = fixture();
+    await f.enable(); f.add();
+    f.worker.start.mockRejectedValueOnce(Object.assign(new Error("Fixture daemon offline"), { name: "WorkerError", retryable: true }));
+    await f.service.tick();
+    // Exercise a stale durable reservation independently of configure()'s eager stop path.
+    f.store.state.config.repos = ["owner/other"]; f.store.save();
+    f.advance(31_000); await f.service.tick();
+    expect(f.worker.start).toHaveBeenCalledTimes(1);
+    expect(f.github.getIssue).toHaveBeenCalledTimes(1);
+    expect(f.store.state.items[0]).toMatchObject({ status: "failed", run: { phase: "failed" } });
+  });
+
+  it("reserves edited content under a new identity without rewriting the prior send snapshot", async () => {
+    const f = fixture();
+    await f.enable(); f.add();
+    f.worker.start.mockRejectedValueOnce(Object.assign(new Error("Fixture daemon offline"), { name: "WorkerError", retryable: true }));
+    await f.service.tick();
+    const original = structuredClone(f.store.state.items[0]!.run!);
+    f.edit("revision-b");
+    f.advance(31_000); await f.service.tick();
+    const item = f.store.state.items[0]!;
+    expect(f.worker.start).toHaveBeenCalledTimes(2);
+    expect(f.worker.stop.mock.invocationCallOrder[0]).toBeLessThan(f.worker.start.mock.invocationCallOrder[1]!);
+    expect(item.run!.id).not.toBe(original.id);
+    expect(item.run!.snapshot.body).toBe("revision-b");
+    expect(item.history[0]).toMatchObject({ id: original.id, phase: "failed", fingerprint: original.fingerprint, snapshot: original.snapshot });
+    f.worker.inspect.mockResolvedValue({ status: "completed", result });
+    await f.service.tick(); await f.service.tick();
+    expect(f.worker.start).toHaveBeenCalledTimes(2);
+    expect(item.processedFingerprint).toBe(fingerprint("revision-b"));
+  });
+
+  it("does not replace an edited reservation until its previous worker is confirmed stopped", async () => {
+    const f = fixture();
+    await f.enable(); f.add();
+    f.worker.start.mockRejectedValueOnce(Object.assign(new Error("Fixture daemon offline"), { name: "WorkerError", retryable: true }));
+    await f.service.tick();
+    const original = structuredClone(f.store.state.items[0]!.run!);
+    f.edit("revision-b");
+    f.worker.stop.mockRejectedValue(Object.assign(new Error("Still stopping"), { name: "WorkerError", retryable: true }));
+    f.advance(31_000); await f.service.tick();
+    expect(f.worker.start).toHaveBeenCalledTimes(1);
+    expect(f.store.state.items[0]!.run).toEqual(original);
+    expect(f.service.overview().workerError).toContain("Still stopping");
+  });
+
   it("cannot dispatch an in-memory reservation after its durable write failed", async () => {
     const f = fixture();
     await f.enable(); f.add();

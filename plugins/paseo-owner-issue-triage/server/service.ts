@@ -242,7 +242,7 @@ export class TriageService {
           }
           if (item.source === "github" && (!this.store.state.config.enabled || this.store.state.scan.error)) continue;
           if (!item.retryAt || item.retryAt <= this.now()) {
-            if (item.source === "github") await this.verifyIdentity();
+            if (item.source === "github" && !await this.refreshReservation(item)) continue;
             await this.startRun(item);
           }
         } else {
@@ -269,6 +269,47 @@ export class TriageService {
         if (error instanceof GitHubError) this.recordApiFailure(error);
       }
     }
+  }
+  /** A reserved retry can run before the next scan; cached eligibility is not enough. */
+  private async refreshReservation(item: Item): Promise<boolean> {
+    const run = item.run!;
+    if (!this.store.state.config.repos.includes(item.snapshot.repo) || !this.store.state.config.repos.includes(run.snapshot.repo)) {
+      await this.worker.stop(run);
+      this.fail(item, "Repository removed from the allowlist. Reserved worker stopped.");
+      this.store.save();
+      return false;
+    }
+    await this.verifyIdentity();
+    let fresh: IssueSnapshot | null;
+    try {
+      const issue = await this.github.getIssue(item.snapshot.repo, item.snapshot.number);
+      fresh = await this.github.snapshot(item.snapshot.repo, issue, this.store.state.owner!.id);
+    } catch (error) {
+      if (!(error instanceof GitHubError) || error.status !== 404) throw error;
+      await this.worker.stop(run);
+      item.unavailable = true;
+      this.fail(item, "Issue is no longer accessible (404). Reserved worker stopped; rediscover it manually after access is restored.");
+      this.store.save();
+      return false;
+    }
+    if (!fresh || fresh.state !== "open" || fresh.fingerprint !== run.fingerprint) {
+      // A send may already have been attempted. Confirm it has stopped before releasing
+      // its identity, and never rewrite the immutable snapshot tied to that send receipt.
+      await this.worker.stop(run);
+      this.fail(item, !fresh ? "Issue no longer belongs to the pinned owner or is a pull request."
+        : fresh.state !== "open" ? "Issue closed before reserved delivery."
+          : "Issue changed before reserved delivery; the old reservation was superseded.");
+      if (fresh) {
+        item.snapshot = fresh;
+        item.status = fresh.state === "open" ? "queued" : "closed";
+        if (item.status === "queued") { item.attempts = 0; item.error = null; }
+      }
+      this.store.save();
+      return false;
+    }
+    item.snapshot = fresh;
+    this.store.save();
+    return true;
   }
   private async scan(): Promise<void> {
     const state = this.store.state;

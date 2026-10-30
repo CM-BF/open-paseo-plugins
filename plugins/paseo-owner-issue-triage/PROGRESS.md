@@ -62,3 +62,9 @@ Core implementation, live UI verification, cleanup and stable installation are c
 - Use the **本人 issues** sidebar entry. The installed scope is `cm-bf/open-paseo-plugins`, historical backfill 0, polling enabled every 180 seconds. #3 is explicitly claimed and excluded.
 - [Verification report](docs/verification/2026-10-29-live.md) contains screenshot links and recovery/source notes. No original installation existed before this task.
 - Work remains on `sw/paseo-owner-issue-triage`; no push or main merge performed. The coordinating agent owns integration.
+
+### 2026-10-29 — reserved retry eligibility
+
+- Fixed a retry-before-scan race: every reserved GitHub retry now checks the pinned account, repository allowlist and fresh API issue eligibility before another delivery attempt. A closed, missing, foreign-authored or PR response stops the reservation; a 404 affects only that issue.
+- Changed content supersedes the old reservation only after its worker is confirmed stopped. Its original run ID, fingerprint and snapshot remain in history; the current content uses the existing queue/dedup path and a new run identity.
+- TypeScript passed; all 126 unit tests across four files passed, including seven new retry-boundary cases. No daemon installation or UI changes were made for this follow-up; the coordinating agent owns runtime replacement.
