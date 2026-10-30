@@ -692,6 +692,30 @@ try {
   assert.equal((await focusChange(removalUpdate)).status,'unavailable');
   check('append locates the actual inserted content; collapsed changes highlight their summary without opening; removal uses its captured parent and cannot follow a replacement selector');
 
+  await publishFocusPatch({id:'hidden-tab-fixture',selector:'body',operation:'append',html:'<main id="hidden-tab-main" style="margin-top:1400px;padding:24px;min-height:320px"><h2>Visible dashboard shell</h2><section id="hidden-tab-content" style="display:none"><article id="hidden-data-target" style="width:200px;height:80px">Hidden data result</article><article id="hidden-patch-target" style="width:200px;height:80px">Hidden patch original</article></section></main>'});
+  const hiddenDataUpdate=await updateRecord('hidden-tab-data',[{selector:'#hidden-data-target'}]);
+  const hiddenPatchUpdate=await publishFocusPatch({id:'hidden-tab-patch',selector:'#hidden-patch-target',operation:'replace',html:'<article id="hidden-patch-target" style="width:200px;height:80px">Hidden patch result</article>'});
+  for (const record of [hiddenDataUpdate,hiddenPatchUpdate]) {
+    await frame('scrollTo(0,0)');
+    const beforeHiddenFocus=await frame("({x:scrollX,y:scrollY,innerX:document.querySelector('#update-scroll').scrollLeft,innerY:document.querySelector('#update-scroll').scrollTop})");
+    const unavailable=await focusChange(record);
+    assert.equal(unavailable.status,'unavailable'); assert.equal(unavailable.location,undefined);
+    assert.deepEqual(await frame("({x:scrollX,y:scrollY,innerX:document.querySelector('#update-scroll').scrollLeft,innerY:document.querySelector('#update-scroll').scrollTop})"),beforeHiddenFocus);
+    assert.equal(await frame("Boolean(document.querySelector('[data-board-update-highlight]'))"),false);
+    assert.equal(await frame("getComputedStyle(document.querySelector('#hidden-tab-content')).display"),'none');
+  }
+  await frame("document.querySelector('#hidden-tab-content').style.display='block'");
+  for (const [record,selector] of [[hiddenDataUpdate,'#hidden-data-target'],[hiddenPatchUpdate,'#hidden-patch-target']]) {
+    const available=await focusChange(record);
+    assert.equal(available.status,'focused'); assert.equal(available.location,'target');
+    const boxes=await frame(`(()=>{const target=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(),ring=document.querySelector('[data-board-update-highlight]').getBoundingClientRect();return {target:{left:target.left,top:target.top,width:target.width,height:target.height},ring:{left:ring.left,top:ring.top,width:ring.width,height:ring.height}}})()`);
+    assert.ok(Math.abs(boxes.target.left-boxes.ring.left)<8&&Math.abs(boxes.target.top-boxes.ring.top)<8);
+    assert.ok(Math.abs(boxes.target.width-boxes.ring.width)<8&&Math.abs(boxes.target.height-boxes.ring.height)<8);
+  }
+  assert.equal(await evaluate('results.ready'),focusReady);
+  assert.equal(await frame("document.querySelector('#field').value"),'draft survives navigation');
+  check('hidden tab data and patch targets stay unavailable without scrolling or highlighting their dashboard shell; showing the tab lets the same updates highlight only their exact targets');
+
   const pathUpdate=await updateRecord('update-path',[{selector:'#update-path-parent > p'}]);
   assert.equal((await focusChange(pathUpdate)).status,'focused');
   await frame("(()=>{const n=document.querySelector('#update-path-parent > p');n.replaceWith(n.cloneNode(true))})()");
