@@ -43,6 +43,19 @@ describe("installed CLI and stdio MCP transport", () => {
     expect((await stat(paths.socket)).mode & 0o777).toBe(0o600);
   });
 
+  it("lets a bound fork publish through the installed CLI without a return-to-owner step", async () => {
+    const paths = runtimePaths(dir);
+    await service.store.create({ id: "shared", title: "Shared Board", ownerAgentId: "owner", html: '<main id="target"></main>' });
+    await service.store.addInteraction({ boardId: "shared", intentId: "fork-request", kind: "fork", text: "Add a visual here" }, "fork-agent");
+    await service.journal.bind("token-fork", { agentId: "fork-agent", cwd: dir });
+    const current = (await service.store.read("shared"))!;
+    const input = join(dir, "fork-publish.json");
+    await writeFile(input, JSON.stringify({ boardId: "shared", expectedRevision: current.revision, eventId: "fork-visual", patch: { id: "visual", selector: "#target", operation: "append", html: '<svg id="visual"></svg>' }, interactionResult: { id: "fork-request", status: "applied", response: "Added directly", resultReferences: ["#visual"] } }));
+    await exec(paths.cli, ["publish", "--file", input], { env: { ...process.env, PASEO_BOARD_BINDING: "token-fork" }, timeout: 5000 });
+    expect((await service.store.read("shared"))!).toMatchObject({ ownerAgentId: "owner", canvas: { patches: [{ id: "visual" }] }, interactions: [{ id: "fork-request", status: "applied" }] });
+    expect(await readFile(paths.skill, "utf8")).toContain("carry it out and publish a revision-checked patch directly to this Board");
+  });
+
   it("serves standard stdio MCP messages and binds mutations to the launch identity", async () => {
     const paths = runtimePaths(dir); await service.journal.bind("token-owner", { agentId: "owner", cwd: dir });
     const child = spawn(paths.mcp, [], { env: { ...process.env, PASEO_BOARD_BINDING: "token-owner" }, stdio: ["pipe", "pipe", "pipe"] });

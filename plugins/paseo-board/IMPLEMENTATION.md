@@ -9,7 +9,7 @@ The plugin is installed and running on Paseo daemon 0.13.2 as paseo-board, from 
 ## Implemented
 
 - Persistent free HTML/CSS/JS canvas, open JSON data updates, local patches, serializable interaction state and explicit whole-document replacement.
-- Native Boards navigation, contextual selection and request preview, independent discussion forks, continued replies and return of a specifically selected reply to the owner.
+- Native Boards navigation, contextual selection and request preview, forks with independent conversation context and direct edits to the shared Board, continued replies and optional forwarding of a selected reply to the owner.
 - Separate saved, delivered, processing, answered and applied receipts. Applying a change requires concrete result references; a completed turn alone is insufficient.
 - Explicit agent decisions, conservative inferred candidates with original excerpts, and observed changes to declared inputs. User requirements and hidden reasoning are not collected as agent decisions.
 - One validated storage service behind typed RPC, agent MCP tools and the standalone CLI. Existing async-shell scripts can emit facts without waking an agent; there is no second task supervisor.
@@ -84,6 +84,6 @@ The reference row now keeps a constant height. Its contents and selection hints 
 
 Durable interactions are projected into an isolated marker layer. Replies and returns share their root marker, whose latest status updates independently of the canvas and does not restart its JavaScript. Markers stay at their original coordinates when their frozen anchor is stale, with a visible old-version label. They are excluded from reference screenshots. Opening a marker reveals its questions, statuses, answers and follow-up actions locally.
 
-Forks inherit the source session's public mode, model, reasoning and feature values. A new scoped respond operation stores text and a separate optional free HTML canvas on the assigned interaction. It does not grant write access to the source canvas. Its response revision supports conflict checking and retry deduplication. Explicit responses are not overwritten by automatic timeline collection. Stream terminal events and late canonical transcript refreshes repair a race in which a finished fork could previously lose its final answer.
+Forks inherit the source session's public mode, model, reasoning and feature values. Forks can directly publish revision-checked changes, record their decisions and emit updates to the same Board when fulfilling the user's request. They cannot change its owner or another agent's interaction receipt. The scoped respond operation stores text and a separate optional free HTML canvas on the assigned interaction for local explanations. Its response revision supports conflict checking and retry deduplication. Explicit responses are not overwritten by automatic timeline collection. Stream terminal events and late canonical transcript refreshes repair a race in which a finished fork could previously lose its final answer.
 
 Verification for these changes is recorded separately in PROGRESS.md; earlier counts above describe the earlier runtime.

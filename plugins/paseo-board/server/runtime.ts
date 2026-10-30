@@ -16,11 +16,11 @@ export const shellQuote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`
 export function toolDefinitions() {
   const withFile = { htmlFile: z.string().describe("Absolute local HTML file; omit html when using this") };
   const entries = [
-    ["list", "List boards owned by you or shared with your discussion fork.", z.object({ workspaceId: z.string().optional() })],
+    ["list", "List boards owned by you or shared with your fork.", z.object({ workspaceId: z.string().optional() })],
     ["read", "Read the free canvas, latest revision, decisions and user interactions. Read before publishing.", z.object({ boardId: IdSchema })],
     ["create", "Create your persistent, fully interactive HTML/JS board. Task content and layout are completely free.", CreateInputSchema.extend({ htmlFile: withFile.htmlFile.optional() })],
-    ["publish", "Update data, insert/replace a local HTML/JS component, or explicitly replace a full document. Preserve other controls with a patch. Link fulfilled user intents to real results.", PublishInputSchema.extend({ htmlFile: withFile.htmlFile.optional() })],
-    ["respond", "Answer your assigned interaction at its original question marker with text and optional fully interactive HTML/JS. This cannot change the source canvas or another agent's answer. Read the interaction responseRevision first (missing means 0).", RespondInputSchema.extend({ htmlFile: withFile.htmlFile.optional() })],
+    ["publish", "Update a Board you own or are forked from: patch a local HTML/JS component, update data, or explicitly replace its document. Forks fulfill user changes directly on the shared Board. Read the current revision, preserve other controls, and link your own fulfilled intent to concrete results.", PublishInputSchema.extend({ htmlFile: withFile.htmlFile.optional() })],
+    ["respond", "Answer your assigned interaction at its original question marker with text and optional fully interactive HTML/JS. This operation writes a local answer; use board_publish for requested changes to the shared canvas. Only your assigned interaction can receive the answer. Read the interaction responseRevision first (missing means 0).", RespondInputSchema.extend({ htmlFile: withFile.htmlFile.optional() })],
     ["decision", "Record a consequential default decision YOU made, with stated rationale, impact and evidence. Never misattribute user requirements or guess hidden reasons.", DecisionUpdateInputSchema],
     ["emit", "Save an external fact/data update without waking any agent. Use a stable eventId for retry; optionally track an observation whose value changes become evidenced candidates.", EmitInputSchema],
   ] as const;
