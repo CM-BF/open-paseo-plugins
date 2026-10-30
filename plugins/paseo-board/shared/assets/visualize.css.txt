@@ -1,0 +1,987 @@
+/*
+ * paseo-visualize frame stylesheet. A fragment renders inside this document in
+ * the user's Paseo theme. Element defaults use :where() and components are single
+ * classes, so any rule the fragment writes wins without a specificity contest.
+ *
+ * Ported from Rodex, which took it from OpenAI Codex
+ * (codex-rs/tui/src/inline_visualization/assets/visualize.css at rust-v0.146.0,
+ * Apache-2.0). Modified in Rodex and again here: fonts load from local() only,
+ * the host palette tokens are --host-*, and the Ivory palette and the Rodex
+ * footer are gone. See NOTICE.
+ */
+
+@font-face {
+  font-family: "Geist";
+  src: local("Geist");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist";
+  src: local("Geist Italic");
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: local("Geist Mono");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: light dark;
+
+  /* Surfaces and text. Each base token is a surface; -foreground is content on it. */
+  --background: light-dark(oklch(99.4% 0.0015 265), #1d1e22);
+  --foreground: light-dark(oklch(21% 0.012 265), oklch(95.5% 0.004 265));
+  --muted-foreground: light-dark(oklch(50% 0.011 265), oklch(66% 0.01 265));
+  --card: light-dark(oklch(96.6% 0.004 265), #25262b);
+  --card-foreground: var(--foreground);
+  --popover: light-dark(oklch(100% 0 0), #25262b);
+  --popover-foreground: var(--foreground);
+  --primary: light-dark(oklch(55% 0.2 278), oklch(70% 0.16 280));
+  --primary-foreground: light-dark(oklch(99.4% 0.0015 265), oklch(16% 0.006 265));
+  --secondary: light-dark(oklch(21% 0.012 265 / 0.055), oklch(96% 0.004 265 / 0.07));
+  --secondary-foreground: var(--foreground);
+  --muted: light-dark(oklch(21% 0.012 265 / 0.045), oklch(96% 0.004 265 / 0.05));
+  --accent: light-dark(oklch(95.6% 0.026 278), oklch(27% 0.06 280));
+  --accent-foreground: light-dark(oklch(47% 0.19 278), oklch(81% 0.105 280));
+  --destructive: light-dark(oklch(50% 0.185 27), oklch(80% 0.115 25));
+  --success: light-dark(oklch(45% 0.105 155), oklch(82% 0.11 155));
+  --warning: light-dark(oklch(51% 0.115 62), oklch(86% 0.115 80));
+  --border: light-dark(oklch(90.8% 0.005 265), #303238);
+  --input: light-dark(oklch(84% 0.007 265), #44464e);
+  --ring: var(--primary);
+
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-size-base: 14px;
+  --radius: 10px;
+  --shadow-sm: 0 0 0 1px light-dark(oklch(21% 0.012 265 / 0.06), oklch(100% 0 0 / 0.06)), 0 1px 2px light-dark(oklch(21% 0.012 265 / 0.06), oklch(0% 0 0 / 0.4));
+  --shadow-lg: 0 0 0 1px light-dark(oklch(21% 0.012 265 / 0.06), oklch(100% 0 0 / 0.07)), 0 12px 32px -8px light-dark(oklch(21% 0.012 265 / 0.18), oklch(0% 0 0 / 0.6));
+
+  /* Data. Series order: blue, orange, green, pink, violet, teal, red, yellow. */
+  --viz-series-1: light-dark(oklch(56% 0.19 266), oklch(71% 0.15 266));
+  --viz-series-2: light-dark(oklch(70% 0.165 55), oklch(77% 0.14 58));
+  --viz-series-3: light-dark(oklch(62% 0.15 152), oklch(74% 0.14 152));
+  --viz-series-4: light-dark(oklch(65% 0.2 352), oklch(75% 0.16 352));
+  --viz-series-5: light-dark(oklch(57% 0.2 305), oklch(72% 0.16 305));
+  --viz-series-6: light-dark(oklch(64% 0.12 196), oklch(75% 0.11 196));
+  --viz-series-7: light-dark(oklch(58% 0.21 27), oklch(71% 0.17 27));
+  --viz-series-8: light-dark(oklch(80% 0.16 88), oklch(85% 0.14 90));
+  --viz-neutral-1: light-dark(oklch(91% 0.005 265), oklch(31% 0.008 265));
+  --viz-neutral-2: light-dark(oklch(82% 0.007 265), oklch(43% 0.009 265));
+  --viz-neutral-3: light-dark(oklch(70% 0.009 265), oklch(57% 0.01 265));
+  --viz-neutral-4: light-dark(oklch(55% 0.011 265), oklch(71% 0.009 265));
+  --viz-neutral-5: light-dark(oklch(38% 0.012 265), oklch(87% 0.006 265));
+  --viz-focus: var(--viz-series-1);
+  --viz-focus-2: var(--viz-series-2);
+  --viz-recede: light-dark(oklch(88% 0.006 265), oklch(34% 0.008 265));
+  --viz-recede-foreground: light-dark(oklch(60% 0.009 265), oklch(56% 0.01 265));
+  --viz-sequential-1: light-dark(oklch(95.5% 0.022 275), oklch(28% 0.045 275));
+  --viz-sequential-2: light-dark(oklch(88% 0.055 275), oklch(37% 0.085 275));
+  --viz-sequential-3: light-dark(oklch(78% 0.1 275), oklch(47% 0.12 275));
+  --viz-sequential-4: light-dark(oklch(66% 0.15 275), oklch(59% 0.15 275));
+  --viz-sequential-5: light-dark(oklch(54% 0.18 276), oklch(71% 0.14 276));
+  --viz-sequential-6: light-dark(oklch(41% 0.16 280), oklch(85% 0.08 278));
+  --viz-diverging-1: light-dark(oklch(46% 0.14 255), oklch(73% 0.13 255));
+  --viz-diverging-2: light-dark(oklch(61% 0.12 252), oklch(59% 0.12 253));
+  --viz-diverging-3: light-dark(oklch(81% 0.06 250), oklch(43% 0.07 250));
+  --viz-diverging-4: light-dark(oklch(95% 0.004 265), oklch(28% 0.006 265));
+  --viz-diverging-5: light-dark(oklch(83% 0.07 62), oklch(45% 0.07 56));
+  --viz-diverging-6: light-dark(oklch(69% 0.14 54), oklch(63% 0.13 53));
+  --viz-diverging-7: light-dark(oklch(55% 0.16 44), oklch(77% 0.14 50));
+
+  scrollbar-color: color-mix(in oklab, var(--foreground) 22%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+/* A custom theme: the host sets its resolved palette colors on the root as --host-*. */
+:root[data-palette="custom"] {
+  --background: var(--host-sheet);
+  --foreground: var(--host-ink);
+  --muted-foreground: var(--host-ink-3);
+  --card: light-dark(var(--host-canvas), var(--host-raised));
+  --popover: var(--host-raised);
+  --primary: var(--host-iris);
+  --primary-foreground: var(--host-on-ink);
+  --secondary: color-mix(in oklab, var(--host-ink) 6%, transparent);
+  --muted: color-mix(in oklab, var(--host-ink) 5%, transparent);
+  --accent: var(--host-iris-soft);
+  --accent-foreground: var(--host-iris-ink);
+  --destructive: var(--host-bad-ink);
+  --success: var(--host-ok-ink);
+  --warning: var(--host-warn-ink);
+  --border: var(--host-line);
+  --input: var(--host-line-strong);
+  --shadow-sm: 0 0 0 1px color-mix(in oklab, var(--host-ink) 7%, transparent), 0 1px 2px light-dark(color-mix(in oklab, var(--host-ink) 6%, transparent), oklch(0% 0 0 / 0.4));
+  --shadow-lg: 0 0 0 1px color-mix(in oklab, var(--host-ink) 7%, transparent), 0 12px 32px -8px light-dark(color-mix(in oklab, var(--host-ink) 18%, transparent), oklch(0% 0 0 / 0.6));
+  --viz-neutral-1: light-dark(color-mix(in oklab, var(--host-ink) 11%, var(--host-sheet)), color-mix(in oklab, var(--host-ink) 16%, var(--host-sheet)));
+  --viz-neutral-2: light-dark(color-mix(in oklab, var(--host-ink) 22%, var(--host-sheet)), color-mix(in oklab, var(--host-ink) 31%, var(--host-sheet)));
+  --viz-neutral-3: light-dark(color-mix(in oklab, var(--host-ink) 38%, var(--host-sheet)), color-mix(in oklab, var(--host-ink) 50%, var(--host-sheet)));
+  --viz-neutral-4: light-dark(color-mix(in oklab, var(--host-ink) 57%, var(--host-sheet)), color-mix(in oklab, var(--host-ink) 68%, var(--host-sheet)));
+  --viz-neutral-5: light-dark(color-mix(in oklab, var(--host-ink) 78%, var(--host-sheet)), color-mix(in oklab, var(--host-ink) 89%, var(--host-sheet)));
+  --viz-recede: light-dark(color-mix(in oklab, var(--host-ink) 15%, var(--host-sheet)), color-mix(in oklab, var(--host-ink) 20%, var(--host-sheet)));
+  --viz-recede-foreground: color-mix(in oklab, var(--host-ink) 49%, var(--host-sheet));
+  --viz-diverging-4: light-dark(color-mix(in oklab, var(--host-ink) 6%, var(--host-sheet)), color-mix(in oklab, var(--host-ink) 12%, var(--host-sheet)));
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--primary) 24%, transparent);
+}
+
+/* Inline in a chat the page is transparent and grows with its content. */
+:where(html) {
+  background-color: transparent;
+}
+
+:where(html[data-surface="inline"]) {
+  overflow-y: hidden;
+}
+
+:where(html[data-surface="page"]) {
+  background-color: var(--background);
+}
+
+:where(html > body) {
+  margin: 0;
+  padding: 6px 4px;
+  color: var(--foreground);
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  font-weight: 400;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+:where(html[data-surface="page"] > body) {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 40px 28px 28px;
+}
+
+/* A page in a narrow side panel keeps its width for content. */
+@media (max-width: 560px) {
+  :where(html[data-surface="page"] > body) {
+    padding: 16px 14px 20px;
+  }
+}
+
+:where(h1, h2, h3, h4) {
+  margin: 0 0 0.5em;
+  color: var(--foreground);
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  text-wrap: balance;
+}
+
+:where(h1) {
+  font-size: 1.6em;
+  line-height: 1.2;
+}
+
+:where(h2) {
+  font-size: 1.25em;
+  line-height: 1.3;
+}
+
+:where(h3) {
+  font-size: 1.07em;
+  line-height: 1.35;
+}
+
+:where(h4) {
+  font-size: 1em;
+  line-height: 1.4;
+}
+
+:where(p) {
+  margin: 0 0 0.75em;
+  text-wrap: pretty;
+}
+
+:where(a) {
+  color: var(--accent-foreground);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, currentColor 35%, transparent);
+  text-underline-offset: 2px;
+}
+
+:where(a:hover) {
+  text-decoration-color: currentColor;
+}
+
+:where(small) {
+  font-size: 0.86em;
+}
+
+:where(strong, b) {
+  font-weight: 600;
+}
+
+:where(hr) {
+  height: 1px;
+  margin: 16px 0;
+  border: 0;
+  background: var(--border);
+}
+
+:where(code, kbd, samp, pre) {
+  font-family: var(--font-mono);
+}
+
+:where(code:not(pre code)) {
+  padding: 0.12em 0.4em;
+  border-radius: 5px;
+  background: var(--muted);
+  font-size: 0.88em;
+}
+
+:where(kbd) {
+  padding: 0.1em 0.4em;
+  border-radius: 5px;
+  background: var(--popover);
+  box-shadow: inset 0 -1px 0 var(--input), var(--shadow-sm);
+  font-size: 0.82em;
+}
+
+:where(pre) {
+  margin: 0 0 0.75em;
+  padding: 10px 12px;
+  overflow: auto;
+  border-radius: var(--radius);
+  background: var(--card);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+:where(svg:not(.lucide)) {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+:where(img, video, canvas) {
+  max-width: 100%;
+}
+
+/* Tables read as hairline rows; `.table` keeps older fragments working. */
+:where(table) {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+:where(th, td) {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+:where(th) {
+  color: var(--muted-foreground);
+  font-size: 0.9em;
+  font-weight: 500;
+}
+
+:where(caption) {
+  padding-bottom: 6px;
+  color: var(--muted-foreground);
+  font-size: 0.9em;
+  text-align: left;
+}
+
+:where(tbody tr:last-child) :where(th, td) {
+  border-bottom: 0;
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.table-sm :is(th, td) {
+  padding: 4px 8px;
+}
+
+:where(.table .text-end, .table [align="right"]) {
+  text-align: right;
+}
+
+:where(.table .text-center, .table [align="center"]) {
+  text-align: center;
+}
+
+.text-nowrap {
+  white-space: nowrap;
+}
+
+/* Surfaces */
+
+.card {
+  min-width: 0;
+  padding: 14px 16px;
+  border-radius: 12px;
+  color: var(--card-foreground);
+  background: var(--card);
+  overflow-wrap: break-word;
+}
+
+.viz-stat {
+  display: grid;
+  gap: 2px;
+}
+
+.viz-stat > :first-child {
+  color: var(--muted-foreground);
+  font-size: 0.9em;
+}
+
+.viz-stat-value {
+  color: var(--foreground);
+  font-size: 1.85em;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.viz-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* Layout helpers */
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 168px), 1fr));
+  gap: 10px;
+}
+
+.viz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+:where(.viz-controls) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px 16px;
+}
+
+:where(.viz-controls:has(> .form-label)) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+}
+
+.viz-stack {
+  display: grid;
+  gap: 14px;
+}
+
+/* Controls */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  min-width: 0;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  font: 500 13px/1 var(--font-sans);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 150ms, color 150ms, box-shadow 150ms;
+}
+
+.btn:not(:disabled):hover {
+  background: color-mix(in oklab, var(--foreground) 10%, transparent);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.btn-primary {
+  color: var(--background);
+  background: var(--foreground);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: color-mix(in oklab, var(--foreground) 86%, var(--background));
+}
+
+.btn-ghost {
+  background: transparent;
+}
+
+.btn-ghost:not(:disabled):hover {
+  background: var(--muted);
+}
+
+.btn-sm {
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.btn-icon {
+  width: 32px;
+  padding: 0;
+}
+
+.btn-icon.btn-sm {
+  width: 26px;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.btn:is([aria-pressed="true"], [aria-selected="true"], .is-selected) {
+  color: var(--accent-foreground);
+  background: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 40%, transparent);
+}
+
+/* A segmented group: the pressed option lifts onto a raised chip. */
+.viz-segmented {
+  display: inline-flex;
+  justify-self: start;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--muted);
+}
+
+.viz-segmented > .btn {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: var(--muted-foreground);
+  background: transparent;
+  box-shadow: none;
+}
+
+.viz-segmented > .btn:not(:disabled):hover {
+  color: var(--foreground);
+  background: transparent;
+}
+
+.viz-segmented > .btn:is([aria-pressed="true"], [aria-selected="true"], .is-selected) {
+  color: var(--foreground);
+  background: var(--popover);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn.viz-tile {
+  width: 100%;
+  height: auto;
+  min-height: 32px;
+  padding: 6px 8px;
+  white-space: normal;
+}
+
+.btn.viz-tile:is([aria-pressed="true"], [aria-selected="true"], .is-selected) {
+  color: inherit;
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+a.btn {
+  color: var(--secondary-foreground);
+}
+
+a.btn-primary {
+  color: var(--background);
+}
+
+.lucide {
+  flex-shrink: 0;
+}
+
+.form-label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.form-control,
+.form-select {
+  display: block;
+  width: 100%;
+  height: 32px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--foreground);
+  background-color: var(--popover);
+  box-shadow: inset 0 0 0 1px var(--input);
+  font: 400 13.5px/1.4 var(--font-sans);
+  transition: box-shadow 150ms;
+}
+
+.form-control::placeholder {
+  color: color-mix(in oklab, var(--muted-foreground) 80%, transparent);
+}
+
+.form-control:focus-visible,
+.form-select:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--ring), 0 0 0 3px color-mix(in oklab, var(--ring) 22%, transparent);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 84px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.form-control[type="file"] {
+  height: auto;
+  padding: 4px;
+}
+
+.form-control[type="file"]::file-selector-button {
+  height: 24px;
+  margin-right: 8px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--foreground);
+  background: var(--secondary);
+  font: 500 12.5px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.form-control-color[type="color"] {
+  width: 44px;
+  padding: 3px;
+}
+
+.form-control-color[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-control-color[type="color"]::-webkit-color-swatch {
+  border: 0;
+  border-radius: 6px;
+}
+
+.form-select {
+  appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 6l4 4 4-4' fill='none' stroke='%23888d96' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: right 9px center;
+  background-repeat: no-repeat;
+  background-size: 14px;
+  cursor: pointer;
+}
+
+.form-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.form-check-label {
+  color: var(--foreground);
+  cursor: pointer;
+}
+
+.form-check-input {
+  appearance: none;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 0;
+  border-radius: 5px;
+  background: var(--popover);
+  box-shadow: inset 0 0 0 1.5px var(--input);
+  cursor: pointer;
+  transition: background-color 150ms, box-shadow 150ms;
+}
+
+.form-check-input[type="radio"] {
+  border-radius: 50%;
+}
+
+.form-check-input[type="checkbox"]:checked {
+  background: var(--primary) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.2l2.6 2.6L12 5.4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px no-repeat;
+  box-shadow: none;
+}
+
+.form-check-input[type="radio"]:checked {
+  box-shadow: inset 0 0 0 5px var(--primary);
+}
+
+.form-check-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-check-input:disabled,
+.form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.form-switch .form-check-input {
+  position: relative;
+  width: 30px;
+  height: 18px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--foreground) 16%, transparent);
+  box-shadow: none;
+}
+
+.form-switch .form-check-input::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 2px oklch(0% 0 0 / 0.25);
+  transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.form-switch .form-check-input:checked {
+  background: var(--primary);
+}
+
+.form-switch .form-check-input:checked::before {
+  transform: translateX(12px);
+}
+
+.form-range {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 24px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.form-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--foreground) 12%, transparent);
+}
+
+.form-range::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--foreground) 12%, transparent);
+}
+
+.form-range::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--primary);
+}
+
+.form-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border: 0;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 0 0 1px oklch(0% 0 0 / 0.1), 0 1px 3px oklch(0% 0 0 / 0.25), inset 0 0 0 4.5px var(--primary);
+}
+
+.form-range::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 0 0 1px oklch(0% 0 0 / 0.1), 0 1px 3px oklch(0% 0 0 / 0.25), inset 0 0 0 4.5px var(--primary);
+}
+
+.form-range:focus-visible {
+  outline: none;
+}
+
+.form-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px color-mix(in oklab, var(--ring) 24%, transparent), inset 0 0 0 4.5px var(--primary);
+}
+
+.form-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* Text */
+
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.text-small {
+  font-size: max(11px, calc(var(--font-size-base) - 2px));
+  line-height: 1.4;
+}
+
+.text-destructive {
+  color: var(--destructive);
+}
+
+.text-success {
+  color: var(--success);
+}
+
+.text-warning {
+  color: var(--warning);
+}
+
+.text-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The shared tooltip; the runtime positions it, fragments may reuse the class. */
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(18rem, var(--tooltip-available-width, calc(100vw - 12px)), calc(100vw - 12px));
+  max-height: min(var(--tooltip-available-height, calc(100vh - 12px)), calc(100vh - 12px));
+  padding: 5px 9px;
+  border-radius: 8px;
+  color: var(--background);
+  background: var(--foreground);
+  box-shadow: var(--shadow-lg);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  overflow-wrap: break-word;
+  pointer-events: none;
+  user-select: none;
+}
+
+/*
+ * Opt-in plot preset. Selectors stay at zero specificity so fragment CSS and
+ * inline styles replace any value.
+ */
+:where(.viz-plot) {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+}
+
+:where(.viz-plot text) {
+  fill: color-mix(in oklab, var(--foreground) 58%, transparent);
+  font-size: max(11px, calc(var(--font-size-base) - 2.5px));
+}
+
+:where(.viz-plot) :where(.viz-plot-grid, .viz-plot-axis) {
+  fill: none;
+  stroke-width: 1px;
+}
+
+:where(.viz-plot .viz-plot-grid) {
+  stroke: color-mix(in oklab, var(--foreground) 8%, transparent);
+}
+
+:where(.viz-plot .viz-plot-axis) {
+  stroke: color-mix(in oklab, var(--foreground) 22%, transparent);
+}
+
+:where(.viz-plot .viz-plot-label) {
+  fill: var(--foreground);
+  paint-order: stroke fill;
+  stroke: var(--background);
+  stroke-linejoin: round;
+  stroke-width: 3px;
+  font-weight: 500;
+}
+
+:where(.viz-plot [data-viz-series="1"], .viz-legend [data-viz-series="1"]) {
+  --viz-series: var(--viz-series-1);
+}
+
+:where(.viz-plot [data-viz-series="2"], .viz-legend [data-viz-series="2"]) {
+  --viz-series: var(--viz-series-2);
+}
+
+:where(.viz-plot [data-viz-series="3"], .viz-legend [data-viz-series="3"]) {
+  --viz-series: var(--viz-series-3);
+}
+
+:where(.viz-plot [data-viz-series="4"], .viz-legend [data-viz-series="4"]) {
+  --viz-series: var(--viz-series-4);
+}
+
+:where(.viz-plot [data-viz-series="5"], .viz-legend [data-viz-series="5"]) {
+  --viz-series: var(--viz-series-5);
+}
+
+:where(.viz-plot [data-viz-series="6"], .viz-legend [data-viz-series="6"]) {
+  --viz-series: var(--viz-series-6);
+}
+
+:where(.viz-plot [data-viz-series="7"], .viz-legend [data-viz-series="7"]) {
+  --viz-series: var(--viz-series-7);
+}
+
+:where(.viz-plot [data-viz-series="8"], .viz-legend [data-viz-series="8"]) {
+  --viz-series: var(--viz-series-8);
+}
+
+:where(.viz-plot .viz-plot-basemap) {
+  fill: color-mix(in oklab, var(--foreground) 5%, transparent);
+  stroke: color-mix(in oklab, var(--foreground) 15%, transparent);
+  stroke-width: 1px;
+}
+
+:where(.viz-plot .viz-plot-line) {
+  fill: none;
+  stroke: var(--viz-series, var(--viz-neutral-5));
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2px;
+}
+
+:where(.viz-plot .viz-plot-mark) {
+  fill: var(--viz-series, var(--viz-neutral-5));
+  stroke: none;
+}
+
+/* `--viz-fill` tunes a large area's strength without breaking its series link. */
+:where(.viz-plot .viz-plot-area) {
+  fill: color-mix(in oklab, var(--viz-series, var(--viz-neutral-5)) var(--viz-fill, 14%), var(--background));
+}
+
+/* `vector-effect` does not inherit from a wrapping `g`; reach its shapes too. */
+:where(
+  .viz-plot .viz-plot-grid,
+  .viz-plot .viz-plot-grid *,
+  .viz-plot .viz-plot-axis,
+  .viz-plot .viz-plot-axis *,
+  .viz-plot .viz-plot-basemap,
+  .viz-plot .viz-plot-basemap *,
+  .viz-plot .viz-plot-line,
+  .viz-plot .viz-plot-line *
+) {
+  vector-effect: non-scaling-stroke;
+}
+
+:where(.viz-plot-scroll) {
+  width: 100%;
+  overflow-x: auto;
+}
+
+:where(.viz-plot-scroll > .viz-plot) {
+  width: 100%;
+  min-width: var(--viz-plot-min-width, 660px);
+  max-width: none;
+}
+
+:where(.viz-legend) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  line-height: 1.4;
+  list-style: none;
+}
+
+:where(.viz-legend > *) {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+:where(.viz-legend .viz-swatch) {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--viz-series, var(--viz-neutral-5));
+}

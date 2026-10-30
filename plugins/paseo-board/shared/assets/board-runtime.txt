@@ -1,0 +1,671 @@
+function (initial) {
+  "use strict";
+  const root = document.documentElement;
+  const scope = { channel: initial.channel, boardId: initial.boardId, sessionId: initial.sessionId };
+  let snapshot = initial;
+  let state = initial.userState;
+  let localStateDirty = false;
+  let selectionMode = "off";
+  let deferredSelection = null;
+  let queued = null;
+  let applying = false;
+  let captureBusy = false;
+  let selectionSession = null;
+  let suppressPointerClick = false;
+  let dismissedPointer = null;
+  let lastAnchor;
+  let pointer = null;
+  let textPointer = null;
+  let overlay = null;
+  let lastGesture = -Infinity;
+  let lastGesturePosition;
+  let patchFailure = null;
+  let sequence = 0;
+  const applied = new Set();
+  const dataListeners = new Set();
+  const stateListeners = new Set();
+  const pendingAsks = new Map();
+  const post = (message) => window.parent.postMessage({ ...message, ...scope }, "*");
+  const copy = (value) => JSON.parse(JSON.stringify(value));
+  const error = (code, message, patchId) => post({ type: "error", error: { code, message: String(message).slice(0, 4000), ...(patchId ? { patchId } : {}) } });
+  const emitListeners = (listeners, value) => { for (const listener of listeners) { try { listener(copy(value)); } catch (e) { error("listener-error", e.message); } } };
+  const currentAnchor = () => ({ kind: "board", boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision });
+  const acting = () => performance.now() - lastGesture < 1800 && navigator.userActivation && navigator.userActivation.isActive;
+  const cancelAsk = { status: "cancelled", outcome: null };
+  const ask = (input) => {
+    const request = typeof input === "string" ? { prompt: input } : input;
+    if (!request || typeof request.prompt !== "string" || !request.prompt.trim() || request.prompt.length > 24000) return Promise.reject(new TypeError("board.ask requires a prompt of 1–24000 characters"));
+    if (!acting() || pendingAsks.size >= 8 || selectionMode !== "off") return Promise.resolve(cancelAsk);
+    lastGesture = -Infinity;
+    const id = `ask-${++sequence}`;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => { pendingAsks.delete(id); resolve(cancelAsk); }, 120000);
+      pendingAsks.set(id, { resolve, timer });
+      post({ type: "ask", id, request: { prompt: request.prompt, anchor: request.anchor || lastAnchor || currentAnchor(), kind: request.kind || "question", position: lastGesturePosition } });
+    });
+  };
+  const saveState = (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("board.saveState requires a JSON object");
+    const serialized = JSON.stringify(value);
+    if (serialized.length > 524288) throw new RangeError("board state exceeds 512 KiB");
+    state = JSON.parse(serialized);
+    localStateDirty = true;
+    post({ type: "state", state });
+    return copy(state);
+  };
+  const subscribe = (listeners, fn) => {
+    if (typeof fn !== "function") throw new TypeError("listener must be a function");
+    listeners.add(fn);
+    return () => listeners.delete(fn);
+  };
+  // No SDK or execution primitive is exposed. Data and view state remain task-agnostic JSON.
+  Object.defineProperty(window, "board", { configurable: false, writable: false, value: Object.freeze({
+    getData: () => copy(snapshot.canvas.data),
+    onData: (fn) => subscribe(dataListeners, fn),
+    getState: () => copy(state),
+    restoreState: () => copy(state),
+    onState: (fn) => subscribe(stateListeners, fn),
+    saveState,
+    ask,
+    getContext: () => ({ boardId: scope.boardId, documentVersion: initial.canvas.documentVersion, boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision }),
+  }) });
+  window.openai = Object.freeze({ sendFollowUpMessage: ask });
+
+  const applyTheme = (theme) => {
+    if (!theme || !["light", "dark"].includes(theme.scheme) || !theme.tokens || typeof theme.tokens !== "object") return;
+    root.setAttribute("data-theme", theme.scheme);
+    root.style.colorScheme = theme.scheme;
+    for (const name of Array.from(root.style)) if (name.startsWith("--host-")) root.style.removeProperty(name);
+    for (const [name, value] of Object.entries(theme.tokens)) if (/^host-[a-z0-9-]+$/.test(name) && typeof value === "string" && /^[#a-zA-Z0-9(),.%+*/ -]{1,200}$/.test(value)) root.style.setProperty("--" + name, value);
+    window.dispatchEvent(new CustomEvent("paseo:themechange", { detail: { theme: theme.scheme, palette: "custom" } }));
+  };
+
+  const runScript = (old) => new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    for (const attribute of old.attributes) script.setAttribute(attribute.name, attribute.value);
+    script.textContent = old.textContent;
+    const executable = !script.type || /^(module|(?:text|application)\/(?:java|ecma)script)$/i.test(script.type);
+    if (!executable) { old.replaceWith(script); resolve(); return; }
+    let scriptError;
+    let timer;
+    const finish = (failure) => { clearTimeout(timer); window.removeEventListener("error", onError); failure ? reject(failure) : resolve(); };
+    const onError = (event) => { scriptError = new Error(event.message || "Patch script failed"); };
+    window.addEventListener("error", onError);
+    const external = script.src || script.type === "module";
+    if (external) {
+      script.async = false;
+      script.addEventListener("load", () => finish(scriptError), { once: true });
+      script.addEventListener("error", () => finish(new Error("Patch script could not load")), { once: true });
+      timer = setTimeout(() => finish(new Error("Patch script timed out; it will not be retried")), 20000);
+    }
+    try { old.replaceWith(script); if (!external) finish(scriptError); } catch (e) { finish(e); }
+  });
+  const applyPatch = async (patch) => {
+    if (applied.has(patch.id)) return;
+    // Claim before mutation. A partial script failure must never run the same patch a second time.
+    applied.add(patch.id);
+    const targets = document.querySelectorAll(patch.selector);
+    if (targets.length !== 1) throw new Error(`Patch selector must match exactly one element; matched ${targets.length}`);
+    const target = targets[0];
+    if (target === root || target === document.head || target === document.body) {
+      if (patch.operation === "replace" || patch.operation === "remove") throw new Error("Replacing document roots requires publishing a new document version");
+    }
+    if (patch.operation === "remove") { target.remove(); return; }
+    const template = document.createElement("template");
+    template.innerHTML = patch.html;
+    const scripts = Array.from(template.content.querySelectorAll("script"));
+    if (patch.operation === "append") target.append(template.content);
+    else if (patch.operation === "prepend") target.prepend(template.content);
+    else if (patch.operation === "replace") target.replaceWith(template.content);
+    else throw new Error("Unknown patch operation");
+    for (const script of scripts) if (script.isConnected) await runScript(script);
+  };
+  const receiveSnapshot = (next) => {
+    if (!next || !next.canvas || next.canvas.documentVersion !== initial.canvas.documentVersion || next.boardRevision < snapshot.boardRevision) return;
+    queued = next;
+    void drain();
+  };
+  const drain = async () => {
+    if (applying || selectionMode !== "off" || selectionSession || captureBusy || !queued) return;
+    applying = true;
+    try {
+      while (queued && selectionMode === "off" && !selectionSession && !captureBusy) {
+        const next = queued;
+        queued = null;
+        const dataChanged = JSON.stringify(snapshot.canvas.data) !== JSON.stringify(next.canvas.data);
+        const serverStateChanged = JSON.stringify(snapshot.userState) !== JSON.stringify(next.userState);
+        snapshot = next;
+        applyTheme(next.theme);
+        if (dataChanged) {
+          emitListeners(dataListeners, next.canvas.data);
+          window.dispatchEvent(new CustomEvent("board:data", { detail: copy(next.canvas.data) }));
+        }
+        if (localStateDirty) {
+          // A slow acknowledgement for an earlier save must never overwrite newer local input.
+          if (JSON.stringify(next.userState) === JSON.stringify(state)) localStateDirty = false;
+        } else if (serverStateChanged && JSON.stringify(next.userState) !== JSON.stringify(state)) {
+          state = next.userState;
+          emitListeners(stateListeners, state);
+        }
+        if (patchFailure) continue;
+        for (const patch of next.canvas.patches) {
+          try { await applyPatch(patch); }
+          catch (e) {
+            patchFailure = patch.id;
+            error("patch-failed", `${e.message}. Later patches are paused until the document is republished.`, patch.id);
+            break;
+          }
+        }
+      }
+    } finally {
+      applying = false;
+      queueMarkerPositions();
+      if (deferredSelection !== null) { const mode = deferredSelection; deferredSelection = null; setSelectionMode(mode); }
+    }
+  };
+
+  // Selection is opt-in. In ordinary mode we never consume pointer, keyboard or drag events.
+  const selectorFor = (node) => {
+    if (!(node instanceof Element)) return undefined;
+    if (node.id) return "#" + CSS.escape(node.id);
+    const parts = [];
+    while (node && node !== document.body && parts.length < 12) {
+      if (node.id) { parts.unshift("#" + CSS.escape(node.id)); break; }
+      const name = node.localName;
+      if (!name) break;
+      const siblings = node.parentElement ? Array.from(node.parentElement.children).filter((n) => n.localName === name) : [];
+      parts.unshift(name + (siblings.length > 1 ? `:nth-of-type(${siblings.indexOf(node) + 1})` : ""));
+      node = node.parentElement;
+    }
+    return parts.length ? parts.join(" > ").slice(0, 1000) : undefined;
+  };
+  const viewport = () => ({ width: innerWidth, height: innerHeight, scrollX, scrollY });
+  const rect = (r) => ({ x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height });
+  // Host-owned discussions are independent from the authored document and its patch journal.
+  // Frozen coordinates are document pixels. A selector on a point/region identifies context,
+  // not a new position; moving to its centre after a revision would silently change meaning.
+  let markerHost;
+  let markerItems = [];
+  let selectedMarkerId;
+  let markerPositionFrame;
+  let lastSelectedPosition;
+  const markerLabels = { saved: "已提交", sending: "发送中", delivered: "等待回答", processing: "处理中", answered: "已回答", applied: "已落实", rejected: "未采纳", failed: "失败" };
+  const inMarkers = (event) => markerHost && event.composedPath().includes(markerHost);
+  const markerNode = (event) => event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-board-interaction"));
+  const positionMarkers = () => {
+    markerPositionFrame = null;
+    if (!markerHost) return;
+    const overlap = new Map();
+    let unanchored = 0;
+    for (const item of markerItems) {
+      const button = item.button;
+      const anchor = item.marker.anchor;
+      let saved = anchor?.rect;
+      const stale = Boolean(anchor && anchor.canvasRevision !== snapshot.canvas.revision);
+      // Only explicit element references identify their whole target. A point's selector is
+      // merely surrounding context and must never snap to a different part of that element.
+      if (!stale && anchor?.kind === "element" && anchor.selector) {
+        try { const targets = document.querySelectorAll(anchor.selector); if (targets.length === 1) saved = rect(targets[0].getBoundingClientRect()); } catch {}
+      }
+      const x = saved ? saved.x - scrollX : 12;
+      const y = saved ? saved.y - scrollY : 12 + unanchored++ * 34;
+      const key = `${Math.round(x / 28)}:${Math.round(y / 28)}`;
+      const offset = overlap.get(key) || 0;
+      overlap.set(key, offset + 1);
+      const left = x + offset * 24;
+      const top = y + offset * 10;
+      const visible = left >= -20 && left < innerWidth && top >= -20 && top < innerHeight;
+      button.hidden = !visible;
+      button.style.left = left + "px";
+      button.style.top = top + "px";
+      button.dataset.stale = String(stale);
+      button.dataset.status = item.marker.status;
+      button.dataset.active = String(["saved", "sending", "delivered", "processing"].includes(item.marker.status));
+      button.setAttribute("aria-pressed", String(item.marker.id === selectedMarkerId));
+      const status = markerLabels[item.marker.status] || "已提交";
+      let face = button.firstElementChild;
+      if (!face) { face = document.createElement("span"); face.className = "face"; face.setAttribute("aria-hidden", "true"); button.append(face); }
+      face.textContent = String(item.marker.number);
+      button.title = `${item.marker.text}\n${status}${!saved ? " · 未指定可定位的局部位置。" : ""}${stale ? ` · 画布已更新；这是 r${anchor.canvasRevision} 的原位置，请核对引用。` : ""}`;
+      button.setAttribute("aria-label", `${item.marker.number}. ${item.marker.text}，${status}${saved ? stale ? "，旧版本位置" : "" : "，整板讨论"}`);
+      if (item.marker.id === selectedMarkerId) {
+        const next = { id: item.marker.id, x: left, y: top };
+        if (JSON.stringify(next) !== JSON.stringify(lastSelectedPosition)) {
+          lastSelectedPosition = next;
+          post({ type: "interaction-position", id: next.id, position: { x: next.x, y: next.y } });
+        }
+      }
+    }
+  };
+  const queueMarkerPositions = () => { if (!markerPositionFrame) markerPositionFrame = requestAnimationFrame(positionMarkers); };
+  const renderMarkers = (markers, selectedId) => {
+    // A host overview can reopen a thread using its captured viewport as a fallback. Always
+    // send this document's current position on re-selection, even if it has not moved since
+    // the previous opening (the host may have discarded that position while closed).
+    if (selectedMarkerId !== selectedId) lastSelectedPosition = undefined;
+    selectedMarkerId = selectedId;
+    if (!markerHost) {
+      markerHost = document.createElement("div");
+      markerHost.setAttribute("data-board-markers", "");
+      markerHost.setAttribute("data-board-overlay", "");
+      markerHost.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;width:100%!important;height:100%!important;z-index:2147483645!important;pointer-events:none!important;";
+      const shadow = markerHost.attachShadow({ mode: "open" });
+      shadow.innerHTML = `<style>
+        :host{color-scheme:normal}
+        button{all:initial;box-sizing:border-box;position:absolute;display:grid;place-items:center;width:26px;height:26px;padding:0;pointer-events:auto;border-radius:50%;background:transparent;opacity:.5;cursor:pointer;transition:opacity .15s ease}
+        button[hidden]{display:none}
+        .face{box-sizing:border-box;display:grid;place-items:center;width:18px;height:18px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 1px 4px #0002;font:10px/1 system-ui,-apple-system,sans-serif}
+        button:hover,button:focus-visible,button[aria-pressed=true]{opacity:1}
+        button:focus-visible{outline:2px solid var(--host-iris,#658aeb);outline-offset:1px}
+        button[aria-pressed=true] .face{border-width:2px}
+        button[data-status=failed] .face,button[data-status=rejected] .face{border-color:#cc6256}
+        button[data-status=answered] .face,button[data-status=applied] .face{border-color:#46846b}
+        button[data-stale=true] .face{border-color:#bd8c35}
+        button[data-active=true]::before{content:"";position:absolute;inset:1px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;pointer-events:none;animation:board-halo 2s ease-in-out infinite}
+        button[data-active=true]::after{content:"";position:absolute;right:0;top:0;width:6px;height:6px;border:1px solid var(--host-iris,#658aeb);border-right-color:transparent;border-bottom-color:transparent;border-radius:50%;background:var(--host-sheet,#fff);pointer-events:none;animation:board-orbit 1.25s linear infinite}
+        @keyframes board-halo{0%,100%{opacity:.15;transform:scale(.96)}50%{opacity:.55;transform:scale(1.03)}}
+        @keyframes board-orbit{to{transform:rotate(360deg)}}
+        @media(prefers-reduced-motion:reduce){button{transition:none}button[data-active=true]::before,button[data-active=true]::after{animation:none}button[data-active=true]::before{opacity:.3}button[data-active=true]::after{border-style:solid}}
+      </style>`;
+      root.append(markerHost);
+    }
+    // Preserve focused buttons while receiving progress, and never replace author controls.
+    const old = new Map(markerItems.map(item => [item.marker.id, item.button]));
+    markerItems = markers.map(marker => {
+      const button = old.get(marker.id) || document.createElement("button");
+      old.delete(marker.id);
+      button.type = "button";
+      button.setAttribute("data-board-interaction", marker.id);
+      if (!button.isConnected) markerHost.shadowRoot.append(button);
+      return { marker, button };
+    });
+    for (const button of old.values()) button.remove();
+    markerHost.style.setProperty("visibility", selectionMode === "off" && !pointer?.temporary ? "visible" : "hidden", "important");
+    positionMarkers();
+  };
+  window.addEventListener("scroll", queueMarkerPositions, true);
+  window.addEventListener("resize", queueMarkerPositions);
+  const clearOverlay = () => { if (overlay) overlay.remove(); overlay = null; };
+  const showOverlay = (r) => {
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.setAttribute("data-board-overlay", "");
+      overlay.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;border:2px solid #658aeb;background:#658aeb22;box-sizing:border-box;";
+      document.body.append(overlay);
+    }
+    Object.assign(overlay.style, { left: r.x + "px", top: r.y + "px", width: Math.max(2, r.width) + "px", height: Math.max(2, r.height) + "px" });
+  };
+  let captureLibrary;
+  const loadCapture = () => {
+    if (!captureLibrary) {
+      const url = URL.createObjectURL(new Blob([initial.captureModule], { type: "text/javascript" }));
+      captureLibrary = import(url).finally(() => URL.revokeObjectURL(url));
+    }
+    return captureLibrary;
+  };
+  const captureRegion = async (region, signal) => {
+    signal.throwIfAborted();
+    if (document.getElementsByTagName("*").length > 20000) throw new Error("Selected document is too complex to capture");
+    const width = Math.max(root.scrollWidth, innerWidth);
+    const height = Math.max(root.scrollHeight, innerHeight);
+    const ratio = Math.min(devicePixelRatio || 1, 2, 16384 / width, 16384 / height, Math.sqrt(16777216 / (width * height)));
+    if (ratio < 0.5) throw new Error("Document is too large to capture; the geometric anchor is still saved");
+    window.dispatchEvent(new CustomEvent("paseo:capture", { detail: { mime: "image/png", scale: ratio } }));
+    const shots = new Map();
+    const original = HTMLCanvasElement.prototype.toDataURL;
+    // Preserve canvases while html-to-image asynchronously clones. Capture consumers can redraw
+    // WebGL in paseo:capture; unreadable cross-origin canvases remain explicitly best-effort.
+    for (const canvas of document.querySelectorAll("canvas")) { try { shots.set(canvas, original.call(canvas)); } catch {} }
+    const api = await loadCapture();
+    signal.throwIfAborted();
+    HTMLCanvasElement.prototype.toDataURL = function (...args) { return args.length === 0 && shots.has(this) ? shots.get(this) : original.apply(this, args); };
+    let rendered;
+    try {
+      rendered = await api.toCanvas(root, { width, height, pixelRatio: ratio, skipFonts: true, skipAutoScale: true, style: { margin: "0" }, filter: (node) => node.nodeName !== "SCRIPT" && !(node.hasAttribute && node.hasAttribute("data-board-overlay")) });
+    } finally { HTMLCanvasElement.prototype.toDataURL = original; }
+    signal.throwIfAborted();
+    const cropped = document.createElement("canvas");
+    cropped.width = Math.max(1, Math.round(region.width * ratio));
+    cropped.height = Math.max(1, Math.round(region.height * ratio));
+    const context = cropped.getContext("2d");
+    if (!context) throw new Error("Screenshot canvas unavailable");
+    context.drawImage(rendered, region.x * ratio, region.y * ratio, region.width * ratio, region.height * ratio, 0, 0, cropped.width, cropped.height);
+    const data = cropped.toDataURL("image/png").split(",")[1];
+    if (data.length > 3000000) throw new Error("Selection screenshot exceeds 3 MB; select a smaller area");
+    return { mimeType: "image/png", data };
+  };
+  // A cancelled capture still owns its html-to-image clone until it settles. Serializing the
+  // underlying work prevents overlapping temporary canvas hooks from restoring one another.
+  let captureTail = Promise.resolve();
+  const queuedCapture = (region, signal) => {
+    const result = captureTail.catch(() => {}).then(() => captureRegion(region, signal));
+    captureTail = result.catch(() => {});
+    return result;
+  };
+  const isEditor = (event) => event.composedPath().some(node => node instanceof Element && (node.matches("input,textarea,select") || node.isContentEditable));
+  const startsTextSelection = (event) => {
+    if (isEditor(event) || !(event.target instanceof Element) || event.target.closest("button,a,input,textarea,select,canvas,svg,[draggable=true],[role=button],[role=slider]")) return false;
+    const range = document.caretRangeFromPoint?.(event.clientX, event.clientY);
+    const caret = range ? null : document.caretPositionFromPoint?.(event.clientX, event.clientY);
+    const node = range?.startContainer || caret?.offsetNode;
+    return node?.nodeType === 3 && Boolean(node.textContent?.trim()) && event.target.contains(node);
+  };
+  const paintSelectionMode = () => {
+    const mode = pointer?.temporary ? "region" : selectionMode;
+    root.setAttribute("data-board-selection", mode);
+    root.style.cursor = mode === "off" ? "" : mode === "text" ? "text" : "crosshair";
+    if (markerHost) markerHost.style.setProperty("visibility", mode === "off" ? "visible" : "hidden", "important");
+  };
+  const releasePointer = () => {
+    const active = pointer;
+    pointer = null;
+    textPointer = null;
+    if (active) { try { if (root.hasPointerCapture(active.pointerId)) root.releasePointerCapture(active.pointerId); } catch {} }
+  };
+  const eventPoint = (event) => ({ x: Math.max(0, Math.min(event.clientX, innerWidth)), y: Math.max(0, Math.min(event.clientY, innerHeight)) });
+  const cancelSelection = ({ release = true, clear = true, notify = false, drainUpdates = true } = {}) => {
+    const previous = selectionSession;
+    selectionSession = null;
+    releasePointer();
+    captureBusy = false;
+    clearOverlay();
+    if (clear) lastAnchor = undefined;
+    if (previous) {
+      previous.abort.abort();
+      previous.indicator?.remove();
+      if (release) post({ type: "selection-lock", id: previous.id, active: false });
+    }
+    paintSelectionMode();
+    if (notify) post({ type: "selection-clear" });
+    if (drainUpdates) void drain();
+  };
+  const beginSelection = (position, dragging = false) => {
+    window.focus();
+    const previousId = selectionSession?.id;
+    cancelSelection({ release: false, drainUpdates: false });
+    const session = { id: previousId || `selection-${++sequence}`, abort: new AbortController(), indicator: null, anchor: null, position };
+    selectionSession = session;
+    // Replacing one local selection keeps the same host lease, so a queued document replacement
+    // cannot slip into a release/acquire gap while the next capture starts.
+    post({ type: "selection-lock", id: session.id, active: true, dragging });
+    return session;
+  };
+  const showCaptureStatus = (session) => {
+    if (selectionSession !== session || session.indicator) return;
+    const host = document.createElement("div");
+    host.setAttribute("data-board-capture-status", "");
+    host.setAttribute("data-board-overlay", "");
+    host.style.cssText = `all:initial;position:fixed;z-index:2147483647;pointer-events:none;left:${Math.max(8, Math.min(session.position.x + 12, innerWidth - 220))}px;top:${Math.max(8, Math.min(session.position.y + 12, innerHeight - 44))}px;`;
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = `<style>div{padding:8px 12px;border:1px solid var(--host-line-strong,#d0d0d0);border-radius:8px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 4px 14px #0002;font:12px/1.5 system-ui,-apple-system,sans-serif}</style><div role="status">正在截取引用… · Esc 取消</div>`;
+    session.indicator = host;
+    document.body.append(host);
+  };
+  const finishSelection = async (session, anchor, imageRegion, reuse = false) => {
+    if (selectionSession !== session) return;
+    releasePointer();
+    selectionMode = "off";
+    paintSelectionMode();
+    showCaptureStatus(session);
+    post({ type: "selection-lock", id: session.id, active: true, dragging: false });
+    post({ type: "selection-end" });
+    captureBusy = true;
+    let timer;
+    let abortListener;
+    try {
+      if (!reuse && imageRegion && imageRegion.width > 0 && imageRegion.height > 0) {
+        anchor.image = await Promise.race([
+          queuedCapture(imageRegion, session.abort.signal),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error("选区截图超时，仍可使用位置和文字上下文。")), 15000);
+            abortListener = () => reject(new DOMException("选区已取消", "AbortError"));
+            session.abort.signal.addEventListener("abort", abortListener, { once: true });
+          }),
+        ]);
+      }
+    } catch (e) {
+      if (selectionSession === session && !session.abort.signal.aborted) error("capture-failed", e.message);
+    } finally {
+      clearTimeout(timer);
+      if (abortListener) session.abort.signal.removeEventListener("abort", abortListener);
+    }
+    if (selectionSession !== session || session.abort.signal.aborted) return;
+    captureBusy = false;
+    lastAnchor = anchor;
+    session.anchor = anchor;
+    post({ type: "anchor", anchor, selectionId: session.id });
+    post({ type: "compose", automatic: true, selectionId: session.id, request: { kind: "question", anchor, position: session.position } });
+    cancelSelection({ clear: false });
+  };
+  const setSelectionMode = (mode) => {
+    if (!["off", "text", "region", "point"].includes(mode)) return;
+    if (applying) { deferredSelection = mode; return; }
+    if (mode === selectionMode) return;
+    cancelSelection({ drainUpdates: false });
+    selectionMode = mode;
+    paintSelectionMode();
+    if (mode === "off") void drain();
+  };
+  const selectedText = (point) => {
+    const selected = window.getSelection();
+    if (!selected || !selected.rangeCount || selected.isCollapsed || !selected.toString().trim()) return null;
+    const range = selected.getRangeAt(0);
+    if (point && !Array.from(range.getClientRects()).some(r => point.x >= r.left && point.x <= r.right && point.y >= r.top && point.y <= r.bottom)) return null;
+    const node = range.commonAncestorContainer;
+    const region = rect(range.getBoundingClientRect());
+    return { anchor: { ...currentAnchor(), kind: "text", text: selected.toString().slice(0, 12000), selector: selectorFor(node.nodeType === 1 ? node : node.parentElement), rect: region, viewport: viewport() }, region };
+  };
+  const pointSelection = (point, target) => ({
+    anchor: { ...currentAnchor(), kind: "point", selector: selectorFor(target), rect: { x: point.x + scrollX, y: point.y + scrollY, width: 0, height: 0 }, viewport: viewport() },
+    region: { x: Math.max(0, Math.min(point.x + scrollX - 120, root.scrollWidth - Math.min(240, innerWidth))), y: Math.max(0, point.y + scrollY - 80), width: Math.min(240, innerWidth), height: 160 },
+  });
+  const containsAnchor = (anchor, point) => {
+    if (!anchor?.rect || anchor.boardRevision !== snapshot.boardRevision || anchor.canvasRevision !== snapshot.canvas.revision) return false;
+    const { x, y, width, height } = anchor.rect;
+    const margin = anchor.kind === "point" ? 6 : 0;
+    return point.x + scrollX >= x - margin && point.x + scrollX <= x + width + margin && point.y + scrollY >= y - margin && point.y + scrollY <= y + height + margin;
+  };
+  window.addEventListener("pointerdown", (event) => {
+    if (!event.isTrusted) return;
+    lastGesture = performance.now();
+    lastGesturePosition = eventPoint(event);
+    if (inMarkers(event)) { window.focus(); cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); event.stopImmediatePropagation(); return; }
+    if (event.button === 0) { window.focus(); post({ type: "canvas-pointer" }); }
+    suppressPointerClick = false;
+    dismissedPointer = null;
+    if (event.button !== 0) return;
+    const temporary = selectionMode === "off" && event.altKey && !isEditor(event);
+    if (selectionMode === "off" && !temporary) {
+      const wasCapturing = captureBusy;
+      cancelSelection({ notify: Boolean(selectionSession || lastAnchor) });
+      // Cancelling an unfinished capture must not activate a control beneath its preview.
+      if (wasCapturing) { dismissedPointer = event.pointerId; suppressPointerClick = true; event.preventDefault(); event.stopImmediatePropagation(); return; }
+      // Freeze the displayed revision during an ordinary native text drag, but let the
+      // browser perform selection. Editors and author-controlled drags keep native behavior.
+      if (!applying && startsTextSelection(event)) {
+        const position = eventPoint(event);
+        textPointer = { pointerId: event.pointerId, position, beforeText: window.getSelection()?.toString() || "", session: beginSelection(position, true) };
+      }
+      return;
+    }
+    if (applying) return;
+    event.stopImmediatePropagation();
+    const session = beginSelection({ x: event.clientX, y: event.clientY }, true);
+    suppressPointerClick = true;
+    if (selectionMode === "text" && !temporary) return;
+    event.preventDefault();
+    pointer = { x: event.clientX, y: event.clientY, target: event.target, pointerId: event.pointerId, temporary, session };
+    try { root.setPointerCapture(event.pointerId); } catch {}
+    paintSelectionMode();
+    showOverlay({ x: pointer.x, y: pointer.y, width: 0, height: 0 });
+  }, true);
+  window.addEventListener("pointermove", (event) => {
+    if (inMarkers(event) && !pointer) { event.stopImmediatePropagation(); return; }
+    if (dismissedPointer === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); return; }
+    if (!pointer && selectionMode === "off") return;
+    event.stopImmediatePropagation();
+    if (!pointer || event.pointerId !== pointer.pointerId) return;
+    event.preventDefault();
+    const point = eventPoint(event);
+    showOverlay({ x: Math.min(pointer.x, point.x), y: Math.min(pointer.y, point.y), width: Math.abs(point.x - pointer.x), height: Math.abs(point.y - pointer.y) });
+  }, true);
+  window.addEventListener("pointerup", (event) => {
+    if (!event.isTrusted || event.button !== 0) return;
+    if (inMarkers(event)) { event.stopImmediatePropagation(); return; }
+    if (dismissedPointer === event.pointerId) { dismissedPointer = null; event.preventDefault(); event.stopImmediatePropagation(); return; }
+    if (textPointer?.pointerId === event.pointerId) {
+      const start = textPointer;
+      textPointer = null;
+      const position = eventPoint(event);
+      const changed = (window.getSelection()?.toString() || "") !== start.beforeText;
+      const text = changed || Math.hypot(position.x - start.position.x, position.y - start.position.y) >= 3 ? selectedText() : null;
+      if (text) {
+        suppressPointerClick = true;
+        start.session.position = position;
+        void finishSelection(start.session, text.anchor, text.region);
+      } else cancelSelection();
+      return;
+    }
+    if (!pointer && selectionMode === "off") return;
+    event.stopImmediatePropagation();
+    const session = selectionSession;
+    if (!session) return;
+    if (selectionMode === "text" && !pointer) {
+      const text = selectedText();
+      session.position = eventPoint(event);
+      if (text) void finishSelection(session, text.anchor, text.region);
+      else cancelSelection();
+      return;
+    }
+    event.preventDefault();
+    if (!pointer || pointer.pointerId !== event.pointerId) return;
+    const start = pointer;
+    const point = eventPoint(event);
+    const isPoint = selectionMode === "point" || Math.hypot(point.x - start.x, point.y - start.y) < 5;
+    session.position = point;
+    if (isPoint) {
+      const selected = pointSelection(session.position, start.target);
+      void finishSelection(session, selected.anchor, selected.region);
+    } else {
+      const region = { x: Math.min(start.x, point.x) + scrollX, y: Math.min(start.y, point.y) + scrollY, width: Math.abs(point.x - start.x), height: Math.abs(point.y - start.y) };
+      void finishSelection(session, { ...currentAnchor(), kind: "region", selector: selectorFor(start.target), rect: region, viewport: viewport() }, region);
+    }
+  }, true);
+  window.addEventListener("pointercancel", () => { dismissedPointer = null; cancelSelection({ notify: true }); }, true);
+  window.addEventListener("lostpointercapture", (event) => {
+    if (pointer?.pointerId === event.pointerId && !root.hasPointerCapture(event.pointerId)) cancelSelection({ notify: true });
+  }, true);
+  window.addEventListener("pointerout", (event) => {
+    if (pointer && !event.relatedTarget && !root.hasPointerCapture(pointer.pointerId)) cancelSelection({ notify: true });
+  }, true);
+  window.addEventListener("blur", () => {
+    if (!selectionSession) return;
+    // Clicking a host toolbar action closes this menu, but must retain its completed anchor
+    // until that action's click handler consumes it. An unfinished gesture/capture is cancelled.
+    const completed = Boolean(selectionSession.anchor);
+    cancelSelection({ clear: !completed, notify: !completed });
+  });
+  window.addEventListener("contextmenu", (event) => {
+    if (!event.isTrusted) return;
+    if (inMarkers(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; }
+    if (event.shiftKey || isEditor(event)) { cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); return; }
+    if (applying) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    lastGesture = performance.now();
+    let point = { x: event.clientX, y: event.clientY };
+    if (point.x === 0 && point.y === 0 && event.target instanceof Element) {
+      const r = event.target.getBoundingClientRect(); point = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }
+    const previous = containsAnchor(lastAnchor, point) ? copy(lastAnchor) : null;
+    const text = !previous ? selectedText(point) : null;
+    const selected = previous ? { anchor: previous, region: null } : text || pointSelection(point, event.target);
+    const session = beginSelection(point);
+    void finishSelection(session, selected.anchor, selected.region, Boolean(previous));
+  }, true);
+  window.addEventListener("click", (event) => {
+    if (inMarkers(event)) {
+      event.preventDefault(); event.stopImmediatePropagation();
+      const button = markerNode(event);
+      if (!event.isTrusted || !button || !navigator.userActivation?.isActive) return;
+      const bounds = button.getBoundingClientRect();
+      post({ type: "open-interaction", id: button.getAttribute("data-board-interaction"), position: { x: bounds.left, y: bounds.top } });
+      return;
+    }
+    if ((event.detail > 0 && suppressPointerClick) || selectionMode !== "off" || pointer) {
+      suppressPointerClick = false;
+      event.preventDefault(); event.stopImmediatePropagation(); return;
+    }
+    if (event.isTrusted) lastGesture = performance.now();
+    const path = event.composedPath();
+    const link = path.find((node) => node instanceof Element && node.matches("a[href],area[href]"));
+    if (!link) return;
+    const href = link.getAttribute("href") || "";
+    event.preventDefault();
+    if (href.startsWith("#")) { try { document.getElementById(decodeURIComponent(href.slice(1)))?.scrollIntoView(); } catch {} }
+    else if (/^https?:\/\//i.test(href) && event.isTrusted && acting()) post({ type: "open-link", url: href });
+  }, true);
+  const submitForm = (form, submitter) => {
+    if (!form.noValidate && !(submitter && submitter.formNoValidate) && !form.reportValidity()) return;
+    const event = new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: submitter || null });
+    if (!form.dispatchEvent(event)) return;
+    if (form.method === "dialog") form.closest("dialog")?.close(submitter?.value);
+  };
+  const isSubmitter = (node) => node && node.form && ["submit", "image"].includes(node.type);
+  document.addEventListener("click", (event) => {
+    if (selectionMode !== "off") return;
+    const button = event.composedPath().find((node) => node instanceof Element && node.matches("button,input"));
+    if (isSubmitter(button) && !button.disabled) setTimeout(() => { if (!event.defaultPrevented) submitForm(button.form, button); }, 0);
+  }, true);
+  document.addEventListener("keydown", (event) => {
+    const field = event.target;
+    if (selectionMode !== "off" || event.key !== "Enter" || event.isComposing || field.tagName !== "INPUT" || !field.form) return;
+    const fields = Array.from(field.form.elements);
+    if (fields.some(isSubmitter)) return;
+    const implicit = ["text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number"];
+    if (!implicit.includes(field.type) || fields.filter((n) => n.tagName === "INPUT" && implicit.includes(n.type)).length > 1) return;
+    setTimeout(() => { if (!event.defaultPrevented) submitForm(field.form, null); }, 0);
+  }, true);
+  HTMLFormElement.prototype.requestSubmit = function (submitter) { submitForm(this, submitter || null); };
+  window.addEventListener("keydown", (event) => {
+    if (event.isTrusted) lastGesture = performance.now();
+    if (!event.isTrusted) return;
+    if (inMarkers(event)) { event.stopImmediatePropagation(); return; }
+    if (event.target instanceof Element) { const r = event.target.getBoundingClientRect(); lastGesturePosition = { x: r.left, y: r.bottom }; }
+    if (event.key === "Escape" && (selectionSession || selectionMode !== "off" || lastAnchor)) {
+      event.preventDefault(); event.stopImmediatePropagation();
+      selectionMode = "off"; cancelSelection({ notify: true }); post({ type: "selection-end" }); return;
+    }
+  }, true);
+  window.addEventListener("message", (event) => {
+    const message = event.data;
+    if (event.source !== window.parent || !message || message.channel !== scope.channel || message.boardId !== scope.boardId || message.sessionId !== scope.sessionId) return;
+    if (message.type === "snapshot") receiveSnapshot(message.snapshot);
+    else if (message.type === "interactions" && Array.isArray(message.markers)) renderMarkers(message.markers, message.selectedId);
+    else if (message.type === "selection") setSelectionMode(message.mode);
+    else if (message.type === "clear-selection") { selectionMode = "off"; cancelSelection(); }
+    else if (message.type === "ask-result") {
+      const pending = pendingAsks.get(message.id);
+      if (pending) { pendingAsks.delete(message.id); clearTimeout(pending.timer); pending.resolve(message.result && message.result.status === "submitted" ? message.result : cancelAsk); }
+    }
+  });
+  const reportedErrors = new Set();
+  window.addEventListener("error", (event) => {
+    const message = event.message || "Canvas resource could not load";
+    if (reportedErrors.has(message) || reportedErrors.size >= 12) return;
+    reportedErrors.add(message);
+    error("runtime-error", message);
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    const message = event.reason && event.reason.message || String(event.reason || "Unhandled promise rejection");
+    if (reportedErrors.has(message) || reportedErrors.size >= 12) return;
+    reportedErrors.add(message);
+    error("runtime-error", message);
+  });
+  const ready = () => {
+    post({ type: "ready" });
+    receiveSnapshot(initial);
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready, { once: true });
+  else ready();
+}
