@@ -4,7 +4,7 @@ A persistent, fully interactive visualize with contextual human–agent conversa
 
 ## Use
 
-Requires Paseo 0.13.2. Use Node 22 LTS or Node 24 LTS with npm 11 for installation and development. For a local directory installation, clone this repository, then run:
+Requires Paseo 0.13.2 or later, with no upper version cap. The development toolchain was verified with Node 22 LTS / Node 24 LTS and npm 11. For a local directory installation, clone this repository, then run:
 
 ```sh
 cd plugins/paseo-board
@@ -16,19 +16,19 @@ On macOS, the bundled CLI is also available at `/Applications/Paseo.app/Contents
 
 Open **Boards** in Paseo's sidebar or Command Center. `/board` opens the current workspace's boards beside an agent. Ask an agent to create a board, or create one and associate its owner in the UI.
 
-The default pointer belongs to the canvas. Hold **Option / Alt and drag** for a temporary region selection; releasing opens **提问 / 修改这里 / 开 fork** beside the selection and returns to normal interaction. **Right-click** anywhere on the canvas to use that position, or right-click inside existing selected text or a region to use the selection. **Esc** cancels. Text inputs and editable areas keep their native context menus; **Shift + right-click** bypasses the Board menu elsewhere. The toolbar selection controls remain available. Contextual actions open an empty host-owned message editor; only its explicit Send control sends to an agent. Generated pages may still request a preview through `board.ask`.
+The default pointer belongs to the canvas. **Right-click**, finish selecting ordinary text, or hold **Option / Alt and drag** a region to open the host-owned input directly beside your pointer. There is no action menu and no question/change mode to choose. **Enter** sends to the current conversation; **⌘ / Ctrl + Enter** (or **Fork 发送**) starts a separate fork with the same draft and context. A follow-up inside an existing fork uses Enter to continue that fork. **Shift + Enter** inserts a line break; IME confirmation does not send. Click outside or press **Esc** to close. Inputs and editable areas keep native selection/context menus; **Shift + right-click** keeps the native menu elsewhere. Toolbar selection controls remain available. The fixed-height reference strip never moves or resizes the canvas. Generated pages can request the same input through `board.ask`; the human chooses the destination when sending.
 
 Decision records describe choices made by the agent, with three distinct sources: explicit agent records, observed changes in declared inputs, and conservatively inferred candidates from visible assistant messages. Unknown rationale stays unknown. User messages and hidden reasoning are not extracted. Candidate collection is a heuristic, not a complete account of all implicit choices.
 
 ## Agent interface
 
-New agents receive `board_create`, `board_list`, `board_read`, `board_publish`, `board_decision`, and `board_emit` MCP tools. Existing sessions can use:
+New agents receive `board_create`, `board_list`, `board_read`, `board_publish`, `board_respond`, `board_decision`, and `board_emit` MCP tools. Existing sessions can use:
 
 ```sh
 ~/.paseo/paseo-board/bin/paseo-board read --file /absolute/request.json
 ```
 
-All commands also accept `--json` or JSON on stdin. Prefer an input file for HTML and complex data. `create` and `publish` accept `htmlFile`. Read the installed `paseo-board` skill for full input shapes and examples.
+All commands also accept `--json` or JSON on stdin. Prefer an input file for HTML and complex data. `create`, `publish`, and `respond` accept `htmlFile`. Read the installed `paseo-board` skill for full input shapes and examples.
 
 ```json
 {
@@ -54,7 +54,7 @@ draw(board.getData());
 const unsubscribe = board.onData(draw);
 const saved = board.getState();
 board.saveState({ zoom: 1.5 });
-// Call from an actual click. Opens a native preview, not an automatic send.
+// Call from an actual click. Opens the local composer; the user sends.
 button.onclick = () => board.ask({ prompt: "Explain this part", kind: "question" });
 ```
 
@@ -70,7 +70,11 @@ An optional `observation` names an input to track. A changed value creates an ob
 
 Selections carry canvas and board versions, quote/geometry and a best-effort PNG. PNG capture can fail for protected or cross-origin content; missing capture is surfaced rather than silently treated as a complete visual snapshot. Old selections remain old; the agent must reconcile them before editing.
 
-A fork is a new discussion agent with explicit context, not a clone of hidden provider state. It is linked without a parent relation to avoid cascade archival. Its Board tools may read the source board but cannot write it. Bringing a conclusion back is a separate user action. `answered` means a reply exists; `applied` requires a result reference. A completed turn alone never means a requested change was made.
+A fork is a separate conversation context on the **same shared Board**, like `/btw`; it is not a clone of hidden provider state. It is linked without a parent relation to avoid cascade archival and inherits the originating session's permission mode (including auto-review), model, reasoning and feature values. A user-requested modification is performed directly with revision-checked Board patches—no return-to-main step is required. Associated forks can publish to that Board and record decisions/events, while ownership and other agents' interaction receipts remain protected. `board_respond` still attaches explanations or interactive figures to the original marker. Legacy return records remain readable. `answered` means a reply exists; `applied` needs concrete result evidence. A completed turn alone never proves a requested change was made.
+
+Questions leave small, translucent numbered markers at their original point, region or text location. Hover, focus or selection brings them into full contrast. Pending work shows a soft animated halo and rotating ring, respecting reduced-motion settings; completed work is still. Clicking a marker opens status, discussion and follow-up actions beside it. Markers survive reopening. Replies and returns remain attached to their original thread. Old canvas versions are identified in the marker's accessible label, tooltip and discussion; the plugin does not guess that an old point still refers to a newly positioned element.
+
+A discussion agent answers through `board_respond` (or CLI `respond`) with `boardId`, `interactionId`, `eventId`, `expectedResponseRevision`, and `response`. Missing `responseRevision` means zero. Optional `html` / `htmlFile`, `patch`, and `data` create a freely interactive visual answer inside that marker’s discussion. This response has its own version and never replaces the main canvas. Explicit answers take precedence over fallback final-message collection. Owners and associated forks use `board_publish` with evidence when applying changes to the main canvas.
 
 Data and a mutation journal live under `~/.paseo/plugin-data/paseo-board`. Atomic replacement, per-board serialization, optimistic revisions and durable deduplication protect updates. Extraction scan checkpoints persist separately from content revisions, so background scanning does not cause edit conflicts or fill the content history; their display catches up on the next full read or content update. The plugin service is the sole writer; direct concurrent file editing is unsupported. Per-board storage currently has a 64 MiB limit and rejects further growth instead of silently deleting history. Back up the directory while the plugin is stopped to migrate or restore it.
 
@@ -89,10 +93,11 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm run typecheck
 npm test
 npm run test:browser
+npm run test:host
 ```
 
 Before installing a changed client, regenerate the committed Hermes compatibility bundle with `npm run build:client`. The build script and its dependencies are contained in this plugin directory. This lowers the host UI bundle; the string-contained desktop canvas runtime retains its full JavaScript capabilities.
 
-Browser tests run the actual React `CanvasFrame` in Chrome, exercising DOM preservation, patch execution/replay, data updates, selection capture and message-source checks. They default to the macOS Chrome application; set `BROWSER_PATH` to another Chrome/Chromium executable when needed. Install the new plugin with the Paseo CLI; reload only its own runtime after source changes. Do not restart the daemon to load plugin code.
+Canvas browser tests run the actual React `CanvasFrame` in Chrome, exercising DOM preservation, patch execution/replay, data updates, selection capture and message-source checks. The host browser suite also renders the real `BoardView` with a fixture RPC transport, checking canvas geometry, local input, marker lifecycle and interactive answers; it is not a live-daemon test. Both suites default to the macOS Chrome application; set `BROWSER_PATH` to another Chrome/Chromium executable when needed. Install the new plugin with the Paseo CLI; reload only its own runtime after source changes. Do not restart the daemon to load plugin code.
 
 `DESIGN.md` records product constraints. `IMPLEMENTATION.md` records implementation details and validation boundaries. `PROGRESS.md` records publication status and dated verification.

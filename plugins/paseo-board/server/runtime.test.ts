@@ -37,7 +37,23 @@ describe("installed CLI and stdio MCP transport", () => {
     const first = await invoke("emit", update); const repeated = await invoke("emit", update); expect(repeated.revision).toBe(first.revision);
     const board = await invoke("read", { boardId: "cli-board" }); expect(board.canvas.html).toContain("globalThis.count=0"); expect(board.canvas.data).toEqual({ result: 42 });
     expect(board.interactions).toEqual([]); // Emits do not enqueue messages or wake agents.
+    await service.store.addInteraction({ boardId: "cli-board", intentId: "visual-question", kind: "question", text: "Explain this" }, "owner");
+    const answered = await invoke("respond", { boardId: "cli-board", interactionId: "visual-question", expectedResponseRevision: 0, eventId: "visual-answer", response: "Interactive reply", htmlFile: html });
+    expect(answered).toMatchObject({ id: "visual-question", status: "answered", responseRevision: 1, responseCanvas: { html: expect.stringContaining("globalThis.count=0") } });
     expect((await stat(paths.socket)).mode & 0o777).toBe(0o600);
+  });
+
+  it("lets a bound fork publish through the installed CLI without a return-to-owner step", async () => {
+    const paths = runtimePaths(dir);
+    await service.store.create({ id: "shared", title: "Shared Board", ownerAgentId: "owner", html: '<main id="target"></main>' });
+    await service.store.addInteraction({ boardId: "shared", intentId: "fork-request", kind: "fork", text: "Add a visual here" }, "fork-agent");
+    await service.journal.bind("token-fork", { agentId: "fork-agent", cwd: dir });
+    const current = (await service.store.read("shared"))!;
+    const input = join(dir, "fork-publish.json");
+    await writeFile(input, JSON.stringify({ boardId: "shared", expectedRevision: current.revision, eventId: "fork-visual", patch: { id: "visual", selector: "#target", operation: "append", html: '<svg id="visual"></svg>' }, interactionResult: { id: "fork-request", status: "applied", response: "Added directly", resultReferences: ["#visual"] } }));
+    await exec(paths.cli, ["publish", "--file", input], { env: { ...process.env, PASEO_BOARD_BINDING: "token-fork" }, timeout: 5000 });
+    expect((await service.store.read("shared"))!).toMatchObject({ ownerAgentId: "owner", canvas: { patches: [{ id: "visual" }] }, interactions: [{ id: "fork-request", status: "applied" }] });
+    expect(await readFile(paths.skill, "utf8")).toContain("carry it out and publish a revision-checked patch directly to this Board");
   });
 
   it("serves standard stdio MCP messages and binds mutations to the launch identity", async () => {
@@ -53,9 +69,13 @@ describe("installed CLI and stdio MCP transport", () => {
     });
     try {
       expect(await call("initialize", { protocolVersion: "2024-11-05" })).toHaveProperty("result.serverInfo.name", "paseo-board");
-      const list = await call("tools/list"); expect((list.result as { tools: unknown[] }).tools).toHaveLength(6);
+      const list = await call("tools/list"); expect((list.result as { tools: unknown[] }).tools).toHaveLength(7);
       const created = await call("tools/call", { name: "board_create", arguments: { id: "bound-board", title: "bound" } }); expect(created).not.toHaveProperty("result.isError", true);
       expect((await service.store.read("bound-board"))!.ownerAgentId).toBe("owner");
+      await service.store.addInteraction({ boardId: "bound-board", intentId: "owner-question", kind: "question", text: "Explain" }, "owner");
+      const answered = await call("tools/call", { name: "board_respond", arguments: { boardId: "bound-board", interactionId: "owner-question", eventId: "response", expectedResponseRevision: 0, response: "Explicit answer", html: "<canvas></canvas>" } });
+      expect(answered).not.toHaveProperty("result.isError", true);
+      expect((await service.store.read("bound-board"))!.interactions[0]).toMatchObject({ responseSource: "explicit", response: "Explicit answer" });
       const forbidden = await call("tools/call", { name: "board_create", arguments: { id: "foreign", title: "foreign", ownerAgentId: "someone-else" } }); expect(forbidden).toHaveProperty("result.isError", true);
     } finally { child.kill(); }
   });

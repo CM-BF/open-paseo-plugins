@@ -101,6 +101,10 @@ var InteractionSchema = z.object({
   status: z.enum(["saved", "sending", "delivered", "processing", "answered", "applied", "rejected", "failed"]),
   agentId: z.string().optional(),
   response: z.string().max(64e3).optional(),
+  responseRevision: z.number().int().nonnegative().optional(),
+  responseSource: z.enum(["explicit", "timeline"]).optional(),
+  responseMethod: z.enum(["respond", "publish"]).optional(),
+  responseCanvas: CanvasSchema.optional(),
   resultReferences: z.array(z.string()).default([]),
   error: z.string().optional(),
   sourceInteractionId: IdSchema.optional(),
@@ -185,6 +189,18 @@ var PublishInputSchema = z.object({
     response: z.string().max(64e3).optional(),
     resultReferences: z.array(z.string()).default([])
   }).optional()
+});
+var RespondInputSchema = z.object({
+  boardId: IdSchema,
+  interactionId: IdSchema,
+  eventId: IdSchema,
+  expectedResponseRevision: z.number().int().nonnegative(),
+  status: z.enum(["processing", "answered", "rejected", "failed"]).default("answered"),
+  response: z.string().min(1).max(64e3),
+  html: z.string().max(4e6).optional(),
+  patch: CanvasPatchSchema.optional(),
+  data: JsonDataSchema.optional(),
+  resultReferences: z.array(z.string().max(4e3)).max(100).optional()
 });
 var EmitInputSchema = z.object({
   boardId: IdSchema,
@@ -1465,7 +1481,7 @@ var runtime_icons_default = '<script id="codex-visualization-lucide" async src="
 var runtime_tooltips_default = '<script>\n// Tooltips for [data-tooltip], positioned with floating-ui. The two scripts are inserted from\n// here instead of as parser-blocking tags, so they never hold DOMContentLoaded (or the\n// fragment code waiting for it); with async off they still run in order.\n(() => {\n  const sources = [\n    "https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js",\n    "https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js",\n  ];\n  const start = () => {\n    if (window.FloatingUIDOM == null) {\n      return;\n    }\n    const { autoUpdate, computePosition, flip, offset, shift, size } =\n      window.FloatingUIDOM;\n    const tooltipPlacements = new Set(["top", "right", "bottom", "left"]);\n    const tooltipId = `codex-visualization-tooltip-${\n      window.crypto?.randomUUID?.() ?? Date.now().toString(36)\n    }`;\n    const tooltipGap = 5;\n    const hoverDelay = 700;\n    const skipDelay = 300;\n    let activeTrigger = null;\n    let pendingTrigger = null;\n    let tooltip = null;\n    let openTimeout = null;\n    let autoUpdateCleanup = null;\n    let positionRequest = 0;\n    let skipDelayUntil = 0;\n\n    const getTrigger = (target) =>\n      target?.nodeType === Node.ELEMENT_NODE\n        ? target.closest("[data-tooltip]")\n        : null;\n    const containsTarget = (trigger, target) =>\n      target?.nodeType != null && trigger.contains(target);\n    const getContent = (trigger) =>\n      trigger.getAttribute("data-tooltip")?.trim() ?? "";\n    const getPlacement = (trigger) => {\n      const placement = trigger.getAttribute("data-tooltip-placement");\n      return tooltipPlacements.has(placement) ? placement : "top";\n    };\n    const getTooltip = () => {\n      if (tooltip == null) {\n        tooltip = document.createElement("div");\n        tooltip.id = tooltipId;\n        tooltip.className = "tooltip";\n        tooltip.setAttribute("role", "tooltip");\n      }\n      return tooltip;\n    };\n    const setDescribedBy = (trigger, described) => {\n      const ids = new Set(\n        (trigger.getAttribute("aria-describedby") ?? "")\n          .split(/\\s+/)\n          .filter(Boolean),\n      );\n      if (described) {\n        ids.add(tooltipId);\n      } else {\n        ids.delete(tooltipId);\n      }\n      if (ids.size === 0) {\n        trigger.removeAttribute("aria-describedby");\n      } else {\n        trigger.setAttribute("aria-describedby", [...ids].join(" "));\n      }\n    };\n    const clearOpenTimeout = () => {\n      if (openTimeout != null) {\n        window.clearTimeout(openTimeout);\n        openTimeout = null;\n      }\n      pendingTrigger = null;\n    };\n    const closeTooltip = (activateSkipDelay = true) => {\n      clearOpenTimeout();\n      positionRequest += 1;\n      autoUpdateCleanup?.();\n      autoUpdateCleanup = null;\n      if (activeTrigger == null) {\n        return;\n      }\n      setDescribedBy(activeTrigger, false);\n      activeTrigger = null;\n      tooltip?.remove();\n      if (activateSkipDelay) {\n        skipDelayUntil = Date.now() + skipDelay;\n      }\n    };\n    const updatePosition = (trigger, floating) => {\n      const request = ++positionRequest;\n      void computePosition(trigger, floating, {\n        middleware: [\n          offset(tooltipGap),\n          flip({ padding: tooltipGap }),\n          shift({ padding: tooltipGap }),\n          size({\n            padding: tooltipGap,\n            apply({ availableHeight, availableWidth, elements }) {\n              elements.floating.style.setProperty(\n                "--tooltip-available-width",\n                `${Math.max(0, availableWidth)}px`,\n              );\n              elements.floating.style.setProperty(\n                "--tooltip-available-height",\n                `${Math.max(0, availableHeight)}px`,\n              );\n            },\n          }),\n        ],\n        placement: getPlacement(trigger),\n        strategy: "fixed",\n      })\n        .then(({ x, y }) => {\n          if (activeTrigger !== trigger || request !== positionRequest) {\n            return;\n          }\n          const scale = window.devicePixelRatio || 1;\n          floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;\n          floating.style.visibility = "visible";\n        })\n        .catch(() => {\n          if (activeTrigger === trigger && request === positionRequest) {\n            closeTooltip(false);\n          }\n        });\n    };\n    const openTooltip = (trigger) => {\n      const content = getContent(trigger);\n      if (!trigger.isConnected || content.length === 0) {\n        return;\n      }\n      clearOpenTimeout();\n      if (activeTrigger === trigger) {\n        return;\n      }\n      closeTooltip();\n      const floating = getTooltip();\n      floating.textContent = content;\n      floating.style.visibility = "hidden";\n      floating.style.transform = "translate(0, 0)";\n      document.body.appendChild(floating);\n      activeTrigger = trigger;\n      setDescribedBy(trigger, true);\n      autoUpdateCleanup = autoUpdate(trigger, floating, () => {\n        updatePosition(trigger, floating);\n      });\n    };\n    const requestOpen = (trigger, immediate = false) => {\n      if (\n        getContent(trigger).length === 0 ||\n        activeTrigger === trigger ||\n        pendingTrigger === trigger\n      ) {\n        return;\n      }\n      clearOpenTimeout();\n      pendingTrigger = trigger;\n      const delay =\n        immediate || activeTrigger != null || Date.now() < skipDelayUntil\n          ? 0\n          : hoverDelay;\n      if (delay === 0) {\n        openTooltip(trigger);\n        return;\n      }\n      openTimeout = window.setTimeout(() => {\n        openTimeout = null;\n        pendingTrigger = null;\n        openTooltip(trigger);\n      }, delay);\n    };\n    const handlePointerOpen = (event) => {\n      if (event.pointerType === "touch") {\n        return;\n      }\n      const trigger = getTrigger(event.target);\n      if (trigger == null || containsTarget(trigger, event.relatedTarget)) {\n        return;\n      }\n      requestOpen(trigger);\n    };\n    const handleLeave = (event) => {\n      const trigger = getTrigger(event.target);\n      if (trigger == null || containsTarget(trigger, event.relatedTarget)) {\n        return;\n      }\n      if (activeTrigger === trigger || pendingTrigger === trigger) {\n        closeTooltip();\n      }\n    };\n    const handleFocusIn = (event) => {\n      const trigger = getTrigger(event.target);\n      if (trigger?.matches(":focus-visible")) {\n        requestOpen(trigger, true);\n      }\n    };\n    const handleKeyDown = (event) => {\n      if (event.key === "Escape") {\n        closeTooltip();\n      }\n    };\n    const handleContextMenu = (event) => {\n      const trigger = getTrigger(event.target);\n      if (activeTrigger === trigger || pendingTrigger === trigger) {\n        closeTooltip();\n      }\n    };\n    const destroy = () => {\n      closeTooltip(false);\n      document.removeEventListener("pointerover", handlePointerOpen);\n      document.removeEventListener("pointerout", handleLeave);\n      document.removeEventListener("focusin", handleFocusIn);\n      document.removeEventListener("focusout", handleLeave);\n      document.removeEventListener("keydown", handleKeyDown);\n      document.removeEventListener("contextmenu", handleContextMenu);\n      tooltip = null;\n    };\n\n    document.addEventListener("pointerover", handlePointerOpen);\n    document.addEventListener("pointerout", handleLeave);\n    document.addEventListener("focusin", handleFocusIn);\n    document.addEventListener("focusout", handleLeave);\n    document.addEventListener("keydown", handleKeyDown);\n    document.addEventListener("contextmenu", handleContextMenu);\n    window.addEventListener("pagehide", destroy, { once: true });\n  };\n  let last = null;\n  for (const src of sources) {\n    last = document.createElement("script");\n    last.src = src;\n    last.async = false;\n    document.head.append(last);\n  }\n  last.addEventListener("load", start, { once: true });\n})();\n</script>\n';
 
 // shared/assets/board-runtime.txt
-var board_runtime_default = 'function (initial) {\n  "use strict";\n  const root = document.documentElement;\n  const scope = { channel: initial.channel, boardId: initial.boardId, sessionId: initial.sessionId };\n  let snapshot = initial;\n  let state = initial.userState;\n  let localStateDirty = false;\n  let selectionMode = "off";\n  let deferredSelection = null;\n  let queued = null;\n  let applying = false;\n  let captureBusy = false;\n  let selectionSession = null;\n  let suppressPointerClick = false;\n  let dismissedPointer = null;\n  let lastAnchor;\n  let pointer = null;\n  let overlay = null;\n  let lastGesture = -Infinity;\n  let patchFailure = null;\n  let sequence = 0;\n  const applied = new Set();\n  const dataListeners = new Set();\n  const stateListeners = new Set();\n  const pendingAsks = new Map();\n  const post = (message) => window.parent.postMessage({ ...message, ...scope }, "*");\n  const copy = (value) => JSON.parse(JSON.stringify(value));\n  const error = (code, message, patchId) => post({ type: "error", error: { code, message: String(message).slice(0, 4000), ...(patchId ? { patchId } : {}) } });\n  const emitListeners = (listeners, value) => { for (const listener of listeners) { try { listener(copy(value)); } catch (e) { error("listener-error", e.message); } } };\n  const currentAnchor = () => ({ kind: "board", boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision });\n  const acting = () => performance.now() - lastGesture < 1800 && navigator.userActivation && navigator.userActivation.isActive;\n  const cancelAsk = { status: "cancelled", outcome: null };\n  const ask = (input) => {\n    const request = typeof input === "string" ? { prompt: input } : input;\n    if (!request || typeof request.prompt !== "string" || !request.prompt.trim() || request.prompt.length > 24000) return Promise.reject(new TypeError("board.ask requires a prompt of 1\u201324000 characters"));\n    if (!acting() || pendingAsks.size >= 8 || selectionMode !== "off") return Promise.resolve(cancelAsk);\n    lastGesture = -Infinity;\n    const id = `ask-${++sequence}`;\n    return new Promise((resolve) => {\n      const timer = setTimeout(() => { pendingAsks.delete(id); resolve(cancelAsk); }, 120000);\n      pendingAsks.set(id, { resolve, timer });\n      post({ type: "ask", id, request: { prompt: request.prompt, anchor: request.anchor || lastAnchor || currentAnchor(), kind: request.kind || "question" } });\n    });\n  };\n  const saveState = (value) => {\n    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("board.saveState requires a JSON object");\n    const serialized = JSON.stringify(value);\n    if (serialized.length > 524288) throw new RangeError("board state exceeds 512 KiB");\n    state = JSON.parse(serialized);\n    localStateDirty = true;\n    post({ type: "state", state });\n    return copy(state);\n  };\n  const subscribe = (listeners, fn) => {\n    if (typeof fn !== "function") throw new TypeError("listener must be a function");\n    listeners.add(fn);\n    return () => listeners.delete(fn);\n  };\n  // No SDK or execution primitive is exposed. Data and view state remain task-agnostic JSON.\n  Object.defineProperty(window, "board", { configurable: false, writable: false, value: Object.freeze({\n    getData: () => copy(snapshot.canvas.data),\n    onData: (fn) => subscribe(dataListeners, fn),\n    getState: () => copy(state),\n    restoreState: () => copy(state),\n    onState: (fn) => subscribe(stateListeners, fn),\n    saveState,\n    ask,\n    getContext: () => ({ boardId: scope.boardId, documentVersion: initial.canvas.documentVersion, boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision }),\n  }) });\n  window.openai = Object.freeze({ sendFollowUpMessage: ask });\n\n  const applyTheme = (theme) => {\n    if (!theme || !["light", "dark"].includes(theme.scheme) || !theme.tokens || typeof theme.tokens !== "object") return;\n    root.setAttribute("data-theme", theme.scheme);\n    root.style.colorScheme = theme.scheme;\n    for (const name of Array.from(root.style)) if (name.startsWith("--host-")) root.style.removeProperty(name);\n    for (const [name, value] of Object.entries(theme.tokens)) if (/^host-[a-z0-9-]+$/.test(name) && typeof value === "string" && /^[#a-zA-Z0-9(),.%+*/ -]{1,200}$/.test(value)) root.style.setProperty("--" + name, value);\n    window.dispatchEvent(new CustomEvent("paseo:themechange", { detail: { theme: theme.scheme, palette: "custom" } }));\n  };\n\n  const runScript = (old) => new Promise((resolve, reject) => {\n    const script = document.createElement("script");\n    for (const attribute of old.attributes) script.setAttribute(attribute.name, attribute.value);\n    script.textContent = old.textContent;\n    const executable = !script.type || /^(module|(?:text|application)\\/(?:java|ecma)script)$/i.test(script.type);\n    if (!executable) { old.replaceWith(script); resolve(); return; }\n    let scriptError;\n    let timer;\n    const finish = (failure) => { clearTimeout(timer); window.removeEventListener("error", onError); failure ? reject(failure) : resolve(); };\n    const onError = (event) => { scriptError = new Error(event.message || "Patch script failed"); };\n    window.addEventListener("error", onError);\n    const external = script.src || script.type === "module";\n    if (external) {\n      script.async = false;\n      script.addEventListener("load", () => finish(scriptError), { once: true });\n      script.addEventListener("error", () => finish(new Error("Patch script could not load")), { once: true });\n      timer = setTimeout(() => finish(new Error("Patch script timed out; it will not be retried")), 20000);\n    }\n    try { old.replaceWith(script); if (!external) finish(scriptError); } catch (e) { finish(e); }\n  });\n  const applyPatch = async (patch) => {\n    if (applied.has(patch.id)) return;\n    // Claim before mutation. A partial script failure must never run the same patch a second time.\n    applied.add(patch.id);\n    const targets = document.querySelectorAll(patch.selector);\n    if (targets.length !== 1) throw new Error(`Patch selector must match exactly one element; matched ${targets.length}`);\n    const target = targets[0];\n    if (target === root || target === document.head || target === document.body) {\n      if (patch.operation === "replace" || patch.operation === "remove") throw new Error("Replacing document roots requires publishing a new document version");\n    }\n    if (patch.operation === "remove") { target.remove(); return; }\n    const template = document.createElement("template");\n    template.innerHTML = patch.html;\n    const scripts = Array.from(template.content.querySelectorAll("script"));\n    if (patch.operation === "append") target.append(template.content);\n    else if (patch.operation === "prepend") target.prepend(template.content);\n    else if (patch.operation === "replace") target.replaceWith(template.content);\n    else throw new Error("Unknown patch operation");\n    for (const script of scripts) if (script.isConnected) await runScript(script);\n  };\n  const receiveSnapshot = (next) => {\n    if (!next || !next.canvas || next.canvas.documentVersion !== initial.canvas.documentVersion || next.boardRevision < snapshot.boardRevision) return;\n    queued = next;\n    void drain();\n  };\n  const drain = async () => {\n    if (applying || selectionMode !== "off" || selectionSession || captureBusy || !queued) return;\n    applying = true;\n    try {\n      while (queued && selectionMode === "off" && !selectionSession && !captureBusy) {\n        const next = queued;\n        queued = null;\n        const dataChanged = JSON.stringify(snapshot.canvas.data) !== JSON.stringify(next.canvas.data);\n        const serverStateChanged = JSON.stringify(snapshot.userState) !== JSON.stringify(next.userState);\n        snapshot = next;\n        applyTheme(next.theme);\n        if (dataChanged) {\n          emitListeners(dataListeners, next.canvas.data);\n          window.dispatchEvent(new CustomEvent("board:data", { detail: copy(next.canvas.data) }));\n        }\n        if (localStateDirty) {\n          // A slow acknowledgement for an earlier save must never overwrite newer local input.\n          if (JSON.stringify(next.userState) === JSON.stringify(state)) localStateDirty = false;\n        } else if (serverStateChanged && JSON.stringify(next.userState) !== JSON.stringify(state)) {\n          state = next.userState;\n          emitListeners(stateListeners, state);\n        }\n        if (patchFailure) continue;\n        for (const patch of next.canvas.patches) {\n          try { await applyPatch(patch); }\n          catch (e) {\n            patchFailure = patch.id;\n            error("patch-failed", `${e.message}. Later patches are paused until the document is republished.`, patch.id);\n            break;\n          }\n        }\n      }\n    } finally {\n      applying = false;\n      if (deferredSelection !== null) { const mode = deferredSelection; deferredSelection = null; setSelectionMode(mode); }\n    }\n  };\n\n  // Selection is opt-in. In ordinary mode we never consume pointer, keyboard or drag events.\n  const selectorFor = (node) => {\n    if (!(node instanceof Element)) return undefined;\n    if (node.id) return "#" + CSS.escape(node.id);\n    const parts = [];\n    while (node && node !== document.body && parts.length < 12) {\n      if (node.id) { parts.unshift("#" + CSS.escape(node.id)); break; }\n      const name = node.localName;\n      if (!name) break;\n      const siblings = node.parentElement ? Array.from(node.parentElement.children).filter((n) => n.localName === name) : [];\n      parts.unshift(name + (siblings.length > 1 ? `:nth-of-type(${siblings.indexOf(node) + 1})` : ""));\n      node = node.parentElement;\n    }\n    return parts.length ? parts.join(" > ").slice(0, 1000) : undefined;\n  };\n  const viewport = () => ({ width: innerWidth, height: innerHeight, scrollX, scrollY });\n  const rect = (r) => ({ x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height });\n  const clearOverlay = () => { if (overlay) overlay.remove(); overlay = null; };\n  const showOverlay = (r) => {\n    if (!overlay) {\n      overlay = document.createElement("div");\n      overlay.setAttribute("data-board-overlay", "");\n      overlay.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;border:2px solid #658aeb;background:#658aeb22;box-sizing:border-box;";\n      document.body.append(overlay);\n    }\n    Object.assign(overlay.style, { left: r.x + "px", top: r.y + "px", width: Math.max(2, r.width) + "px", height: Math.max(2, r.height) + "px" });\n  };\n  let captureLibrary;\n  const loadCapture = () => {\n    if (!captureLibrary) {\n      const url = URL.createObjectURL(new Blob([initial.captureModule], { type: "text/javascript" }));\n      captureLibrary = import(url).finally(() => URL.revokeObjectURL(url));\n    }\n    return captureLibrary;\n  };\n  const captureRegion = async (region, signal) => {\n    signal.throwIfAborted();\n    if (document.getElementsByTagName("*").length > 20000) throw new Error("Selected document is too complex to capture");\n    const width = Math.max(root.scrollWidth, innerWidth);\n    const height = Math.max(root.scrollHeight, innerHeight);\n    const ratio = Math.min(devicePixelRatio || 1, 2, 16384 / width, 16384 / height, Math.sqrt(16777216 / (width * height)));\n    if (ratio < 0.5) throw new Error("Document is too large to capture; the geometric anchor is still saved");\n    window.dispatchEvent(new CustomEvent("paseo:capture", { detail: { mime: "image/png", scale: ratio } }));\n    const shots = new Map();\n    const original = HTMLCanvasElement.prototype.toDataURL;\n    // Preserve canvases while html-to-image asynchronously clones. Capture consumers can redraw\n    // WebGL in paseo:capture; unreadable cross-origin canvases remain explicitly best-effort.\n    for (const canvas of document.querySelectorAll("canvas")) { try { shots.set(canvas, original.call(canvas)); } catch {} }\n    const api = await loadCapture();\n    signal.throwIfAborted();\n    HTMLCanvasElement.prototype.toDataURL = function (...args) { return args.length === 0 && shots.has(this) ? shots.get(this) : original.apply(this, args); };\n    let rendered;\n    try {\n      rendered = await api.toCanvas(root, { width, height, pixelRatio: ratio, skipFonts: true, skipAutoScale: true, style: { margin: "0" }, filter: (node) => node.nodeName !== "SCRIPT" && !(node.hasAttribute && node.hasAttribute("data-board-overlay")) });\n    } finally { HTMLCanvasElement.prototype.toDataURL = original; }\n    signal.throwIfAborted();\n    const cropped = document.createElement("canvas");\n    cropped.width = Math.max(1, Math.round(region.width * ratio));\n    cropped.height = Math.max(1, Math.round(region.height * ratio));\n    const context = cropped.getContext("2d");\n    if (!context) throw new Error("Screenshot canvas unavailable");\n    context.drawImage(rendered, region.x * ratio, region.y * ratio, region.width * ratio, region.height * ratio, 0, 0, cropped.width, cropped.height);\n    const data = cropped.toDataURL("image/png").split(",")[1];\n    if (data.length > 3000000) throw new Error("Selection screenshot exceeds 3 MB; select a smaller area");\n    return { mimeType: "image/png", data };\n  };\n  // A cancelled capture still owns its html-to-image clone until it settles. Serializing the\n  // underlying work prevents overlapping temporary canvas hooks from restoring one another.\n  let captureTail = Promise.resolve();\n  const queuedCapture = (region, signal) => {\n    const result = captureTail.catch(() => {}).then(() => captureRegion(region, signal));\n    captureTail = result.catch(() => {});\n    return result;\n  };\n  const inMenu = (event) => selectionSession?.menu && event.composedPath().includes(selectionSession.menu);\n  const isEditor = (event) => event.composedPath().some(node => node instanceof Element && (node.matches("input,textarea,select") || node.isContentEditable));\n  const paintSelectionMode = () => {\n    const mode = pointer?.temporary ? "region" : selectionMode;\n    root.setAttribute("data-board-selection", mode);\n    root.style.cursor = mode === "off" ? "" : mode === "text" ? "text" : "crosshair";\n  };\n  const releasePointer = () => {\n    const active = pointer;\n    pointer = null;\n    if (active) { try { if (root.hasPointerCapture(active.pointerId)) root.releasePointerCapture(active.pointerId); } catch {} }\n  };\n  const eventPoint = (event) => ({ x: Math.max(0, Math.min(event.clientX, innerWidth)), y: Math.max(0, Math.min(event.clientY, innerHeight)) });\n  const cancelSelection = ({ release = true, clear = true, notify = false, drainUpdates = true } = {}) => {\n    const previous = selectionSession;\n    selectionSession = null;\n    releasePointer();\n    captureBusy = false;\n    clearOverlay();\n    if (clear) lastAnchor = undefined;\n    if (previous) {\n      previous.abort.abort();\n      previous.menu?.remove();\n      if (release) post({ type: "selection-lock", id: previous.id, active: false });\n    }\n    paintSelectionMode();\n    if (notify) post({ type: "selection-clear" });\n    if (drainUpdates) void drain();\n  };\n  const beginSelection = (position, dragging = false) => {\n    window.focus();\n    const previousId = selectionSession?.id;\n    cancelSelection({ release: false, drainUpdates: false });\n    const session = { id: previousId || `selection-${++sequence}`, abort: new AbortController(), menu: null, anchor: null, position };\n    selectionSession = session;\n    // Replacing one local selection keeps the same host lease, so a queued document replacement\n    // cannot slip into a release/acquire gap while the next capture starts.\n    post({ type: "selection-lock", id: session.id, active: true, dragging });\n    return session;\n  };\n  const menuButtons = (session) => Array.from(session.menu?.shadowRoot.querySelectorAll("button") || []);\n  const showMenu = (session) => {\n    if (selectionSession !== session) return;\n    if (!session.menu) {\n      const host = document.createElement("div");\n      host.setAttribute("data-board-menu", "");\n      host.setAttribute("data-board-overlay", "");\n      host.style.cssText = `all:initial;position:fixed;z-index:2147483647;left:${Math.max(8, Math.min(session.position.x, innerWidth - 224))}px;top:${Math.max(8, Math.min(session.position.y, innerHeight - 192))}px;width:216px;`;\n      const shadow = host.attachShadow({ mode: "open" });\n      shadow.innerHTML = `<style>\n        :host{color-scheme:normal}.menu{box-sizing:border-box;padding:7px;border:1px solid var(--host-line-strong,#d0d0d0);border-radius:10px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 8px 30px #0003;font:13px/1.5 system-ui,-apple-system,sans-serif}\n        .status{padding:5px 9px;color:var(--host-ink-3,#666);font-size:11px}button{box-sizing:border-box;display:block;width:100%;padding:9px 11px;text-align:left;border:0;border-radius:5px;background:transparent;color:inherit;font:inherit;cursor:pointer}button:hover,button:focus-visible{background:var(--host-iris-soft,#edf1fc);outline:2px solid var(--host-iris,#4c6fc9);outline-offset:-2px}button:disabled{opacity:.5;cursor:wait}\n      </style><div class="menu" role="menu" aria-label="\u4E0E agent \u4EA4\u6D41" tabindex="-1"><div class="status" role="status"></div><button type="button" role="menuitem" data-board-action="question">\u63D0\u95EE</button><button type="button" role="menuitem" data-board-action="change">\u4FEE\u6539\u8FD9\u91CC</button><button type="button" role="menuitem" data-board-action="fork">\u5F00 fork</button></div>`;\n      session.menu = host;\n      document.body.append(host);\n      shadow.querySelector(\'[role="menu"]\').focus({ preventScroll: true });\n    }\n    session.menu.shadowRoot.querySelector(".status").textContent = session.anchor ? "\u56F4\u7ED5\u6B64\u5904\u4EA4\u6D41 \xB7 Esc \u53D6\u6D88" : "\u6B63\u5728\u622A\u53D6\u9009\u533A\u2026";\n    for (const button of menuButtons(session)) button.disabled = !session.anchor;\n    if (session.anchor) menuButtons(session)[0]?.focus({ preventScroll: true });\n  };\n  const finishSelection = async (session, anchor, imageRegion, reuse = false) => {\n    if (selectionSession !== session) return;\n    releasePointer();\n    selectionMode = "off";\n    paintSelectionMode();\n    showMenu(session);\n    post({ type: "selection-lock", id: session.id, active: true, dragging: false });\n    post({ type: "selection-end" });\n    captureBusy = true;\n    let timer;\n    let abortListener;\n    try {\n      if (!reuse && imageRegion && imageRegion.width > 0 && imageRegion.height > 0) {\n        anchor.image = await Promise.race([\n          queuedCapture(imageRegion, session.abort.signal),\n          new Promise((_, reject) => {\n            timer = setTimeout(() => reject(new Error("\u9009\u533A\u622A\u56FE\u8D85\u65F6\uFF0C\u4ECD\u53EF\u4F7F\u7528\u4F4D\u7F6E\u548C\u6587\u5B57\u4E0A\u4E0B\u6587\u3002")), 15000);\n            abortListener = () => reject(new DOMException("\u9009\u533A\u5DF2\u53D6\u6D88", "AbortError"));\n            session.abort.signal.addEventListener("abort", abortListener, { once: true });\n          }),\n        ]);\n      }\n    } catch (e) {\n      if (selectionSession === session && !session.abort.signal.aborted) error("capture-failed", e.message);\n    } finally {\n      clearTimeout(timer);\n      if (abortListener) session.abort.signal.removeEventListener("abort", abortListener);\n    }\n    if (selectionSession !== session || session.abort.signal.aborted) return;\n    captureBusy = false;\n    lastAnchor = anchor;\n    session.anchor = anchor;\n    post({ type: "anchor", anchor, selectionId: session.id });\n    showMenu(session);\n  };\n  const setSelectionMode = (mode) => {\n    if (!["off", "text", "region", "point"].includes(mode)) return;\n    if (applying) { deferredSelection = mode; return; }\n    if (mode === selectionMode) return;\n    cancelSelection({ drainUpdates: false });\n    selectionMode = mode;\n    paintSelectionMode();\n    if (mode === "off") void drain();\n  };\n  const selectedText = (point) => {\n    const selected = window.getSelection();\n    if (!selected || !selected.rangeCount || selected.isCollapsed || !selected.toString().trim()) return null;\n    const range = selected.getRangeAt(0);\n    if (point && !Array.from(range.getClientRects()).some(r => point.x >= r.left && point.x <= r.right && point.y >= r.top && point.y <= r.bottom)) return null;\n    const node = range.commonAncestorContainer;\n    const region = rect(range.getBoundingClientRect());\n    return { anchor: { ...currentAnchor(), kind: "text", text: selected.toString().slice(0, 12000), selector: selectorFor(node.nodeType === 1 ? node : node.parentElement), rect: region, viewport: viewport() }, region };\n  };\n  const pointSelection = (point, target) => ({\n    anchor: { ...currentAnchor(), kind: "point", selector: selectorFor(target), rect: { x: point.x + scrollX, y: point.y + scrollY, width: 0, height: 0 }, viewport: viewport() },\n    region: { x: Math.max(0, Math.min(point.x + scrollX - 120, root.scrollWidth - Math.min(240, innerWidth))), y: Math.max(0, point.y + scrollY - 80), width: Math.min(240, innerWidth), height: 160 },\n  });\n  const containsAnchor = (anchor, point) => {\n    if (!anchor?.rect || anchor.boardRevision !== snapshot.boardRevision || anchor.canvasRevision !== snapshot.canvas.revision) return false;\n    const { x, y, width, height } = anchor.rect;\n    const margin = anchor.kind === "point" ? 6 : 0;\n    return point.x + scrollX >= x - margin && point.x + scrollX <= x + width + margin && point.y + scrollY >= y - margin && point.y + scrollY <= y + height + margin;\n  };\n  window.addEventListener("pointerdown", (event) => {\n    if (!event.isTrusted) return;\n    lastGesture = performance.now();\n    suppressPointerClick = false;\n    dismissedPointer = null;\n    if (inMenu(event)) { event.stopImmediatePropagation(); return; }\n    if (event.button !== 0) return;\n    const temporary = selectionMode === "off" && event.altKey && !isEditor(event);\n    if (selectionMode === "off" && !temporary) {\n      const hadMenu = Boolean(selectionSession);\n      cancelSelection({ notify: Boolean(selectionSession || lastAnchor) });\n      // Dismissing the context menu must not also activate an underlying canvas control.\n      if (hadMenu) { dismissedPointer = event.pointerId; suppressPointerClick = true; event.preventDefault(); event.stopImmediatePropagation(); }\n      return;\n    }\n    if (applying) return;\n    event.stopImmediatePropagation();\n    const session = beginSelection({ x: event.clientX, y: event.clientY }, true);\n    suppressPointerClick = true;\n    if (selectionMode === "text" && !temporary) return;\n    event.preventDefault();\n    pointer = { x: event.clientX, y: event.clientY, target: event.target, pointerId: event.pointerId, temporary, session };\n    try { root.setPointerCapture(event.pointerId); } catch {}\n    paintSelectionMode();\n    showOverlay({ x: pointer.x, y: pointer.y, width: 0, height: 0 });\n  }, true);\n  window.addEventListener("pointermove", (event) => {\n    if (dismissedPointer === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (inMenu(event)) { event.stopImmediatePropagation(); return; }\n    if (!pointer && selectionMode === "off") return;\n    event.stopImmediatePropagation();\n    if (!pointer || event.pointerId !== pointer.pointerId) return;\n    event.preventDefault();\n    const point = eventPoint(event);\n    showOverlay({ x: Math.min(pointer.x, point.x), y: Math.min(pointer.y, point.y), width: Math.abs(point.x - pointer.x), height: Math.abs(point.y - pointer.y) });\n  }, true);\n  window.addEventListener("pointerup", (event) => {\n    if (!event.isTrusted || event.button !== 0) return;\n    if (dismissedPointer === event.pointerId) { dismissedPointer = null; event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (inMenu(event)) { event.stopImmediatePropagation(); return; }\n    if (!pointer && selectionMode === "off") return;\n    event.stopImmediatePropagation();\n    const session = selectionSession;\n    if (!session) return;\n    if (selectionMode === "text" && !pointer) {\n      const text = selectedText();\n      if (text) void finishSelection(session, text.anchor, text.region);\n      else cancelSelection();\n      return;\n    }\n    event.preventDefault();\n    if (!pointer || pointer.pointerId !== event.pointerId) return;\n    const start = pointer;\n    const point = eventPoint(event);\n    const isPoint = selectionMode === "point" || Math.hypot(point.x - start.x, point.y - start.y) < 5;\n    session.position = point;\n    if (isPoint) {\n      const selected = pointSelection(session.position, start.target);\n      void finishSelection(session, selected.anchor, selected.region);\n    } else {\n      const region = { x: Math.min(start.x, point.x) + scrollX, y: Math.min(start.y, point.y) + scrollY, width: Math.abs(point.x - start.x), height: Math.abs(point.y - start.y) };\n      void finishSelection(session, { ...currentAnchor(), kind: "region", selector: selectorFor(start.target), rect: region, viewport: viewport() }, region);\n    }\n  }, true);\n  window.addEventListener("pointercancel", () => { dismissedPointer = null; cancelSelection({ notify: true }); }, true);\n  window.addEventListener("lostpointercapture", (event) => {\n    if (pointer?.pointerId === event.pointerId && !root.hasPointerCapture(event.pointerId)) cancelSelection({ notify: true });\n  }, true);\n  window.addEventListener("pointerout", (event) => {\n    if (pointer && !event.relatedTarget && !root.hasPointerCapture(pointer.pointerId)) cancelSelection({ notify: true });\n  }, true);\n  window.addEventListener("blur", () => {\n    if (!selectionSession) return;\n    // Clicking a host toolbar action closes this menu, but must retain its completed anchor\n    // until that action\'s click handler consumes it. An unfinished gesture/capture is cancelled.\n    const completed = Boolean(selectionSession.anchor);\n    cancelSelection({ clear: !completed, notify: !completed });\n  });\n  window.addEventListener("contextmenu", (event) => {\n    if (!event.isTrusted) return;\n    if (event.shiftKey || isEditor(event)) { cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); return; }\n    if (applying) return;\n    event.preventDefault();\n    event.stopImmediatePropagation();\n    if (inMenu(event)) return;\n    lastGesture = performance.now();\n    let point = { x: event.clientX, y: event.clientY };\n    if (point.x === 0 && point.y === 0 && event.target instanceof Element) {\n      const r = event.target.getBoundingClientRect(); point = { x: r.left + r.width / 2, y: r.top + r.height / 2 };\n    }\n    const previous = containsAnchor(lastAnchor, point) ? copy(lastAnchor) : null;\n    const text = !previous ? selectedText(point) : null;\n    const selected = previous ? { anchor: previous, region: null } : text || pointSelection(point, event.target);\n    const session = beginSelection(point);\n    void finishSelection(session, selected.anchor, selected.region, Boolean(previous));\n  }, true);\n  window.addEventListener("click", (event) => {\n    if (inMenu(event)) {\n      event.preventDefault(); event.stopImmediatePropagation();\n      const action = event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-board-action"));\n      if (!event.isTrusted || !action || action.disabled || !selectionSession.anchor || !navigator.userActivation?.isActive) return;\n      const session = selectionSession;\n      post({ type: "compose", selectionId: session.id, request: { kind: action.getAttribute("data-board-action"), anchor: session.anchor } });\n      cancelSelection({ clear: false });\n      return;\n    }\n    if ((event.detail > 0 && suppressPointerClick) || selectionMode !== "off" || pointer) {\n      suppressPointerClick = false;\n      event.preventDefault(); event.stopImmediatePropagation(); return;\n    }\n    if (event.isTrusted) lastGesture = performance.now();\n    const path = event.composedPath();\n    const link = path.find((node) => node instanceof Element && node.matches("a[href],area[href]"));\n    if (!link) return;\n    const href = link.getAttribute("href") || "";\n    event.preventDefault();\n    if (href.startsWith("#")) { try { document.getElementById(decodeURIComponent(href.slice(1)))?.scrollIntoView(); } catch {} }\n    else if (/^https?:\\/\\//i.test(href) && event.isTrusted && acting()) post({ type: "open-link", url: href });\n  }, true);\n  const submitForm = (form, submitter) => {\n    if (!form.noValidate && !(submitter && submitter.formNoValidate) && !form.reportValidity()) return;\n    const event = new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: submitter || null });\n    if (!form.dispatchEvent(event)) return;\n    if (form.method === "dialog") form.closest("dialog")?.close(submitter?.value);\n  };\n  const isSubmitter = (node) => node && node.form && ["submit", "image"].includes(node.type);\n  document.addEventListener("click", (event) => {\n    if (selectionMode !== "off") return;\n    const button = event.composedPath().find((node) => node instanceof Element && node.matches("button,input"));\n    if (isSubmitter(button) && !button.disabled) setTimeout(() => { if (!event.defaultPrevented) submitForm(button.form, button); }, 0);\n  }, true);\n  document.addEventListener("keydown", (event) => {\n    const field = event.target;\n    if (selectionMode !== "off" || event.key !== "Enter" || event.isComposing || field.tagName !== "INPUT" || !field.form) return;\n    const fields = Array.from(field.form.elements);\n    if (fields.some(isSubmitter)) return;\n    const implicit = ["text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number"];\n    if (!implicit.includes(field.type) || fields.filter((n) => n.tagName === "INPUT" && implicit.includes(n.type)).length > 1) return;\n    setTimeout(() => { if (!event.defaultPrevented) submitForm(field.form, null); }, 0);\n  }, true);\n  HTMLFormElement.prototype.requestSubmit = function (submitter) { submitForm(this, submitter || null); };\n  window.addEventListener("keydown", (event) => {\n    if (event.isTrusted) lastGesture = performance.now();\n    if (!event.isTrusted) return;\n    if (event.key === "Escape" && (selectionSession || selectionMode !== "off" || lastAnchor)) {\n      event.preventDefault(); event.stopImmediatePropagation();\n      selectionMode = "off"; cancelSelection({ notify: true }); post({ type: "selection-end" }); return;\n    }\n    if (inMenu(event) && ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {\n      event.preventDefault(); event.stopImmediatePropagation();\n      const buttons = menuButtons(selectionSession).filter(button => !button.disabled);\n      if (!buttons.length) return;\n      const index = buttons.indexOf(selectionSession.menu.shadowRoot.activeElement);\n      const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;\n      buttons[next].focus();\n    } else if (inMenu(event)) {\n      event.stopImmediatePropagation();\n      if (event.key === "Tab") cancelSelection({ notify: true });\n    }\n  }, true);\n  window.addEventListener("message", (event) => {\n    const message = event.data;\n    if (event.source !== window.parent || !message || message.channel !== scope.channel || message.boardId !== scope.boardId || message.sessionId !== scope.sessionId) return;\n    if (message.type === "snapshot") receiveSnapshot(message.snapshot);\n    else if (message.type === "selection") setSelectionMode(message.mode);\n    else if (message.type === "clear-selection") { selectionMode = "off"; cancelSelection(); }\n    else if (message.type === "ask-result") {\n      const pending = pendingAsks.get(message.id);\n      if (pending) { pendingAsks.delete(message.id); clearTimeout(pending.timer); pending.resolve(message.result && message.result.status === "submitted" ? message.result : cancelAsk); }\n    }\n  });\n  const reportedErrors = new Set();\n  window.addEventListener("error", (event) => {\n    const message = event.message || "Canvas resource could not load";\n    if (reportedErrors.has(message) || reportedErrors.size >= 12) return;\n    reportedErrors.add(message);\n    error("runtime-error", message);\n  });\n  window.addEventListener("unhandledrejection", (event) => {\n    const message = event.reason && event.reason.message || String(event.reason || "Unhandled promise rejection");\n    if (reportedErrors.has(message) || reportedErrors.size >= 12) return;\n    reportedErrors.add(message);\n    error("runtime-error", message);\n  });\n  const ready = () => {\n    post({ type: "ready" });\n    receiveSnapshot(initial);\n  };\n  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready, { once: true });\n  else ready();\n}\n';
+var board_runtime_default = 'function (initial) {\n  "use strict";\n  const root = document.documentElement;\n  const scope = { channel: initial.channel, boardId: initial.boardId, sessionId: initial.sessionId };\n  let snapshot = initial;\n  let state = initial.userState;\n  let localStateDirty = false;\n  let selectionMode = "off";\n  let deferredSelection = null;\n  let queued = null;\n  let applying = false;\n  let captureBusy = false;\n  let selectionSession = null;\n  let suppressPointerClick = false;\n  let dismissedPointer = null;\n  let lastAnchor;\n  let pointer = null;\n  let textPointer = null;\n  let overlay = null;\n  let lastGesture = -Infinity;\n  let lastGesturePosition;\n  let patchFailure = null;\n  let sequence = 0;\n  const applied = new Set();\n  const dataListeners = new Set();\n  const stateListeners = new Set();\n  const pendingAsks = new Map();\n  const post = (message) => window.parent.postMessage({ ...message, ...scope }, "*");\n  const copy = (value) => JSON.parse(JSON.stringify(value));\n  const error = (code, message, patchId) => post({ type: "error", error: { code, message: String(message).slice(0, 4000), ...(patchId ? { patchId } : {}) } });\n  const emitListeners = (listeners, value) => { for (const listener of listeners) { try { listener(copy(value)); } catch (e) { error("listener-error", e.message); } } };\n  const currentAnchor = () => ({ kind: "board", boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision });\n  const acting = () => performance.now() - lastGesture < 1800 && navigator.userActivation && navigator.userActivation.isActive;\n  const cancelAsk = { status: "cancelled", outcome: null };\n  const ask = (input) => {\n    const request = typeof input === "string" ? { prompt: input } : input;\n    if (!request || typeof request.prompt !== "string" || !request.prompt.trim() || request.prompt.length > 24000) return Promise.reject(new TypeError("board.ask requires a prompt of 1\u201324000 characters"));\n    if (!acting() || pendingAsks.size >= 8 || selectionMode !== "off") return Promise.resolve(cancelAsk);\n    lastGesture = -Infinity;\n    const id = `ask-${++sequence}`;\n    return new Promise((resolve) => {\n      const timer = setTimeout(() => { pendingAsks.delete(id); resolve(cancelAsk); }, 120000);\n      pendingAsks.set(id, { resolve, timer });\n      post({ type: "ask", id, request: { prompt: request.prompt, anchor: request.anchor || lastAnchor || currentAnchor(), kind: request.kind || "question", position: lastGesturePosition } });\n    });\n  };\n  const saveState = (value) => {\n    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("board.saveState requires a JSON object");\n    const serialized = JSON.stringify(value);\n    if (serialized.length > 524288) throw new RangeError("board state exceeds 512 KiB");\n    state = JSON.parse(serialized);\n    localStateDirty = true;\n    post({ type: "state", state });\n    return copy(state);\n  };\n  const subscribe = (listeners, fn) => {\n    if (typeof fn !== "function") throw new TypeError("listener must be a function");\n    listeners.add(fn);\n    return () => listeners.delete(fn);\n  };\n  // No SDK or execution primitive is exposed. Data and view state remain task-agnostic JSON.\n  Object.defineProperty(window, "board", { configurable: false, writable: false, value: Object.freeze({\n    getData: () => copy(snapshot.canvas.data),\n    onData: (fn) => subscribe(dataListeners, fn),\n    getState: () => copy(state),\n    restoreState: () => copy(state),\n    onState: (fn) => subscribe(stateListeners, fn),\n    saveState,\n    ask,\n    getContext: () => ({ boardId: scope.boardId, documentVersion: initial.canvas.documentVersion, boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision }),\n  }) });\n  window.openai = Object.freeze({ sendFollowUpMessage: ask });\n\n  const applyTheme = (theme) => {\n    if (!theme || !["light", "dark"].includes(theme.scheme) || !theme.tokens || typeof theme.tokens !== "object") return;\n    root.setAttribute("data-theme", theme.scheme);\n    root.style.colorScheme = theme.scheme;\n    for (const name of Array.from(root.style)) if (name.startsWith("--host-")) root.style.removeProperty(name);\n    for (const [name, value] of Object.entries(theme.tokens)) if (/^host-[a-z0-9-]+$/.test(name) && typeof value === "string" && /^[#a-zA-Z0-9(),.%+*/ -]{1,200}$/.test(value)) root.style.setProperty("--" + name, value);\n    window.dispatchEvent(new CustomEvent("paseo:themechange", { detail: { theme: theme.scheme, palette: "custom" } }));\n  };\n\n  const runScript = (old) => new Promise((resolve, reject) => {\n    const script = document.createElement("script");\n    for (const attribute of old.attributes) script.setAttribute(attribute.name, attribute.value);\n    script.textContent = old.textContent;\n    const executable = !script.type || /^(module|(?:text|application)\\/(?:java|ecma)script)$/i.test(script.type);\n    if (!executable) { old.replaceWith(script); resolve(); return; }\n    let scriptError;\n    let timer;\n    const finish = (failure) => { clearTimeout(timer); window.removeEventListener("error", onError); failure ? reject(failure) : resolve(); };\n    const onError = (event) => { scriptError = new Error(event.message || "Patch script failed"); };\n    window.addEventListener("error", onError);\n    const external = script.src || script.type === "module";\n    if (external) {\n      script.async = false;\n      script.addEventListener("load", () => finish(scriptError), { once: true });\n      script.addEventListener("error", () => finish(new Error("Patch script could not load")), { once: true });\n      timer = setTimeout(() => finish(new Error("Patch script timed out; it will not be retried")), 20000);\n    }\n    try { old.replaceWith(script); if (!external) finish(scriptError); } catch (e) { finish(e); }\n  });\n  const applyPatch = async (patch) => {\n    if (applied.has(patch.id)) return;\n    // Claim before mutation. A partial script failure must never run the same patch a second time.\n    applied.add(patch.id);\n    const targets = document.querySelectorAll(patch.selector);\n    if (targets.length !== 1) throw new Error(`Patch selector must match exactly one element; matched ${targets.length}`);\n    const target = targets[0];\n    if (target === root || target === document.head || target === document.body) {\n      if (patch.operation === "replace" || patch.operation === "remove") throw new Error("Replacing document roots requires publishing a new document version");\n    }\n    if (patch.operation === "remove") { target.remove(); return; }\n    const template = document.createElement("template");\n    template.innerHTML = patch.html;\n    const scripts = Array.from(template.content.querySelectorAll("script"));\n    if (patch.operation === "append") target.append(template.content);\n    else if (patch.operation === "prepend") target.prepend(template.content);\n    else if (patch.operation === "replace") target.replaceWith(template.content);\n    else throw new Error("Unknown patch operation");\n    for (const script of scripts) if (script.isConnected) await runScript(script);\n  };\n  const receiveSnapshot = (next) => {\n    if (!next || !next.canvas || next.canvas.documentVersion !== initial.canvas.documentVersion || next.boardRevision < snapshot.boardRevision) return;\n    queued = next;\n    void drain();\n  };\n  const drain = async () => {\n    if (applying || selectionMode !== "off" || selectionSession || captureBusy || !queued) return;\n    applying = true;\n    try {\n      while (queued && selectionMode === "off" && !selectionSession && !captureBusy) {\n        const next = queued;\n        queued = null;\n        const dataChanged = JSON.stringify(snapshot.canvas.data) !== JSON.stringify(next.canvas.data);\n        const serverStateChanged = JSON.stringify(snapshot.userState) !== JSON.stringify(next.userState);\n        snapshot = next;\n        applyTheme(next.theme);\n        if (dataChanged) {\n          emitListeners(dataListeners, next.canvas.data);\n          window.dispatchEvent(new CustomEvent("board:data", { detail: copy(next.canvas.data) }));\n        }\n        if (localStateDirty) {\n          // A slow acknowledgement for an earlier save must never overwrite newer local input.\n          if (JSON.stringify(next.userState) === JSON.stringify(state)) localStateDirty = false;\n        } else if (serverStateChanged && JSON.stringify(next.userState) !== JSON.stringify(state)) {\n          state = next.userState;\n          emitListeners(stateListeners, state);\n        }\n        if (patchFailure) continue;\n        for (const patch of next.canvas.patches) {\n          try { await applyPatch(patch); }\n          catch (e) {\n            patchFailure = patch.id;\n            error("patch-failed", `${e.message}. Later patches are paused until the document is republished.`, patch.id);\n            break;\n          }\n        }\n      }\n    } finally {\n      applying = false;\n      queueMarkerPositions();\n      if (deferredSelection !== null) { const mode = deferredSelection; deferredSelection = null; setSelectionMode(mode); }\n    }\n  };\n\n  // Selection is opt-in. In ordinary mode we never consume pointer, keyboard or drag events.\n  const selectorFor = (node) => {\n    if (!(node instanceof Element)) return undefined;\n    if (node.id) return "#" + CSS.escape(node.id);\n    const parts = [];\n    while (node && node !== document.body && parts.length < 12) {\n      if (node.id) { parts.unshift("#" + CSS.escape(node.id)); break; }\n      const name = node.localName;\n      if (!name) break;\n      const siblings = node.parentElement ? Array.from(node.parentElement.children).filter((n) => n.localName === name) : [];\n      parts.unshift(name + (siblings.length > 1 ? `:nth-of-type(${siblings.indexOf(node) + 1})` : ""));\n      node = node.parentElement;\n    }\n    return parts.length ? parts.join(" > ").slice(0, 1000) : undefined;\n  };\n  const viewport = () => ({ width: innerWidth, height: innerHeight, scrollX, scrollY });\n  const rect = (r) => ({ x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height });\n  // Host-owned discussions are independent from the authored document and its patch journal.\n  // Frozen coordinates are document pixels. A selector on a point/region identifies context,\n  // not a new position; moving to its centre after a revision would silently change meaning.\n  let markerHost;\n  let markerItems = [];\n  let selectedMarkerId;\n  let markerPositionFrame;\n  let lastSelectedPosition;\n  const markerLabels = { saved: "\u5DF2\u63D0\u4EA4", sending: "\u53D1\u9001\u4E2D", delivered: "\u7B49\u5F85\u56DE\u7B54", processing: "\u5904\u7406\u4E2D", answered: "\u5DF2\u56DE\u7B54", applied: "\u5DF2\u843D\u5B9E", rejected: "\u672A\u91C7\u7EB3", failed: "\u5931\u8D25" };\n  const inMarkers = (event) => markerHost && event.composedPath().includes(markerHost);\n  const markerNode = (event) => event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-board-interaction"));\n  const positionMarkers = () => {\n    markerPositionFrame = null;\n    if (!markerHost) return;\n    const overlap = new Map();\n    let unanchored = 0;\n    for (const item of markerItems) {\n      const button = item.button;\n      const anchor = item.marker.anchor;\n      let saved = anchor?.rect;\n      const stale = Boolean(anchor && anchor.canvasRevision !== snapshot.canvas.revision);\n      // Only explicit element references identify their whole target. A point\'s selector is\n      // merely surrounding context and must never snap to a different part of that element.\n      if (!stale && anchor?.kind === "element" && anchor.selector) {\n        try { const targets = document.querySelectorAll(anchor.selector); if (targets.length === 1) saved = rect(targets[0].getBoundingClientRect()); } catch {}\n      }\n      const x = saved ? saved.x - scrollX : 12;\n      const y = saved ? saved.y - scrollY : 12 + unanchored++ * 34;\n      const key = `${Math.round(x / 28)}:${Math.round(y / 28)}`;\n      const offset = overlap.get(key) || 0;\n      overlap.set(key, offset + 1);\n      const left = x + offset * 24;\n      const top = y + offset * 10;\n      const visible = left >= -20 && left < innerWidth && top >= -20 && top < innerHeight;\n      button.hidden = !visible;\n      button.style.left = left + "px";\n      button.style.top = top + "px";\n      button.dataset.stale = String(stale);\n      button.dataset.status = item.marker.status;\n      button.dataset.active = String(["saved", "sending", "delivered", "processing"].includes(item.marker.status));\n      button.setAttribute("aria-pressed", String(item.marker.id === selectedMarkerId));\n      const status = markerLabels[item.marker.status] || "\u5DF2\u63D0\u4EA4";\n      let face = button.firstElementChild;\n      if (!face) { face = document.createElement("span"); face.className = "face"; face.setAttribute("aria-hidden", "true"); button.append(face); }\n      face.textContent = String(item.marker.number);\n      button.title = `${item.marker.text}\\n${status}${!saved ? " \xB7 \u672A\u6307\u5B9A\u53EF\u5B9A\u4F4D\u7684\u5C40\u90E8\u4F4D\u7F6E\u3002" : ""}${stale ? ` \xB7 \u753B\u5E03\u5DF2\u66F4\u65B0\uFF1B\u8FD9\u662F r${anchor.canvasRevision} \u7684\u539F\u4F4D\u7F6E\uFF0C\u8BF7\u6838\u5BF9\u5F15\u7528\u3002` : ""}`;\n      button.setAttribute("aria-label", `${item.marker.number}. ${item.marker.text}\uFF0C${status}${saved ? stale ? "\uFF0C\u65E7\u7248\u672C\u4F4D\u7F6E" : "" : "\uFF0C\u6574\u677F\u8BA8\u8BBA"}`);\n      if (item.marker.id === selectedMarkerId) {\n        const next = { id: item.marker.id, x: left, y: top };\n        if (JSON.stringify(next) !== JSON.stringify(lastSelectedPosition)) {\n          lastSelectedPosition = next;\n          post({ type: "interaction-position", id: next.id, position: { x: next.x, y: next.y } });\n        }\n      }\n    }\n  };\n  const queueMarkerPositions = () => { if (!markerPositionFrame) markerPositionFrame = requestAnimationFrame(positionMarkers); };\n  const renderMarkers = (markers, selectedId) => {\n    // A host overview can reopen a thread using its captured viewport as a fallback. Always\n    // send this document\'s current position on re-selection, even if it has not moved since\n    // the previous opening (the host may have discarded that position while closed).\n    if (selectedMarkerId !== selectedId) lastSelectedPosition = undefined;\n    selectedMarkerId = selectedId;\n    if (!markerHost) {\n      markerHost = document.createElement("div");\n      markerHost.setAttribute("data-board-markers", "");\n      markerHost.setAttribute("data-board-overlay", "");\n      markerHost.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;width:100%!important;height:100%!important;z-index:2147483645!important;pointer-events:none!important;";\n      const shadow = markerHost.attachShadow({ mode: "open" });\n      shadow.innerHTML = `<style>\n        :host{color-scheme:normal}\n        button{all:initial;box-sizing:border-box;position:absolute;display:grid;place-items:center;width:26px;height:26px;padding:0;pointer-events:auto;border-radius:50%;background:transparent;opacity:.5;cursor:pointer;transition:opacity .15s ease}\n        button[hidden]{display:none}\n        .face{box-sizing:border-box;display:grid;place-items:center;width:18px;height:18px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 1px 4px #0002;font:10px/1 system-ui,-apple-system,sans-serif}\n        button:hover,button:focus-visible,button[aria-pressed=true]{opacity:1}\n        button:focus-visible{outline:2px solid var(--host-iris,#658aeb);outline-offset:1px}\n        button[aria-pressed=true] .face{border-width:2px}\n        button[data-status=failed] .face,button[data-status=rejected] .face{border-color:#cc6256}\n        button[data-status=answered] .face,button[data-status=applied] .face{border-color:#46846b}\n        button[data-stale=true] .face{border-color:#bd8c35}\n        button[data-active=true]::before{content:"";position:absolute;inset:1px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;pointer-events:none;animation:board-halo 2s ease-in-out infinite}\n        button[data-active=true]::after{content:"";position:absolute;right:0;top:0;width:6px;height:6px;border:1px solid var(--host-iris,#658aeb);border-right-color:transparent;border-bottom-color:transparent;border-radius:50%;background:var(--host-sheet,#fff);pointer-events:none;animation:board-orbit 1.25s linear infinite}\n        @keyframes board-halo{0%,100%{opacity:.15;transform:scale(.96)}50%{opacity:.55;transform:scale(1.03)}}\n        @keyframes board-orbit{to{transform:rotate(360deg)}}\n        @media(prefers-reduced-motion:reduce){button{transition:none}button[data-active=true]::before,button[data-active=true]::after{animation:none}button[data-active=true]::before{opacity:.3}button[data-active=true]::after{border-style:solid}}\n      </style>`;\n      root.append(markerHost);\n    }\n    // Preserve focused buttons while receiving progress, and never replace author controls.\n    const old = new Map(markerItems.map(item => [item.marker.id, item.button]));\n    markerItems = markers.map(marker => {\n      const button = old.get(marker.id) || document.createElement("button");\n      old.delete(marker.id);\n      button.type = "button";\n      button.setAttribute("data-board-interaction", marker.id);\n      if (!button.isConnected) markerHost.shadowRoot.append(button);\n      return { marker, button };\n    });\n    for (const button of old.values()) button.remove();\n    markerHost.style.setProperty("visibility", selectionMode === "off" && !pointer?.temporary ? "visible" : "hidden", "important");\n    positionMarkers();\n  };\n  window.addEventListener("scroll", queueMarkerPositions, true);\n  window.addEventListener("resize", queueMarkerPositions);\n  const clearOverlay = () => { if (overlay) overlay.remove(); overlay = null; };\n  const showOverlay = (r) => {\n    if (!overlay) {\n      overlay = document.createElement("div");\n      overlay.setAttribute("data-board-overlay", "");\n      overlay.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;border:2px solid #658aeb;background:#658aeb22;box-sizing:border-box;";\n      document.body.append(overlay);\n    }\n    Object.assign(overlay.style, { left: r.x + "px", top: r.y + "px", width: Math.max(2, r.width) + "px", height: Math.max(2, r.height) + "px" });\n  };\n  let captureLibrary;\n  const loadCapture = () => {\n    if (!captureLibrary) {\n      const url = URL.createObjectURL(new Blob([initial.captureModule], { type: "text/javascript" }));\n      captureLibrary = import(url).finally(() => URL.revokeObjectURL(url));\n    }\n    return captureLibrary;\n  };\n  const captureRegion = async (region, signal) => {\n    signal.throwIfAborted();\n    if (document.getElementsByTagName("*").length > 20000) throw new Error("Selected document is too complex to capture");\n    const width = Math.max(root.scrollWidth, innerWidth);\n    const height = Math.max(root.scrollHeight, innerHeight);\n    const ratio = Math.min(devicePixelRatio || 1, 2, 16384 / width, 16384 / height, Math.sqrt(16777216 / (width * height)));\n    if (ratio < 0.5) throw new Error("Document is too large to capture; the geometric anchor is still saved");\n    window.dispatchEvent(new CustomEvent("paseo:capture", { detail: { mime: "image/png", scale: ratio } }));\n    const shots = new Map();\n    const original = HTMLCanvasElement.prototype.toDataURL;\n    // Preserve canvases while html-to-image asynchronously clones. Capture consumers can redraw\n    // WebGL in paseo:capture; unreadable cross-origin canvases remain explicitly best-effort.\n    for (const canvas of document.querySelectorAll("canvas")) { try { shots.set(canvas, original.call(canvas)); } catch {} }\n    const api = await loadCapture();\n    signal.throwIfAborted();\n    HTMLCanvasElement.prototype.toDataURL = function (...args) { return args.length === 0 && shots.has(this) ? shots.get(this) : original.apply(this, args); };\n    let rendered;\n    try {\n      rendered = await api.toCanvas(root, { width, height, pixelRatio: ratio, skipFonts: true, skipAutoScale: true, style: { margin: "0" }, filter: (node) => node.nodeName !== "SCRIPT" && !(node.hasAttribute && node.hasAttribute("data-board-overlay")) });\n    } finally { HTMLCanvasElement.prototype.toDataURL = original; }\n    signal.throwIfAborted();\n    const cropped = document.createElement("canvas");\n    cropped.width = Math.max(1, Math.round(region.width * ratio));\n    cropped.height = Math.max(1, Math.round(region.height * ratio));\n    const context = cropped.getContext("2d");\n    if (!context) throw new Error("Screenshot canvas unavailable");\n    context.drawImage(rendered, region.x * ratio, region.y * ratio, region.width * ratio, region.height * ratio, 0, 0, cropped.width, cropped.height);\n    const data = cropped.toDataURL("image/png").split(",")[1];\n    if (data.length > 3000000) throw new Error("Selection screenshot exceeds 3 MB; select a smaller area");\n    return { mimeType: "image/png", data };\n  };\n  // A cancelled capture still owns its html-to-image clone until it settles. Serializing the\n  // underlying work prevents overlapping temporary canvas hooks from restoring one another.\n  let captureTail = Promise.resolve();\n  const queuedCapture = (region, signal) => {\n    const result = captureTail.catch(() => {}).then(() => captureRegion(region, signal));\n    captureTail = result.catch(() => {});\n    return result;\n  };\n  const isEditor = (event) => event.composedPath().some(node => node instanceof Element && (node.matches("input,textarea,select") || node.isContentEditable));\n  const startsTextSelection = (event) => {\n    if (isEditor(event) || !(event.target instanceof Element) || event.target.closest("button,a,input,textarea,select,canvas,svg,[draggable=true],[role=button],[role=slider]")) return false;\n    const range = document.caretRangeFromPoint?.(event.clientX, event.clientY);\n    const caret = range ? null : document.caretPositionFromPoint?.(event.clientX, event.clientY);\n    const node = range?.startContainer || caret?.offsetNode;\n    return node?.nodeType === 3 && Boolean(node.textContent?.trim()) && event.target.contains(node);\n  };\n  const paintSelectionMode = () => {\n    const mode = pointer?.temporary ? "region" : selectionMode;\n    root.setAttribute("data-board-selection", mode);\n    root.style.cursor = mode === "off" ? "" : mode === "text" ? "text" : "crosshair";\n    if (markerHost) markerHost.style.setProperty("visibility", mode === "off" ? "visible" : "hidden", "important");\n  };\n  const releasePointer = () => {\n    const active = pointer;\n    pointer = null;\n    textPointer = null;\n    if (active) { try { if (root.hasPointerCapture(active.pointerId)) root.releasePointerCapture(active.pointerId); } catch {} }\n  };\n  const eventPoint = (event) => ({ x: Math.max(0, Math.min(event.clientX, innerWidth)), y: Math.max(0, Math.min(event.clientY, innerHeight)) });\n  const cancelSelection = ({ release = true, clear = true, notify = false, drainUpdates = true } = {}) => {\n    const previous = selectionSession;\n    selectionSession = null;\n    releasePointer();\n    captureBusy = false;\n    clearOverlay();\n    if (clear) lastAnchor = undefined;\n    if (previous) {\n      previous.abort.abort();\n      previous.indicator?.remove();\n      if (release) post({ type: "selection-lock", id: previous.id, active: false });\n    }\n    paintSelectionMode();\n    if (notify) post({ type: "selection-clear" });\n    if (drainUpdates) void drain();\n  };\n  const beginSelection = (position, dragging = false) => {\n    window.focus();\n    const previousId = selectionSession?.id;\n    cancelSelection({ release: false, drainUpdates: false });\n    const session = { id: previousId || `selection-${++sequence}`, abort: new AbortController(), indicator: null, anchor: null, position };\n    selectionSession = session;\n    // Replacing one local selection keeps the same host lease, so a queued document replacement\n    // cannot slip into a release/acquire gap while the next capture starts.\n    post({ type: "selection-lock", id: session.id, active: true, dragging });\n    return session;\n  };\n  const showCaptureStatus = (session) => {\n    if (selectionSession !== session || session.indicator) return;\n    const host = document.createElement("div");\n    host.setAttribute("data-board-capture-status", "");\n    host.setAttribute("data-board-overlay", "");\n    host.style.cssText = `all:initial;position:fixed;z-index:2147483647;pointer-events:none;left:${Math.max(8, Math.min(session.position.x + 12, innerWidth - 220))}px;top:${Math.max(8, Math.min(session.position.y + 12, innerHeight - 44))}px;`;\n    const shadow = host.attachShadow({ mode: "open" });\n    shadow.innerHTML = `<style>div{padding:8px 12px;border:1px solid var(--host-line-strong,#d0d0d0);border-radius:8px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 4px 14px #0002;font:12px/1.5 system-ui,-apple-system,sans-serif}</style><div role="status">\u6B63\u5728\u622A\u53D6\u5F15\u7528\u2026 \xB7 Esc \u53D6\u6D88</div>`;\n    session.indicator = host;\n    document.body.append(host);\n  };\n  const finishSelection = async (session, anchor, imageRegion, reuse = false) => {\n    if (selectionSession !== session) return;\n    releasePointer();\n    selectionMode = "off";\n    paintSelectionMode();\n    showCaptureStatus(session);\n    post({ type: "selection-lock", id: session.id, active: true, dragging: false });\n    post({ type: "selection-end" });\n    captureBusy = true;\n    let timer;\n    let abortListener;\n    try {\n      if (!reuse && imageRegion && imageRegion.width > 0 && imageRegion.height > 0) {\n        anchor.image = await Promise.race([\n          queuedCapture(imageRegion, session.abort.signal),\n          new Promise((_, reject) => {\n            timer = setTimeout(() => reject(new Error("\u9009\u533A\u622A\u56FE\u8D85\u65F6\uFF0C\u4ECD\u53EF\u4F7F\u7528\u4F4D\u7F6E\u548C\u6587\u5B57\u4E0A\u4E0B\u6587\u3002")), 15000);\n            abortListener = () => reject(new DOMException("\u9009\u533A\u5DF2\u53D6\u6D88", "AbortError"));\n            session.abort.signal.addEventListener("abort", abortListener, { once: true });\n          }),\n        ]);\n      }\n    } catch (e) {\n      if (selectionSession === session && !session.abort.signal.aborted) error("capture-failed", e.message);\n    } finally {\n      clearTimeout(timer);\n      if (abortListener) session.abort.signal.removeEventListener("abort", abortListener);\n    }\n    if (selectionSession !== session || session.abort.signal.aborted) return;\n    captureBusy = false;\n    lastAnchor = anchor;\n    session.anchor = anchor;\n    post({ type: "anchor", anchor, selectionId: session.id });\n    post({ type: "compose", automatic: true, selectionId: session.id, request: { kind: "question", anchor, position: session.position } });\n    cancelSelection({ clear: false });\n  };\n  const setSelectionMode = (mode) => {\n    if (!["off", "text", "region", "point"].includes(mode)) return;\n    if (applying) { deferredSelection = mode; return; }\n    if (mode === selectionMode) return;\n    cancelSelection({ drainUpdates: false });\n    selectionMode = mode;\n    paintSelectionMode();\n    if (mode === "off") void drain();\n  };\n  const selectedText = (point) => {\n    const selected = window.getSelection();\n    if (!selected || !selected.rangeCount || selected.isCollapsed || !selected.toString().trim()) return null;\n    const range = selected.getRangeAt(0);\n    if (point && !Array.from(range.getClientRects()).some(r => point.x >= r.left && point.x <= r.right && point.y >= r.top && point.y <= r.bottom)) return null;\n    const node = range.commonAncestorContainer;\n    const region = rect(range.getBoundingClientRect());\n    return { anchor: { ...currentAnchor(), kind: "text", text: selected.toString().slice(0, 12000), selector: selectorFor(node.nodeType === 1 ? node : node.parentElement), rect: region, viewport: viewport() }, region };\n  };\n  const pointSelection = (point, target) => ({\n    anchor: { ...currentAnchor(), kind: "point", selector: selectorFor(target), rect: { x: point.x + scrollX, y: point.y + scrollY, width: 0, height: 0 }, viewport: viewport() },\n    region: { x: Math.max(0, Math.min(point.x + scrollX - 120, root.scrollWidth - Math.min(240, innerWidth))), y: Math.max(0, point.y + scrollY - 80), width: Math.min(240, innerWidth), height: 160 },\n  });\n  const containsAnchor = (anchor, point) => {\n    if (!anchor?.rect || anchor.boardRevision !== snapshot.boardRevision || anchor.canvasRevision !== snapshot.canvas.revision) return false;\n    const { x, y, width, height } = anchor.rect;\n    const margin = anchor.kind === "point" ? 6 : 0;\n    return point.x + scrollX >= x - margin && point.x + scrollX <= x + width + margin && point.y + scrollY >= y - margin && point.y + scrollY <= y + height + margin;\n  };\n  window.addEventListener("pointerdown", (event) => {\n    if (!event.isTrusted) return;\n    lastGesture = performance.now();\n    lastGesturePosition = eventPoint(event);\n    if (inMarkers(event)) { window.focus(); cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); event.stopImmediatePropagation(); return; }\n    if (event.button === 0) { window.focus(); post({ type: "canvas-pointer" }); }\n    suppressPointerClick = false;\n    dismissedPointer = null;\n    if (event.button !== 0) return;\n    const temporary = selectionMode === "off" && event.altKey && !isEditor(event);\n    if (selectionMode === "off" && !temporary) {\n      const wasCapturing = captureBusy;\n      cancelSelection({ notify: Boolean(selectionSession || lastAnchor) });\n      // Cancelling an unfinished capture must not activate a control beneath its preview.\n      if (wasCapturing) { dismissedPointer = event.pointerId; suppressPointerClick = true; event.preventDefault(); event.stopImmediatePropagation(); return; }\n      // Freeze the displayed revision during an ordinary native text drag, but let the\n      // browser perform selection. Editors and author-controlled drags keep native behavior.\n      if (!applying && startsTextSelection(event)) {\n        const position = eventPoint(event);\n        textPointer = { pointerId: event.pointerId, position, beforeText: window.getSelection()?.toString() || "", session: beginSelection(position, true) };\n      }\n      return;\n    }\n    if (applying) return;\n    event.stopImmediatePropagation();\n    const session = beginSelection({ x: event.clientX, y: event.clientY }, true);\n    suppressPointerClick = true;\n    if (selectionMode === "text" && !temporary) return;\n    event.preventDefault();\n    pointer = { x: event.clientX, y: event.clientY, target: event.target, pointerId: event.pointerId, temporary, session };\n    try { root.setPointerCapture(event.pointerId); } catch {}\n    paintSelectionMode();\n    showOverlay({ x: pointer.x, y: pointer.y, width: 0, height: 0 });\n  }, true);\n  window.addEventListener("pointermove", (event) => {\n    if (inMarkers(event) && !pointer) { event.stopImmediatePropagation(); return; }\n    if (dismissedPointer === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (!pointer && selectionMode === "off") return;\n    event.stopImmediatePropagation();\n    if (!pointer || event.pointerId !== pointer.pointerId) return;\n    event.preventDefault();\n    const point = eventPoint(event);\n    showOverlay({ x: Math.min(pointer.x, point.x), y: Math.min(pointer.y, point.y), width: Math.abs(point.x - pointer.x), height: Math.abs(point.y - pointer.y) });\n  }, true);\n  window.addEventListener("pointerup", (event) => {\n    if (!event.isTrusted || event.button !== 0) return;\n    if (inMarkers(event)) { event.stopImmediatePropagation(); return; }\n    if (dismissedPointer === event.pointerId) { dismissedPointer = null; event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (textPointer?.pointerId === event.pointerId) {\n      const start = textPointer;\n      textPointer = null;\n      const position = eventPoint(event);\n      const changed = (window.getSelection()?.toString() || "") !== start.beforeText;\n      const text = changed || Math.hypot(position.x - start.position.x, position.y - start.position.y) >= 3 ? selectedText() : null;\n      if (text) {\n        suppressPointerClick = true;\n        start.session.position = position;\n        void finishSelection(start.session, text.anchor, text.region);\n      } else cancelSelection();\n      return;\n    }\n    if (!pointer && selectionMode === "off") return;\n    event.stopImmediatePropagation();\n    const session = selectionSession;\n    if (!session) return;\n    if (selectionMode === "text" && !pointer) {\n      const text = selectedText();\n      session.position = eventPoint(event);\n      if (text) void finishSelection(session, text.anchor, text.region);\n      else cancelSelection();\n      return;\n    }\n    event.preventDefault();\n    if (!pointer || pointer.pointerId !== event.pointerId) return;\n    const start = pointer;\n    const point = eventPoint(event);\n    const isPoint = selectionMode === "point" || Math.hypot(point.x - start.x, point.y - start.y) < 5;\n    session.position = point;\n    if (isPoint) {\n      const selected = pointSelection(session.position, start.target);\n      void finishSelection(session, selected.anchor, selected.region);\n    } else {\n      const region = { x: Math.min(start.x, point.x) + scrollX, y: Math.min(start.y, point.y) + scrollY, width: Math.abs(point.x - start.x), height: Math.abs(point.y - start.y) };\n      void finishSelection(session, { ...currentAnchor(), kind: "region", selector: selectorFor(start.target), rect: region, viewport: viewport() }, region);\n    }\n  }, true);\n  window.addEventListener("pointercancel", () => { dismissedPointer = null; cancelSelection({ notify: true }); }, true);\n  window.addEventListener("lostpointercapture", (event) => {\n    if (pointer?.pointerId === event.pointerId && !root.hasPointerCapture(event.pointerId)) cancelSelection({ notify: true });\n  }, true);\n  window.addEventListener("pointerout", (event) => {\n    if (pointer && !event.relatedTarget && !root.hasPointerCapture(pointer.pointerId)) cancelSelection({ notify: true });\n  }, true);\n  window.addEventListener("blur", () => {\n    if (!selectionSession) return;\n    // Clicking a host toolbar action closes this menu, but must retain its completed anchor\n    // until that action\'s click handler consumes it. An unfinished gesture/capture is cancelled.\n    const completed = Boolean(selectionSession.anchor);\n    cancelSelection({ clear: !completed, notify: !completed });\n  });\n  window.addEventListener("contextmenu", (event) => {\n    if (!event.isTrusted) return;\n    if (inMarkers(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (event.shiftKey || isEditor(event)) { cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); return; }\n    if (applying) return;\n    event.preventDefault();\n    event.stopImmediatePropagation();\n    lastGesture = performance.now();\n    let point = { x: event.clientX, y: event.clientY };\n    if (point.x === 0 && point.y === 0 && event.target instanceof Element) {\n      const r = event.target.getBoundingClientRect(); point = { x: r.left + r.width / 2, y: r.top + r.height / 2 };\n    }\n    const previous = containsAnchor(lastAnchor, point) ? copy(lastAnchor) : null;\n    const text = !previous ? selectedText(point) : null;\n    const selected = previous ? { anchor: previous, region: null } : text || pointSelection(point, event.target);\n    const session = beginSelection(point);\n    void finishSelection(session, selected.anchor, selected.region, Boolean(previous));\n  }, true);\n  window.addEventListener("click", (event) => {\n    if (inMarkers(event)) {\n      event.preventDefault(); event.stopImmediatePropagation();\n      const button = markerNode(event);\n      if (!event.isTrusted || !button || !navigator.userActivation?.isActive) return;\n      const bounds = button.getBoundingClientRect();\n      post({ type: "open-interaction", id: button.getAttribute("data-board-interaction"), position: { x: bounds.left, y: bounds.top } });\n      return;\n    }\n    if ((event.detail > 0 && suppressPointerClick) || selectionMode !== "off" || pointer) {\n      suppressPointerClick = false;\n      event.preventDefault(); event.stopImmediatePropagation(); return;\n    }\n    if (event.isTrusted) lastGesture = performance.now();\n    const path = event.composedPath();\n    const link = path.find((node) => node instanceof Element && node.matches("a[href],area[href]"));\n    if (!link) return;\n    const href = link.getAttribute("href") || "";\n    event.preventDefault();\n    if (href.startsWith("#")) { try { document.getElementById(decodeURIComponent(href.slice(1)))?.scrollIntoView(); } catch {} }\n    else if (/^https?:\\/\\//i.test(href) && event.isTrusted && acting()) post({ type: "open-link", url: href });\n  }, true);\n  const submitForm = (form, submitter) => {\n    if (!form.noValidate && !(submitter && submitter.formNoValidate) && !form.reportValidity()) return;\n    const event = new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: submitter || null });\n    if (!form.dispatchEvent(event)) return;\n    if (form.method === "dialog") form.closest("dialog")?.close(submitter?.value);\n  };\n  const isSubmitter = (node) => node && node.form && ["submit", "image"].includes(node.type);\n  document.addEventListener("click", (event) => {\n    if (selectionMode !== "off") return;\n    const button = event.composedPath().find((node) => node instanceof Element && node.matches("button,input"));\n    if (isSubmitter(button) && !button.disabled) setTimeout(() => { if (!event.defaultPrevented) submitForm(button.form, button); }, 0);\n  }, true);\n  document.addEventListener("keydown", (event) => {\n    const field = event.target;\n    if (selectionMode !== "off" || event.key !== "Enter" || event.isComposing || field.tagName !== "INPUT" || !field.form) return;\n    const fields = Array.from(field.form.elements);\n    if (fields.some(isSubmitter)) return;\n    const implicit = ["text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number"];\n    if (!implicit.includes(field.type) || fields.filter((n) => n.tagName === "INPUT" && implicit.includes(n.type)).length > 1) return;\n    setTimeout(() => { if (!event.defaultPrevented) submitForm(field.form, null); }, 0);\n  }, true);\n  HTMLFormElement.prototype.requestSubmit = function (submitter) { submitForm(this, submitter || null); };\n  window.addEventListener("keydown", (event) => {\n    if (event.isTrusted) lastGesture = performance.now();\n    if (!event.isTrusted) return;\n    if (inMarkers(event)) { event.stopImmediatePropagation(); return; }\n    if (event.target instanceof Element) { const r = event.target.getBoundingClientRect(); lastGesturePosition = { x: r.left, y: r.bottom }; }\n    if (event.key === "Escape" && (selectionSession || selectionMode !== "off" || lastAnchor)) {\n      event.preventDefault(); event.stopImmediatePropagation();\n      selectionMode = "off"; cancelSelection({ notify: true }); post({ type: "selection-end" }); return;\n    }\n  }, true);\n  window.addEventListener("message", (event) => {\n    const message = event.data;\n    if (event.source !== window.parent || !message || message.channel !== scope.channel || message.boardId !== scope.boardId || message.sessionId !== scope.sessionId) return;\n    if (message.type === "snapshot") receiveSnapshot(message.snapshot);\n    else if (message.type === "interactions" && Array.isArray(message.markers)) renderMarkers(message.markers, message.selectedId);\n    else if (message.type === "selection") setSelectionMode(message.mode);\n    else if (message.type === "clear-selection") { selectionMode = "off"; cancelSelection(); }\n    else if (message.type === "ask-result") {\n      const pending = pendingAsks.get(message.id);\n      if (pending) { pendingAsks.delete(message.id); clearTimeout(pending.timer); pending.resolve(message.result && message.result.status === "submitted" ? message.result : cancelAsk); }\n    }\n  });\n  const reportedErrors = new Set();\n  window.addEventListener("error", (event) => {\n    const message = event.message || "Canvas resource could not load";\n    if (reportedErrors.has(message) || reportedErrors.size >= 12) return;\n    reportedErrors.add(message);\n    error("runtime-error", message);\n  });\n  window.addEventListener("unhandledrejection", (event) => {\n    const message = event.reason && event.reason.message || String(event.reason || "Unhandled promise rejection");\n    if (reportedErrors.has(message) || reportedErrors.size >= 12) return;\n    reportedErrors.add(message);\n    error("runtime-error", message);\n  });\n  const ready = () => {\n    post({ type: "ready" });\n    receiveSnapshot(initial);\n  };\n  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready, { once: true });\n  else ready();\n}\n';
 
 // shared/assets/html-to-image.txt
 var html_to_image_default = '/*\n * html-to-image 1.11.11 (https://github.com/bubkoo/html-to-image), MIT license.\n * Bundled from its ES module build into one self-contained module.\n * This file is generated by scripts/vendor-html-to-image.mjs; do not edit.\n *\n * MIT License\n *\n * Copyright (c) 2017-2023 W.Y.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a copy\n * of this software and associated documentation files (the "Software"), to deal\n * in the Software without restriction, including without limitation the rights\n * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n * copies of the Software, and to permit persons to whom the Software is\n * furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in all\n * copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n * SOFTWARE.\n */\nfunction A(t,e){if(t.match(/^[a-z]+:\\/\\//i))return t;if(t.match(/^\\/\\//))return window.location.protocol+t;if(t.match(/^[a-z]+:/i))return t;let n=document.implementation.createHTMLDocument(),r=n.createElement("base"),o=n.createElement("a");return n.head.appendChild(r),n.body.appendChild(o),e&&(r.href=e),o.href=t,o.href}var U=(()=>{let t=0,e=()=>`0000${(Math.random()*36**4<<0).toString(36)}`.slice(-4);return()=>(t+=1,`u${e()}${t}`)})();function f(t){let e=[];for(let n=0,r=t.length;n<r;n++)e.push(t[n]);return e}function x(t,e){let r=(t.ownerDocument.defaultView||window).getComputedStyle(t).getPropertyValue(e);return r?parseFloat(r.replace("px","")):0}function K(t){let e=x(t,"border-left-width"),n=x(t,"border-right-width");return t.clientWidth+e+n}function Q(t){let e=x(t,"border-top-width"),n=x(t,"border-bottom-width");return t.clientHeight+e+n}function b(t,e={}){let n=e.width||K(t),r=e.height||Q(t);return{width:n,height:r}}function v(){let t,e;try{e=process}catch{}let n=e&&e.env?e.env.devicePixelRatio:null;return n&&(t=parseInt(n,10),Number.isNaN(t)&&(t=1)),t||window.devicePixelRatio||1}var u=16384;function F(t){(t.width>u||t.height>u)&&(t.width>u&&t.height>u?t.width>t.height?(t.height*=u/t.width,t.width=u):(t.width*=u/t.height,t.height=u):t.width>u?(t.height*=u/t.width,t.width=u):(t.width*=u/t.height,t.height=u))}function k(t,e={}){return t.toBlob?new Promise(n=>{t.toBlob(n,e.type?e.type:"image/png",e.quality?e.quality:1)}):new Promise(n=>{let r=window.atob(t.toDataURL(e.type?e.type:void 0,e.quality?e.quality:void 0).split(",")[1]),o=r.length,i=new Uint8Array(o);for(let s=0;s<o;s+=1)i[s]=r.charCodeAt(s);n(new Blob([i],{type:e.type?e.type:"image/png"}))})}function g(t){return new Promise((e,n)=>{let r=new Image;r.decode=()=>e(r),r.onload=()=>e(r),r.onerror=n,r.crossOrigin="anonymous",r.decoding="async",r.src=t})}async function Y(t){return Promise.resolve().then(()=>new XMLSerializer().serializeToString(t)).then(encodeURIComponent).then(e=>`data:image/svg+xml;charset=utf-8,${e}`)}async function M(t,e,n){let r="http://www.w3.org/2000/svg",o=document.createElementNS(r,"svg"),i=document.createElementNS(r,"foreignObject");return o.setAttribute("width",`${e}`),o.setAttribute("height",`${n}`),o.setAttribute("viewBox",`0 0 ${e} ${n}`),i.setAttribute("width","100%"),i.setAttribute("height","100%"),i.setAttribute("x","0"),i.setAttribute("y","0"),i.setAttribute("externalResourcesRequired","true"),o.appendChild(i),i.appendChild(t),Y(o)}var l=(t,e)=>{if(t instanceof e)return!0;let n=Object.getPrototypeOf(t);return n===null?!1:n.constructor.name===e.name||l(n,e)};function Z(t){let e=t.getPropertyValue("content");return`${t.cssText} content: \'${e.replace(/\'|"/g,"")}\';`}function N(t){return f(t).map(e=>{let n=t.getPropertyValue(e),r=t.getPropertyPriority(e);return`${e}: ${n}${r?" !important":""};`}).join(" ")}function tt(t,e,n){let r=`.${t}:${e}`,o=n.cssText?Z(n):N(n);return document.createTextNode(`${r}{${o}}`)}function O(t,e,n){let r=window.getComputedStyle(t,n),o=r.getPropertyValue("content");if(o===""||o==="none")return;let i=U();try{e.className=`${e.className} ${i}`}catch{return}let s=document.createElement("style");s.appendChild(tt(i,n,r)),e.appendChild(s)}function V(t,e){O(t,e,":before"),O(t,e,":after")}var H="application/font-woff",W="image/jpeg",et={woff:H,woff2:H,ttf:"application/font-truetype",eot:"application/vnd.ms-fontobject",png:"image/png",jpg:W,jpeg:W,gif:"image/gif",tiff:"image/tiff",svg:"image/svg+xml",webp:"image/webp"};function rt(t){let e=/\\.([^./]*?)$/g.exec(t);return e?e[1]:""}function d(t){let e=rt(t).toLowerCase();return et[e]||""}function nt(t){return t.split(/,/)[1]}function y(t){return t.search(/^(data:)/)!==-1}function T(t,e){return`data:${e};base64,${t}`}async function L(t,e,n){let r=await fetch(t,e);if(r.status===404)throw new Error(`Resource "${r.url}" not found`);let o=await r.blob();return new Promise((i,s)=>{let a=new FileReader;a.onerror=s,a.onloadend=()=>{try{i(n({res:r,result:a.result}))}catch(c){s(c)}},a.readAsDataURL(o)})}var P={};function ot(t,e,n){let r=t.replace(/\\?.*/,"");return n&&(r=t),/ttf|otf|eot|woff2?/i.test(r)&&(r=r.replace(/.*\\//,"")),e?`[${e}]${r}`:r}async function p(t,e,n){let r=ot(t,e,n.includeQueryParams);if(P[r]!=null)return P[r];n.cacheBust&&(t+=(/\\?/.test(t)?"&":"?")+new Date().getTime());let o;try{let i=await L(t,n.fetchRequestInit,({res:s,result:a})=>(e||(e=s.headers.get("Content-Type")||""),nt(a)));o=T(i,e)}catch(i){o=n.imagePlaceholder||"";let s=`Failed to fetch resource: ${t}`;i&&(s=typeof i=="string"?i:i.message),s&&console.warn(s)}return P[r]=o,o}async function it(t){let e=t.toDataURL();return e==="data:,"?t.cloneNode(!1):g(e)}async function st(t,e){if(t.currentSrc){let i=document.createElement("canvas"),s=i.getContext("2d");i.width=t.clientWidth,i.height=t.clientHeight,s?.drawImage(t,0,0,i.width,i.height);let a=i.toDataURL();return g(a)}let n=t.poster,r=d(n),o=await p(n,r,e);return g(o)}async function at(t){var e;try{if(!((e=t?.contentDocument)===null||e===void 0)&&e.body)return await w(t.contentDocument.body,{},!0)}catch{}return t.cloneNode(!1)}async function ct(t,e){return l(t,HTMLCanvasElement)?it(t):l(t,HTMLVideoElement)?st(t,e):l(t,HTMLIFrameElement)?at(t):t.cloneNode(!1)}var lt=t=>t.tagName!=null&&t.tagName.toUpperCase()==="SLOT";async function ut(t,e,n){var r,o;let i=[];return lt(t)&&t.assignedNodes?i=f(t.assignedNodes()):l(t,HTMLIFrameElement)&&(!((r=t.contentDocument)===null||r===void 0)&&r.body)?i=f(t.contentDocument.body.childNodes):i=f(((o=t.shadowRoot)!==null&&o!==void 0?o:t).childNodes),i.length===0||l(t,HTMLVideoElement)||await i.reduce((s,a)=>s.then(()=>w(a,n)).then(c=>{c&&e.appendChild(c)}),Promise.resolve()),e}function ft(t,e){let n=e.style;if(!n)return;let r=window.getComputedStyle(t);r.cssText?(n.cssText=r.cssText,n.transformOrigin=r.transformOrigin):f(r).forEach(o=>{let i=r.getPropertyValue(o);o==="font-size"&&i.endsWith("px")&&(i=`${Math.floor(parseFloat(i.substring(0,i.length-2)))-.1}px`),l(t,HTMLIFrameElement)&&o==="display"&&i==="inline"&&(i="block"),o==="d"&&e.getAttribute("d")&&(i=`path(${e.getAttribute("d")})`),n.setProperty(o,i,r.getPropertyPriority(o))})}function mt(t,e){l(t,HTMLTextAreaElement)&&(e.innerHTML=t.value),l(t,HTMLInputElement)&&e.setAttribute("value",t.value)}function ht(t,e){if(l(t,HTMLSelectElement)){let r=Array.from(e.children).find(o=>t.value===o.getAttribute("value"));r&&r.setAttribute("selected","")}}function gt(t,e){return l(e,Element)&&(ft(t,e),V(t,e),mt(t,e),ht(t,e)),e}async function dt(t,e){let n=t.querySelectorAll?t.querySelectorAll("use"):[];if(n.length===0)return t;let r={};for(let i=0;i<n.length;i++){let a=n[i].getAttribute("xlink:href");if(a){let c=t.querySelector(a),h=document.querySelector(a);!c&&h&&!r[a]&&(r[a]=await w(h,e,!0))}}let o=Object.values(r);if(o.length){let i="http://www.w3.org/1999/xhtml",s=document.createElementNS(i,"svg");s.setAttribute("xmlns",i),s.style.position="absolute",s.style.width="0",s.style.height="0",s.style.overflow="hidden",s.style.display="none";let a=document.createElementNS(i,"defs");s.appendChild(a);for(let c=0;c<o.length;c++)a.appendChild(o[c]);t.appendChild(s)}return t}async function w(t,e,n){return!n&&e.filter&&!e.filter(t)?null:Promise.resolve(t).then(r=>ct(r,e)).then(r=>ut(t,r,e)).then(r=>gt(t,r)).then(r=>dt(r,e))}var _=/url\\(([\'"]?)([^\'"]+?)\\1\\)/g,pt=/url\\([^)]+\\)\\s*format\\((["\']?)([^"\']+)\\1\\)/g,yt=/src:\\s*(?:url\\([^)]+\\)\\s*format\\([^)]+\\)[,;]\\s*)+/g;function wt(t){let e=t.replace(/([.*+?^${}()|\\[\\]\\/\\\\])/g,"\\\\$1");return new RegExp(`(url\\\\([\'"]?)(${e})([\'"]?\\\\))`,"g")}function xt(t){let e=[];return t.replace(_,(n,r,o)=>(e.push(o),n)),e.filter(n=>!y(n))}async function bt(t,e,n,r,o){try{let i=n?A(e,n):e,s=d(e),a;if(o){let c=await o(i);a=T(c,s)}else a=await p(i,s,r);return t.replace(wt(e),`$1${a}$3`)}catch{}return t}function St(t,{preferredFontFormat:e}){return e?t.replace(yt,n=>{for(;;){let[r,,o]=pt.exec(n)||[];if(!o)return"";if(o===e)return`src: ${r};`}}):t}function $(t){return t.search(_)!==-1}async function S(t,e,n){if(!$(t))return t;let r=St(t,n);return xt(r).reduce((i,s)=>i.then(a=>bt(a,s,e,n)),Promise.resolve(r))}async function E(t,e,n){var r;let o=(r=e.style)===null||r===void 0?void 0:r.getPropertyValue(t);if(o){let i=await S(o,null,n);return e.style.setProperty(t,i,e.style.getPropertyPriority(t)),!0}return!1}async function Et(t,e){await E("background",t,e)||await E("background-image",t,e),await E("mask",t,e)||await E("mask-image",t,e)}async function Rt(t,e){let n=l(t,HTMLImageElement);if(!(n&&!y(t.src))&&!(l(t,SVGImageElement)&&!y(t.href.baseVal)))return;let r=n?t.src:t.href.baseVal,o=await p(r,d(r),e);await new Promise((i,s)=>{t.onload=i,t.onerror=s;let a=t;a.decode&&(a.decode=i),a.loading==="lazy"&&(a.loading="eager"),n?(t.srcset="",t.src=o):t.href.baseVal=o})}async function Ct(t,e){let r=f(t.childNodes).map(o=>D(o,e));await Promise.all(r).then(()=>t)}async function D(t,e){l(t,Element)&&(await Et(t,e),await Rt(t,e),await Ct(t,e))}function B(t,e){let{style:n}=t;e.backgroundColor&&(n.backgroundColor=e.backgroundColor),e.width&&(n.width=`${e.width}px`),e.height&&(n.height=`${e.height}px`);let r=e.style;return r!=null&&Object.keys(r).forEach(o=>{n[o]=r[o]}),t}var q={};async function j(t){let e=q[t];if(e!=null)return e;let r=await(await fetch(t)).text();return e={url:t,cssText:r},q[t]=e,e}async function z(t,e){let n=t.cssText,r=/url\\(["\']?([^"\')]+)["\']?\\)/g,i=(n.match(/url\\([^)]+\\)/g)||[]).map(async s=>{let a=s.replace(r,"$1");return a.startsWith("https://")||(a=new URL(a,t.url).href),L(a,e.fetchRequestInit,({result:c})=>(n=n.replace(s,`url(${c})`),[s,c]))});return Promise.all(i).then(()=>n)}function G(t){if(t==null)return[];let e=[],n=/(\\/\\*[\\s\\S]*?\\*\\/)/gi,r=t.replace(n,""),o=new RegExp("((@.*?keyframes [\\\\s\\\\S]*?){([\\\\s\\\\S]*?}\\\\s*?)})","gi");for(;;){let c=o.exec(r);if(c===null)break;e.push(c[0])}r=r.replace(o,"");let i=/@import[\\s\\S]*?url\\([^)]*\\)[\\s\\S]*?;/gi,s="((\\\\s*?(?:\\\\/\\\\*[\\\\s\\\\S]*?\\\\*\\\\/)?\\\\s*?@media[\\\\s\\\\S]*?){([\\\\s\\\\S]*?)}\\\\s*?})|(([\\\\s\\\\S]*?){([\\\\s\\\\S]*?)})",a=new RegExp(s,"gi");for(;;){let c=i.exec(r);if(c===null){if(c=a.exec(r),c===null)break;i.lastIndex=a.lastIndex}else a.lastIndex=i.lastIndex;e.push(c[0])}return e}async function Pt(t,e){let n=[],r=[];return t.forEach(o=>{if("cssRules"in o)try{f(o.cssRules||[]).forEach((i,s)=>{if(i.type===CSSRule.IMPORT_RULE){let a=s+1,c=i.href,h=j(c).then(m=>z(m,e)).then(m=>G(m).forEach(C=>{try{o.insertRule(C,C.startsWith("@import")?a+=1:o.cssRules.length)}catch(J){console.error("Error inserting rule from remote css",{rule:C,error:J})}})).catch(m=>{console.error("Error loading remote css",m.toString())});r.push(h)}})}catch(i){let s=t.find(a=>a.href==null)||document.styleSheets[0];o.href!=null&&r.push(j(o.href).then(a=>z(a,e)).then(a=>G(a).forEach(c=>{s.insertRule(c,o.cssRules.length)})).catch(a=>{console.error("Error loading remote stylesheet",a)})),console.error("Error inlining remote css file",i)}}),Promise.all(r).then(()=>(t.forEach(o=>{if("cssRules"in o)try{f(o.cssRules||[]).forEach(i=>{n.push(i)})}catch(i){console.error(`Error while reading CSS rules from ${o.href}`,i)}}),n))}function Tt(t){return t.filter(e=>e.type===CSSRule.FONT_FACE_RULE).filter(e=>$(e.style.getPropertyValue("src")))}async function Lt(t,e){if(t.ownerDocument==null)throw new Error("Provided element is not within a Document");let n=f(t.ownerDocument.styleSheets),r=await Pt(n,e);return Tt(r)}async function I(t,e){let n=await Lt(t,e);return(await Promise.all(n.map(o=>{let i=o.parentStyleSheet?o.parentStyleSheet.href:null;return S(o.cssText,i,e)}))).join(`\n`)}async function X(t,e){let n=e.fontEmbedCSS!=null?e.fontEmbedCSS:e.skipFonts?null:await I(t,e);if(n){let r=document.createElement("style"),o=document.createTextNode(n);r.appendChild(o),t.firstChild?t.insertBefore(r,t.firstChild):t.appendChild(r)}}async function $t(t,e={}){let{width:n,height:r}=b(t,e),o=await w(t,e,!0);return await X(o,e),await D(o,e),B(o,e),await M(o,n,r)}async function R(t,e={}){let{width:n,height:r}=b(t,e),o=await $t(t,e),i=await g(o),s=document.createElement("canvas"),a=s.getContext("2d"),c=e.pixelRatio||v(),h=e.canvasWidth||n,m=e.canvasHeight||r;return s.width=h*c,s.height=m*c,e.skipAutoScale||F(s),s.style.width=`${h}`,s.style.height=`${m}`,e.backgroundColor&&(a.fillStyle=e.backgroundColor,a.fillRect(0,0,s.width,s.height)),a.drawImage(i,0,0,s.width,s.height),s}async function oe(t,e={}){let{width:n,height:r}=b(t,e);return(await R(t,e)).getContext("2d").getImageData(0,0,n,r).data}async function ie(t,e={}){return(await R(t,e)).toDataURL()}async function se(t,e={}){return(await R(t,e)).toDataURL("image/jpeg",e.quality||1)}async function ae(t,e={}){let n=await R(t,e);return await k(n)}async function ce(t,e={}){return I(t,e)}export{ce as getFontEmbedCSS,ae as toBlob,R as toCanvas,se as toJpeg,oe as toPixelData,ie as toPng,$t as toSvg};\n';
@@ -1475,10 +1491,44 @@ var FRAME_CHANNEL = "paseo-board-frame-v1";
 var record = v => v !== null && typeof v === "object" && !Array.isArray(v);
 var short = (v, max) => typeof v === "string" && v.length > 0 && v.length <= max;
 var finite = v => typeof v === "number" && Number.isFinite(v);
+var position = v => record(v) && finite(v.x) && finite(v.y) && Math.abs(v.x) < 1e6 && Math.abs(v.y) < 1e6;
+function interactionMarkers(interactions) {
+  var byId = new Map(interactions.map(item => [item.id, item]));
+  var roots = /* @__PURE__ */new Map();
+  for (var item of interactions) {
+    var root = item;
+    var seen = /* @__PURE__ */new Set([item.id]);
+    while (root.sourceInteractionId && byId.has(root.sourceInteractionId) && !seen.has(root.sourceInteractionId)) {
+      seen.add(root.sourceInteractionId);
+      root = byId.get(root.sourceInteractionId);
+    }
+    var existing = roots.get(root.id);
+    if (!existing) roots.set(root.id, {
+      root,
+      latest: item
+    });else if (item.createdAt >= existing.latest.createdAt) existing.latest = item;
+  }
+  return Array.from(roots.values()).map(({
+    root,
+    latest
+  }, index) => ({
+    id: root.id,
+    text: root.text.slice(0, 240),
+    status: latest.status,
+    number: index + 1,
+    ...(root.anchor ? {
+      anchor: {
+        ...root.anchor,
+        image: void 0
+      }
+    } : {})
+  }));
+}
 function readFrameMessage(value, scope) {
   if (!record(value) || value.channel !== FRAME_CHANNEL || value.boardId !== scope.boardId || value.sessionId !== scope.sessionId) return null;
   switch (value.type) {
     case "ready":
+    case "canvas-pointer":
     case "selection-end":
     case "selection-clear":
       break;
@@ -1492,13 +1542,20 @@ function readFrameMessage(value, scope) {
       {
         var request = value.request;
         if (!short(value.selectionId, 160) || !record(request) || !["question", "change", "fork"].includes(request.kind) || !validAnchor(request.anchor)) return null;
+        if (request.position !== void 0 && !position(request.position)) return null;
+        if (value.automatic !== void 0 && typeof value.automatic !== "boolean") return null;
         break;
       }
+    case "open-interaction":
+    case "interaction-position":
+      if (!short(value.id, 160) || !position(value.position)) return null;
+      break;
     case "ask":
       {
         var _request = value.request;
         if (!short(value.id, 160) || !record(_request) || !short(_request.prompt, 24e3)) return null;
         if (_request.anchor !== void 0 && !validAnchor(_request.anchor)) return null;
+        if (_request.position !== void 0 && !position(_request.position)) return null;
         if (_request.kind !== void 0 && !["question", "change", "fork"].includes(_request.kind)) return null;
         break;
       }
@@ -1626,6 +1683,7 @@ function CanvasFrame(props) {
     if (!canRenderFrames || !browser.window) return;
     var waiting = /* @__PURE__ */new Set();
     var cancelledSelections = /* @__PURE__ */new Set();
+    var composedSelections = /* @__PURE__ */new Set();
     var disposed = false;
     var lastLink = 0;
     var sync = () => {
@@ -1643,6 +1701,11 @@ function CanvasFrame(props) {
           theme: current.theme
         }
       });
+      send({
+        type: "interactions",
+        markers: interactionMarkers(current.interactions || []),
+        selectedId: current.selectedInteractionId
+      });
     };
     var userActing = () => browser.document?.activeElement === frame.current && browser.navigator?.userActivation?.isActive === true;
     var onMessage = event => {
@@ -1655,6 +1718,9 @@ function CanvasFrame(props) {
           ready.current = true;
           sync();
           current.onReady?.();
+          break;
+        case "canvas-pointer":
+          if (userActing()) current.onCanvasPointer?.();
           break;
         case "error":
           current.onError(message.error);
@@ -1685,10 +1751,27 @@ function CanvasFrame(props) {
             break;
           }
         case "anchor":
-          if ((message.selectionId !== void 0 ? message.selectionId === interactionLock.current?.id : current.selectionMode !== "off") && message.anchor.boardRevision <= current.boardRevision && message.anchor.canvasRevision <= current.canvas.revision) current.onAnchor(message.anchor);
+          if ((message.selectionId !== void 0 ? message.selectionId === interactionLock.current?.id : current.selectionMode !== "off") && message.anchor.boardRevision <= current.boardRevision && message.anchor.canvasRevision <= current.canvas.revision) {
+            if (interactionLock.current) interactionLock.current.anchor = message.anchor;
+            current.onAnchor(message.anchor);
+          }
           break;
         case "compose":
-          if (userActing() && message.selectionId === interactionLock.current?.id && message.request.anchor.boardRevision <= current.boardRevision && message.request.anchor.canvasRevision <= current.canvas.revision) current.onCompose?.(message.request);
+          {
+            var lock = interactionLock.current;
+            var key = document.current.sessionId + ":" + message.selectionId;
+            var automatic = message.automatic === true && browser.document?.activeElement === frame.current && lock?.dragging === false && lock.anchor && JSON.stringify(lock.anchor) === JSON.stringify(message.request.anchor);
+            if ((userActing() || automatic) && message.selectionId === lock?.id && !composedSelections.has(key) && message.request.anchor.boardRevision <= current.boardRevision && message.request.anchor.canvasRevision <= current.canvas.revision) {
+              composedSelections.add(key);
+              current.onCompose?.(message.request);
+            }
+            break;
+          }
+        case "open-interaction":
+          if (userActing() && interactionMarkers(current.interactions || []).some(item => item.id === message.id)) current.onOpenInteraction?.(message.id, message.position);
+          break;
+        case "interaction-position":
+          if (message.id === current.selectedInteractionId && interactionMarkers(current.interactions || []).some(item => item.id === message.id)) current.onInteractionPosition?.(message.id, message.position);
           break;
         case "state":
           localState.current = {
@@ -1707,8 +1790,8 @@ function CanvasFrame(props) {
         case "ask":
           {
             var origin = document.current;
-            var key = origin.sessionId + ":" + message.id;
-            if (waiting.has(key)) break;
+            var _key = origin.sessionId + ":" + message.id;
+            if (waiting.has(_key)) break;
             var answer = result => {
               if (disposed || document.current?.sessionId !== origin.sessionId) return;
               send({
@@ -1724,7 +1807,7 @@ function CanvasFrame(props) {
               });
               break;
             }
-            waiting.add(key);
+            waiting.add(_key);
             Promise.resolve().then(() => current.onAsk(message.request)).catch(e => {
               current.onError({
                 code: "ask-failed",
@@ -1735,7 +1818,7 @@ function CanvasFrame(props) {
                 outcome: null
               };
             }).then(result => {
-              waiting.delete(key);
+              waiting.delete(_key);
               answer(result);
             });
             break;
@@ -1778,6 +1861,13 @@ function CanvasFrame(props) {
   }, [props.canvas, props.boardRevision, props.userState, props.theme]);
   useEffect(() => {
     if (ready.current) send({
+      type: "interactions",
+      markers: interactionMarkers(props.interactions || []),
+      selectedId: props.selectedInteractionId
+    });
+  }, [props.interactions, props.selectedInteractionId]);
+  useEffect(() => {
+    if (ready.current) send({
       type: "selection",
       mode: props.selectionMode
     });
@@ -1808,6 +1898,64 @@ function CanvasFrame(props) {
       border: 0,
       background: "transparent",
       colorScheme: props.theme.scheme
+    }
+  });
+}
+function usePopoverDismiss(active, onDismiss) {
+  var latest = useRef(onDismiss);
+  latest.current = onDismiss;
+  useEffect(() => {
+    if (!active || !canRenderFrames || !browser.window) return;
+    var dismiss = event => {
+      if (event.isTrusted && !event.target?.closest?.('[data-testid="board-local-popover"]')) latest.current();
+    };
+    browser.window.addEventListener("pointerdown", dismiss, true);
+    return () => browser.window?.removeEventListener("pointerdown", dismiss, true);
+  }, [active]);
+}
+function WebMessageInput(props) {
+  var composing = useRef(false);
+  var compositionEnded = useRef(0);
+  if (!canRenderFrames) return null;
+  return createElement("textarea", {
+    value: props.value,
+    autoFocus: true,
+    disabled: props.disabled,
+    placeholder: props.placeholder,
+    maxLength: 24e3,
+    "aria-label": "\u53D1\u7ED9 agent \u7684\u6D88\u606F",
+    "data-testid": "board-message-input",
+    onChange: event => props.onChange(event.target.value),
+    onCompositionStart: () => {
+      composing.current = true;
+    },
+    onCompositionEnd: () => {
+      composing.current = false;
+      compositionEnded.current = Date.now();
+    },
+    onKeyDown: event => {
+      if (composing.current || event.nativeEvent?.isComposing || event.keyCode === 229 || event.nativeEvent?.keyCode === 229 || Date.now() - compositionEnded.current < 50) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        props.onClose();
+      } else if (event.key === "Enter" && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!props.disabled) props.onSubmit(event.ctrlKey || event.metaKey);
+      }
+    },
+    style: {
+      boxSizing: "border-box",
+      width: "100%",
+      minHeight: 88,
+      maxHeight: 220,
+      resize: "vertical",
+      font: "inherit",
+      lineHeight: 1.5,
+      padding: 10,
+      borderRadius: 8,
+      ...props.style
     }
   });
 }
@@ -1915,8 +2063,76 @@ function createStateWriter(save, onError) {
   };
 }
 
+// client/interaction-layout.ts
+function anchorPoint(anchor) {
+  if (!anchor?.rect) return {
+    x: 24,
+    y: 24
+  };
+  return {
+    x: anchor.rect.x - (anchor.viewport?.scrollX ?? 0),
+    y: anchor.rect.y - (anchor.viewport?.scrollY ?? 0)
+  };
+}
+function popoverPlacement(point, viewport, contentHeight) {
+  var margin = 8;
+  var width = Math.min(420, Math.max(1, viewport.width - margin * 2));
+  var maxHeight = Math.max(1, Math.min(520, viewport.height - margin * 2));
+  var height = Math.min(contentHeight, maxHeight);
+  var clamp = (value, maximum) => Math.max(margin, Math.min(value, maximum));
+  var left = clamp(point.x + 14 + width <= viewport.width - margin ? point.x + 14 : point.x - width - 14, viewport.width - width - margin);
+  var top = clamp(point.y + 14 + height <= viewport.height - margin ? point.y + 14 : point.y - height - 14, viewport.height - height - margin);
+  return {
+    left,
+    top,
+    width,
+    maxHeight
+  };
+}
+function interactionRoot(id, interactions) {
+  var lookup = new Map(interactions.map(item => [item.id, item]));
+  var seen = /* @__PURE__ */new Set();
+  var current = lookup.get(id);
+  while (current?.sourceInteractionId && !seen.has(current.id)) {
+    seen.add(current.id);
+    var parent = lookup.get(current.sourceInteractionId);
+    if (!parent || seen.has(parent.id)) break;
+    current = parent;
+  }
+  return current?.id ?? id;
+}
+function interactionThread(id, interactions) {
+  if (!id) return [];
+  var root = interactionRoot(id, interactions);
+  return interactions.filter(item => interactionRoot(item.id, interactions) === root);
+}
+function mergeInteractions(saved, optimistic) {
+  var ids = new Set(saved.map(item => item.id));
+  return [...saved, ...optimistic.filter(item => !ids.has(item.id))];
+}
+function visualQuestion(item, request) {
+  var anchor = request.anchor;
+  var reference = {
+    interactionId: item.id,
+    responseRevision: item.responseRevision ?? 0,
+    responseCanvasRevision: item.responseCanvas?.revision,
+    kind: request.kind ?? "question",
+    selection: anchor ? {
+      kind: anchor.kind,
+      quote: anchor.text,
+      selector: anchor.selector,
+      rect: anchor.rect,
+      viewport: anchor.viewport
+    } : void 0
+  };
+  return `\u5173\u4E8E\u8FD9\u6761\u56DE\u7B54\u7684\u4EA4\u4E92\u56FE\u89E3\uFF08\u4EE5\u4E0B\u9009\u533A\u5750\u6807\u5C5E\u4E8E\u56DE\u7B54\u56FE\u89E3\uFF0C\u4E0D\u662F\u4E3B\u753B\u5E03\uFF1B\u53EF\u7528 board_read \u67E5\u770B\u5BF9\u5E94 responseCanvas\uFF09\uFF1A
+${JSON.stringify(reference)}
+
+${request.prompt ?? ""}`.slice(0, 24e3);
+}
+
 // client/board.tsx
-import { Fragment, jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
+import { jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
 var statusNames = {
   saved: "\u5DF2\u4FDD\u5B58",
   sending: "\u53D1\u9001\u4E2D",
@@ -1928,11 +2144,11 @@ var statusNames = {
   failed: "\u5931\u8D25"
 };
 var kindNames = {
-  question: "\u63D0\u95EE",
-  change: "\u4FEE\u6539\u8FD9\u91CC",
-  fork: "\u72EC\u7ACB\u8BA8\u8BBA",
-  return: "\u5E26\u56DE\u4E3B\u7EBF",
-  reply: "\u7EE7\u7EED\u8BA8\u8BBA"
+  question: "\u6D88\u606F",
+  change: "\u6D88\u606F",
+  fork: "Fork",
+  return: "\u8F6C\u7ED9\u4E3B\u4F1A\u8BDD",
+  reply: "Fork \u56DE\u590D"
 };
 function BoardView(props) {
   return /* @__PURE__ */jsx2(ColorContext.Provider, {
@@ -1967,6 +2183,20 @@ function BoardContent({
   var [message, setMessage] = useState2(null);
   var [frameError, setFrameError] = useState2(null);
   var [height, setHeight] = useState2(500);
+  var [width, setWidth] = useState2(900);
+  var [popoverHeight, setPopoverHeight] = useState2(300);
+  var [popoverPoint, setPopoverPoint] = useState2({
+    x: 24,
+    y: 24
+  });
+  var [selectedInteractionId, setSelectedInteractionId] = useState2();
+  var [optimistic, setOptimistic] = useState2([]);
+  var interactions = useMemo(() => mergeInteractions(board?.interactions ?? [], optimistic), [board?.interactions, optimistic]);
+  var thread = useMemo(() => interactionThread(selectedInteractionId, interactions), [selectedInteractionId, interactions]);
+  var popover = popoverPlacement(popoverPoint, {
+    width,
+    height
+  }, popoverHeight);
   var stateWriter = useRef2(null);
   var frameTheme = useMemo(() => frameThemeFromColors(theme.colors), [theme.colors]);
   var onAnchor = useCallback2(next => {
@@ -1982,21 +2212,27 @@ function BoardContent({
       return;
     }
     var next = {
-      kind: request.kind ?? "question",
+      kind: "question",
       text: request.prompt,
       anchor: request.anchor,
       resolve
     };
+    setPopoverPoint(request.position ?? anchorPoint(request.anchor));
+    setSelectedInteractionId(void 0);
+    setMessage(null);
     composeRef.current = next;
     setCompose(next);
   }), []);
   var onCompose = useCallback2(request => {
     if (composeRef.current || pending.current) return;
     var next = {
-      kind: request.kind,
+      kind: "question",
       text: "",
       anchor: request.anchor
     };
+    setPopoverPoint(request.position ?? anchorPoint(request.anchor));
+    setSelectedInteractionId(void 0);
+    setMessage(null);
     setAnchor(request.anchor);
     setSelectionMode("off");
     setDrawer(null);
@@ -2018,6 +2254,10 @@ function BoardContent({
   useEffect2(() => {
     setFrameError(null);
   }, [board?.canvas.documentVersion]);
+  useEffect2(() => {
+    var persisted = new Set(board?.interactions.map(item => item.id));
+    setOptimistic(items => items.some(item => persisted.has(item.id)) ? items.filter(item => !persisted.has(item.id)) : items);
+  }, [board?.interactions]);
   useEffect2(() => () => {
     if (!pending.current) composeRef.current?.resolve?.({
       status: "cancelled"
@@ -2030,31 +2270,72 @@ function BoardContent({
     });
     setCompose(null);
     composeRef.current = null;
+    setMessage(null);
   };
-  var openCompose = (kind, source) => {
-    if (pending.current || composeRef.current) return;
+  var openCompose = (kind, source, text, resolve) => {
+    if (pending.current || composeRef.current) {
+      resolve?.({
+        status: "cancelled",
+        outcome: "\u53E6\u4E00\u6761\u8F93\u5165\u5C1A\u672A\u5173\u95ED"
+      });
+      return;
+    }
     setDrawer(null);
     var draft = {
-      kind,
-      text: kind === "return" ? "\u8BF7\u8003\u8651\u8FD9\u6BB5\u8BA8\u8BBA\u7684\u7ED3\u8BBA\uFF0C\u5E76\u628A\u9002\u7528\u7684\u4FEE\u6539\u843D\u5B9E\u5230\u4E3B\u7EBF\u3002\u8BF4\u660E\u91C7\u7EB3\u4E86\u54EA\u4E9B\u5185\u5BB9\uFF0C\u4EE5\u53CA\u672A\u91C7\u7EB3\u7684\u7406\u7531\u3002" : "",
+      kind: kind === "change" || kind === "fork" ? "question" : kind,
+      text: text ?? (kind === "return" ? "\u8BF7\u8003\u8651\u8FD9\u6BB5\u8BA8\u8BBA\u7684\u7ED3\u8BBA\uFF0C\u5E76\u628A\u9002\u7528\u7684\u4FEE\u6539\u843D\u5B9E\u5230\u4E3B\u7EBF\u3002\u8BF4\u660E\u91C7\u7EB3\u4E86\u54EA\u4E9B\u5185\u5BB9\uFF0C\u4EE5\u53CA\u672A\u91C7\u7EB3\u7684\u7406\u7531\u3002" : ""),
       anchor: source?.anchor ?? anchor ?? (board ? {
         kind: "board",
         boardRevision: board.revision,
         canvasRevision: board.canvas.revision
       } : void 0),
-      sourceInteractionId: source?.id
+      sourceInteractionId: source?.id,
+      resolve
     };
+    if (!source || !selectedInteractionId) setPopoverPoint(anchorPoint(draft.anchor));
+    setSelectedInteractionId(source ? interactionRoot(source.id, interactions) : void 0);
+    setMessage(null);
     composeRef.current = draft;
     setCompose(draft);
   };
-  var submit = () => __async(null, null, function* () {
+  var retryUnconfirmed = item => {
+    if (pending.current || composeRef.current) return;
+    var draft = {
+      kind: item.kind,
+      text: item.text,
+      intentId: item.id,
+      anchor: item.anchor,
+      sourceInteractionId: item.sourceInteractionId
+    };
+    composeRef.current = draft;
+    setCompose(draft);
+    setMessage(null);
+  };
+  var submit = (fork = false) => __async(null, null, function* () {
     var draft = composeRef.current;
-    if (!draft?.text.trim() || pending.current) return;
+    if (!draft?.text.trim() || pending.current || !board?.ownerAgentId) return;
+    var kind = fork ? "fork" : draft.kind;
+    if (draft.intentId && kind !== draft.kind) return;
+    draft.kind = kind;
     pending.current = true;
     setSending(true);
     setMessage(null);
+    draft.intentId ?? (draft.intentId = localId("intent"));
+    var now = (/* @__PURE__ */new Date()).toISOString();
+    var local = {
+      id: draft.intentId,
+      kind: draft.kind,
+      text: draft.text.trim(),
+      anchor: draft.anchor,
+      sourceInteractionId: draft.sourceInteractionId,
+      status: "sending",
+      resultReferences: [],
+      createdAt: now,
+      updatedAt: now
+    };
+    setOptimistic(items => [...items.filter(item => item.id !== local.id), local]);
+    setSelectedInteractionId(interactionRoot(draft.sourceInteractionId ?? draft.intentId, interactions));
     try {
-      draft.intentId ?? (draft.intentId = localId("intent"));
       var result = yield send({
         boardId,
         intentId: draft.intentId,
@@ -2063,6 +2344,7 @@ function BoardContent({
         anchor: draft.anchor,
         sourceInteractionId: draft.sourceInteractionId
       });
+      setOptimistic(items => items.map(item => item.id === result.id ? result : item));
       draft.resolve?.({
         status: "submitted",
         outcome: statusNames[result.status]
@@ -2071,15 +2353,36 @@ function BoardContent({
       composeRef.current = null;
       setAnchor(void 0);
       setSelectionClearToken(value => value + 1);
-      setDrawer("threads");
       void query.refetch();
     } catch (error) {
-      setMessage(errorMessage(error));
+      var message2 = errorMessage(error);
+      setMessage(message2);
+      setOptimistic(items => items.map(item => item.id === local.id ? {
+        ...item,
+        status: "failed",
+        error: message2
+      } : item));
     } finally {
       pending.current = false;
       setSending(false);
     }
   });
+  var openInteraction = (id, position2) => {
+    if (pending.current || composeRef.current) return;
+    var item = interactions.find(item2 => item2.id === id);
+    if (!item) return;
+    setSelectedInteractionId(interactionRoot(id, interactions));
+    setPopoverPoint(position2 ?? anchorPoint(item.anchor));
+    setDrawer(null);
+    setMessage(null);
+  };
+  var closePopover = () => {
+    if (!pending.current) {
+      cancelCompose();
+      setSelectedInteractionId(void 0);
+    }
+  };
+  usePopoverDismiss(Boolean(compose || selectedInteractionId), closePopover);
   var updateDecision = (decision, status) => __async(null, null, function* () {
     if (!board) return;
     try {
@@ -2182,60 +2485,50 @@ function BoardContent({
             flex: 1
           }
         }), /* @__PURE__ */jsx2(Action, {
-          label: "\u63D0\u95EE",
+          label: "\u53D1\u6D88\u606F",
           icon: "MessageCircle",
           onPress: () => openCompose("question")
-        }), /* @__PURE__ */jsx2(Action, {
-          label: "\u4FEE\u6539\u8FD9\u91CC",
-          icon: "Pencil",
-          onPress: () => openCompose("change")
-        }), /* @__PURE__ */jsx2(Action, {
-          label: "\u5F00 fork",
-          icon: "GitBranch",
-          onPress: () => openCompose("fork")
         })]
       })]
-    }), query.error ? /* @__PURE__ */jsx2(Notice, {
-      error: true,
-      text: "\u8FDE\u63A5\u6682\u65F6\u4E2D\u65AD\u3002\u5F53\u524D\u662F\u4E0A\u6B21\u6536\u5230\u7684\u5185\u5BB9\uFF0C\u5C1A\u672A\u786E\u8BA4\u6700\u65B0\u72B6\u6001\u3002"
-    }) : null, frameError ? /* @__PURE__ */jsx2(Notice, {
-      error: true,
-      text: frameError
-    }) : null, message ? /* @__PURE__ */jsx2(Notice, {
-      error: true,
-      text: message
-    }) : null, anchor ? /* @__PURE__ */jsxs2(View2, {
+    }), /* @__PURE__ */jsxs2(View2, {
+      testID: "board-reference-bar",
       style: {
-        padding: 8,
-        gap: 8,
+        height: 38,
+        flexShrink: 0,
+        paddingHorizontal: 12,
         flexDirection: "row",
         alignItems: "center",
+        gap: 8,
         backgroundColor: c.surface1
       },
-      children: [/* @__PURE__ */jsxs2(Text2, {
+      children: [/* @__PURE__ */jsx2(Text2, {
         numberOfLines: 1,
         style: {
           color: c.foregroundMuted,
           flex: 1,
           fontSize: 12
         },
-        children: ["\u5DF2\u5F15\u7528 r", anchor.boardRevision, " \xB7 ", selectedText]
-      }), /* @__PURE__ */jsx2(Action, {
+        children: anchor ? `\u5DF2\u5F15\u7528 r${anchor.boardRevision} \xB7 ${selectedText}` : selectionMode === "text" ? "\u62D6\u9009\u6587\u5B57\uFF0C\u76F4\u63A5\u5728\u65C1\u8FB9\u63D0\u95EE\u3002Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : selectionMode === "region" ? "\u62D6\u51FA\u4E00\u4E2A\u533A\u57DF\uFF0C\u53EF\u5305\u542B\u56FE\u7247\u3001\u56FE\u8868\u6216\u7A7A\u767D\u3002Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : selectionMode === "point" ? "\u70B9\u51FB\u9700\u8981\u6DFB\u52A0\u6216\u4FEE\u6539\u5185\u5BB9\u7684\u4F4D\u7F6E\u3002Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : "\u53F3\u952E\u5C31\u5730\u4EA4\u6D41 \xB7 Option / Alt + \u62D6\u52A8\u6846\u9009"
+      }), anchor ? /* @__PURE__ */jsx2(Action, {
         label: "\u6E05\u9664\u5F15\u7528",
         onPress: () => {
           setAnchor(void 0);
           setSelectionClearToken(value => value + 1);
         }
-      })]
-    }) : null, selectionMode !== "off" ? /* @__PURE__ */jsx2(Notice, {
-      text: selectionMode === "text" ? "\u62D6\u9009\u753B\u5E03\u5185\u7684\u6587\u5B57\uFF0C\u5F15\u7528\u540E\u5373\u53EF\u63D0\u95EE\u3002Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : selectionMode === "region" ? "\u62D6\u51FA\u4E00\u4E2A\u533A\u57DF\uFF0C\u53EF\u5305\u542B\u56FE\u7247\u3001\u56FE\u8868\u6216\u7A7A\u767D\u3002Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : "\u70B9\u51FB\u9700\u8981\u6DFB\u52A0\u6216\u4FEE\u6539\u5185\u5BB9\u7684\u4F4D\u7F6E\u3002Esc \u8FD4\u56DE\u4EA4\u4E92\u3002"
-    }) : null, /* @__PURE__ */jsx2(View2, {
+      }) : null]
+    }), /* @__PURE__ */jsxs2(View2, {
+      testID: "board-canvas-container",
       style: {
         flex: 1,
-        minHeight: 180
+        minHeight: 180,
+        position: "relative",
+        overflow: "hidden"
       },
-      onLayout: event => setHeight(Math.max(180, event.nativeEvent.layout.height)),
-      children: canRenderFrames ? /* @__PURE__ */jsx2(CanvasFrame, {
+      onLayout: event => {
+        setHeight(Math.max(180, event.nativeEvent.layout.height));
+        setWidth(event.nativeEvent.layout.width);
+      },
+      children: [canRenderFrames ? /* @__PURE__ */jsx2(CanvasFrame, {
         boardId: board.id,
         title: board.title,
         canvas: board.canvas,
@@ -2245,9 +2538,16 @@ function BoardContent({
         height,
         selectionMode,
         selectionClearToken,
+        interactions,
+        selectedInteractionId,
+        onOpenInteraction: openInteraction,
+        onInteractionPosition: (id, point) => {
+          if (id === selectedInteractionId && !composeRef.current) setPopoverPoint(point);
+        },
         onAnchor,
         onAsk,
         onCompose,
+        onCanvasPointer: closePopover,
         onState,
         onError: error => setFrameError(`${error.message}${error.patchId ? `\uFF08${error.patchId}\uFF09` : ""}`),
         onSelectionEnd: () => setSelectionMode("off"),
@@ -2268,7 +2568,196 @@ function BoardContent({
         }), /* @__PURE__ */jsx2(Markdown, {
           children: typeof board.canvas.data.summary === "string" ? board.canvas.data.summary : "Agent \u5C1A\u672A\u63D0\u4F9B\u6587\u5B57\u6458\u8981\u3002\u4F60\u53EF\u4EE5\u76F4\u63A5\u63D0\u95EE\uFF0C\u56DE\u590D\u4F1A\u51FA\u73B0\u5728\u8BA8\u8BBA\u91CC\u3002"
         })]
-      })
+      }), query.error || frameError || message && !compose && !selectedInteractionId ? /* @__PURE__ */jsx2(View2, {
+        style: {
+          position: "absolute",
+          left: 8,
+          right: 8,
+          top: 8
+        },
+        children: /* @__PURE__ */jsx2(Notice, {
+          error: true,
+          text: query.error ? "\u8FDE\u63A5\u6682\u65F6\u4E2D\u65AD\u3002\u5F53\u524D\u662F\u4E0A\u6B21\u6536\u5230\u7684\u5185\u5BB9\uFF0C\u5C1A\u672A\u786E\u8BA4\u6700\u65B0\u72B6\u6001\u3002" : frameError || message || ""
+        })
+      }) : null, compose || selectedInteractionId ? /* @__PURE__ */jsxs2(View2, {
+        testID: "board-local-popover",
+        accessibilityLabel: "\u539F\u4F4D\u4EA4\u6D41",
+        onLayout: event => setPopoverHeight(event.nativeEvent.layout.height),
+        style: {
+          position: "absolute",
+          ...popover,
+          borderWidth: 1,
+          borderColor: c.border,
+          borderRadius: 12,
+          backgroundColor: c.surface0,
+          overflow: "hidden",
+          shadowColor: "#000",
+          shadowOpacity: 0.22,
+          shadowRadius: 16,
+          shadowOffset: {
+            width: 0,
+            height: 5
+          },
+          elevation: 10
+        },
+        children: [/* @__PURE__ */jsxs2(View2, {
+          style: {
+            flexDirection: "row",
+            alignItems: "center",
+            padding: 8,
+            gap: 8,
+            borderBottomWidth: 1,
+            borderColor: c.border
+          },
+          children: [/* @__PURE__ */jsx2(Text2, {
+            style: {
+              color: c.foreground,
+              fontWeight: "600",
+              flex: 1
+            },
+            children: compose ? compose.kind === "reply" ? "\u7EE7\u7EED\u8FD9\u4E2A Fork" : "\u53D1\u7ED9 agent" : "\u8FD9\u91CC\u7684\u8BA8\u8BBA"
+          }), !canRenderFrames ? /* @__PURE__ */jsx2(Action, {
+            label: "\u5173\u95ED",
+            disabled: sending,
+            onPress: closePopover
+          }) : null]
+        }), /* @__PURE__ */jsxs2(ScrollView, {
+          style: {
+            flexShrink: 1
+          },
+          contentContainerStyle: {
+            padding: 12,
+            gap: 16
+          },
+          keyboardShouldPersistTaps: "handled",
+          children: [thread.map(item => /* @__PURE__ */jsx2(InteractionContent, {
+            item,
+            board,
+            frameTheme,
+            unconfirmed: !board.interactions.some(saved => saved.id === item.id),
+            onRetry: () => retryUnconfirmed(item),
+            onFollow: (kind, text, resolve) => openCompose(kind, item, text, resolve),
+            onOpenAgent: () => {
+              if (item.agentId && navigation) navigation.openAgent({
+                agentId: item.agentId
+              });
+            }
+          }, item.id)), compose ? /* @__PURE__ */jsxs2(View2, {
+            style: {
+              gap: 10
+            },
+            children: [!thread.length ? /* @__PURE__ */jsx2(AnchorPreview, {
+              anchor: compose.anchor,
+              compact: true
+            }) : null, compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsx2(Copy, {
+              small: true,
+              muted: true,
+              children: "\u5F15\u7528\u6765\u81EA\u65E7\u753B\u5E03\u7248\u672C\uFF1Bagent \u4F1A\u5BF9\u7167\u539F\u6765\u7684\u4F4D\u7F6E\u548C\u5FEB\u7167\u3002"
+            }) : null, compose.kind === "reply" ? /* @__PURE__ */jsx2(Copy, {
+              small: true,
+              muted: true,
+              children: "\u7EE7\u7EED\u5F53\u524D Fork\uFF1B\u9700\u8981\u4FEE\u6539\u65F6\uFF0C\u4F1A\u76F4\u63A5\u66F4\u65B0\u8FD9\u5757 Board\u3002"
+            }) : null, canRenderFrames ? /* @__PURE__ */jsx2(WebMessageInput, {
+              value: compose.text,
+              disabled: sending,
+              onChange: text => {
+                var previous = composeRef.current;
+                if (previous) {
+                  var next = {
+                    ...previous,
+                    text,
+                    intentId: void 0
+                  };
+                  composeRef.current = next;
+                  setCompose(next);
+                }
+              },
+              onSubmit: fork => {
+                void submit(fork);
+              },
+              onClose: closePopover,
+              placeholder: "\u60F3\u4E86\u89E3\u4EC0\u4E48\uFF1F\u6216\u5E0C\u671B\u8FD9\u91CC\u53D1\u751F\u4EC0\u4E48\u53D8\u5316\uFF1F",
+              style: {
+                color: c.foreground,
+                background: c.surface1,
+                border: `1px solid ${c.border}`,
+                borderRadius: 8,
+                padding: 10,
+                minHeight: 80,
+                fontSize: 14
+              }
+            }) : /* @__PURE__ */jsx2(TextInput, {
+              autoFocus: true,
+              accessibilityLabel: "\u53D1\u7ED9 agent \u7684\u6D88\u606F",
+              value: compose.text,
+              editable: !sending,
+              multiline: true,
+              maxLength: 24e3,
+              onChangeText: text => {
+                var previous = composeRef.current;
+                if (previous) {
+                  var next = {
+                    ...previous,
+                    text,
+                    intentId: void 0
+                  };
+                  composeRef.current = next;
+                  setCompose(next);
+                }
+              },
+              placeholder: "\u60F3\u4E86\u89E3\u4EC0\u4E48\uFF1F\u6216\u5E0C\u671B\u8FD9\u91CC\u53D1\u751F\u4EC0\u4E48\u53D8\u5316\uFF1F",
+              placeholderTextColor: c.foregroundMuted,
+              style: {
+                color: c.foreground,
+                backgroundColor: c.surface1,
+                borderColor: c.border,
+                borderWidth: 1,
+                borderRadius: 8,
+                padding: 10,
+                minHeight: 80,
+                textAlignVertical: "top"
+              }
+            }), !board.ownerAgentId ? /* @__PURE__ */jsx2(Notice, {
+              error: true,
+              text: "\u8FD9\u5757 Board \u5C1A\u672A\u5173\u8054\u8D1F\u8D23\u7684 agent\u3002\u8BF7\u8BA9 agent \u63A5\u7BA1\u540E\u518D\u53D1\u9001\u3002"
+            }) : null, message ? /* @__PURE__ */jsx2(Notice, {
+              error: true,
+              text: message
+            }) : null, /* @__PURE__ */jsxs2(Copy, {
+              small: true,
+              muted: true,
+              children: ["Enter \u53D1\u7ED9", compose.kind === "reply" || compose.kind === "fork" ? "\u5F53\u524D Fork" : "\u4E3B\u4F1A\u8BDD", " \xB7 Shift+Enter \u6362\u884C"]
+            }), /* @__PURE__ */jsxs2(View2, {
+              style: {
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+                justifyContent: "flex-end"
+              },
+              children: [/* @__PURE__ */jsx2(Action, {
+                label: "Fork \u53D1\u9001",
+                icon: "GitBranch",
+                disabled: sending || !compose.text.trim() || !board.ownerAgentId || Boolean(compose.intentId && compose.kind !== "fork"),
+                onPress: () => {
+                  void submit(true);
+                }
+              }), /* @__PURE__ */jsx2(Action, {
+                label: sending ? "\u53D1\u9001\u4E2D\u2026" : "\u53D1\u9001",
+                disabled: sending || !compose.text.trim() || !board.ownerAgentId,
+                primary: true,
+                onPress: () => {
+                  void submit();
+                }
+              })]
+            }), /* @__PURE__ */jsx2(Copy, {
+              small: true,
+              muted: true,
+              children: "\u2318 / Ctrl + Enter \u5F00 Fork \xB7 \u9694\u5F00\u8BDD\u9898\uFF0C\u4E5F\u80FD\u76F4\u63A5\u6539 Board"
+            })]
+          }) : null]
+        })]
+      }) : null]
     }), /* @__PURE__ */jsxs2(View2, {
       style: {
         paddingHorizontal: 12,
@@ -2283,7 +2772,7 @@ function BoardContent({
       children: [canRenderFrames ? /* @__PURE__ */jsx2(Copy, {
         small: true,
         muted: true,
-        children: "Option / Alt + \u62D6\u52A8\u6846\u9009 \xB7 \u53F3\u952E\u63D0\u95EE\u6216\u4FEE\u6539 \xB7 Esc \u53D6\u6D88"
+        children: "\u9009\u4E2D\u6587\u5B57 / Option + \u62D6\u52A8 / \u53F3\u952E\uFF0C\u5373\u53EF\u8F93\u5165 \xB7 Esc \u53D6\u6D88"
       }) : null, /* @__PURE__ */jsxs2(Copy, {
         small: true,
         muted: true,
@@ -2314,6 +2803,8 @@ function BoardContent({
                 selector: decision.related[0]
               }
             };
+            setSelectedInteractionId(void 0);
+            setPopoverPoint(anchorPoint(draft.anchor));
             composeRef.current = draft;
             setCompose(draft);
           }
@@ -2324,7 +2815,7 @@ function BoardContent({
           children: [!board.interactions.length ? /* @__PURE__ */jsx2(Copy, {
             muted: true,
             children: "\u6307\u7740\u753B\u5E03\u63D0\u95EE\u3001\u63D0\u51FA\u4FEE\u6539\uFF0C\u6216\u5F00\u4E00\u4E2A\u72EC\u7ACB\u8BA8\u8BBA\u3002\u4EA4\u6D41\u4F1A\u4FDD\u7559\u5F53\u65F6\u7684\u5F15\u7528\u548C\u7248\u672C\u3002"
-          }) : null, [...board.interactions].reverse().map(interaction => /* @__PURE__ */jsxs2(View2, {
+          }) : null, [...interactions].filter(item => interactionRoot(item.id, interactions) === item.id).reverse().map(interaction => /* @__PURE__ */jsxs2(View2, {
             style: {
               borderBottomWidth: 1,
               borderColor: c.border,
@@ -2334,43 +2825,12 @@ function BoardContent({
             children: [/* @__PURE__ */jsxs2(Copy, {
               small: true,
               muted: true,
-              children: [kindNames[interaction.kind], " \xB7 ", statusNames[interaction.status], " \xB7 ", timeLabel(interaction.createdAt)]
-            }), /* @__PURE__ */jsx2(AnchorPreview, {
-              anchor: interaction.anchor
+              children: [kindNames[interaction.kind], " \xB7 ", statusNames[interactionThread(interaction.id, interactions).at(-1)?.status ?? interaction.status], " \xB7 ", timeLabel(interaction.createdAt)]
             }), /* @__PURE__ */jsx2(Copy, {
               children: interaction.text
-            }), interaction.response ? /* @__PURE__ */jsx2(Markdown, {
-              children: interaction.response
-            }) : null, interaction.error ? /* @__PURE__ */jsx2(Notice, {
-              error: true,
-              text: interaction.error
-            }) : null, interaction.resultReferences.length ? /* @__PURE__ */jsxs2(Copy, {
-              small: true,
-              muted: true,
-              children: ["\u843D\u5B9E\u4F9D\u636E\uFF1A", interaction.resultReferences.join(" \xB7 ")]
-            }) : null, /* @__PURE__ */jsxs2(View2, {
-              style: {
-                flexDirection: "row",
-                flexWrap: "wrap",
-                gap: 8
-              },
-              children: [["fork", "reply"].includes(interaction.kind) && interaction.agentId ? /* @__PURE__ */jsxs2(Fragment, {
-                children: [/* @__PURE__ */jsx2(Action, {
-                  label: "\u7EE7\u7EED\u8BA8\u8BBA",
-                  onPress: () => openCompose("reply", interaction)
-                }), interaction.response ? /* @__PURE__ */jsx2(Action, {
-                  label: "\u5E26\u56DE\u4E3B\u7EBF",
-                  onPress: () => openCompose("return", interaction)
-                }) : null]
-              }) : null, interaction.agentId && navigation ? /* @__PURE__ */jsx2(Action, {
-                label: "\u6253\u5F00\u4F1A\u8BDD",
-                onPress: () => {
-                  setDrawer(null);
-                  navigation.openAgent({
-                    agentId: interaction.agentId
-                  });
-                }
-              }) : null]
+            }), /* @__PURE__ */jsx2(Action, {
+              label: "\u539F\u4F4D\u67E5\u770B\u548C\u7EE7\u7EED\u4EA4\u6D41",
+              onPress: () => openInteraction(interaction.id)
             })]
           }, interaction.id))]
         }) : null, drawer === "history" ? /* @__PURE__ */jsxs2(View2, {
@@ -2394,90 +2854,108 @@ function BoardContent({
           }) : null]
         }) : null]
       })
-    }), /* @__PURE__ */jsx2(Modal, {
-      title: compose ? kindNames[compose.kind] : "\u63D0\u95EE",
-      open: compose !== null,
-      onOpenChange: open => {
-        if (!open) cancelCompose();
+    })]
+  });
+}
+function InteractionContent({
+  item,
+  board,
+  frameTheme,
+  onFollow,
+  onOpenAgent,
+  unconfirmed,
+  onRetry
+}) {
+  var c = useColors();
+  var discussion = item.kind === "fork" || item.kind === "reply";
+  var [showSnapshot, setShowSnapshot] = useState2(false);
+  var [visualState, setVisualState] = useState2({});
+  var [visualError, setVisualError] = useState2();
+  var stale = item.anchor && item.anchor.canvasRevision !== board.canvas.revision;
+  var follow = text => onFollow(discussion ? "reply" : "question", text);
+  return /* @__PURE__ */jsxs2(View2, {
+    style: {
+      gap: 10,
+      paddingBottom: 14,
+      borderBottomWidth: 1,
+      borderColor: c.border
+    },
+    children: [/* @__PURE__ */jsxs2(Copy, {
+      small: true,
+      muted: true,
+      children: [kindNames[item.kind], " \xB7 ", statusNames[item.status], " \xB7 ", timeLabel(item.createdAt)]
+    }), /* @__PURE__ */jsx2(Copy, {
+      children: item.text
+    }), stale ? /* @__PURE__ */jsxs2(Copy, {
+      small: true,
+      muted: true,
+      children: ["\u65E7\u4F4D\u7F6E \xB7 \u753B\u5E03 v", item.anchor.canvasRevision, "\uFF0C\u5F53\u524D v", board.canvas.revision, "\u3002\u6B64\u6807\u8BB0\u4FDD\u7559\u63D0\u95EE\u65F6\u7684\u4F4D\u7F6E\u3002"]
+    }) : null, showSnapshot ? /* @__PURE__ */jsx2(AnchorPreview, {
+      anchor: item.anchor
+    }) : null, item.response ? /* @__PURE__ */jsx2(Markdown, {
+      children: item.response
+    }) : null, item.responseCanvas && canRenderFrames ? /* @__PURE__ */jsx2(View2, {
+      style: {
+        height: 260,
+        borderWidth: 1,
+        borderColor: c.border,
+        borderRadius: 8,
+        overflow: "hidden"
       },
-      children: /* @__PURE__ */jsx2(Modal.Content, {
-        children: compose ? /* @__PURE__ */jsxs2(View2, {
-          style: {
-            gap: 14
-          },
-          children: [/* @__PURE__ */jsx2(AnchorPreview, {
-            anchor: compose.anchor
-          }), compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsx2(Notice, {
-            text: "\u753B\u5E03\u5DF2\u66F4\u65B0\u3002\u4F1A\u4FDD\u7559\u4F60\u5F15\u7528\u7684\u65E7\u7248\u672C\uFF0Cagent \u4F1A\u5224\u65AD\u5B83\u662F\u5426\u4ECD\u7136\u9002\u7528\u3002"
-          }) : null, compose.kind === "fork" ? /* @__PURE__ */jsx2(Copy, {
-            muted: true,
-            children: "\u5F00\u542F\u72EC\u7ACB\u8BA8\u8BBA\uFF0C\u5E26\u4E0A\u5F15\u7528\u3001\u753B\u9762\u5FEB\u7167\u548C\u76F8\u5173\u51B3\u7B56\u3002\u8BA8\u8BBA\u4E0D\u4F1A\u81EA\u52A8\u6539\u5199\u4E3B\u7EBF\u3002"
-          }) : compose.kind === "return" ? /* @__PURE__ */jsx2(Copy, {
-            muted: true,
-            children: "\u628A\u7ED3\u8BBA\u4F5C\u4E3A\u8981\u6C42\u53D1\u7ED9\u4E3B\u7EBF agent\u3002\u53EA\u6709 agent \u63D0\u4F9B\u843D\u5B9E\u4F9D\u636E\u540E\uFF0C\u624D\u663E\u793A\u201C\u5DF2\u843D\u5B9E\u201D\u3002"
-          }) : null, /* @__PURE__ */jsx2(TextInput, {
-            autoFocus: true,
-            accessibilityLabel: "\u53D1\u7ED9 agent \u7684\u6D88\u606F",
-            value: compose.text,
-            editable: !sending,
-            multiline: true,
-            maxLength: 24e3,
-            onChangeText: text => {
-              var previous = composeRef.current;
-              if (previous) {
-                var next = {
-                  ...previous,
-                  text,
-                  intentId: void 0
-                };
-                composeRef.current = next;
-                setCompose(next);
-              }
-            },
-            placeholder: "\u60F3\u4E86\u89E3\u4EC0\u4E48\uFF1F\u6216\u5E0C\u671B\u8FD9\u91CC\u53D1\u751F\u4EC0\u4E48\u53D8\u5316\uFF1F",
-            placeholderTextColor: c.foregroundMuted,
-            style: {
-              color: c.foreground,
-              backgroundColor: c.surface1,
-              borderColor: c.border,
-              borderWidth: 1,
-              borderRadius: 8,
-              padding: 12,
-              minHeight: 130,
-              textAlignVertical: "top"
-            }
-          }), !board.ownerAgentId ? /* @__PURE__ */jsx2(Notice, {
-            error: true,
-            text: "\u8FD9\u5757 Board \u5C1A\u672A\u5173\u8054\u8D1F\u8D23\u7684 agent\u3002\u8BF7\u8BA9 agent \u63A5\u7BA1\u540E\u518D\u53D1\u9001\u3002"
-          }) : null, message ? /* @__PURE__ */jsx2(Notice, {
-            error: true,
-            text: message
-          }) : null, /* @__PURE__ */jsxs2(View2, {
-            style: {
-              flexDirection: "row",
-              justifyContent: "flex-end",
-              gap: 8
-            },
-            children: [/* @__PURE__ */jsx2(Action, {
-              label: "\u53D6\u6D88",
-              disabled: sending,
-              onPress: cancelCompose
-            }), /* @__PURE__ */jsx2(Action, {
-              label: sending ? "\u53D1\u9001\u4E2D\u2026" : compose.kind === "fork" ? "\u5F00\u542F\u8BA8\u8BBA" : "\u53D1\u9001",
-              disabled: sending || !compose.text.trim() || !board.ownerAgentId,
-              primary: true,
-              onPress: () => {
-                void submit();
-              }
-            })]
-          })]
-        }) : null
+      children: /* @__PURE__ */jsx2(CanvasFrame, {
+        boardId: `${board.id}.response.${item.id}`,
+        title: "Agent \u7684\u53EF\u4EA4\u4E92\u56DE\u7B54",
+        canvas: item.responseCanvas,
+        boardRevision: board.revision,
+        userState: visualState,
+        theme: frameTheme,
+        height: 260,
+        selectionMode: "off",
+        onAnchor: () => void 0,
+        onAsk: request => new Promise(resolve => onFollow(discussion ? "reply" : "question", visualQuestion(item, request), resolve)),
+        onCompose: request => onFollow(discussion ? "reply" : "question", visualQuestion(item, request)),
+        onState: setVisualState,
+        onError: error => setVisualError(error.message),
+        onOpenLink: url => {
+          void openExternalUrl(url).catch(error => setVisualError(errorMessage(error)));
+        }
       })
+    }) : null, item.responseCanvas && !canRenderFrames ? /* @__PURE__ */jsx2(Copy, {
+      small: true,
+      muted: true,
+      children: "\u8FD9\u6761\u56DE\u590D\u5305\u542B\u53EF\u4EA4\u4E92\u56FE\u89E3\uFF0C\u8BF7\u5728\u684C\u9762\u67E5\u770B\u3002"
+    }) : null, item.error || visualError ? /* @__PURE__ */jsx2(Notice, {
+      error: true,
+      text: item.error || visualError || ""
+    }) : null, item.resultReferences.length ? /* @__PURE__ */jsxs2(Copy, {
+      small: true,
+      muted: true,
+      children: ["\u4F9D\u636E\uFF1A", item.resultReferences.join(" \xB7 ")]
+    }) : null, /* @__PURE__ */jsxs2(View2, {
+      style: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 6
+      },
+      children: [item.anchor ? /* @__PURE__ */jsx2(Action, {
+        label: showSnapshot ? "\u6536\u8D77\u539F\u59CB\u5F15\u7528" : "\u539F\u59CB\u5F15\u7528",
+        onPress: () => setShowSnapshot(value => !value)
+      }) : null, unconfirmed && item.status === "failed" ? /* @__PURE__ */jsx2(Action, {
+        label: "\u91CD\u8BD5\u53D1\u9001",
+        onPress: onRetry
+      }) : null, !unconfirmed && (!discussion || item.agentId) ? /* @__PURE__ */jsx2(Action, {
+        label: "\u7EE7\u7EED\u4EA4\u6D41",
+        onPress: () => follow()
+      }) : null, item.agentId ? /* @__PURE__ */jsx2(Action, {
+        label: "\u4F1A\u8BDD",
+        onPress: onOpenAgent
+      }) : null]
     })]
   });
 }
 function AnchorPreview({
-  anchor
+  anchor,
+  compact = false
 }) {
   if (!anchor) return null;
   return /* @__PURE__ */jsxs2(View2, {
@@ -2495,7 +2973,7 @@ function AnchorPreview({
       resizeMode: "contain",
       style: {
         width: "100%",
-        height: 150
+        height: compact ? 72 : 150
       },
       accessibilityLabel: "\u63D0\u95EE\u65F6\u7684\u753B\u9762\u5FEB\u7167"
     }) : null]

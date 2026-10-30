@@ -54,6 +54,10 @@ export const InteractionSchema = z.object({
   status: z.enum(["saved", "sending", "delivered", "processing", "answered", "applied", "rejected", "failed"]),
   agentId: z.string().optional(),
   response: z.string().max(64000).optional(),
+  responseRevision: z.number().int().nonnegative().optional(),
+  responseSource: z.enum(["explicit", "timeline"]).optional(),
+  responseMethod: z.enum(["respond", "publish"]).optional(),
+  responseCanvas: CanvasSchema.optional(),
   resultReferences: z.array(z.string()).default([]),
   error: z.string().optional(),
   sourceInteractionId: IdSchema.optional(),
@@ -80,6 +84,14 @@ export const PublishInputSchema = z.object({
   decisions: z.array(DecisionInputSchema).max(50).optional(), summary: z.string().max(4000).default("Board updated"),
   interactionResult: z.object({ id: IdSchema, status: z.enum(["processing", "applied", "rejected", "failed"]), response: z.string().max(64000).optional(), resultReferences: z.array(z.string()).default([]) }).optional(),
 });
+export const RespondInputSchema = z.object({
+  boardId: IdSchema, interactionId: IdSchema, eventId: IdSchema,
+  expectedResponseRevision: z.number().int().nonnegative(),
+  status: z.enum(["processing", "answered", "rejected", "failed"]).default("answered"),
+  response: z.string().min(1).max(64000),
+  html: z.string().max(4000000).optional(), patch: CanvasPatchSchema.optional(), data: JsonDataSchema.optional(),
+  resultReferences: z.array(z.string().max(4000)).max(100).optional(),
+});
 export const EmitInputSchema = z.object({ boardId: IdSchema, eventId: IdSchema, source: z.string().min(1).max(200), kind: z.string().max(200).default("update"), summary: z.string().max(4000), data: JsonDataSchema.optional(), observation: z.object({ id: IdSchema, name: z.string().max(200), value: z.unknown(), evidence: EvidenceSchema }).optional() });
 export const InteractInputSchema = z.object({ boardId: IdSchema, intentId: IdSchema, kind: z.enum(["question", "change", "fork", "return", "reply"]), text: z.string().min(1).max(24000), anchor: AnchorSchema.optional(), sourceInteractionId: IdSchema.optional() });
 export const DecisionUpdateInputSchema = z.object({ boardId: IdSchema, expectedRevision: z.number().int().nonnegative(), eventId: IdSchema, decision: DecisionInputSchema });
@@ -94,6 +106,7 @@ export type DecisionInput = z.infer<typeof DecisionInputSchema>;
 export type Interaction = z.infer<typeof InteractionSchema>;
 export type CreateInput = z.input<typeof CreateInputSchema>;
 export type PublishInput = z.input<typeof PublishInputSchema>;
+export type RespondInput = z.input<typeof RespondInputSchema>;
 export type EmitInput = z.input<typeof EmitInputSchema>;
 export type InteractInput = z.input<typeof InteractInputSchema>;
 export type JsonData = z.infer<typeof JsonDataSchema>;

@@ -61,7 +61,7 @@ if (mode === 'mcp') {
     const args = process.argv.slice(3);
     const operation = args.shift();
     if (!operation || ['--help', '-h', 'help'].includes(operation)) {
-      process.stdout.write('Usage: paseo-board <list|read|create|publish|decision|emit> [--file /absolute/input.json | --json JSON]\nNo input option reads JSON from stdin. list defaults to {}. create/publish accept htmlFile.\n');
+      process.stdout.write('Usage: paseo-board <list|read|create|publish|respond|decision|emit> [--file /absolute/input.json | --json JSON]\nNo input option reads JSON from stdin. list defaults to {}. create/publish/respond accept htmlFile.\n');
     } else {
       if (!definitions.some(tool => tool.name === 'board_' + operation)) throw new Error('Unknown operation: ' + operation);
       let raw = '{}';

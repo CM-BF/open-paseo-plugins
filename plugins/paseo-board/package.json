@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:browser": "node scripts/browser-test.mjs",
-    "build:client": "node scripts/build-client.mjs ."
+    "build:client": "node scripts/build-client.mjs .",
+    "test:host": "node scripts/board-host-test.mjs"
   },
   "devDependencies": {
     "@babel/core": "^7.28.0",

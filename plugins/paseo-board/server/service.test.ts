@@ -12,7 +12,7 @@ function fakeSdk() {
   const histories = new Map<string, TimelineEntry[]>();
   const snapshots = new Map<string, Snapshot>();
   const subscribers = new Map<string, (value: unknown) => void>();
-  const snapshot = (id: string) => ({ id, provider: "codex", model: "example-model", cwd: "/tmp/board-fixture", workspaceId: "wks_0123456789abcdef", status: "idle", pendingPermissions: [], activeTurn: null, thinkingOptionId: "high", archivedAt: null } as unknown as Snapshot);
+  const snapshot = (id: string) => ({ id, provider: "codex", model: "example-model", cwd: "/tmp/board-fixture", workspaceId: "wks_0123456789abcdef", status: "idle", pendingPermissions: [], activeTurn: null, thinkingOptionId: "high", currentModeId: "auto-review", features: [{ type: "select", id: "service_tier", value: "priority", label: "Speed", options: [] }, { type: "toggle", id: "plan_mode", value: false, label: "Plan" }], archivedAt: null } as unknown as Snapshot);
   snapshots.set("owner", snapshot("owner")); snapshots.set("fork-agent", snapshot("fork-agent"));
   const sends: Array<{ id: string; text: string; options: Record<string, unknown> }> = [];
   const send = vi.fn(async (id: string, text: string, options: Record<string, unknown>) => {
@@ -78,7 +78,43 @@ describe("BoardService SDK adapter", () => {
     expect((await store.read("board"))!.interactions[0].status).toBe("processing");
   });
 
-  it("forks with frozen selection, PNG and decisions using a read-only session without a parent", async () => {
+  it("settles unsent intents already applied in the owner's current turn and releases the FIFO queue", async () => {
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status: "running" });
+    const first = { boardId: "board", intentId: "already-applied-1", kind: "change" as const, text: "Close on outside click" };
+    const second = { ...first, intentId: "already-applied-2", text: "Animate while processing" };
+    await service.interact(first); await service.interact(second); await service.drain();
+    for (const input of [first, second]) {
+      const board = (await store.read("board"))!;
+      await service.execute("publish", { boardId: "board", expectedRevision: board.revision, eventId: `apply-${input.intentId}`, interactionResult: { id: input.intentId, status: "applied", response: "Implemented during the current turn", resultReferences: ["#target"] } }, { agentId: "owner", cwd: dir });
+      expect(journal.get(deliveryKey("board", input.intentId))!.state).toBe("saved");
+    }
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status: "idle" });
+    await service.interact({ ...first, intentId: "next", text: "The next actual request" });
+    await service.drain();
+    expect(sdk.sends).toHaveLength(1);
+    expect(sdk.sends[0].text).toContain("intent=next]");
+    for (const input of [first, second]) expect(journal.get(deliveryKey("board", input.intentId))).toMatchObject({ state: "settled", awaitingTurn: false });
+    await service.interact(first); await service.interact(second); await service.reconcile(); await service.drain();
+    expect(sdk.sends).toHaveLength(1);
+    await service.dispose(); journal = new ServiceJournal(join(dir, "service.json")); await journal.init();
+    service = new BoardService(store, journal, () => undefined); service.capture(sdk.api);
+    await service.reconcile(); await service.drain();
+    expect(sdk.sends).toHaveLength(1);
+    expect((await store.read("board"))!.interactions.slice(0, 2).map(item => item.status)).toEqual(["applied", "applied"]);
+    expect(journal.get("board/already-applied-1")!.state).toBe("settled");
+  });
+
+  it("reconciles an unsent terminal intent without pretending that it was delivered", async () => {
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status: "running" });
+    await service.interact({ boardId: "board", intentId: "handled", kind: "question", text: "Already answered" }); await service.drain();
+    await service.execute("respond", { boardId: "board", interactionId: "handled", eventId: "answer-now", expectedResponseRevision: 0, response: "Answered during the current turn" }, { agentId: "owner", cwd: dir });
+    await service.reconcile(); await service.reconcile(); await service.drain();
+    expect(journal.get("board/handled")).toMatchObject({ state: "settled", awaitingTurn: false });
+    expect(sdk.sends).toHaveLength(0);
+    expect((await store.read("board"))!.interactions[0].status).toBe("answered");
+  });
+
+  it("forks with frozen selection, PNG and decisions using inherited session settings without a parent", async () => {
     let board = (await store.read("board"))!;
     await store.recordDecision({ boardId: board.id, expectedRevision: board.revision, eventId: "choice", decision: { id: "scope", choice: "Only support current clients", basis: "explicit", rationale: "Initial scope", evidence: [], related: [] } });
     const anchor = { boardRevision: 1, canvasRevision: 1, kind: "region" as const, rect: { x: 50, y: 40, width: 200, height: 150 }, image: { mimeType: "image/png" as const, data: "cG5n" } };
@@ -86,24 +122,165 @@ describe("BoardService SDK adapter", () => {
     expect(sdk.create).toHaveBeenCalledTimes(1);
     const options = sdk.create.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
     expect(options).not.toHaveProperty("parent"); expect(options).toHaveProperty("idempotencyKey", "paseo-board-fork:board:fork-1");
-    expect(options).toHaveProperty("config.options.sandbox_mode", "read-only");
+    expect(options).toHaveProperty("config.modeId", "auto-review");
+    expect(options).toHaveProperty("config.provider", "codex/example-model");
+    expect(options).toHaveProperty("config.thinkingOptionId", "high");
+    expect(options).toHaveProperty("config.featureValues", { service_tier: "priority", plan_mode: false });
+    expect(options).not.toHaveProperty("config.options");
+    expect(options).toHaveProperty("config.systemPrompt", expect.stringContaining("perform it directly"));
+    expect(options).toHaveProperty("config.systemPrompt", expect.not.stringContaining("not authorization to execute"));
+    expect(sdk.sends[0].text).toContain('interactionId="fork-1"');
+    expect(sdk.sends[0].text).toContain("board_respond");
     expect(sdk.sends[0].id).toBe("fork-agent"); expect(sdk.sends[0].options.images).toEqual([{ mimeType: "image/png", data: "cG5n" }]);
     expect(sdk.sends[0].text).toContain('"boardRevision":1'); expect(sdk.sends[0].text).toContain("Only support current clients"); expect(sdk.sends[0].text).not.toContain("cG5n");
     sdk.append("fork-agent", { type: "assistant_message", text: "This default affects compatibility; consider a fallback." }); await service.onTurnEnded("fork-agent");
     board = (await store.read("board"))!; expect(board.interactions[0].status).toBe("answered");
     await service.interact({ boardId: "board", intentId: "reply-1", kind: "reply", sourceInteractionId: "fork-1", text: "Show an alternative" }); await service.drain();
     expect(sdk.sends[1].id).toBe("fork-agent"); expect(sdk.sends[1].text).toContain("consider a fallback");
+    expect((await store.read("board"))!.interactions[1].anchor).toEqual(anchor);
+    expect(sdk.sends[1].text).toContain('interactionId="reply-1"');
     await service.interact({ boardId: "board", intentId: "return-1", kind: "return", sourceInteractionId: "fork-1", text: "Apply the fallback" }); await service.drain();
     expect(sdk.sends[2].id).toBe("owner"); expect(sdk.sends[2].text).toContain("This default affects compatibility");
   });
 
-  it("does not let a discussion fork overwrite the original board, while letting it build a separate free canvas", async () => {
-    await service.interact({ boardId: "board", intentId: "fork-1", kind: "fork", text: "Discuss" }); await service.drain();
-    const actor = { agentId: "fork-agent", cwd: "/tmp/fixture" };
+  it("lets a fork directly patch the shared canvas and keeps its applied receipt through fallback and restart", async () => {
+    await service.interact({ boardId: "board", intentId: "fork-1", kind: "fork", text: "Add an animation here" }); await service.drain();
+    const actor = { agentId: "fork-agent", cwd: dir };
+    const original = (await store.read("board"))!;
+    const input = { boardId: "board", expectedRevision: original.revision, eventId: "fork-patch", ownerAgentId: "owner", patch: { id: "animation", selector: "#target", operation: "append" as const, html: '<canvas id="animation"></canvas>' }, interactionResult: { id: "fork-1", status: "applied" as const, response: "Added the animation directly to this Board.", resultReferences: ["#animation"] } };
+    const updated = await service.execute("publish", input, actor);
+    expect(updated).toMatchObject({ ownerAgentId: "owner", canvas: { revision: original.canvas.revision + 1, patches: [input.patch] }, interactions: [{ id: "fork-1", status: "applied", resultReferences: ["#animation"] }] });
+    expect(sdk.sends).toHaveLength(1); expect(sdk.sends[0].id).toBe("fork-agent");
+    expect(sdk.sends[0].text).toContain("perform it and update this Board without requiring a return");
+    expect(sdk.sends[0].text).toContain("board_publish");
+    sdk.append("fork-agent", { type: "assistant_message", text: "A later generic chat completion" });
+    await service.onTurnEnded("fork-agent");
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "applied", response: input.interactionResult.response });
+    await service.dispose(); journal = new ServiceJournal(join(dir, "service.json")); await journal.init();
+    service = new BoardService(store, journal, () => undefined); service.capture(sdk.api); await service.reconcile(); await service.drain();
+    expect((await store.read("board"))!.interactions[0].status).toBe("applied");
+    const restored = (await store.read("board"))!;
+    expect(await service.execute("publish", { boardId: "board", expectedRevision: restored.revision, eventId: "after-restart", data: { restoredFork: true } }, actor)).toHaveProperty("canvas.data.restoredFork", true);
+  });
+
+  it("allows fork decisions and external updates but keeps ownership and unrelated boards isolated", async () => {
+    await service.interact({ boardId: "board", intentId: "fork-1", kind: "fork", text: "Update this" }); await service.drain();
+    const actor = { agentId: "fork-agent", cwd: dir };
+    const board = (await store.read("board"))!;
+    const decided = await service.execute("decision", { boardId: "board", expectedRevision: board.revision, eventId: "fork-choice", decision: { id: "animation-speed", choice: "Use adjustable playback", basis: "explicit", rationale: "Keep the explanation inspectable", authorAgentId: "owner" } }, actor);
+    expect(decided).toHaveProperty("decisions.0.authorAgentId", "fork-agent");
+    expect(await service.execute("emit", { boardId: "board", eventId: "fork-event", source: "fork-async-shell", summary: "Result ready", data: { result: 42 } }, actor)).toHaveProperty("canvas.data.result", 42);
+    for (const nextOwner of ["fork-agent", "someone-else"]) {
+      await expect(service.execute("publish", { boardId: "board", expectedRevision: (await store.read("board"))!.revision, eventId: `steal-${nextOwner}`, ownerAgentId: nextOwner }, actor)).rejects.toThrow("Only the user");
+    }
+    await store.create({ id: "unrelated", title: "Another Board", ownerAgentId: "owner" });
+    for (const operation of ["read", "publish", "decision", "emit"] as const) {
+      await expect(service.execute(operation, { boardId: "unrelated" }, actor)).rejects.toThrow("does not own");
+    }
+    expect((await store.read("board"))!.ownerAgentId).toBe("owner");
+    expect(await service.execute("create", { id: "fork-owned", title: "Another canvas" }, actor)).toHaveProperty("ownerAgentId", "fork-agent");
+  });
+
+  it("keeps shared edits revision-checked and restricts receipts to their assigned agent", async () => {
+    await service.interact({ boardId: "board", intentId: "fork-1", kind: "fork", text: "Update this" }); await service.drain();
+    await store.addInteraction({ boardId: "board", intentId: "owner-question", kind: "question", text: "For the owner" }, "owner");
+    const actor = { agentId: "fork-agent", cwd: dir };
+    const original = (await store.read("board"))!;
+    await service.execute("publish", { boardId: "board", expectedRevision: original.revision, eventId: "owner-edit", data: { owner: true } }, { agentId: "owner", cwd: dir });
+    await expect(service.execute("publish", { boardId: "board", expectedRevision: original.revision, eventId: "fork-stale", data: { fork: true } }, actor)).rejects.toHaveProperty("code", "revision_conflict");
+    const current = (await store.read("board"))!;
+    await expect(service.execute("decision", { boardId: "board", expectedRevision: original.revision, eventId: "fork-stale-choice", decision: { id: "stale", choice: "Stale choice", basis: "explicit" } }, actor)).rejects.toHaveProperty("code", "revision_conflict");
+    await expect(service.execute("publish", { boardId: "board", expectedRevision: current.revision, eventId: "wrong-receipt", data: { wrong: true }, interactionResult: { id: "owner-question", status: "applied", resultReferences: ["#target"] } }, actor)).rejects.toThrow("assigned");
+    await expect(service.execute("respond", { boardId: "board", interactionId: "owner-question", expectedResponseRevision: 0, eventId: "wrong-response", response: "Impersonated answer" }, actor)).rejects.toThrow("assigned");
+    expect((await store.read("board"))!.revision).toBe(current.revision);
+    expect(await service.execute("publish", { boardId: "board", expectedRevision: current.revision, eventId: "fork-current", data: { fork: true } }, actor)).toHaveProperty("canvas.data", { temperature: 10, owner: true, fork: true });
+  });
+
+  it("does not grant shared mutation rights from an ordinary assigned question", async () => {
+    await store.addInteraction({ boardId: "board", intentId: "legacy-question", kind: "question", text: "Prior assignee" }, "previous-owner");
+    const actor = { agentId: "previous-owner", cwd: dir };
     expect(await service.execute("read", { boardId: "board" }, actor)).toHaveProperty("id", "board");
-    await expect(service.execute("publish", { boardId: "board", expectedRevision: 1, eventId: "bad", html: "bad" }, actor)).rejects.toThrow("does not own");
-    const created = await service.execute("create", { id: "fork-board", title: "Interactive explanation", html: "<canvas></canvas>" }, actor);
-    expect(created).toHaveProperty("ownerAgentId", "fork-agent");
+    await expect(service.execute("publish", { boardId: "board", expectedRevision: (await store.read("board"))!.revision, eventId: "legacy-write", data: { wrong: true } }, actor)).rejects.toThrow("does not own");
+  });
+
+  it("persists assigned visual answers without changing the canvas and rejects cross-interaction writes", async () => {
+    await service.interact({ boardId: "board", intentId: "fork-1", kind: "fork", text: "Explain visually" }); await service.drain();
+    const actor = { agentId: "fork-agent", cwd: dir };
+    const original = (await store.read("board"))!.canvas;
+    const htmlFile = join(dir, "reply.html"); await writeFile(htmlFile, '<button id="play">Play</button><script>window.replyRuns=1</script>');
+    const input = { boardId: "board", interactionId: "fork-1", eventId: "answer-1", expectedResponseRevision: 0, response: "A visual explanation", htmlFile, data: { speed: 1 } };
+    const response = await service.execute("respond", input, actor);
+    expect(response).toMatchObject({ id: "fork-1", status: "answered", responseSource: "explicit", responseRevision: 1, responseCanvas: { revision: 1, documentVersion: 1, data: { speed: 1 } } });
+    expect((await store.read("board"))!.canvas).toEqual(original);
+    expect(await service.execute("respond", input, actor)).toEqual(response);
+    await expect(service.execute("respond", { ...input, eventId: "stale-answer" }, actor)).rejects.toHaveProperty("code", "revision_conflict");
+    await expect(service.execute("respond", { ...input, eventId: "foreign-answer" }, { agentId: "other", cwd: dir })).rejects.toThrow("assigned");
+    await expect(service.execute("respond", { ...input, eventId: "owner-answer" }, { agentId: "owner", cwd: dir })).rejects.toThrow("assigned");
+    await expect(service.execute("publish", { boardId: "board", expectedRevision: (await store.read("board"))!.revision, eventId: "owner-overwrite", interactionResult: { id: "fork-1", status: "processing", response: "Replace fork answer" } }, { agentId: "owner", cwd: dir })).rejects.toThrow("assigned");
+    const updated = await service.execute("respond", { boardId: "board", interactionId: "fork-1", eventId: "answer-data", expectedResponseRevision: 1, response: "A faster explanation", data: { speed: 2 } }, actor);
+    expect(updated).toMatchObject({ responseRevision: 2, responseCanvas: { revision: 2, documentVersion: 1, html: expect.stringContaining("replyRuns"), data: { speed: 2 } } });
+    sdk.append("fork-agent", { type: "assistant_message", text: "Chat fallback must not replace the explicit answer." });
+    await service.onTurnEnded("fork-agent");
+    await service.dispose(); journal = new ServiceJournal(join(dir, "service.json")); await journal.init();
+    service = new BoardService(store, journal, () => undefined); service.capture(sdk.api); await service.reconcile(); await service.drain();
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "answered", response: "A faster explanation", responseRevision: 2 });
+  });
+
+  it("lets the assigned owner answer a question with an independent visual response", async () => {
+    await service.interact({ boardId: "board", intentId: "question", kind: "question", text: "Explain" }); await service.drain();
+    const response = await service.execute("respond", { boardId: "board", interactionId: "question", eventId: "owner-response", expectedResponseRevision: 0, response: "Explanation", html: "<canvas></canvas>" }, { agentId: "owner", cwd: dir });
+    expect(response).toHaveProperty("status", "answered");
+    expect((await store.read("board"))!.canvas.html).toContain("Existing visualization");
+  });
+
+  it("preserves an explicit working response and reports a missing final submission when the turn ends", async () => {
+    await service.interact({ boardId: "board", intentId: "fork", kind: "fork", text: "Explain" }); await service.drain();
+    await service.execute("respond", { boardId: "board", interactionId: "fork", eventId: "working", expectedResponseRevision: 0, status: "processing", response: "Constructing the animation" }, { agentId: "fork-agent", cwd: dir });
+    sdk.append("fork-agent", { type: "assistant_message", text: "Unstructured commentary." }); await service.onTurnEnded("fork-agent");
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "failed", response: "Constructing the animation", responseSource: "explicit", error: expect.stringContaining("尚未提交最终回答") });
+  });
+
+  it("keeps an owner's published async work processing after its current turn ends", async () => {
+    await service.interact({ boardId: "board", intentId: "async", kind: "question", text: "Run and explain later" }); await service.drain();
+    const board = (await store.read("board"))!;
+    await service.execute("publish", { boardId: "board", expectedRevision: board.revision, eventId: "async-working", interactionResult: { id: "async", status: "processing", response: "Waiting for async-shell" } }, { agentId: "owner", cwd: dir });
+    await service.onTurnEnded("owner");
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "processing", responseMethod: "publish", response: "Waiting for async-shell" });
+  });
+
+  it.each(["failed", "canceled"] as const)("preserves explicit partial content when the discussion turn is %s", async outcome => {
+    await service.interact({ boardId: "board", intentId: "partial", kind: "fork", text: "Explain" }); await service.drain();
+    await service.execute("respond", { boardId: "board", interactionId: "partial", eventId: "partial-working", expectedResponseRevision: 0, status: "processing", response: "Partial explanation", html: "<p>Partial visual</p>" }, { agentId: "fork-agent", cwd: dir });
+    await service.onTurnEnded("fork-agent", outcome);
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "failed", response: "Partial explanation", responseCanvas: { html: "<p>Partial visual</p>" }, error: expect.any(String) });
+  });
+
+  it("uses streamed turn outcome events even if the lifecycle hook is missed", async () => {
+    await service.interact({ boardId: "board", intentId: "event", kind: "fork", text: "Explain" }); await service.drain();
+    sdk.append("fork-agent", { type: "assistant_message", text: "The completed answer" });
+    const ended = vi.spyOn(service, "onTurnEnded");
+    sdk.subscribers.get("fork-agent")!({ event: { type: "turn_completed", provider: "codex", turnId: "event-turn" } });
+    expect(ended).toHaveBeenCalledWith("fork-agent", "completed", "event-turn");
+    await ended.mock.results[0].value;
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "answered", response: "The completed answer" });
+  });
+
+  it("retains late final text when completion races a canonical history update", async () => {
+    await service.interact({ boardId: "board", intentId: "late", kind: "question", text: "Explain" }); await service.drain();
+    sdk.append("owner", { type: "assistant_message", text: "Initial" }); await service.onTurnEnded("owner");
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "answered", response: "Initial" });
+    const entry = sdk.histories.get("owner")!.at(-1)!; entry.item = { type: "assistant_message", text: "Initial, now complete." }; entry.seqEnd++;
+    await service.syncHistory("owner");
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "answered", response: "Initial, now complete." });
+  });
+
+  it("recovers an answer arriving after the turn-end event without leaving a permanent pending marker", async () => {
+    await service.interact({ boardId: "board", intentId: "late-empty", kind: "question", text: "Explain" }); await service.drain();
+    await service.onTurnEnded("owner");
+    expect((await store.read("board"))!.interactions[0].status).toBe("failed");
+    sdk.append("owner", { type: "assistant_message", text: "Canonical final arrived late." }); await service.syncHistory("owner");
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "answered", response: "Canonical final arrived late." });
+    expect((await store.read("board"))!.interactions[0].error).toBeUndefined();
   });
 
   it("preserves an unknown send result and reconciles only actual matching message evidence", async () => {
