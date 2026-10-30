@@ -16,7 +16,7 @@ export type FrameMessage = FrameScope & (
   | { type: "ready" }
   | { type: "anchor"; anchor: Anchor; selectionId?: string }
   | { type: "selection-lock"; id: string; active: boolean; dragging?: boolean }
-  | { type: "compose"; selectionId: string; request: ComposeRequest }
+  | { type: "compose"; selectionId: string; automatic?: boolean; request: ComposeRequest }
   | { type: "open-interaction"; id: string; position: FramePosition }
   | { type: "interaction-position"; id: string; position: FramePosition }
   | { type: "ask"; id: string; request: AskRequest }
@@ -64,6 +64,7 @@ export function readFrameMessage(value: unknown, scope: Pick<FrameScope, "boardI
       const request = value.request;
       if (!short(value.selectionId, 160) || !record(request) || !["question", "change", "fork"].includes(request.kind as string) || !validAnchor(request.anchor)) return null;
       if (request.position !== undefined && !position(request.position)) return null;
+      if (value.automatic !== undefined && typeof value.automatic !== "boolean") return null;
       break;
     }
     case "open-interaction": case "interaction-position":

@@ -69,7 +69,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   if (localState.current?.boardId === props.boardId && JSON.stringify(localState.current.state) === JSON.stringify(props.userState)) localState.current.dirty = false;
   const effectiveState = () => localState.current?.boardId === latest.current.boardId && localState.current.dirty ? localState.current.state : latest.current.userState;
   const document = useRef<ReturnType<typeof documentFor> | null>(null);
-  const interactionLock = useRef<{ boardId: string; sessionId: string; id: string; dragging: boolean } | null>(null);
+  const interactionLock = useRef<{ boardId: string; sessionId: string; id: string; dragging: boolean; anchor?: Anchor } | null>(null);
   const [, redraw] = useState(0);
   if (interactionLock.current?.boardId !== props.boardId) interactionLock.current = null;
   const ready = useRef(false);
@@ -86,6 +86,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
     if (!canRenderFrames || !browser.window) return;
     const waiting = new Set<string>();
     const cancelledSelections = new Set<string>();
+    const composedSelections = new Set<string>();
     let disposed = false;
     let lastLink = 0;
     const sync = () => {
@@ -124,13 +125,24 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
           // The picture can take seconds to encode; user activation may have expired, but a
           // local selection must still own its lease. Legacy anchors without a lease require
           // an explicit host selection mode; cancelling a lease rejects late captures at once.
-          if ((message.selectionId !== undefined ? message.selectionId === interactionLock.current?.id : current.selectionMode !== "off") && message.anchor.boardRevision <= current.boardRevision && message.anchor.canvasRevision <= current.canvas.revision) current.onAnchor(message.anchor);
+          if ((message.selectionId !== undefined ? message.selectionId === interactionLock.current?.id : current.selectionMode !== "off") && message.anchor.boardRevision <= current.boardRevision && message.anchor.canvasRevision <= current.canvas.revision) {
+            if (interactionLock.current) interactionLock.current.anchor = message.anchor;
+            current.onAnchor(message.anchor);
+          }
           break;
-        case "compose":
-          // This only opens a host-owned blank composer. It cannot send a message or invoke SDK
-          // methods, and needs a fresh click/key activation after the capture/menu has appeared.
-          if (userActing() && message.selectionId === interactionLock.current?.id && message.request.anchor.boardRevision <= current.boardRevision && message.request.anchor.canvasRevision <= current.canvas.revision) current.onCompose?.(message.request);
+        case "compose": {
+          // A completed trusted selection opens one blank composer. A slow screenshot may
+          // outlive transient activation, but it must retain the lease and exact frozen anchor.
+          // This cannot send a message; the user still submits through the host input.
+          const lock = interactionLock.current;
+          const key = document.current.sessionId + ":" + message.selectionId;
+          const automatic = message.automatic === true && browser.document?.activeElement === frame.current && lock?.dragging === false && lock.anchor && JSON.stringify(lock.anchor) === JSON.stringify(message.request.anchor);
+          if ((userActing() || automatic) && message.selectionId === lock?.id && !composedSelections.has(key) && message.request.anchor.boardRevision <= current.boardRevision && message.request.anchor.canvasRevision <= current.canvas.revision) {
+            composedSelections.add(key);
+            current.onCompose?.(message.request);
+          }
           break;
+        }
         case "open-interaction":
           if (userActing() && interactionMarkers(current.interactions || []).some(item => item.id === message.id)) current.onOpenInteraction?.(message.id, message.position);
           break;
