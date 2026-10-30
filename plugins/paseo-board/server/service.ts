@@ -315,7 +315,9 @@ export class BoardService {
       this.agentClaims.add(claimedAgent);
       const target = paseo.agents.ref(delivery.targetAgentId);
       const fresh = await target.refresh();
-      if (!fresh || fresh.agent.archivedAt || fresh.agent.status === "closed") throw new Error("目标 agent 已停止或归档，请重新绑定负责人。");
+      // Closed is a nonresident provider session, not a deleted agent. SDK send()
+      // resumes the persisted session; only missing/archived targets require rebinding.
+      if (!fresh || fresh.agent.archivedAt) throw new Error("目标 agent 不存在或已归档，请重新绑定负责人。");
       if (isBusy(fresh.agent)) return; // Durable queue; lifecycle or bounded timer retries when idle.
       await this.watch(delivery.targetAgentId);
       board = await this.requireBoard(delivery.boardId);

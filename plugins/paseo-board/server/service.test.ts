@@ -91,6 +91,50 @@ describe("BoardService SDK adapter", () => {
     expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "answered", response: "The curve shows the observed data.", resultReferences: [] });
   });
 
+  it("sends a closed unarchived owner through the SDK so its persisted session can resume", async () => {
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status: "closed" });
+    const input = { boardId: "board", intentId: "resume-owner", kind: "question" as const, destination: "main" as const, text: "Continue this Board discussion" };
+    await service.interact(input); await service.drain();
+    expect(sdk.send).toHaveBeenCalledTimes(1);
+    expect(sdk.sends[0]).toMatchObject({ id: "owner", options: { messageId: "paseo-board:board:resume-owner", activeTurnBehavior: "steer" } });
+    expect(sdk.sends[0].text).toContain("Continue this Board discussion");
+    expect(sdk.create).not.toHaveBeenCalled();
+    expect((await store.read("board"))!).toMatchObject({ ownerAgentId: "owner", interactions: [{ id: "resume-owner", status: "delivered", agentId: "owner" }] });
+    await service.interact(input); await service.drain();
+    expect(sdk.send).toHaveBeenCalledTimes(1);
+    sdk.append("owner", { type: "assistant_message", text: "The resumed session answered." });
+    await service.onTurnEnded("owner");
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "answered", response: "The resumed session answered." });
+  });
+
+  it.each(["idle", "closed"] as const)("does not send to an archived owner even when its status is %s", async (status) => {
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status, archivedAt: new Date().toISOString() });
+    await service.interact({ boardId: "board", intentId: "archived-owner", kind: "question", text: "Do not restore an archived owner" }); await service.drain();
+    expect(sdk.send).not.toHaveBeenCalled(); expect(sdk.create).not.toHaveBeenCalled();
+    expect(journal.get("board/archived-owner")).toMatchObject({ state: "failed" });
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "failed", error: expect.stringContaining("归档") });
+  });
+
+  it("does not send to a missing owner or silently create its replacement", async () => {
+    sdk.snapshots.delete("owner");
+    await service.interact({ boardId: "board", intentId: "missing-owner", kind: "question", text: "Keep the original target" }); await service.drain();
+    expect(sdk.send).not.toHaveBeenCalled(); expect(sdk.create).not.toHaveBeenCalled();
+    expect((await store.read("board"))!).toMatchObject({ ownerAgentId: "owner", interactions: [{ status: "failed", agentId: "owner" }] });
+  });
+
+  it("retains a closed owner's SDK resume failure without claiming delivery or blindly resending", async () => {
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status: "closed" });
+    sdk.send.mockRejectedValueOnce(new Error("Provider could not resume the persisted session"));
+    const input = { boardId: "board", intentId: "resume-failed", kind: "question" as const, text: "Try the original owner" };
+    await service.interact(input); await service.drain();
+    expect(sdk.send).toHaveBeenCalledTimes(1);
+    expect(journal.get("board/resume-failed")).toMatchObject({ state: "unknown" });
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "failed", error: expect.stringContaining("Provider could not resume") });
+    await service.interact(input); await service.reconcile(); await service.drain();
+    expect(sdk.send).toHaveBeenCalledTimes(1); expect(sdk.create).not.toHaveBeenCalled();
+    expect((await store.read("board"))!.interactions[0].status).toBe("failed");
+  });
+
   it("queues an intent while the owner is busy and delivers after the owning turn ends", async () => {
     sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status: "running" });
     await service.interact({ boardId: "board", intentId: "change-1", kind: "change", text: "Add an animation here" }); await service.drain();
