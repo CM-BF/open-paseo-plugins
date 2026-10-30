@@ -193,7 +193,8 @@ export class BoardService {
     if (!paseo || !delivery || this.stopped || !["saved", "creating"].includes(delivery.state)) return;
     let board = await this.requireBoard(delivery.boardId);
     const interaction = board.interactions.find((item) => item.id === delivery.interactionId);
-    if (!interaction || terminal.has(interaction.status)) return;
+    if (!interaction) return;
+    if (terminal.has(interaction.status)) { await this.journal.settleUnsent(key); return; }
     if (board.ownerAgentId !== delivery.ownerAgentId) { await this.fail(delivery, "负责人已变更，旧请求未自动发给其他 agent。"); return; }
     let claimedAgent: string | undefined;
     try {
@@ -235,6 +236,7 @@ export class BoardService {
       await this.watch(delivery.targetAgentId);
       board = await this.requireBoard(delivery.boardId);
       if (this.stopped || board.ownerAgentId !== delivery.ownerAgentId) return;
+      if (board.interactions.some(item => item.id === interaction.id && terminal.has(item.status))) { await this.journal.settleUnsent(key); return; }
       delivery.state = "sending";
       delivery.awaitingTurn = true;
       await this.journal.put(delivery);
@@ -478,6 +480,10 @@ export class BoardService {
       if (!interaction && delivery.input) {
         interaction = await this.store.addInteraction(delivery.input, delivery.targetAgentId);
         board = await this.requireBoard(delivery.boardId);
+      }
+      if (interaction && terminal.has(interaction.status) && ["saved", "creating"].includes(delivery.state)) {
+        await this.journal.settleUnsent(deliveryKey(delivery.boardId, delivery.interactionId));
+        continue;
       }
       if (delivery.outcome) await this.applyOutcome(delivery);
       if (delivery.targetAgentId && delivery.state !== "failed" && interaction && !terminal.has(interaction.status)) wanted.add(delivery.targetAgentId);

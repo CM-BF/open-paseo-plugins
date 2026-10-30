@@ -78,6 +78,42 @@ describe("BoardService SDK adapter", () => {
     expect((await store.read("board"))!.interactions[0].status).toBe("processing");
   });
 
+  it("settles unsent intents already applied in the owner's current turn and releases the FIFO queue", async () => {
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status: "running" });
+    const first = { boardId: "board", intentId: "already-applied-1", kind: "change" as const, text: "Close on outside click" };
+    const second = { ...first, intentId: "already-applied-2", text: "Animate while processing" };
+    await service.interact(first); await service.interact(second); await service.drain();
+    for (const input of [first, second]) {
+      const board = (await store.read("board"))!;
+      await service.execute("publish", { boardId: "board", expectedRevision: board.revision, eventId: `apply-${input.intentId}`, interactionResult: { id: input.intentId, status: "applied", response: "Implemented during the current turn", resultReferences: ["#target"] } }, { agentId: "owner", cwd: dir });
+      expect(journal.get(deliveryKey("board", input.intentId))!.state).toBe("saved");
+    }
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status: "idle" });
+    await service.interact({ ...first, intentId: "next", text: "The next actual request" });
+    await service.drain();
+    expect(sdk.sends).toHaveLength(1);
+    expect(sdk.sends[0].text).toContain("intent=next]");
+    for (const input of [first, second]) expect(journal.get(deliveryKey("board", input.intentId))).toMatchObject({ state: "settled", awaitingTurn: false });
+    await service.interact(first); await service.interact(second); await service.reconcile(); await service.drain();
+    expect(sdk.sends).toHaveLength(1);
+    await service.dispose(); journal = new ServiceJournal(join(dir, "service.json")); await journal.init();
+    service = new BoardService(store, journal, () => undefined); service.capture(sdk.api);
+    await service.reconcile(); await service.drain();
+    expect(sdk.sends).toHaveLength(1);
+    expect((await store.read("board"))!.interactions.slice(0, 2).map(item => item.status)).toEqual(["applied", "applied"]);
+    expect(journal.get("board/already-applied-1")!.state).toBe("settled");
+  });
+
+  it("reconciles an unsent terminal intent without pretending that it was delivered", async () => {
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status: "running" });
+    await service.interact({ boardId: "board", intentId: "handled", kind: "question", text: "Already answered" }); await service.drain();
+    await service.execute("respond", { boardId: "board", interactionId: "handled", eventId: "answer-now", expectedResponseRevision: 0, response: "Answered during the current turn" }, { agentId: "owner", cwd: dir });
+    await service.reconcile(); await service.reconcile(); await service.drain();
+    expect(journal.get("board/handled")).toMatchObject({ state: "settled", awaitingTurn: false });
+    expect(sdk.sends).toHaveLength(0);
+    expect((await store.read("board"))!.interactions[0].status).toBe("answered");
+  });
+
   it("forks with frozen selection, PNG and decisions using inherited session settings without a parent", async () => {
     let board = (await store.read("board"))!;
     await store.recordDecision({ boardId: board.id, expectedRevision: board.revision, eventId: "choice", decision: { id: "scope", choice: "Only support current clients", basis: "explicit", rationale: "Initial scope", evidence: [], related: [] } });
