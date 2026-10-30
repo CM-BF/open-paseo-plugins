@@ -8,12 +8,12 @@ import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, type AskRequest, t
 type FrameWindow = { postMessage(message: unknown, origin: string): void };
 type Frame = { contentWindow: FrameWindow | null };
 type MessageEvent = { source: unknown; data: unknown };
-type OuterPointerEvent = { isTrusted: boolean };
+type OuterPointerEvent = { isTrusted: boolean; target?: { closest?(selector: string): unknown } };
 type BrowserWindow = {
   addEventListener(name: "message", fn: (event: MessageEvent) => void): void;
   removeEventListener(name: "message", fn: (event: MessageEvent) => void): void;
-  addEventListener(name: "pointerup" | "pointercancel", fn: (event: OuterPointerEvent) => void, capture: boolean): void;
-  removeEventListener(name: "pointerup" | "pointercancel", fn: (event: OuterPointerEvent) => void, capture: boolean): void;
+  addEventListener(name: "pointerdown" | "pointerup" | "pointercancel", fn: (event: OuterPointerEvent) => void, capture: boolean): void;
+  removeEventListener(name: "pointerdown" | "pointerup" | "pointercancel", fn: (event: OuterPointerEvent) => void, capture: boolean): void;
 };
 const browser = globalThis as unknown as {
   window?: BrowserWindow;
@@ -223,6 +223,20 @@ export interface WebMessageInputProps {
   disabled?: boolean;
   placeholder?: string;
   style?: Record<string, unknown>;
+}
+
+/** Host clicks outside the floating conversation dismiss it; iframe clicks arrive via the bridge. */
+export function usePopoverDismiss(active: boolean, onDismiss: () => void): void {
+  const latest = useRef(onDismiss);
+  latest.current = onDismiss;
+  useEffect(() => {
+    if (!active || !canRenderFrames || !browser.window) return;
+    const dismiss = (event: OuterPointerEvent) => {
+      if (event.isTrusted && !event.target?.closest?.('[data-testid="board-local-popover"]')) latest.current();
+    };
+    browser.window.addEventListener("pointerdown", dismiss, true);
+    return () => browser.window?.removeEventListener("pointerdown", dismiss, true);
+  }, [active]);
 }
 
 /** Native DOM composition events preserve IME confirmation; RNW onKeyPress drops that detail. */

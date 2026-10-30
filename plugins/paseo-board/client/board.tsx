@@ -6,7 +6,7 @@ import { Markdown, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/
 import { interactBoardRpc, recordDecisionRpc, saveStateRpc, type Anchor, type Board, type Decision, type Interaction, type JsonData } from "../shared/contracts";
 import type { AskRequest, AskResult, ComposeRequest, FrameTheme, SelectionMode } from "../shared/frame-contract";
 import { frameThemeFromColors } from "../shared/frame-theme";
-import { CanvasFrame, WebMessageInput, canRenderFrames } from "./web";
+import { CanvasFrame, WebMessageInput, canRenderFrames, usePopoverDismiss } from "./web";
 import { Action, ColorContext, Copy, Notice, errorMessage, localId, timeLabel, useColors } from "./ui";
 import { useBoard } from "./data";
 import { createStateWriter } from "./state-writer";
@@ -127,6 +127,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation }: Props) {
     setSelectedInteractionId(interactionRoot(id, interactions)); setPopoverPoint(position ?? anchorPoint(item.anchor)); setDrawer(null); setMessage(null);
   };
   const closePopover = () => { if (!pending.current) { cancelCompose(); setSelectedInteractionId(undefined); } };
+  usePopoverDismiss(Boolean(compose || selectedInteractionId), closePopover);
   const updateDecision = async (decision: Decision, status: "questioned" | "dismissed") => {
     if (!board) return;
     try { query.accept(await record({ boardId, expectedRevision: board.revision, eventId: localId("decision"), decision: { ...decision, status } })); }
@@ -157,7 +158,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation }: Props) {
       {canRenderFrames ? <CanvasFrame boardId={board.id} title={board.title} canvas={board.canvas} boardRevision={board.revision} userState={board.userState} theme={frameTheme} height={height} selectionMode={selectionMode} selectionClearToken={selectionClearToken} interactions={interactions} selectedInteractionId={selectedInteractionId} onOpenInteraction={openInteraction} onInteractionPosition={(id, point) => { if (id === selectedInteractionId && !composeRef.current) setPopoverPoint(point); }} onAnchor={onAnchor} onAsk={onAsk} onCompose={onCompose} onState={onState} onError={error => setFrameError(`${error.message}${error.patchId ? `（${error.patchId}）` : ""}`)} onSelectionEnd={() => setSelectionMode("off")} onSelectionClear={() => { setAnchor(undefined); setSelectionMode("off"); }} onOpenLink={url => { void openExternalUrl(url).catch(e => setMessage(errorMessage(e))); }} /> : <ScrollView contentContainerStyle={{ padding: 24, gap: 16 }}><Notice text="手机兼容视图。完整的自由画布、动画和页面交互在桌面版使用；这里可以查看摘要、决策并与 agent 交流。" /><Markdown>{typeof board.canvas.data.summary === "string" ? board.canvas.data.summary : "Agent 尚未提供文字摘要。你可以直接提问，回复会出现在讨论里。"}</Markdown></ScrollView>}
       {query.error || frameError || (message && !compose && !selectedInteractionId) ? <View style={{ position: "absolute", left: 8, right: 8, top: 8 }}><Notice error text={query.error ? "连接暂时中断。当前是上次收到的内容，尚未确认最新状态。" : frameError || message || ""} /></View> : null}
       {compose || selectedInteractionId ? <View testID="board-local-popover" accessibilityLabel="原位交流" onLayout={event => setPopoverHeight(event.nativeEvent.layout.height)} style={{ position: "absolute", ...popover, borderWidth: 1, borderColor: c.border, borderRadius: 12, backgroundColor: c.surface0, overflow: "hidden", shadowColor: "#000", shadowOpacity: 0.22, shadowRadius: 16, shadowOffset: { width: 0, height: 5 }, elevation: 10 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", padding: 8, gap: 8, borderBottomWidth: 1, borderColor: c.border }}><Text style={{ color: c.foreground, fontWeight: "600", flex: 1 }}>{compose ? compose.kind === "reply" ? "继续这个 Fork" : "发给 agent" : "这里的讨论"}</Text><Action label="关闭" disabled={sending} onPress={closePopover} /></View>
+        <View style={{ flexDirection: "row", alignItems: "center", padding: 8, gap: 8, borderBottomWidth: 1, borderColor: c.border }}><Text style={{ color: c.foreground, fontWeight: "600", flex: 1 }}>{compose ? compose.kind === "reply" ? "继续这个 Fork" : "发给 agent" : "这里的讨论"}</Text>{!canRenderFrames ? <Action label="关闭" disabled={sending} onPress={closePopover} /> : null}</View>
         <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ padding: 12, gap: 16 }} keyboardShouldPersistTaps="handled">
           {thread.map(item => <InteractionContent key={item.id} item={item} board={board} frameTheme={frameTheme} unconfirmed={!board.interactions.some(saved => saved.id === item.id)} onRetry={() => retryUnconfirmed(item)} onFollow={(kind, text, resolve) => openCompose(kind, item, text, resolve)} onOpenAgent={() => { if (item.agentId && navigation) navigation.openAgent({ agentId: item.agentId }); }} />)}
           {compose ? <View style={{ gap: 10 }}>
