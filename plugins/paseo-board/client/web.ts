@@ -37,6 +37,7 @@ export interface CanvasFrameProps extends FrameSnapshot {
   onAnchor(anchor: Anchor): void;
   onAsk(request: AskRequest): Promise<AskResult>;
   onCompose?(request: ComposeRequest): void;
+  onCanvasPointer?(): void;
   onOpenInteraction?(id: string, position: FramePosition): void;
   onInteractionPosition?(id: string, position: FramePosition): void;
   onState(state: JsonData): void;
@@ -103,6 +104,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
       const current = latest.current;
       switch (message.type) {
         case "ready": ready.current = true; sync(); current.onReady?.(); break;
+        case "canvas-pointer": if (userActing()) current.onCanvasPointer?.(); break;
         case "error": current.onError(message.error); break;
         case "selection-end": current.onSelectionEnd?.(); break;
         case "selection-clear": current.onSelectionClear?.(); break;

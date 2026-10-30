@@ -197,6 +197,12 @@ try {
   const explicitText = await composeAfter(() => drag({x:words.x+1,y:words.y+10},{x:words.x+170,y:words.y+10}));
   assert.equal(explicitText.anchor.kind, 'text');
   await frame('getSelection().removeAllRanges()');
+  const doubleText = await composeAfter(async () => {
+    await command('Input.dispatchMouseEvent',{type:'mousePressed',x:words.x+80,y:words.y+10,button:'left',clickCount:2});
+    await command('Input.dispatchMouseEvent',{type:'mouseReleased',x:words.x+80,y:words.y+10,button:'left',clickCount:2});
+  });
+  assert.equal(doubleText.anchor.kind, 'text'); assert.ok(doubleText.anchor.text.trim());
+  await frame('getSelection().removeAllRanges()');
   check('ordinary native text selection and explicit text mode open pointer-local input on mouse release');
 
   await update("{selectionMode:'point'}");
@@ -330,14 +336,22 @@ try {
   const beforeMarkerReady = await evaluate('results.ready');
   await update(`{interactions:[${JSON.stringify(markerQuestion)}]}`);
   await untilFrame("document.querySelector('[data-board-markers]')?.shadowRoot.querySelector('[data-board-interaction=spatial-question]')?.dataset.status==='sending'");
+  assert.equal(await frame("getComputedStyle(document.querySelector('[data-board-markers]').shadowRoot.querySelector('button'),'::before').animationName"), 'board-halo');
+  await command('Emulation.setEmulatedMedia', { features: [{name:'prefers-reduced-motion',value:'reduce'}] });
+  await untilFrame("matchMedia('(prefers-reduced-motion: reduce)').matches");
+  assert.equal(await frame("getComputedStyle(document.querySelector('[data-board-markers]').shadowRoot.querySelector('button'),'::before').animationName"), 'none');
+  await command('Emulation.setEmulatedMedia', { features: [] });
+  await untilFrame("!matchMedia('(prefers-reduced-motion: reduce)').matches");
   assert.equal(await frame("document.querySelector('#field').value"), 'marker update preserves draft');
   assert.equal(await evaluate('results.ready'), beforeMarkerReady);
   assert.ok(await frame('ticks') > markerTicks);
   const markerBounds = await location('[data-board-interaction=spatial-question]');
   assert.equal(markerBounds.x, markerAnchor.rect.x);
   assert.equal(markerBounds.y, markerAnchor.rect.y);
+  const markerPointerCount = await evaluate('results.canvasPointers');
   await click('[data-board-interaction=spatial-question]');
   await until('results.openedInteractions.length===1');
+  assert.equal(await evaluate('results.canvasPointers'), markerPointerCount);
   assert.deepEqual(await evaluate('results.openedInteractions[0]'), { id: 'spatial-question', position: { x: markerAnchor.rect.x, y: markerAnchor.rect.y } });
   await frame("document.querySelector('[data-board-markers]').shadowRoot.querySelector('button').click()");
   await settleFrame();
@@ -366,6 +380,7 @@ try {
   await evaluate('reconnect()');
   await until(`results.ready===${beforeMarkerReady + 1}`);
   await untilFrame("document.querySelector('[data-board-markers]')?.shadowRoot.querySelector('button')?.dataset.status==='answered'");
+  assert.equal(await frame("getComputedStyle(document.querySelector('[data-board-markers]').shadowRoot.querySelector('button'),'::before').animationName"), 'none');
   assert.equal(await frame("document.querySelector('[data-board-markers]').shadowRoot.querySelectorAll('button').length"), 1);
   assert.equal(await frame("document.querySelector('[data-board-markers]').shadowRoot.querySelector('button').dataset.stale"), 'true');
   check('markers follow document scrolling, completed replies survive remount, and changed canvas revisions explicitly retain the old location');
@@ -389,6 +404,20 @@ try {
   await click('#increment');
   assert.equal(await frame('count'), 1);
   check('markers stay out of reference screenshots, reject forged scope and synthetic clicks, and leave canvas controls usable');
+
+  const outsidePointers = await evaluate('results.canvasPointers');
+  const outsideControlCount = await frame('count');
+  await click('#increment');
+  await until(`results.canvasPointers===${outsidePointers+1}`);
+  assert.equal(await frame('count'), outsideControlCount+1);
+  await frame("document.querySelector('#target').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,pointerId:32}))");
+  await settleFrame();
+  assert.equal(await evaluate('results.canvasPointers'),outsidePointers+1);
+  await frame('new Promise(resolve=>{const check=()=>navigator.userActivation.isActive?setTimeout(check,20):resolve();check()})');
+  await evaluate("(()=>{const scope=results.raw.filter(m=>m.type==='ready').at(-1);fixtureCall(`parent.postMessage(${JSON.stringify({...scope,type:'canvas-pointer'})},'*')`)})()");
+  await settleFrame();
+  assert.equal(await evaluate('results.canvasPointers'),outsidePointers+1);
+  check('trusted canvas pointer events can dismiss host input without blocking controls; markers, synthetic pointers and idle bridge messages cannot dismiss it');
 
   await composeAfter(() => rightClick('#target'));
   const composePosition = await evaluate('results.composes.at(-1).position');

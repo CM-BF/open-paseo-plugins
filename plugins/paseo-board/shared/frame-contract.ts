@@ -14,6 +14,7 @@ export interface FrameScope { channel: typeof FRAME_CHANNEL; boardId: string; se
 export interface FrameSnapshot { canvas: Canvas; boardRevision: number; userState: JsonData; theme: FrameTheme }
 export type FrameMessage = FrameScope & (
   | { type: "ready" }
+  | { type: "canvas-pointer" }
   | { type: "anchor"; anchor: Anchor; selectionId?: string }
   | { type: "selection-lock"; id: string; active: boolean; dragging?: boolean }
   | { type: "compose"; selectionId: string; automatic?: boolean; request: ComposeRequest }
@@ -57,7 +58,7 @@ export function interactionMarkers(interactions: readonly Interaction[]): Intera
 export function readFrameMessage(value: unknown, scope: Pick<FrameScope, "boardId" | "sessionId">): FrameMessage | null {
   if (!record(value) || value.channel !== FRAME_CHANNEL || value.boardId !== scope.boardId || value.sessionId !== scope.sessionId) return null;
   switch (value.type) {
-    case "ready": case "selection-end": case "selection-clear": break;
+    case "ready": case "canvas-pointer": case "selection-end": case "selection-clear": break;
     case "anchor": if (!validAnchor(value.anchor) || (value.selectionId !== undefined && !short(value.selectionId, 160))) return null; break;
     case "selection-lock": if (!short(value.id, 160) || typeof value.active !== "boolean" || (value.dragging !== undefined && typeof value.dragging !== "boolean")) return null; break;
     case "compose": {

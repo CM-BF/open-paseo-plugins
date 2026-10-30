@@ -31,7 +31,7 @@ document.querySelector('#save').onclick=()=>board.saveState({field:document.quer
 document.querySelector('#paint').getContext('2d').fillRect(0,0,180,100);document.querySelector('#form').onsubmit=e=>{e.preventDefault();window.submits=(window.submits||0)+1};
 window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channel==='fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'fixture-result',id:e.data.id,error:error.message},'*')}}});
 </script>`;
-host.results = { asks: [], composes: [], hostAsks: [], anchors: [], errors: [], states: [], links: [], ready: 0, raw: [], openedInteractions: [], interactionPositions: [], inputSubmits: [], inputCloses: 0 };
+host.results = { asks: [], composes: [], hostAsks: [], anchors: [], errors: [], states: [], links: [], ready: 0, raw: [], openedInteractions: [], interactionPositions: [], inputSubmits: [], inputCloses: 0, canvasPointers: 0 };
 let requestId = 0;
 const pending = new Map();
 let saveTimer: ReturnType<typeof setTimeout>;
@@ -61,6 +61,7 @@ function App() {
   return createElement(Fragment, null, createElement(CanvasFrame, { ...props, key: mount,
     onAsk: async (request: any) => { host.results.asks.push(request); return { status: "submitted" as const, outcome: "saved" }; },
     onCompose: (request: any) => { host.results.composes.push(request); setProps((p) => ({ ...p, selectionMode: "off" })); },
+    onCanvasPointer: () => host.results.canvasPointers++,
     onOpenInteraction: (id, position) => { host.results.openedInteractions.push({ id, position }); setProps(p => ({ ...p, selectedInteractionId: id })); },
     onInteractionPosition: (id, position) => host.results.interactionPositions.push({ id, position }),
     onAnchor: (anchor) => { host.results.anchors.push(anchor); setSelectedAnchor(anchor); },

@@ -220,6 +220,7 @@ function (initial) {
       button.style.top = top + "px";
       button.dataset.stale = String(stale);
       button.dataset.status = item.marker.status;
+      button.dataset.active = String(["saved", "sending", "delivered", "processing"].includes(item.marker.status));
       button.setAttribute("aria-pressed", String(item.marker.id === selectedMarkerId));
       const status = markerLabels[item.marker.status] || "已提交";
       button.textContent = `${item.marker.number} · ${status}${saved ? stale ? " · 旧位置" : "" : " · 整板"}`;
@@ -247,7 +248,7 @@ function (initial) {
       markerHost.setAttribute("data-board-overlay", "");
       markerHost.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;width:100%!important;height:100%!important;z-index:2147483645!important;pointer-events:none!important;";
       const shadow = markerHost.attachShadow({ mode: "open" });
-      shadow.innerHTML = `<style>:host{color-scheme:normal}button{all:initial;box-sizing:border-box;position:absolute;pointer-events:auto;max-width:180px;padding:5px 8px;border:1px solid var(--host-iris,#658aeb);border-radius:14px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 2px 8px #0002;font:11px/1.3 system-ui,-apple-system,sans-serif;white-space:nowrap;cursor:pointer}button[hidden]{display:none}button:hover,button:focus-visible,button[aria-pressed=true]{outline:2px solid var(--host-iris,#658aeb);outline-offset:2px}button[data-status=failed],button[data-status=rejected]{border-color:#cc6256}button[data-status=processing],button[data-status=sending]{border-style:dashed}button[data-stale=true]{border-color:#bd8c35;background:var(--host-sheet,#fff)}</style>`;
+      shadow.innerHTML = `<style>:host{color-scheme:normal}button{all:initial;box-sizing:border-box;position:absolute;pointer-events:auto;max-width:180px;padding:5px 8px;border:1px solid var(--host-iris,#658aeb);border-radius:14px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 2px 8px #0002;font:11px/1.3 system-ui,-apple-system,sans-serif;white-space:nowrap;cursor:pointer}button[hidden]{display:none}button:hover,button:focus-visible,button[aria-pressed=true]{outline:2px solid var(--host-iris,#658aeb);outline-offset:2px}button[data-status=failed],button[data-status=rejected]{border-color:#cc6256}button[data-status=processing],button[data-status=sending]{border-style:dashed}button[data-stale=true]{border-color:#bd8c35;background:var(--host-sheet,#fff)}button[data-active=true]::before{content:"";position:absolute;inset:-5px;border:2px solid var(--host-iris,#658aeb);border-radius:inherit;pointer-events:none;animation:board-halo 2s ease-in-out infinite}button[data-active=true]::after{content:"";position:absolute;right:-5px;top:-5px;width:10px;height:10px;border:2px solid var(--host-iris,#658aeb);border-right-color:transparent;border-bottom-color:transparent;border-radius:50%;background:var(--host-sheet,#fff);pointer-events:none;animation:board-orbit 1.25s linear infinite}@keyframes board-halo{0%,100%{opacity:.14;transform:scale(.98)}50%{opacity:.48;transform:scale(1.05)}}@keyframes board-orbit{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){button[data-active=true]::before,button[data-active=true]::after{animation:none}button[data-active=true]::before{opacity:.3}button[data-active=true]::after{border-style:solid}}</style>`;
       root.append(markerHost);
     }
     // Preserve focused buttons while receiving progress, and never replace author controls.
@@ -451,6 +452,7 @@ function (initial) {
     lastGesture = performance.now();
     lastGesturePosition = eventPoint(event);
     if (inMarkers(event)) { window.focus(); cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); event.stopImmediatePropagation(); return; }
+    if (event.button === 0) { window.focus(); post({ type: "canvas-pointer" }); }
     suppressPointerClick = false;
     dismissedPointer = null;
     if (event.button !== 0) return;
@@ -464,7 +466,7 @@ function (initial) {
       // browser perform selection. Editors and author-controlled drags keep native behavior.
       if (!applying && startsTextSelection(event)) {
         const position = eventPoint(event);
-        textPointer = { pointerId: event.pointerId, position, session: beginSelection(position, true) };
+        textPointer = { pointerId: event.pointerId, position, beforeText: window.getSelection()?.toString() || "", session: beginSelection(position, true) };
       }
       return;
     }
@@ -497,7 +499,8 @@ function (initial) {
       const start = textPointer;
       textPointer = null;
       const position = eventPoint(event);
-      const text = Math.hypot(position.x - start.position.x, position.y - start.position.y) >= 3 ? selectedText() : null;
+      const changed = (window.getSelection()?.toString() || "") !== start.beforeText;
+      const text = changed || Math.hypot(position.x - start.position.x, position.y - start.position.y) >= 3 ? selectedText() : null;
       if (text) {
         suppressPointerClick = true;
         start.session.position = position;
