@@ -73,6 +73,8 @@ Network access is limited to HTTPS resources on `unpkg.com`, `cdn.jsdelivr.net`,
 
 Visual verification needs the actual Board renderer. A raw HTML file lacks its injected styles and runtime, and there is no `board_preview` tool. Use an owned test Board in Paseo, or an isolated development harness built with `buildBoardDocument` for explicit light/dark palettes without changing the user's global theme. Clearly distinguish renderer checks from native UI verification; the repository's browser tests cover their fixtures, not every authored design.
 
+The [interactive diff example](examples/interactive-diff.html) uses the injected palette and controls, with split/unified views and editable bounded line comparisons. Append its self-contained section to a Board; its controls remain local and save only their own state field. It is illustrative content, not a mandatory Board layout or a publication-history diff.
+
 ## Multiple writers
 
 `board_read` adds an `authoring` view. `materializedAuthoredHtml` statically replays the ordered patch journal without executing scripts; an optional `selector` returns a composed target fragment. `canvas.html` remains the underlying base document for replay and is **not** the current patched source. An unresolved/ambiguous/dynamic patch stops composition and returns null with its failure location. This view is authored source, not the running DOM, event listeners or Canvas pixels.

@@ -1,0 +1,210 @@
+<section id="board-diff-demo" lang="zh-CN" aria-labelledby="board-diff-title">
+  <style id="board-diff-style">
+    #board-diff-demo { color:var(--foreground); background:var(--background); font-family:var(--font-sans); width:100%; max-width:1200px; min-width:0; margin-inline:auto; grid-column:1 / -1; container-type:inline-size; }
+    #board-diff-demo .bd-heading { margin:0 0 8px; font-size:1.35rem; }
+    #board-diff-demo .bd-intro { max-width:68ch; margin:0 0 18px; color:var(--muted-foreground); }
+    #board-diff-demo .bd-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 12px; }
+    #board-diff-demo .bd-counts { display:flex; flex-wrap:wrap; gap:14px; font-variant-numeric:tabular-nums; font-size:13px; }
+    #board-diff-demo .bd-added { color:var(--success); }
+    #board-diff-demo .bd-removed { color:var(--destructive); }
+    #board-diff-demo .bd-box { border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; background:var(--popover); color:var(--popover-foreground); }
+    #board-diff-demo .bd-columns { display:grid; grid-template-columns:1fr 1fr; background:var(--muted); border-bottom:1px solid var(--border); font-size:12px; font-weight:600; }
+    #board-diff-demo .bd-column { padding:9px 12px; min-width:0; }
+    #board-diff-demo .bd-column + .bd-column { border-left:1px solid var(--border); }
+    #board-diff-demo .bd-lines { max-height:570px; overflow:auto; scrollbar-gutter:stable; }
+    #board-diff-demo .bd-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
+    #board-diff-demo .bd-cell { display:grid; grid-template-columns:2.8em 1.4em minmax(0,1fr); align-items:start; min-width:0; font:12.5px/1.65 var(--font-mono); }
+    #board-diff-demo .bd-pair > .bd-cell + .bd-cell { border-left:1px solid var(--border); }
+    #board-diff-demo .bd-unified { grid-template-columns:2.8em 2.8em 1.4em minmax(0,1fr); }
+    #board-diff-demo .bd-number { padding:2px 6px 2px 0; text-align:right; color:var(--muted-foreground); user-select:none; font-variant-numeric:tabular-nums; }
+    #board-diff-demo .bd-sign { padding:2px 0; text-align:center; font-weight:700; user-select:none; }
+    #board-diff-demo .bd-source { display:block; color:inherit; background:transparent; border:0; border-radius:0; font:inherit; margin:0; padding:2px 10px 2px 4px; min-height:1.65em; white-space:pre-wrap; overflow-wrap:anywhere; tab-size:2; }
+    #board-diff-demo .bd-cell[data-kind="add"] { background:color-mix(in oklab,var(--success) 10%,var(--popover)); }
+    #board-diff-demo .bd-cell[data-kind="delete"] { background:color-mix(in oklab,var(--destructive) 10%,var(--popover)); }
+    #board-diff-demo .bd-cell[data-kind="add"] .bd-sign { color:var(--success); }
+    #board-diff-demo .bd-cell[data-kind="delete"] .bd-sign { color:var(--destructive); }
+    #board-diff-demo .bd-cell[data-kind="blank"] { background:var(--muted); }
+    #board-diff-demo .bd-empty { margin:0; padding:18px 12px; color:var(--muted-foreground); }
+    #board-diff-demo .bd-note { margin:10px 0 0; color:var(--muted-foreground); font-size:12px; }
+    #board-diff-demo .bd-editor { margin-top:20px; border-top:1px solid var(--border); padding-top:12px; }
+    #board-diff-demo .bd-summary { cursor:pointer; font-weight:500; width:fit-content; padding:4px 0; }
+    #board-diff-demo .bd-summary:focus-visible { outline:2px solid var(--ring); outline-offset:4px; border-radius:3px; }
+    #board-diff-demo .bd-inputs { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin-top:12px; }
+    #board-diff-demo .bd-input { min-height:190px; font:12.5px/1.6 var(--font-mono); padding:10px; white-space:pre; overflow:auto; }
+    #board-diff-demo .bd-editor-footer { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-top:10px; }
+    #board-diff-demo .bd-limit { margin:0; color:var(--muted-foreground); font-size:12px; }
+    #board-diff-demo .bd-error { color:var(--destructive); margin:10px 0 0; font-size:13px; }
+    #board-diff-demo [hidden] { display:none !important; }
+    @container (max-width:560px) {
+      #board-diff-demo .bd-inputs { grid-template-columns:minmax(0,1fr); }
+      #board-diff-demo .bd-cell { font-size:12px; grid-template-columns:2.3em 1.2em minmax(0,1fr); }
+      #board-diff-demo .bd-unified { grid-template-columns:2.3em 2.3em 1.2em minmax(0,1fr); }
+      #board-diff-demo .bd-source { padding-right:6px; }
+    }
+  </style>
+  <h2 id="board-diff-title" class="bd-heading">直接看，哪里变了。</h2>
+  <p id="board-diff-intro" class="bd-intro">示例：把整块 data 更新，改成只修改一个字段的 dataPatch。展开下方编辑区，换成任意两段文本，差异会实时更新。</p>
+  <div id="board-diff-toolbar" class="bd-toolbar">
+    <div id="board-diff-modes" class="viz-segmented" role="group" aria-label="差异排列方式">
+      <button id="board-diff-split" class="btn btn-sm" type="button" aria-pressed="true">并排</button>
+      <button id="board-diff-unified" class="btn btn-sm" type="button" aria-pressed="false">合并</button>
+    </div>
+    <div id="board-diff-counts" class="bd-counts" role="status" aria-live="polite" aria-atomic="true">
+      <span id="board-diff-add-count" class="bd-added">+ 0 行新增</span>
+      <span id="board-diff-delete-count" class="bd-removed">− 0 行删除</span>
+    </div>
+  </div>
+  <div id="board-diff-box" class="bd-box" role="region" aria-label="文本逐行差异" aria-describedby="board-diff-legend">
+    <div id="board-diff-columns" class="bd-columns">
+      <div id="board-diff-before-heading" class="bd-column">修改前</div>
+      <div id="board-diff-after-heading" class="bd-column">修改后</div>
+    </div>
+    <div id="board-diff-lines" class="bd-lines" tabindex="0" aria-label="差异内容，可滚动"></div>
+  </div>
+  <p id="board-diff-legend" class="bd-note">+ 新增　− 删除　· 保留。按整行比较，空格也参与匹配；颜色之外保留符号和行号。</p>
+  <details id="board-diff-editor" class="bd-editor">
+    <summary id="board-diff-summary" class="bd-summary">展开编辑两段文本</summary>
+    <div id="board-diff-inputs" class="bd-inputs">
+      <label id="board-diff-before-label" class="form-label" for="board-diff-before">修改前
+        <textarea id="board-diff-before" class="form-control bd-input" maxlength="20000" spellcheck="false" aria-describedby="board-diff-limit"></textarea>
+      </label>
+      <label id="board-diff-after-label" class="form-label" for="board-diff-after">修改后
+        <textarea id="board-diff-after" class="form-control bd-input" maxlength="20000" spellcheck="false" aria-describedby="board-diff-limit"></textarea>
+      </label>
+    </div>
+    <div id="board-diff-editor-footer" class="bd-editor-footer">
+      <p id="board-diff-limit" class="bd-limit">每侧最多 200 行、20,000 字符。空文本为 0 行。</p>
+      <button id="board-diff-reset" class="btn btn-ghost btn-sm" type="button">恢复示例</button>
+    </div>
+  </details>
+  <p id="board-diff-error" class="bd-error" role="status" aria-live="polite" hidden></p>
+  <p id="board-diff-example-note" class="bd-note">这是请求格式示例，不是运行日志，也不会执行其中的代码。示例假设 /preferences/layout 已存在且值为 "grid"。</p>
+  <script id="board-diff-script">
+    (() => {
+      const root = document.getElementById('board-diff-demo');
+      if (!root || root.dataset.initialized) return;
+      root.dataset.initialized = 'true';
+      const byId = name => root.querySelector('#board-diff-' + name);
+      const before = byId('before');
+      const after = byId('after');
+      const list = byId('lines');
+      const editor = byId('editor');
+      const error = byId('error');
+      const sampleBefore = [
+        '{',
+        '  "boardId": "demo",',
+        '  "expectedRevision": 12,',
+        '  "eventId": "layout-change",',
+        '  "canvasBase": { "revision": 4, "documentVersion": 1 },',
+        '  "data": {',
+        '    "preferences": { "layout": "list" }',
+        '  }',
+        '}'
+      ].join('\n');
+      const sampleAfter = [
+        '{',
+        '  "boardId": "demo",',
+        '  "expectedRevision": 12,',
+        '  "eventId": "layout-change",',
+        '  "dataPatch": [{',
+        '    "path": "/preferences/layout",',
+        '    "operation": "set",',
+        '    "expected": { "exists": true, "value": "grid" },',
+        '    "value": "list"',
+        '  }]',
+        '}'
+      ].join('\n');
+      const lines = value => value === '' ? [] : value.replace(/\r\n?/g, '\n').split('\n');
+      const valid = value => typeof value === 'string' && value.length <= 20000 && lines(value).length <= 200;
+      let restored = {};
+      try { restored = window.board?.getState()?.boardDiffDemo || {}; } catch (_) {}
+      before.value = valid(restored.before) ? restored.before : sampleBefore;
+      after.value = valid(restored.after) ? restored.after : sampleAfter;
+      let mode = restored.mode === 'unified' ? 'unified' : 'split';
+      editor.open = restored.editorOpen === true;
+      let changes = [];
+      const persist = () => {
+        if (!valid(before.value) || !valid(after.value)) return;
+        try {
+          if (window.board) window.board.saveState({ ...window.board.getState(), boardDiffDemo: { before:before.value, after:after.value, mode, editorOpen:editor.open } });
+        } catch (_) { /* The local comparison remains usable if state storage is unavailable. */ }
+      };
+      const compare = (a, b) => {
+        const matrix = Array.from({ length:a.length + 1 }, () => new Uint16Array(b.length + 1));
+        for (let i=a.length-1; i>=0; i--) for (let j=b.length-1; j>=0; j--) matrix[i][j] = a[i] === b[j] ? matrix[i+1][j+1]+1 : Math.max(matrix[i+1][j],matrix[i][j+1]);
+        const result = [];
+        let i=0, j=0;
+        while (i<a.length || j<b.length) {
+          if (i<a.length && j<b.length && a[i] === b[j]) { result.push({ kind:'same', text:a[i], old:i+1, next:j+1 }); i++; j++; }
+          else if (i<a.length && (j===b.length || matrix[i+1][j] >= matrix[i][j+1])) { result.push({ kind:'delete', text:a[i], old:i+1 }); i++; }
+          else { result.push({ kind:'add', text:b[j], next:j+1 }); j++; }
+        }
+        return result;
+      };
+      const node = (tag, id, cls, text) => {
+        const element = document.createElement(tag);
+        element.id = 'board-diff-' + id;
+        element.className = cls;
+        if (text !== undefined) element.textContent = String(text);
+        return element;
+      };
+      const cell = (item, key, side, unified=false) => {
+        const kind = item?.kind || 'blank';
+        const row = node('div', key, 'bd-cell' + (unified ? ' bd-unified' : ''));
+        row.dataset.kind = kind;
+        const number = (value, suffix) => { const n = node('span', key+'-'+suffix, 'bd-number', value || ''); n.setAttribute('aria-label', value ? (suffix==='old' ? '原第 ' : '新第 ') + value + ' 行' : ''); return n; };
+        if (unified || side==='old') row.append(number(item?.old, 'old'));
+        if (unified || side==='next') row.append(number(item?.next, 'next'));
+        const sign = node('span', key+'-sign', 'bd-sign', kind==='add' ? '+' : kind==='delete' ? '−' : kind==='same' ? '·' : '');
+        sign.setAttribute('aria-label', kind==='add' ? '新增' : kind==='delete' ? '删除' : kind==='same' ? '保留' : '');
+        row.append(sign, node('code', key+'-code', 'bd-source', item?.text || ''));
+        return row;
+      };
+      const draw = () => {
+        byId('split').setAttribute('aria-pressed', String(mode==='split'));
+        byId('unified').setAttribute('aria-pressed', String(mode==='unified'));
+        byId('before-heading').textContent = mode==='split' ? '修改前' : '原行号 / 新行号 · 修改前后';
+        byId('after-heading').hidden = mode==='unified';
+        byId('columns').style.gridTemplateColumns = mode==='split' ? '1fr 1fr' : '1fr';
+        const fragment = document.createDocumentFragment();
+        if (!changes.length) fragment.append(node('p', 'empty', 'bd-empty', '两边都是空文本。'));
+        else if (mode==='unified') changes.forEach((item,index) => fragment.append(cell(item, 'line-'+index, '', true)));
+        else {
+          let index=0, pair=0;
+          const appendPair = (left,right) => { const row=node('div','pair-'+pair,'bd-pair'); row.append(cell(left,'pair-'+pair+'-old','old'),cell(right,'pair-'+pair+'-next','next')); fragment.append(row); pair++; };
+          while (index<changes.length) {
+            if (changes[index].kind==='same') { appendPair(changes[index],changes[index]); index++; continue; }
+            const removed=[], added=[];
+            while (index<changes.length && changes[index].kind!=='same') { const item=changes[index++]; (item.kind==='delete' ? removed : added).push(item); }
+            for (let n=0; n<Math.max(removed.length,added.length); n++) appendPair(removed[n],added[n]);
+          }
+        }
+        list.replaceChildren(fragment);
+      };
+      const refresh = (save=true) => {
+        const invalid = [!valid(before.value) ? '修改前' : '',!valid(after.value) ? '修改后' : ''].filter(Boolean);
+        before.setAttribute('aria-invalid',String(!valid(before.value)));
+        after.setAttribute('aria-invalid',String(!valid(after.value)));
+        if (invalid.length) {
+          error.textContent = invalid.join('、') + '超过 200 行或 20,000 字符；请缩短。当前差异仍是上一次有效输入，不会截断或执行超限比较。';
+          error.hidden = false;
+          return;
+        }
+        error.hidden = true;
+        error.textContent = '';
+        changes = compare(lines(before.value),lines(after.value));
+        byId('add-count').textContent = '+ ' + changes.filter(item=>item.kind==='add').length + ' 行新增';
+        byId('delete-count').textContent = '− ' + changes.filter(item=>item.kind==='delete').length + ' 行删除';
+        draw();
+        if (save) persist();
+      };
+      before.addEventListener('input',()=>refresh());
+      after.addEventListener('input',()=>refresh());
+      byId('split').addEventListener('click',()=>{ mode='split'; draw(); persist(); });
+      byId('unified').addEventListener('click',()=>{ mode='unified'; draw(); persist(); });
+      editor.addEventListener('toggle',persist);
+      byId('reset').addEventListener('click',()=>{ before.value=sampleBefore; after.value=sampleAfter; refresh(); });
+      refresh(false);
+    })();
+  </script>
+</section>
