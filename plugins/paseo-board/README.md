@@ -99,7 +99,21 @@ await feed.set({ value: 43 }, { attention: 'milestone' });
 // Canvas: const off = board.watch('/live/a', value => render(value));
 ```
 
-The installed skill supplies the actual import path and the equivalent CLI/MCP `feed` actions (`open`, `set`, `status`, `close`). The process inherits its owning agent's binding; do not copy that binding into code or prompts. Use a unique durable `stateFile`, await each operation, and keep sources on disjoint object paths. A set replaces that source's complete value. Missing object parents are created; overlapping sources and scalar/array parents are rejected.
+The installed skill supplies the actual import path and the equivalent CLI/MCP `feed` actions (`open`, `set`, `status`, `close`). The process requires its owning agent's binding; do not copy its value into code or prompts. A detached async-shell task needs an explicit launch-time environment handoff, shown below. Use a unique durable `stateFile`, await each operation, and keep sources on disjoint object paths. A set replaces that source's complete value. Missing object parents are created; overlapping sources and scalar/array parents are rejected.
+
+Register the producer from the owning agent's ordinary shell tool using the public async-shell CLI. Replace the CLI path with the installed one; the generated Board skill supplies it. The shell expands these variables locally without exposing their values to the model:
+
+```bash
+/absolute/paseo-home/paseo-async-shell/bin/paseo-shell register \
+  --description "Update this Board from task data" \
+  --idempotency-key "my-board-source-a-v1" \
+  --cwd /absolute/task-directory --timeout 3600 \
+  --env "PASEO_BOARD_HOME=${PASEO_BOARD_HOME:?Board runtime missing}" \
+  --env "PASEO_BOARD_BINDING=${PASEO_BOARD_BINDING:?Board session identity missing}" \
+  -- node /absolute/task-directory/producer.mjs
+```
+
+The MCP registration server does **not** inherit the calling session's environment. Do not enable shell tracing or print the binding; do not override `PASEO_AGENT_ID`, which async-shell sets from the caller. Its public task receipt excludes environment overrides. A Node registration wrapper should capture output and avoid logging raw `execFile` errors, which can contain expanded arguments. Keep the registration idempotency key when its result is uncertain. The private `stateFile` stores pending data and ACKs, not credentials; restarting a producer still requires this owning-agent launch environment. No extra supervisor or Board credential store is introduced.
 
 Unknown outcomes retain exactly one pending request; restarting with the same configuration replays it before accepting new work. Confirmed conflicts need inspection and explicit reconciliation. A changed generation fences older producers; changing the same path through normal publication also stops a stale feed. `feed.retry()`, `feed.status()`, explicit `feed.reopen({discardRejected:true})`, and `feed.close()` expose recovery rather than silently overwriting another writer.
 
@@ -131,7 +145,7 @@ Conflicts carry current/base versions, recent update locations and writer attrib
 
 ## Background events
 
-Reuse `register_async_shell` to wait for external events. Its script calls `paseo-board emit` with stable event IDs. Shared data uses conditional `dataPatch`, or traditional `data` with the canvas base captured when that payload was prepared. Pure facts/observations need no canvas condition. Delayed data producers must reconcile a conflict instead of overwriting newer results. The board updates while the owner is idle. `emit` never sends an agent message. If interpretation or action is needed, the same shell can use `paseo-shell sendback` with an idempotency key. Board does not implement a second shell supervisor or read async-shell's private files.
+Reuse async-shell to wait for external events, using the environment handoff above for scripts that write Board data. Its script calls `paseo-board emit` with stable event IDs. Shared data uses conditional `dataPatch`, or traditional `data` with the canvas base captured when that payload was prepared. Pure facts/observations need no canvas condition. Delayed data producers must reconcile a conflict instead of overwriting newer results. The board updates while the owner is idle. `emit` never sends an agent message. If interpretation or action is needed, the same shell can use `paseo-shell sendback` with an idempotency key. Board does not implement a second shell supervisor or read async-shell's private files.
 
 An optional `observation` names an input to track. A changed value creates an observed record with supplied evidence and no invented reason. It does not automatically inspect all commands, files or parameters on the machine.
 
