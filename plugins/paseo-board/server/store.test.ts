@@ -18,12 +18,13 @@ describe("BoardStore", () => {
   });
   afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 
-  async function board() {
-    return store.create({ id: "test", title: "A free canvas", html: "<main id='a'>Hello</main>", data: { count: 1 } });
+  async function board(ownerAgentId = "owner") {
+    return store.create({ id: "test", ownerAgentId, title: "A free canvas", html: "<main id='a'>Hello</main>", data: { count: 1 } });
   }
 
   it("rejects stale HTML and patches even if a writer refreshes only the Board revision", async () => {
-    const initial = await board();
+    const initial = await board("agent-a");
+    await store.addInteraction({ boardId: initial.id, intentId: "fork-b", kind: "fork", text: "Collaborate" }, "agent-b");
     const changed = await store.publish({ boardId: initial.id, expectedRevision: initial.revision, canvasBase: canvasBase(initial), eventId: "first-agent", patch: { id: "first-agent", selector: "#a", operation: "append", html: "<p>A</p>" } }, "agent-a");
     for (const payload of [{ patch: { id: "stale-patch", selector: "#a", operation: "replace" as const, html: "<main>B</main>" } }, { html: "Old source plus B", replaceDocument: true }]) {
       await expect(store.publish({ boardId: initial.id, expectedRevision: changed.revision, canvasBase: canvasBase(initial), eventId: "stale-agent", ...payload }, "agent-b")).rejects.toMatchObject({ code: "revision_conflict", details: { scope: "canvas", base: { canvas: canvasBase(initial) }, current: { canvas: canvasBase(changed) }, recentUpdates: [{ actorAgentId: "agent-a", targets: [{ selector: "#a" }] }], coverageComplete: true } });
@@ -65,8 +66,43 @@ describe("BoardStore", () => {
     expect(await readFile(path, "utf8")).toBe(before);
   });
 
+  it("rechecks current writer rights inside the queue before writes and receipt replay", async () => {
+    const initial = await board("previous-owner");
+    const oldPublish = { boardId: initial.id, expectedRevision: initial.revision, eventId: "old-publish", dataPatch: [{ path: "/published", operation: "set" as const, expected: { exists: false }, value: true }] };
+    const published = await store.publish(oldPublish, "previous-owner");
+    const oldEmit = { boardId: initial.id, eventId: "old-emit", source: "shell", summary: "Fact already saved" };
+    const emitted = await store.emit(oldEmit, "previous-owner");
+    // Rebinding wins the queue even though the later requests passed transport checks
+    // against the previous owner and have valid independent data preconditions.
+    const rebind = store.publish({ boardId: initial.id, expectedRevision: emitted.revision, eventId: "rebind", ownerAgentId: "new-owner" });
+    const pendingPublish = store.publish({ ...oldPublish, eventId: "late-publish", dataPatch: [{ ...oldPublish.dataPatch[0], path: "/late" }] }, "previous-owner");
+    const pendingEmit = store.emit({ ...oldEmit, eventId: "late-emit" }, "previous-owner");
+    await rebind;
+    await expect(pendingPublish).rejects.toHaveProperty("code", "forbidden");
+    await expect(pendingEmit).rejects.toHaveProperty("code", "forbidden");
+    const before = await readFile(join(root, "boards", "test.json"), "utf8");
+    await expect(store.publish(oldPublish, "previous-owner")).rejects.toHaveProperty("code", "forbidden");
+    await expect(store.emit(oldEmit, "previous-owner")).rejects.toHaveProperty("code", "forbidden");
+    expect(await readFile(join(root, "boards", "test.json"), "utf8")).toBe(before);
+    // Same-user RPCs without an agent binding retain their existing trusted access.
+    expect((await store.publish(oldPublish)).canvas).toEqual(published.canvas);
+    expect((await store.emit(oldEmit)).ownerAgentId).toBe("new-owner");
+  });
+
+  it("permits an associated fork after owner changes but does not elevate a question assignee", async () => {
+    const initial = await board("old-owner");
+    await store.addInteraction({ boardId: initial.id, intentId: "fork", kind: "fork", text: "Shared work" }, "fork-agent");
+    await store.addInteraction({ boardId: initial.id, intentId: "question", kind: "question", text: "Read only" }, "question-agent");
+    const current = (await store.read(initial.id))!;
+    await store.publish({ boardId: initial.id, expectedRevision: current.revision, eventId: "new-owner", ownerAgentId: "new-owner" });
+    const request = { boardId: initial.id, eventId: "fork-data", source: "fork", summary: "Shared update", dataPatch: [{ path: "/forkResult", operation: "set" as const, expected: { exists: false }, value: 1 }] };
+    expect((await store.emit(request, "fork-agent")).canvas.data.forkResult).toBe(1);
+    await expect(store.publish({ boardId: initial.id, expectedRevision: current.revision, eventId: "question-write", dataPatch: [{ path: "/unauthorized", operation: "set", expected: { exists: false }, value: 1 }] }, "question-agent")).rejects.toHaveProperty("code", "forbidden");
+    await expect(store.emit({ boardId: initial.id, eventId: "question-event", source: "question", summary: "No write access" }, "question-agent")).rejects.toHaveProperty("code", "forbidden");
+  });
+
   it("allows a source-bound patch and its own result after unrelated interaction and user-state writes", async () => {
-    const initial = await board();
+    const initial = await board("agent-a");
     await store.addInteraction({ boardId: initial.id, intentId: "mine", kind: "change", text: "Add A" }, "agent-a");
     await store.saveState({ boardId: initial.id, state: { draft: "still typing" } });
     await store.addInteraction({ boardId: initial.id, intentId: "other", kind: "question", text: "Explain B" }, "agent-b");
@@ -83,7 +119,8 @@ describe("BoardStore", () => {
   });
 
   it("serializes competing conditional emit snapshots and preserves the winner on late retries", async () => {
-    const initial = await store.create({ id: "test", title: "Shared", data: { nested: { left: 0, right: 0 } } });
+    const initial = await store.create({ id: "test", ownerAgentId: "agent-0", title: "Shared", data: { nested: { left: 0, right: 0 } } });
+    await store.addInteraction({ boardId: initial.id, intentId: "fork-1", kind: "fork", text: "Collaborate" }, "agent-1");
     const base = { boardId: initial.id, source: "shell", summary: "progress", canvasBase: canvasBase(initial) };
     const writes = [
       { ...base, eventId: "emit-a", data: { nested: { left: 1, right: 0 } } },
@@ -100,7 +137,8 @@ describe("BoardStore", () => {
   });
 
   it("lets concurrent agents update different nested leaves and rejects conflicting or stale values", async () => {
-    const initial = await store.create({ id: "test", title: "Shared", data: { nested: { left: 0, right: 0 }, untouched: [1, 2] } });
+    const initial = await store.create({ id: "test", ownerAgentId: "agent-a", title: "Shared", data: { nested: { left: 0, right: 0 }, untouched: [1, 2] } });
+    await store.addInteraction({ boardId: initial.id, intentId: "fork-b", kind: "fork", text: "Collaborate" }, "agent-b");
     const set = (path: string, value: number) => ({ path, operation: "set" as const, expected: { exists: true, value: 0 }, value });
     await Promise.all([
       store.publish({ boardId: initial.id, expectedRevision: initial.revision, eventId: "leaf-a", dataPatch: [set("/nested/left", 1)], focusSelectors: ["#left"] }, "agent-a"),
@@ -138,7 +176,7 @@ describe("BoardStore", () => {
   });
 
   it("does not claim complete conflict coverage when older updates have been pruned", async () => {
-    const initial = await board();
+    const initial = await board("last-writer");
     const current = await store.emit({ boardId: initial.id, eventId: "latest", source: "shell", summary: "Result", canvasBase: canvasBase(initial), data: { count: 2 } }, "last-writer");
     const path = join(root, "boards", "test.json");
     const incomplete = JSON.parse(await readFile(path, "utf8"));
@@ -149,6 +187,8 @@ describe("BoardStore", () => {
 
   it("records only committed main canvas changes with exact versions and explicit data locations", async () => {
     let current = await board();
+    await store.addInteraction({ boardId: current.id, intentId: "fork-author", kind: "fork", text: "Collaborate" }, "fork");
+    current = (await store.read(current.id))!;
     expect(current.updates).toEqual([]);
     current = await store.publish({ boardId: "test", expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "patch-located", patch: { id: "patch-target", selector: "#a", operation: "remove" } }, "owner");
     expect(current.updates).toEqual([{ id: "patch-located", eventId: "patch-located", at: current.updatedAt, boardRevision: current.revision, canvasRevision: current.canvas.revision, documentVersion: 1, kind: "patch", targets: [{ selector: "#a", operation: "remove", patchId: "patch-target" }], actorAgentId: "owner" }]);
@@ -182,7 +222,9 @@ describe("BoardStore", () => {
   });
 
   it("serializes canvas locations, deduplicates retries and preserves per-update attention across restart", async () => {
-    let current = await board();
+    let current = await board("writer-a");
+    await store.addInteraction({ boardId: current.id, intentId: "fork-writer-b", kind: "fork", text: "Collaborate" }, "writer-b");
+    current = (await store.read(current.id))!;
     const request = { boardId: "test", expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "original", data: { count: 2 }, focusSelectors: ["#a"] };
     const results = await Promise.allSettled([store.publish(request, "writer-a"), store.publish({ ...request, eventId: "competitor" }, "writer-b")]);
     expect(results.filter(item => item.status === "fulfilled")).toHaveLength(1);
@@ -195,7 +237,7 @@ describe("BoardStore", () => {
     current = (await store.read("test"))!;
     expect(current.updates).toHaveLength(2);
     expect(current.updates[0]).toEqual(first);
-    expect(current.updates.map(item => item.boardRevision)).toEqual([2, 3]);
+    expect(current.updates.map(item => item.boardRevision)).toEqual([first.boardRevision, first.boardRevision + 1]);
     const path = join(root, "boards", "test.json");
     const before = JSON.parse(await readFile(path, "utf8"));
     const marked = await store.markUpdatesSeen({ boardId: "test", updateIds: ["second", "second", "future"] });
@@ -209,7 +251,7 @@ describe("BoardStore", () => {
     expect(await readFile(path, "utf8")).toBe(file);
     const reopened = new BoardStore(root);
     expect((await reopened.read("test"))!.seenUpdateIds).toEqual(["second"]);
-    expect((await reopened.list())[0]).toMatchObject({ unreadUpdateCount: 1, latestUpdateRevision: 3 });
+    expect((await reopened.list())[0]).toMatchObject({ unreadUpdateCount: 1, latestUpdateRevision: first.boardRevision + 1 });
     // A mark cannot invalidate a publisher's CAS or pre-acknowledge an unknown future ID.
     current = await reopened.publish({ boardId: "test", expectedRevision: current.revision, canvasBase: canvasBase(current), eventId: "future", data: { count: 4 } });
     await Promise.all([store.markUpdatesSeen({ boardId: "test", updateIds: ["original"] }), reopened.markUpdatesSeen({ boardId: "test", updateIds: ["second"] })]);

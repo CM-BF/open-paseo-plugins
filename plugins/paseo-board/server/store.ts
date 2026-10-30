@@ -143,7 +143,7 @@ export class BoardStore {
         this.changeInteraction(board, id, { ...update, error: undefined, responseSource: "explicit", responseMethod: "publish", responseRevision: (current?.responseRevision ?? 0) + 1 }, at);
       }
       this.event(board, input.eventId, "agent", "publish", input.summary, at);
-    }, input.eventId);
+    }, input.eventId, actorAgentId ? board => this.expectCanvasWriter(board, actorAgentId) : undefined);
   }
 
   async respond(raw: RespondInput, actorAgentId?: string): Promise<Interaction> {
@@ -196,7 +196,7 @@ export class BoardStore {
       }
       if (input.observation) this.observe(board, input, at);
       this.event(board, input.eventId, input.source, input.kind, input.summary, at, input.data);
-    }, input.eventId);
+    }, input.eventId, actorAgentId ? board => this.expectCanvasWriter(board, actorAgentId) : undefined);
   }
 
   async recordDecision(raw: DecisionUpdateInput): Promise<Board> {
@@ -284,13 +284,16 @@ export class BoardStore {
 
   private path(id: string): string { return join(this.directory, `${assertId(id)}.json`); }
 
-  private async mutate(boardId: string, operation: string, payload: unknown, change: Mutation, eventId?: string): Promise<Board> {
+  private async mutate(boardId: string, operation: string, payload: unknown, change: Mutation, eventId?: string, authorize?: (board: Board) => void): Promise<Board> {
     const path = this.path(boardId);
     const digest = fingerprint(operation, payload);
     await this.init();
     return serialized(path, async () => {
       const envelope = await readEnvelope(path, boardId);
       if (!envelope) throw new BoardStoreError("not_found", `Board ${boardId} does not exist`);
+      // Transport checks can precede file reads and queue waits. Recheck the current
+      // writer before both committing and returning a historical successful receipt.
+      authorize?.(envelope.board);
       if (eventId && this.checkReceipt(envelope, eventId, digest)) return envelope.board;
       const before = canonicalJson(envelope.board);
       const at = new Date().toISOString();
@@ -315,6 +318,10 @@ export class BoardStore {
 
   private expectRevision(board: Board, expected: number): void {
     if (board.revision !== expected) throw new BoardStoreError("revision_conflict", `Board changed: expected revision ${expected}, current revision ${board.revision}`, { scope: "board", expectedRevision: expected, currentRevision: board.revision, ...this.conflictContext(board, undefined, expected) });
+  }
+
+  private expectCanvasWriter(board: Board, agentId: string): void {
+    if (board.ownerAgentId !== agentId && !board.interactions.some(item => item.kind === "fork" && item.agentId === agentId)) throw new BoardStoreError("forbidden", "This agent no longer owns this Board or belongs to an associated fork");
   }
 
   private conflictContext(board: Board, base?: CanvasBase, boardRevision?: number): Record<string, unknown> {
