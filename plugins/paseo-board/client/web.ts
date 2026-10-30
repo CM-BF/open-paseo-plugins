@@ -1,9 +1,9 @@
 // Browser DOM access lives only in this module. Native callers use their compatibility view.
 import { createElement, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
 import { Platform } from "react-native";
-import type { Anchor, Canvas, JsonData } from "../shared/contracts";
+import type { Anchor, Canvas, Interaction, JsonData } from "../shared/contracts";
 import { buildBoardDocument } from "../shared/document";
-import { FRAME_CHANNEL, readFrameMessage, type AskRequest, type AskResult, type ComposeRequest, type FrameError, type FrameSnapshot, type FrameTheme, type SelectionMode } from "../shared/frame-contract";
+import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, type AskRequest, type AskResult, type ComposeRequest, type FrameError, type FramePosition, type FrameSnapshot, type FrameTheme, type SelectionMode } from "../shared/frame-contract";
 
 type FrameWindow = { postMessage(message: unknown, origin: string): void };
 type Frame = { contentWindow: FrameWindow | null };
@@ -32,9 +32,13 @@ export interface CanvasFrameProps extends FrameSnapshot {
   height: number;
   selectionMode: SelectionMode;
   selectionClearToken?: number;
+  interactions?: Interaction[];
+  selectedInteractionId?: string;
   onAnchor(anchor: Anchor): void;
   onAsk(request: AskRequest): Promise<AskResult>;
   onCompose?(request: ComposeRequest): void;
+  onOpenInteraction?(id: string, position: FramePosition): void;
+  onInteractionPosition?(id: string, position: FramePosition): void;
   onState(state: JsonData): void;
   onError(error: FrameError): void;
   onOpenLink?(url: string): void;
@@ -88,6 +92,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
       const current = latest.current;
       send({ type: "selection", mode: current.selectionMode });
       send({ type: "snapshot", snapshot: { canvas: current.canvas, boardRevision: current.boardRevision, userState: effectiveState(), theme: current.theme } });
+      send({ type: "interactions", markers: interactionMarkers(current.interactions || []), selectedId: current.selectedInteractionId });
     };
     const userActing = () => browser.document?.activeElement === frame.current && browser.navigator?.userActivation?.isActive === true;
     const onMessage = (event: MessageEvent) => {
@@ -125,6 +130,12 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
           // This only opens a host-owned blank composer. It cannot send a message or invoke SDK
           // methods, and needs a fresh click/key activation after the capture/menu has appeared.
           if (userActing() && message.selectionId === interactionLock.current?.id && message.request.anchor.boardRevision <= current.boardRevision && message.request.anchor.canvasRevision <= current.canvas.revision) current.onCompose?.(message.request);
+          break;
+        case "open-interaction":
+          if (userActing() && interactionMarkers(current.interactions || []).some(item => item.id === message.id)) current.onOpenInteraction?.(message.id, message.position);
+          break;
+        case "interaction-position":
+          if (message.id === current.selectedInteractionId && interactionMarkers(current.interactions || []).some(item => item.id === message.id)) current.onInteractionPosition?.(message.id, message.position);
           break;
         case "state":
           localState.current = { boardId: current.boardId, state: message.state, dirty: true };
@@ -183,6 +194,9 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
     send({ type: "snapshot", snapshot: { canvas: props.canvas, boardRevision: props.boardRevision, userState: effectiveState(), theme: props.theme } });
   }, [props.canvas, props.boardRevision, props.userState, props.theme]);
   useEffect(() => {
+    if (ready.current) send({ type: "interactions", markers: interactionMarkers(props.interactions || []), selectedId: props.selectedInteractionId });
+  }, [props.interactions, props.selectedInteractionId]);
+  useEffect(() => {
     if (ready.current) send({ type: "selection", mode: props.selectionMode });
   }, [props.selectionMode]);
   const cleared = useRef(props.selectionClearToken);
@@ -198,5 +212,35 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
     sandbox: "allow-scripts", allow: "clipboard-write; fullscreen", referrerPolicy: "no-referrer",
     "data-testid": "paseo-board-canvas", "data-board-id": props.boardId,
     style: { display: "block", width: "100%", height: props.height, border: 0, background: "transparent", colorScheme: props.theme.scheme },
+  });
+}
+
+export interface WebMessageInputProps {
+  value: string;
+  onChange(value: string): void;
+  onSubmit(): void;
+  onClose(): void;
+  disabled?: boolean;
+  placeholder?: string;
+  style?: Record<string, unknown>;
+}
+
+/** Native DOM composition events preserve IME confirmation; RNW onKeyPress drops that detail. */
+export function WebMessageInput(props: WebMessageInputProps): ReactElement | null {
+  const composing = useRef(false);
+  const compositionEnded = useRef(0);
+  if (!canRenderFrames) return null;
+  return createElement("textarea", {
+    value: props.value, autoFocus: true, disabled: props.disabled, placeholder: props.placeholder, maxLength: 24000,
+    "aria-label": "发给 agent 的消息", "data-testid": "board-message-input",
+    onChange: (event: { target: { value: string } }) => props.onChange(event.target.value),
+    onCompositionStart: () => { composing.current = true; },
+    onCompositionEnd: () => { composing.current = false; compositionEnded.current = Date.now(); },
+    onKeyDown: (event: { key: string; keyCode: number; nativeEvent?: { isComposing?: boolean; keyCode?: number }; shiftKey: boolean; altKey: boolean; ctrlKey: boolean; metaKey: boolean; preventDefault(): void; stopPropagation(): void }) => {
+      if (composing.current || event.nativeEvent?.isComposing || event.keyCode === 229 || event.nativeEvent?.keyCode === 229 || Date.now() - compositionEnded.current < 50) return;
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); props.onClose(); }
+      else if (event.key === "Enter" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) { event.preventDefault(); event.stopPropagation(); if (!props.disabled) props.onSubmit(); }
+    },
+    style: { boxSizing: "border-box", width: "100%", minHeight: 88, maxHeight: 220, resize: "vertical", font: "inherit", lineHeight: 1.5, padding: 10, borderRadius: 8, ...props.style },
   });
 }

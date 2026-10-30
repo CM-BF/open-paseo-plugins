@@ -1,11 +1,14 @@
-import type { Anchor, Canvas, JsonData } from "./contracts";
+import type { Anchor, Canvas, Interaction, JsonData } from "./contracts";
 
 export const FRAME_CHANNEL = "paseo-board-frame-v1";
 export type SelectionMode = "off" | "text" | "region" | "point";
 export interface FrameTheme { scheme: "light" | "dark"; tokens: Record<string, string> }
 export interface FrameError { code: string; message: string; patchId?: string }
-export interface AskRequest { prompt: string; anchor?: Anchor; kind?: "question" | "change" | "fork" }
-export interface ComposeRequest { kind: "question" | "change" | "fork"; anchor: Anchor }
+/** CSS pixels relative to the iframe viewport (not document coordinates). */
+export interface FramePosition { x: number; y: number }
+export interface AskRequest { prompt: string; anchor?: Anchor; kind?: "question" | "change" | "fork"; position?: FramePosition }
+export interface ComposeRequest { kind: "question" | "change" | "fork"; anchor: Anchor; position?: FramePosition }
+export interface InteractionMarker { id: string; text: string; status: Interaction["status"]; anchor?: Anchor; number: number }
 export interface AskResult { status: "submitted" | "cancelled"; outcome?: string | null }
 export interface FrameScope { channel: typeof FRAME_CHANNEL; boardId: string; sessionId: string }
 export interface FrameSnapshot { canvas: Canvas; boardRevision: number; userState: JsonData; theme: FrameTheme }
@@ -14,6 +17,8 @@ export type FrameMessage = FrameScope & (
   | { type: "anchor"; anchor: Anchor; selectionId?: string }
   | { type: "selection-lock"; id: string; active: boolean; dragging?: boolean }
   | { type: "compose"; selectionId: string; request: ComposeRequest }
+  | { type: "open-interaction"; id: string; position: FramePosition }
+  | { type: "interaction-position"; id: string; position: FramePosition }
   | { type: "ask"; id: string; request: AskRequest }
   | { type: "state"; state: JsonData }
   | { type: "error"; error: FrameError }
@@ -25,6 +30,28 @@ export type FrameMessage = FrameScope & (
 const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const short = (v: unknown, max: number): v is string => typeof v === "string" && v.length > 0 && v.length <= max;
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const position = (v: unknown): v is FramePosition => record(v) && finite(v.x) && finite(v.y) && Math.abs(v.x) < 1000000 && Math.abs(v.y) < 1000000;
+
+/** Follow-ups retain the original question's location; transport excludes large image/reply data. */
+export function interactionMarkers(interactions: readonly Interaction[]): InteractionMarker[] {
+  const byId = new Map(interactions.map(item => [item.id, item]));
+  const roots = new Map<string, { root: Interaction; latest: Interaction }>();
+  for (const item of interactions) {
+    let root = item;
+    const seen = new Set([item.id]);
+    while (root.sourceInteractionId && byId.has(root.sourceInteractionId) && !seen.has(root.sourceInteractionId)) {
+      seen.add(root.sourceInteractionId);
+      root = byId.get(root.sourceInteractionId)!;
+    }
+    const existing = roots.get(root.id);
+    if (!existing) roots.set(root.id, { root, latest: item });
+    else if (item.createdAt >= existing.latest.createdAt) existing.latest = item;
+  }
+  return Array.from(roots.values()).map(({ root, latest }, index) => ({
+    id: root.id, text: root.text.slice(0, 240), status: latest.status, number: index + 1,
+    ...(root.anchor ? { anchor: { ...root.anchor, image: undefined } } : {}),
+  }));
+}
 
 /** A frame can author arbitrary code, so every privileged bridge payload is checked again here. */
 export function readFrameMessage(value: unknown, scope: Pick<FrameScope, "boardId" | "sessionId">): FrameMessage | null {
@@ -36,12 +63,17 @@ export function readFrameMessage(value: unknown, scope: Pick<FrameScope, "boardI
     case "compose": {
       const request = value.request;
       if (!short(value.selectionId, 160) || !record(request) || !["question", "change", "fork"].includes(request.kind as string) || !validAnchor(request.anchor)) return null;
+      if (request.position !== undefined && !position(request.position)) return null;
       break;
     }
+    case "open-interaction": case "interaction-position":
+      if (!short(value.id, 160) || !position(value.position)) return null;
+      break;
     case "ask": {
       const request = value.request;
       if (!short(value.id, 160) || !record(request) || !short(request.prompt, 24000)) return null;
       if (request.anchor !== undefined && !validAnchor(request.anchor)) return null;
+      if (request.position !== undefined && !position(request.position)) return null;
       if (request.kind !== undefined && !["question", "change", "fork"].includes(request.kind as string)) return null;
       break;
     }

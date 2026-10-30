@@ -2,7 +2,7 @@
 import { createElement, Fragment, useState } from "react";
 // @ts-expect-error react-dom is only needed by this browser fixture.
 import { createRoot } from "react-dom/client";
-import { CanvasFrame } from "../client/web";
+import { CanvasFrame, WebMessageInput } from "../client/web";
 import { frameThemeFromColors, DEFAULT_LIGHT_COLORS } from "../shared/frame-theme";
 const host = globalThis as any;
 const fragment = `<style>body{padding:24px;margin:0}#target{min-height:120px}button{margin:5px}#words{display:block;font:20px sans-serif;width:600px}#paint{display:block}#dragbox{position:absolute;left:740px;top:90px;width:220px;height:68px;touch-action:none}#editing{position:absolute;left:740px;top:185px;width:220px}#editing textarea,#editable{display:block;width:200px;margin-bottom:12px}#editable{min-height:32px;border:1px solid #888}</style>
@@ -31,7 +31,7 @@ document.querySelector('#save').onclick=()=>board.saveState({field:document.quer
 document.querySelector('#paint').getContext('2d').fillRect(0,0,180,100);document.querySelector('#form').onsubmit=e=>{e.preventDefault();window.submits=(window.submits||0)+1};
 window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channel==='fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'fixture-result',id:e.data.id,error:error.message},'*')}}});
 </script>`;
-host.results = { asks: [], composes: [], hostAsks: [], anchors: [], errors: [], states: [], links: [], ready: 0, raw: [] };
+host.results = { asks: [], composes: [], hostAsks: [], anchors: [], errors: [], states: [], links: [], ready: 0, raw: [], openedInteractions: [], interactionPositions: [], inputSubmits: [], inputCloses: 0 };
 let requestId = 0;
 const pending = new Map();
 let saveTimer: ReturnType<typeof setTimeout>;
@@ -51,14 +51,18 @@ host.fixtureCall = (code: string) => new Promise((resolve, reject) => {
 function App() {
   const [mount, setMount] = useState(0);
   const [selectedAnchor, setSelectedAnchor] = useState<any>();
+  const [input, setInput] = useState<string | null>(null);
+  host.showInput = (value: string) => setInput(value);
   host.reconnect = () => setMount((n) => n + 1);
-  const [props, setProps] = useState({ boardId: "test-board", title: "Test board", canvas: { html: fragment, data: { n: 0 }, patches: [], revision: 1, documentVersion: 1 }, boardRevision: 1, userState: { saved: "original" }, theme: frameThemeFromColors(DEFAULT_LIGHT_COLORS), height: 700, selectionMode: "off" as any });
+  const [props, setProps] = useState({ boardId: "test-board", title: "Test board", canvas: { html: fragment, data: { n: 0 }, patches: [], revision: 1, documentVersion: 1 }, boardRevision: 1, userState: { saved: "original" }, theme: frameThemeFromColors(DEFAULT_LIGHT_COLORS), height: 700, selectionMode: "off" as any, interactions: [] as any[], selectedInteractionId: undefined as string | undefined });
   host.hostProps = props;
   host.update = (next: any) => setProps((previous) => ({ ...previous, ...next }));
   host.replaceDocument = () => setProps((p) => ({ ...p, selectionMode: "off", boardRevision: p.boardRevision + 1, canvas: { ...p.canvas, patches: [], revision: p.canvas.revision + 1, documentVersion: p.canvas.documentVersion + 1 } }));
   return createElement(Fragment, null, createElement(CanvasFrame, { ...props, key: mount,
     onAsk: async (request: any) => { host.results.asks.push(request); return { status: "submitted" as const, outcome: "saved" }; },
     onCompose: (request: any) => { host.results.composes.push(request); setProps((p) => ({ ...p, selectionMode: "off" })); },
+    onOpenInteraction: (id, position) => { host.results.openedInteractions.push({ id, position }); setProps(p => ({ ...p, selectedInteractionId: id })); },
+    onInteractionPosition: (id, position) => host.results.interactionPositions.push({ id, position }),
     onAnchor: (anchor) => { host.results.anchors.push(anchor); setSelectedAnchor(anchor); },
     onState: (state) => { clearTimeout(saveTimer); saveTimer = setTimeout(() => { host.results.states.push(state); setProps((p) => ({ ...p, userState: state as any })); }, 200); },
     onError: (error) => host.results.errors.push(error),
@@ -66,6 +70,6 @@ function App() {
     onReady: () => host.results.ready++,
     onSelectionEnd: () => setProps((p) => ({ ...p, selectionMode: "off" })),
     onSelectionClear: () => setSelectedAnchor(undefined),
-  }), createElement("button", { id: "host-ask", type: "button", style: { margin: 8 }, onClick: () => host.results.hostAsks.push(selectedAnchor ?? null) }, "Host: ask about selection"));
+  }), createElement("button", { id: "host-ask", type: "button", style: { margin: 8 }, onClick: () => host.results.hostAsks.push(selectedAnchor ?? null) }, "Host: ask about selection"), input === null ? null : createElement("div", { style: { position: "fixed", left: 200, top: 220, width: 380 } }, createElement(WebMessageInput, { value: input, onChange: setInput, onSubmit: () => host.results.inputSubmits.push(input), onClose: () => { host.results.inputCloses++; setInput(null); } })));
 }
 createRoot(host.document.getElementById("app")).render(createElement(App));

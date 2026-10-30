@@ -17,6 +17,7 @@ function (initial) {
   let pointer = null;
   let overlay = null;
   let lastGesture = -Infinity;
+  let lastGesturePosition;
   let patchFailure = null;
   let sequence = 0;
   const applied = new Set();
@@ -39,7 +40,7 @@ function (initial) {
     return new Promise((resolve) => {
       const timer = setTimeout(() => { pendingAsks.delete(id); resolve(cancelAsk); }, 120000);
       pendingAsks.set(id, { resolve, timer });
-      post({ type: "ask", id, request: { prompt: request.prompt, anchor: request.anchor || lastAnchor || currentAnchor(), kind: request.kind || "question" } });
+      post({ type: "ask", id, request: { prompt: request.prompt, anchor: request.anchor || lastAnchor || currentAnchor(), kind: request.kind || "question", position: lastGesturePosition } });
     });
   };
   const saveState = (value) => {
@@ -157,6 +158,7 @@ function (initial) {
       }
     } finally {
       applying = false;
+      queueMarkerPositions();
       if (deferredSelection !== null) { const mode = deferredSelection; deferredSelection = null; setSelectionMode(mode); }
     }
   };
@@ -178,6 +180,87 @@ function (initial) {
   };
   const viewport = () => ({ width: innerWidth, height: innerHeight, scrollX, scrollY });
   const rect = (r) => ({ x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height });
+  // Host-owned discussions are independent from the authored document and its patch journal.
+  // Frozen coordinates are document pixels. A selector on a point/region identifies context,
+  // not a new position; moving to its centre after a revision would silently change meaning.
+  let markerHost;
+  let markerItems = [];
+  let selectedMarkerId;
+  let markerPositionFrame;
+  let lastSelectedPosition;
+  const markerLabels = { saved: "已提交", sending: "发送中", delivered: "等待回答", processing: "处理中", answered: "已回答", applied: "已落实", rejected: "未采纳", failed: "失败" };
+  const inMarkers = (event) => markerHost && event.composedPath().includes(markerHost);
+  const markerNode = (event) => event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-board-interaction"));
+  const positionMarkers = () => {
+    markerPositionFrame = null;
+    if (!markerHost) return;
+    const overlap = new Map();
+    let unanchored = 0;
+    for (const item of markerItems) {
+      const button = item.button;
+      const anchor = item.marker.anchor;
+      let saved = anchor?.rect;
+      const stale = Boolean(anchor && anchor.canvasRevision !== snapshot.canvas.revision);
+      // Only explicit element references identify their whole target. A point's selector is
+      // merely surrounding context and must never snap to a different part of that element.
+      if (!stale && anchor?.kind === "element" && anchor.selector) {
+        try { const targets = document.querySelectorAll(anchor.selector); if (targets.length === 1) saved = rect(targets[0].getBoundingClientRect()); } catch {}
+      }
+      const x = saved ? saved.x - scrollX : 12;
+      const y = saved ? saved.y - scrollY : 12 + unanchored++ * 34;
+      const key = `${Math.round(x / 28)}:${Math.round(y / 28)}`;
+      const offset = overlap.get(key) || 0;
+      overlap.set(key, offset + 1);
+      const left = x + offset * 24;
+      const top = y + offset * 10;
+      const visible = left >= -20 && left < innerWidth && top >= -20 && top < innerHeight;
+      button.hidden = !visible;
+      button.style.left = left + "px";
+      button.style.top = top + "px";
+      button.dataset.stale = String(stale);
+      button.dataset.status = item.marker.status;
+      button.setAttribute("aria-pressed", String(item.marker.id === selectedMarkerId));
+      const status = markerLabels[item.marker.status] || "已提交";
+      button.textContent = `${item.marker.number} · ${status}${saved ? stale ? " · 旧位置" : "" : " · 整板"}`;
+      button.title = `${item.marker.text}\n${status}${!saved ? " · 未指定可定位的局部位置。" : ""}${stale ? ` · 画布已更新；这是 r${anchor.canvasRevision} 的原位置，请核对引用。` : ""}`;
+      button.setAttribute("aria-label", `${item.marker.number}. ${item.marker.text}，${status}${saved ? stale ? "，旧版本位置" : "" : "，整板讨论"}`);
+      if (item.marker.id === selectedMarkerId) {
+        const next = { id: item.marker.id, x: left, y: top };
+        if (JSON.stringify(next) !== JSON.stringify(lastSelectedPosition)) {
+          lastSelectedPosition = next;
+          post({ type: "interaction-position", id: next.id, position: { x: next.x, y: next.y } });
+        }
+      }
+    }
+  };
+  const queueMarkerPositions = () => { if (!markerPositionFrame) markerPositionFrame = requestAnimationFrame(positionMarkers); };
+  const renderMarkers = (markers, selectedId) => {
+    selectedMarkerId = selectedId;
+    if (!markerHost) {
+      markerHost = document.createElement("div");
+      markerHost.setAttribute("data-board-markers", "");
+      markerHost.setAttribute("data-board-overlay", "");
+      markerHost.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;width:100%!important;height:100%!important;z-index:2147483645!important;pointer-events:none!important;";
+      const shadow = markerHost.attachShadow({ mode: "open" });
+      shadow.innerHTML = `<style>:host{color-scheme:normal}button{all:initial;box-sizing:border-box;position:absolute;pointer-events:auto;max-width:180px;padding:5px 8px;border:1px solid var(--host-iris,#658aeb);border-radius:14px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 2px 8px #0002;font:11px/1.3 system-ui,-apple-system,sans-serif;white-space:nowrap;cursor:pointer}button[hidden]{display:none}button:hover,button:focus-visible,button[aria-pressed=true]{outline:2px solid var(--host-iris,#658aeb);outline-offset:2px}button[data-status=failed],button[data-status=rejected]{border-color:#cc6256}button[data-status=processing],button[data-status=sending]{border-style:dashed}button[data-stale=true]{border-color:#bd8c35;background:var(--host-sheet,#fff)}</style>`;
+      root.append(markerHost);
+    }
+    // Preserve focused buttons while receiving progress, and never replace author controls.
+    const old = new Map(markerItems.map(item => [item.marker.id, item.button]));
+    markerItems = markers.map(marker => {
+      const button = old.get(marker.id) || document.createElement("button");
+      old.delete(marker.id);
+      button.type = "button";
+      button.setAttribute("data-board-interaction", marker.id);
+      if (!button.isConnected) markerHost.shadowRoot.append(button);
+      return { marker, button };
+    });
+    for (const button of old.values()) button.remove();
+    markerHost.style.setProperty("visibility", selectionMode === "off" && !pointer?.temporary ? "visible" : "hidden", "important");
+    positionMarkers();
+  };
+  window.addEventListener("scroll", queueMarkerPositions, true);
+  window.addEventListener("resize", queueMarkerPositions);
   const clearOverlay = () => { if (overlay) overlay.remove(); overlay = null; };
   const showOverlay = (r) => {
     if (!overlay) {
@@ -241,6 +324,7 @@ function (initial) {
     const mode = pointer?.temporary ? "region" : selectionMode;
     root.setAttribute("data-board-selection", mode);
     root.style.cursor = mode === "off" ? "" : mode === "text" ? "text" : "crosshair";
+    if (markerHost) markerHost.style.setProperty("visibility", mode === "off" ? "visible" : "hidden", "important");
   };
   const releasePointer = () => {
     const active = pointer;
@@ -362,6 +446,8 @@ function (initial) {
   window.addEventListener("pointerdown", (event) => {
     if (!event.isTrusted) return;
     lastGesture = performance.now();
+    lastGesturePosition = eventPoint(event);
+    if (inMarkers(event)) { window.focus(); cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); event.stopImmediatePropagation(); return; }
     suppressPointerClick = false;
     dismissedPointer = null;
     if (inMenu(event)) { event.stopImmediatePropagation(); return; }
@@ -386,6 +472,7 @@ function (initial) {
     showOverlay({ x: pointer.x, y: pointer.y, width: 0, height: 0 });
   }, true);
   window.addEventListener("pointermove", (event) => {
+    if (inMarkers(event) && !pointer) { event.stopImmediatePropagation(); return; }
     if (dismissedPointer === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); return; }
     if (inMenu(event)) { event.stopImmediatePropagation(); return; }
     if (!pointer && selectionMode === "off") return;
@@ -397,6 +484,7 @@ function (initial) {
   }, true);
   window.addEventListener("pointerup", (event) => {
     if (!event.isTrusted || event.button !== 0) return;
+    if (inMarkers(event)) { event.stopImmediatePropagation(); return; }
     if (dismissedPointer === event.pointerId) { dismissedPointer = null; event.preventDefault(); event.stopImmediatePropagation(); return; }
     if (inMenu(event)) { event.stopImmediatePropagation(); return; }
     if (!pointer && selectionMode === "off") return;
@@ -439,6 +527,7 @@ function (initial) {
   });
   window.addEventListener("contextmenu", (event) => {
     if (!event.isTrusted) return;
+    if (inMarkers(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; }
     if (event.shiftKey || isEditor(event)) { cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); return; }
     if (applying) return;
     event.preventDefault();
@@ -456,12 +545,20 @@ function (initial) {
     void finishSelection(session, selected.anchor, selected.region, Boolean(previous));
   }, true);
   window.addEventListener("click", (event) => {
+    if (inMarkers(event)) {
+      event.preventDefault(); event.stopImmediatePropagation();
+      const button = markerNode(event);
+      if (!event.isTrusted || !button || !navigator.userActivation?.isActive) return;
+      const bounds = button.getBoundingClientRect();
+      post({ type: "open-interaction", id: button.getAttribute("data-board-interaction"), position: { x: bounds.left, y: bounds.top } });
+      return;
+    }
     if (inMenu(event)) {
       event.preventDefault(); event.stopImmediatePropagation();
       const action = event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-board-action"));
       if (!event.isTrusted || !action || action.disabled || !selectionSession.anchor || !navigator.userActivation?.isActive) return;
       const session = selectionSession;
-      post({ type: "compose", selectionId: session.id, request: { kind: action.getAttribute("data-board-action"), anchor: session.anchor } });
+      post({ type: "compose", selectionId: session.id, request: { kind: action.getAttribute("data-board-action"), anchor: session.anchor, position: session.position } });
       cancelSelection({ clear: false });
       return;
     }
@@ -503,6 +600,8 @@ function (initial) {
   window.addEventListener("keydown", (event) => {
     if (event.isTrusted) lastGesture = performance.now();
     if (!event.isTrusted) return;
+    if (inMarkers(event)) { event.stopImmediatePropagation(); return; }
+    if (event.target instanceof Element) { const r = event.target.getBoundingClientRect(); lastGesturePosition = { x: r.left, y: r.bottom }; }
     if (event.key === "Escape" && (selectionSession || selectionMode !== "off" || lastAnchor)) {
       event.preventDefault(); event.stopImmediatePropagation();
       selectionMode = "off"; cancelSelection({ notify: true }); post({ type: "selection-end" }); return;
@@ -523,6 +622,7 @@ function (initial) {
     const message = event.data;
     if (event.source !== window.parent || !message || message.channel !== scope.channel || message.boardId !== scope.boardId || message.sessionId !== scope.sessionId) return;
     if (message.type === "snapshot") receiveSnapshot(message.snapshot);
+    else if (message.type === "interactions" && Array.isArray(message.markers)) renderMarkers(message.markers, message.selectedId);
     else if (message.type === "selection") setSelectionMode(message.mode);
     else if (message.type === "clear-selection") { selectionMode = "off"; cancelSelection(); }
     else if (message.type === "ask-result") {
