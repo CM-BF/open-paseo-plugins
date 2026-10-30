@@ -49,17 +49,98 @@ An explicit whole-document replacement clears the patch journal and resets runni
 
 ## Free canvas and local changes
 
-HTML may include scripts, style, SVG, Canvas, WebGL and arbitrary controls. It runs in a network-restricted sandbox. Put scripts and essential assets inline; do not depend on arbitrary remote scripts or localhost APIs. The canvas cannot execute shell commands or send messages by itself.
+HTML may include scripts, style, SVG, Canvas, WebGL and arbitrary controls. It runs in a network-restricted sandbox. Inline scripts/assets and blob workers work. HTTPS scripts, modules, styles, fonts, images and fetch are allowed from unpkg.com, cdn.jsdelivr.net, esm.sh and cdnjs.cloudflare.com; use small versioned builds when a library helps. Other hosts, Google Fonts, localhost APIs and nested frames are blocked. Keep essential data inline or in board data, and handle CDN loading failures. The canvas cannot execute shell commands or send messages by itself.
 
 Choose a coherent color policy. For host-adaptive content, use paired host tokens for both background and text. For a fixed light/dark canvas, explicitly set its surface, text and color-scheme together; use local palette variables for controls and secondary text rather than mixing a fixed white surface with host-adaptive foreground. Board defaults have low CSS priority and headings inherit their surrounding text color. Verify the same canvas under both light and dark host themes, including inputs, buttons and muted labels. Changing the host theme does not recolor images, Canvas/WebGL pixels or arbitrary custom drawings automatically.
 
+### Injected design system: use, adapt or ignore
+
+Board already includes visualize's CSS, tokens and optional helpers. Do not re-import its stylesheet or recreate every button from scratch. These are optional drawing materials, not a required component catalog or page template. A diagram, editorial layout, simulator or custom spatial canvas is equally valid; avoid turning every paragraph into a card. Let the user's question determine the visual hierarchy and interaction.
+
+The stylesheet is in the low-priority paseo-board-defaults CSS layer, so ordinary authored CSS wins. Board uses the page surface: body starts at max-width 960px, centered, with 40px 28px 28px padding (16px 14px 20px in a narrow pane). This is a default, not a desktop size limit. A deliberately wide board may override body max-width/padding, then give its own sections appropriate widths and scrolling. Do not apply fixed width/height to all content just to imitate a screenshot.
+
+**Tokens available through var(...):**
+
+| Purpose | Tokens |
+| --- | --- |
+| Page and secondary text | --background / --foreground; --muted-foreground |
+| Surface/text pairs | --card / --card-foreground, --popover / --popover-foreground, --primary / --primary-foreground, --secondary / --secondary-foreground, --accent / --accent-foreground |
+| Quiet surfaces and outlines | --muted, --border, --input, --ring |
+| Status accents | --destructive, --success, --warning (no matching status-foreground tokens) |
+| Categorical data | --viz-series-1 through --viz-series-8: blue, orange, green, pink, violet, teal, red, yellow |
+| Ordered data | --viz-neutral-1..5 (weak to strong), --viz-sequential-1..6, --viz-diverging-1..7 (4 is the midpoint) |
+| Focus/context | --viz-focus, --viz-focus-2, --viz-recede, --viz-recede-foreground |
+| Type and shape | --font-sans, --font-mono, --font-size-base, --radius, --shadow-sm, --shadow-lg |
+
+Use the semantic tokens above rather than coupling authored content to the internal --host-* palette. The font stacks use locally installed Geist / Geist Mono, then system fallbacks; the sans stack includes Chinese fonts. No font is downloaded automatically. Keep body text in --font-sans and reserve --font-mono / tabular numerals for values and code. Defaults are 14px body text with 1.55 line height and 600-weight headings; choose a readable size and a small, consistent hierarchy for the actual viewing distance. Do not make every label tiny or every title oversized. There is no built-in spacing-token scale: use consistent local gaps (for example 8/12/16/24/32px), larger spacing between groups than within them, and scoped variables if helpful. Let long text wrap and give grid/flex children min-width:0.
+
+**Optional classes:**
+
+- Layout/surfaces: .card, .viz-grid (auto-fit columns, 10px gap), .viz-row (wrapping row, 8px gap), .viz-stack (14px gap), .viz-controls; .viz-stat with .viz-stat-value, and .viz-badge. Use plain sections when a surface or badge adds no meaning.
+- Actions: .btn plus .btn-primary, .btn-ghost, .btn-sm, .btn-icon or .btn-block. .btn-primary is a strong foreground/background inversion, not necessarily the accent color. Pressed state uses aria-pressed, aria-selected or .is-selected; .viz-segmented groups toggle buttons. Supply real labels, focus states and disabled behavior.
+- Fields: .form-label, .form-control, .form-select, .form-range, .form-check (optionally .form-switch), .form-check-input, .form-check-label. Classes style native controls; authors still wire their behavior.
+- Text/tables: .text-muted, .text-small, .text-mono, .text-destructive, .text-success, .text-warning, .sr-only; native tables are styled, with .table-responsive for horizontal overflow and .table-sm for denser cells. Muted text still needs contrast on its actual surface.
+
+For example, this self-contained local control uses the existing styles without creating a task template:
+
+\`\`\`html
+<section id="motion-demo" class="viz-stack" aria-labelledby="motion-title">
+  <style id="motion-demo-style">
+    #motion-demo { color:var(--foreground); background:var(--background); }
+    #motion-demo .motion-controls { gap:12px; }
+  </style>
+  <h2 id="motion-title">Explore the motion</h2>
+  <div class="viz-row motion-controls">
+    <label class="form-label" for="motion-rate">Speed
+      <input id="motion-rate" class="form-range" type="range" min="1" max="5" value="1">
+    </label>
+    <output id="motion-value" class="text-mono" for="motion-rate">1×</output>
+    <button id="motion-reset" class="btn btn-ghost" type="button">Reset</button>
+  </div>
+  <script>
+    (() => {
+      const section = document.getElementById('motion-demo');
+      const rate = section.querySelector('#motion-rate');
+      const value = section.querySelector('#motion-value');
+      rate.oninput = () => { value.textContent = rate.value + '×'; };
+      section.querySelector('#motion-reset').onclick = () => { rate.value = '1'; rate.oninput(); };
+    })();
+  </script>
+</section>
+\`\`\`
+
+Do not globally redefine .card, .btn or .text-muted to serve one new component: older content and other agents may use them. Use #your-component .your-class or a specific additional class, and keep each component's style element under a stable ID. A fixed-palette component must set its own surface/text pairs, muted text, outlines and control colors (including any inherited helper tokens it uses), plus color-scheme:light or dark. Setting only background:white is incomplete; setting color-scheme alone does not replace the host's palette. A whole fixed-palette page should also set its page background/text so margins match.
+
+**Charts and drawings:** .viz-plot on an SVG opts into themed structure: .viz-plot-grid, .viz-plot-axis, .viz-plot-label (haloed annotation), .viz-plot-line, .viz-plot-mark, .viz-plot-area and .viz-plot-basemap. data-viz-series="1" through "8" selects a series; --viz-series can instead select a focus/sequential/diverging token, and --viz-fill controls an area's strength. .viz-plot-scroll supports wide plots with --viz-plot-min-width (660px default). Legends use .viz-legend with .viz-swatch. Use categorical colors for identities, sequential colors for magnitude and diverging colors for a meaningful midpoint; keep identities consistent across updates and supply labels or shapes as well as color. For example:
+
+\`\`\`html
+<svg id="curve-preview" class="viz-plot" viewBox="0 0 320 120" role="img" aria-labelledby="curve-title">
+  <title id="curve-title">Illustrative curve rising from left to right</title>
+  <path class="viz-plot-axis" d="M20 15V100H300"/>
+  <path class="viz-plot-line" data-viz-series="1" d="M20 90C100 90 180 20 300 20"/>
+  <text class="viz-plot-label" x="204" y="56">Illustration</text>
+</svg>
+\`\`\`
+
+CSS/SVG colors follow the host automatically. Canvas/WebGL must resolve colors in their element's theme context and redraw on window's paseo:themechange event (event.detail.theme is light or dark), plus resize when needed. For Canvas, a computed CSS color property on a probe element resolves var()/light-dark(); copying an unresolved custom-property string directly into drawing APIs is unreliable. Keep dense plots readable through zoom or local horizontal scrolling rather than shrinking all labels for mobile.
+
+**Icons and tooltips have an initial-load condition.** If the initial document source contains lucide, Board includes a CDN Lucide loader and initializes <i data-lucide="name"></i> icons at 16px. For icons added later, call window.lucide.createIcons() after inserting them; if the initial loader is still pending, wait for its load event (script ID codex-visualization-lucide). If the initial source contains data-tooltip, dataset.tooltip or floatingui, Board loads Floating UI and delegates themed tooltips for data-tooltip="…" (optional data-tooltip-placement). Those delegated tooltips work on later elements once loaded. A patch that introduces either feature for the first time does NOT automatically load its helper. Include the intended helper usage in initial HTML, or explicitly load a library from an allowed CDN and wire its initialization/tooltip behavior yourself; self-contained SVG/native title is another option. Handle loading failure and keep important actions understandable without a tooltip. Do not assume visualize-only export, preview or follow-up APIs are Board features; use window.board below.
+
+### Maintain a long-lived composition
+
 Stable HTML IDs make precise updates easy: patch {id:"explain-v1", selector:"#comparison", operation:"append", html:"..."}. Supported operations: append, prepend, replace, remove. Patches may add script-powered animations. Choose the smallest stable element containing the intended change; do not replace an enclosing layout or status panel merely to edit one sentence. A highlight describes the published target, not an exact visual diff. Preserve existing controls by modifying only the target. Full html replacement requires replaceDocument:true and canvasBase, rebuilds the document and clears its patch journal; reserve it for intentional redesigns and preserve current contributions plus serializable state.
+
+Before extending a layout, read its current composed source and reuse its typography, spacing and section structure. Replace an owned style element when its rules change instead of appending successive overrides; avoid duplicate IDs. Keep component CSS scoped, and explicitly dispose of its window listeners, timers, animation loops and board subscriptions before replacing/removing that component: removing DOM does not automatically clean those up. Data-only changes should update existing nodes and drawings, not rebuild a form or reset the user's zoom. After a patch, inspect surrounding sections as well as the changed one for overflow, clipping, inconsistent spacing and contrast; fix the smallest affected scope rather than starting the whole board over.
 
 Committed main-canvas changes retain a bounded set of locations for the user to visit and highlight directly. Patch selectors are captured automatically; document replacement is recorded as a whole-document change. For data-only publish or emit, include focusSelectors:["#comparison", "#summary"] when those elements actually render the changed data. Do not supply focusSelectors together with html/patch or without data/dataPatch, and do not invent locations when unknown. A repeated data value creates no new location. These locations do not require task-specific components or a textual activity feed. The host alone marks individual updates seen; agent tools cannot acknowledge them for the user.
 
 Preserve a component's stable HTML ID when moving or making it collapsible, and give a new component a different ID. New selections capture an optional component binding so discussion markers can follow layout changes or remain on a collapsed component's visible container. The original quote, rectangle, image and version remain frozen evidence; a marker's current display location does not make an old reference current. A missing or ambiguous component remains accessible through the discussion index rather than being silently attached to unrelated content. No prescribed component schema is required.
 
 Use the injected window.board API: board.getData(), board.onData(callback), board.getState(), board.saveState(json), board.restoreState(), board.onState(callback), board.getContext(), board.ask({prompt,kind:"question"|"change"|"fork",anchor?}). Subscribe with onData and render getData() initially; onData/onState return unsubscribe functions. User-facing ask/change/fork actions open the trusted host composer; call ask from a real user click, and the native composer confirms before sending. Plugin selection works even without semantic IDs: selected text, a point or region, geometry and the current version travel together. Add IDs where useful, not mandatory object schemas.
+
+### Preview what actually renders
+
+There is no board_preview tool. Opening an authored HTML file directly omits Board's injected styles, sandbox, data and patch replay. For actual UI verification, publish to an owned test Board and open it through Paseo with available browser/computer tools. Inspect a desktop viewport and a narrower pane, exercise controls and a local patch, and capture the real rendering. Check light and dark host palettes in an isolated test context; do not change the user's global theme solely to run a test. In a repository development checkout, an isolated browser harness can use shared/document.ts's buildBoardDocument with real FrameSnapshots and explicit light/dark themes; this verifies the renderer, not the native Paseo UI. npm run test:browser and npm run test:host run the repository's regression fixtures, not a preview of your arbitrary new board. If an actual browser/host is unavailable, report that limit and only claim the source checks performed. Never invent a successful screenshot or treat a publish receipt as visual verification.
 
 ## Answer on the board
 
