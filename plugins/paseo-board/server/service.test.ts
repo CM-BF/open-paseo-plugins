@@ -114,7 +114,7 @@ describe("BoardService SDK adapter", () => {
     expect((await store.read("board"))!.interactions[0].status).toBe("answered");
   });
 
-  it("forks with frozen selection, PNG and decisions using inherited session settings without a parent", async () => {
+  it("forks with frozen selection and PNG while leaving full board context available on demand", async () => {
     let board = (await store.read("board"))!;
     await store.recordDecision({ boardId: board.id, expectedRevision: board.revision, eventId: "choice", decision: { id: "scope", choice: "Only support current clients", basis: "explicit", rationale: "Initial scope", evidence: [], related: [] } });
     const anchor = { boardRevision: 1, canvasRevision: 1, kind: "region" as const, rect: { x: 50, y: 40, width: 200, height: 150 }, image: { mimeType: "image/png" as const, data: "cG5n" } };
@@ -132,7 +132,7 @@ describe("BoardService SDK adapter", () => {
     expect(sdk.sends[0].text).toContain('interactionId="fork-1"');
     expect(sdk.sends[0].text).toContain("board_respond");
     expect(sdk.sends[0].id).toBe("fork-agent"); expect(sdk.sends[0].options.images).toEqual([{ mimeType: "image/png", data: "cG5n" }]);
-    expect(sdk.sends[0].text).toContain('"boardRevision":1'); expect(sdk.sends[0].text).toContain("Only support current clients"); expect(sdk.sends[0].text).not.toContain("cG5n");
+    expect(sdk.sends[0].text).toContain('"boardRevision":1'); expect(sdk.sends[0].text).not.toContain("Only support current clients"); expect(sdk.sends[0].text).not.toContain("cG5n");
     sdk.append("fork-agent", { type: "assistant_message", text: "This default affects compatibility; consider a fallback." }); await service.onTurnEnded("fork-agent");
     board = (await store.read("board"))!; expect(board.interactions[0].status).toBe("answered");
     await service.interact({ boardId: "board", intentId: "reply-1", kind: "reply", sourceInteractionId: "fork-1", text: "Show an alternative" }); await service.drain();
@@ -141,6 +141,160 @@ describe("BoardService SDK adapter", () => {
     expect(sdk.sends[1].text).toContain('interactionId="reply-1"');
     await service.interact({ boardId: "board", intentId: "return-1", kind: "return", sourceInteractionId: "fork-1", text: "Apply the fallback" }); await service.drain();
     expect(sdk.sends[2].id).toBe("owner"); expect(sdk.sends[2].text).toContain("This default affects compatibility");
+  });
+
+  it("sends compact immutable prompts with selection evidence instead of whole-board code, data and decisions", async () => {
+    let board = (await store.read("board"))!;
+    await store.publish({ boardId: "board", expectedRevision: board.revision, eventId: "large-context", html: '<div>' + 'UNRELATED_CANVAS '.repeat(12000) + '</div>', data: { unrelated: 'UNRELATED_DATA '.repeat(3000) }, decisions: [{ id: "irrelevant", basis: "explicit", choice: "UNRELATED_DECISION", evidence: [] }] });
+    const anchor = { kind: "text" as const, text: "The selected claim", selector: "#claim", boardRevision: 1, canvasRevision: 1, image: { mimeType: "image/png" as const, data: "cG5n" } };
+    await service.interact({ boardId: "board", intentId: "compact-main", kind: "question", destination: "main", text: "Explain the selected claim", anchor }); await service.drain();
+    const prompt = sdk.sends[0].text;
+    expect(prompt.length).toBeLessThan(3000);
+    for (const unrelated of ["UNRELATED_CANVAS", "UNRELATED_DATA", "UNRELATED_DECISION", "cG5n", '"visibleText"', '"data"']) expect(prompt).not.toContain(unrelated);
+    expect(prompt).toContain('"selectionMayBeStale":true'); expect(prompt).toContain('"text":"The selected claim"'); expect(prompt).toContain("board_read");
+    expect(sdk.sends[0].id).toBe("owner"); expect(sdk.sends[0].options.images).toEqual([anchor.image]);
+    board = (await store.read("board"))!;
+    await store.publish({ boardId: "board", expectedRevision: board.revision, eventId: "changed-after-send", data: { changed: true } });
+    await service.interact({ boardId: "board", intentId: "compact-main", kind: "question", destination: "main", text: "Explain the selected claim", anchor }); await service.drain();
+    expect(sdk.sends).toHaveLength(1); expect(journal.get("board/compact-main")!.prompt).toBe(prompt);
+    await expect(service.interact({ boardId: "board", intentId: "compact-main", kind: "question", destination: "side", text: "Explain the selected claim", anchor })).rejects.toHaveProperty("code", "idempotency_conflict");
+  });
+
+  it("keeps full selected source text frozen on the interaction while only sending a bounded excerpt", async () => {
+    await store.addInteraction({ boardId: "board", intentId: "source", kind: "question", text: "Original source question" }, "owner");
+    const original = "Selected original response ".repeat(1000) + "UNIQUE_FROZEN_TAIL";
+    await store.respond({ boardId: "board", interactionId: "source", eventId: "source-answer", expectedResponseRevision: 0, response: original, html: "<div>DO_NOT_COPY_SOURCE_HTML</div>", resultReferences: ["source:original"] });
+    const input = { boardId: "board", intentId: "source-follow", kind: "question" as const, destination: "main" as const, text: "Discuss this earlier answer", sourceInteractionId: "source" };
+    await service.interact(input); await service.drain();
+    const prompt = sdk.sends[0].text;
+    expect(prompt.length).toBeLessThan(4000); expect(prompt).not.toContain("UNIQUE_FROZEN_TAIL"); expect(prompt).not.toContain("DO_NOT_COPY_SOURCE_HTML"); expect(prompt).toContain(".sourceSnapshot");
+    await store.respond({ boardId: "board", interactionId: "source", eventId: "source-revised", expectedResponseRevision: 1, response: "A later replacement", resultReferences: ["source:replacement"] });
+    await service.interact(input); await service.drain();
+    const frozen = (await store.read("board"))!.interactions.find(item => item.id === input.intentId)!.sourceSnapshot;
+    expect(frozen).toMatchObject({ id: "source", response: original, responseRevision: 1, resultReferences: ["source:original"], responseCanvasRevision: 1 });
+    expect(JSON.stringify(frozen)).not.toContain("DO_NOT_COPY_SOURCE_HTML");
+    await service.dispose(); journal = new ServiceJournal(join(dir, "service.json")); await journal.init(); service = new BoardService(store, journal, () => undefined); service.capture(sdk.api); await service.reconcile(); await service.drain();
+    expect((await store.read("board"))!.interactions.find(item => item.id === input.intentId)!.sourceSnapshot).toEqual(frozen);
+    expect(journal.get("board/source-follow")!.prompt).toBe(prompt); expect(sdk.sends).toHaveLength(1);
+  });
+
+  it("routes main and side independently of thread source, permits only associated side selection, and preserves selection retries", async () => {
+    let serial = 0;
+    sdk.create.mockImplementation(async () => {
+      const id = `side-${++serial}`; sdk.snapshots.set(id, { ...sdk.snapshots.get("owner")!, id }); return sdk.api.agents.ref(id);
+    });
+    const first = { boardId: "board", intentId: "side-first", kind: "question" as const, destination: "side" as const, text: "Start side discussion" };
+    expect(await service.interact(first)).toMatchObject({ kind: "fork", destination: "side" }); await service.drain();
+    expect((await store.read("board"))!.sideAgentId).toBe("side-1"); expect(sdk.sends[0].id).toBe("side-1");
+    sdk.append("side-1", { type: "assistant_message", text: "First answer" }); await service.onTurnEnded("side-1");
+    await service.interact({ boardId: "board", intentId: "main-from-side", kind: "question", destination: "main", sourceInteractionId: "side-first", text: "Ask main at this thread" }); await service.drain();
+    expect(sdk.sends.at(-1)!.id).toBe("owner");
+    await service.interact({ boardId: "board", intentId: "side-follow", kind: "question", destination: "side", sourceInteractionId: "main-from-side", text: "Ask current side at the main thread" }); await service.drain();
+    expect(sdk.sends.at(-1)!.id).toBe("side-1"); expect(sdk.create).toHaveBeenCalledTimes(1);
+    expect((await store.read("board"))!.interactions.find(item => item.id === "side-follow")).toMatchObject({ kind: "reply", sourceInteractionId: "main-from-side", agentId: "side-1" });
+    await service.interact({ boardId: "board", intentId: "side-new", kind: "question", destination: "new-side", sourceInteractionId: "side-first", text: "Start a fresh side here" }); await service.drain();
+    expect((await store.read("board"))!.sideAgentId).toBe("side-2"); expect(sdk.create).toHaveBeenCalledTimes(2);
+    let board = (await store.read("board"))!;
+    const chooseFirst = { boardId: "board", agentId: "side-1", expectedRevision: board.revision, eventId: "choose-first" };
+    expect((await service.selectSideAgent(chooseFirst)).sideAgentId).toBe("side-1");
+    board = (await store.read("board"))!;
+    await service.selectSideAgent({ boardId: "board", agentId: "side-2", expectedRevision: board.revision, eventId: "choose-second" });
+    expect((await service.selectSideAgent(chooseFirst)).sideAgentId).toBe("side-2");
+    await expect(service.selectSideAgent({ ...chooseFirst, agentId: "side-2" })).rejects.toHaveProperty("code", "idempotency_conflict");
+    await expect(service.selectSideAgent({ boardId: "board", agentId: "owner", expectedRevision: (await store.read("board"))!.revision, eventId: "not-a-fork" })).rejects.toHaveProperty("code", "forbidden");
+    await store.create({ id: "other", title: "Other Board", ownerAgentId: "owner" });
+    await expect(service.selectSideAgent({ boardId: "other", agentId: "side-1", expectedRevision: 1, eventId: "cross-board" })).rejects.toHaveProperty("code", "forbidden");
+    await expect(service.interact({ boardId: "other", intentId: "source-cross", kind: "question", destination: "side", sourceInteractionId: "side-first", text: "Wrong source" })).rejects.toHaveProperty("code", "not_found");
+    for (const agentId of ["owner", "side-1"]) await expect(service.execute("publish", { boardId: "board", expectedRevision: (await store.read("board"))!.revision, eventId: `agent-route-${agentId}`, sideAgentId: "side-1" }, { agentId, cwd: dir })).rejects.toThrow("Only the user");
+    await service.interact(first); await service.drain();
+    expect(sdk.create).toHaveBeenCalledTimes(2); expect((await store.read("board"))!.sideAgentId).toBe("side-2");
+  });
+
+  it("atomically reserves one first side, freezes queued targets and prevents late creation from overriding a newer selection", async () => {
+    await store.addInteraction({ boardId: "board", intentId: "historical-fork", kind: "fork", text: "Earlier side" }, "historical-side");
+    await store.updateInteraction("board", "historical-fork", { status: "answered", response: "Already completed" });
+    const release = new Map<string, () => void>(); let serial = 0;
+    sdk.create.mockImplementation(async options => {
+      const id = `concurrent-side-${++serial}`; sdk.snapshots.set(id, { ...sdk.snapshots.get("owner")!, id });
+      await new Promise<void>(resolve => release.set(options.idempotencyKey as string, resolve)); return sdk.api.agents.ref(id);
+    });
+    const input = (intentId: string, destination: "side" | "new-side" = "side") => ({ boardId: "board", intentId, kind: "question" as const, destination, text: intentId });
+    await Promise.all([service.interact(input("first")), service.interact(input("follow-first"))]);
+    await vi.waitFor(() => expect(sdk.create).toHaveBeenCalledTimes(1));
+    expect(journal.get("board/follow-first")).toMatchObject({ kind: "reply", waitForSideInteractionId: "first" });
+    expect((await store.read("board"))!.pendingSideInteractionId).toBe("first");
+    await service.interact(input("second", "new-side"));
+    await service.interact(input("follow-second"));
+    await vi.waitFor(() => expect(sdk.create).toHaveBeenCalledTimes(2));
+    expect(journal.get("board/follow-second")).toMatchObject({ waitForSideInteractionId: "second" });
+    const selected = await service.selectSideAgent({ boardId: "board", agentId: "historical-side", expectedRevision: (await store.read("board"))!.revision, eventId: "choose-history-while-creating" });
+    expect(selected.sideAgentId).toBe("historical-side"); expect(selected.pendingSideInteractionId).toBeUndefined();
+    release.get("paseo-board-fork:board:second")!();
+    await vi.waitFor(() => expect(journal.get("board/second")!.targetAgentId).toBe("concurrent-side-2"));
+    release.get("paseo-board-fork:board:first")!(); await service.drain();
+    expect((await store.read("board"))!).toMatchObject({ sideAgentId: "historical-side" });
+    expect((await store.read("board"))!.pendingSideInteractionId).toBeUndefined();
+    expect(journal.get("board/follow-first")!.targetAgentId).toBe("concurrent-side-1");
+    expect(journal.get("board/follow-second")!.targetAgentId).toBe("concurrent-side-2");
+    expect(sdk.sends).toHaveLength(2);
+    sdk.append("concurrent-side-1", { type: "assistant_message", text: "First done" }); await service.onTurnEnded("concurrent-side-1"); await service.drain();
+    expect(sdk.sends.at(-1)!.text).toContain("intent=follow-first]"); expect(sdk.sends.at(-1)!.id).toBe("concurrent-side-1");
+    sdk.append("concurrent-side-2", { type: "assistant_message", text: "Second done" }); await service.onTurnEnded("concurrent-side-2"); await service.drain();
+    expect(sdk.sends.at(-1)!.text).toContain("intent=follow-second]"); expect(sdk.sends.at(-1)!.id).toBe("concurrent-side-2");
+    expect(sdk.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers a lost create acknowledgement using its frozen native payload and original side target after restart", async () => {
+    sdk.create.mockRejectedValue(new Error("Create response lost after native acceptance"));
+    const first = { boardId: "board", intentId: "lost-create", kind: "question" as const, destination: "side" as const, text: "Create once" };
+    await service.interact(first); await service.drain();
+    const original = sdk.create.mock.calls[0][0]; const frozenPrompt = journal.get("board/lost-create")!.prompt;
+    expect(journal.get("board/lost-create")).toMatchObject({ state: "creating", creationSpec: expect.objectContaining({ idempotencyKey: "paseo-board-fork:board:lost-create" }) });
+    await service.interact({ ...first, intentId: "after-lost-create", text: "Queued for the same side" });
+    // Hold the SDK unavailable until a fresh service takes over the durable journal.
+    await service.dispose();
+    const beforeRestartCreates = sdk.create.mock.calls.length;
+    sdk.create.mockImplementation(async () => sdk.api.agents.ref("fork-agent"));
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, model: "changed-model", currentModeId: "changed-mode" });
+    let board = (await store.read("board"))!;
+    await store.publish({ boardId: "board", expectedRevision: board.revision, eventId: "changed-title", title: "A different title", html: "New unrelated canvas" });
+    journal = new ServiceJournal(join(dir, "service.json")); await journal.init(); service = new BoardService(store, journal, () => undefined); service.capture(sdk.api);
+    await service.reconcile(); await service.drain();
+    expect(sdk.create.mock.calls[beforeRestartCreates][0]).toEqual(original);
+    expect(journal.get("board/lost-create")!.prompt).toBe(frozenPrompt);
+    expect((await store.read("board"))!.sideAgentId).toBe("fork-agent");
+    expect(journal.get("board/after-lost-create")!.targetAgentId).toBe("fork-agent");
+    await service.interact(first); await service.drain(); expect(sdk.create).toHaveBeenCalledTimes(beforeRestartCreates + 1);
+  });
+
+  it("recovers journal-first route projections and never rolls a later side selection back", async () => {
+    const add = vi.spyOn(store, "addInteraction"); add.mockRejectedValueOnce(new Error("Projection unavailable"));
+    const input = { boardId: "board", intentId: "journal-first", kind: "question" as const, destination: "side" as const, text: "Persist before projection" };
+    await expect(service.interact(input)).rejects.toThrow("Projection unavailable");
+    expect(journal.sideRoute("board")).toMatchObject({ pendingInteractionId: "journal-first", version: 1 });
+    expect((await store.read("board"))!.interactions).toHaveLength(0);
+    await service.dispose(); journal = new ServiceJournal(join(dir, "service.json")); await journal.init();
+    service = new BoardService(store, journal, () => undefined); service.capture(sdk.api); await service.reconcile(); await service.drain();
+    expect((await store.read("board"))!).toMatchObject({ sideAgentId: "fork-agent", sideAgentRevision: 2 });
+    expect(sdk.create).toHaveBeenCalledTimes(1);
+    const selected = await service.selectSideAgent({ boardId: "board", agentId: "fork-agent", expectedRevision: (await store.read("board"))!.revision, eventId: "reselect" });
+    await store.projectSideAgent("board", { pendingInteractionId: "journal-first", version: 1 });
+    expect((await store.read("board"))!.sideAgentRevision).toBe(selected.sideAgentRevision);
+    expect((await store.read("board"))!.pendingSideInteractionId).toBeUndefined();
+  });
+
+  it("does not start native fork creation after disposal begins during durable preparation", async () => {
+    const update = store.updateInteraction.bind(store); let held = false; let resume!: () => void;
+    const gate = new Promise<void>(resolve => { resume = resolve; });
+    vi.spyOn(store, "updateInteraction").mockImplementation(async (boardId, id, input) => {
+      if (id === "stopped-create" && input.status === "sending") { held = true; await gate; }
+      return update(boardId, id, input);
+    });
+    await service.interact({ boardId: "board", intentId: "stopped-create", kind: "question", destination: "new-side", text: "Prepare a side" });
+    await vi.waitFor(() => expect(held).toBe(true));
+    const stopping = service.dispose(); resume(); await stopping;
+    expect(sdk.create).not.toHaveBeenCalled();
+    expect(journal.get("board/stopped-create")).toMatchObject({ state: "creating", creationSpec: expect.objectContaining({ idempotencyKey: "paseo-board-fork:board:stopped-create" }) });
   });
 
   it("lets a fork directly patch the shared canvas and keeps its applied receipt through fallback and restart", async () => {
