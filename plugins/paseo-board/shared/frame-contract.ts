@@ -1,4 +1,4 @@
-import type { Anchor, Canvas, Interaction, JsonData } from "./contracts";
+import type { Anchor, Canvas, CanvasUpdate, Interaction, JsonData } from "./contracts";
 
 export const FRAME_CHANNEL = "paseo-board-frame-v1";
 export type SelectionMode = "off" | "text" | "region" | "point";
@@ -7,6 +7,12 @@ export interface FrameError { code: string; message: string; patchId?: string }
 /** CSS pixels relative to the iframe viewport (not document coordinates). */
 export interface FramePosition { x: number; y: number }
 export type InteractionLocation = "component" | "collapsed" | "ancestor" | "snapshot";
+export interface FocusUpdateRequest { update: CanvasUpdate; token: number; targetIndex?: number; automatic?: boolean }
+export interface UpdatePosition {
+  requestId: string; id: string; token: number; targetIndex: number; documentVersion: number;
+  status: "focused" | "unavailable" | "deferred";
+  position?: FramePosition; location?: "target" | "ancestor" | "document"; reason?: string;
+}
 export interface AskRequest { prompt: string; anchor?: Anchor; kind?: "question" | "change" | "fork"; position?: FramePosition }
 export interface ComposeRequest { kind: "question" | "change" | "fork"; anchor: Anchor; position?: FramePosition }
 export interface InteractionMarker { id: string; text: string; status: Interaction["status"]; anchor?: Anchor; number: number }
@@ -16,6 +22,8 @@ export interface FrameSnapshot { canvas: Canvas; boardRevision: number; userStat
 export type FrameMessage = FrameScope & (
   | { type: "ready" }
   | { type: "canvas-pointer" }
+  | { type: "canvas-activity"; busy: boolean }
+  | ({ type: "update-position" } & UpdatePosition)
   | { type: "anchor"; anchor: Anchor; selectionId?: string }
   | { type: "selection-lock"; id: string; active: boolean; dragging?: boolean }
   | { type: "compose"; selectionId: string; automatic?: boolean; request: ComposeRequest }
@@ -60,6 +68,18 @@ export function readFrameMessage(value: unknown, scope: Pick<FrameScope, "boardI
   if (!record(value) || value.channel !== FRAME_CHANNEL || value.boardId !== scope.boardId || value.sessionId !== scope.sessionId) return null;
   switch (value.type) {
     case "ready": case "canvas-pointer": case "selection-end": case "selection-clear": break;
+    case "canvas-activity": if (typeof value.busy !== "boolean") return null; break;
+    case "update-position":
+      if (!short(value.requestId, 160) || !short(value.id, 160)
+        || !Number.isSafeInteger(value.token) || Number(value.token) < 0
+        || !Number.isSafeInteger(value.targetIndex) || Number(value.targetIndex) < 0 || Number(value.targetIndex) > 100
+        || !Number.isSafeInteger(value.documentVersion) || Number(value.documentVersion) < 0
+        || !["focused", "unavailable", "deferred"].includes(value.status as string)) return null;
+      if (value.position !== undefined && !position(value.position)) return null;
+      if (value.location !== undefined && !["target", "ancestor", "document"].includes(value.location as string)) return null;
+      if (value.reason !== undefined && !short(value.reason, 500)) return null;
+      if (value.status === "focused" && (!position(value.position) || !value.location)) return null;
+      break;
     case "anchor": if (!validAnchor(value.anchor) || (value.selectionId !== undefined && !short(value.selectionId, 160))) return null; break;
     case "selection-lock": if (!short(value.id, 160) || typeof value.active !== "boolean" || (value.dragging !== undefined && typeof value.dragging !== "boolean")) return null; break;
     case "compose": {

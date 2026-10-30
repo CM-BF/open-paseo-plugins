@@ -63,6 +63,17 @@ describe("frame bridge validation", () => {
     expect(readFrameMessage(message({ type: "interaction-position", id: "q1", position: { x: 12, y: 34 }, location: "guessed" }), scope)).toBeNull();
     expect(readFrameMessage(message({ type: "ask", id: "ask", request: { prompt: "Hello", position: { x: Infinity, y: 1 } } }), scope)).toBeNull();
   });
+  it("validates update navigation receipts and activity without granting arbitrary seen state", () => {
+    const receipt = { type: "update-position", requestId: "request-1", id: "update-1", token: 1, targetIndex: 0, documentVersion: 2, status: "focused", position: { x: 8, y: 12 }, location: "target" };
+    expect(readFrameMessage(message(receipt), scope)).not.toBeNull();
+    expect(readFrameMessage(message({ ...receipt, status: "deferred", position: undefined, location: undefined }), scope)).not.toBeNull();
+    expect(readFrameMessage(message({ ...receipt, status: "unavailable", reason: "Removed" }), scope)).not.toBeNull();
+    for (const bad of [{ requestId: "" }, { token: NaN }, { token: -1 }, { targetIndex: 101 }, { documentVersion: -1 }, { status: "seen" }, { position: undefined }, { location: "guessed" }, { reason: "x".repeat(501) }]) {
+      expect(readFrameMessage(message({ ...receipt, ...bad }), scope)).toBeNull();
+    }
+    expect(readFrameMessage(message({ type: "canvas-activity", busy: true }), scope)).not.toBeNull();
+    expect(readFrameMessage(message({ type: "canvas-activity", busy: "false" }), scope)).toBeNull();
+  });
   it("keeps one durable marker per thread with its original location and latest reply status", () => {
     const anchor = { kind: "point" as const, boardRevision: 2, canvasRevision: 1, rect: { x: 40, y: 80, width: 0, height: 0 }, image: { mimeType: "image/png" as const, data: "iVBORw0KGgoAAAA" } };
     const base = { text: "Question", status: "answered" as const, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", resultReferences: [] };

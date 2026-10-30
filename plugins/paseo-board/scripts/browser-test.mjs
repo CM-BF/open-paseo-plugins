@@ -639,6 +639,114 @@ try {
   }
   check('unstyled canvases still inherit the host palette after fixed author styles are removed');
 
+  // Explicit update records are the only source of spatial navigation. These messages
+  // exercise the real sandbox runtime; the host navigation/ack policy has its own tests.
+  const sendFrame = (fields) => evaluate(`(()=>{const scope=results.raw.filter(m=>m.type==='ready').at(-1);document.querySelector('iframe').contentWindow.postMessage({...scope,...${JSON.stringify(fields)}},'*')})()`);
+  let updateToken = 0;
+  const focusChange = async (record, options={}) => {
+    const token=++updateToken, requestId=`focus-test-${token}`;
+    await sendFrame({type:'focus-update',requestId,update:record,token,targetIndex:0,...options});
+    await until(`results.raw.some(m=>m.type==='update-position'&&m.requestId===${JSON.stringify(requestId)})`);
+    return evaluate(`results.raw.find(m=>m.type==='update-position'&&m.requestId===${JSON.stringify(requestId)})`);
+  };
+  const updateRecord = async (id,targets=[],kind='data') => ({id,eventId:id,at:new Date().toISOString(),...(await frame('({boardRevision:board.getContext().boardRevision,canvasRevision:board.getContext().canvasRevision,documentVersion:board.getContext().documentVersion})')),kind,targets});
+  const publishFocusPatch = async (patch) => {
+    await update(`{boardRevision:hostProps.boardRevision+1,canvas:{...hostProps.canvas,revision:hostProps.canvas.revision+1,patches:[...hostProps.canvas.patches,${JSON.stringify(patch)}]}}`);
+    await untilFrame(`board.getContext().canvasRevision===${await evaluate('hostProps.canvas.revision')}`);
+    await settleFrame();
+    return updateRecord(patch.id,[{selector:patch.selector,operation:patch.operation,patchId:patch.id}],'patch');
+  };
+  await publishFocusPatch({id:'update-focus-fixture',selector:'body',operation:'append',html:`<section id="update-area" style="margin-top:1200px;padding:16px"><div id="update-scroll" style="width:480px;height:230px;overflow:auto;border:2px solid #444"><div id="update-inner" style="width:1800px;height:1100px;position:relative"><article id="update-far" style="position:absolute;left:1400px;top:750px;width:200px;height:90px;background:#ddeeff;color:#123">Far update</article></div></div><details id="update-details"><summary>Collapsed result</summary><p id="update-folded">Hidden result</p></details><section id="update-delete-parent" style="padding:24px;border:1px solid #777"><p id="update-delete">Remove me</p></section><section id="update-path-parent"><p>Anonymous target</p></section></section>`});
+  const focusReady=await evaluate('results.ready');
+  const focusTicks=await frame('window.ticks');
+  const farUpdate=await updateRecord('update-data-far',[{selector:'#update-far'}]);
+  await frame("document.querySelector('#field').value='draft survives navigation';document.activeElement?.blur();scrollTo(0,0)");
+  const farStyle=await frame("document.querySelector('#update-far').getAttribute('style')");
+  assert.equal((await focusChange(farUpdate)).status,'focused');
+  const spatial=await frame("(()=>{const target=document.querySelector('#update-far').getBoundingClientRect(),pane=document.querySelector('#update-scroll'),box=pane.getBoundingClientRect();return {x:pane.scrollLeft,y:pane.scrollTop,top:target.top,bottom:target.bottom,left:target.left,right:target.right,pane:{top:box.top,bottom:box.bottom,left:box.left,right:box.right},height:innerHeight}})()");
+  assert.ok(spatial.x>1000&&spatial.y>500);
+  assert.ok(spatial.top>=spatial.pane.top&&spatial.bottom<=spatial.pane.bottom&&spatial.left>=spatial.pane.left&&spatial.right<=spatial.pane.right);
+  assert.ok(spatial.top>=0&&spatial.bottom<=spatial.height);
+  assert.equal(await frame("getComputedStyle(document.querySelector('[data-board-update-highlight]').shadowRoot.querySelector('.ring')).animationIterationCount"),'3');
+  assert.equal(await frame("document.querySelector('#update-far').getAttribute('style')"),farStyle);
+  await untilFrame("!document.querySelector('[data-board-update-highlight]')",5000);
+  assert.equal(await evaluate('results.ready'),focusReady);
+  assert.equal(await frame("document.querySelector('#field').value"),'draft survives navigation');
+  assert.ok(await frame('window.ticks')>focusTicks);
+  check('explicit update focus scrolls nested horizontal and vertical containers, pulses exactly three times, cleans its overlay and preserves drafts, styles and the live iframe');
+
+  const insertedUpdate=await publishFocusPatch({id:'update-inserted',selector:'#update-inner',operation:'append',html:'<p id="update-new" style="position:absolute;left:1200px;top:950px;width:180px;height:60px">New result</p>'});
+  const insertedReply=await focusChange(insertedUpdate);
+  assert.equal(insertedReply.location,'target');
+  assert.ok(await frame("(()=>{const target=document.querySelector('#update-new').getBoundingClientRect(),ring=document.querySelector('[data-board-update-highlight]').getBoundingClientRect();return Math.abs(target.left-ring.left)<8&&Math.abs(target.top-ring.top)<8})()"));
+  const foldedUpdate=await updateRecord('update-folded-result',[{selector:'#update-folded'}]);
+  assert.equal((await focusChange(foldedUpdate)).location,'ancestor');
+  assert.equal(await frame("document.querySelector('#update-details').open"),false);
+  assert.ok(await frame("(()=>{const a=document.querySelector('#update-details summary').getBoundingClientRect(),b=document.querySelector('[data-board-update-highlight]').getBoundingClientRect();return Math.abs(a.top-b.top)<8})()"));
+  const removalUpdate=await publishFocusPatch({id:'update-removed',selector:'#update-delete',operation:'remove'});
+  await frame("(()=>{const n=document.createElement('p');n.id='update-delete';n.textContent='Unrelated replacement';document.body.prepend(n)})()");
+  assert.equal((await focusChange(removalUpdate)).location,'ancestor');
+  assert.ok(await frame("(()=>{const a=document.querySelector('#update-delete-parent').getBoundingClientRect(),b=document.querySelector('[data-board-update-highlight]').getBoundingClientRect();return Math.abs(a.top-b.top)<8})()"));
+  await frame("document.querySelector('#update-delete-parent').remove()");
+  assert.equal((await focusChange(removalUpdate)).status,'unavailable');
+  check('append locates the actual inserted content; collapsed changes highlight their summary without opening; removal uses its captured parent and cannot follow a replacement selector');
+
+  const pathUpdate=await updateRecord('update-path',[{selector:'#update-path-parent > p'}]);
+  assert.equal((await focusChange(pathUpdate)).status,'focused');
+  await frame("(()=>{const n=document.querySelector('#update-path-parent > p');n.replaceWith(n.cloneNode(true))})()");
+  assert.equal((await focusChange(pathUpdate)).status,'unavailable');
+  await frame("document.querySelector('#update-far').insertAdjacentHTML('afterend','<p id=update-far>Duplicate identity</p>')");
+  assert.equal((await focusChange(farUpdate)).status,'unavailable');
+  await frame("document.querySelectorAll('#update-far')[1].remove()");
+  await publishFocusPatch({id:'update-stable-replacement',selector:'#update-far',operation:'replace',html:'<article id="update-far" style="position:absolute;left:1400px;top:750px;width:200px;height:90px">Same component, updated result</article>'});
+  assert.equal((await focusChange(farUpdate)).status,'focused');
+  const beforeStale=await frame('({x:scrollX,y:scrollY})');
+  assert.equal((await focusChange({...farUpdate,documentVersion:farUpdate.documentVersion-1})).status,'unavailable');
+  assert.deepEqual(await frame('({x:scrollX,y:scrollY})'),beforeStale);
+  assert.equal((await focusChange(await updateRecord('update-unspecified'))).status,'unavailable');
+  assert.equal((await focusChange({...removalUpdate,id:'update-cold-remove',targets:[{selector:'#update-delete',operation:'remove',patchId:'not-replayed'}]})).status,'unavailable');
+  check('stable unique IDs survive local replacements, while removed anonymous nodes, duplicate identities, old documents and data without location never jump to guessed content');
+
+  await frame("document.querySelector('#field').scrollIntoView({block:'center'})");
+  await click('#field');
+  const typingPosition=await frame('({x:scrollX,y:scrollY})');
+  assert.equal((await focusChange(farUpdate,{automatic:true})).status,'deferred');
+  assert.equal((await focusChange(farUpdate)).status,'deferred');
+  assert.deepEqual(await frame('({x:scrollX,y:scrollY})'),typingPosition);
+  assert.equal(await frame("document.querySelector('#field').value"),'draft survives navigation');
+  await frame('document.activeElement.blur()');
+  await until("results.raw.filter(m=>m.type==='canvas-activity').at(-1)?.busy===false",5000);
+  await sendFrame({type:'host-activity',composing:true});
+  assert.equal((await focusChange(farUpdate,{automatic:true})).status,'deferred');
+  await sendFrame({type:'host-activity',composing:false});
+  await until("results.raw.filter(m=>m.type==='canvas-activity').at(-1)?.busy===false");
+  await frame("document.querySelector('#words').scrollIntoView({block:'center'});pauseNextCapture()");
+  await rightClick('#words');
+  await untilFrame('Boolean(captureGate?.held)');
+  const capturePosition=await frame('({x:scrollX,y:scrollY})');
+  assert.equal((await focusChange(farUpdate,{automatic:true})).status,'deferred');
+  assert.deepEqual(await frame('({x:scrollX,y:scrollY})'),capturePosition);
+  await key('Escape');await frame('releaseCapture()');
+  await until("results.raw.filter(m=>m.type==='canvas-activity').at(-1)?.busy===false",5000);
+  assert.deepEqual(await frame('({x:scrollX,y:scrollY})'),capturePosition);
+  assert.equal((await focusChange(farUpdate,{automatic:true})).status,'focused');
+  check('typing, host composition and a held screenshot defer update focus; activity releases without polling and no deferred request secretly scrolls later');
+
+  const frameTarget=(await command('Target.getTargets')).targetInfos.find(t=>t.type==='iframe');
+  const motionSession=(await command('Target.attachToTarget',{targetId:frameTarget.targetId,flatten:true})).sessionId;
+  await send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]},motionSession);
+  await untilFrame("matchMedia('(prefers-reduced-motion: reduce)').matches");
+  assert.equal((await focusChange(farUpdate)).status,'focused');
+  assert.equal(await frame("getComputedStyle(document.querySelector('[data-board-update-highlight]').shadowRoot.querySelector('.ring')).animationName"),'none');
+  await untilFrame("!document.querySelector('[data-board-update-highlight]')",4000);
+  await send('Emulation.setEmulatedMedia',{features:[]},motionSession);
+  await untilFrame("!matchMedia('(prefers-reduced-motion: reduce)').matches");
+  const wholeUpdate=await updateRecord('update-document',[],'document');
+  assert.equal((await focusChange(wholeUpdate)).location,'document');
+  assert.equal(await frame('scrollY'),0);
+  await untilFrame("!document.querySelector('[data-board-update-highlight]')",5000);
+  check('reduced-motion updates use a short static ring; explicit document replacement can indicate the whole canvas, with all highlight timers ending');
+
   const screenshot = await command('Page.captureScreenshot', { format: 'png' });
   const artifact = process.env.BOARD_TEST_SCREENSHOT;
   if (artifact) await writeFile(artifact, Buffer.from(screenshot.data, 'base64'));

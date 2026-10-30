@@ -112,10 +112,11 @@ function (initial) {
     if (target === root || target === document.head || target === document.body) {
       if (patch.operation === "replace" || patch.operation === "remove") throw new Error("Replacing document roots requires publishing a new document version");
     }
-    if (patch.operation === "remove") { target.remove(); return; }
+    if (patch.operation === "remove") { capturePatchTargets(patch, target); target.remove(); return; }
     const template = document.createElement("template");
     template.innerHTML = patch.html;
     const scripts = Array.from(template.content.querySelectorAll("script"));
+    capturePatchTargets(patch, target, Array.from(template.content.children));
     if (patch.operation === "append") target.append(template.content);
     else if (patch.operation === "prepend") target.prepend(template.content);
     else if (patch.operation === "replace") target.replaceWith(template.content);
@@ -129,8 +130,9 @@ function (initial) {
   };
   const drain = async () => {
     if (applying || selectionMode !== "off" || selectionSession || captureBusy) return;
-    if (!queued) { drainMarkerFocus(); return; }
+    if (!queued) { reportCanvasActivity(); drainMarkerFocus(); return; }
     applying = true;
+    reportCanvasActivity();
     try {
       while (queued && selectionMode === "off" && !selectionSession && !captureBusy) {
         const next = queued;
@@ -162,6 +164,7 @@ function (initial) {
       }
     } finally {
       applying = false;
+      reportCanvasActivity();
       queueMarkerPositions();
       if (deferredSelection !== null) { const mode = deferredSelection; deferredSelection = null; setSelectionMode(mode); }
       drainMarkerFocus();
@@ -328,6 +331,166 @@ function (initial) {
     // Legacy selectors only described surrounding context; never guess a live binding.
     return { rect: anchor?.rect, mode: "snapshot", tracked: [] };
   };
+  // Update navigation consumes explicit publish records only. It never turns arbitrary
+  // author DOM mutations into activity, and its finite overlays do not change the canvas.
+  const updatePatchTargets = new Map();
+  const updateTargets = new Map();
+  const rememberBounded = (map, key, value) => {
+    map.set(key, value);
+    while (map.size > 160) map.delete(map.keys().next().value);
+    return value;
+  };
+  const capturedTarget = (node) => {
+    const identity = identityFor(node);
+    return identity ? { identity, node } : null;
+  };
+  const resolveUpdateTarget = (saved) => saved && resolveIdentity(saved.identity, saved.node, false);
+  const capturePatchTargets = (patch, target, inserted = []) => rememberBounded(updatePatchTargets, patch.id, {
+    documentVersion: snapshot.canvas.documentVersion, selector: patch.selector, operation: patch.operation,
+    target: capturedTarget(target), parent: capturedTarget(target.parentElement),
+    inserted: inserted.filter(node => authorElement(node) && !node.matches("script,style,link,meta,template")).map(capturedTarget).filter(Boolean).slice(0, 12),
+  });
+  const updateContext = (target) => {
+    if (visibleBox(target, true)) return target;
+    let folded;
+    for (let node = target; authorElement(node); node = node.parentElement) {
+      if (node.localName === "details" && !node.open) {
+        const summary = Array.from(node.children).find(child => child.localName === "summary");
+        if (summary && !summary.contains(target) && visibleBox(summary, true)) folded = summary;
+      }
+    }
+    if (folded) return folded;
+    for (let node = target.parentElement; authorElement(node); node = node.parentElement) if (visibleBox(node, true)) return node;
+    return null;
+  };
+  const findUpdateTarget = (update, index) => {
+    const hint = update.targets[index];
+    if (!hint || typeof hint.selector !== "string" || hint.selector.length > 1000) return null;
+    const patch = hint.patchId && updatePatchTargets.get(hint.patchId);
+    if (patch && patch.documentVersion === update.documentVersion && patch.selector === hint.selector && patch.operation === hint.operation) {
+      if (patch.operation === "remove") {
+        const parent = resolveUpdateTarget(patch.parent);
+        return parent ? { node: parent, ancestor: true } : null;
+      }
+      const inserted = patch.inserted.map(resolveUpdateTarget).find(Boolean);
+      const node = patch.inserted.length ? inserted : resolveUpdateTarget(patch.target);
+      return node ? { node, ancestor: false } : null;
+    }
+    // Removal cannot be reconstructed from a newly matching selector after a cold start.
+    if (hint.operation === "remove") return null;
+    const key = `${update.id}:${index}`;
+    const saved = updateTargets.get(key);
+    if (saved) { const node = resolveUpdateTarget(saved); return node ? { node, ancestor: false } : null; }
+    let matches;
+    try { matches = document.querySelectorAll(hint.selector); } catch { return null; }
+    if (matches.length !== 1 || !authorElement(matches[0])) return null;
+    const node = matches[0];
+    // Path selectors are only meaningful in the exact revision; an ID explicitly declares
+    // stable component identity, but still cannot cross a document replacement.
+    if (update.canvasRevision !== snapshot.canvas.revision && (!node.id || hint.selector !== "#" + CSS.escape(node.id))) return null;
+    rememberBounded(updateTargets, key, capturedTarget(node));
+    return { node, ancestor: false };
+  };
+  let updateHighlight;
+  let updateHighlightTimer;
+  let updateHighlightFrame;
+  const clearUpdateHighlight = () => {
+    clearTimeout(updateHighlightTimer); updateHighlightTimer = null;
+    if (updateHighlightFrame) cancelAnimationFrame(updateHighlightFrame);
+    updateHighlightFrame = null;
+    updateHighlight?.host.remove(); updateHighlight = null;
+  };
+  const positionUpdateHighlight = () => {
+    updateHighlightFrame = null;
+    if (!updateHighlight) return false;
+    const box = updateHighlight.node ? visibleBox(updateHighlight.node) : { left: 6, top: 6, right: innerWidth - 6, bottom: innerHeight - 6 };
+    if (!box) { clearUpdateHighlight(); return false; }
+    const left = Math.max(4, box.left - 3), top = Math.max(4, box.top - 3);
+    const right = Math.min(innerWidth - 4, box.right + 3), bottom = Math.min(innerHeight - 4, box.bottom + 3);
+    if (right <= left || bottom <= top) { clearUpdateHighlight(); return false; }
+    updateHighlight.host.style.setProperty("left", left + "px", "important");
+    updateHighlight.host.style.setProperty("top", top + "px", "important");
+    updateHighlight.host.style.setProperty("width", right - left + "px", "important");
+    updateHighlight.host.style.setProperty("height", bottom - top + "px", "important");
+    return true;
+  };
+  const queueUpdateHighlight = () => { if (updateHighlight && !updateHighlightFrame) updateHighlightFrame = requestAnimationFrame(positionUpdateHighlight); };
+  const showUpdateHighlight = (node) => {
+    clearUpdateHighlight();
+    const host = document.createElement("div");
+    host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-update-highlight", "");
+    host.setAttribute("aria-hidden", "true");
+    host.style.cssText = "all:initial!important;position:fixed!important;display:block!important;z-index:2147483646!important;pointer-events:none!important;";
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = `<style>:host{color-scheme:normal}.ring{position:absolute;inset:0;box-sizing:border-box;border:3px solid #fff;border-radius:8px;box-shadow:0 0 0 3px #224ee8,0 0 0 5px #0a173b80;animation:board-update-flash .65s ease-in-out 3;pointer-events:none}@keyframes board-update-flash{0%,100%{opacity:.15}50%{opacity:1}}@media(prefers-reduced-motion:reduce){.ring{animation:none;opacity:1}}</style><div class="ring"></div>`;
+    root.append(host); updateHighlight = { host, node };
+    if (!positionUpdateHighlight()) return false;
+    updateHighlightTimer = setTimeout(clearUpdateHighlight, matchMedia("(prefers-reduced-motion:reduce)").matches ? 1000 : 2050);
+    return true;
+  };
+  let hostComposing = false;
+  const activePointers = new Set();
+  let activityUntil = 0;
+  let activityTimer;
+  let reportedActivity = false;
+  const editableActive = () => document.hasFocus() && document.activeElement instanceof Element
+    && (document.activeElement.matches("input,textarea,select") || document.activeElement.isContentEditable);
+  const updateHardBusy = () => hostComposing || activePointers.size > 0 || editableActive() || selectionMode !== "off" || selectionSession || captureBusy || applying || queued;
+  const reportCanvasActivity = () => {
+    clearTimeout(activityTimer); activityTimer = null;
+    const delay = activityUntil - performance.now();
+    const busy = Boolean(updateHardBusy() || delay > 0);
+    if (busy !== reportedActivity) { reportedActivity = busy; post({ type: "canvas-activity", busy }); }
+    if (delay > 0) activityTimer = setTimeout(reportCanvasActivity, delay + 1);
+  };
+  const noteCanvasActivity = (event) => {
+    if (!event.isTrusted) return;
+    activityUntil = performance.now() + 1200;
+    clearUpdateHighlight();
+    reportCanvasActivity();
+  };
+  window.addEventListener("pointerdown", event => { if (event.isTrusted) { activePointers.add(event.pointerId); noteCanvasActivity(event); } }, true);
+  for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) window.addEventListener(name, event => { if (event.isTrusted) { activePointers.delete(event.pointerId); reportCanvasActivity(); } }, true);
+  for (const name of ["keydown", "wheel", "focusin", "focusout"]) window.addEventListener(name, event => { noteCanvasActivity(event); if (name === "focusout") queueMicrotask(reportCanvasActivity); }, true);
+  window.addEventListener("blur", () => { activePointers.clear(); queueMicrotask(reportCanvasActivity); });
+  window.addEventListener("scroll", queueUpdateHighlight, true);
+  window.addEventListener("resize", queueUpdateHighlight);
+  window.addEventListener("pagehide", () => { clearUpdateHighlight(); clearTimeout(activityTimer); });
+  const focusUpdate = (message) => {
+    const update = message.update;
+    const index = message.targetIndex === undefined ? 0 : message.targetIndex;
+    if (typeof message.requestId !== "string" || !message.requestId || message.requestId.length > 160
+      || !Number.isSafeInteger(message.token) || message.token < 0 || !Number.isSafeInteger(index) || index < 0 || index > 100
+      || !update || typeof update.id !== "string" || !update.id || update.id.length > 160
+      || !Number.isSafeInteger(update.documentVersion) || update.documentVersion < 0 || !Number.isSafeInteger(update.canvasRevision)
+      || !Array.isArray(update.targets) || update.targets.length > 100 || !["patch", "data", "document"].includes(update.kind)) return;
+    const reply = (status, fields = {}) => post({ type: "update-position", requestId: message.requestId, id: update.id, token: message.token,
+      targetIndex: index, documentVersion: update.documentVersion, status, ...fields });
+    clearUpdateHighlight();
+    if (update.documentVersion !== snapshot.canvas.documentVersion) { reply("unavailable", { reason: "属于另一版画布，保留原更新记录" }); return; }
+    if (updateHardBusy() || (message.automatic && performance.now() < activityUntil)) {
+      // The host retries after canvas-activity false; never keep a hidden scroll request
+      // that could surprise the user after they have moved on to a different update.
+      reportCanvasActivity(); reply("deferred", { reason: "正在交互，稍后定位" }); return;
+    }
+    if (update.canvasRevision > snapshot.canvas.revision) { reply("unavailable", { reason: "对应画布版本尚未载入" }); return; }
+    if (!update.targets.length) {
+      if (update.kind !== "document") { reply("unavailable", { reason: "此次数据更新未指定画布位置" }); return; }
+      window.scrollTo({ left: 0, top: 0, behavior: "instant" });
+      if (showUpdateHighlight(null)) reply("focused", { location: "document", position: { x: 12, y: 12 } });
+      else reply("unavailable", { reason: "画布当前不可见" });
+      return;
+    }
+    const target = findUpdateTarget(update, index);
+    const node = target && updateContext(target.node);
+    if (!node) { reply("unavailable", { reason: "原组件已移除、身份不明确或当前不可见" }); return; }
+    node.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    const box = visibleBox(node);
+    if (!box || !showUpdateHighlight(node)) { reply("unavailable", { reason: "组件当前不可见" }); return; }
+    reply("focused", { location: target.ancestor || node !== target.node ? "ancestor" : "target",
+      position: { x: Math.max(8, Math.min(innerWidth - 8, box.left + box.width / 2)), y: Math.max(8, Math.min(innerHeight - 8, box.top + box.height / 2)) } });
+  };
+
   // Host-owned discussions are independent from the authored document and its patch journal.
   let markerHost;
   let markerItems = [];
@@ -572,6 +735,7 @@ function (initial) {
     }
     paintSelectionMode();
     if (notify) post({ type: "selection-clear" });
+    reportCanvasActivity();
     if (drainUpdates) void drain();
   };
   const beginSelection = (position, dragging = false) => {
@@ -580,6 +744,7 @@ function (initial) {
     cancelSelection({ release: false, drainUpdates: false });
     const session = { id: previousId || `selection-${++sequence}`, abort: new AbortController(), indicator: null, anchor: null, position };
     selectionSession = session;
+    reportCanvasActivity();
     // Replacing one local selection keeps the same host lease, so a queued document replacement
     // cannot slip into a release/acquire gap while the next capture starts.
     post({ type: "selection-lock", id: session.id, active: true, dragging });
@@ -639,6 +804,7 @@ function (initial) {
     cancelSelection({ drainUpdates: false });
     selectionMode = mode;
     paintSelectionMode();
+    reportCanvasActivity();
     if (mode === "off") void drain();
   };
   const selectedText = (point) => {
@@ -844,6 +1010,8 @@ function (initial) {
     if (event.source !== window.parent || !message || message.channel !== scope.channel || message.boardId !== scope.boardId || message.sessionId !== scope.sessionId) return;
     if (message.type === "snapshot") receiveSnapshot(message.snapshot);
     else if (message.type === "interactions" && Array.isArray(message.markers)) renderMarkers(message.markers, message.selectedId);
+    else if (message.type === "focus-update") focusUpdate(message);
+    else if (message.type === "host-activity" && typeof message.composing === "boolean") { hostComposing = message.composing; reportCanvasActivity(); }
     else if (message.type === "focus-interaction" && typeof message.id === "string") focusInteraction(message.id);
     else if (message.type === "selection") setSelectionMode(message.mode);
     else if (message.type === "clear-selection") { selectionMode = "off"; cancelSelection(); }
