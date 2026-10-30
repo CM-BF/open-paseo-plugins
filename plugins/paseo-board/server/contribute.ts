@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { setInterval, clearInterval } from "node:timers";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { createBoardRpc, emitBoardRpc, interactBoardRpc, listBoardsRpc, publishBoardRpc, readBoardRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc, markUpdatesSeenRpc } from "../shared/contracts";
+import { createBoardRpc, emitBoardRpc, feedBoardRpc, interactBoardRpc, listBoardsRpc, publishBoardRpc, readBoardRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc, markUpdatesSeenRpc } from "../shared/contracts";
 import { BoardStore } from "./store";
 import { BoardService } from "./service";
 import { ServiceJournal } from "./journal";
@@ -58,6 +58,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   server.handle(createBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); const board = await store.create(input); void service.reconcile(); return board; });
   server.handle(publishBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.publish(input); });
   server.handle(emitBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.emit(input); });
+  server.handle(feedBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.feed(input); });
   server.handle(recordDecisionRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.recordDecision(input); });
   server.handle(interactBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return service.interact(input); });
   server.handle(selectSideAgentRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return service.selectSideAgent(input); });

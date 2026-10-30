@@ -6,9 +6,10 @@ import {
   BoardSchema, CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, InteractInputSchema,
   InteractionSchema, PublishInputSchema, RespondInputSchema, StateInputSchema, MarkUpdatesSeenInputSchema,
   type Board, type BoardSummary, type CreateInput, type DecisionInput, type EmitInput, type CanvasUpdate,
-  type InteractInput, type Interaction, type PublishInput, type RespondInput, type MarkUpdatesSeenInput, type CanvasBase, type DataPatch,
+  type FeedInput, type FeedResult, type InteractInput, type Interaction, type PublishInput, type RespondInput, type MarkUpdatesSeenInput, type CanvasBase, type DataPatch,
 } from "../shared/contracts";
 import { assertId, assertJson, BoardStoreError, canonicalJson, ensureDirectory, fingerprint, parseInput, readEnvelope, serialized, writeEnvelope, type Envelope } from "./store-format";
+import { changeFeed, parseFeed } from "./feeds";
 import { applyDataPatch } from "./data-patch";
 
 export { BoardStoreError } from "./store-format";
@@ -31,6 +32,7 @@ export class BoardStore {
   readonly rootDir: string;
   private readonly directory: string;
   private initialization?: Promise<void>;
+  private feedPending = 0;
 
   constructor(rootDir: string) {
     this.rootDir = resolve(rootDir);
@@ -197,6 +199,47 @@ export class BoardStore {
       if (input.observation) this.observe(board, input, at);
       this.event(board, input.eventId, input.source, input.kind, input.summary, at, input.data);
     }, input.eventId, actorAgentId ? board => this.expectCanvasWriter(board, actorAgentId) : undefined);
+  }
+
+  /** Acknowledgement, source sequence, data and provenance commit in one durable rename. */
+  async feed(raw: FeedInput, actorAgentId?: string): Promise<FeedResult> {
+    const input = parseFeed(raw);
+    if (this.feedPending >= 32) throw new BoardStoreError("backpressure", "Board feed queue is full; retry the identical sequence and payload");
+    this.feedPending++;
+    try {
+      await this.init();
+      const path = this.path(input.boardId);
+      return await serialized(path, async () => {
+        const envelope = await readEnvelope(path, input.boardId);
+        if (!envelope) throw new BoardStoreError("not_found", `Board ${input.boardId} does not exist`);
+        if (actorAgentId) this.expectCanvasWriter(envelope.board, actorAgentId);
+        const before = structuredClone(envelope.board);
+        const at = new Date().toISOString();
+        try {
+          const change = changeFeed(envelope.board, input, at, actorAgentId);
+          if (!change.changed) return change.result;
+          if (change.dataChanged && change.targets !== undefined) this.canvasUpdate(envelope.board, change.eventId!, at, "data", [...new Set(change.targets)].map(selector => ({ selector })), actorAgentId);
+          const eventId = change.eventId ?? `feed:${fingerprint("feed-control", { input, actorAgentId }).slice(0, 40)}`;
+          this.event(envelope.board, eventId, actorAgentId ?? "user", `feed-${input.action}`, `Feed ${input.sourceId}: ${input.action}`, at);
+          envelope.board.revision++;
+          envelope.board.updatedAt = at;
+          envelope.history.push({ revision: envelope.board.revision, at, operation: "feed", payload: { ...input, actorAgentId } });
+          assertJson(envelope.board.canvas.data, "Canvas data");
+          await writeEnvelope(path, envelope);
+          return change.result;
+        } catch (error) {
+          // Errors are operational inspection metadata, not successful data/sequence updates.
+          // Only the current source's actual writer can annotate its diagnostic.
+          envelope.board = before;
+          const source = before.feeds?.find(item => item.sourceId === input.sourceId);
+          if (source && source.actorAgentId === actorAgentId && input.action === "set" && source.generation === input.generation && error instanceof BoardStoreError) {
+            source.lastError = { code: error.code, message: error.message.slice(0, 1000), at };
+            await writeEnvelope(path, envelope);
+          }
+          throw error;
+        }
+      });
+    } finally { this.feedPending--; }
   }
 
   async recordDecision(raw: DecisionUpdateInput): Promise<Board> {

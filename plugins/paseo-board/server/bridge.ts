@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { z } from "zod";
 import type { BoardService } from "./service";
 
-const RequestSchema = z.object({ protocol: z.literal(1), operation: z.enum(["list", "read", "create", "publish", "decision", "emit", "respond"]), input: z.record(z.string(), z.unknown()), binding: z.string().optional(), client: z.enum(["cli", "mcp"]) });
+const RequestSchema = z.object({ protocol: z.literal(1), operation: z.enum(["list", "read", "create", "publish", "decision", "emit", "respond", "feed"]), input: z.record(z.string(), z.unknown()), binding: z.string().optional(), client: z.enum(["cli", "mcp"]) });
 const LIMIT = 8_000_000;
 
 /** Owner-only Unix socket. MCP calls additionally bind to the launching agent. */

@@ -158,9 +158,15 @@ describe("installed CLI and stdio MCP transport", () => {
     const { call, close } = mcpClient(paths.mcp, "token-owner");
     try {
       expect(await call("initialize", { protocolVersion: "2024-11-05" })).toHaveProperty("result.serverInfo.name", "paseo-board");
-      const list = await call("tools/list"); expect((list.result as { tools: unknown[] }).tools).toHaveLength(7);
+      const list = await call("tools/list");
+      expect((list.result as { tools: Array<{ name: string }> }).tools.map(tool => tool.name).sort()).toEqual([
+        "board_create", "board_decision", "board_emit", "board_feed", "board_list", "board_publish", "board_read", "board_respond",
+      ]);
       const created = await call("tools/call", { name: "board_create", arguments: { id: "bound-board", title: "bound" } }); expect(created).not.toHaveProperty("result.isError", true);
       expect((await service.store.read("bound-board"))!.ownerAgentId).toBe("owner");
+      expect(toolValue(await call("tools/call", { name: "board_feed", arguments: { action: "open", boardId: "bound-board", sourceId: "mcp-source", path: "/live/mcp", requestId: "mcp-open", expectedGeneration: 0 } }))).toMatchObject({ source: { actorAgentId: "owner" }, ack: { generation: 1, seq: 0 } });
+      expect(toolValue(await call("tools/call", { name: "board_feed", arguments: { action: "set", boardId: "bound-board", sourceId: "mcp-source", generation: 1, seq: 1, value: { free: "JSON" } } }))).toMatchObject({ ack: { seq: 1 } });
+      expect((await service.store.read("bound-board"))!.canvas.data).toEqual({ live: { mcp: { free: "JSON" } } });
       await service.store.addInteraction({ boardId: "bound-board", intentId: "owner-question", kind: "question", text: "Explain" }, "owner");
       const answered = await call("tools/call", { name: "board_respond", arguments: { boardId: "bound-board", interactionId: "owner-question", eventId: "response", expectedResponseRevision: 0, response: "Explicit answer", html: "<canvas></canvas>" } });
       expect(answered).not.toHaveProperty("result.isError", true);

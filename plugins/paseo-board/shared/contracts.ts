@@ -86,6 +86,40 @@ export const DataPatchSchema = z.object({
 });
 export const DataPatchesSchema = z.array(DataPatchSchema).min(1).max(100);
 export const FocusSelectorsSchema = z.array(z.string().min(1).max(1000)).max(12);
+// Latest-state feeds carry arbitrary JSON. Their identities are bound by the transport,
+// never by an agent-supplied actor or a transferable per-feed credential.
+export const FeedAckSchema = z.object({
+  boardId: IdSchema, sourceId: IdSchema, generation: z.number().int().positive(),
+  seq: z.number().int().nonnegative(), revision: z.number().int().nonnegative(),
+  canvasRevision: z.number().int().nonnegative(), acceptedAt: z.string(),
+});
+export const FeedStateSchema = z.object({
+  sourceId: IdSchema, path: z.string(), generation: z.number().int().positive(),
+  actorAgentId: z.string().optional(), closed: z.boolean(), seq: z.number().int().nonnegative(),
+  openedAt: z.string(), lastAcceptedAt: z.string().optional(),
+  focusSelectors: FocusSelectorsSchema.default([]),
+  lastAck: FeedAckSchema.optional(),
+  lastError: z.object({ code: z.string(), message: z.string(), at: z.string() }).optional(),
+  // Internal, bounded reconciliation metadata. No values or bearer credentials.
+  valueFingerprint: z.string(), openRequestId: IdSchema, openFingerprint: z.string(),
+  openAck: FeedAckSchema,
+  receipts: z.array(z.object({ seq: z.number().int().positive(), fingerprint: z.string(), ack: FeedAckSchema })).max(32),
+});
+const FeedIdentityShape = { boardId: IdSchema, sourceId: IdSchema };
+export const FeedInputSchema = z.discriminatedUnion("action", [
+  z.object({ ...FeedIdentityShape, action: z.literal("open"), path: z.string().min(1).max(2000),
+    requestId: IdSchema, expectedGeneration: z.number().int().nonnegative(), focusSelectors: FocusSelectorsSchema.default([]) }),
+  z.object({ ...FeedIdentityShape, action: z.literal("set"), generation: z.number().int().positive(), seq: z.number().int().positive(),
+    value: z.unknown(), attention: z.enum(["quiet", "milestone"]).default("quiet"), focusSelectors: FocusSelectorsSchema.optional() }),
+  z.object({ ...FeedIdentityShape, action: z.literal("close"), generation: z.number().int().positive() }),
+  z.object({ ...FeedIdentityShape, action: z.literal("status") }),
+]);
+export const FeedResultSchema = z.object({ source: FeedStateSchema, ack: FeedAckSchema.optional() });
+export type FeedInput = z.input<typeof FeedInputSchema>;
+export type FeedState = z.infer<typeof FeedStateSchema>;
+export type FeedAck = z.infer<typeof FeedAckSchema>;
+export type FeedResult = z.infer<typeof FeedResultSchema>;
+
 export const CanvasUpdateSchema = z.object({
   id: IdSchema, eventId: IdSchema, at: z.string(),
   boardRevision: z.number().int().nonnegative(), canvasRevision: z.number().int().nonnegative(), documentVersion: z.number().int().nonnegative(),
@@ -128,6 +162,7 @@ export const BoardSchema = z.object({
   revision: z.number().int().nonnegative(), createdAt: z.string(), updatedAt: z.string(),
   canvas: CanvasSchema,
   updates: z.array(CanvasUpdateSchema).max(80).default([]), seenUpdateIds: z.array(IdSchema).max(80).default([]),
+  feeds: z.array(FeedStateSchema).max(64).optional(),
   decisions: z.array(DecisionSchema), interactions: z.array(InteractionSchema), events: z.array(EventSchema), observations: z.array(ObservationSchema),
   userState: JsonDataSchema,
   extraction: z.object({ lastCheckedAt: z.string().optional(), agentId: z.string().optional(), cursor: z.string().optional(), note: z.string().optional() }),
@@ -187,3 +222,5 @@ export const selectSideAgentRpc = defineRpc({ name: "board.side-agent", input: S
 export const recordDecisionRpc = defineRpc({ name: "board.decision", input: DecisionUpdateInputSchema, output: BoardSchema });
 export const saveStateRpc = defineRpc({ name: "board.state", input: StateInputSchema, output: z.object({ saved: z.boolean() }) });
 export const markUpdatesSeenRpc = defineRpc({ name: "board.updates-seen", input: MarkUpdatesSeenInputSchema, output: BoardSchema });
+
+export const feedBoardRpc = defineRpc({ name: "board.feed", input: FeedInputSchema, output: FeedResultSchema });

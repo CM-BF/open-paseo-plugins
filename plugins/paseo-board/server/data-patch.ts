@@ -4,7 +4,7 @@ import { assertJson, BoardStoreError, canonicalJson } from "./store-format";
 const owns = (object: object, key: string) => Object.prototype.hasOwnProperty.call(object, key);
 const dangerous = new Set(["__proto__", "prototype", "constructor"]);
 
-function pointer(path: string): string[] {
+export function pointer(path: string): string[] {
   if (!path.startsWith("/") || /~(?:[^01]|$)/.test(path)) throw new BoardStoreError("invalid_input", "Data paths must be valid non-root JSON Pointers", { path });
   const parts = path.slice(1).split("/").map(part => part.replace(/~[01]/g, escape => escape === "~0" ? "~" : "/"));
   if (parts.length > 64 || parts.some(part => dangerous.has(part))) throw new BoardStoreError("invalid_input", "Unsafe or excessively deep data path", { path });

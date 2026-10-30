@@ -3,7 +3,7 @@ import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { setTimeout, clearTimeout } from "node:timers";
 import {
-  CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, IdSchema, InteractInputSchema,
+  CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, FeedInputSchema, IdSchema, InteractInputSchema,
   PublishInputSchema, ReadInputSchema, RespondInputSchema, SelectSideAgentInputSchema, type Board, type Interaction, type InteractInput, type SelectSideAgentInput,
 } from "../shared/contracts";
 import { BoardStore, BoardStoreError } from "./store";
@@ -14,7 +14,7 @@ import { extractCandidates } from "./extraction";
 import { describeAuthoring } from "./authored-source";
 import { inspectBoard } from "./inspection";
 
-export type Operation = "list" | "read" | "create" | "publish" | "decision" | "emit" | "respond";
+export type Operation = "list" | "read" | "create" | "publish" | "decision" | "emit" | "respond" | "feed";
 const terminal = new Set<Interaction["status"]>(["applied", "rejected", "answered"]);
 const alreadyHandled = (interaction: Interaction) => terminal.has(interaction.status) || (interaction.status === "processing" && interaction.responseSource === "explicit");
 const describe = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -123,6 +123,7 @@ export class BoardService {
         if (actor) parsed.decision.authorAgentId = actor.agentId;
         return this.store.recordDecision(parsed);
       }
+      case "feed": return this.store.feed(FeedInputSchema.parse(input), actor?.agentId);
       case "emit": return this.store.emit(EmitInputSchema.parse(input), actor?.agentId);
     }
   }
