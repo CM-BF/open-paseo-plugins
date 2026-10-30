@@ -18,7 +18,9 @@ the Rodex adaptation and were further modified by paseo-visualize.
 
 shared/assets/html-to-image.txt is html-to-image 1.11.11
 (https://github.com/bubkoo/html-to-image), bundled as an ES module by
-paseo-visualize. Its full MIT license is retained at the top of that file.
+paseo-visualize. Paseo Board adds optional clone/style/scheduling callbacks and a
+selection-sized SVG viewport to that bundle; the original MIT license is retained
+at the top of the file. These adaptations are Copyright 2026 Shurui Gui.
 
   html-to-image
   Copyright (c) 2017-2023 W.Y.

@@ -718,36 +718,171 @@ function (initial) {
     }
     return captureLibrary;
   };
-  const captureRegion = async (region, signal) => {
+  const captureOverlay = (node) => node instanceof Element && !!node.closest("[data-board-overlay],[data-board-markers],[data-board-capture-status]");
+  const captureTask = () => new Promise(resolve => setTimeout(resolve, 0));
+  // Keep the layout tree, but do not copy thousands of computed styles in off-selection
+  // subtrees. A shallow placeholder is safe only when its used size does not depend on its
+  // children and their margins cannot collapse through it. Overlapping/overflowing descendants
+  // keep every ancestor on their path. Unknown paint effects conservatively keep their subtree.
+  const capturePlan = async (region, signal) => {
+    const nodes = Array.from(document.querySelectorAll("*"));
+    if (nodes.length > 20000) throw new Error("Selected document is too complex to capture; the geometric anchor is still saved");
+    const needed = new Set([root]);
+    const candidates = new Map();
+    const forced = new Set();
+    let slice = performance.now();
+    const keep = node => { for (; node && !needed.has(node); node = node.parentElement) needed.add(node); };
+    const intersects = r => r.right >= region.x && r.bottom >= region.y && r.left <= region.x + region.width && r.top <= region.y + region.height;
+    for (const node of nodes) {
+      signal.throwIfAborted();
+      if (performance.now() - slice > 8) { await captureTask(); signal.throwIfAborted(); slice = performance.now(); }
+      if (captureOverlay(node) || node.matches("script,style,link,meta,head")) continue;
+      const style = getComputedStyle(node);
+      if (style.display === "none") { candidates.set(node, null); continue; }
+      if (forced.has(node.parentElement)) { forced.add(node); keep(node); continue; }
+      const bounds = node.getBoundingClientRect();
+      // Shadows can paint outside the border box. This deliberately generous bound includes
+      // spread, offsets and the blur tail; filters and pseudo content have no safe cheap bound.
+      const shadow = [style.boxShadow, style.textShadow].join(" ").replace(/rgba?\([^)]*\)/g, "");
+      const bleed = 2 + 3 * Array.from(shadow.matchAll(/(-?[\d.]+)px/g), match => Math.abs(Number(match[1]))).reduce((sum, value) => sum + value, 0);
+      const box = { left: bounds.left + scrollX - bleed, top: bounds.top + scrollY - bleed, right: bounds.right + scrollX + bleed, bottom: bounds.bottom + scrollY + bleed };
+      const pseudo = ["::before", "::after"].some(part => !["none", "normal"].includes(getComputedStyle(node, part).content));
+      if (node.matches("defs,filter,clipPath,mask,pattern,linearGradient,radialGradient,symbol") || node.shadowRoot || style.filter !== "none" || (style.backdropFilter && style.backdropFilter !== "none") || pseudo) { forced.add(node); keep(node); }
+      else if (intersects(box)) keep(node);
+      const block = ["block", "flex", "grid", "flow-root"].includes(style.display);
+      const closedMargins = style.display !== "block" || style.overflowY !== "visible" ||
+        (parseFloat(style.paddingTop) + parseFloat(style.borderTopWidth) > 0 && parseFloat(style.paddingBottom) + parseFloat(style.borderBottomWidth) > 0);
+      if (node instanceof HTMLElement && block && closedMargins && /^\d+(\.\d+)?px$/.test(style.width) && /^\d+(\.\d+)?px$/.test(style.height)) {
+        candidates.set(node, { width: style.width, height: style.height });
+      }
+    }
+    const prune = new Map();
+    for (const [node, size] of candidates) if (!needed.has(node)) prune.set(node, size);
+    return { prune, needed };
+  };
+  const captureFrozenRegion = async (region, signal) => {
     signal.throwIfAborted();
-    if (document.getElementsByTagName("*").length > 20000) throw new Error("Selected document is too complex to capture");
     const width = Math.max(root.scrollWidth, innerWidth);
     const height = Math.max(root.scrollHeight, innerHeight);
-    const ratio = Math.min(devicePixelRatio || 1, 2, 16384 / width, 16384 / height, Math.sqrt(16777216 / (width * height)));
-    if (ratio < 0.5) throw new Error("Document is too large to capture; the geometric anchor is still saved");
+    const ratio = Math.min(devicePixelRatio || 1, 2, 16384 / region.width, 16384 / region.height, Math.sqrt(16777216 / (region.width * region.height)));
+    if (!Number.isFinite(ratio) || ratio < 0.5) throw new Error("Selection is too large to capture; the geometric anchor is still saved");
+    const api = await loadCapture();
+    signal.throwIfAborted();
+    const plan = await capturePlan(region, signal);
+    signal.throwIfAborted();
     window.dispatchEvent(new CustomEvent("paseo:capture", { detail: { mime: "image/png", scale: ratio } }));
     const shots = new Map();
     const original = HTMLCanvasElement.prototype.toDataURL;
-    // Preserve canvases while html-to-image asynchronously clones. Capture consumers can redraw
-    // WebGL in paseo:capture; unreadable cross-origin canvases remain explicitly best-effort.
-    for (const canvas of document.querySelectorAll("canvas")) { try { shots.set(canvas, original.call(canvas)); } catch {} }
-    const api = await loadCapture();
-    signal.throwIfAborted();
+    // Freeze fresh pixels per capture, never reuse a previous selection's dynamic bitmap.
+    for (const canvas of document.querySelectorAll("canvas")) {
+      let skipped = captureOverlay(canvas);
+      for (let parent = canvas; parent && !skipped; parent = parent.parentElement) skipped = plan.prune.has(parent);
+      if (!skipped) { try { shots.set(canvas, original.call(canvas)); } catch {} }
+    }
+    const startScroll = { x: scrollX, y: scrollY };
     HTMLCanvasElement.prototype.toDataURL = function (...args) { return args.length === 0 && shots.has(this) ? shots.get(this) : original.apply(this, args); };
-    let rendered;
+    const parentStyles = new WeakMap();
+    let cloned = 0;
+    let slice = performance.now();
+    const started = slice;
+    const check = () => {
+      signal.throwIfAborted();
+      if (scrollX !== startScroll.x || scrollY !== startScroll.y) throw new Error("Canvas changed during capture; the geometric anchor is still saved");
+      if (cloned > 1800 || performance.now() - started > 3500) throw new Error("Selected area is too complex to capture promptly; the geometric anchor is still saved");
+    };
     try {
-      rendered = await api.toCanvas(root, { width, height, pixelRatio: ratio, skipFonts: true, skipAutoScale: true, style: { margin: "0" }, filter: (node) => node.nodeName !== "SCRIPT" && !(node.hasAttribute && node.hasAttribute("data-board-overlay")) });
+      const svg = await api.toSvg(root, {
+        width, height, captureViewport: region, skipFonts: true, style: { margin: "0" },
+        filter: node => node.nodeName !== "SCRIPT" && !captureOverlay(node),
+        filterChildren: node => !plan.prune.has(node),
+        // Computed values already resolve var(). Preserve custom-property inheritance instead
+        // of redundantly copying the same theme tokens onto every single descendant.
+        filterStyleProperty: (node, property, value) => {
+          if (!property.startsWith("--") || !node.parentElement) return true;
+          let style = parentStyles.get(node.parentElement);
+          if (!style) { style = getComputedStyle(node.parentElement); parentStyles.set(node.parentElement, style); }
+          return style.getPropertyValue(property) !== value;
+        },
+        beforeSerialize: async () => { await captureTask(); check(); },
+        beforeClone: async node => {
+          if (node instanceof Element) cloned++;
+          check();
+          if (performance.now() - slice > 8) { await captureTask(); check(); slice = performance.now(); }
+        },
+        afterClone: (source, clone) => {
+          if (!(source instanceof Element) || !(clone instanceof Element)) return;
+          if (clone.style) { clone.style.animation = "none"; clone.style.transition = "none"; }
+          const sourceStyle = getComputedStyle(source);
+          if (["sticky", "fixed"].includes(sourceStyle.position) && !plan.needed.has(source)) { clone.style.opacity = "0"; return; }
+          if (sourceStyle.position === "sticky") throw new Error("Sticky content cannot be captured accurately; the geometric anchor is still saved");
+          if (sourceStyle.position === "fixed") {
+            for (let parent = source.parentElement; parent && parent !== root; parent = parent.parentElement) {
+              const style = getComputedStyle(parent);
+              if (style.transform !== "none" || style.filter !== "none" || style.perspective !== "none" || parent.scrollTop || parent.scrollLeft) throw new Error("Transformed fixed content cannot be captured accurately; the geometric anchor is still saved");
+            }
+            const bounds = source.getBoundingClientRect();
+            clone.style.left = bounds.left + scrollX + "px";
+            clone.style.top = bounds.top + scrollY + "px";
+            clone.style.right = "auto";
+            clone.style.bottom = "auto";
+          }
+          const size = plan.prune.get(source);
+          if (size && clone.style) {
+            for (const key of ["width", "minWidth", "maxWidth"]) clone.style[key] = size.width;
+            for (const key of ["height", "minHeight", "maxHeight"]) clone.style[key] = size.height;
+          }
+          if ((source.scrollTop || source.scrollLeft) && source !== root && source !== document.body) {
+            // Translate already-laid-out direct children inside the original clipping box.
+            // A raw text scroller cannot be wrapped without changing line layout.
+            if (Array.from(source.childNodes).some(node => node.nodeType === 3 && node.textContent.trim())) throw new Error("This text scroller cannot be captured accurately; the geometric anchor is still saved");
+            clone.style.overflow = "hidden";
+            for (const child of clone.children) if (child.style) child.style.transform = `translate(${-source.scrollLeft}px, ${-source.scrollTop}px) ${child.style.transform === "none" ? "" : child.style.transform}`;
+          }
+        },
+      });
+      check();
+      // Keep the original foreignObject/layout dimensions, but decode and allocate only the
+      // requested SVG viewport. Page length must not reduce a small selection's pixel ratio.
+      await captureTask();
+      check();
+      const image = new Image();
+      image.decoding = "async";
+      const ready = new Promise((resolve, reject) => { image.onload = resolve; image.onerror = () => reject(new Error("Selection image could not be decoded")); });
+      image.src = svg;
+      await ready;
+      check();
+      const cropped = document.createElement("canvas");
+      cropped.width = Math.max(1, Math.round(region.width * ratio));
+      cropped.height = Math.max(1, Math.round(region.height * ratio));
+      const context = cropped.getContext("2d");
+      if (!context) throw new Error("Screenshot canvas unavailable");
+      context.drawImage(image, 0, 0, cropped.width, cropped.height);
+      const data = cropped.toDataURL("image/png").split(",")[1];
+      if (data.length > 3000000) throw new Error("Selection screenshot exceeds 3 MB; select a smaller area");
+      return { mimeType: "image/png", data };
     } finally { HTMLCanvasElement.prototype.toDataURL = original; }
-    signal.throwIfAborted();
-    const cropped = document.createElement("canvas");
-    cropped.width = Math.max(1, Math.round(region.width * ratio));
-    cropped.height = Math.max(1, Math.round(region.height * ratio));
-    const context = cropped.getContext("2d");
-    if (!context) throw new Error("Screenshot canvas unavailable");
-    context.drawImage(rendered, region.x * ratio, region.y * ratio, region.width * ratio, region.height * ratio, 0, 0, cropped.width, cropped.height);
-    const data = cropped.toDataURL("image/png").split(",")[1];
-    if (data.length > 3000000) throw new Error("Selection screenshot exceeds 3 MB; select a smaller area");
-    return { mimeType: "image/png", data };
+  };
+  const captureRegion = async (region, signal) => {
+    // A cooperative clone spans several browser tasks. Pause CSS/Web Animations at their
+    // current displayed frame and resume only animations that were running before capture.
+    const controller = new AbortController();
+    const cancel = () => controller.abort(signal.reason);
+    if (signal.aborted) cancel(); else signal.addEventListener("abort", cancel, { once: true });
+    const observer = new MutationObserver(records => {
+      if (records.some(record => !captureOverlay(record.target) && (record.type !== "attributes" || record.oldValue !== record.target.getAttribute(record.attributeName)) &&
+        (record.type !== "childList" || [...record.addedNodes, ...record.removedNodes].some(node => !captureOverlay(node))))) {
+        controller.abort(new Error("Canvas changed during capture; the geometric anchor is still saved"));
+      }
+    });
+    observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeOldValue: true });
+    const animations = document.getAnimations().filter(animation => animation.playState === "running" && !captureOverlay(animation.effect?.target));
+    for (const animation of animations) animation.pause();
+    try { return await captureFrozenRegion(region, controller.signal); }
+    finally {
+      observer.disconnect();
+      signal.removeEventListener("abort", cancel);
+      for (const animation of animations) if (animation.playState === "paused") animation.play();
+    }
   };
   // A cancelled capture still owns its html-to-image clone until it settles. Serializing the
   // underlying work prevents overlapping temporary canvas hooks from restoring one another.
