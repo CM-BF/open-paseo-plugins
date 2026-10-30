@@ -1,0 +1,10 @@
+import { defineRpc } from "@getpaseo/plugin";
+import { z } from "zod";
+import { CatalogSchema, ConfigSchema, OverviewSchema, RepoSchema } from "./types";
+export const overviewRpc = defineRpc({ name: "triage.overview", input: z.object({}), output: OverviewSchema });
+export const configureRpc = defineRpc({ name: "triage.configure", input: z.object({ config: ConfigSchema }), output: OverviewSchema });
+export const scanRpc = defineRpc({ name: "triage.scan", input: z.object({}), output: OverviewSchema });
+export const itemActionRpc = defineRpc({ name: "triage.item", input: z.object({ key: z.string().max(240), action: z.enum(["triage", "retry", "claim", "release"]), note: z.string().max(500).optional() }), output: OverviewSchema });
+export const intakeRpc = defineRpc({ name: "triage.intake", input: z.object({ repo: RepoSchema, number: z.number().int().positive() }), output: OverviewSchema });
+export const catalogRpc = defineRpc({ name: "triage.catalog", input: z.object({}), output: CatalogSchema });
+export const diagnosticRpc = defineRpc({ name: "triage.diagnostic", input: z.object({ action: z.enum(["run", "cleanup"]) }), output: OverviewSchema });

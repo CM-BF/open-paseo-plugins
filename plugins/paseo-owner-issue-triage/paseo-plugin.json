@@ -1,0 +1,23 @@
+{
+  "id": "paseo-owner-issue-triage",
+  "name": "Owner issue triage",
+  "description": "Automatically triage only your GitHub issues into a durable, observable Paseo queue.",
+  "requirements": {
+    "paseo": ">=0.13.2"
+  },
+  "build": [
+    [
+      "npm",
+      "ci",
+      "--ignore-scripts"
+    ],
+    [
+      "npm",
+      "run",
+      "build:client"
+    ]
+  ],
+  "media": [
+    "docs/verification/2026-10-29-owner-intake-desktop.png"
+  ]
+}
