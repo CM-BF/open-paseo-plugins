@@ -22,7 +22,7 @@ const transitions: Record<Interaction["status"], readonly Interaction["status"][
   sending: ["delivered", "processing", "answered", "applied", "rejected", "failed"],
   delivered: ["processing", "answered", "applied", "rejected", "failed"],
   processing: ["answered", "applied", "rejected", "failed"],
-  failed: ["sending", "processing", "answered", "rejected"],
+  failed: ["sending", "processing", "answered", "applied", "rejected"],
   answered: ["applied"], applied: [], rejected: [],
 };
 
@@ -119,7 +119,7 @@ export class BoardStore {
       if (input.interactionResult) {
         const { id, ...update } = input.interactionResult;
         const current = board.interactions.find(item => item.id === id);
-        this.changeInteraction(board, id, { ...update, ...(update.response !== undefined ? { responseSource: "explicit", responseMethod: "publish", responseRevision: (current?.responseRevision ?? 0) + 1 } : {}) }, at);
+        this.changeInteraction(board, id, { ...update, error: undefined, responseSource: "explicit", responseMethod: "publish", responseRevision: (current?.responseRevision ?? 0) + 1 }, at);
       }
       this.event(board, input.eventId, "agent", "publish", input.summary, at);
     }, input.eventId);

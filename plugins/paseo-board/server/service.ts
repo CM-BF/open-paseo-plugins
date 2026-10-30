@@ -410,8 +410,10 @@ export class BoardService {
     if (delivery.outcome === "completed" && interaction.responseSource !== "explicit" && ["question", "fork", "reply"].includes(delivery.kind) && interaction.response?.trim()) {
       if (interaction.status === "failed") await this.store.updateInteraction(board.id, interaction.id, { status: "processing", error: undefined });
       await this.store.updateInteraction(board.id, interaction.id, { status: "answered", error: undefined });
-    } else if (delivery.outcome === "completed" && interaction.responseMethod === "respond" && interaction.status === "processing") {
-      await this.store.updateInteraction(board.id, interaction.id, { status: "failed", error: "对应回合已结束，但只提交了处理中回复，尚未提交最终回答。已保留现有说明；可以继续提问。" });
+    } else if (delivery.outcome === "completed" && interaction.responseSource === "explicit" && interaction.status === "processing") {
+      // An explicit progress receipt can outlive this model turn (for example async-shell).
+      // Turn completion neither completes nor fails the user's longer-running request.
+      return;
     } else if (delivery.outcome === "completed" && ["question", "fork", "reply"].includes(delivery.kind) && !interaction.response?.trim() && interaction.status !== "failed") {
       await this.store.updateInteraction(board.id, interaction.id, { status: "failed", error: "对应回合已结束，但没有收到可显示的回答。可以在这个位置继续提问。" });
     } else if (delivery.outcome !== "completed" && interaction.status !== "failed") {

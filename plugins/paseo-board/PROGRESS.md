@@ -107,4 +107,10 @@ Provide a persistent, fully interactive, task-independent conversation canvas fo
 
 - Request: prevent a dark Board shell from forcing light text into an authored light canvas. The inherited visualization stylesheet assigned a foreground directly to headings/body, and live theme updates wrote an inline `color-scheme` that could override authored CSS.
 - Moved renderer defaults into a low-priority CSS layer, made body/headings inherit foreground, and left `color-scheme` as an overridable stylesheet default. Host palette tokens and the plugin's own controls still track the host theme. The authoring instructions now require paired surface/text colors and light/dark shell verification; arbitrary custom drawings are not recolored automatically.
-- Added browser checks for fixed light and dark content, explicit control colors, authored color-scheme, repeated host theme changes, live input/runtime preservation and default host-adaptive content. Results are pending.
+- Added browser checks for fixed light and dark content, explicit control colors, authored color-scheme, repeated host theme changes, live input/runtime preservation and default host-adaptive content. TypeScript and all 35 canvas browser scenarios passed, including the two new theme checks.
+
+### 2026-10-29 — explicit asynchronous progress receipts
+
+- Fixed a production false failure: a normal model turn ending after `respond(status=processing)` now preserves the explicit ongoing request, matching `publish` progress receipts. An async-shell continuation may finish it later; a turn ending is not task completion. Explicit failed/canceled/unknown outcomes retain their existing handling.
+- New explicit publish receipts clear obsolete failure errors, including progress without response text. A previously failed interaction can become applied only with the usual concrete result references.
+- Validation: 55 service/store tests passed in an isolated checkout, including completed turn → durable restart → later explicit answer and stale-error removal. No daemon install or live acceptance was performed for this commit; the coordinating agent owns deployment.

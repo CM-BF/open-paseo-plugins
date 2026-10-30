@@ -233,11 +233,33 @@ describe("BoardService SDK adapter", () => {
     expect((await store.read("board"))!.canvas.html).toContain("Existing visualization");
   });
 
-  it("preserves an explicit working response and reports a missing final submission when the turn ends", async () => {
+  it("keeps an explicit working response processing across turn completion and restart until its async result arrives", async () => {
     await service.interact({ boardId: "board", intentId: "fork", kind: "fork", text: "Explain" }); await service.drain();
     await service.execute("respond", { boardId: "board", interactionId: "fork", eventId: "working", expectedResponseRevision: 0, status: "processing", response: "Constructing the animation" }, { agentId: "fork-agent", cwd: dir });
     sdk.append("fork-agent", { type: "assistant_message", text: "Unstructured commentary." }); await service.onTurnEnded("fork-agent");
-    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "failed", response: "Constructing the animation", responseSource: "explicit", error: expect.stringContaining("尚未提交最终回答") });
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "processing", response: "Constructing the animation", responseSource: "explicit" });
+    await service.dispose(); journal = new ServiceJournal(join(dir, "service.json")); await journal.init();
+    service = new BoardService(store, journal, () => undefined); service.capture(sdk.api); await service.reconcile(); await service.drain();
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "processing", responseRevision: 1 });
+    expect((await store.read("board"))!.interactions[0].error).toBeUndefined();
+    await service.execute("respond", { boardId: "board", interactionId: "fork", eventId: "async-ready", expectedResponseRevision: 1, response: "The async animation is ready" }, { agentId: "fork-agent", cwd: dir });
+    await service.onTurnEnded("fork-agent");
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "answered", response: "The async animation is ready", responseRevision: 2 });
+  });
+
+  it("clears obsolete failure errors on explicit progress and evidence-backed application", async () => {
+    await service.interact({ boardId: "board", intentId: "async-recover", kind: "question", text: "Continue in the background" }); await service.drain();
+    await store.updateInteraction("board", "async-recover", { status: "failed", error: "Obsolete turn failure" });
+    let board = (await store.read("board"))!;
+    await service.execute("publish", { boardId: "board", expectedRevision: board.revision, eventId: "resume", interactionResult: { id: "async-recover", status: "processing" } }, { agentId: "owner", cwd: dir });
+    await service.onTurnEnded("owner");
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "processing", responseSource: "explicit", responseMethod: "publish" });
+    expect((await store.read("board"))!.interactions[0].error).toBeUndefined();
+    await store.updateInteraction("board", "async-recover", { status: "failed", error: "Another obsolete failure" });
+    board = (await store.read("board"))!;
+    await service.execute("publish", { boardId: "board", expectedRevision: board.revision, eventId: "finished", interactionResult: { id: "async-recover", status: "applied", response: "The background result is now visible", resultReferences: ["#target"] } }, { agentId: "owner", cwd: dir });
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "applied", response: "The background result is now visible", resultReferences: ["#target"] });
+    expect((await store.read("board"))!.interactions[0].error).toBeUndefined();
   });
 
   it("keeps an owner's published async work processing after its current turn ends", async () => {
