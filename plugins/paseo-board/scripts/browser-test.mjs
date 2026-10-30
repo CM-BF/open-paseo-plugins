@@ -126,6 +126,47 @@ try {
   assert.equal(await frame('window.boots'), 1);
   check('live data retains controls, animation clock and the iframe JS heap');
 
+  await frame(`(()=>{window.watchResults=[];window.watchStops=[board.watch('/live/a',(v,c)=>{watchResults.push({value:v,exists:c.exists,revision:c.canvasRevision});if(v&&typeof v==='object')v.changedByListener=true})];return true})()`);
+  assert.deepEqual(await frame('watchResults'), [{exists:false,revision:2}]);
+  await update('{canvas:{...hostProps.canvas,data:{n:1,live:{a:{score:0.8,phase:"ready"},b:0}}}}');
+  await untilFrame('watchResults.length===2');
+  assert.deepEqual(await frame('board.getData().live.a'), {score:0.8,phase:'ready'});
+  await update('{canvas:{...hostProps.canvas,data:{n:1,live:{a:{phase:"ready",score:0.8},b:1}}}}');
+  await untilFrame('board.getData().live.b===1');
+  assert.equal(await frame('watchResults.length'), 2);
+  assert.equal(await frame("document.querySelector('#field').value"), 'keep typed input');
+  assert.equal(await frame('window.boots'), 1);
+  check('path watches render initially, isolate callback data and skip sibling/key-order-only changes without remounting controls');
+
+  await frame(`(()=>{window.escapedResults=[];window.unsubEscaped=board.watch('/a~1b/~0',(v,c)=>escapedResults.push({value:v,exists:c.exists}));window.sharedCalls=0;const fn=()=>sharedCalls++;window.offOne=board.watch('/live/a',fn);window.offTwo=board.watch('/live/a',fn);offOne();window.offThrow=board.watch('/live/a',()=>{throw new Error('expected-watch-error')});return true})()`);
+  await update('{canvas:{...hostProps.canvas,data:{n:1,live:{a:null},"a/b":{"~":42}}}}');
+  await untilFrame('escapedResults.length===2');
+  assert.deepEqual(await frame('watchResults.at(-1)'), {value:null,exists:true,revision:2});
+  assert.deepEqual(await frame('escapedResults.at(-1)'), {value:42,exists:true});
+  assert.equal(await frame('sharedCalls'), 3);
+  await update('{canvas:{...hostProps.canvas,data:{n:1,live:{}}}}');
+  await untilFrame('watchResults.at(-1).exists===false');
+  assert.deepEqual(await frame('escapedResults.at(-1)'), {exists:false});
+  assert.equal(await frame('sharedCalls'), 4);
+  await frame('watchStops.forEach(off=>off());unsubEscaped();offTwo();offThrow()');
+  assert.deepEqual(await frame(`['bad','/x~2','/__proto__/x','/constructor','/prototype'].map(p=>{try{board.watch(p,()=>{});return false}catch{return true}})`), [true,true,true,true,true]);
+  const stoppedCalls = await frame('watchResults.length');
+  await update('{canvas:{...hostProps.canvas,data:{n:1,live:{a:2}}}}');
+  await untilFrame('board.getData().live.a===2');
+  assert.equal(await frame('watchResults.length'), stoppedCalls);
+  await update('{canvas:{...hostProps.canvas,data:{n:1}}}');
+  await untilFrame('!board.getData().live');
+  check('path watches distinguish null/removal, decode pointers, reject prototype traversal, isolate listener errors and unsubscribe independently');
+
+  await frame(`(()=>{window.nestedCalls=[];window.nestedStops=[];nestedStops.push(board.watch('/left',(_v,c)=>{if(c.exists)nestedStops.push(board.watch('/right',(v,c)=>nestedCalls.push({value:v,revision:c.canvasRevision})))}));nestedStops.push(board.watch('/right',()=>{}));return true})()`);
+  await update('{canvas:{...hostProps.canvas,data:{n:1,left:1,right:2}}}');
+  await untilFrame('board.getData().right===2');
+  assert.deepEqual(await frame('nestedCalls'), [{value:2,revision:2}]);
+  await frame('nestedStops.forEach(off=>off())');
+  await update('{canvas:{...hostProps.canvas,data:{n:1}}}');
+  await untilFrame('!board.getData().left');
+  check('a subscription added during another renderer receives the current snapshot once, never an old value labelled with a new revision');
+
   const patch = { id: 'patch-one', selector: '#target', operation: 'append', html: '<button id="new-control">New animation</button><script>window.patchRuns=(window.patchRuns||0)+1;document.querySelector("#new-control").onclick=()=>window.patchClicks=(window.patchClicks||0)+1</script>' };
   await update(`{boardRevision:3,canvas:{...hostProps.canvas,revision:3,patches:[${JSON.stringify(patch)}]}}`);
   await frame("new Promise(resolve=>{const tick=()=>window.patchRuns?resolve():setTimeout(tick,10);tick()})");

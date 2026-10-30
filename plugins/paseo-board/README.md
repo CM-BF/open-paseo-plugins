@@ -57,6 +57,10 @@ Canvas API:
 const draw = data => { /* Your own interactive rendering */ };
 draw(board.getData());
 const unsubscribe = board.onData(draw);
+// Or render only one arbitrary JSON path, initially and when its value changes:
+const stopWatching = board.watch('/live/source-a', (value, context) => {
+  if (context.exists) draw(value);
+});
 const saved = board.getState();
 board.saveState({ zoom: 1.5 });
 // Call from an actual click. Opens the local composer; the user sends.
@@ -64,6 +68,10 @@ button.onclick = () => board.ask({ prompt: "Explain this part", kind: "question"
 ```
 
 `board.restoreState()`, `board.onState(callback)` and `board.getContext()` are also available. `window.openai.sendFollowUpMessage` is compatible with visualize-style requests. The result is a submission receipt, not the model's answer. Use stable DOM IDs for local edits; selection also works without IDs.
+
+`board.watch` returns an unsubscribe function. It distinguishes missing values from null, isolates callback data and skips changes outside its selected JSON Pointer. Clean up subscriptions before removing their components. It preserves arbitrary rendering code; it does not choose a chart or rebuild DOM. Current frame snapshots remain whole snapshots.
+
+For a compact agent check, call `board_read` with `view:"inspect"`, optional `dataPaths`, `interactionIds`, `selector`, and `recentLimit` (default 8, maximum 20). This omits historical images and full HTML, bounds requested values/excerpts, and reports every omission. It retains the same reader permissions as a full read. The default full view is unchanged. Both expose persistent evidence; neither observes live browser pixels or proves that a renderer succeeded.
 
 The host supplies a default palette; authored CSS takes precedence through a lower-priority default layer. Headings and body text inherit their surrounding color. For a fixed light or dark design, set its background, foreground and `color-scheme` together, and provide coherent colors for controls and muted text. For an adaptive design, use matching host surface and text tokens. Host theme changes preserve the canvas runtime and do not override an authored `color-scheme`; images and Canvas/WebGL drawings still need the author's own palette handling.
 

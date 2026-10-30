@@ -4,6 +4,18 @@ import { z } from "zod";
 export const PLUGIN_ID = "paseo-board";
 export const IdSchema = z.string().min(1).max(160).regex(/^[a-zA-Z0-9_.:-]+$/);
 export const JsonDataSchema = z.record(z.string(), z.unknown());
+export const ReadInputSchema = z.object({
+  boardId: IdSchema,
+  view: z.enum(["full", "inspect"]).default("full"),
+  selector: z.string().min(1).max(1000).optional(),
+  dataPaths: z.array(z.string().max(2000).refine(path => {
+    if ((path !== "" && !path.startsWith("/")) || /~(?![01])/.test(path)) return false;
+    const parts = path === "" ? [] : path.slice(1).split("/").map(part => part.replace(/~1/g, "/").replace(/~0/g, "~"));
+    return parts.length <= 64 && !parts.some(part => ["__proto__", "prototype", "constructor"].includes(part));
+  }, "Expected a safe JSON Pointer")).max(20).optional(),
+  interactionIds: z.array(IdSchema).max(20).optional(),
+  recentLimit: z.number().int().min(1).max(20).default(8),
+});
 export const EvidenceSchema = z.object({
   kind: z.enum(["agent", "message", "file", "command", "event", "user"]),
   reference: z.string().max(4000),

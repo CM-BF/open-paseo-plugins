@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, IdSchema, PublishInputSchema, RespondInputSchema } from "../shared/contracts";
+import { CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, IdSchema, PublishInputSchema, ReadInputSchema, RespondInputSchema } from "../shared/contracts";
 import { RUNTIME_SOURCE } from "./runtime-source";
 import { skillMarkdown } from "./prompts";
 
@@ -17,7 +17,7 @@ export function toolDefinitions() {
   const withFile = { htmlFile: z.string().describe("Absolute local HTML file; omit html when using this") };
   const entries = [
     ["list", "List boards owned by you or shared with your fork.", z.object({ workspaceId: z.string().optional() })],
-    ["read", "Read current Board and authoring: canvasBase plus statically replayed materializedAuthoredHtml and optional selector target. canvas.html is BASE source only. Incomplete static replay returns null, never a stale page presented as current; arbitrary JS is not executed. Preserve the returned canvasBase with the draft you edit.", z.object({ boardId: IdSchema, selector: z.string().min(1).max(1000).optional() })],
+    ["read", "Read current Board. Use view:inspect for compact persisted status, optional dataPaths (JSON Pointers), interactionIds, selector and recentLimit (default 8, max 20), omitting historical PNG/HTML. It does not observe live browser rendering. Default view:full preserves the complete Board and authoring: canvasBase plus statically replayed materializedAuthoredHtml and optional target. canvas.html is BASE source only. Incomplete static replay returns null. Preserve the original canvasBase when drafting edits.", ReadInputSchema],
     ["create", "Create your persistent, fully interactive HTML/JS board. Task content and layout are completely free.", CreateInputSchema.extend({ htmlFile: withFile.htmlFile.optional() })],
     ["publish", "Update the shared Board. Target the smallest stable element for a local change; do not replace a large parent just to edit one sentence. A patch or traditional data requires the canvasBase captured when drafting; full html/htmlFile also requires replaceDocument:true. On revision_conflict reread and merge content, never simply bump a version or repeat old HTML. For concurrent object leaves use dataPatch with JSON Pointer path, operation set/remove, expected:{exists,value}, and value for set; arrays are compared/replaced as a whole. expectedRevision protects Board metadata. dataPatch conditions can preserve disjoint writes without replacing siblings. Optional focusSelectors locate data changes. Successful publication is durable acceptance, not proof that arbitrary browser JS ran. Link your own fulfilled intent to concrete evidence.", PublishInputSchema.extend({ htmlFile: withFile.htmlFile.optional() })],
     ["respond", "Answer your assigned interaction at its original question marker with text and optional fully interactive HTML/JS. This operation writes a local answer; use board_publish for requested changes to the shared canvas. Only your assigned interaction can receive the answer. Read the interaction responseRevision first (missing means 0).", RespondInputSchema.extend({ htmlFile: withFile.htmlFile.optional() })],

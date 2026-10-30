@@ -4,7 +4,7 @@ import { z } from "zod";
 import { setTimeout, clearTimeout } from "node:timers";
 import {
   CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, IdSchema, InteractInputSchema,
-  PublishInputSchema, RespondInputSchema, SelectSideAgentInputSchema, type Board, type Interaction, type InteractInput, type SelectSideAgentInput,
+  PublishInputSchema, ReadInputSchema, RespondInputSchema, SelectSideAgentInputSchema, type Board, type Interaction, type InteractInput, type SelectSideAgentInput,
 } from "../shared/contracts";
 import { BoardStore, BoardStoreError } from "./store";
 import { canonicalJson } from "./store-format";
@@ -12,6 +12,7 @@ import { ServiceJournal, deliveryKey, type Binding, type Delivery } from "./jour
 import { discussionConfig, isBusy, type Agent, type Paseo, type TimelinePage } from "./sdk";
 import { extractCandidates } from "./extraction";
 import { describeAuthoring } from "./authored-source";
+import { inspectBoard } from "./inspection";
 
 export type Operation = "list" | "read" | "create" | "publish" | "decision" | "emit" | "respond";
 const terminal = new Set<Interaction["status"]>(["applied", "rejected", "answered"]);
@@ -104,8 +105,9 @@ export class BoardService {
     if (actor && !(operation === "read" ? this.canRead(board, actor) : this.canWrite(board, actor))) throw new Error("This agent does not own this board or belong to one of its forks");
     switch (operation) {
       case "read": {
-        const selector = z.string().min(1).max(1000).optional().parse(input.selector);
-        return { ...board, authoring: describeAuthoring(board.canvas, selector) };
+        const read = ReadInputSchema.parse(input);
+        if (read.view === "inspect") return inspectBoard(board, read);
+        return { ...board, authoring: describeAuthoring(board.canvas, read.selector) };
       }
       case "publish": {
         if (actor && ["sideAgentId", "pendingSideInteractionId", "sideAgentRevision"].some(field => input[field] !== undefined)) throw new Error("Only the user can select the Board's side conversation");

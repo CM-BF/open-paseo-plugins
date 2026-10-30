@@ -69,6 +69,9 @@ describe("installed CLI and stdio MCP transport", () => {
     const update = { boardId: "cli-board", canvasBase: canvasBase(afterHtml), eventId: "event1", source: "async-shell-test", summary: "New result", data: { result: 42 }, focusSelectors: ["#free"] };
     const first = await invoke("emit", update); const repeated = await invoke("emit", update); expect(repeated.revision).toBe(first.revision);
     const board = await invoke("read", { boardId: "cli-board" }); expect(board.canvas.html).toContain("globalThis.count=0"); expect(board.canvas.data).toEqual({ result: 42 });
+    const compact = await invoke("read", { boardId: "cli-board", view: "inspect", dataPaths: ["/result"], selector: "#free" });
+    expect(compact).toMatchObject({ view: "inspect", data: [{ path: "/result", value: 42 }], observation: { liveBrowser: "not-observed" }, source: { replay: { complete: true } } });
+    expect(compact.canvas).toBeUndefined();
     expect(board.interactions).toEqual([]); // Emits do not enqueue messages or wake agents.
     expect(board.updates).toMatchObject([{ kind: "document", targets: [] }, { id: "event1", kind: "data", targets: [{ selector: "#free" }] }]);
     await expect(invoke("updates-seen", { boardId: "cli-board", updateIds: ["event1"] })).rejects.toThrow();

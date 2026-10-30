@@ -26,6 +26,12 @@ Provide a persistent, fully interactive, task-independent conversation canvas fo
 
 ## Verification records
 
+### 2026-10-30 — ingress and selection performance in progress
+
+- The user approved the generic latest-state ingress design and requested an Astra group for capture/composer performance. The accepted boundaries and planned checks are in `docs/ingress-and-capture.md`; the free HTML canvas and arbitrary JSON remain unchanged in scope.
+- Work is split into persistent feed protocol/producer recovery, immediate composition with generation-bound late images, and measured capture work reduction. The coordinating branch adds path watches, compact persisted inspection and integration documentation. No installed-runtime result is claimed for these pending changes.
+- A local isolated baseline reproduced expensive whole-document capture: a 2066×8216 document with 6,763 elements produced an 83.36 MB intermediate SVG; its small capture took 5.44 s with a 5.26 s longest main-thread task. This independently reproduces the scaling mechanism, not the user's inaccessible remote board or its exact 11 s measurement. Early held-capture composer checks showed focused input within roughly 24 ms; the full regression run is still in progress.
+
 ### 2026-10-29 — original local source `4fc08fc`
 
 - Daemon: Paseo 0.13.2, primary local daemon. Installed source: retained directory `~/.paseo/local-plugins/paseo-board/dev`. No daemon restart or unrelated plugin reload.

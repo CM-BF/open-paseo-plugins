@@ -24,6 +24,7 @@ function (initial) {
   let sequence = 0;
   const applied = new Set();
   const dataListeners = new Set();
+  const dataWatches = new Map();
   const stateListeners = new Set();
   const pendingAsks = new Map();
   const post = (message) => window.parent.postMessage({ ...message, ...scope }, "*");
@@ -59,10 +60,63 @@ function (initial) {
     listeners.add(fn);
     return () => listeners.delete(fn);
   };
+  // Watch only selected JSON values. Snapshots remain whole; this avoids cloning
+  // the entire data object for each renderer and rerendering unrelated components.
+  const watchSegments = (path) => {
+    if (typeof path !== "string" || path.length > 2000 || (path !== "" && !path.startsWith("/")) || /~(?![01])/.test(path)) throw new TypeError("watch requires a JSON Pointer (empty string means all data)");
+    const parts = path === "" ? [] : path.slice(1).split("/").map(part => part.replace(/~1/g, "/").replace(/~0/g, "~"));
+    if (parts.length > 64 || parts.some(part => ["__proto__", "prototype", "constructor"].includes(part))) throw new TypeError("watch path is not allowed");
+    return parts;
+  };
+  const readWatchedValue = (data, parts) => {
+    let value = data;
+    for (const part of parts) {
+      if (!value || typeof value !== "object" || !Object.prototype.hasOwnProperty.call(value, part)) return { exists: false };
+      if (Array.isArray(value) && !/^(0|[1-9][0-9]*)$/.test(part)) return { exists: false };
+      value = value[part];
+    }
+    return { exists: true, value };
+  };
+  const equalJson = (a, b) => {
+    if (a === b) return true;
+    if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return false;
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length && keys.every(key => Object.prototype.hasOwnProperty.call(b, key) && equalJson(a[key], b[key]));
+  };
+  const deliverWatch = (entry, fn) => {
+    try { fn(entry.current.exists ? copy(entry.current.value) : undefined, Object.freeze({ path: entry.path, exists: entry.current.exists, boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision })); }
+    catch (e) { error("listener-error", e instanceof Error ? e.message : String(e)); }
+  };
+  const emitWatches = () => {
+    const deliveries = [];
+    // Update every cache before calling authored code. A callback may subscribe
+    // to another existing path; its initial value must belong to this snapshot.
+    for (const entry of Array.from(dataWatches.values())) {
+      const next = readWatchedValue(snapshot.canvas.data, entry.parts);
+      if (next.exists === entry.current.exists && equalJson(next.value, entry.current.value)) continue;
+      entry.current = next;
+      deliveries.push({ entry, listeners: Array.from(entry.listeners) });
+    }
+    for (const { entry, listeners } of deliveries) {
+      for (const fn of listeners) if (entry.listeners.has(fn)) deliverWatch(entry, fn);
+    }
+  };
+  const watch = (path, fn) => {
+    const parts = watchSegments(path);
+    if (typeof fn !== "function") throw new TypeError("watch listener must be a function");
+    let entry = dataWatches.get(path);
+    if (!entry) { entry = { path, parts, current: readWatchedValue(snapshot.canvas.data, parts), listeners: new Set() }; dataWatches.set(path, entry); }
+    // A separate wrapper gives each subscription its own lifetime, even with the same callback.
+    const listener = (value, context) => fn(value, context);
+    entry.listeners.add(listener);
+    deliverWatch(entry, listener);
+    return () => { entry.listeners.delete(listener); if (!entry.listeners.size && dataWatches.get(path) === entry) dataWatches.delete(path); };
+  };
   // No SDK or execution primitive is exposed. Data and view state remain task-agnostic JSON.
   Object.defineProperty(window, "board", { configurable: false, writable: false, value: Object.freeze({
     getData: () => copy(snapshot.canvas.data),
     onData: (fn) => subscribe(dataListeners, fn),
+    watch,
     getState: () => copy(state),
     restoreState: () => copy(state),
     onState: (fn) => subscribe(stateListeners, fn),
@@ -142,6 +196,7 @@ function (initial) {
         snapshot = next;
         applyTheme(next.theme);
         if (dataChanged) {
+          emitWatches();
           emitListeners(dataListeners, next.canvas.data);
           window.dispatchEvent(new CustomEvent("board:data", { detail: copy(next.canvas.data) }));
         }

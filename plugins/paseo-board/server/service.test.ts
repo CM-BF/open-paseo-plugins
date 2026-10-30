@@ -59,6 +59,17 @@ describe("BoardService SDK adapter", () => {
   });
   afterEach(async () => { await service.dispose(); await rm(dir, { recursive: true, force: true }); });
 
+  it("provides compact inspection under the same reader authorization without changing full reads", async () => {
+    const compact = await service.execute("read", { boardId: "board", view: "inspect", dataPaths: ["/temperature"], selector: "#target" }, { agentId: "owner", cwd: dir });
+    expect(compact).toMatchObject({ view: "inspect", data: [{ path: "/temperature", exists: true, value: 10 }], source: { target: { text: '<main id="target">Existing visualization</main>' } } });
+    expect(compact).not.toHaveProperty("canvas");
+    const full = await service.execute("read", { boardId: "board" }, { agentId: "owner", cwd: dir });
+    expect(full).toMatchObject({ canvas: { data: { temperature: 10 } }, authoring: { materializedAuthoredHtml: '<main id="target">Existing visualization</main>' } });
+    await expect(service.execute("read", { boardId: "board", view: "inspect" }, { agentId: "unrelated", cwd: dir })).rejects.toThrow("does not own this board");
+    await store.addInteraction({ boardId: "board", intentId: "allowed-fork", kind: "fork", text: "Inspect" }, "fork-agent");
+    expect(await service.execute("read", { boardId: "board", view: "inspect" }, { agentId: "fork-agent", cwd: dir })).toMatchObject({ view: "inspect" });
+  });
+
   it("attributes canvas locations to the bound writer and keeps seen metadata out of agent mutations", async () => {
     await store.addInteraction({ boardId: "board", intentId: "existing-fork", kind: "fork", text: "Shared canvas" }, "fork-agent");
     const owner = { agentId: "owner", cwd: dir }; const fork = { agentId: "fork-agent", cwd: dir };
@@ -302,6 +313,10 @@ describe("BoardService SDK adapter", () => {
     expect((await store.read("board"))!.interactions.find(item => item.id === "side-follow")).toMatchObject({ kind: "reply", sourceInteractionId: "main-from-side", agentId: "side-1" });
     await service.interact({ boardId: "board", intentId: "side-new", kind: "question", destination: "new-side", sourceInteractionId: "side-first", text: "Start a fresh side here" }); await service.drain();
     expect((await store.read("board"))!.sideAgentId).toBe("side-2"); expect(sdk.create).toHaveBeenCalledTimes(2);
+    // The route and retry checks below need a quiescent persisted snapshot. Stop
+    // timeline refresh timers from racing the deliberately separate CAS/auth checks.
+    await service.dispose();
+    service = new BoardService(store, journal, () => undefined); service.capture(sdk.api);
     let board = (await store.read("board"))!;
     const chooseFirst = { boardId: "board", agentId: "side-1", expectedRevision: board.revision, eventId: "choose-first" };
     expect((await service.selectSideAgent(chooseFirst)).sideAgentId).toBe("side-1");
