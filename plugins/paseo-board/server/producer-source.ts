@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
 
 const LIMIT = 256000;
+// These codes are raised before a feed transaction commits. Generic service/I/O
+// failures may follow rename and must never authorize discarding a pending value.
+const rejectionCodes = new Set(['invalid_input', 'size_limit', 'forbidden', 'not_found', 'generation_conflict', 'source_closed', 'idempotency_conflict', 'sequence_conflict', 'data_conflict', 'path_conflict', 'backpressure']);
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const canonical = value => JSON.stringify(sort(value));
 function sort(value) {
@@ -92,7 +95,10 @@ function transport(root, binding, input) {
       if (!text.includes('\n')) return;
       try {
         const response = JSON.parse(text.split('\n')[0]);
-        if (!response.ok) finish(Object.assign(fail(response.error.code, response.error.message), { confirmed: true, details: response.error.details }));
+        if (!response.ok) {
+          const confirmed = rejectionCodes.has(response.error.code);
+          finish(Object.assign(fail(confirmed ? response.error.code : 'outcome_unknown', response.error.message), { confirmed, causeCode: response.error.code, details: response.error.details }));
+        }
         else finish(null, response.result);
       } catch (error) { finish(error); }
     });
@@ -114,6 +120,12 @@ export async function createFeed(options) {
   await mkdir(dirname(stateFile), { recursive: true, mode: 0o700 });
   const config = json({ boardId, sourceId, path, focusSelectors });
   let active = false;
+  let pinned;
+  let ownedOpenRequestId;
+  const pin = state => ({ generation: state.generation, actorAgentId: state.actorAgentId, generationRequestId: state.generationRequestId });
+  function assertPinned(state) {
+    if (state.generation !== pinned.generation || state.actorAgentId !== pinned.actorAgentId || state.generationRequestId !== pinned.generationRequestId || state.pending?.action === 'open' && state.pending.requestId !== ownedOpenRequestId) throw fail('generation_conflict', 'This producer instance was superseded; it cannot adopt another instance’s generation');
+  }
   async function exclusive(fn) {
     if (active) throw fail('producer_busy', 'Await the current feed operation before submitting another value');
     active = true;
@@ -146,9 +158,11 @@ export async function createFeed(options) {
         const ack = result.ack;
         if (!ack || ack.boardId !== boardId || ack.sourceId !== sourceId || !Number.isSafeInteger(ack.revision) || ack.generation !== (request.action === 'open' ? request.expectedGeneration + 1 : request.generation) || ack.seq !== (request.action === 'open' ? 0 : request.seq)) throw fail('outcome_unknown', 'Unconfirmed sequence receipt; pending value retained');
         state.generation = ack.generation; state.seq = ack.seq; state.lastAck = ack; state.actorAgentId = result.source.actorAgentId;
+        if (request.action === 'open') state.generationRequestId = request.requestId;
       } else state.closed = true;
       delete state.pending; delete state.lastError;
       await atomic(stateFile, state);
+      if (request.action === 'open' && ownedOpenRequestId === request.requestId) { pinned = pin(state); ownedOpenRequestId = undefined; }
       return result.ack ?? result.source;
     } catch (error) {
       state.lastError = { code: error.code ?? 'outcome_unknown', message: error.message, at: new Date().toISOString(), confirmed: error.confirmed === true };
@@ -173,15 +187,17 @@ export async function createFeed(options) {
       await atomic(stateFile, state);
     }
     // Resume an interrupted write with its immutable payload before accepting new work.
+    if (state.pending?.action === 'open') ownedOpenRequestId = state.pending.requestId;
     if (state.pending) await settle(state);
     else {
       const result = await send({ boardId, sourceId, action: 'status' });
       if (state.actorAgentId !== result.source.actorAgentId || state.generation !== result.source.generation || result.source.closed) throw fail('generation_conflict', 'Feed generation changed or closed; inspect and explicitly reopen it');
     }
+    pinned = pin(state);
   });
   return {
     set: (value, policy = {}) => exclusive(async () => {
-      const state = await load();
+      const state = await load(); assertPinned(state);
       const request = { boardId, sourceId, action: 'set', generation: state.generation, seq: state.seq + 1, value: json(value), attention: policy.attention ?? 'quiet', ...(policy.focusSelectors ? { focusSelectors: json(policy.focusSelectors) } : {}) };
       if (state.closed) throw fail('source_closed', 'Feed is closed');
       if (state.pending && canonical(state.pending) !== canonical(request)) throw fail('pending_write', 'Reconcile the retained pending value with retry(); do not replace it with a new value');
@@ -189,20 +205,23 @@ export async function createFeed(options) {
       await atomic(stateFile, state);
       return settle(state);
     }),
-    retry: () => exclusive(async () => settle(await load())),
+    retry: () => exclusive(async () => { const state = await load(); assertPinned(state); return settle(state); }),
     status: () => exclusive(async () => ({ local: await load(), remote: await send({ boardId, sourceId, action: 'status' }) })),
     reopen: (options = {}) => exclusive(async () => {
       const state = await load();
       if (state.pending && !(options.discardRejected === true && state.lastError?.confirmed === true)) throw fail('pending_write', 'Retry unknown writes; explicitly discardRejected:true only for a confirmed rejection');
       const current = await send({ boardId, sourceId, action: 'status' });
       if (current.source.actorAgentId !== state.actorAgentId) throw fail('forbidden', 'Another writer owns this source');
-      state.pending = { ...config, action: 'open', expectedGeneration: current.source.generation, requestId: randomUUID() };
+      // Only this explicit operation may adopt a newer journal generation.
+      pinned = pin(state);
+      ownedOpenRequestId = randomUUID();
+      state.pending = { ...config, action: 'open', expectedGeneration: current.source.generation, requestId: ownedOpenRequestId };
       delete state.closed;
       await atomic(stateFile, state);
       return settle(state);
     }),
     close: () => exclusive(async () => {
-      const state = await load();
+      const state = await load(); assertPinned(state);
       if (state.pending) throw fail('pending_write', 'Resolve the pending operation before closing');
       state.pending = { boardId, sourceId, action: 'close', generation: state.generation };
       await atomic(stateFile, state);

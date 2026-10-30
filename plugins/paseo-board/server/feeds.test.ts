@@ -19,7 +19,7 @@ describe("durable latest-state feeds", () => {
     expect(board.canvas.html).toBe(initial.canvas.html); expect(board.canvas.revision).toBe(initial.canvas.revision + 1); expect(board.updates).toEqual([]);
     const raw = JSON.parse(await readFile(join(root, "boards/test.json"), "utf8"));
     expect(raw.board.feeds[0].lastAck).toEqual(first.ack);
-    expect(raw.history.at(-1)).toMatchObject({ operation: "feed", payload: { actorAgentId: "owner", seq: 1, value: { arbitrary: [true, 3, null] } } });
+    expect(raw.history.at(-1)).toMatchObject({ operation: "feed", payload: { actorAgentId: "owner", seq: 1, path: "/live/a", valueFingerprint: expect.any(String), valueBytes: Buffer.byteLength(JSON.stringify({ arbitrary: [true, 3, null] })), ack: first.ack } });
     await store.feed(set(2, null, { attention: "milestone" }), "owner");
     expect((await store.read("test"))!.updates).toMatchObject([{ kind: "data", actorAgentId: "owner", targets: [{ selector: "#a" }] }]);
     await store.feed(set(3, null, { attention: "milestone" }), "owner"); expect((await store.read("test"))!.updates).toHaveLength(1);
@@ -89,6 +89,24 @@ describe("durable latest-state feeds", () => {
     await store.feed({ action: "close", boardId: "test", sourceId: "worker", generation: 1 }, "owner");
     await expect(store.feed(open("child", "/live/a/0/x"), "owner")).rejects.toHaveProperty("code", "data_conflict");
     expect((await store.read("test"))!.canvas.data.live).toEqual({ a: [1, 2] });
+  });
+
+  it("retains compact provenance instead of multiplying large values in feed history", async () => {
+    await store.feed(open(), "owner");
+    const sizes: number[] = [];
+    for (let seq = 1; seq <= 3; seq++) {
+      await store.feed(set(seq, { value: "x".repeat(32000), seq }), "owner");
+      sizes.push(Buffer.byteLength(await readFile(join(root, "boards/test.json"), "utf8")));
+    }
+    const raw = JSON.parse(await readFile(join(root, "boards/test.json"), "utf8"));
+    const writes = raw.history.filter((item: { operation: string; payload: { action?: string } }) => item.operation === "feed" && item.payload.action === "set");
+    expect(writes).toHaveLength(3);
+    for (const write of writes) {
+      expect(write.payload.value).toBeUndefined(); expect(write.payload.valueBytes).toBeGreaterThan(32000);
+      expect(write.payload.valueFingerprint).toMatch(/^[a-f0-9]{64}$/); expect(Buffer.byteLength(JSON.stringify(write))).toBeLessThan(1200);
+    }
+    expect(sizes[2] - sizes[0]).toBeLessThan(5000);
+    expect(raw.board.canvas.data.live.a.value.length).toBe(32000);
   });
 
 });

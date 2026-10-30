@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile, stat, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -8,11 +8,25 @@ import { BoardService } from "./service";
 import { ServiceJournal } from "./journal";
 import { BoardBridge } from "./bridge";
 import { runtimePaths, writeRuntime } from "./runtime";
+const syncFault = vi.hoisted(() => ({ directory: "", remaining: 0 }));
+vi.mock("node:fs/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, open: async (...args: Parameters<typeof actual.open>) => {
+    const handle = await actual.open(...args);
+    if (String(args[0]) !== syncFault.directory || args[1] !== "r" || syncFault.remaining < 1) return handle;
+    return new Proxy(handle, { get(target, property) {
+      if (property === "sync") return async () => { syncFault.remaining--; throw Object.assign(new Error("Injected directory fsync error after rename"), { code: "EIO" }); };
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+  } };
+});
 const exec = promisify(execFile);
 
 describe("installed latest-state producer and feed transport", () => {
   let dir: string, store: BoardStore, service: BoardService, bridge: BoardBridge, counter: number;
   beforeEach(async () => {
+    syncFault.directory = ""; syncFault.remaining = 0;
     dir = await mkdtemp("/tmp/pf-"); counter = 0;
     store = new BoardStore(join(dir, "data")); await store.create({ id: "board", title: "Feed transport", ownerAgentId: "owner" });
     const journal = new ServiceJournal(join(dir, "service.json")); await journal.init(); await journal.bind("own-token", { agentId: "owner", cwd: dir });
@@ -84,6 +98,46 @@ describe("installed latest-state producer and feed transport", () => {
     expect(denied.code).toBe("pending_write");
     bridge.dispatch = dispatch;
     expect(await run('const f = await createFeed(config); console.log(JSON.stringify(await f.retry()));')).toMatchObject({ generation: 1, seq: 3 });
+  });
+
+  it("pins each live SDK instance to its own generation, even when another handle rewrites the journal", async () => {
+    const result = await run(`const f1=await createFeed(config); await f1.set("generation-1");
+      const f2=await createFeed({...config,restart:true}); await f2.set("generation-2");
+      const blocked=[]; for(const op of [()=>f1.set("old"),()=>f1.retry(),()=>f1.close()]) {try{await op();blocked.push("WRONG");}catch(e){blocked.push(e.code);}}
+      const continued=await f2.set("generation-2-continued");
+      await f1.reopen(); const explicit=await f1.set("generation-3"); let oldF2; try{await f2.set("old-generation-2");}catch(e){oldF2=e.code;}
+      console.log(JSON.stringify({blocked,continued,explicit,oldF2}));`);
+    expect(result.blocked).toEqual(["generation_conflict", "generation_conflict", "generation_conflict"]);
+    expect(result.continued).toMatchObject({ generation: 2, seq: 2 });
+    expect(result.explicit).toMatchObject({ generation: 3, seq: 1 }); expect(result.oldF2).toBe("generation_conflict");
+    expect((await store.read("board"))!.canvas.data.live).toEqual({ a: "generation-3" });
+  });
+
+  it("keeps an ambiguous post-rename fsync failure unknown and replays its committed ACK", async () => {
+    await run('await createFeed(config);');
+    syncFault.directory = join(dir, "data/boards"); syncFault.remaining = 1;
+    const dispatch = bridge.dispatch.bind(bridge); let writes = 0; let firstResponse: unknown;
+    bridge.dispatch = async line => {
+      if (JSON.parse(line).input.action !== "set") return dispatch(line);
+      writes++;
+      if (writes === 1) { firstResponse = await dispatch(line); return firstResponse; }
+      return { ok: false, error: { code: "EIO", message: "Continuing storage response uncertainty" } };
+    };
+    const result = await run(`const f=await createFeed(config); let unknown,reopen,restart;
+      try{await f.set({durable:"once"});}catch(e){unknown=e.code;}
+      try{await f.reopen({discardRejected:true});}catch(e){reopen=e.code;}
+      try{await createFeed({...config,restart:true});}catch(e){restart=e.code;}
+      console.log(JSON.stringify({unknown,reopen,restart}));`);
+    expect(firstResponse).toMatchObject({ ok: false, error: { code: "EIO" } }); expect(syncFault.remaining).toBe(0);
+    expect(result).toEqual({ unknown: "outcome_unknown", reopen: "pending_write", restart: "pending_write" });
+    expect(writes).toBe(3);
+    const journal = JSON.parse(await readFile(join(dir, "producer.json"), "utf8"));
+    expect(journal).toMatchObject({ seq: 0, pending: { generation: 1, seq: 1, value: { durable: "once" } }, lastError: { code: "outcome_unknown", confirmed: false } });
+    const committed = (await store.read("board"))!; const ack = committed.feeds![0].lastAck;
+    expect(committed.canvas.data.live).toEqual({ a: { durable: "once" } });
+    bridge.dispatch = dispatch;
+    expect(await run('const f=await createFeed(config); console.log(JSON.stringify(await f.retry()));')).toEqual(ack);
+    expect((await store.read("board"))!.revision).toBe(committed.revision);
   });
 
 });

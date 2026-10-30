@@ -223,7 +223,16 @@ export class BoardStore {
           this.event(envelope.board, eventId, actorAgentId ?? "user", `feed-${input.action}`, `Feed ${input.sourceId}: ${input.action}`, at);
           envelope.board.revision++;
           envelope.board.updatedAt = at;
-          envelope.history.push({ revision: envelope.board.revision, at, operation: "feed", payload: { ...input, actorAgentId } });
+          // Latest-state feeds are not an event-log archive. Keep immutable
+          // provenance/ACK evidence without copying every potentially large value.
+          const payload = input.action === "set" ? {
+            boardId: input.boardId, sourceId: input.sourceId, action: input.action,
+            path: change.result.source.path, generation: input.generation, seq: input.seq,
+            attention: input.attention, focusSelectors: input.focusSelectors,
+            valueFingerprint: change.result.source.valueFingerprint,
+            valueBytes: Buffer.byteLength(JSON.stringify(input.value), "utf8"), actorAgentId, ack: change.result.ack,
+          } : { ...input, actorAgentId };
+          envelope.history.push({ revision: envelope.board.revision, at, operation: "feed", payload });
           assertJson(envelope.board.canvas.data, "Canvas data");
           await writeEnvelope(path, envelope);
           return change.result;
