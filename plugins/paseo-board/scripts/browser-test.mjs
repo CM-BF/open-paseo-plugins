@@ -337,10 +337,16 @@ try {
   await update(`{interactions:[${JSON.stringify(markerQuestion)}]}`);
   await untilFrame("document.querySelector('[data-board-markers]')?.shadowRoot.querySelector('[data-board-interaction=spatial-question]')?.dataset.status==='sending'");
   assert.equal(await frame("getComputedStyle(document.querySelector('[data-board-markers]').shadowRoot.querySelector('button'),'::before').animationName"), 'board-halo');
-  await command('Emulation.setEmulatedMedia', { features: [{name:'prefers-reduced-motion',value:'reduce'}] });
+  // The opaque sandbox can live in a separate renderer; emulate its media preference on
+  // that target as well as the host, rather than assuming a top-page override propagates.
+  const mediaSessions = [sessionId];
+  for (const target of (await send('Target.getTargets')).targetInfos.filter(target=>target.type==='iframe')) {
+    mediaSessions.push((await send('Target.attachToTarget', {targetId:target.targetId,flatten:true})).sessionId);
+  }
+  await Promise.all(mediaSessions.map(id=>send('Emulation.setEmulatedMedia', { features: [{name:'prefers-reduced-motion',value:'reduce'}] }, id)));
   await untilFrame("matchMedia('(prefers-reduced-motion: reduce)').matches");
   assert.equal(await frame("getComputedStyle(document.querySelector('[data-board-markers]').shadowRoot.querySelector('button'),'::before').animationName"), 'none');
-  await command('Emulation.setEmulatedMedia', { features: [] });
+  await Promise.all(mediaSessions.map(id=>send('Emulation.setEmulatedMedia', { features: [] }, id)));
   await untilFrame("!matchMedia('(prefers-reduced-motion: reduce)').matches");
   assert.equal(await frame("document.querySelector('#field').value"), 'marker update preserves draft');
   assert.equal(await evaluate('results.ready'), beforeMarkerReady);
