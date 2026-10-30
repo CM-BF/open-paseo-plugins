@@ -3,12 +3,12 @@ import { createElement, useEffect, useLayoutEffect, useRef, useState, type React
 import { Platform } from "react-native";
 import type { Anchor, Canvas, Interaction, JsonData } from "../shared/contracts";
 import { buildBoardDocument } from "../shared/document";
-import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, type AskRequest, type AskResult, type ComposeRequest, type FrameError, type FramePosition, type FrameSnapshot, type FrameTheme, type SelectionMode } from "../shared/frame-contract";
+import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, type AskRequest, type AskResult, type ComposeRequest, type FrameError, type FramePosition, type FrameSnapshot, type FrameTheme, type InteractionLocation, type SelectionMode } from "../shared/frame-contract";
 
 type FrameWindow = { postMessage(message: unknown, origin: string): void };
 type Frame = { contentWindow: FrameWindow | null };
 type MessageEvent = { source: unknown; data: unknown };
-type OuterPointerEvent = { isTrusted: boolean; target?: { closest?(selector: string): unknown } };
+type OuterPointerEvent = { isTrusted: boolean; target?: { closest?(selector: string): unknown }; preventDefault(): void };
 type BrowserWindow = {
   addEventListener(name: "message", fn: (event: MessageEvent) => void): void;
   removeEventListener(name: "message", fn: (event: MessageEvent) => void): void;
@@ -34,12 +34,13 @@ export interface CanvasFrameProps extends FrameSnapshot {
   selectionClearToken?: number;
   interactions?: Interaction[];
   selectedInteractionId?: string;
+  focusInteraction?: { id: string; token: number };
   onAnchor(anchor: Anchor): void;
   onAsk(request: AskRequest): Promise<AskResult>;
   onCompose?(request: ComposeRequest): void;
   onCanvasPointer?(): void;
-  onOpenInteraction?(id: string, position: FramePosition): void;
-  onInteractionPosition?(id: string, position: FramePosition): void;
+  onOpenInteraction?(id: string, position: FramePosition, location?: InteractionLocation): void;
+  onInteractionPosition?(id: string, position: FramePosition, location?: InteractionLocation): void;
   onState(state: JsonData): void;
   onError(error: FrameError): void;
   onOpenLink?(url: string): void;
@@ -74,6 +75,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   const [, redraw] = useState(0);
   if (interactionLock.current?.boardId !== props.boardId) interactionLock.current = null;
   const ready = useRef(false);
+  const focused = useRef<string | undefined>(undefined);
   if (!document.current || document.current.boardId !== props.boardId || (document.current.version !== props.canvas.documentVersion && props.selectionMode === "off" && !interactionLock.current)) {
     document.current = documentFor({ ...props, userState: effectiveState() });
     ready.current = false;
@@ -82,6 +84,15 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   const send = (payload: Record<string, unknown>) => {
     const current = document.current!;
     frame.current?.contentWindow?.postMessage({ ...payload, channel: FRAME_CHANNEL, boardId: current.boardId, sessionId: current.sessionId }, "*");
+  };
+  const focusRequestedInteraction = () => {
+    const current = latest.current;
+    const request = current.focusInteraction;
+    if (!ready.current || !request || request.id !== current.selectedInteractionId || !interactionMarkers(current.interactions || []).some(item => item.id === request.id)) return;
+    const key = `${document.current!.sessionId}:${request.token}:${request.id}`;
+    if (focused.current === key) return;
+    focused.current = key;
+    send({ type: "focus-interaction", id: request.id });
   };
   useLayoutEffect(() => {
     if (!canRenderFrames || !browser.window) return;
@@ -95,6 +106,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
       send({ type: "selection", mode: current.selectionMode });
       send({ type: "snapshot", snapshot: { canvas: current.canvas, boardRevision: current.boardRevision, userState: effectiveState(), theme: current.theme } });
       send({ type: "interactions", markers: interactionMarkers(current.interactions || []), selectedId: current.selectedInteractionId });
+      focusRequestedInteraction();
     };
     const userActing = () => browser.document?.activeElement === frame.current && browser.navigator?.userActivation?.isActive === true;
     const onMessage = (event: MessageEvent) => {
@@ -146,10 +158,10 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
           break;
         }
         case "open-interaction":
-          if (userActing() && interactionMarkers(current.interactions || []).some(item => item.id === message.id)) current.onOpenInteraction?.(message.id, message.position);
+          if (userActing() && interactionMarkers(current.interactions || []).some(item => item.id === message.id)) current.onOpenInteraction?.(message.id, message.position, message.location);
           break;
         case "interaction-position":
-          if (message.id === current.selectedInteractionId && interactionMarkers(current.interactions || []).some(item => item.id === message.id)) current.onInteractionPosition?.(message.id, message.position);
+          if (message.id === current.selectedInteractionId && interactionMarkers(current.interactions || []).some(item => item.id === message.id)) current.onInteractionPosition?.(message.id, message.position, message.location);
           break;
         case "state":
           localState.current = { boardId: current.boardId, state: message.state, dirty: true };
@@ -210,6 +222,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   useEffect(() => {
     if (ready.current) send({ type: "interactions", markers: interactionMarkers(props.interactions || []), selectedId: props.selectedInteractionId });
   }, [props.interactions, props.selectedInteractionId]);
+  useEffect(() => { focusRequestedInteraction(); }, [props.focusInteraction, props.selectedInteractionId, props.interactions]);
   useEffect(() => {
     if (ready.current) send({ type: "selection", mode: props.selectionMode });
   }, [props.selectionMode]);
@@ -240,17 +253,24 @@ export interface WebMessageInputProps {
 }
 
 /** Host clicks outside the floating conversation dismiss it; iframe clicks arrive via the bridge. */
-export function usePopoverDismiss(active: boolean, onDismiss: () => void): void {
+export function usePopoverDismiss(active: boolean, onDismiss: () => void, preserveInput = false): void {
   const latest = useRef(onDismiss);
   latest.current = onDismiss;
   useEffect(() => {
     if (!active || !canRenderFrames || !browser.window) return;
     const dismiss = (event: OuterPointerEvent) => {
-      if (event.isTrusted && !event.target?.closest?.('[data-testid="board-local-popover"]')) latest.current();
+      if (!event.isTrusted) return;
+      if (event.target?.closest?.('[data-testid="board-discussion-rail"]')) {
+        // A disabled navigation row must not blur an unsent draft: Enter/Escape should
+        // still address that input after an incidental rail click.
+        if (preserveInput) event.preventDefault();
+        return;
+      }
+      if (!event.target?.closest?.('[data-testid="board-local-popover"]')) latest.current();
     };
     browser.window.addEventListener("pointerdown", dismiss, true);
     return () => browser.window?.removeEventListener("pointerdown", dismiss, true);
-  }, [active]);
+  }, [active, preserveInput]);
 }
 
 /** Native DOM composition events preserve IME confirmation; RNW onKeyPress drops that detail. */

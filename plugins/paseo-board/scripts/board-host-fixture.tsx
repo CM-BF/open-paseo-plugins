@@ -12,7 +12,7 @@ const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 const now = () => new Date().toISOString();
 const fragment = `<style>body{padding:24px;margin:0;font:16px sans-serif}#point{position:absolute;top:140px;left:120px;width:100px;height:70px;background:#ebf5ed}#field{display:block;margin-top:40px}#words{margin-top:100px;width:600px}#far{margin-top:850px}</style><h1>Actual BoardView fixture</h1><button id="control">Keep running</button><output id="count">0</output><input id="field" value="initial"><div id="point">Point here</div><p id="words">A stable sentence for selecting the original location.</p><div id="far">Far below</div><script>
 window.boots=1;window.ticks=0;window.count=0;function tick(){ticks++;requestAnimationFrame(tick)}requestAnimationFrame(tick);document.querySelector('#control').onclick=()=>{count++;document.querySelector('#count').textContent=count};
-window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channel==='host-fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'host-fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'host-fixture-result',id:e.data.id,error:error.message},'*')}}});
+window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-interaction')parent.postMessage({channel:'host-fixture-focus',id:e.data.id},'*');if(e.source===parent&&e.data?.channel==='host-fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'host-fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'host-fixture-result',id:e.data.id,error:error.message},'*')}}});
 </script>`;
 let persisted: Board = { schemaVersion: 1, id: "host-fixture", title: "Host integration fixture", ownerAgentId: "owner-fixture", revision: 1, createdAt: now(), updatedAt: now(), canvas: { html: fragment, revision: 1, documentVersion: 1, data: { summary: "Isolated test fixture" }, patches: [] }, decisions: [], interactions: [], events: [], observations: [], userState: {}, extraction: {} };
 const query = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
@@ -20,7 +20,7 @@ let submitMode: "held" | "accept" | "reject" = "held";
 const pending = new Map<string, { input: any; resolve(value: Interaction): void; reject(error: Error): void }>();
 const advance = () => { persisted = { ...persisted, revision: persisted.revision + 1, updatedAt: now() }; };
 const fixture: any = global.hostFixture = {
-  calls: [] as any[], links: [] as string[], openedAgents: [] as string[], ready: 0, responseClicks: 0, responseResults: [] as any[],
+  calls: [] as any[], links: [] as string[], openedAgents: [] as string[], anchors: [] as any[], focusRequests: [] as string[], ready: 0, responseClicks: 0, responseResults: [] as any[],
   board: () => copy(persisted),
   mode: (next: typeof submitMode) => { submitMode = next; },
   pending: () => [...pending.keys()],
@@ -53,9 +53,11 @@ const fixture: any = global.hostFixture = {
 let requestId = 0;
 const frameRequests = new Map<number, { resolve(value: any): void; reject(error: Error): void }>();
 global.addEventListener("message", (event: any) => {
+  if (event.data?.channel === "host-fixture-focus") fixture.focusRequests.push(event.data.id);
   if (event.data?.channel === "host-response-fixture" && event.data.clicked) fixture.responseClicks++;
   if (event.data?.channel === "host-response-fixture" && event.data.result) fixture.responseResults.push(event.data.result);
   if (event.data?.channel === "paseo-board-frame-v1" && event.data.type === "ready") fixture.ready++;
+  if (event.data?.channel === "paseo-board-frame-v1" && event.data.type === "anchor") fixture.anchors.push(event.data.anchor);
   if (event.data?.channel !== "host-fixture-result") return;
   const entry = frameRequests.get(event.data.id); if (!entry) return; frameRequests.delete(event.data.id);
   event.data.error ? entry.reject(new Error(event.data.error)) : entry.resolve(event.data.value);
