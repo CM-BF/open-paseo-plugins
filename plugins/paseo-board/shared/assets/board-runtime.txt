@@ -20,6 +20,7 @@ function (initial) {
   let lastGesture = -Infinity;
   let lastGesturePosition;
   let patchFailure = null;
+  let pendingMarkerFocus = null;
   let sequence = 0;
   const applied = new Set();
   const dataListeners = new Set();
@@ -41,7 +42,7 @@ function (initial) {
     return new Promise((resolve) => {
       const timer = setTimeout(() => { pendingAsks.delete(id); resolve(cancelAsk); }, 120000);
       pendingAsks.set(id, { resolve, timer });
-      post({ type: "ask", id, request: { prompt: request.prompt, anchor: request.anchor || lastAnchor || currentAnchor(), kind: request.kind || "question", position: lastGesturePosition } });
+      post({ type: "ask", id, request: { prompt: request.prompt, anchor: bindAuthoredAnchor(request.anchor || lastAnchor || currentAnchor()), kind: request.kind || "question", position: lastGesturePosition } });
     });
   };
   const saveState = (value) => {
@@ -126,7 +127,8 @@ function (initial) {
     void drain();
   };
   const drain = async () => {
-    if (applying || selectionMode !== "off" || selectionSession || captureBusy || !queued) return;
+    if (applying || selectionMode !== "off" || selectionSession || captureBusy) return;
+    if (!queued) { drainMarkerFocus(); return; }
     applying = true;
     try {
       while (queued && selectionMode === "off" && !selectionSession && !captureBusy) {
@@ -161,6 +163,7 @@ function (initial) {
       applying = false;
       queueMarkerPositions();
       if (deferredSelection !== null) { const mode = deferredSelection; deferredSelection = null; setSelectionMode(mode); }
+      drainMarkerFocus();
     }
   };
 
@@ -181,9 +184,150 @@ function (initial) {
   };
   const viewport = () => ({ width: innerWidth, height: innerHeight, scrollX, scrollY });
   const rect = (r) => ({ x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height });
+  // Identity metadata is optional and never changes the author's DOM or the original
+  // quote/PNG/coordinates. A live reference survives reparenting; stable IDs survive patches.
+  const bindingNodes = new Map();
+  const bindingFingerprint = (node) => {
+    const text = (node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 1000);
+    const input = [node.localName, node.getAttribute("role"), node.getAttribute("name"), node.getAttribute("type"), node.getAttribute("aria-label"), text].join("\n");
+    let hash = 2166136261;
+    for (let i = 0; i < input.length; i++) hash = Math.imul(hash ^ input.charCodeAt(i), 16777619);
+    return (hash >>> 0).toString(16).padStart(8, "0");
+  };
+  const authorElement = (node) => node instanceof Element && node !== root && node !== document.body && node !== document.head && !node.closest("[data-board-overlay]");
+  const identityFor = (node) => {
+    const selector = selectorFor(node);
+    if (!selector || !authorElement(node)) return null;
+    return { selector, tag: node.localName, ...(node.id && node.id.length <= 1000 ? { id: node.id } : {}), fingerprint: bindingFingerprint(node) };
+  };
+  const captureBinding = (target, region, enclose = false) => {
+    if (!(target instanceof Element)) return undefined;
+    // A region may span several components; select its enclosing context, not the element
+    // where the drag happened to start. Whole-page regions remain geometric references.
+    if (enclose) {
+      while (authorElement(target)) {
+        const r = rect(target.getBoundingClientRect());
+        if (region.x >= r.x - 1 && region.y >= r.y - 1 && region.x + region.width <= r.x + r.width + 1 && region.y + region.height <= r.y + r.height + 1) break;
+        target = target.parentElement;
+      }
+    }
+    const identity = identityFor(target);
+    if (!identity) return undefined;
+    const r = rect(target.getBoundingClientRect());
+    const ancestors = [];
+    const nodes = [target];
+    for (let parent = target.parentElement; authorElement(parent) && ancestors.length < 8; parent = parent.parentElement) {
+      const ancestor = identityFor(parent);
+      if (ancestor) { ancestors.push(ancestor); nodes.push(parent); }
+    }
+    const key = `binding-${++sequence}-${scope.sessionId}`.slice(0, 160);
+    const binding = { documentVersion: snapshot.canvas.documentVersion, key, target: identity, ancestors,
+      relative: { x: Math.max(0, Math.min(1, r.width ? (region.x - r.x) / r.width : 0)), y: Math.max(0, Math.min(1, r.height ? (region.y - r.y) / r.height : 0)) } };
+    bindingNodes.set(key, nodes);
+    // Unsent selections need no long-lived registry. Active marker bindings are retained.
+    if (bindingNodes.size > 600) {
+      const retained = new Set(markerItems.map(item => item.marker.anchor?.binding?.key));
+      for (const candidate of bindingNodes.keys()) if (candidate !== key && !retained.has(candidate)) { bindingNodes.delete(candidate); if (bindingNodes.size <= 500) break; }
+    }
+    return binding;
+  };
+  const bindAuthoredAnchor = (anchor) => {
+    if (!anchor || anchor.binding || !anchor.rect || !anchor.selector || anchor.canvasRevision !== snapshot.canvas.revision || anchor.boardRevision !== snapshot.boardRevision) return anchor;
+    try {
+      const targets = document.querySelectorAll(anchor.selector);
+      if (targets.length === 1) {
+        const binding = captureBinding(targets[0], anchor.rect, anchor.kind === "region");
+        if (binding) return { ...anchor, binding };
+      }
+    } catch {}
+    return anchor;
+  };
+  const resolveIdentity = (identity, cached, allowPath) => {
+    if (!identity) return null;
+    if (identity.id) {
+      let matches;
+      try { matches = document.querySelectorAll("#" + CSS.escape(identity.id)); } catch { return null; }
+      // Duplicate IDs are ambiguous even when one original node is still in memory.
+      if (matches.length !== 1 || matches[0].localName !== identity.tag) return null;
+      return matches[0];
+    }
+    if (cached) return cached.isConnected && authorElement(cached) ? cached : null;
+    if (!allowPath) return null;
+    try {
+      const matches = document.querySelectorAll(identity.selector);
+      if (matches.length === 1 && authorElement(matches[0]) && matches[0].localName === identity.tag && bindingFingerprint(matches[0]) === identity.fingerprint) return matches[0];
+    } catch {}
+    return null;
+  };
+  const visibleBox = (node, revealScroll = false) => {
+    if (!authorElement(node) || !node.isConnected || !node.getClientRects().length) return null;
+    const style = getComputedStyle(node);
+    if (style.visibility !== "visible" || style.display === "none" || style.contentVisibility === "hidden") return null;
+    const box = node.getBoundingClientRect();
+    let left = box.left, top = box.top, right = box.right, bottom = box.bottom;
+    // CSS accordions and nested scrollers can keep a child's layout box while completely
+    // clipping its pixels. Only visible pixels can host a marker; viewport clipping itself
+    // is excluded here because a sidebar action is allowed to scroll an offscreen component.
+    for (let parent = node.parentElement; authorElement(parent); parent = parent.parentElement) {
+      const css = getComputedStyle(parent);
+      if (css.contentVisibility === "hidden") return null;
+      if (parent.localName === "details" && !parent.open) {
+        const summary = Array.from(parent.children).find(child => child.localName === "summary");
+        if (!summary?.contains(node)) return null;
+      }
+      const clipX = /^(hidden|clip|auto|scroll)$/.test(css.overflowX) && !(revealScroll && /^(auto|scroll)$/.test(css.overflowX));
+      const clipY = /^(hidden|clip|auto|scroll)$/.test(css.overflowY) && !(revealScroll && /^(auto|scroll)$/.test(css.overflowY));
+      if (!clipX && !clipY) continue;
+      const r = parent.getBoundingClientRect();
+      const scaleX = parent.offsetWidth ? r.width / parent.offsetWidth : 1;
+      const scaleY = parent.offsetHeight ? r.height / parent.offsetHeight : 1;
+      if (clipX) { const x = r.left + parent.clientLeft * scaleX; left = Math.max(left, x); right = Math.min(right, x + parent.clientWidth * scaleX); }
+      if (clipY) { const y = r.top + parent.clientTop * scaleY; top = Math.max(top, y); bottom = Math.min(bottom, y + parent.clientHeight * scaleY); }
+    }
+    return right > left && bottom > top ? { left, top, right, bottom, width: right - left, height: bottom - top } : null;
+  };
+  const visibleContext = (target) => {
+    // Inspect current ancestors, not only captured ones: wrapping a stable component in a
+    // new <details> must work immediately. Opening or clicking authored controls is forbidden.
+    let folded;
+    let hiddenContent;
+    for (let node = target; authorElement(node); node = node.parentElement) {
+      if (getComputedStyle(node).contentVisibility === "hidden") hiddenContent = node;
+      if (node.localName === "details" && !node.open) {
+        const summary = Array.from(node.children).find(child => child.localName === "summary");
+        if (!summary || !summary.contains(target)) folded = summary || node;
+      }
+    }
+    if (folded && visibleBox(folded)) return folded;
+    for (let node = hiddenContent ? hiddenContent.parentElement : target; authorElement(node); node = node.parentElement) if (visibleBox(node)) return node;
+    return null;
+  };
+  const markerLocation = (anchor) => {
+    const binding = anchor?.binding;
+    if (binding && binding.documentVersion === snapshot.canvas.documentVersion) {
+      const cached = bindingNodes.get(binding.key) || [];
+      const identities = [binding.target, ...binding.ancestors];
+      const allowPath = anchor.canvasRevision === snapshot.canvas.revision;
+      const nodes = identities.map((identity, index) => resolveIdentity(identity, cached[index], allowPath));
+      // Retain detached references as tombstones: replacing a non-ID node at the same nth
+      // path in this session must never silently become the original component.
+      bindingNodes.set(binding.key, nodes.map((node, index) => node || cached[index]));
+      const target = nodes[0];
+      const context = target ? visibleContext(target) : nodes.slice(1).map(node => node && visibleContext(node)).find(Boolean);
+      if (context) {
+        const r = rect(context.getBoundingClientRect());
+        const visible = rect(visibleBox(context));
+        const direct = context === target;
+        return { rect: { x: Math.max(visible.x, Math.min(visible.x + visible.width, r.x + (direct ? binding.relative.x * r.width : Math.min(8, r.width / 2)))), y: Math.max(visible.y, Math.min(visible.y + visible.height, r.y + (direct ? binding.relative.y * r.height : Math.min(8, r.height / 2)))), width: 0, height: 0 }, node: context,
+          focusNode: target && visibleBox(target, true) ? target : context,
+          mode: direct ? "component" : target ? "collapsed" : "ancestor", tracked: nodes.filter(Boolean) };
+      }
+      return { rect: anchor.rect, mode: "snapshot", tracked: nodes.filter(Boolean) };
+    }
+    // Legacy selectors only described surrounding context; never guess a live binding.
+    return { rect: anchor?.rect, mode: "snapshot", tracked: [] };
+  };
   // Host-owned discussions are independent from the authored document and its patch journal.
-  // Frozen coordinates are document pixels. A selector on a point/region identifies context,
-  // not a new position; moving to its centre after a revision would silently change meaning.
   let markerHost;
   let markerItems = [];
   let selectedMarkerId;
@@ -196,17 +340,18 @@ function (initial) {
     markerPositionFrame = null;
     if (!markerHost) return;
     const overlap = new Map();
+    const observed = new Set();
     let unanchored = 0;
     for (const item of markerItems) {
       const button = item.button;
       const anchor = item.marker.anchor;
-      let saved = anchor?.rect;
+      const location = markerLocation(anchor);
+      const saved = location.rect;
       const stale = Boolean(anchor && anchor.canvasRevision !== snapshot.canvas.revision);
-      // Only explicit element references identify their whole target. A point's selector is
-      // merely surrounding context and must never snap to a different part of that element.
-      if (!stale && anchor?.kind === "element" && anchor.selector) {
-        try { const targets = document.querySelectorAll(anchor.selector); if (targets.length === 1) saved = rect(targets[0].getBoundingClientRect()); } catch {}
-      }
+      item.location = location;
+      for (const node of location.tracked) observed.add(node);
+      // ResizeObserver includes new wrapper ancestors introduced after selection.
+      for (let node = location.node, depth = 0; authorElement(node) && depth < 16; node = node.parentElement, depth++) observed.add(node);
       const x = saved ? saved.x - scrollX : 12;
       const y = saved ? saved.y - scrollY : 12 + unanchored++ * 34;
       const key = `${Math.round(x / 28)}:${Math.round(y / 28)}`;
@@ -219,6 +364,7 @@ function (initial) {
       button.style.left = left + "px";
       button.style.top = top + "px";
       button.dataset.stale = String(stale);
+      button.dataset.location = location.mode;
       button.dataset.status = item.marker.status;
       button.dataset.active = String(["saved", "sending", "delivered", "processing"].includes(item.marker.status));
       button.setAttribute("aria-pressed", String(item.marker.id === selectedMarkerId));
@@ -226,23 +372,68 @@ function (initial) {
       let face = button.firstElementChild;
       if (!face) { face = document.createElement("span"); face.className = "face"; face.setAttribute("aria-hidden", "true"); button.append(face); }
       face.textContent = String(item.marker.number);
-      button.title = `${item.marker.text}\n${status}${!saved ? " · 未指定可定位的局部位置。" : ""}${stale ? ` · 画布已更新；这是 r${anchor.canvasRevision} 的原位置，请核对引用。` : ""}`;
-      button.setAttribute("aria-label", `${item.marker.number}. ${item.marker.text}，${status}${saved ? stale ? "，旧版本位置" : "" : "，整板讨论"}`);
+      const locationLabel = location.mode === "collapsed" ? "组件当前不可见，标记显示在可见上层" : location.mode === "ancestor" ? "原组件无法唯一定位，标记显示在原上层" : location.mode === "snapshot" && saved ? "原始快照位置" : "";
+      button.title = `${item.marker.text}\n${status}${locationLabel ? " · " + locationLabel : ""}${!saved ? " · 未指定可定位的局部位置。" : ""}${stale ? ` · 画布已更新；引用仍为 r${anchor.canvasRevision}，请核对原始快照。` : ""}`;
+      button.setAttribute("aria-label", `${item.marker.number}. ${item.marker.text}，${status}${locationLabel ? "，" + locationLabel : ""}${saved ? stale ? "，旧版本位置" : "" : "，整板讨论"}`);
       if (item.marker.id === selectedMarkerId) {
-        const next = { id: item.marker.id, x: left, y: top };
+        const next = { id: item.marker.id, x: left, y: top, location: location.mode };
         if (JSON.stringify(next) !== JSON.stringify(lastSelectedPosition)) {
           lastSelectedPosition = next;
-          post({ type: "interaction-position", id: next.id, position: { x: next.x, y: next.y } });
+          post({ type: "interaction-position", id: next.id, position: { x: next.x, y: next.y }, location: next.location });
         }
       }
     }
+    syncMarkerObservers(observed);
   };
-  const queueMarkerPositions = () => { if (!markerPositionFrame) markerPositionFrame = requestAnimationFrame(positionMarkers); };
+  const queueMarkerPositions = () => { if (!markerPositionFrame && markerItems.length) markerPositionFrame = requestAnimationFrame(positionMarkers); };
+  let markerMutationTimer;
+  const queueLayoutPositions = () => {
+    // At most one layout pass per 100ms for continuously changing authored DOM. There is
+    // no polling/RAF loop; quiet canvases cost nothing and overlay writes are excluded.
+    if (!markerMutationTimer && markerItems.length) markerMutationTimer = setTimeout(() => { markerMutationTimer = null; queueMarkerPositions(); }, 100);
+  };
+  const markerResizeObserver = new ResizeObserver(queueLayoutPositions);
+  const observedMarkerNodes = new Set();
+  const markerMutationObserver = new MutationObserver(records => {
+    if (records.some(record => !(record.target instanceof Element ? record.target : record.target.parentElement)?.closest("[data-board-overlay]")
+      && !(record.type === "childList" && [...record.addedNodes, ...record.removedNodes].every(node => node instanceof Element && node.hasAttribute("data-board-overlay"))))) queueLayoutPositions();
+  });
+  let markerObserving = false;
+  const syncMarkerObservers = (nodes) => {
+    if (markerItems.length && document.body) nodes.add(document.body);
+    for (const node of observedMarkerNodes) if (!nodes.has(node)) { markerResizeObserver.unobserve(node); observedMarkerNodes.delete(node); }
+    for (const node of nodes) if (!observedMarkerNodes.has(node)) { markerResizeObserver.observe(node); observedMarkerNodes.add(node); }
+    if (markerItems.length && !markerObserving) {
+      markerMutationObserver.observe(root, { subtree: true, childList: true, characterData: true, attributes: true });
+      markerObserving = true;
+    } else if (!markerItems.length && markerObserving) { markerMutationObserver.disconnect(); markerObserving = false; }
+  };
+  const drainMarkerFocus = () => {
+    if (pendingMarkerFocus && !applying && !queued && !selectionSession && !captureBusy && selectionMode === "off") {
+      const id = pendingMarkerFocus; pendingMarkerFocus = null; focusInteraction(id);
+    }
+  };
+  const focusInteraction = (id) => {
+    const item = markerItems.find(item => item.marker.id === id);
+    if (!item) return;
+    if (applying || queued || selectionSession || captureBusy || selectionMode !== "off") { pendingMarkerFocus = id; return; }
+    const location = markerLocation(item.marker.anchor);
+    if (location.focusNode) location.focusNode.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+    selectedMarkerId = id;
+    lastSelectedPosition = undefined;
+    positionMarkers();
+    const box = item.button.getBoundingClientRect();
+    // A missing/legacy reference still opens beside the viewport rather than disappearing
+    // offscreen. It is never scrolled onto an unrelated element or automatically expanded.
+    const position = { x: Math.max(12, Math.min(innerWidth - 38, box.left)), y: Math.max(12, Math.min(innerHeight - 38, box.top)) };
+    post({ type: "interaction-position", id, position, location: item.location.mode });
+  };
   const renderMarkers = (markers, selectedId) => {
     // A host overview can reopen a thread using its captured viewport as a fallback. Always
     // send this document's current position on re-selection, even if it has not moved since
     // the previous opening (the host may have discarded that position while closed).
     if (selectedMarkerId !== selectedId) lastSelectedPosition = undefined;
+    if (pendingMarkerFocus && pendingMarkerFocus !== selectedId) pendingMarkerFocus = null;
     selectedMarkerId = selectedId;
     if (!markerHost) {
       markerHost = document.createElement("div");
@@ -285,6 +476,9 @@ function (initial) {
   };
   window.addEventListener("scroll", queueMarkerPositions, true);
   window.addEventListener("resize", queueMarkerPositions);
+  document.addEventListener("transitionend", queueLayoutPositions, true);
+  document.addEventListener("animationend", queueLayoutPositions, true);
+  document.addEventListener("load", queueLayoutPositions, true);
   const clearOverlay = () => { if (overlay) overlay.remove(); overlay = null; };
   const showOverlay = (r) => {
     if (!overlay) {
@@ -453,14 +647,21 @@ function (initial) {
     if (point && !Array.from(range.getClientRects()).some(r => point.x >= r.left && point.x <= r.right && point.y >= r.top && point.y <= r.bottom)) return null;
     const node = range.commonAncestorContainer;
     const region = rect(range.getBoundingClientRect());
-    return { anchor: { ...currentAnchor(), kind: "text", text: selected.toString().slice(0, 12000), selector: selectorFor(node.nodeType === 1 ? node : node.parentElement), rect: region, viewport: viewport() }, region };
+    const target = node.nodeType === 1 ? node : node.parentElement;
+    return { anchor: { ...currentAnchor(), kind: "text", text: selected.toString().slice(0, 12000), selector: selectorFor(target), rect: region, viewport: viewport(), binding: captureBinding(target, region) }, region };
   };
-  const pointSelection = (point, target) => ({
-    anchor: { ...currentAnchor(), kind: "point", selector: selectorFor(target), rect: { x: point.x + scrollX, y: point.y + scrollY, width: 0, height: 0 }, viewport: viewport() },
-    region: { x: Math.max(0, Math.min(point.x + scrollX - 120, root.scrollWidth - Math.min(240, innerWidth))), y: Math.max(0, point.y + scrollY - 80), width: Math.min(240, innerWidth), height: 160 },
-  });
-  const containsAnchor = (anchor, point) => {
+  const pointSelection = (point, target) => {
+    const position = { x: point.x + scrollX, y: point.y + scrollY, width: 0, height: 0 };
+    return { anchor: { ...currentAnchor(), kind: "point", selector: selectorFor(target), rect: position, viewport: viewport(), binding: captureBinding(target, position) },
+      region: { x: Math.max(0, Math.min(position.x - 120, root.scrollWidth - Math.min(240, innerWidth))), y: Math.max(0, position.y - 80), width: Math.min(240, innerWidth), height: 160 } };
+  };
+  const containsAnchor = (anchor, point, target) => {
     if (!anchor?.rect || anchor.boardRevision !== snapshot.boardRevision || anchor.canvasRevision !== snapshot.canvas.revision) return false;
+    if (anchor.binding) {
+      const location = markerLocation(anchor);
+      if (location.mode !== "component" || !(target instanceof Element) || !location.node.contains(target)
+        || Math.abs(location.rect.x - anchor.rect.x) > 1 || Math.abs(location.rect.y - anchor.rect.y) > 1) return false;
+    }
     const { x, y, width, height } = anchor.rect;
     const margin = anchor.kind === "point" ? 6 : 0;
     return point.x + scrollX >= x - margin && point.x + scrollX <= x + width + margin && point.y + scrollY >= y - margin && point.y + scrollY <= y + height + margin;
@@ -548,7 +749,7 @@ function (initial) {
       void finishSelection(session, selected.anchor, selected.region);
     } else {
       const region = { x: Math.min(start.x, point.x) + scrollX, y: Math.min(start.y, point.y) + scrollY, width: Math.abs(point.x - start.x), height: Math.abs(point.y - start.y) };
-      void finishSelection(session, { ...currentAnchor(), kind: "region", selector: selectorFor(start.target), rect: region, viewport: viewport() }, region);
+      void finishSelection(session, { ...currentAnchor(), kind: "region", selector: selectorFor(start.target), rect: region, viewport: viewport(), binding: captureBinding(start.target, region, true) }, region);
     }
   }, true);
   window.addEventListener("pointercancel", () => { dismissedPointer = null; cancelSelection({ notify: true }); }, true);
@@ -577,7 +778,7 @@ function (initial) {
     if (point.x === 0 && point.y === 0 && event.target instanceof Element) {
       const r = event.target.getBoundingClientRect(); point = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
     }
-    const previous = containsAnchor(lastAnchor, point) ? copy(lastAnchor) : null;
+    const previous = containsAnchor(lastAnchor, point, event.target) ? copy(lastAnchor) : null;
     const text = !previous ? selectedText(point) : null;
     const selected = previous ? { anchor: previous, region: null } : text || pointSelection(point, event.target);
     const session = beginSelection(point);
@@ -589,7 +790,7 @@ function (initial) {
       const button = markerNode(event);
       if (!event.isTrusted || !button || !navigator.userActivation?.isActive) return;
       const bounds = button.getBoundingClientRect();
-      post({ type: "open-interaction", id: button.getAttribute("data-board-interaction"), position: { x: bounds.left, y: bounds.top } });
+      post({ type: "open-interaction", id: button.getAttribute("data-board-interaction"), position: { x: bounds.left, y: bounds.top }, location: button.dataset.location });
       return;
     }
     if ((event.detail > 0 && suppressPointerClick) || selectionMode !== "off" || pointer) {
@@ -642,6 +843,7 @@ function (initial) {
     if (event.source !== window.parent || !message || message.channel !== scope.channel || message.boardId !== scope.boardId || message.sessionId !== scope.sessionId) return;
     if (message.type === "snapshot") receiveSnapshot(message.snapshot);
     else if (message.type === "interactions" && Array.isArray(message.markers)) renderMarkers(message.markers, message.selectedId);
+    else if (message.type === "focus-interaction" && typeof message.id === "string") focusInteraction(message.id);
     else if (message.type === "selection") setSelectionMode(message.mode);
     else if (message.type === "clear-selection") { selectionMode = "off"; cancelSelection(); }
     else if (message.type === "ask-result") {

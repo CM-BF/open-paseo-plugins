@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, validAnchor } from "./frame-contract";
-import type { Interaction } from "./contracts";
+import { AnchorSchema, type Interaction } from "./contracts";
 const scope = { boardId: "board", sessionId: "session" };
 const message = (fields: object) => ({ channel: FRAME_CHANNEL, ...scope, ...fields });
 describe("frame bridge validation", () => {
@@ -36,6 +36,22 @@ describe("frame bridge validation", () => {
     expect(validAnchor({ ...anchor, image: { mimeType: "image/png", data: "bad content" } })).toBe(false);
     expect(validAnchor({ ...anchor, canvasRevision: 1.5 })).toBe(false);
   });
+  it("round-trips optional component bindings and rejects malformed identity metadata", () => {
+    const identity = { selector: "#panel > p", tag: "p", fingerprint: "1234abcd" };
+    const binding = { documentVersion: 2, key: "binding-a", target: identity, ancestors: [{ ...identity, id: "panel", selector: "#panel", tag: "section" }], relative: { x: 0.2, y: 0.8 } };
+    const anchor = { kind: "point", boardRevision: 8, canvasRevision: 4, rect: { x: 10, y: 20, width: 0, height: 0 }, binding };
+    expect(validAnchor(anchor)).toBe(true);
+    expect(AnchorSchema.parse(anchor).binding).toEqual(binding);
+    expect(validAnchor({ ...anchor, binding: undefined })).toBe(true);
+    for (const invalid of [
+      { ...binding, documentVersion: -1 }, { ...binding, key: "x".repeat(161) },
+      { ...binding, target: { ...identity, fingerprint: "bad" } }, { ...binding, ancestors: Array(9).fill(identity) },
+      { ...binding, relative: { x: Infinity, y: 0 } }, { ...binding, relative: { x: 0, y: -0.01 } },
+    ]) {
+      expect(validAnchor({ ...anchor, binding: invalid })).toBe(false);
+      expect(AnchorSchema.safeParse({ ...anchor, binding: invalid }).success).toBe(false);
+    }
+  });
   it("validates frame-relative positions and marker message scope", () => {
     for (const type of ["open-interaction", "interaction-position"]) {
       expect(readFrameMessage(message({ type, id: "q1", position: { x: 12, y: 34 } }), scope)).not.toBeNull();
@@ -43,6 +59,8 @@ describe("frame bridge validation", () => {
       expect(readFrameMessage(message({ type, id: "q1", position: { x: 1, y: "34" } }), scope)).toBeNull();
       expect(readFrameMessage(message({ type, id: "q1", sessionId: "previous", position: { x: 12, y: 34 } }), scope)).toBeNull();
     }
+    expect(readFrameMessage(message({ type: "interaction-position", id: "q1", position: { x: 12, y: 34 }, location: "collapsed" }), scope)).not.toBeNull();
+    expect(readFrameMessage(message({ type: "interaction-position", id: "q1", position: { x: 12, y: 34 }, location: "guessed" }), scope)).toBeNull();
     expect(readFrameMessage(message({ type: "ask", id: "ask", request: { prompt: "Hello", position: { x: Infinity, y: 1 } } }), scope)).toBeNull();
   });
   it("keeps one durable marker per thread with its original location and latest reply status", () => {

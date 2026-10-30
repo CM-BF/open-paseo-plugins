@@ -23,6 +23,20 @@ export const DecisionInputSchema = z.object({
 });
 export const DecisionSchema = DecisionInputSchema.extend({ createdAt: z.string(), updatedAt: z.string() });
 export const RectSchema = z.object({ x: z.number(), y: z.number(), width: z.number().nonnegative(), height: z.number().nonnegative() });
+// Optional DOM identity hints. The frozen quote/rect/image remain the source of truth.
+export const AnchorElementSchema = z.object({
+  selector: z.string().min(1).max(1000),
+  tag: z.string().min(1).max(100),
+  id: z.string().min(1).max(1000).optional(),
+  fingerprint: z.string().regex(/^[a-f0-9]{8}$/),
+});
+export const AnchorBindingSchema = z.object({
+  documentVersion: z.number().int().nonnegative(),
+  key: z.string().min(1).max(160),
+  target: AnchorElementSchema,
+  ancestors: z.array(AnchorElementSchema).max(8),
+  relative: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) }),
+});
 export const AnchorSchema = z.object({
   boardRevision: z.number().int().nonnegative(),
   canvasRevision: z.number().int().nonnegative(),
@@ -30,6 +44,7 @@ export const AnchorSchema = z.object({
   text: z.string().max(12000).optional(),
   selector: z.string().max(1000).optional(),
   rect: RectSchema.optional(),
+  binding: AnchorBindingSchema.optional(),
   viewport: z.object({ width: z.number().positive(), height: z.number().positive(), scrollX: z.number(), scrollY: z.number() }).optional(),
   image: z.object({ mimeType: z.literal("image/png"), data: z.string().max(3000000) }).optional(),
 });
