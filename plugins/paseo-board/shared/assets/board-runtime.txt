@@ -360,7 +360,8 @@ function (initial) {
       }
     }
     if (folded) return folded;
-    for (let node = target.parentElement; authorElement(node); node = node.parentElement) if (visibleBox(node, true)) return node;
+    // Hidden authored views have no implied visible location. Climbing to main (or any
+    // ordinary ancestor) would highlight unrelated content and falsely acknowledge it.
     return null;
   };
   const findUpdateTarget = (update, index) => {
@@ -482,8 +483,9 @@ function (initial) {
       return;
     }
     const target = findUpdateTarget(update, index);
-    const node = target && updateContext(target.node);
-    if (!node) { reply("unavailable", { reason: "原组件已移除、身份不明确或当前不可见" }); return; }
+    if (!target) { reply("unavailable", { reason: "原组件已移除、身份不明确或当前不可见" }); return; }
+    const node = updateContext(target.node);
+    if (!node) { reply("unavailable", { reason: "组件当前隐藏或被裁剪，显示后可继续定位" }); return; }
     node.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
     const box = visibleBox(node);
     if (!box || !showUpdateHighlight(node)) { reply("unavailable", { reason: "组件当前不可见" }); return; }
