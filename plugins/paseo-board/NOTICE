@@ -1,0 +1,29 @@
+paseo-board
+Copyright 2026 Shurui Gui
+
+The theme CSS, tooltip and icon runtimes, frame-theme.ts, document CSP and capture
+approach are adapted from paseo-visualize (Copyright 2026 Shurui Gui). The board
+document builder, interaction bridge and live runtime are modified for persistent
+interactive boards; no installed-plugin internals are imported at runtime.
+
+The copied files shared/assets/visualize.css.txt, runtime-icons.txt and
+runtime-tooltips.txt contain work derived from OpenAI Codex
+(https://github.com/openai/codex), tag rust-v0.146.0,
+codex-rs/tui/src/inline_visualization/assets. They reached paseo-visualize through
+the Rodex adaptation and were further modified by paseo-visualize.
+
+  OpenAI Codex
+  Copyright 2025 OpenAI
+  Licensed under the Apache License, Version 2.0 (LICENSE-APACHE-2.0).
+
+shared/assets/html-to-image.txt is html-to-image 1.11.11
+(https://github.com/bubkoo/html-to-image), bundled as an ES module by
+paseo-visualize. Its full MIT license is retained at the top of that file.
+
+  html-to-image
+  Copyright (c) 2017-2023 W.Y.
+  Licensed under the MIT License.
+
+The optional icon/tooltip runtimes load lucide 1.17.0 (ISC),
+@floating-ui/core 1.7.3 and @floating-ui/dom 1.7.4 (MIT) from unpkg.com at view time;
+those dependencies are not redistributed here.

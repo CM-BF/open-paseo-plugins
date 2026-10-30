@@ -1,0 +1,9 @@
+{
+  "id": "learning-loop",
+  "name": "Learning Loop",
+  "description": "Hermes-style learning loop for every Paseo agent: bounded memory, agent-written skills, full-text recall of past sessions and a background review that turns corrections into memory and skills",
+  "media": [],
+  "requirements": {
+    "paseo": ">=0.12.0"
+  }
+}

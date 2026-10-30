@@ -1,0 +1,58 @@
+<script>
+(() => {
+  // Upgrade only this component. The original page's animation remains the frame clock;
+  // its old three-point state stays separate from the new editable curve state.
+  if (window.conversationCurve) return;
+  const oldScene=document.getElementById('curve-scene');
+  const original=[...oldScene.querySelectorAll('[data-point]')].map(el=>({x:Number(el.getAttribute('cx')),y:Number(el.getAttribute('cy'))}));
+  const oldDot=document.getElementById('traveler');
+  const dotPosition={x:Number(oldDot.getAttribute('cx')),y:Number(oldDot.getAttribute('cy'))};
+  const evaluate=(points,t)=>{const work=points.map(p=>({...p}));for(let n=work.length-1;n>0;n--)for(let i=0;i<n;i++)work[i]={x:(1-t)*work[i].x+t*work[i+1].x,y:(1-t)*work[i].y+t*work[i+1].y};return work[0];};
+  const elevate=points=>{const n=points.length;return [points[0],...points.slice(1).map((p,i)=>({x:(i+1)/n*points[i].x+(1-(i+1)/n)*p.x,y:(i+1)/n*points[i].y+(1-(i+1)/n)*p.y})),points[n-1]].map(p=>({...p}));};
+  const saved=board.getState().conversationCurve;
+  const valid=points=>Array.isArray(points)&&points.length>=4&&points.length<=12&&points.every(p=>p&&Number.isFinite(p.x)&&Number.isFinite(p.y));
+  let points=valid(saved?.points)?saved.points.map(p=>({...p})):elevate(original);
+  let phase=0,best=Infinity,last=performance.now(),drag=null;
+  for(let i=0;i<=400;i++){const p=evaluate(original,i/400),distance=(p.x-dotPosition.x)**2+(p.y-dotPosition.y)**2;if(distance<best){best=distance;phase=i/400;}}
+  const ns='http://www.w3.org/2000/svg';
+  const node=(tag,attributes)=>{const el=document.createElementNS(ns,tag);for(const [name,value] of Object.entries(attributes))el.setAttribute(name,String(value));return el;};
+  const scene=node('svg',{id:'curve-scene',viewBox:'0 0 760 300',role:'group','aria-label':'四点曲线草稿。拖动控制点，或聚焦后用方向键移动。'});
+  // Retain the ID used by the old closure, without painting its obsolete quadratic dot.
+  const clock=node('circle',{id:'traveler',r:0,visibility:'hidden','aria-hidden':'true'});
+  const guide=node('path',{id:'curve-guide-v2',fill:'none',stroke:'var(--host-line-strong)','stroke-dasharray':'4 7'});
+  const path=node('path',{id:'curve-four',fill:'none',stroke:'var(--host-iris)','stroke-width':3});
+  const traveler=node('circle',{id:'traveler-v2',r:7,fill:'var(--host-ink)','pointer-events':'none'});
+  const handles=node('g',{'aria-label':'曲线控制点'});
+  const caption=node('text',{x:28,y:275,fill:'var(--host-ink-3)','font-size':12});
+  scene.append(clock,guide,path,traveler,handles,caption);
+  oldScene.replaceWith(scene);
+  const persist=()=>board.saveState({...board.getState(),conversationCurve:{points:points.map(p=>({...p}))}});
+  const clamp=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
+  const drawDot=()=>{const p=evaluate(points,phase);traveler.setAttribute('cx',p.x);traveler.setAttribute('cy',p.y);};
+  function draw(){
+    guide.setAttribute('d',points.map((p,i)=>`${i?'L':'M'}${p.x} ${p.y}`).join(' '));
+    // Four points use the exact cubic path. The open component API also supports later
+    // degree elevation, with a sampled path for curves above cubic degree.
+    path.setAttribute('d',points.length===4?`M${points[0].x} ${points[0].y}C${points[1].x} ${points[1].y} ${points[2].x} ${points[2].y} ${points[3].x} ${points[3].y}`:Array.from({length:121},(_,i)=>{const p=evaluate(points,i/120);return `${i?'L':'M'}${p.x} ${p.y}`;}).join(' '));
+    [...handles.children].forEach((el,i)=>{el.setAttribute('cx',points[i].x);el.setAttribute('cy',points[i].y);});drawDot();
+  }
+  function makeHandles(){
+    handles.replaceChildren(...points.map((p,i)=>node('circle',{id:`curve-point-${i+1}`,class:'handle','data-point':i,r:13,tabindex:0,role:'button','aria-label':`${i===0?'起点':i===points.length-1?'终点':'控制点 '+i}，共 ${points.length} 个点，用方向键移动`})));
+    caption.textContent=`${points.length} 个可拖动点 · 拖动 / 调节 / 暂停`;
+    scene.setAttribute('aria-label',`${points.length} 点曲线草稿。可拖动，或聚焦控制点后用方向键移动。`);
+    document.querySelector('#playground > .muted').textContent=`拖动 ${points.length} 个点，改变曲线。起点、终点之间的点控制弯曲方式。`;
+  }
+  scene.addEventListener('pointerdown',event=>{const handle=event.target.closest('[data-point]');if(!handle)return;drag={index:Number(handle.dataset.point),pointerId:event.pointerId};handle.setPointerCapture(event.pointerId);});
+  scene.addEventListener('pointermove',event=>{if(!drag||drag.pointerId!==event.pointerId)return;const matrix=scene.getScreenCTM();if(!matrix)return;const p=new DOMPoint(event.clientX,event.clientY).matrixTransform(matrix.inverse());points[drag.index]={x:clamp(p.x,28,732),y:clamp(p.y,28,245)};draw();});
+  const finish=event=>{if(drag&&drag.pointerId===event.pointerId){drag=null;persist();}};
+  scene.addEventListener('pointerup',finish);scene.addEventListener('pointercancel',finish);
+  scene.addEventListener('keydown',event=>{const handle=event.target.closest('[data-point]'),delta={ArrowLeft:[-8,0],ArrowRight:[8,0],ArrowUp:[0,-8],ArrowDown:[0,8]}[event.key];if(!handle||!delta)return;event.preventDefault();const i=Number(handle.dataset.point);points[i]={x:clamp(points[i].x+delta[0],28,732),y:clamp(points[i].y+delta[1],28,245)};draw();persist();});
+  const observer=new MutationObserver(()=>{if(!scene.isConnected){observer.disconnect();return;}const now=performance.now();if(document.getElementById('toggle-motion').textContent!=='播放')phase=(phase+Math.min(now-last,100)*.00022*Number(document.getElementById('motion-speed').value))%1;last=now;drawDot();});
+  observer.observe(clock,{attributes:true,attributeFilter:['cx','cy']});
+  const setPoints=next=>{if(!valid(next))throw new Error('Use 4–12 finite control points');points=next.map(p=>({...p}));makeHandles();draw();persist();};
+  window.conversationCurve=Object.freeze({getPoints:()=>points.map(p=>({...p})),setPoints,elevate:()=>setPoints(elevate(points))});
+  document.getElementById('reset-curve').onclick=()=>{let reset=elevate([{x:95,y:160},{x:380,y:65},{x:665,y:160}]);while(reset.length<points.length)reset=elevate(reset);setPoints(reset);};
+  document.getElementById('explain-curve').onclick=()=>{const c=board.getContext();board.ask({prompt:`请用可交互的解释说明这 ${points.length} 个点怎样决定曲线；把解释放到 #reply-content，并保留当前曲线和草稿。`,kind:'question',anchor:{kind:'element',selector:'#curve-scene',boardRevision:c.boardRevision,canvasRevision:c.canvasRevision,text:`控制点：${JSON.stringify(points)}`}}).catch(()=>{});};
+  makeHandles();draw();persist();
+})();
+</script>

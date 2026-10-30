@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "name": "Hermes learning mechanisms",
+      "repository": "https://github.com/NousResearch/hermes-agent",
+      "commit": "81a55437f3f31a9f12a30c53b6c5d49d420898aa",
+      "relationship": "feature",
+      "paths": [
+        "agent/background_review.py",
+        "agent/review_engine.py",
+        "agent/learn_prompt.py",
+        "agent/curator.py",
+        "agent/prompt_builder.py",
+        "tools/memory_tool.py",
+        "tools/memory_tool_store.py",
+        "tools/session_search_tool.py",
+        "tools/skill_manager_tool.py"
+      ],
+      "notes": "参考有界记忆、技能沉淀、会话搜索和后台复盘。保留 Paseo 原生 provider、权限与上下文缓存行为，逐项评估差异。来源版本见 docs/hermes-to-paseo-converter-feasibility.md。"
+    }
+  ]
+}
