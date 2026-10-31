@@ -1,10 +1,12 @@
 # Paseo Board publication and verification
 
-### 2026-10-31 — runtime dependency preparation (in progress)
+### 2026-10-31 — runtime dependency preparation verified
 
 - A remote install reported unresolved `linkedom` from `server/authored-source.ts`. It is already a locked production dependency, but the manifest omitted Git preparation. Prior clean checks explicitly installed all dependencies before building the client, so they did not cover an unprepared Git source or production-only server compilation.
 - Added manifest preparation with locked production-only `npm ci`, disabling dependency lifecycle scripts, and distinguished managed Git preparation from manual directory dependency installation in the README. No runtime source or generated bundle changed.
-- Clean production dependency and actual host compiler verification are pending. No remote-machine recovery, installation or publication is claimed yet.
+- A clean archive without dependencies reproduced the exact unresolved `linkedom` error through the installed Paseo compiler. The actual host manifest reader and preparation runner installed only locked production dependencies; both original runtime entries and directory candidate validation then passed without the development SDK or TypeScript installed in that tree. The committed client bundle stayed byte-identical.
+- Retained two harness failures: the background launch initially entered the desktop application instead of Node, and a dependency containment assertion compared macOS `/var` with its canonical `/private/var` path. Explicit Node launch and realpath containment corrected these checks without borrowing developer dependencies.
+- Independent review found no blocking issue. [Verification and limits](docs/verification/2026-10-31-runtime-dependencies.md) distinguish the host preparation/compiler checks from an actual remote installation. No local daemon reload, Board data mutation, or remote-machine recovery is claimed. Main publication follows this verification checkpoint.
 
 ## Goal
 
