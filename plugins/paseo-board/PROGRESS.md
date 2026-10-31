@@ -1,5 +1,12 @@
 # Paseo Board publication and verification
 
+### 2026-10-31 — source-position text editing ready for clean verification
+
+- The user asked to edit words at their original canvas location instead of in a separate input window. The existing text-patch protocol remains the commit path; this change replaces the editor presentation and preserves normal authored controls and scripts.
+- The draft uses an isolated, source-aligned editing layer with matching typography and wrapping. Original nodes remain intact until host Save, with Escape/cancel, composition protection and frozen source/base conditions. Mixed inline markup remains outside the selected text-run edit. Changes to copied inline parent context freeze the draft and withdraw the stale preview.
+- The ordinary host Save card no longer has a second editable text field; rejected or uncertain outcomes retain a read-only copyable draft. TypeScript and 12 host edit checks pass. The full canvas Chromium suite passes 71 checks, including exact text-range geometry and wrapping, real caret/input/IME, ordinary spaces versus NBSP, undo/redo, exact newlines, scroll/resize, source and sibling invalidation, simple SVG semantic saves and cold replay. Retained failed runs identified whitespace behavior and test lifecycle assumptions; their assertions remain covered.
+- Clean pinned-source verification, generated-asset parity and native installation/acceptance remain pending. Complex SVG transforms/textPath/multi-position tspans and arbitrary layered backgrounds are not claimed to have exact visual parity. Delivery remains on draft PR #4; main is unchanged.
+
 ### 2026-10-31 — component editing feedback fixes installed, PR only
 
 - Fixed the four reported problems: a definite save refusal that left editing locked, invisible shortcut outlines, missing drag/result previews and an inspector that obscured the canvas. Known refusals now return typed, event-scoped results; generic host, worker and I/O failures retain exact retries because their commit outcome can still be unknown.

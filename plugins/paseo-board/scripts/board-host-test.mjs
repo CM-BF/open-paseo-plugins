@@ -264,6 +264,7 @@ try {
     await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
     assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(panel)})`),false);assert.equal(await editCount(),0);
     await showProposal(request);assert.equal(await editCount(),0);
+    assert.equal(await evaluate(`!!document.querySelector('[data-testid="board-component-edit-text"]')`),false,'ordinary text review keeps editing in the canvas instead of opening another host text field');
     await clearProposal();assert.equal(await editCount(),0);assert.equal(await submitCount(),0);
     assert.equal(await frame("document.querySelector('#words').textContent"),request.patch.expectedText);
     check('untrusted proposals only stage host-owned Save/Cancel controls; wrong scopes/windows and cancelling never write or send agent messages');
@@ -291,6 +292,7 @@ try {
     await until(`document.querySelector('button[aria-label="关闭修改提示"]')`);
     assert.deepEqual(await evaluate("hostFixture.calls.filter(item=>item.name==='board.edit').at(-1).input"),refusedRequest);
     assert.equal(await evaluate(`document.querySelector('[data-testid="board-component-edit-text"]').value`),'保留这段文字草稿');
+    assert.equal(await evaluate(`document.querySelector('[data-testid="board-component-edit-text"]').readOnly`),true,'rejected draft remains copyable without changing the frozen proposal');
     assert.notEqual(await evaluate(`document.querySelector('button[aria-label="关闭修改提示"]').getAttribute('aria-disabled')`),'true');
     assert.equal(await evaluate('JSON.stringify(hostFixture.board().canvas)'),canvasBeforeRefusal);
     assert.equal(await evaluate(`JSON.stringify(document.querySelector('[data-testid="paseo-board-canvas"]').getBoundingClientRect().toJSON())`),frameBeforeRefusal);

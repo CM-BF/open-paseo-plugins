@@ -48,9 +48,9 @@ export function ComponentEditPanel({ editor }: { editor: ReturnType<typeof useCo
       <Text style={{ color: c.foreground, fontWeight: "600", fontSize: 12 }}>{patch.operation === "text" ? "修改文字" : patch.operation === "copy" ? "复制组件" : "移动组件"}</Text>
       <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11, flex: 1 }}>{patch.operation === "text" ? source : `${source} → ${draft.destinationLabel || patch.destination} · ${destination}`}</Text>
     </View>
-    {patch.operation === "text" ? <>
-      <TextInput testID="board-component-edit-text" accessibilityLabel="组件的新文字" value={patch.text ?? ""} multiline maxLength={24000} readOnly={draft.status !== "review"} onChangeText={editor.editText} style={{ color: c.foreground, backgroundColor: c.surface1, padding: 7, minHeight: 40, maxHeight: 96, borderWidth: 1, borderColor: c.border, borderRadius: 5 }} />
-      {draft.status === "rejected" ? <Text style={{ color: c.foregroundMuted, fontSize: 11 }}>文字草稿保留在上方，可复制后重新选择。</Text> : null}
+    {patch.operation === "text" && (draft.status === "rejected" || draft.status === "unknown") ? <>
+      <TextInput testID="board-component-edit-text" accessibilityLabel="保留的文字草稿" value={patch.text ?? ""} multiline maxLength={24000} readOnly style={{ color: c.foreground, backgroundColor: c.surface1, padding: 7, minHeight: 40, maxHeight: 96, borderWidth: 1, borderColor: c.border, borderRadius: 5 }} />
+      {draft.status === "rejected" ? <Text style={{ color: c.foregroundMuted, fontSize: 11 }}>文字草稿已保留，可复制后重新选择。</Text> : null}
     </> : null}
     {draft.error ? <Text numberOfLines={3} accessibilityRole="alert" style={{ color: c.statusDanger, fontSize: 12 }}>{draft.error}</Text> : null}
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
