@@ -745,12 +745,52 @@ function (initial, createFrameReceiver) {
   // subtrees. A shallow placeholder is safe only when its used size does not depend on its
   // children and their margins cannot collapse through it. Overlapping/overflowing descendants
   // keep every ancestor on their path. Unknown paint effects conservatively keep their subtree.
+  // Layout boxes survive closed details/content-visibility, while display:contents and
+  // visibility overrides can still paint descendants. Suppress only whole paint subtrees.
+  const capturePaintSuppressed = (node, cache = new Map()) => {
+    if (!node) return false;
+    if (cache.has(node)) return cache.get(node);
+    const parent = node.parentElement;
+    const summary = parent?.matches("details:not([open])") && Array.from(parent.children).find(child => child.tagName === "SUMMARY");
+    const hidden = getComputedStyle(node).display === "none" || Boolean(parent && (
+      getComputedStyle(parent).contentVisibility === "hidden" ||
+      (parent.matches("details:not([open])") && node !== summary && getComputedStyle(parent, "::details-content").contentVisibility === "hidden") ||
+      capturePaintSuppressed(parent, cache)));
+    cache.set(node, hidden);
+    return hidden;
+  };
+  const captureDefinition = node => {
+    for (; node; node = node.parentElement) if (node instanceof SVGElement && node.matches("defs,filter,clipPath,mask,pattern,linearGradient,radialGradient,symbol")) return true;
+    return false;
+  };
+  const captureReferenceIds = (node, style) => {
+    const ids = new Set();
+    const add = value => {
+      if (!value || value.startsWith("data:")) return;
+      if (value.startsWith("#")) { ids.add(value.slice(1)); return; }
+      try {
+        const url = new URL(value, document.baseURI);
+        if (url.hash && url.href.split("#")[0] === document.URL.split("#")[0]) ids.add(decodeURIComponent(url.hash.slice(1)));
+      } catch {}
+    };
+    // Navigation hrefs, data attributes and unused CSS variables are not paint edges.
+    if (node instanceof SVGElement && node.localName !== "a") {
+      add(node.getAttribute("href"));
+      add(node.getAttribute("xlink:href"));
+    }
+    for (const [property, value] of style) {
+      if (property.startsWith("--") || (property === "content" && !value.startsWith("url("))) continue;
+      for (const match of value.matchAll(/url\(\s*["']?([^"')\s]+)["']?\s*\)/g)) add(match[1]);
+    }
+    return ids;
+  };
   const capturePlan = async (region, signal) => {
     const nodes = Array.from(document.querySelectorAll("*"));
     if (nodes.length > 20000) throw new Error("Selected document is too complex to capture; the geometric anchor is still saved");
     const needed = new Set([root]);
     const candidates = new Map();
     const forced = new Set();
+    const paintHidden = new Map();
     let slice = performance.now();
     const keep = node => { for (; node && !needed.has(node); node = node.parentElement) needed.add(node); };
     const intersects = r => r.right >= region.x && r.bottom >= region.y && r.left <= region.x + region.width && r.top <= region.y + region.height;
@@ -759,7 +799,10 @@ function (initial, createFrameReceiver) {
       if (performance.now() - slice > 8) { await captureTask(); signal.throwIfAborted(); slice = performance.now(); }
       if (captureOverlay(node) || node.matches("script,style,link,meta,head")) continue;
       const style = getComputedStyle(node);
-      if (style.display === "none") { candidates.set(node, null); continue; }
+      if (capturePaintSuppressed(node, paintHidden) || captureDefinition(node)) {
+        candidates.set(node, null);
+        continue;
+      }
       if (forced.has(node.parentElement)) { forced.add(node); keep(node); continue; }
       const bounds = node.getBoundingClientRect();
       // Shadows can paint outside the border box. This deliberately generous bound includes
@@ -768,7 +811,7 @@ function (initial, createFrameReceiver) {
       const bleed = 2 + 3 * Array.from(shadow.matchAll(/(-?[\d.]+)px/g), match => Math.abs(Number(match[1]))).reduce((sum, value) => sum + value, 0);
       const box = { left: bounds.left + scrollX - bleed, top: bounds.top + scrollY - bleed, right: bounds.right + scrollX + bleed, bottom: bounds.bottom + scrollY + bleed };
       const pseudo = ["::before", "::after"].some(part => !["none", "normal"].includes(getComputedStyle(node, part).content));
-      if (node.matches("defs,filter,clipPath,mask,pattern,linearGradient,radialGradient,symbol") || node.shadowRoot || style.filter !== "none" || (style.backdropFilter && style.backdropFilter !== "none") || pseudo) { forced.add(node); keep(node); }
+      if (node.shadowRoot || style.filter !== "none" || (style.backdropFilter && style.backdropFilter !== "none") || pseudo) { forced.add(node); keep(node); }
       else if (intersects(box)) keep(node);
       const block = ["block", "flex", "grid", "flow-root"].includes(style.display);
       const closedMargins = style.display !== "block" || style.overflowY !== "visible" ||
@@ -777,26 +820,55 @@ function (initial, createFrameReceiver) {
         candidates.set(node, { width: style.width, height: style.height });
       }
     }
-    const prune = new Map();
-    for (const [node, size] of candidates) if (!needed.has(node)) prune.set(node, size);
     if (needed.size > 1800) throw new Error("Selected area is too complex to capture promptly; the geometric anchor is still saved");
     const geometry = new Map();
     const styles = new Map();
+    const pseudoStyles = new Map();
+    const references = new Set();
+    // Hidden SVG resources can paint through a visible use/fill/filter reference. Follow
+    // those dependencies (including indirect references) rather than ignoring hidden DOM.
     for (const node of needed) {
+      if (needed.size > 1800) throw new Error("Selected area is too complex to capture promptly; the geometric anchor is still saved");
       signal.throwIfAborted();
       if (performance.now() - slice > 8) { await captureTask(); signal.throwIfAborted(); slice = performance.now(); }
       geometry.set(node, captureGeometry(node));
       const style = getComputedStyle(node);
-      styles.set(node, new Map(Array.from(style, property => [property, style.getPropertyValue(property)])));
+      const recorded = new Map(Array.from(style, property => [property, style.getPropertyValue(property)]));
+      styles.set(node, recorded);
+      const pseudos = ["::before", "::after"].map(part => {
+        const style = getComputedStyle(node, part);
+        return new Map(["none", "normal"].includes(style.content) ? [["content", style.content]] : Array.from(style, property => [property, style.getPropertyValue(property)]));
+      });
+      pseudoStyles.set(node, pseudos);
+      for (const id of new Set([recorded, ...pseudos].flatMap(style => Array.from(captureReferenceIds(node, style))))) {
+        if (references.has(id)) continue;
+        references.add(id);
+        const resource = document.getElementById(id);
+        if (!resource) continue;
+        keep(resource);
+        for (const child of resource.querySelectorAll("*")) keep(child);
+      }
     }
-    return { prune, needed, geometry, styles };
+    const prune = new Map();
+    for (const [node, size] of candidates) if (!needed.has(node)) prune.set(node, size);
+    const suppressedRoots = Array.from(paintHidden).filter(([node, hidden]) => hidden && !paintHidden.get(node.parentElement)).map(([node]) => node);
+    return { prune, needed, geometry, styles, pseudoStyles, references, suppressedRoots, outsideMutations: false };
 
   };
   const captureGeometry = node => {
     const bounds = node.getBoundingClientRect();
     return [bounds.x, bounds.y, bounds.width, bounds.height, node.scrollLeft, node.scrollTop];
   };
-  const captureLayoutMatches = plan => Array.from(plan.geometry).every(([node, before]) => node.isConnected && captureGeometry(node).every((value, index) => Math.abs(value - before[index]) < 0.01));
+  const captureLayoutMatches = plan => plan.suppressedRoots.every(node => !node.isConnected || capturePaintSuppressed(node)) &&
+    Array.from(plan.geometry).every(([node, before]) => node.isConnected && captureGeometry(node).every((value, index) => Math.abs(value - before[index]) < 0.01));
+  const captureStylesMatch = plan => !plan.outsideMutations || Array.from(plan.styles).every(([node, recorded]) => {
+    const style = getComputedStyle(node);
+    if (!Array.from(recorded).every(([property, value]) => style.getPropertyValue(property) === value)) return false;
+    return plan.pseudoStyles.get(node).every((recorded, index) => {
+      const style = getComputedStyle(node, index === 0 ? "::before" : "::after");
+      return Array.from(recorded).every(([property, value]) => style.getPropertyValue(property) === value);
+    });
+  });
   const captureMutationIsOutside = (record, plan, region) => {
     const target = record.target instanceof Element ? record.target : record.target.parentElement;
     if (!target || plan.needed.has(target)) return false;
@@ -805,10 +877,11 @@ function (initial, createFrameReceiver) {
     // screenshot. The selected layout and computed styles are validated independently.
     const affected = [target, ...target.querySelectorAll("*")];
     if (affected.length > 2000) return false;
+    const paintHidden = new Map();
     return affected.every(node => {
-      if (plan.needed.has(node)) return false;
+      if (plan.needed.has(node) || (node.id && plan.references.has(node.id))) return false;
+      if (capturePaintSuppressed(node, paintHidden)) return true;
       const style = getComputedStyle(node);
-      if (style.display === "none") return true;
       if (node.shadowRoot || style.filter !== "none" || (style.backdropFilter && style.backdropFilter !== "none") ||
         ["::before", "::after"].some(part => !["none", "normal"].includes(getComputedStyle(node, part).content))) return false;
       const bounds = node.getBoundingClientRect();
@@ -907,6 +980,7 @@ function (initial, createFrameReceiver) {
       });
       check();
       if (!captureLayoutMatches(plan)) throw new Error("Canvas layout changed during capture; the geometric anchor is still saved");
+      if (!captureStylesMatch(plan)) throw new Error("Canvas styling changed during capture; the geometric anchor is still saved");
       // Keep the original foreignObject/layout dimensions, but decode and allocate only the
       // requested SVG viewport. Page length must not reduce a small selection's pixel ratio.
       await captureTask();
@@ -918,6 +992,7 @@ function (initial, createFrameReceiver) {
       await ready;
       check();
       if (!captureLayoutMatches(plan)) throw new Error("Canvas layout changed during capture; the geometric anchor is still saved");
+      if (!captureStylesMatch(plan)) throw new Error("Canvas styling changed during capture; the geometric anchor is still saved");
       const cropped = document.createElement("canvas");
       cropped.width = Math.max(1, Math.round(region.width * ratio));
       cropped.height = Math.max(1, Math.round(region.height * ratio));
@@ -944,6 +1019,9 @@ function (initial, createFrameReceiver) {
       if (!plan) { buffered.push(...changed); return; }
       if (!captureLayoutMatches(plan) || changed.some(record => !captureMutationIsOutside(record, plan, region))) {
         controller.abort(new Error("Canvas changed during capture; the geometric anchor is still saved"));
+      } else {
+        // A hidden/outside mutation can affect already-cloned selected styles via :has().
+        plan.outsideMutations = true;
       }
     };
     const observer = new MutationObserver(validate);

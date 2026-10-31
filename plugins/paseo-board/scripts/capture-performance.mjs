@@ -16,6 +16,7 @@ const output = process.env.CAPTURE_OUTPUT || join(tmpdir(), `board-capture-perfo
 let source = await readFile(join(plugin, 'shared/assets/board-runtime.txt'), 'utf8');
 if (process.env.CAPTURE_BASELINE_REV) source = execFileSync('git', ['show', `${process.env.CAPTURE_BASELINE_REV}:plugins/paseo-board/shared/assets/board-runtime.txt`], {cwd:plugin,encoding:'utf8'});
 source = source.replace('const captureRegion = async', 'const captureRegion = window.captureForTest = async');
+source = source.replace('beforeSerialize: async () => { await captureTask(); check(); },', 'beforeSerialize: async () => { await window.beforeCaptureSerialize?.(); await captureTask(); check(); },');
 source = source.replace('const image = new Image();', 'const decodeStarted=performance.now();const image = new Image();').replace('await ready;', 'await ready;window.captureProbe.decodeMs=performance.now()-decodeStarted;');
 source = source.replace('const plan = await capturePlan(region, signal);', 'const planStart=performance.now();const plan = await capturePlan(region, signal);window.captureProbe.planMs=performance.now()-planStart;');
 const result = await build({entryPoints:[join(plugin,'shared/document.ts')],bundle:true,format:'esm',platform:'node',write:false,loader:{'.txt':'text'},plugins:[{name:'capture-probe',setup(b){b.onLoad({filter:/board-runtime\.txt$/},()=>({contents:source,loader:'text'})); b.onLoad({filter:/html-to-image\.txt$/},async args=>({contents:(await readFile(args.path,'utf8')).replace('async function w(t,e,n){','async function w(t,e,n){if(t instanceof Element)window.captureProbe.cloneElements=(window.captureProbe.cloneElements||0)+1;')+`\nconst originalSvg=$t; $t=async(...a)=>{const s=performance.now();try{return await originalSvg(...a)}finally{window.captureProbe.svgMs=performance.now()-s}};const originalImage=g;g=async(...a)=>{const s=performance.now();try{return await originalImage(...a)}finally{if(String(a[0]).startsWith('data:image/svg+xml'))window.captureProbe.decodeMs=performance.now()-s}};const originalSerialize=M;M=async(...a)=>{const s=performance.now();const v=await originalSerialize(...a);window.captureProbe.serializeMs=performance.now()-s;window.captureProbe.svgBytes=v.length;return v};`,loader:'text'}));}}]});
@@ -87,6 +88,53 @@ try {
    const pathInvalidation=await evaluate(`(async()=>{captureProbe={};let changed=false;window.addEventListener('paseo:capture',()=>{const sheet=document.getElementById('svg-capture-style').sheet;sheet.insertRule('#css-path { d: path("M 40 50 L 130 140 L 210 100") }',sheet.cssRules.length);changed=true},{once:true});try{await captureForTest({x:0,y:0,width:500,height:280},new AbortController().signal);return {changed,error:null}}catch(e){return {changed,error:e.message}}})()`);
    assert(pathInvalidation.changed);assert.match(pathInvalidation.error,/styling changed/,'a real CSS d change still invalidates frozen capture');
    reports.push({name:'svg-css-path-invalidation',error:pathInvalidation.error,changed:pathInvalidation.changed});
+   const hiddenContent='<div id="hidden-content"><svg width="500" height="180"><circle id="hidden-dot" cx="80" cy="80" r="12" fill="red"/></svg><output id="hidden-counter"></output></div>';
+   const hiddenFixture=container=>`<style id="hidden-fixture-style">html,body{margin:0;padding:0;max-width:none;background:white;color:#17365d}#hidden-shell{width:700px}#visible-selection{width:700px;min-height:200px;padding:12px;display:grid;grid-template-columns:repeat(10,1fr);background:#e5edf6;font:12px system-ui}body:has(#hidden-content[data-color]) #visible-selection{color:red}body:has(#hidden-content[data-layout]) #visible-selection{margin-top:50px}#visible-selection::before{content:"";position:absolute;width:12px;height:12px;background:blue}body:has(#hidden-content[data-pseudo]) #visible-selection::before{background:red}</style>${container}<section id="visible-selection" data-label="url(#hidden-content)" style="--unused-resource:url(#hidden-content)"><a href="#hidden-content" aria-label="Hidden link" style="height:12px;background:#274c87"></a>${Array.from({length:160},(_,i)=>`<span style="height:12px;background:hsl(${i*29} 60% 70%)"></span>`).join('')}</section><script>window.hiddenFrames=0;window.stopHidden=false;const animateHidden=()=>{if(stopHidden)return;hiddenFrames++;document.getElementById('hidden-dot').setAttribute('cx',String(80+hiddenFrames%30));document.getElementById('hidden-counter').textContent=String(hiddenFrames);requestAnimationFrame(animateHidden)};requestAnimationFrame(animateHidden)</script>`;
+   const hiddenCases=[
+     ['closed-details',`<details id="hidden-shell"><summary aria-label="Folded animation"><span id="visible-summary" style="display:inline-block;width:80px;height:12px;background:#397bb4"></span></summary>${hiddenContent}<summary id="second-summary">Hidden second summary</summary></details>`],
+     ['display-none',`<div id="hidden-shell" style="display:none">${hiddenContent}</div>`],
+     ['content-visibility-hidden',`<div id="hidden-shell" style="content-visibility:hidden;height:24px;background:#d9e5f2">${hiddenContent}</div>`],
+   ];
+   for(const [name,container] of hiddenCases){
+     await load(hiddenFixture(container));
+     const frames=await evaluate('hiddenFrames');
+     const shot=await run(`${name}-animation`,{x:0,y:0,width:700,height:300});
+     assert(!shot.error && shot.pixelDiff.fraction<0.005,`${name} ignores unpainted animation while preserving native selected pixels`);
+     assert(await evaluate('hiddenFrames')>frames+1,`${name} animation kept running`);
+     const same=await evaluate('(async()=>{const before=lastScreenshot.data;stopHidden=true;captureProbe={};const after=await captureForTest({x:0,y:0,width:700,height:300},new AbortController().signal);return before===after.data})()');
+     assert(same,`${name} selected pixels exactly match stopped animation`);
+     reports.at(-1).identicalToStoppedAnimation=true;
+   }
+   const expectHiddenInvalidation=async(name,change,expected=/changed/)=>{
+     await load(hiddenFixture(hiddenCases[0][1]));
+     const error=await evaluate(`(async()=>{captureProbe={};window.beforeCaptureSerialize=()=>{${change}};try{await captureForTest({x:0,y:0,width:700,height:300},new AbortController().signal);return null}catch(e){return e.message}})()`);
+     assert.match(error,expected,name);reports.push({name,error});
+   };
+   await expectHiddenInvalidation('late-hidden-has-style','document.getElementById("hidden-content").setAttribute("data-color", "yes")',/styling changed/);
+   await expectHiddenInvalidation('late-hidden-has-pseudo-style','document.getElementById("hidden-content").setAttribute("data-pseudo", "yes")',/styling changed/);
+   await expectHiddenInvalidation('late-hidden-has-layout','document.getElementById("hidden-content").setAttribute("data-layout", "yes")');
+   await expectHiddenInvalidation('visible-summary-mutation','document.getElementById("visible-summary").textContent="Changed summary"');
+   await expectHiddenInvalidation('closed-details-revealed','document.getElementById("hidden-shell").open=true');
+   await expectHiddenInvalidation('closed-details-cssom-revealed','document.getElementById("hidden-fixture-style").sheet.insertRule("#hidden-shell::details-content { content-visibility:visible }",0)');
+   await load('<style>html,body{margin:0;padding:0;max-width:none;background:white;color:#17365d}#contents{display:contents}#override{visibility:hidden}#painted{visibility:visible;width:200px;height:80px;background:#2587bd}symbol,filter{display:block;width:90px;height:40px;background:#be642b}</style><div id="contents"><div id="override"><div id="painted"></div></div></div><symbol></symbol><filter></filter>');
+   const override=await run('display-contents-visibility-override-html-tags',{x:0,y:0,width:250,height:180});
+   assert(!override.error && override.pixelDiff.fraction<0.01,'display:contents, visible descendants and HTML names resembling SVG resources still paint');
+   const visibleChange=await evaluate('(async()=>{captureProbe={};window.beforeCaptureSerialize=()=>document.getElementById("painted").textContent="Changed visible child";try{await captureForTest({x:0,y:0,width:250,height:180},new AbortController().signal);return null}catch(e){return e.message}})()');
+   assert.match(visibleChange,/changed/);reports.push({name:'visible-override-mutation',error:visibleChange});
+   // html-to-image already flattens inherited use-instance fill (baseline c4e9cb1).
+   // Keep this paint-dependency fixture explicit; inherited-use color fidelity is separate.
+   const resourceContent='<svg><defs><linearGradient id="hidden-gradient"><stop id="hidden-stop" stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient><g id="hidden-shape"><use href="#hidden-inner"/></g><path id="hidden-inner" fill="green" d="M10 10H90V90H10Z"/></defs></svg>';
+   for(const wrapper of ['display-none','closed-details','zero-size']){
+     const fixture=`<style>html,body{margin:0;padding:0;max-width:none;background:white}</style>${wrapper==='display-none'?`<div style="display:none">${resourceContent}</div>`:wrapper==='closed-details'?`<details><summary aria-label="Hidden resources" style="height:20px;width:200px;background:#ddd"></summary>${resourceContent}</details>`:`<div style="width:0;height:0;overflow:hidden">${resourceContent}</div>`}<svg width="240" height="120"><rect width="120" height="120" fill="url(#hidden-gradient)"/><use href="#hidden-shape" x="120" fill="green"/></svg>`;
+     await load(fixture);
+     const shot=await run(`${wrapper}-referenced-svg-resources`,{x:0,y:0,width:240,height:160});
+     assert(!shot.error && shot.pixelDiff.fraction<0.005,'hidden SVG gradient and transitive use dependencies preserve native pixels');
+     for(const [name,change] of [['gradient','document.getElementById("hidden-stop").setAttribute("stop-color","yellow")'],['transitive-use','document.getElementById("hidden-inner").setAttribute("d","M10 10H40V40H10Z")']]){
+       await load(fixture);
+       const error=await evaluate(`(async()=>{captureProbe={};window.beforeCaptureSerialize=()=>{${change}};try{await captureForTest({x:0,y:0,width:240,height:160},new AbortController().signal);return null}catch(e){return e.message}})()`);
+       assert.match(error,/changed/);reports.push({name:`${wrapper}-${name}-mutation`,error});
+     }
+   }
    const base='<style>html,body{padding:0;margin:0;max-width:none;width:2066px;min-height:1600px;background:white;color:#17365d}*{box-sizing:border-box}.box{width:300px;height:180px;padding:12px;border:4px solid #507095;background:#d7e6f6}#grid{display:grid;grid-template-columns:repeat(3,300px);gap:25px;padding:20px;background:linear-gradient(90deg,#f0d0d0,#d0d0f0);border:10px solid #506070;width:1020px}#overflow{position:absolute;left:1600px;top:30px;width:70px;height:70px}#overflow>i{position:absolute;left:-1240px;top:80px;width:75px;height:50px;background:#e64b38}#shadow{position:absolute;left:1150px;top:100px;width:50px;height:80px;box-shadow:-180px 0 12px 3px #14a080}#scroll{position:absolute;top:500px;left:40px;width:420px;height:180px;overflow:auto;border:6px solid #6090b0}#scroll>div{width:700px;height:100px;background:linear-gradient(90deg,#c03,#09c)}#paint{position:absolute;left:520px;top:500px;width:240px;height:160px}#pseudo{position:absolute;left:1500px;top:100px}#pseudo::before{content:"";position:absolute;left:-750px;top:50px;width:60px;height:60px;background:#7654d0}</style>';
    await load(base+'<div id="grid">'+Array.from({length:12},(_,i)=>'<div class="box" style="background:hsl('+i*29+' 60% 80%)"></div>').join('')+'</div><div id="overflow"><i></i></div><div id="shadow"></div><div id="pseudo"></div><div id="scroll">'+Array.from({length:8},()=>'<div></div>').join('')+'</div><canvas id="paint" width="240" height="160"></canvas>');
    let r=await run('overlap-overflow-shadow-pseudo-gradient',{x:30,y:40,width:1000,height:370});
