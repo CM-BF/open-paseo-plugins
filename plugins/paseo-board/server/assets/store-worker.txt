@@ -20022,7 +20022,8 @@ var BoardChangeReasonSchema = external_exports.enum(["content", "attention", "me
 var BoardChangeSchema = external_exports.object({ cursor: BoardEventCursorSchema, summary: BoardSummarySchema, canvasRevision: external_exports.number().int().nonnegative(), reason: BoardChangeReasonSchema });
 var BoardChangesSchema = external_exports.discriminatedUnion("mode", [
   external_exports.object({ mode: external_exports.literal("snapshot"), cursor: BoardEventCursorSchema, boards: external_exports.array(BoardSummarySchema) }),
-  external_exports.object({ mode: external_exports.literal("delta"), cursor: BoardEventCursorSchema, changes: external_exports.array(BoardChangeSchema) })
+  external_exports.object({ mode: external_exports.literal("delta"), cursor: BoardEventCursorSchema, changes: external_exports.array(BoardChangeSchema) }),
+  external_exports.object({ mode: external_exports.literal("compact"), fromCursor: BoardEventCursorSchema, cursor: BoardEventCursorSchema, changes: external_exports.array(BoardChangeSchema) })
 ]);
 var CreateInputSchema = external_exports.object({ id: IdSchema.optional(), title: external_exports.string().min(1).max(200), projectId: external_exports.string().optional(), workspaceId: external_exports.string().optional(), ownerAgentId: external_exports.string().optional(), html: external_exports.string().max(4e6).default(""), data: JsonDataSchema.default({}) });
 var PublishInputSchema = external_exports.object({
@@ -20073,7 +20074,8 @@ var recordDecisionRpc = defineRpc({ name: "board.decision", input: DecisionUpdat
 var saveStateRpc = defineRpc({ name: "board.state", input: StateInputSchema, output: external_exports.object({ saved: external_exports.boolean() }) });
 var markUpdatesSeenRpc = defineRpc({ name: "board.updates-seen", input: MarkUpdatesSeenInputSchema, output: BoardSchema });
 var feedBoardRpc = defineRpc({ name: "board.feed", input: FeedInputSchema, output: FeedResultSchema });
-var boardChangesRpc = defineRpc({ name: "board.changes", input: external_exports.object({ cursor: BoardEventCursorSchema.optional() }), output: BoardChangesSchema });
+var boardChangesRpc = defineRpc({ name: "board.changes", input: external_exports.object({ cursor: BoardEventCursorSchema.optional(), compact: external_exports.boolean().optional() }), output: BoardChangesSchema });
+var boardCheckRpc = defineRpc({ name: "board.check", input: external_exports.object({ cursor: BoardEventCursorSchema }), output: external_exports.object({ changed: external_exports.boolean() }) });
 
 // server/store-format.ts
 var import_node_crypto = require("node:crypto");
