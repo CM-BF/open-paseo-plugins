@@ -38,7 +38,20 @@ The enabled plugin started one isolated coordinator with exactly two worker chil
 
 The main-environment installation performed one disable/enable cycle. A second live pool shutdown/restart was deliberately omitted; shutdown/reaping evidence comes from the final isolated packaged-Helper test. The installer has no public atomic idle/producer lock, so its fresh activity gates reduce but cannot eliminate a producer-start race. Once new code might have accepted writes, its failure path preserves current source/data for reconciliation instead of automatically downgrading or restoring a backup.
 
-Native UI acceptance is **pending** at this documentation checkpoint. Browser fixture evidence adapts Paseo transport/native primitives and does not establish native interaction behavior, physical-mobile acceptance, or compatibility with automatic updates on another computer. The companion host event implementation remains separate; the installed Board can use compact checks on the current host without that companion update.
+### Native desktop acceptance
+
+The installed branch was exercised in the actual Paseo desktop application against the primary daemon, using one explicitly named test Board owned by the coordinating agent. No additional agent or workspace was created.
+
+- The dashboard displayed synchronization as synced while independently showing the active development Board as processing and the test Board as idle.
+- The pencil selected the current title. Escape cancelled an edited name; a subsequent Enter persisted a new name. A typed draft, counter value of two and in-page random runtime marker stayed unchanged throughout the rename.
+- Component selection exposed the clicked heading, its article, the containing section and its two direct article children. The authored page used ordinary semantic HTML without component-registration attributes.
+- Referencing the second article produced a real PNG and an element anchor with its section, details and tab ancestors. One native discussion was saved against that exact binding.
+- Closing details and selecting the other tab removed the canvas marker while preserving its rail entry. Clicking that entry selected the correct tab, opened details and scrolled the nested container to the bound article. Draft, counter and runtime marker remained unchanged.
+- A real bound CLI response appeared in the native discussion. Returning to the dashboard and reopening the Board preserved its renamed title, draft, count, selected tab, open details and answered discussion. The new page mount appropriately acquired a new runtime marker.
+
+The test Board is intentionally retained as a user testing surface. The private `native-acceptance.json` records observations and public readback; native screenshots and accessibility observations remain in the coordinating conversation. `native-component-reference.png` is the actual Board-captured selection, not a full-host screenshot. No unrelated user content or host screenshot is published here.
+
+Native acceptance covers the desktop path above. Compact viewports, theme changes, lost connectivity, concurrent rename conflicts, custom reveal cancellation and process crashes use the separately recorded automated checks; no physical-mobile or remote-device update acceptance is claimed. The native question was created through the UI and answered through the existing bound CLI, not a fresh model-agent MCP session. The companion host event implementation remains separate; the installed Board uses compact checks on the current host without that update.
 
 ### Retained integration failures
 
