@@ -58,7 +58,7 @@ export class BoardCompactSync {
     try {
       const cursor = this.options.cursor();
       const changed = cursor ? (await this.options.check(cursor)).changed : true;
-      if (!active()) return;
+      if (!active() || !this.visibility.visible()) return;
       if (changed) {
         this.options.state(cursor ? "recovering" : "connecting");
         await this.options.recover();
@@ -72,7 +72,9 @@ export class BoardCompactSync {
       this.options.state("disconnected", error);
     } finally {
       this.flight = false;
-      if (active() && this.visibility.visible()) {
+      if (!this.stopped && this.visibility.visible() && generation !== this.generation) {
+        void this.tick();
+      } else if (active() && this.visibility.visible()) {
         const delay = Math.min((this.options.intervalMs ?? 2000) * 2 ** Math.max(0, this.failures - 1), 30_000);
         this.timer = setTimeout(() => { this.timer = undefined; void this.tick(); }, delay);
       }

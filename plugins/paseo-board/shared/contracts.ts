@@ -186,7 +186,7 @@ export const BoardChangeSchema = z.object({ cursor: BoardEventCursorSchema, summ
 export const BoardChangesSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("snapshot"), cursor: BoardEventCursorSchema, boards: z.array(BoardSummarySchema) }),
   z.object({ mode: z.literal("delta"), cursor: BoardEventCursorSchema, changes: z.array(BoardChangeSchema) }),
-  z.object({ mode: z.literal("compact"), fromCursor: BoardEventCursorSchema, cursor: BoardEventCursorSchema, changes: z.array(BoardChangeSchema).max(256) }),
+  z.object({ mode: z.literal("compact"), fromCursor: BoardEventCursorSchema, cursor: BoardEventCursorSchema, changes: z.array(BoardChangeSchema) }),
 ]);
 export type BoardEventCursor = z.infer<typeof BoardEventCursorSchema>;
 export type BoardChange = z.infer<typeof BoardChangeSchema>;

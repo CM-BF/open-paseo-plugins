@@ -34,6 +34,7 @@ export class BoardEventHub {
   private sequence = 0;
   private boards = new Map<string, BoardSummary>();
   private history: BoardChange[] = [];
+  private latestByBoard = new Map<string, BoardChange>();
   private listeners = new Set<(event: BoardChange) => void>();
 
   constructor(options: { epoch?: string; retention?: number } = {}) {
@@ -57,6 +58,7 @@ export class BoardEventHub {
     const summary = structuredClone(notice.summary);
     this.boards.set(summary.id, summary);
     const event: BoardChange = { cursor: { epoch: this.epoch, sequence: ++this.sequence }, summary, canvasRevision: notice.canvasRevision, reason: notice.reason };
+    this.latestByBoard.set(summary.id, event);
     this.history.push(event);
     if (this.history.length > this.retention) this.history.shift();
     for (const listener of this.listeners) {
@@ -75,14 +77,16 @@ export class BoardEventHub {
   changesSince(cursor?: BoardEventCursor, compact = false): BoardChanges {
     const current = { epoch: this.epoch, sequence: this.sequence };
     const earliest = this.history[0]?.cursor.sequence ?? this.sequence + 1;
-    if (!cursor || cursor.epoch !== this.epoch || cursor.sequence > this.sequence || cursor.sequence < earliest - 1) {
+    if (!cursor || cursor.epoch !== this.epoch || cursor.sequence > this.sequence) {
       return { mode: "snapshot", ...this.snapshot() };
     }
-    const changes = this.history.filter(change => change.cursor.sequence > cursor.sequence);
     if (compact) {
-      const latest = new Map(changes.map(change => [change.summary.id, change]));
-      return { mode: "compact", fromCursor: { ...cursor }, cursor: current, changes: structuredClone([...latest.values()].sort((a, b) => a.cursor.sequence - b.cursor.sequence)) };
+      // Compact clients need each Board's latest state, even after its event journal rolls over.
+      const changes = [...this.latestByBoard.values()].filter(change => change.cursor.sequence > cursor.sequence);
+      return { mode: "compact", fromCursor: { ...cursor }, cursor: current, changes: structuredClone(changes.sort((a, b) => a.cursor.sequence - b.cursor.sequence)) };
     }
+    if (cursor.sequence < earliest - 1) return { mode: "snapshot", ...this.snapshot() };
+    const changes = this.history.filter(change => change.cursor.sequence > cursor.sequence);
     return { mode: "delta", cursor: current, changes: structuredClone(changes) };
   }
 

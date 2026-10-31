@@ -35,14 +35,25 @@ describe("shared compact Board sync", () => {
     const sync = new BoardCompactSync({ cursor: () => ({ epoch: "one", sequence: 0 }), check, recover, state: vi.fn(), visibility });
     sync.start(); await vi.advanceTimersByTimeAsync(20_000);
     expect(check).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(0);
-    visibility.set(false); pending.resolve({ changed: false }); await vi.advanceTimersByTimeAsync(0);
-    expect(vi.getTimerCount()).toBe(0);
+    visibility.set(false); pending.resolve({ changed: true }); await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0); expect(recover).not.toHaveBeenCalled();
     visibility.set(true); await vi.advanceTimersByTimeAsync(0);
-    expect(check).toHaveBeenCalledTimes(2);
+    expect(check).toHaveBeenCalledTimes(2); expect(recover).toHaveBeenCalledTimes(1);
     const held = deferred<{ changed: boolean }>(); check.mockImplementationOnce(() => held.promise);
     await vi.advanceTimersByTimeAsync(2000); expect(check).toHaveBeenCalledTimes(3);
     sync.stop(); held.resolve({ changed: true }); await vi.advanceTimersByTimeAsync(60_000);
-    expect(check).toHaveBeenCalledTimes(3); expect(recover).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
+    expect(check).toHaveBeenCalledTimes(3); expect(recover).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("can restart after stopping with a previous request still outstanding", async () => {
+    vi.useFakeTimers(); const held = deferred<{ changed: boolean }>();
+    const check = vi.fn().mockReturnValueOnce(held.promise).mockResolvedValue({ changed: false });
+    const state = vi.fn();
+    const sync = new BoardCompactSync({ cursor: () => ({ epoch: "one", sequence: 0 }), check, recover: vi.fn(), state, visibility: visible() });
+    sync.start(); sync.stop(); sync.start();
+    held.resolve({ changed: true }); await vi.advanceTimersByTimeAsync(0);
+    expect(check).toHaveBeenCalledTimes(2); expect(state).toHaveBeenLastCalledWith("checking");
+    expect(vi.getTimerCount()).toBe(1); sync.stop();
   });
 
   it("backs failures off to thirty seconds and resets the delay after success", async () => {

@@ -119,4 +119,17 @@ describe("durable Board events and compact summaries", () => {
     expect(Buffer.byteLength(JSON.stringify(hub.changesSince(cursor)))).toBeGreaterThan(60_000);
     expect(hub.hasChanges(compact.cursor)).toBe(false);
   });
+
+  it("keeps compact recovery proportional to changed Boards after the event journal rolls over", async () => {
+    await create(store);
+    const hub = new BoardEventHub({ epoch: "fixed" });
+    hub.seed(Array.from({ length: 100 }, (_, i) => ({ ...notices[0].summary, id: `board-${i}` })));
+    const cursor = hub.snapshot().cursor;
+    for (let revision = 1; revision <= 1000; revision++) hub.accept({ ...notices[0], summary: { ...notices[0].summary, id: "board-0", revision } });
+    const compact = hub.changesSince(cursor, true);
+    expect(compact.mode).toBe("compact");
+    expect(compact.mode === "compact" && compact.changes.map(change => [change.summary.id, change.summary.revision])).toEqual([["board-0", 1000]]);
+    expect(Buffer.byteLength(JSON.stringify(compact))).toBeLessThan(700);
+    expect(hub.changesSince(cursor).mode).toBe("snapshot");
+  });
 });
