@@ -90,4 +90,33 @@ describe("durable Board events and compact summaries", () => {
     remove();
     expect(hub.snapshot().cursor.sequence).toBe(3);
   });
+
+  it("checks one or one hundred cached Boards with the same 17-byte payload and no board files", async () => {
+    await create(store);
+    const summary = (await store.list())[0];
+    await rm(join(directory, "boards"), { recursive: true });
+    for (const count of [1, 100]) {
+      const hub = new BoardEventHub({ epoch: "fixed" });
+      hub.seed(Array.from({ length: count }, (_, i) => ({ ...summary, id: `board-${i}` })));
+      const cursor = hub.snapshot().cursor;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        expect(JSON.stringify({ changed: hub.hasChanges(cursor) })).toBe('{"changed":false}');
+        expect(Buffer.byteLength(JSON.stringify({ changed: hub.hasChanges(cursor) }))).toBe(17);
+      }
+      expect(hub.hasChanges({ ...cursor, epoch: "restarted" })).toBe(true);
+    }
+  });
+
+  it("coalesces two hundred commits from one Board into one bounded latest summary", async () => {
+    await create(store);
+    const hub = new BoardEventHub({ epoch: "fixed" });
+    const cursor = hub.snapshot().cursor;
+    for (let revision = 1; revision <= 200; revision++) hub.accept({ ...notices[0], summary: { ...notices[0].summary, revision } });
+    const compact = hub.changesSince(cursor, true);
+    expect(compact).toMatchObject({ mode: "compact", fromCursor: cursor, cursor: { sequence: 200 }, changes: [{ summary: { revision: 200 } }] });
+    expect(compact.mode === "compact" && compact.changes.length).toBe(1);
+    expect(Buffer.byteLength(JSON.stringify(compact))).toBeLessThan(700);
+    expect(Buffer.byteLength(JSON.stringify(hub.changesSince(cursor)))).toBeGreaterThan(60_000);
+    expect(hub.hasChanges(compact.cursor)).toBe(false);
+  });
 });

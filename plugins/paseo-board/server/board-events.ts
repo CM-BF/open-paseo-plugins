@@ -69,13 +69,21 @@ export class BoardEventHub {
     return { cursor: { epoch: this.epoch, sequence: this.sequence }, boards: structuredClone(sortBoardSummaries(this.boards.values(), filter)) };
   }
 
-  changesSince(cursor?: BoardEventCursor): BoardChanges {
+  /** Idle checks compare two scalar values: no scan, clone, worker RPC, or filesystem read. */
+  hasChanges(cursor: BoardEventCursor): boolean { return cursor.epoch !== this.epoch || cursor.sequence !== this.sequence; }
+
+  changesSince(cursor?: BoardEventCursor, compact = false): BoardChanges {
     const current = { epoch: this.epoch, sequence: this.sequence };
     const earliest = this.history[0]?.cursor.sequence ?? this.sequence + 1;
     if (!cursor || cursor.epoch !== this.epoch || cursor.sequence > this.sequence || cursor.sequence < earliest - 1) {
       return { mode: "snapshot", ...this.snapshot() };
     }
-    return { mode: "delta", cursor: current, changes: structuredClone(this.history.filter(change => change.cursor.sequence > cursor.sequence)) };
+    const changes = this.history.filter(change => change.cursor.sequence > cursor.sequence);
+    if (compact) {
+      const latest = new Map(changes.map(change => [change.summary.id, change]));
+      return { mode: "compact", fromCursor: { ...cursor }, cursor: current, changes: structuredClone([...latest.values()].sort((a, b) => a.cursor.sequence - b.cursor.sequence)) };
+    }
+    return { mode: "delta", cursor: current, changes: structuredClone(changes) };
   }
 
   subscribe(listener: (event: BoardChange) => void): () => void {

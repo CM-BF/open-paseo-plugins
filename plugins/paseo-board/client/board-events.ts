@@ -1,5 +1,7 @@
 import { BoardChangeSchema, BoardChangesSchema, type BoardChange, type BoardChanges, type BoardEventCursor, type BoardSummary } from "../shared/contracts";
 
+export type BoardLiveStatus = "connecting" | "connected" | "checking" | "recovering" | "disconnected" | "unsupported";
+
 export interface BoardEventListener {
   change(event: BoardChange): void;
   reconnect(): void;
@@ -14,7 +16,7 @@ export function installBoardEventTransport(next: BoardEventTransport): () => voi
 }
 export function connectBoardEvents(hostId: string, listener: BoardEventListener): () => void {
   if (!transport) {
-    listener.error(new Error("此 Paseo 版本尚未提供 Board 事件订阅；需要配套宿主更新才能实时同步。"));
+    listener.error(Object.assign(new Error("此 Paseo 版本尚未提供 Board 事件订阅；需要配套宿主更新才能实时同步。"), { code: "plugin_events_unsupported" }));
     return () => undefined;
   }
   return transport(hostId, listener);
@@ -48,6 +50,8 @@ export class BoardEventReceiver {
   snapshot(): BoardIndexSnapshot | undefined {
     return this.cursor ? { cursor: { ...this.cursor }, boards: [...this.boards.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id)) } : undefined;
   }
+
+  currentCursor(): BoardEventCursor | undefined { return this.cursor ? { ...this.cursor } : undefined; }
 
   receive(raw: BoardChange): Promise<void> {
     if (this.disposed) return Promise.resolve();
@@ -84,6 +88,18 @@ export class BoardEventReceiver {
         this.cursor = result.cursor;
         this.boards = new Map(result.boards.map(board => [board.id, board]));
         this.updated(this.snapshot()!, true);
+      } else if (result.mode === "compact") {
+        if (!requested || result.fromCursor.epoch !== requested.epoch || result.fromCursor.sequence !== requested.sequence || result.cursor.epoch !== requested.epoch || result.cursor.sequence < requested.sequence) throw new Error("Board compact recovery has invalid coverage");
+        const ids = new Set<string>();
+        let sequence = requested.sequence;
+        for (const event of result.changes) {
+          if (event.cursor.epoch !== requested.epoch || event.cursor.sequence <= sequence || event.cursor.sequence > result.cursor.sequence || ids.has(event.summary.id)) throw new Error("Board compact recovery contains invalid changes");
+          sequence = event.cursor.sequence; ids.add(event.summary.id);
+        }
+        if (sequence !== result.cursor.sequence) throw new Error("Board compact recovery is incomplete");
+        for (const event of result.changes) { this.boards.set(event.summary.id, event.summary); this.changed(event); }
+        this.cursor = result.cursor;
+        this.updated(this.snapshot()!, false);
       } else {
         if (!this.cursor || result.cursor.epoch !== this.cursor.epoch) throw new Error("Board event recovery requires a matching snapshot");
         for (const event of result.changes) {

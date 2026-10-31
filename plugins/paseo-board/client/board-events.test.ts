@@ -90,4 +90,18 @@ describe("Board event client", () => {
     expect(cleanup).toHaveBeenCalledTimes(1);
     uninstall();
   });
+
+  it("applies a coalesced coverage interval once per changed Board and rejects false coverage", async () => {
+    const fetchChanges = vi.fn<(cursor?: BoardEventCursor) => Promise<BoardChanges>>()
+      .mockResolvedValueOnce(snapshot()).mockResolvedValueOnce({ mode: "compact", fromCursor: { epoch: "live", sequence: 0 }, cursor: { epoch: "live", sequence: 200 }, changes: [event(200)] })
+      .mockResolvedValueOnce({ mode: "compact", fromCursor: { epoch: "live", sequence: 0 }, cursor: { epoch: "live", sequence: 201 }, changes: [event(201)] });
+    const changed = vi.fn(); const updated = vi.fn();
+    const receiver = new BoardEventReceiver({ fetchChanges, changed, updated });
+    await receiver.recover(); await receiver.recover();
+    expect(receiver.currentCursor()).toEqual({ epoch: "live", sequence: 200 });
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(updated).toHaveBeenCalledTimes(2);
+    await expect(receiver.recover()).rejects.toThrow("invalid coverage");
+    expect(receiver.currentCursor()?.sequence).toBe(200);
+  });
 });

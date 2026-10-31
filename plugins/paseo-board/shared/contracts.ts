@@ -186,11 +186,14 @@ export const BoardChangeSchema = z.object({ cursor: BoardEventCursorSchema, summ
 export const BoardChangesSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("snapshot"), cursor: BoardEventCursorSchema, boards: z.array(BoardSummarySchema) }),
   z.object({ mode: z.literal("delta"), cursor: BoardEventCursorSchema, changes: z.array(BoardChangeSchema) }),
+  z.object({ mode: z.literal("compact"), fromCursor: BoardEventCursorSchema, cursor: BoardEventCursorSchema, changes: z.array(BoardChangeSchema).max(256) }),
 ]);
 export type BoardEventCursor = z.infer<typeof BoardEventCursorSchema>;
 export type BoardChange = z.infer<typeof BoardChangeSchema>;
 export type BoardChanges = z.infer<typeof BoardChangesSchema>;
 export const BOARD_CHANGE_EVENT = "board.changed";
+// Structural public event contract; registration is capability-gated until the host API ships.
+export const boardChangedEvent = { name: BOARD_CHANGE_EVENT, schema: BoardChangeSchema };
 export const CreateInputSchema = z.object({ id: IdSchema.optional(), title: z.string().min(1).max(200), projectId: z.string().optional(), workspaceId: z.string().optional(), ownerAgentId: z.string().optional(), html: z.string().max(4000000).default(""), data: JsonDataSchema.default({}) });
 export const PublishInputSchema = z.object({
   boardId: IdSchema, expectedRevision: z.number().int().nonnegative(), eventId: IdSchema,
@@ -251,4 +254,5 @@ export const markUpdatesSeenRpc = defineRpc({ name: "board.updates-seen", input:
 
 export const feedBoardRpc = defineRpc({ name: "board.feed", input: FeedInputSchema, output: FeedResultSchema });
 
-export const boardChangesRpc = defineRpc({ name: "board.changes", input: z.object({ cursor: BoardEventCursorSchema.optional() }), output: BoardChangesSchema });
+export const boardChangesRpc = defineRpc({ name: "board.changes", input: z.object({ cursor: BoardEventCursorSchema.optional(), compact: z.boolean().optional() }), output: BoardChangesSchema });
+export const boardCheckRpc = defineRpc({ name: "board.check", input: z.object({ cursor: BoardEventCursorSchema }), output: z.object({ changed: z.boolean() }) });
