@@ -1,5 +1,11 @@
 # Paseo Board publication and verification
 
+### 2026-10-31 — direct component editing in progress
+
+- User requested a held selection shortcut with hover preview, structural drag with container-level switching, cut/copy/paste and direct text editing. Work continues on the existing PR branch; local testing is authorized, main merge is not.
+- Three parallel slices cover the sandbox inspector/runtime, host-owned staged editing and durable source-aware operations in the worker pool. The [design and verification plan](docs/component-editing.md) records conflict handling and the distinction between moving an existing node and copying JavaScript behavior.
+- No implementation or new acceptance result is claimed by this planning entry. The existing installed version remains the previously accepted interaction-refinement build until the new checks pass.
+
 ### 2026-10-31 — interaction refinements installed for testing, PR only
 
 - Implemented inline title editing, separate work/synchronization status, bounded worker processes, component selection with actual containment, and marker navigation across tabs/containers. Arbitrary agent-authored HTML/JS remains supported without a mandatory component schema.
