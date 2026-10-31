@@ -59,6 +59,14 @@ try {
   };
   const frame = (expression) => evaluate(`window.fixtureCall(${JSON.stringify(expression)})`);
   const untilFrame = (expression, timeout = 10000) => frame(`new Promise((resolve,reject)=>{const deadline=performance.now()+${timeout};const loop=()=>{if(${expression})return resolve(true);if(performance.now()>deadline)return reject(new Error('frame condition timeout: '+${JSON.stringify(expression)}));setTimeout(loop,20)};loop()})`);
+  const remountMainFrame = async () => {
+    const previous = await evaluate('hostFixture.mainReady()');
+    assert.ok(previous?.ready, 'The current main frame must have a validated ready receipt before remount');
+    await evaluate('hostFixture.remount()');
+    await until(`(()=>{const current=hostFixture.mainReady();return current?.ready&&current.frameId!==${JSON.stringify(previous.frameId)}&&current.sessionId!==${JSON.stringify(previous.sessionId)}&&current.count>${previous.count}})()`);
+    const current = await evaluate('hostFixture.mainReady()');
+    assert.ok(await evaluate(`hostFixture.readyRecords.some(item=>item.accepted&&item.boardId==='host-fixture'&&item.sessionId===${JSON.stringify(current.sessionId)}&&item.mainFrameId===${current.frameId})`));
+  };
   const key = async (name, code = name, modifiers = 0) => {
     const virtual = name === 'Escape' ? 27 : name === 'Enter' ? 13 : name === 'Alt' ? 18 : undefined;
     await command('Input.dispatchKeyEvent', { type: 'keyDown', key: name, code, modifiers, ...(name === 'Enter' ? {text:'\r'} : {}), ...(virtual ? { windowsVirtualKeyCode: virtual } : {}) });
@@ -605,12 +613,24 @@ try {
   check('generated visual questions wait for explicit send and RPC acceptance; their callback resolves once and retains response-version context alongside the original main-canvas anchor');
 
   await closePopover();
-  const priorReady = await evaluate('hostFixture.ready');
-  await evaluate('hostFixture.remount()');
-  await until(`hostFixture.ready>${priorReady}`);
+  assert.ok(await evaluate("hostFixture.readyRecords.some(item=>item.boardId!=='host-fixture'&&!item.accepted)&&hostFixture.ready>hostFixture.mainReady().count"), 'Response visual ready events must remain separate from main-frame readiness');
+  await remountMainFrame();
   await untilMarker(id, 'answered');
+  const diagnoseRemount = process.env.BOARD_HOST_TEST_DIAGNOSTICS === 'remount';
+  const remountMarkerTrace = async phase => {
+    if (!diagnoseRemount) return;
+    const browserState = await evaluate(`(()=>{const frame=document.querySelector('iframe[data-board-id="host-fixture"]');const r=frame?.getBoundingClientRect();const p=document.querySelector(${JSON.stringify(popover)});return {phase:${JSON.stringify(phase)},ready:hostFixture.ready,frame:r?{x:r.x,y:r.y,width:r.width,height:r.height}:null,popover:p?.textContent?.slice(0,600),active:document.activeElement?.tagName,raw:hostFixture.raw.slice(-12).map(item=>({type:item.type,id:item.id,position:item.position,location:item.location})),calls:hostFixture.calls.slice(-8).map(item=>({name:item.name,boardId:item.input.boardId})),interaction:hostFixture.board().interactions.filter(item=>item.id===${JSON.stringify(id)}).map(item=>({id:item.id,text:item.text.slice(0,120),status:item.status}))}})()`);
+    const markerState = await frame(`(()=>{const root=document.querySelector('[data-board-markers]')?.shadowRoot;const target=root?.querySelector(${JSON.stringify(marker(id))});const r=target?.getBoundingClientRect();const hit=r?root?.elementFromPoint(r.x+r.width/2,r.y+r.height/2):null;return {marker:target?{hidden:target.hidden,location:target.dataset.location,status:target.dataset.status,style:target.getAttribute('style'),rect:{x:r.x,y:r.y,width:r.width,height:r.height}}:null,hit:hit?.closest('[data-board-interaction]')?.getAttribute('data-board-interaction'),viewport:{width:innerWidth,height:innerHeight,x:scrollX,y:scrollY},pointer:window.remountPointerTrace||[]}})()`);
+    const hitPoint = markerState.marker && browserState.frame ? { x: browserState.frame.x + markerState.marker.rect.x + markerState.marker.rect.width / 2, y: browserState.frame.y + markerState.marker.rect.y + markerState.marker.rect.height / 2 } : null;
+    const hostHit = hitPoint ? await evaluate(`(()=>{const hit=document.elementFromPoint(${hitPoint.x},${hitPoint.y});return {tag:hit?.tagName,testId:hit?.getAttribute('data-testid'),boardId:hit?.getAttribute('data-board-id'),label:hit?.getAttribute('aria-label'),text:hit?.textContent?.slice(0,100)}})()`) : null;
+    console.log('DIAG remount-marker', JSON.stringify({ browserState, markerState, hitPoint, hostHit }));
+  };
+  if (diagnoseRemount) await frame(`window.remountPointerTrace=[];for(const type of ['pointerdown','pointerup','click'])window.addEventListener(type,event=>{const marker=event.composedPath().find(node=>node?.hasAttribute?.('data-board-interaction'));window.remountPointerTrace.push({type,trusted:event.isTrusted,x:event.clientX,y:event.clientY,target:event.target?.tagName,marker:marker?.getAttribute('data-board-interaction')});window.remountPointerTrace=window.remountPointerTrace.slice(-9)},{capture:true});true`);
+  await remountMarkerTrace('before-click');
   await click(marker(id));
-  await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('First line')`);
+  try { await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('First line')`); }
+  catch (error) { await remountMarkerTrace('failed'); throw error; }
+  await remountMarkerTrace('opened');
   await evaluate('hostFixture.updateCanvas()');
   await untilFrame("board.getData().next===true");
   await untilFrame(`document.querySelector('[data-board-markers]')?.shadowRoot?.querySelector(${JSON.stringify(marker(id))})?.dataset.stale==='true'`);
@@ -815,8 +835,7 @@ try {
   await until(`!document.querySelector(${JSON.stringify(input)})`); await closePopover();
   assert.equal(await evaluate('hostFixture.ready'), beforePickerReady);
   assert.equal(await frame("document.querySelector('#field').value"), 'side selection preserves canvas');
-  const beforeSideRemount = await evaluate('hostFixture.ready');
-  await evaluate('hostFixture.remount()'); await until(`hostFixture.ready>${beforeSideRemount}`);
+  await remountMainFrame();
   await openAt();
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(picker)})?.textContent.includes('旁支 2')`), true);
   await key('Escape'); await noPopover();

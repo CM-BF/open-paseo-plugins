@@ -166,6 +166,22 @@ const fixture: any = global.hostFixture = {
 };
 let requestId = 0;
 const frameRequests = new Map<number, { resolve(value: any): void; reject(error: Error): void }>();
+let mainFrameSequence = 0;
+let mainReadyCount = 0;
+const mainFrames = new WeakMap<object, { id: number; readySession?: string }>();
+const currentMainFrame = () => {
+  const frame = global.document.querySelector('iframe[data-board-id="host-fixture"]');
+  if (!frame) return undefined;
+  let entry = mainFrames.get(frame);
+  if (!entry) { entry = { id: ++mainFrameSequence }; mainFrames.set(frame, entry); }
+  const sessionId = frame.srcdoc.match(/\{"channel":"paseo-board-frame-v1","boardId":"host-fixture","sessionId":"([^"]+)"/)?.[1];
+  return { frame, entry, sessionId };
+};
+fixture.mainReady = () => {
+  const current = currentMainFrame();
+  return current ? { frameId: current.entry.id, sessionId: current.sessionId, ready: Boolean(current.sessionId && current.entry.readySession === current.sessionId), count: mainReadyCount } : null;
+};
+fixture.readyRecords = [];
 global.addEventListener("message", (event: any) => {
   if (event.data?.channel === "paseo-board-frame-v1") fixture.raw.push(event.data);
   if (event.data?.channel === "host-fixture-update") fixture.updateRequests.push(event.data.request);
@@ -173,7 +189,17 @@ global.addEventListener("message", (event: any) => {
   if (event.data?.channel === "host-fixture-focus") fixture.focusRequests.push(event.data.id);
   if (event.data?.channel === "host-response-fixture" && event.data.clicked) fixture.responseClicks++;
   if (event.data?.channel === "host-response-fixture" && event.data.result) fixture.responseResults.push(event.data.result);
-  if (event.data?.channel === "paseo-board-frame-v1" && event.data.type === "ready") fixture.ready++;
+  if (event.data?.channel === "paseo-board-frame-v1" && event.data.type === "ready") {
+    // A response visual has its own runtime and ready event. Only the current
+    // main iframe's WindowProxy AND embedded session establish main readiness.
+    fixture.ready++;
+    const current = currentMainFrame();
+    const fromMain = current && event.source === current.frame.contentWindow;
+    const accepted = fromMain && event.data.boardId === "host-fixture" && event.data.sessionId === current.sessionId;
+    if (accepted) { current.entry.readySession = current.sessionId; mainReadyCount++; }
+    fixture.readyRecords.push({ boardId: event.data.boardId, sessionId: event.data.sessionId, mainFrameId: current?.entry.id, accepted: Boolean(accepted) });
+    fixture.readyRecords = fixture.readyRecords.slice(-24);
+  }
   if (event.data?.channel === "paseo-board-frame-v1" && event.data.type === "anchor") fixture.anchors.push(event.data.anchor);
   if (event.data?.channel !== "host-fixture-result") return;
   const entry = frameRequests.get(event.data.id); if (!entry) return; frameRequests.delete(event.data.id);
