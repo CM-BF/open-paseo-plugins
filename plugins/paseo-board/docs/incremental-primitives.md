@@ -32,7 +32,7 @@ The initial default capacity is 10,000 records / 1,000,000 UTF-8 serialized-arra
 
 `offer(value)` returns a disposition: committed with a real durable ACK, superseded before submission, or cancelled before submission. A staged value is volatile until submitted through the feed's existing durable journal. `flush`/`drain` waits for actual durable completion and exposes errors. Unknown writes remain fixed until exact retry; no later value overtakes them, and no generation is reopened automatically. The existing raw feed interface remains available when the helper is idle.
 
-These are implementation contracts under test, not a completed release receipt. Precise signatures and error behavior will be reflected in the generated skill and README after integration.
+These contracts are implemented in the generated SDK, skill and README. The installed-runtime acceptance and its remaining limits are recorded in [verification](verification/2026-10-30-incremental-primitives.md).
 
 ## Required evidence
 

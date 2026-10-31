@@ -310,3 +310,13 @@ Provide a persistent, fully interactive, task-independent conversation canvas fo
 - Source head 99c618a passed TypeScript and all 228 tests in 15 files, plus 29 BoardView and 50 canvas Chromium checks. Normal generated-runtime composition is exercised by producer subprocess tests.
 - Client build and Hermes compatibility passed. A clean git archive with npm ci --ignore-scripts rebuilt a byte-identical client bundle (SHA-256 23988df3b214ae49fd13dba8135fc4e133f8758fb892446e40804dfd412fb53f).
 - No native/installed acceptance is claimed by these isolated checks. Backup installation, actual producer/MCP acceptance and release remain pending.
+
+
+### 2026-10-30 — installed incremental primitives and native acceptance
+
+- Backed up and installed verified `d2f8b45` in the retained directory on the existing primary 0.14.0 daemon. All 86 tracked files matched and all three original Boards retained canvas/state.
+- Seven actual bound CLI/independent-process checks passed for records/latest coexistence, restart, exact ACK replay, capacity rejection, generation fencing and manual edits. Quiet progress did not wake agents or create attention noise.
+- A fresh inexpensive MCP owner passed three grouped checks in two turns. Native records changed from 3 to 5 while typed input/focus survived, callbacks changed from 1 to 2 and document boots stayed at 1. One native question caused actual inspect/respond calls with complete records, seq 3 and the unseen final nonce; the exact answer appeared in the native Board. The sole successful fixture owner was archived.
+- Retained two earlier failed runs: a canonical-timeline parser incorrectly expected the raw MCP error flag, and a model mistyped a rejected probe's random value. Parser regressions and shorter rejected probe values corrected the harness without weakening exact parameter/ACK/data checks. Those two fixture owners are also archived; root is untouched.
+- The user-requested Board organization was separately published as a local patch: two tabs, six folds and reorder/note/sketch demos. Existing DOM, input and curve handlers survived; actual renderer light/dark desktop/compact checks and native tab/fold/curve checks passed. This canvas content is private, not a generic editor API.
+- Full verification and scope are recorded in [incremental primitives verification](docs/verification/2026-10-30-incremental-primitives.md). Exact fixture cleanup and authorized main publication remain pending at this checkpoint.
