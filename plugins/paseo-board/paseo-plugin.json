@@ -2,5 +2,6 @@
   "id": "paseo-board",
   "name": "Boards",
   "description": "Live, fully interactive canvases authored by agents, with contextual questions, discussion forks and traceable agent decisions.",
-  "requirements": { "paseo": ">=0.13.2" }
+  "requirements": { "paseo": ">=0.13.2" },
+  "build": [["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"]]
 }

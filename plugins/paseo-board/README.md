@@ -4,15 +4,17 @@ A persistent, fully interactive visualize with contextual human–agent conversa
 
 ## Use
 
-Requires Paseo 0.13.2 or later, with no upper version cap. The development toolchain was verified with Node 22 LTS / Node 24 LTS and npm 11. For a local directory installation, clone this repository, then run:
+Requires Paseo 0.13.2 or later, with no upper version cap. The development toolchain was verified with Node 22 LTS / Node 24 LTS and npm 11. Managed Git installations and updates run the manifest's locked production dependency installation automatically; npm must be available on the daemon's command path. This installs `linkedom`, used by the server to inspect authored HTML, without running dependency lifecycle scripts. The client bundle is already committed and does not need rebuilding during installation.
+
+For a local directory installation, clone this repository, then run:
 
 ```sh
 cd plugins/paseo-board
-npm ci --ignore-scripts --no-audit --no-fund
+npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 paseo plugin install "$PWD" --id paseo-board
 ```
 
-On macOS, the bundled CLI is also available at `/Applications/Paseo.app/Contents/Resources/bin/paseo`. Keep this checkout at a stable location: a directory install uses it directly and does not install its npm dependencies. The committed client bundle is ready to load; regenerate it after changing client code.
+On macOS, the bundled CLI is also available at `/Applications/Paseo.app/Contents/Resources/bin/paseo`. Keep this checkout at a stable location: a directory install uses it directly and does not run manifest preparation. After updating a directory checkout, repeat the dependency command before `paseo plugin reload paseo-board`. A `Could not resolve "linkedom"` error means this runtime dependency is unavailable in that checkout; install its locked dependencies rather than removing the import. Development and client bundle regeneration require a full `npm ci --include=dev --ignore-scripts` instead.
 
 Open **Boards** in Paseo's sidebar or Command Center. `/board` opens the current workspace's boards beside an agent. Ask an agent to create a board, or create one and associate its owner in the UI.
 

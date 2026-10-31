@@ -1,5 +1,11 @@
 # Paseo Board publication and verification
 
+### 2026-10-31 — runtime dependency preparation (in progress)
+
+- A remote install reported unresolved `linkedom` from `server/authored-source.ts`. It is already a locked production dependency, but the manifest omitted Git preparation. Prior clean checks explicitly installed all dependencies before building the client, so they did not cover an unprepared Git source or production-only server compilation.
+- Added manifest preparation with locked production-only `npm ci`, disabling dependency lifecycle scripts, and distinguished managed Git preparation from manual directory dependency installation in the README. No runtime source or generated bundle changed.
+- Clean production dependency and actual host compiler verification are pending. No remote-machine recovery, installation or publication is claimed yet.
+
 ## Goal
 
 Provide a persistent, fully interactive, task-independent conversation canvas for humans and agents. The agent freely authors HTML/CSS/JS; the plugin supplies durable identity, incremental updates, selection, contextual questions/forks and records of meaningful default decisions. Desktop capability is primary; mobile has a compatibility view.
