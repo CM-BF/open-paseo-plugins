@@ -3,11 +3,10 @@
  * the user's Paseo theme. Element defaults use :where() and components are single
  * classes, so any rule the fragment writes wins without a specificity contest.
  *
- * Ported from Rodex, which took it from OpenAI Codex
+ * Derived from OpenAI Codex through earlier adaptations and paseo-visualize
  * (codex-rs/tui/src/inline_visualization/assets/visualize.css at rust-v0.146.0,
- * Apache-2.0). Modified in Rodex and again here: fonts load from local() only,
- * the host palette tokens are --host-*, and the Ivory palette and the Rodex
- * footer are gone. See NOTICE.
+ * Apache-2.0). Adaptations include local()-only fonts, --host-* palette tokens,
+ * and removal of the Ivory palette and the upstream footer. See NOTICE.
  */
 
 @font-face {

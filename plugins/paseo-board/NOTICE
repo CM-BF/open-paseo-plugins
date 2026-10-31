@@ -10,7 +10,7 @@ The copied files shared/assets/visualize.css.txt, runtime-icons.txt and
 runtime-tooltips.txt contain work derived from OpenAI Codex
 (https://github.com/openai/codex), tag rust-v0.146.0,
 codex-rs/tui/src/inline_visualization/assets. They reached paseo-visualize through
-the Rodex adaptation and were further modified by paseo-visualize.
+an intermediate adaptation and were further modified by paseo-visualize.
 
   OpenAI Codex
   Copyright 2025 OpenAI

@@ -1,5 +1,10 @@
 # Paseo Board publication and verification
 
+### 2026-10-31 — stylesheet provenance wording cleanup
+
+- Removed the intermediate project's display name from stylesheet comments and the explanatory provenance paragraph. Preserved the upstream OpenAI source/tag/path, author copyrights, Apache license and the fact that intermediate adaptations preceded this plugin.
+- Regenerated the client bundle from the source asset. Case-insensitive scanning found no remaining occurrences in all 90 tracked plugin files. CSS after the header is byte-identical, and the generated bundle changes only by that embedded header. Copyright and license lines remain intact; installation and publication receipts are recorded separately.
+
 ### 2026-10-31 — runtime dependency preparation verified
 
 - A remote install reported unresolved `linkedom` from `server/authored-source.ts`. It is already a locked production dependency, but the manifest omitted Git preparation. Prior clean checks explicitly installed all dependencies before building the client, so they did not cover an unprepared Git source or production-only server compilation.
