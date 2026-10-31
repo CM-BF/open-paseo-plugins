@@ -336,6 +336,45 @@ try {
     assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)}).value`),draft);assert.equal(await evaluate(`document.activeElement===document.querySelector(${JSON.stringify(input)})`),true);
     assert.equal(await editCount(),beforeRemount);assert.equal(await submitCount(),0);await key('Escape');
     check('remount cancels unsaved proposals and an open composer retains its exact draft and focus when authored code proposes an edit');
+
+    // Drive real trusted shortcut selection and paste, not a forged proposal:
+    // only the runtime path builds the preview that can overlap the host card.
+    const shortcutPick = async (selector) => {
+      const r = await location(selector), x = r.x + 6, y = r.y + 6;
+      const hit = await frame(`(()=>{const source=document.querySelector(${JSON.stringify(selector)}),r=source.getBoundingClientRect(),hit=document.elementFromPoint(r.left+6,r.top+6);return source===hit||source.contains(hit)})()`);
+      assert.ok(hit,`Shortcut must hit ${selector}`);
+      await command('Input.dispatchMouseEvent',{type:'mouseMoved',x,y,modifiers:12});
+      await command('Input.dispatchMouseEvent',{type:'mousePressed',x,y,button:'left',clickCount:1,modifiers:12});
+      await command('Input.dispatchMouseEvent',{type:'mouseReleased',x,y,button:'left',clickCount:1,modifiers:12});
+      await untilFrame(`document.querySelector('[data-board-components]')?.shadowRoot.querySelector('[aria-current=true]')?.textContent===${JSON.stringify(selector)}`);
+    };
+    const originalHtml = await frame("document.querySelector('#edit-preview-source').outerHTML");
+    const editsBeforePreview = await editCount();
+    for (const size of [{width:1200,height:900},{width:900,height:740}]) {
+      await command('Emulation.setDeviceMetricsOverride',{...size,deviceScaleFactor:1,mobile:false});
+      await frame("document.querySelector('#edit-preview-fixture').style.display='block';document.querySelector('#edit-preview-target').style.top=(innerHeight-135)+'px';scrollTo(0,0);true");
+      await frame('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      const before = await frame("({scrollX,scrollY,targetScroll:document.querySelector('#edit-preview-target').scrollTop,parent:document.querySelector('#edit-preview-source').parentElement.id,html:document.querySelector('#edit-preview-source').outerHTML,field:document.querySelector('#field').value,boots:window.boots})");
+      await shortcutPick('#edit-preview-source');await key('c','KeyC',4);
+      await shortcutPick('#edit-preview-target');await key('v','KeyV',4);
+      await until(`document.querySelector(${JSON.stringify(panel)})`);
+      await untilFrame("document.querySelector('[data-board-component-layout]')?.shadowRoot.querySelector('[data-board-preview-inserted]')");
+      const green = await frame("document.querySelector('[data-board-component-layout]').shadowRoot.querySelector('[data-board-preview-inserted]').getBoundingClientRect().toJSON()");
+      const canvas = await canvasRect(), card = await hostLocation(panel);
+      const resultBox = {left:canvas.x+green.left,top:canvas.y+green.top,right:canvas.x+green.right,bottom:canvas.y+green.bottom};
+      const overlap = Math.max(0,Math.min(resultBox.right,card.x+card.width)-Math.max(resultBox.left,card.x))*Math.max(0,Math.min(resultBox.bottom,card.y+card.height)-Math.max(resultBox.top,card.y));
+      assert.equal(overlap,0,`Preview result must not be covered by Save/Cancel: ${JSON.stringify({size,green,canvas,card})}`);
+      assert.ok(green.left>=0&&green.right<=canvas.width&&green.top>=0&&green.bottom<=canvas.height,JSON.stringify({size,green,canvas}));
+      console.log(`MEASURE preview-card ${JSON.stringify({viewport:size,green,canvas,card,overlap})}`);
+      const after = await frame("({scrollX,scrollY,targetScroll:document.querySelector('#edit-preview-target').scrollTop,parent:document.querySelector('#edit-preview-source').parentElement.id,html:document.querySelector('#edit-preview-source').outerHTML,field:document.querySelector('#field').value,boots:window.boots})");
+      assert.deepEqual(after,before);assert.equal(after.html,originalHtml);assert.equal(await editCount(),editsBeforePreview);
+      await clearProposal();await untilFrame("!document.querySelector('[data-board-component-layout]')");
+      await shortcutPick('#edit-preview-source');await key('Escape');
+    }
+    await frame("document.querySelector('#edit-preview-fixture').style.display='none';true");
+    await command('Emulation.setDeviceMetricsOverride',{width:1200,height:900,deviceScaleFactor:1,mobile:false});
+    assert.equal(await submitCount(),0);
+    check('trusted shortcut copy/paste renders an actual bottom-edge layout preview above the host Save/Cancel card at wide and compact desktop sizes, without changing source DOM, controls, scroll or sending a message');
   }
 
   if (process.env.BOARD_HOST_TEST_SCOPE === 'dashboard') {
