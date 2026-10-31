@@ -1,0 +1,3 @@
+# Preserve original bundled dependency comments, including their trailing spaces.
+# Keep all other whitespace checks; authored source files retain normal checks.
+server/assets/store-worker.txt whitespace=-blank-at-eol

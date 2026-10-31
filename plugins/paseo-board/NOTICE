@@ -31,8 +31,12 @@ The optional icon/tooltip runtimes load lucide 1.17.0 (ISC),
 @floating-ui/core 1.7.3 and @floating-ui/dom 1.7.4 (MIT) from unpkg.com at view time;
 those dependencies are not redistributed here.
 
-server/assets/store-worker.txt bundles Zod and the Paseo SDK contract helpers.
-The generated worker includes Zod's MIT license and attribution.
+server/assets/store-worker.txt bundles Zod, the Paseo SDK contract helpers,
+LinkeDOM and its HTML/CSS parser dependencies. The build inventories every
+emitted dependency (including nested versions) and embeds its original license
+and attribution in the generated worker. LinkeDOM is ISC; its dependency notices
+include MIT, ISC and BSD-2-Clause licenses. See the worker header for the exact
+package versions and full notices.
 
   Zod
   Copyright (c) 2025 Colin McDonnell
