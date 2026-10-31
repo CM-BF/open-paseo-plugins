@@ -1,11 +1,14 @@
 # Paseo Board publication and verification
 
-### 2026-10-31 — direct gestures implemented; clean integration pending
+### 2026-10-31 — direct gestures installed; native gesture acceptance unavailable
 
 - The user requested three direct actions after selecting a component: right-click to compose a component reference, drag the component body to move it, and double-click its text to edit in place. Existing reference/capture, structural move and guarded text-save machinery remain the implementation paths.
 - A right-click inside the selection references the selected component, including its selector, binding identity and frozen canvas version alongside the screenshot. A short movement threshold separates clicks/double-clicks from structural dragging. Text hit testing targets the actual direct text run; native input/editor paths and unselected authored controls keep their normal behavior.
 - Real Chromium passed all 76 canvas checks, including five new direct-gesture scenarios: complete selected-parent reference and PNG, interrupted drag cancellation, movement threshold and preview/commit, exact text-run double-click, and native/synthetic event boundaries. TypeScript and 59 service tests passed, including persisted reference identity and immutable retries with and without PNG. Independent review has no open findings; both direct press and toolbar drag catch oversized-identity failures.
-- Final generated assets, clean pinned-source verification and local installation are next. Local test installation remains authorized; all publication stays on draft PR #4 and main remains unchanged. Native acceptance has not yet been attempted for this revision.
+- Runtime `9670dc9789fe9e06ff74a917480aa9a830d0c412` passed a fresh clean archive: TypeScript, 300 source tests in 22 files, 38 full-host + 9 dashboard + 12 edit-host + 76 canvas Chromium checks (135 executed checks, including repeated title checks), Hermes, byte-identical worker/client builds and production Helper compilation with two real workers and durable edit IPC.
+- Backed up and installed the exact 121 tracked runtime files on the primary daemon, preserving all five current Boards and saved state. Exactly two pool children were observed; no daemon restart or data rollback occurred. Startup reached ready; an existing historical-thread resume size error recurred separately.
+- Native gesture acceptance remains unavailable: initial app selection timed out; selection by full application path exposed the correct local-host window, but a Board-tab action was rejected after the user changed the app and the required state refresh timed out. No native gesture, save/cancel/reopen or screenshot is claimed. The installed build is ready for user testing; [current evidence and limits](docs/verification/2026-10-31-direct-gestures.md) distinguish automated checks from native acceptance.
+- Delivery stays on draft PR #4; main remains at `9bd750c` pending explicit merge approval.
 
 ### 2026-10-31 — source-position text editing installed; native acceptance unavailable
 
