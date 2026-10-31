@@ -16,6 +16,22 @@ const documentFor = (board: Board) => {
 };
 const html = '<main id="board"><section id="left"><article id="a"><h3 id="heading">Original</h3><p id="mixed">Before <b id="bold">bold</b> after</p><button id="button" onclick="count++">Go</button></article><article id="b">B</article></section><section id="right"><p id="tail">Tail</p></section></main>';
 
+// Browser SVG names use their adjusted camelCase spelling. This view changes only
+// that parser difference; the actual browser parity test lives in browser-test.mjs.
+function browserSvgNames(element: Parameters<typeof componentIdentityFor>[0]) {
+  type ElementShape = Parameters<typeof componentIdentityFor>[0];
+  const nodes = [element, ...Array.from(element.querySelectorAll("*"))];
+  const copies = new Map<ElementShape, ElementShape>();
+  for (const node of nodes) copies.set(node, {
+    localName: ({ foreignobject: "foreignObject", lineargradient: "linearGradient" } as Record<string, string>)[node.localName] ?? node.localName,
+    id: node.id, outerHTML: node.outerHTML,
+    get parentElement() { return node.parentElement ? copies.get(node.parentElement) ?? null : null; },
+    getAttribute: name => node.getAttribute(name),
+    querySelectorAll: selector => Array.from(node.querySelectorAll(selector)).map(child => copies.get(child)!),
+  });
+  return copies.get(element)!;
+}
+
 describe("durable user component edits", () => {
   let root: string, store: BoardStore;
   beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "board-components-")); store = new BoardStore(root); });
@@ -167,6 +183,25 @@ describe("durable user component edits", () => {
     const one = document.querySelector("#one")!, two = document.querySelector("#two")!;
     one.id = "same"; two.id = "same";
     expect(componentIdentityFor(one).fingerprint).not.toBe(componentIdentityFor(two).fingerprint);
+  });
+
+  it("matches browser SVG adjusted names and replays authoritative lowercase copied markup", async () => {
+    const initial = await create('<main><svg><g id="svg-component"><foreignObject id="foreign" width="100" height="30"><div id="html-content">HTML in SVG</div></foreignObject><defs><linearGradient id="gradient"></linearGradient></defs><rect fill="url(#gradient)"></rect></g></svg><svg id="right"></svg></main>');
+    const document = documentFor(initial), source = document.querySelector("#svg-component")!;
+    expect(document.querySelector("#foreign")!.localName).toBe("foreignobject");
+    const browserSource = browserSvgNames(source);
+    expect(Array.from(browserSource.querySelectorAll("*")).map(node => node.localName)).toContain("foreignObject");
+    expect(Array.from(browserSource.querySelectorAll("*")).map(node => node.localName)).toContain("linearGradient");
+    expect(componentIdentityFor(browserSource)).toEqual(componentIdentityFor(source));
+    expect(componentIdentityFor(browserSvgNames(document.querySelector("#foreign")!)).tag).toBe("foreignobject");
+    const copy = request(initial, "copy", "#svg-component", { sourceIdentity: componentIdentityFor(browserSource) });
+    const copied = await store.edit(copy);
+    expect(copied.canvas.patches[0].html).toContain("<foreignobject");
+    expect(copied.canvas.patches[0].html).toContain("<lineargradient");
+    const restored = (await new BoardStore(root).read(initial.id))!;
+    const clone = documentFor(restored).querySelector("#copied-0")!;
+    expect(componentIdentityFor(browserSvgNames(clone))).toEqual(componentIdentityFor(clone));
+    expect(clone.querySelector("div")!.textContent).toBe("HTML in SVG");
   });
 
   it("replays a copy followed by a cloned text edit and move across a cold store read", async () => {
