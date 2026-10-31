@@ -69,7 +69,9 @@ button.onclick = () => board.ask({ prompt: "Explain this part", kind: "question"
 
 `board.restoreState()`, `board.onState(callback)` and `board.getContext()` are also available. `window.openai.sendFollowUpMessage` is compatible with visualize-style requests. The result is a submission receipt, not the model's answer. Use stable DOM IDs for local edits; selection also works without IDs.
 
-`board.watch` returns an unsubscribe function. It distinguishes missing values from null, isolates callback data and skips changes outside its selected JSON Pointer. Clean up subscriptions before removing their components. It preserves arbitrary rendering code; it does not choose a chart or rebuild DOM. Current frame snapshots remain whole snapshots.
+`board.watch` returns an unsubscribe function. It distinguishes missing values from null, isolates callback data and skips changes outside its selected JSON Pointer. Clean up subscriptions before removing their components. It preserves arbitrary rendering code; it does not choose a chart or rebuild DOM. Compatible host-to-frame delivery uses versioned path deltas, verified array tails and automatic full-snapshot recovery without remounting. Unchanged theme values cause no CSS rewrite or theme event. Legacy frames keep full snapshots. Host-side diffing, upstream RPC polling, whole-envelope persistence and legacy full-data callbacks remain broader costs.
+
+Use `board.watch(path, render, { schedule: 'frame' })` to keep the initial synchronous callback and coalesce subsequent rendering to the latest value per animation frame. Unsubscribe cancels pending work. This optional scheduling policy does not retain intermediate events or change the author's chart/DOM implementation.
 
 For a compact agent check, call `board_read` with `view:"inspect"`, optional `dataPaths`, `interactionIds`, `selector`, and `recentLimit` (default 8, maximum 20). This omits historical images and full HTML, bounds requested values/excerpts, and reports every omission. It retains the same reader permissions as a full read. The default full view is unchanged. Both expose persistent evidence; neither observes live browser pixels or proves that a renderer succeeded.
 
@@ -99,7 +101,7 @@ await feed.set({ value: 43 }, { attention: 'milestone' });
 // Canvas: const off = board.watch('/live/a', value => render(value));
 ```
 
-The installed skill supplies the actual import path and the equivalent CLI/MCP `feed` actions (`open`, `set`, `status`, `close`). The process requires its owning agent's binding; do not copy its value into code or prompts. A detached async-shell task needs an explicit launch-time environment handoff, shown below. Use a unique durable `stateFile`, await each operation, and keep sources on disjoint object paths. A set replaces that source's complete value. Missing object parents are created; overlapping sources and scalar/array parents are rejected.
+The installed skill supplies the actual import path and the equivalent CLI/MCP `feed` actions (`open`, `set`, `append`, `status`, `close`). The process requires its owning agent's binding; do not copy its value into code or prompts. A detached async-shell task needs an explicit launch-time environment handoff, shown below. Use a unique durable `stateFile`, await each operation, and keep sources on disjoint object paths. A set replaces that source's complete value. Missing object parents are created; overlapping sources and scalar/array parents are rejected.
 
 Register the producer from the owning agent's ordinary shell tool using the public async-shell CLI. Replace the CLI path with the installed one; the generated Board skill supplies it. The shell expands these variables locally without exposing their values to the model:
 
@@ -117,7 +119,39 @@ The MCP registration server does **not** inherit the calling session's environme
 
 Unknown outcomes retain exactly one pending request; restarting with the same configuration replays it before accepting new work. Confirmed conflicts need inspection and explicit reconciliation. A changed generation fences older producers; changing the same path through normal publication also stops a stale feed. `feed.retry()`, `feed.status()`, explicit `feed.reopen({discardRejected:true})`, and `feed.close()` expose recovery rather than silently overwriting another writer.
 
-Quiet and milestone affect attention, not durability or model wakeups. Neither wakes an agent. Values are limited to 256,000 bytes, one pending request per local journal, 64 retained source identities per Board and 32 recent replay receipts per source. Keep large artifacts outside Board and publish references or summaries. This first version is latest state with bounded requests, not a telemetry database or arbitrary event-stream replay. It retains existing whole-snapshot frame transport and atomic Board storage. Async-shell remains the process supervisor.
+Quiet and milestone affect attention, not durability or model wakeups. Neither wakes an agent. Values are limited to 256,000 bytes, one pending request per local journal, 64 retained source identities per Board and 32 recent replay receipts per source. Keep large artifacts outside Board and publish references or summaries. Default feeds retain latest state; use explicit records mode below when every accepted sample must remain. Atomic whole-Board storage and upstream polling remain. Frame deltas do not turn this bounded store into an unbounded telemetry database. Async-shell remains the process supervisor.
+
+## Optional latest-state coalescing
+
+```js
+import { createLatestWriter } from '/absolute/paseo-home/paseo-board/lib/feed.mjs';
+const writer = createLatestWriter(feed, { delayMs: 16 });
+const outcomes = [writer.offer({ progress: 10 }), writer.offer({ progress: 20 }), writer.offer({ progress: 30 })];
+await writer.flush();
+const dispositions = await Promise.all(outcomes);
+await writer.close();
+```
+
+This helper retains one immutable submitted request plus one replaceable staged latest value. Each offer returns `committed` with an ACK, `superseded` before submission, or `cancelled` before submission. Staged values are volatile until the raw feed journals them. Ordinary awaited `feed.set` is unchanged; records and milestones cannot be coalesced. Drain first and use raw `feed.set` for a milestone while the helper is idle.
+
+`flush`/`drain` returns the last durable ACK or exposes the original error; it never retries silently. `retry` verifies the exact retained request before using the SDK's guarded retry, so an earlier ACK cannot become proof of a new write. Unknown writes block later submissions. A rejected offer stays rejected even after successful retry. `dispose` cancels staged work, waits for any active call and preserves durable pending state for explicit raw-feed reconciliation. `close` drains and closes; a failed drain requires explicit recovery before closing again. The helper is not a durable queue or a process supervisor. `delayMs` defaults to 0 and is bounded to 60000.
+
+## Optional ordered records
+
+```js
+const samples = await createFeed({
+  boardId: 'my-project', sourceId: 'samples-a', path: '/history/a',
+  mode: 'records', capacity: { maxRecords: 10000, maxBytes: 1000000 },
+  stateFile: '/absolute/private-task-directory/samples-a.json'
+});
+await samples.append([{ step: 1, loss: 0.8 }, { step: 2, loss: 0.6 }]);
+// Canvas remains arbitrary author code, optionally coalesced to display frames:
+// board.watch('/history/a', records => draw(records), { schedule: 'frame' });
+```
+
+Records are arbitrary JSON in an ordinary retained array. Each batch commits atomically, with per-source ordering, the same durable journal and exact ACK replay as latest feeds. Retry cannot duplicate a batch; generation changes retain compatible prior records and fence old writers. Manual same-path edits conflict. Mode and records path are stable source identities; different sources use disjoint paths, without a cross-source total order.
+
+A batch contains 1–1000 records and at most 256,000 UTF-8 serialized bytes. Retention defaults to 10,000 records / 1,000,000 serialized-array bytes, capped at 50,000 / 1,500,000; existing compatible records count toward it. Overall canvas JSON is limited to 2,000,000 bytes across all sources, and the persisted Board envelope to 64,000,000 bytes; either may reject earlier. The per-source cap leaves room for other data but does not reserve that room, and compact history still grows. `capacity_exceeded` rejects the entire batch before mutation and reports usage and limits. There is no automatic eviction. Inspect `recordCount`, `recordBytes` and `capacity`; keep larger histories in external artifacts. Display coalescing may skip frames, never accepted records.
 
 ## Multiple writers
 

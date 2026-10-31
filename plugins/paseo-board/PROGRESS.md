@@ -295,3 +295,11 @@ Provide a persistent, fully interactive, task-independent conversation canvas fo
 - Existing free HTML/JS, latest-state feeds and default path-watch semantics remain supported. No fixed task schema, chart API, mandatory component isolation or worker ownership is introduced.
 - Host-to-canvas delta transport is the first transport scope; upstream polling and whole-envelope persistence remain and must be disclosed in measurements. Record capacity rejects before mutation; latest-state supersession is distinct from accepted records.
 - This entry records authorized implementation work only. No new source-test, installed-runtime or performance result is claimed yet.
+
+
+### Incremental primitives integration (2026-10-30, verification pending)
+
+- Integrated versioned host-to-frame data/patch deltas, verified record tails, exact-base recovery, affected-path watches, optional per-frame display callbacks and theme deduplication. Free HTML/JS rendering remains author-controlled; polling, host comparison and whole-envelope persistence remain.
+- Integrated opt-in bounded records mode and append with durable exact replay, plus optional latest-state coalescing. Recovery verifies the exact pending request under the journal lock so a previous ACK cannot prove a later failed submission.
+- Updated generated MCP descriptions, installed SDK composition and authoring guidance with current APIs, limits and volatile-versus-durable distinctions. The generated-module test now asserts the real runtime exported the helper instead of appending a test-only fallback.
+- Branch evidence: 50 canvas and 29 host Chromium scenarios passed; records protocol/producer/runtime/inspection 48 tests passed; latest helper 18 tests passed. Integrated source/browser/clean-build/Hermes and installed transport acceptance remain pending. No install or publication claimed in this entry.

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -252,8 +252,7 @@ describe("latest writer with the actual generated producer module and Unix trans
     const journal = new ServiceJournal(join(dir, "service.json")); await journal.init(); await journal.bind("fixture-token", { agentId: "owner", cwd: dir });
     service = new BoardService(store, journal, () => undefined); bridge = new BoardBridge(service);
     await writeRuntime(runtimePaths(dir));
-    // Before root runtime integration, evaluate the exact combined installed bytes.
-    if (!(await readFile(runtimePaths(dir).feedSdk, "utf8")).includes("export function createLatestWriter")) await appendFile(runtimePaths(dir).feedSdk, LATEST_PRODUCER_SOURCE);
+    expect(await readFile(runtimePaths(dir).feedSdk, "utf8")).toContain("export function createLatestWriter");
     await bridge.start(runtimePaths(dir).socket);
   });
   afterEach(async () => { await bridge.close(); await service.dispose(); await rm(dir, { recursive: true, force: true }); });

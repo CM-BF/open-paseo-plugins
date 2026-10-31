@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, FeedInputSchema, IdSchema, PublishInputSchema, ReadInputSchema, RespondInputSchema } from "../shared/contracts";
 import { PRODUCER_SOURCE } from "./producer-source";
+import { LATEST_PRODUCER_SOURCE } from "./producer-latest-source";
 import { RUNTIME_SOURCE } from "./runtime-source";
 import { skillMarkdown } from "./prompts";
 
@@ -23,7 +24,7 @@ export function toolDefinitions() {
     ["publish", "Update the shared Board. Target the smallest stable element for a local change; do not replace a large parent just to edit one sentence. A patch or traditional data requires the canvasBase captured when drafting; full html/htmlFile also requires replaceDocument:true. On revision_conflict reread and merge content, never simply bump a version or repeat old HTML. For concurrent object leaves use dataPatch with JSON Pointer path, operation set/remove, expected:{exists,value}, and value for set; arrays are compared/replaced as a whole. expectedRevision protects Board metadata. dataPatch conditions can preserve disjoint writes without replacing siblings. Optional focusSelectors locate data changes. Successful publication is durable acceptance, not proof that arbitrary browser JS ran. Link your own fulfilled intent to concrete evidence.", PublishInputSchema.extend({ htmlFile: withFile.htmlFile.optional() })],
     ["respond", "Answer your assigned interaction at its original question marker with text and optional fully interactive HTML/JS. This operation writes a local answer; use board_publish for requested changes to the shared canvas. Only your assigned interaction can receive the answer. Read the interaction responseRevision first (missing means 0).", RespondInputSchema.extend({ htmlFile: withFile.htmlFile.optional() })],
     ["decision", "Record a consequential default decision YOU made, with stated rationale, impact and evidence. Never misattribute user requirements or guess hidden reasons.", DecisionUpdateInputSchema],
-    ["feed", "Manage a latest-state JSON source. Open once with sourceId/path/requestId/expectedGeneration:0; set the next seq in that generation. Same seq must retain the exact value and attention. Quiet updates persist and reach the canvas without unread/highlight noise. Milestones may name focusSelectors. Existing source generations change only through explicit open with their current expectedGeneration; closed/old writers cannot overwrite newer ones. Prefer the generated createFeed SDK for durable sequence/retry handling.", FeedInputSchema],
+    ["feed", "Manage an arbitrary-JSON source. Open once with sourceId/path/requestId/expectedGeneration:0. Default latest mode uses set; explicit mode:records with optional capacity uses append and preserves every accepted record in order. Use the next seq in that generation; identical retries retain exact payload and attention. Capacity overflow rejects the whole batch without eviction. Quiet updates persist and reach the canvas without unread/highlight noise. Milestones may name focusSelectors. Existing source generations change only through explicit open with their current expectedGeneration; closed/old writers cannot overwrite newer ones. Prefer the generated createFeed SDK for durable sequence/retry handling. Optional createLatestWriter coalesces latest state only, never records or milestones.", FeedInputSchema],
     ["emit", "Save an external fact or conditional shared-data update without waking agents. Traditional data REQUIRES its original canvasBase; prefer dataPatch JSON Pointer operations with expected old values for concurrent producers. Never reread just to bump a version on an old payload. Pure events/observations need no canvasBase. Keep eventId stable for an identical retry; focusSelectors may locate changed data.", EmitInputSchema],
   ] as const;
   return entries.map(([name, description, schema]) => ({ name: `board_${name}`, description, inputSchema: z.toJSONSchema(schema, { io: "input" }) }));
@@ -48,7 +49,7 @@ async function atomic(path: string, text: string, mode = 0o600): Promise<void> {
 }
 export async function writeRuntime(paths: RuntimePaths): Promise<void> {
   await Promise.all([paths.root, paths.bin, join(paths.root, "lib"), paths.skillDir].map((path) => mkdir(path, { recursive: true, mode: 0o700 })));
-  await atomic(paths.feedSdk, PRODUCER_SOURCE);
+  await atomic(paths.feedSdk, PRODUCER_SOURCE + LATEST_PRODUCER_SOURCE);
   await atomic(paths.script, RUNTIME_SOURCE.replace("__BOARD_TOOL_DEFINITIONS__", JSON.stringify(toolDefinitions())));
   await atomic(paths.cli, launcher(paths, "cli"), 0o700);
   await atomic(paths.mcp, launcher(paths, "mcp"), 0o700);
