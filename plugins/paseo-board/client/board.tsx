@@ -11,6 +11,7 @@ import { CanvasFrame, WebMessageInput, canRenderFrames, usePopoverDismiss } from
 import { Action, ColorContext, Copy, Notice, errorMessage, localId, timeLabel, useColors } from "./ui";
 import { useBoard } from "./data";
 import { BoardTitle } from "./board-title";
+import { BoardConnectionStatus } from "./connection-status";
 import { createStateWriter } from "./state-writer";
 import { DiscussionRail } from "./discussion-rail";
 import { SideAgentPicker } from "./side-agent-picker";
@@ -238,7 +239,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation }: Props) {
       {compose || selectedInteractionId ? <View testID="board-local-popover" accessibilityLabel="原位交流" onLayout={event => setPopoverHeight(event.nativeEvent.layout.height)} style={{ position: "absolute", ...popover, borderWidth: 1, borderColor: c.border, borderRadius: 12, backgroundColor: c.surface0, overflow: "hidden", shadowColor: "#000", shadowOpacity: 0.22, shadowRadius: 16, shadowOffset: { width: 0, height: 5 }, elevation: 10 }}>
         <View style={{ flexDirection: "row", alignItems: "center", padding: 8, gap: 8, borderBottomWidth: 1, borderColor: c.border }}><Text style={{ color: c.foreground, fontWeight: "600", flex: 1 }}>{compose ? "发给 agent" : "这里的讨论"}</Text>{!canRenderFrames ? <Action label="关闭" disabled={sending} onPress={closePopover} /> : null}</View>
         <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ padding: 12, gap: 16 }} keyboardShouldPersistTaps="handled">
-          {interactionLocation && interactionLocation.id === selectedInteractionId && interactionLocation.location !== "component" ? <Copy small muted>{({ collapsed: "组件当前不可见 · 标记跟随可见外层", ancestor: "原内容不可见 · 标记暂随可见外层", hidden: "组件位于未显示的容器 · 当前无法自动打开", snapshot: "未定位到当前组件 · 可查看原始引用" })[interactionLocation.location]}</Copy> : null}
+          {interactionLocation && interactionLocation.id === selectedInteractionId && interactionLocation.location !== "component" ? <Copy small muted>{({ collapsed: "组件当前不可见 · 标记跟随可见外层", ancestor: "原内容不可见 · 标记暂随可见外层", hidden: "组件当前隐藏 · 可从侧栏请求定位", snapshot: "未定位到当前组件 · 可查看原始引用" })[interactionLocation.location]}</Copy> : null}
           {thread.map(item => <InteractionContent key={item.id} item={item} board={board} frameTheme={frameTheme} unconfirmed={!board.interactions.some(saved => saved.id === item.id)} onRetry={() => retryUnconfirmed(item)} onFollow={(kind, text, resolve) => openCompose(kind, item, text, resolve)} onOpenAgent={() => { if (item.agentId && navigation) navigation.openAgent({ agentId: item.agentId }); }} />)}
           {compose ? <View style={{ gap: 10 }}>
             {!thread.length ? <AnchorPreview anchor={compose.anchor} compact captureStatus={compose.captureStatus} /> : null}
@@ -266,7 +267,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation }: Props) {
     </View>
     <View style={{ paddingHorizontal: 12, paddingVertical: 5, borderTopWidth: 1, borderColor: c.border, flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
       {canRenderFrames ? <Copy small muted>选中文字 / Option + 拖动 / 右键，即可输入 · Esc 取消</Copy> : null}
-      <Copy small muted>{query.error || query.liveError ? "同步待恢复" : "持续更新"} · r{board.revision} · {timeLabel(board.updatedAt)}</Copy>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}><BoardConnectionStatus status={query.error ? "disconnected" : query.liveStatus} /><Copy small muted>r{board.revision} · {timeLabel(board.updatedAt)}</Copy></View>
     </View>
     <Modal title={drawer === "decisions" ? "Agent 做过的默认决策" : drawer === "threads" ? "围绕画布的讨论" : "发生了什么变化"} open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }}><Modal.Content>
       {drawer === "decisions" ? <DecisionList board={board} onUpdate={updateDecision} onQuestion={decision => { setDrawer(null); const draft: Compose = { kind: "question", text: `关于这个 agent 决策：${decision.choice}\n\n`, anchor: { kind: "element", boardRevision: board.revision, canvasRevision: board.canvas.revision, text: decision.choice, selector: decision.related[0] } }; setSelectedInteractionId(undefined); setPopoverPoint(anchorPoint(draft.anchor)); composeRef.current = draft; setCompose(draft); }} /> : null}

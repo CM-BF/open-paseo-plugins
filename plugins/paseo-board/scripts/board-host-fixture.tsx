@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BoardView } from "../client/board";
 import { BoardHome } from "../client/home";
 import { DEFAULT_LIGHT_COLORS } from "../shared/frame-theme";
-import type { Board, BoardSummary, CanvasUpdate, Interaction } from "../shared/contracts";
+import type { Board, BoardChange, BoardEventCursor, BoardSummary, CanvasUpdate, Interaction } from "../shared/contracts";
 import { installBoardEventTransport, type BoardEventListener } from "../client/board-events";
 const global = globalThis as any;
 const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -36,14 +36,25 @@ let pendingChoice: { input: any; resolve(value: Board): void; reject(error: Erro
 const pending = new Map<string, { input: any; resolve(value: Interaction): void; reject(error: Error): void }>();
 const eventListeners = new Set<BoardEventListener>();
 let eventSequence = 0;
+let holdChanges = false;
+let holdCheck = false;
+let checkFails = false;
+const eventJournal: BoardChange[] = [];
+const pendingChanges: Array<() => void> = [];
+const pendingChecks: Array<() => void> = [];
 const cursor = () => ({ epoch: "fixture", sequence: eventSequence });
 const summary = (): BoardSummary => ({ id: persisted.id, title: persisted.title, ownerAgentId: persisted.ownerAgentId, revision: persisted.revision, createdAt: persisted.createdAt, updatedAt: persisted.updatedAt, decisionCount: persisted.decisions.length, pendingCount: persisted.interactions.filter(item => !["answered", "applied", "rejected"].includes(item.status)).length, unreadUpdateCount: persisted.updates.filter(update => !persisted.seenUpdateIds.includes(update.id)).length, latestUpdateRevision: persisted.updates.at(-1)?.boardRevision ?? 0, status: persisted.interactions.some(item => item.status === "failed") ? "error" : persisted.interactions.some(item => ["saved", "sending", "delivered", "processing"].includes(item.status)) ? "processing" : "idle" });
 const summaries = () => [summary(), { ...summary(), id: "another-board", title: "Another project", unreadUpdateCount: 3, latestUpdateRevision: 4, status: "idle" as const }];
-installBoardEventTransport((_hostId, listener) => { eventListeners.add(listener); return () => { eventListeners.delete(listener); }; });
+const changes = (since?: BoardEventCursor, compact = false) => {
+  if (since?.epoch !== "fixture" || since.sequence > eventSequence) return { mode: "snapshot", boards: summaries(), cursor: cursor() };
+  const events = eventJournal.filter(event => event.cursor.sequence > since.sequence);
+  return compact ? { mode: "compact", fromCursor: since, changes: [...new Map(events.map(event => [event.summary.id, event])).values()].sort((a, b) => a.cursor.sequence - b.cursor.sequence), cursor: cursor() } : { mode: "delta", changes: events, cursor: cursor() };
+};
+if (new URLSearchParams(global.location.search).get("push") !== "off") installBoardEventTransport((_hostId, listener) => { eventListeners.add(listener); global.queueMicrotask(() => { if (eventListeners.has(listener)) listener.reconnect(); }); return () => { eventListeners.delete(listener); }; });
 const notify = (reason: "metadata" | "attention" = "metadata") => {
   // Mutations such as addUpdate complete their persisted fields synchronously
   // after advance(). Publish the fully committed projection at the microtask edge.
-  global.queueMicrotask(() => { eventSequence++; const event = { cursor: cursor(), summary: summary(), canvasRevision: persisted.canvas.revision, reason }; for (const listener of eventListeners) listener.change(copy(event)); });
+  global.queueMicrotask(() => { eventSequence++; const event = { cursor: cursor(), summary: summary(), canvasRevision: persisted.canvas.revision, reason }; eventJournal.push(copy(event)); for (const listener of eventListeners) listener.change(copy(event)); });
 };
 const advance = () => { persisted = { ...persisted, revision: persisted.revision + 1, updatedAt: now() }; notify(); };
 const fixture: any = global.hostFixture = {
@@ -53,6 +64,11 @@ const fixture: any = global.hostFixture = {
   choiceMode: (next: typeof choiceMode) => { choiceMode = next; },
   readFails: (next: boolean) => { readFails = next; },
   renameMode: (next: typeof renameMode) => { renameMode = next; },
+  eventDisconnect: (unsupported = false) => { for (const listener of eventListeners) listener.error(Object.assign(new Error(unsupported ? "Fixture host does not support events" : "Fixture event connection lost"), { code: unsupported ? "plugin_events_unsupported" : "plugin_events_disconnected" })); },
+  eventReconnect: () => { for (const listener of eventListeners) listener.reconnect(); },
+  holdChanges: (next: boolean) => { holdChanges = next; if (!next) for (const resolve of pendingChanges.splice(0)) resolve(); },
+  holdCheck: (next: boolean) => { holdCheck = next; if (!next) for (const resolve of pendingChecks.splice(0)) resolve(); },
+  checkFails: (next: boolean) => { checkFails = next; },
   renameElsewhere: (title: string) => { persisted.title = title; advance(); },
   acceptRename: () => {
     if (!pendingRename) throw new Error("No pending rename");
@@ -99,7 +115,11 @@ const fixture: any = global.hostFixture = {
     if (name === "board.read" && readFails) throw new Error("Fixture read unavailable");
     if (name === "board.read") return input.sinceRevision === persisted.revision ? { board: null, unchanged: true } : { board: copy(persisted), unchanged: false };
     if (name === "board.list") return { boards: summaries(), cursor: cursor() };
-    if (name === "board.changes") return { mode: "snapshot", boards: summaries(), cursor: cursor() };
+    if (name === "board.changes") return holdChanges ? new Promise(resolve => pendingChanges.push(() => resolve(changes(input.cursor, input.compact)))) : changes(input.cursor, input.compact);
+    if (name === "board.check") {
+      const result = () => { if (checkFails) throw new Error("Fixture compact check unavailable"); return { changed: input.cursor.epoch !== "fixture" || input.cursor.sequence !== eventSequence }; };
+      return holdCheck ? new Promise((resolve, reject) => pendingChecks.push(() => { try { resolve(result()); } catch (error) { reject(error); } })) : result();
+    }
     if (name === "board.rename") {
       const previous = renameReceipts.get(input.eventId);
       if (previous) {

@@ -3,6 +3,8 @@
 import { createElement, useCallback, useLayoutEffect, useRef } from "react";
 const global = globalThis as any;
 export const Platform = { OS: "web" };
+// Web fixtures use document.visibilityState; the native import still needs a shape.
+export const AppState = { currentState: "active", addEventListener: () => ({ remove() {} }) };
 function styles(value: any): any {
   const source = typeof value === "function" ? value({ pressed: false }) : Array.isArray(value) ? Object.assign({}, ...value) : value;
   const next = { ...source };

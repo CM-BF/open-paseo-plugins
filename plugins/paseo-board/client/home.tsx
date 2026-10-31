@@ -7,6 +7,7 @@ import { createBoardRpc } from "../shared/contracts";
 import { Action, ColorContext, Copy, Notice, errorMessage, localId, timeLabel, useColors } from "./ui";
 import { BoardView } from "./board";
 import { useBoardList } from "./data";
+import { BoardConnectionStatus } from "./connection-status";
 
 interface Props extends PluginSurfaceProps { initialBoardId?: string; workspaceId?: string; agentId?: string }
 const EMPTY_CANVAS = `<style>main{padding:clamp(24px,8vw,100px);max-width:760px;margin:auto}h1{font-size:clamp(30px,5vw,54px);letter-spacing:-.04em}p{line-height:1.8;opacity:.65}#content{min-height:30vh}</style><main><p>YOUR SHARED SURFACE</p><h1>从一个问题开始。</h1><p>让 agent 根据眼前的任务组织这里。解释、图表、动画和互动工具，都可以在同一块画布上不断生长。</p><div id="content"></div></main>`;
@@ -41,12 +42,13 @@ function BoardIndex({ host, workspaceId, agentId, onSelect }: Props & { onSelect
   return <View style={{ flex: 1, backgroundColor: c.surface0 }}>
     <ScrollView contentContainerStyle={{ padding: 28, gap: 24, maxWidth: 1100, width: "100%", alignSelf: "center" }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}><View style={{ flex: 1, gap: 7 }}><Text style={{ color: c.foreground, fontSize: 28, fontWeight: "600", letterSpacing: -0.7 }}>Boards</Text><Copy muted>回到项目的现状，指着内容与 agent 交流。</Copy></View><Action label="新建 Board" icon="Plus" primary onPress={() => { setDraftId(localId("board")); setCreating(true); }} /></View>
+      <BoardConnectionStatus status={boards.liveStatus} />
       {boards.error ? <Notice error text={errorMessage(boards.error)} /> : null}
       {boards.liveError ? <Notice error text={errorMessage(boards.liveError)} /> : null}
       {boards.isPending ? <Copy muted>正在读取…</Copy> : null}
       {boards.data?.boards.length === 0 ? <View style={{ paddingVertical: 60, gap: 14 }}><Copy>还没有 Board。</Copy><Copy muted>你可以让 agent 为当前任务建立一块持续更新的自由画布，或先关联一个 agent 开始。</Copy></View> : null}
       {boards.data?.boards.map(board => <Pressable key={board.id} accessibilityRole="button" accessibilityLabel={`打开 ${board.title}`} onPress={() => onSelect(board.id)} style={({ pressed }) => ({ paddingVertical: 20, paddingHorizontal: 18, borderWidth: 1, borderColor: c.border, borderRadius: 10, backgroundColor: pressed ? c.surface2 : c.surface1, gap: 10 })}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}><Text style={{ color: c.foreground, fontSize: 19, fontWeight: "500", flex: 1 }}>{board.title}</Text><View testID={`board-status-${board.id}`} accessibilityLabel={board.status === "processing" ? "处理中" : board.status === "error" ? "需要关注" : "空闲"} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}><View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: board.status === "processing" ? c.accent : board.status === "error" ? c.statusDanger : c.foregroundMuted }} /><Copy muted small>{board.status === "processing" ? "处理中" : board.status === "error" ? "需要关注" : "空闲"}</Copy></View>{board.unreadUpdateCount > 0 ? <View testID={`board-unread-${board.id}`} accessibilityLabel={`${board.unreadUpdateCount} 处未看更新`} style={{ backgroundColor: c.accent, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 }}><Text style={{ color: c.accentForeground, fontSize: 12, fontWeight: "600" }}>{board.unreadUpdateCount} 更新</Text></View> : null}</View>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}><Text style={{ color: c.foreground, fontSize: 19, fontWeight: "500", flex: 1 }}>{board.title}</Text><View testID={`board-status-${board.id}`} accessibilityLabel={board.status === "processing" ? "工作：处理中" : board.status === "error" ? "工作：需要关注" : "工作：空闲"} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}><View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: board.status === "processing" ? c.accent : board.status === "error" ? c.statusDanger : c.foregroundMuted }} /><Copy muted small>工作 · {board.status === "processing" ? "处理中" : board.status === "error" ? "需要关注" : "空闲"}</Copy></View>{board.unreadUpdateCount > 0 ? <View testID={`board-unread-${board.id}`} accessibilityLabel={`${board.unreadUpdateCount} 处未看更新`} style={{ backgroundColor: c.accent, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 }}><Text style={{ color: c.accentForeground, fontSize: 12, fontWeight: "600" }}>{board.unreadUpdateCount} 更新</Text></View> : null}</View>
         <Copy muted small>{board.decisionCount} 个 agent 决策 · {board.pendingCount} 个待落实交流</Copy>
         <Copy muted small>更新于 {timeLabel(board.updatedAt)}</Copy>
       </Pressable>)}

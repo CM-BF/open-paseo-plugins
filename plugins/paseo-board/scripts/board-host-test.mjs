@@ -235,16 +235,17 @@ try {
 
   if (process.env.BOARD_HOST_TEST_SCOPE === 'dashboard') {
     await evaluate('hostFixture.index()');
-    await until("document.querySelector('[data-testid=board-status-host-fixture]')?.getAttribute('aria-label')==='空闲'");
+    await until("document.querySelector('[data-testid=board-status-host-fixture]')?.getAttribute('aria-label')==='工作：空闲'");
+    await until("document.querySelector('[data-testid=board-connection-status]')?.getAttribute('aria-label')==='实时同步：已同步'");
     await evaluate("window.otherBoardStatus=document.querySelector('[data-testid=board-status-another-board]');true");
     const beforeIndexChanges = await evaluate("hostFixture.calls.filter(item=>item.name==='board.changes').length");
     const beforeIndexReads = await evaluate("hostFixture.calls.filter(item=>item.name==='board.read').length");
     await evaluate(`hostFixture.seed([{id:'dashboard-work',kind:'question',text:'Work status fixture',status:'processing',resultReferences:[],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}])`);
-    await until("document.querySelector('[data-testid=board-status-host-fixture]')?.getAttribute('aria-label')==='处理中'");
+    await until("document.querySelector('[data-testid=board-status-host-fixture]')?.getAttribute('aria-label')==='工作：处理中'");
     await evaluate("hostFixture.updateInteraction('dashboard-work',{status:'failed'})");
-    await until("document.querySelector('[data-testid=board-status-host-fixture]')?.getAttribute('aria-label')==='需要关注'");
+    await until("document.querySelector('[data-testid=board-status-host-fixture]')?.getAttribute('aria-label')==='工作：需要关注'");
     await evaluate("hostFixture.updateInteraction('dashboard-work',{status:'applied'});hostFixture.renameElsewhere('Dashboard event name')");
-    await until("document.querySelector('[data-testid=board-status-host-fixture]')?.getAttribute('aria-label')==='空闲'&&document.querySelector('button[aria-label=\"打开 Dashboard event name\"]')");
+    await until("document.querySelector('[data-testid=board-status-host-fixture]')?.getAttribute('aria-label')==='工作：空闲'&&document.querySelector('button[aria-label=\"打开 Dashboard event name\"]')");
     assert.equal(await evaluate("document.querySelector('[data-testid=board-status-another-board]')===window.otherBoardStatus"), true);
     assert.equal(await evaluate("document.querySelector('[data-testid=board-unread-another-board]').textContent"), '3 更新');
     assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.changes').length"), beforeIndexChanges);
@@ -254,6 +255,51 @@ try {
     assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.changes').length"), beforeIndexChanges);
     assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.read').length"), beforeIndexReads);
     check('dashboard applies processing/error/idle and title commit events incrementally, preserves unrelated rows and unread badges, and stays quiet without polling');
+    await evaluate('hostFixture.eventDisconnect()');
+    await until("document.querySelector('[data-testid=board-connection-status]')?.getAttribute('aria-label')==='实时同步：断开'");
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-status-host-fixture]').getAttribute('aria-label')"), '工作：空闲');
+    await evaluate('hostFixture.holdChanges(true);hostFixture.eventReconnect()');
+    await until("document.querySelector('[data-testid=board-connection-status]')?.getAttribute('aria-label')==='实时同步：恢复中'");
+    await evaluate('hostFixture.holdChanges(false)');
+    await until("document.querySelector('[data-testid=board-connection-status]')?.getAttribute('aria-label')==='实时同步：已同步'");
+    await evaluate('hostFixture.eventDisconnect(true)');
+    await until("document.querySelector('[data-testid=board-connection-status]')?.getAttribute('aria-label')==='实时同步：已同步'&&hostFixture.calls.some(item=>item.name==='board.check')");
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-status-host-fixture]').getAttribute('aria-label')"), '工作：空闲');
+    check('dashboard labels transport loss and recovery separately from work status, and falls back to compact checks when push is unsupported');
+
+    await command('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/?push=off` });
+    await until('window.hostFixture?.ready >= 1');
+    await evaluate('hostFixture.index()');
+    await until("document.querySelector('[data-testid=board-connection-status]')?.getAttribute('aria-label')==='实时同步：已同步'");
+    const countCalls = name => evaluate(`hostFixture.calls.filter(item=>item.name===${JSON.stringify(name)}).length`);
+    const compactInitial = { checks: await countCalls('board.check'), changes: await countCalls('board.changes'), reads: await countCalls('board.read') };
+    await until(`hostFixture.calls.filter(item=>item.name==='board.check').length>=${compactInitial.checks + 2}`);
+    assert.equal(await countCalls('board.changes'), compactInitial.changes, 'Idle compact probes do not fetch summaries again');
+    assert.equal(await countCalls('board.read'), compactInitial.reads, 'Idle compact probes do not fetch Board history');
+    assert.equal(await countCalls('board.list'), 0);
+    assert.ok(await evaluate("hostFixture.calls.filter(item=>item.name==='board.check').every(item=>Object.keys(item.input).join(',')==='cursor'&&typeof item.input.cursor.sequence==='number')"));
+    await evaluate("window.otherBoardStatus=document.querySelector('[data-testid=board-status-another-board]');hostFixture.renameElsewhere('Compact change');hostFixture.seed([{id:'compact-work',kind:'question',text:'Compact work',status:'processing',resultReferences:[],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}]);true");
+    await until("document.querySelector('button[aria-label=\"打开 Compact change\"]')&&document.querySelector('[data-testid=board-status-host-fixture]')?.getAttribute('aria-label')==='工作：处理中'");
+    assert.equal(await countCalls('board.changes'), compactInitial.changes + 1, 'A changed cursor fetches one incremental recovery');
+    assert.equal(await countCalls('board.read'), compactInitial.reads, 'Dashboard changes never need whole Boards');
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-status-another-board]')===window.otherBoardStatus"), true);
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-unread-another-board]').textContent"), '3 更新');
+    check('a host without push uses cursor-only idle probes and fetches only incremental summaries when changed');
+
+    await evaluate('hostFixture.holdCheck(true)');
+    const beforeHeldCheck = await countCalls('board.check');
+    await until(`hostFixture.calls.filter(item=>item.name==='board.check').length===${beforeHeldCheck + 1}`);
+    await evaluate('new Promise(resolve=>setTimeout(resolve,2300))');
+    assert.equal(await countCalls('board.check'), beforeHeldCheck + 1, 'A slow probe does not overlap another probe');
+    await evaluate('hostFixture.checkFails(true);hostFixture.holdCheck(false)');
+    await until("document.querySelector('[data-testid=board-connection-status]')?.getAttribute('aria-label')==='实时同步：断开'");
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-status-host-fixture]').getAttribute('aria-label')"), '工作：处理中');
+    await evaluate("hostFixture.checkFails(false);hostFixture.holdChanges(true);hostFixture.updateInteraction('compact-work',{status:'applied'})");
+    await until("document.querySelector('[data-testid=board-connection-status]')?.getAttribute('aria-label')==='实时同步：恢复中'", 12000);
+    await evaluate('hostFixture.holdChanges(false)');
+    await until("document.querySelector('[data-testid=board-connection-status]')?.getAttribute('aria-label')==='实时同步：已同步'&&document.querySelector('[data-testid=board-status-host-fixture]')?.getAttribute('aria-label')==='工作：空闲'");
+    assert.equal(await countCalls('board.read'), compactInitial.reads);
+    check('compact probes are single-flight and display failure and recovery independently from Board work status');
   }
   if (!['rename', 'dashboard'].includes(process.env.BOARD_HOST_TEST_SCOPE)) {
   const beforeTicks = await frame('window.ticks');
