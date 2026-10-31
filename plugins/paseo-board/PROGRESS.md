@@ -303,3 +303,10 @@ Provide a persistent, fully interactive, task-independent conversation canvas fo
 - Integrated opt-in bounded records mode and append with durable exact replay, plus optional latest-state coalescing. Recovery verifies the exact pending request under the journal lock so a previous ACK cannot prove a later failed submission.
 - Updated generated MCP descriptions, installed SDK composition and authoring guidance with current APIs, limits and volatile-versus-durable distinctions. The generated-module test now asserts the real runtime exported the helper instead of appending a test-only fallback.
 - Branch evidence: 50 canvas and 29 host Chromium scenarios passed; records protocol/producer/runtime/inspection 48 tests passed; latest helper 18 tests passed. Integrated source/browser/clean-build/Hermes and installed transport acceptance remain pending. No install or publication claimed in this entry.
+
+
+### Incremental primitives combined verification (2026-10-30)
+
+- Source head 99c618a passed TypeScript and all 228 tests in 15 files, plus 29 BoardView and 50 canvas Chromium checks. Normal generated-runtime composition is exercised by producer subprocess tests.
+- Client build and Hermes compatibility passed. A clean git archive with npm ci --ignore-scripts rebuilt a byte-identical client bundle (SHA-256 23988df3b214ae49fd13dba8135fc4e133f8758fb892446e40804dfd412fb53f).
+- No native/installed acceptance is claimed by these isolated checks. Backup installation, actual producer/MCP acceptance and release remain pending.
