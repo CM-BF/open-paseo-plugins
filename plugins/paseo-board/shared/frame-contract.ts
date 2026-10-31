@@ -1,12 +1,12 @@
 import type { Anchor, Canvas, CanvasUpdate, Interaction, JsonData } from "./contracts";
 
 export const FRAME_CHANNEL = "paseo-board-frame-v1";
-export type SelectionMode = "off" | "text" | "region" | "point";
+export type SelectionMode = "off" | "text" | "region" | "point" | "component";
 export interface FrameTheme { scheme: "light" | "dark"; tokens: Record<string, string> }
 export interface FrameError { code: string; message: string; patchId?: string }
 /** CSS pixels relative to the iframe viewport (not document coordinates). */
 export interface FramePosition { x: number; y: number }
-export type InteractionLocation = "component" | "collapsed" | "ancestor" | "snapshot";
+export type InteractionLocation = "component" | "collapsed" | "ancestor" | "snapshot" | "hidden";
 export interface FocusUpdateRequest { update: CanvasUpdate; token: number; targetIndex?: number; automatic?: boolean }
 export interface UpdatePosition {
   requestId: string; id: string; token: number; targetIndex: number; documentVersion: number;
@@ -110,7 +110,7 @@ export function readFrameMessage(value: unknown, scope: Pick<FrameScope, "boardI
     }
     case "open-interaction": case "interaction-position":
       if (!short(value.id, 160) || !position(value.position)) return null;
-      if (value.location !== undefined && !["component", "collapsed", "ancestor", "snapshot"].includes(value.location as string)) return null;
+      if (value.location !== undefined && !["component", "collapsed", "ancestor", "snapshot", "hidden"].includes(value.location as string)) return null;
       break;
     case "ask": {
       const request = value.request;

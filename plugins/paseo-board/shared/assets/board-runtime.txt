@@ -27,12 +27,14 @@ function (initial, createFrameReceiver) {
   const dataWatches = new Map();
   const stateListeners = new Set();
   const pendingAsks = new Map();
+  const revealListeners = new Set();
+  let markerReveal = null;
   const post = (message) => window.parent.postMessage({ ...message, ...scope }, "*");
   const copy = (value) => value === undefined ? undefined : structuredClone(value);
   const error = (code, message, patchId) => post({ type: "error", error: { code, message: String(message).slice(0, 4000), ...(patchId ? { patchId } : {}) } });
   const emitListeners = (listeners, value) => { for (const listener of listeners) { try { listener(copy(value)); } catch (e) { error("listener-error", e.message); } } };
   const currentAnchor = () => ({ kind: "board", boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision });
-  const acting = () => performance.now() - lastGesture < 1800 && navigator.userActivation && navigator.userActivation.isActive;
+  const acting = () => !markerReveal && performance.now() - lastGesture < 1800 && navigator.userActivation && navigator.userActivation.isActive;
   const cancelAsk = { status: "cancelled", outcome: null };
   const ask = (input) => {
     const request = typeof input === "string" ? { prompt: input } : input;
@@ -128,6 +130,7 @@ function (initial, createFrameReceiver) {
     onState: (fn) => subscribe(stateListeners, fn),
     saveState,
     ask,
+    onReveal: (fn) => subscribe(revealListeners, fn),
     getContext: () => ({ boardId: scope.boardId, documentVersion: initial.canvas.documentVersion, boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision }),
   }) });
   window.openai = Object.freeze({ sendFollowUpMessage: ask });
@@ -382,17 +385,47 @@ function (initial, createFrameReceiver) {
     for (let node = hiddenContent ? hiddenContent.parentElement : target; authorElement(node); node = node.parentElement) if (visibleBox(node)) return node;
     return null;
   };
+  // Only an explicit, unique ARIA relationship may activate an authored tab. Never
+  // infer navigation from class names, labels or nearby buttons.
+  const tabForPanel = (panel) => {
+    if (!panel.id || panel.getAttribute("role") !== "tabpanel" || document.querySelectorAll("#" + CSS.escape(panel.id)).length !== 1) return null;
+    const tabs = Array.from(document.querySelectorAll('[role="tab"][aria-controls]')).filter(tab => tab.getAttribute("aria-controls")?.trim() === panel.id);
+    if (tabs.length !== 1) return null;
+    const tab = tabs[0];
+    const list = tab.closest('[role="tablist"]');
+    if (!list || !authorElement(tab) || typeof tab.click !== "function" || tab.matches(":disabled,[aria-disabled=true]") || !["true", "false"].includes(tab.getAttribute("aria-selected"))) return null;
+    if (tab.localName === "a" || tab.closest("a[href]") || (tab.form && ((tab.localName === "button" && tab.type !== "button") || (tab.localName === "input" && tab.type !== "button")))) return null;
+    return tab;
+  };
+  const hiddenMarkerBoundary = (target) => {
+    if (!authorElement(target)) return null;
+    // Custom views need no ARIA/component schema to suppress markers. Hard hidden
+    // ancestors never fall back to a visible dashboard shell. Native closed details
+    // and scroll/accordion clipping remain distinguishable and may use their summary.
+    if (getComputedStyle(target).visibility !== "visible") return target;
+    for (let node = target; node instanceof Element; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (node.hidden || node.getAttribute("aria-hidden") === "true" || style.display === "none" || style.contentVisibility === "hidden" || Number(style.opacity) === 0) return node;
+      if (node.getAttribute("role") === "tabpanel" && tabForPanel(node)?.getAttribute("aria-selected") === "false") return node;
+    }
+    return null;
+  };
+  const resolvedBindingNodes = (anchor) => {
+    const binding = anchor?.binding;
+    if (!binding || binding.documentVersion !== snapshot.canvas.documentVersion) return [];
+    const cached = bindingNodes.get(binding.key) || [];
+    const nodes = [binding.target, ...binding.ancestors].map((identity, index) => resolveIdentity(identity, cached[index], anchor.canvasRevision === snapshot.canvas.revision));
+    // Keep detached non-ID references as tombstones; never reuse a replacement at its path.
+    bindingNodes.set(binding.key, nodes.map((node, index) => node || cached[index]));
+    return nodes;
+  };
   const markerLocation = (anchor) => {
     const binding = anchor?.binding;
     if (binding && binding.documentVersion === snapshot.canvas.documentVersion) {
-      const cached = bindingNodes.get(binding.key) || [];
-      const identities = [binding.target, ...binding.ancestors];
-      const allowPath = anchor.canvasRevision === snapshot.canvas.revision;
-      const nodes = identities.map((identity, index) => resolveIdentity(identity, cached[index], allowPath));
-      // Retain detached references as tombstones: replacing a non-ID node at the same nth
-      // path in this session must never silently become the original component.
-      bindingNodes.set(binding.key, nodes.map((node, index) => node || cached[index]));
+      const nodes = resolvedBindingNodes(anchor);
       const target = nodes[0];
+      const panel = hiddenMarkerBoundary(target || nodes.slice(1).find(Boolean));
+      if (panel) return { rect: null, mode: "hidden", tracked: [...nodes.filter(Boolean), panel] };
       const context = target ? visibleContext(target) : nodes.slice(1).map(node => node && visibleContext(node)).find(Boolean);
       if (context) {
         const r = rect(context.getBoundingClientRect());
@@ -602,7 +635,7 @@ function (initial, createFrameReceiver) {
       const left = x + offset * 24;
       const top = y + offset * 10;
       const visible = left >= -20 && left < innerWidth && top >= -20 && top < innerHeight;
-      button.hidden = !visible;
+      button.hidden = !visible || location.mode === "hidden";
       button.style.left = left + "px";
       button.style.top = top + "px";
       button.dataset.stale = String(stale);
@@ -614,7 +647,7 @@ function (initial, createFrameReceiver) {
       let face = button.firstElementChild;
       if (!face) { face = document.createElement("span"); face.className = "face"; face.setAttribute("aria-hidden", "true"); button.append(face); }
       face.textContent = String(item.marker.number);
-      const locationLabel = location.mode === "collapsed" ? "组件当前不可见，标记显示在可见上层" : location.mode === "ancestor" ? "原组件无法唯一定位，标记显示在原上层" : location.mode === "snapshot" && saved ? "原始快照位置" : "";
+      const locationLabel = location.mode === "hidden" ? "组件当前隐藏；可从侧栏请求定位" : location.mode === "collapsed" ? "组件当前不可见，标记显示在可见上层" : location.mode === "ancestor" ? "原组件无法唯一定位，标记显示在原上层" : location.mode === "snapshot" && saved ? "原始快照位置" : "";
       button.title = `${item.marker.text}\n${status}${locationLabel ? " · " + locationLabel : ""}${!saved ? " · 未指定可定位的局部位置。" : ""}${stale ? ` · 画布已更新；引用仍为 r${anchor.canvasRevision}，请核对原始快照。` : ""}`;
       button.setAttribute("aria-label", `${item.marker.number}. ${item.marker.text}，${status}${locationLabel ? "，" + locationLabel : ""}${saved ? stale ? "，旧版本位置" : "" : "，整板讨论"}`);
       if (item.marker.id === selectedMarkerId) {
@@ -655,18 +688,65 @@ function (initial, createFrameReceiver) {
       const id = pendingMarkerFocus; pendingMarkerFocus = null; focusInteraction(id);
     }
   };
-  const focusInteraction = (id) => {
+  const cancelMarkerReveal = () => { markerReveal?.abort(); markerReveal = null; };
+  const revealTarget = async (target, controller) => {
+    const current = () => markerReveal === controller && !controller.signal.aborted && target.isConnected;
+    // A callback can reveal custom navigation, but gets no user-activation/message lease.
+    // Async implementations must honor signal; the runtime also revalidates after awaits.
+    for (const listener of [...revealListeners]) {
+      if (!current()) return false;
+      try { await listener(Object.freeze({ target, reason: "interaction", signal: controller.signal })); }
+      catch (cause) { if (current()) error("reveal-error", cause instanceof Error ? cause.message : String(cause)); }
+    }
+    if (!current()) return false;
+    const ancestors = [];
+    for (let node = target; authorElement(node); node = node.parentElement) ancestors.unshift(node);
+    for (const node of ancestors) {
+      if (!current()) return false;
+      if (node.localName === "details" && !node.open) node.open = true;
+      if (node.getAttribute("role") === "tabpanel") {
+        const tab = tabForPanel(node);
+        if (tab && tab.getAttribute("aria-selected") === "false" && visibleBox(tab, true)) {
+          tab.click();
+          // Let authored frameworks commit their state before inspecting nested tabs.
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          if (!current() || tab.getAttribute("aria-selected") !== "true") return false;
+        }
+      }
+    }
+    return current();
+  };
+  const focusInteraction = async (id) => {
+    cancelMarkerReveal();
     const item = markerItems.find(item => item.marker.id === id);
     if (!item) return;
     if (applying || queued || selectionSession || captureBusy || selectionMode !== "off") { pendingMarkerFocus = id; return; }
+    selectedMarkerId = id;
+    lastGesture = -Infinity;
+    const controller = new AbortController();
+    markerReveal = controller;
+    const target = resolvedBindingNodes(item.marker.anchor)[0];
+    if (target) {
+      // The signal also bounds callbacks that ignore cancellation or never settle.
+      let timer;
+      await Promise.race([revealTarget(target, controller), new Promise(resolve => {
+        controller.signal.addEventListener("abort", () => resolve(false), { once: true });
+        timer = setTimeout(() => { controller.abort(); resolve(false); }, 3000);
+      })]);
+      clearTimeout(timer);
+    }
+    if (markerReveal !== controller || controller.signal.aborted || selectedMarkerId !== id || !markerItems.some(current => current.marker.id === id && current.marker.anchor?.binding?.key === item.marker.anchor?.binding?.key)) {
+      if (markerReveal === controller) markerReveal = null;
+      return;
+    }
+    markerReveal = null;
     const location = markerLocation(item.marker.anchor);
     if (location.focusNode) location.focusNode.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
-    selectedMarkerId = id;
     lastSelectedPosition = undefined;
     positionMarkers();
     const box = item.button.getBoundingClientRect();
     // A missing/legacy reference still opens beside the viewport rather than disappearing
-    // offscreen. It is never scrolled onto an unrelated element or automatically expanded.
+    // offscreen. An unavailable reference is never scrolled onto an unrelated element.
     const position = { x: Math.max(12, Math.min(innerWidth - 38, box.left)), y: Math.max(12, Math.min(innerHeight - 38, box.top)) };
     post({ type: "interaction-position", id, position, location: item.location.mode });
   };
@@ -674,7 +754,7 @@ function (initial, createFrameReceiver) {
     // A host overview can reopen a thread using its captured viewport as a fallback. Always
     // send this document's current position on re-selection, even if it has not moved since
     // the previous opening (the host may have discarded that position while closed).
-    if (selectedMarkerId !== selectedId) lastSelectedPosition = undefined;
+    if (selectedMarkerId !== selectedId) { lastSelectedPosition = undefined; cancelMarkerReveal(); }
     if (pendingMarkerFocus && pendingMarkerFocus !== selectedId) pendingMarkerFocus = null;
     selectedMarkerId = selectedId;
     if (!markerHost) {
@@ -731,6 +811,111 @@ function (initial, createFrameReceiver) {
     }
     Object.assign(overlay.style, { left: r.x + "px", top: r.y + "px", width: Math.max(2, r.width) + "px", height: Math.max(2, r.height) + "px" });
   };
+  // Selection is a read-only inspector over the author's real DOM. Optional labels improve
+  // discovery, but no IDs, wrappers or component registry are inserted into authored content.
+  let componentHost = null;
+  let selectedComponent = null;
+  let componentChoices = [];
+  let componentParents = [];
+  let componentChildren = [];
+  let componentFrame = null;
+  const inComponents = (event) => componentHost && event.composedPath().includes(componentHost);
+  const componentLabel = (node) => (node.getAttribute("data-board-component") || node.getAttribute("aria-label") || (node.id ? "#" + node.id : node.localName)).slice(0, 100);
+  const componentBoundary = (node) => authorElement(node) && node.matches('[data-board-component],[id],section,article,main,aside,nav,header,footer,form,fieldset,details,summary,button,input,textarea,select,canvas,svg,table,ul,ol,li,p,h1,h2,h3,h4,h5,h6,[role]');
+  const componentAt = (target) => {
+    for (let node = target; authorElement(node); node = node.parentElement) if (componentBoundary(node)) return node;
+    return authorElement(target) ? target : null;
+  };
+  const componentResize = new ResizeObserver(() => queueComponentOutline());
+  const componentMutation = new MutationObserver(records => {
+    if (records.some(record => !(record.target instanceof Element ? record.target : record.target.parentElement)?.closest("[data-board-overlay]")
+      && !(record.type === "childList" && [...record.addedNodes, ...record.removedNodes].every(node => node instanceof Element && node.hasAttribute("data-board-overlay"))))) queueComponentOutline();
+  });
+  const clearComponent = () => {
+    componentHost?.remove(); componentHost = null; selectedComponent = null; componentChoices = []; componentParents = []; componentChildren = [];
+    componentResize.disconnect(); componentMutation.disconnect();
+    if (componentFrame !== null) cancelAnimationFrame(componentFrame);
+    componentFrame = null;
+  };
+  const positionComponent = () => {
+    componentFrame = null;
+    if (!componentHost || !selectedComponent) return;
+    if (selectedComponent.isConnected) {
+      const parents = componentAncestors(selectedComponent);
+      const children = selectableChildren(selectedComponent);
+      if (parents.length !== componentParents.length || parents.some((node, index) => node !== componentParents[index]) || children.length !== componentChildren.length || children.some((node, index) => node !== componentChildren[index])) {
+        selectComponent(selectedComponent); return;
+      }
+      for (const button of componentHost.shadowRoot.querySelectorAll('[data-component-action="choose"]')) button.textContent = componentLabel(componentChoices[Number(button.dataset.componentIndex)]);
+    }
+    const box = visibleBox(selectedComponent);
+    const outline = componentHost.shadowRoot.querySelector(".outline");
+    const reference = componentHost.shadowRoot.querySelector('[data-component-action="reference"]');
+    outline.hidden = !box; reference.disabled = !box;
+    if (box) Object.assign(outline.style, { left: box.left + "px", top: box.top + "px", width: box.width + "px", height: box.height + "px" });
+    componentHost.shadowRoot.querySelector('[role="status"]').textContent = box ? "选择组件 · 查看真实包含关系" : "组件已隐藏或移除，请重新选择";
+  };
+  const queueComponentOutline = () => { if (componentHost && componentFrame === null) componentFrame = requestAnimationFrame(positionComponent); };
+  const componentAncestors = (node) => {
+    const ancestors = [];
+    for (let parent = node; authorElement(parent) && ancestors.length < 16; parent = parent.parentElement) ancestors.unshift(parent);
+    return ancestors;
+  };
+  const selectableChildren = (node) => {
+    const children = [];
+    for (const child of node.children) {
+      if (authorElement(child) && !child.matches("script,style,link,meta,template") && visibleBox(child)) children.push(child);
+      if (children.length > 40) break;
+    }
+    return children;
+  };
+  const selectComponent = (node) => {
+    if (!authorElement(node) || !node.isConnected) return;
+    clearComponent();
+    selectedComponent = node;
+    const host = document.createElement("div");
+    host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-components", "");
+    host.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483647!important;pointer-events:none!important;";
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = `<style>
+      :host{color-scheme:normal}.outline{position:fixed;box-sizing:border-box;border:2px solid var(--host-iris,#658aeb);background:#658aeb12;pointer-events:none}.outline[hidden]{display:none}
+      .panel{position:absolute;bottom:12px;left:12px;max-width:min(620px,calc(100% - 24px));max-height:40vh;overflow:auto;box-sizing:border-box;padding:10px;border:1px solid var(--host-line-strong,#aaa);border-radius:10px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);font:12px/1.5 system-ui;box-shadow:0 3px 15px #0002;pointer-events:auto}
+      .row{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}button{font:inherit;padding:4px 8px;border:1px solid var(--host-line-strong,#ccc);border-radius:5px;color:inherit;background:transparent;cursor:pointer}button[aria-current=true]{border-color:var(--host-iris,#658aeb);font-weight:600}button:focus-visible{outline:2px solid var(--host-iris,#658aeb)}button:disabled{opacity:.5;cursor:default}.label{opacity:.7}
+    </style><div class="outline"></div><div class="panel" role="region" aria-label="组件选择"><div role="status"></div><div class="label">包含层级</div><div class="row ancestors"></div><div class="label">直接子组件</div><div class="row children"></div><div class="row"><button type="button" data-component-action="reference">引用组件</button><button type="button" data-component-action="close">完成选择 · Esc</button></div></div>`;
+    const addChoice = (element, container) => {
+      const button = document.createElement("button"); button.type = "button";
+      button.dataset.componentAction = "choose"; button.dataset.componentIndex = String(componentChoices.length);
+      button.textContent = componentLabel(element); button.setAttribute("aria-current", String(element === node));
+      componentChoices.push(element); container.append(button);
+    };
+    const ancestors = componentAncestors(node);
+    componentParents = ancestors;
+    for (const parent of ancestors) addChoice(parent, shadow.querySelector(".ancestors"));
+    const children = selectableChildren(node);
+    componentChildren = children;
+    for (const child of children.slice(0, 40)) addChoice(child, shadow.querySelector(".children"));
+    if (!children.length) shadow.querySelector(".children").textContent = "没有可见子组件";
+    else if (children.length > 40) shadow.querySelector(".children").append(document.createTextNode("显示前 40 项；可直接点击画布选择其他组件"));
+    componentHost = host; root.append(host);
+    componentMutation.observe(root, { subtree: true, childList: true, attributes: true });
+    for (const parent of ancestors) componentResize.observe(parent);
+    positionComponent();
+  };
+  const componentAction = (event) => {
+    const button = event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-component-action"));
+    if (!event.isTrusted || !button || button.disabled) return;
+    if (button.dataset.componentAction === "choose") { selectComponent(componentChoices[Number(button.dataset.componentIndex)]); return; }
+    if (button.dataset.componentAction === "close") { setSelectionMode("off"); post({ type: "selection-end" }); return; }
+    const target = selectedComponent;
+    if (button.dataset.componentAction !== "reference" || !target || !visibleBox(target)) return;
+    const box = target.getBoundingClientRect();
+    const region = rect(box);
+    const anchor = { ...currentAnchor(), kind: "element", selector: selectorFor(target), rect: region, viewport: viewport(), binding: captureBinding(target, region) };
+    const session = beginSelection({ x: Math.max(8, Math.min(box.left, innerWidth - 24)), y: Math.max(8, Math.min(box.top, innerHeight - 24)) });
+    void finishSelection(session, anchor, region);
+  };
+  window.addEventListener("scroll", queueComponentOutline, true);
+  window.addEventListener("resize", queueComponentOutline);
   let captureLibrary;
   const loadCapture = () => {
     if (!captureLibrary) {
@@ -1065,11 +1250,13 @@ function (initial, createFrameReceiver) {
   };
   const eventPoint = (event) => ({ x: Math.max(0, Math.min(event.clientX, innerWidth)), y: Math.max(0, Math.min(event.clientY, innerHeight)) });
   const cancelSelection = ({ release = true, clear = true, notify = false, drainUpdates = true } = {}) => {
+    cancelMarkerReveal();
     const previous = selectionSession;
     selectionSession = null;
     releasePointer();
     captureBusy = false;
     clearOverlay();
+    clearComponent();
     if (clear) lastAnchor = undefined;
     if (previous) {
       previous.abort.abort();
@@ -1156,10 +1343,11 @@ function (initial, createFrameReceiver) {
     cancelSelection({ clear: false });
   };
   const setSelectionMode = (mode) => {
-    if (!["off", "text", "region", "point"].includes(mode)) return;
+    if (!["off", "text", "region", "point", "component"].includes(mode)) return;
     if (applying) { deferredSelection = mode; return; }
     if (mode === selectionMode) return;
     cancelSelection({ drainUpdates: false });
+    cancelMarkerReveal();
     selectionMode = mode;
     paintSelectionMode();
     reportCanvasActivity();
@@ -1195,11 +1383,16 @@ function (initial, createFrameReceiver) {
     if (!event.isTrusted) return;
     lastGesture = performance.now();
     lastGesturePosition = eventPoint(event);
+    if (inComponents(event)) { event.stopImmediatePropagation(); return; }
     if (inMarkers(event)) { window.focus(); cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); event.stopImmediatePropagation(); return; }
     if (event.button === 0) { window.focus(); post({ type: "canvas-pointer" }); }
     suppressPointerClick = false;
     dismissedPointer = null;
     if (event.button !== 0) return;
+    if (selectionMode === "component") {
+      event.preventDefault(); event.stopImmediatePropagation(); suppressPointerClick = true;
+      selectComponent(componentAt(event.target)); return;
+    }
     const temporary = selectionMode === "off" && event.altKey && !isEditor(event);
     if (selectionMode === "off" && !temporary) {
       const wasCapturing = captureBusy;
@@ -1226,6 +1419,7 @@ function (initial, createFrameReceiver) {
     showOverlay({ x: pointer.x, y: pointer.y, width: 0, height: 0 });
   }, true);
   window.addEventListener("pointermove", (event) => {
+    if (inComponents(event)) { event.stopImmediatePropagation(); return; }
     if (inMarkers(event) && !pointer) { event.stopImmediatePropagation(); return; }
     if (dismissedPointer === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); return; }
     if (!pointer && selectionMode === "off") return;
@@ -1237,6 +1431,7 @@ function (initial, createFrameReceiver) {
   }, true);
   window.addEventListener("pointerup", (event) => {
     if (!event.isTrusted || event.button !== 0) return;
+    if (inComponents(event)) { event.stopImmediatePropagation(); return; }
     if (inMarkers(event)) { event.stopImmediatePropagation(); return; }
     if (dismissedPointer === event.pointerId) { dismissedPointer = null; event.preventDefault(); event.stopImmediatePropagation(); return; }
     if (textPointer?.pointerId === event.pointerId) {
@@ -1292,6 +1487,7 @@ function (initial, createFrameReceiver) {
   });
   window.addEventListener("contextmenu", (event) => {
     if (!event.isTrusted) return;
+    if (inComponents(event) || selectionMode === "component") { event.preventDefault(); event.stopImmediatePropagation(); return; }
     if (inMarkers(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; }
     if (event.shiftKey || isEditor(event)) { cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); return; }
     if (applying) return;
@@ -1309,6 +1505,7 @@ function (initial, createFrameReceiver) {
     void finishSelection(session, selected.anchor, selected.region, Boolean(previous));
   }, true);
   window.addEventListener("click", (event) => {
+    if (inComponents(event)) { event.preventDefault(); event.stopImmediatePropagation(); componentAction(event); return; }
     if (inMarkers(event)) {
       event.preventDefault(); event.stopImmediatePropagation();
       const button = markerNode(event);
@@ -1355,6 +1552,7 @@ function (initial, createFrameReceiver) {
   window.addEventListener("keydown", (event) => {
     if (event.isTrusted) lastGesture = performance.now();
     if (!event.isTrusted) return;
+    if (inComponents(event) && event.key !== "Escape") { event.stopImmediatePropagation(); return; }
     if (inMarkers(event)) { event.stopImmediatePropagation(); return; }
     if (event.target instanceof Element) { const r = event.target.getBoundingClientRect(); lastGesturePosition = { x: r.left, y: r.bottom }; }
     if (event.key === "Escape" && (selectionSession || selectionMode !== "off" || lastAnchor)) {

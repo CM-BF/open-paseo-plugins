@@ -88,7 +88,9 @@ describe("frame bridge validation", () => {
       expect(readFrameMessage(message({ type, id: "q1", position: { x: 1, y: "34" } }), scope)).toBeNull();
       expect(readFrameMessage(message({ type, id: "q1", sessionId: "previous", position: { x: 12, y: 34 } }), scope)).toBeNull();
     }
-    expect(readFrameMessage(message({ type: "interaction-position", id: "q1", position: { x: 12, y: 34 }, location: "collapsed" }), scope)).not.toBeNull();
+    for (const location of ["collapsed", "component", "hidden"]) {
+      expect(readFrameMessage(message({ type: "interaction-position", id: "q1", position: { x: 12, y: 34 }, location }), scope)).not.toBeNull();
+    }
     expect(readFrameMessage(message({ type: "interaction-position", id: "q1", position: { x: 12, y: 34 }, location: "guessed" }), scope)).toBeNull();
     expect(readFrameMessage(message({ type: "ask", id: "ask", request: { prompt: "Hello", position: { x: Infinity, y: 1 } } }), scope)).toBeNull();
   });

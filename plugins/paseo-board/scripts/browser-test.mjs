@@ -70,7 +70,7 @@ try {
     await command('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
   };
   const location = async (selector) => {
-    const box = await frame(`(()=>{const selector=${JSON.stringify(selector)};const element=document.querySelector('[data-board-menu]')?.shadowRoot?.querySelector(selector)||document.querySelector('[data-board-markers]')?.shadowRoot?.querySelector(selector)||document.querySelector(selector);const r=element.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()`);
+    const box = await frame(`(()=>{const selector=${JSON.stringify(selector)};const element=document.querySelector('[data-board-menu]')?.shadowRoot?.querySelector(selector)||document.querySelector('[data-board-components]')?.shadowRoot?.querySelector(selector)||document.querySelector('[data-board-markers]')?.shadowRoot?.querySelector(selector)||document.querySelector(selector);const r=element.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()`);
     const origin = await evaluate(`(()=>{const r=document.querySelector('iframe').getBoundingClientRect();return {x:r.x,y:r.y}})()`);
     return { x: origin.x + box.x, y: origin.y + box.y, width: box.width, height: box.height };
   };
@@ -94,7 +94,12 @@ try {
   const composeAfter = async (action) => {
     const before = await evaluate('results.composes.length');
     await action();
-    await until(`results.composes.length === ${before + 1}`, 18000);
+    try { await until(`results.composes.length === ${before + 1}`, 18000); }
+    catch (failure) {
+      console.error('Compose failure state:', JSON.stringify(await evaluate(`({expected:${before+1},actual:results.composes.length,ready:results.ready,active:document.activeElement?.tagName,scope:hostProps.canvas.documentVersion,raw:results.raw.slice(-16).map(m=>({type:m.type,id:m.id,selectionId:m.selectionId,active:m.active,kind:m.anchor?.kind,revision:m.anchor?.canvasRevision,requestKind:m.request?.anchor?.kind,error:m.error})),errors:results.errors.slice(-3)})`)));
+      console.error('Compose failure frame:', JSON.stringify(await frame("({context:board.getContext(),focused:document.hasFocus(),mode:document.documentElement.dataset.boardSelection,active:document.activeElement?.tagName,selection:getSelection().toString(),target:(()=>{const r=document.querySelector('#target')?.getBoundingClientRect();return r?{x:r.x,y:r.y,width:r.width,height:r.height,hit:document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.id}:null})()})")));
+      throw failure;
+    }
     await noMenu();
     return evaluate('results.composes.at(-1)');
   };
@@ -583,6 +588,32 @@ try {
   await update(`{boardRevision:hostProps.boardRevision+1,canvas:{...hostProps.canvas,revision:hostProps.canvas.revision+1,patches:[...hostProps.canvas.patches,${JSON.stringify(componentPatch)}]}}`);
   await untilFrame("Boolean(document.querySelector('#bound-content'))");
   await frame("document.querySelector('#bound-content').scrollIntoView({block:'center'})");
+  const authoredBeforeSelection = await frame("document.querySelector('#component-fixture').outerHTML");
+  const composeBeforeSelection = await evaluate('results.composes.length');
+  await update("{selectionMode:'component'}");
+  await untilFrame("document.documentElement.getAttribute('data-board-selection')==='component'");
+  await click('#bound-content');
+  await untilFrame("document.querySelector('[data-board-components]')?.shadowRoot.querySelector('[aria-current=true]')?.textContent==='#bound-content'");
+  assert.equal(await evaluate('results.composes.length'),composeBeforeSelection);
+  assert.deepEqual(await frame("Array.from(document.querySelector('[data-board-components]').shadowRoot.querySelectorAll('.ancestors button')).map(b=>b.textContent)"),['#component-fixture','#fold-component','#bound-content']);
+  await click('[data-component-index="1"]');
+  assert.equal(await frame("document.querySelector('[data-board-components]').shadowRoot.querySelector('[aria-current=true]').textContent"),'#fold-component');
+  assert.deepEqual(await frame("Array.from(document.querySelector('[data-board-components]').shadowRoot.querySelectorAll('.children button')).map(b=>b.textContent)"),['#fold-summary','#bound-content']);
+  await click('[data-component-index="3"]');
+  const pickedComponent = await composeAfter(()=>click('[data-component-action="reference"]'));
+  assert.equal(pickedComponent.anchor.kind,'element');
+  assert.equal(pickedComponent.anchor.binding.target.id,'bound-content');
+  assert.ok(pickedComponent.anchor.binding.ancestors.some(a=>a.id==='fold-component'));
+  assert.equal(await frame("document.querySelector('#component-fixture').outerHTML"),authoredBeforeSelection);
+  await update("{selectionMode:'component'}");
+  await click('#bound-content');
+  await frame("(()=>{const target=document.querySelector('#bound-content');const wrapper=document.createElement('div');wrapper.id='dynamic-parent';target.before(wrapper);wrapper.append(target)})()");
+  await untilFrame("Array.from(document.querySelector('[data-board-components]').shadowRoot.querySelectorAll('.ancestors button')).some(b=>b.textContent==='#dynamic-parent')");
+  await frame("(()=>{const wrapper=document.querySelector('#dynamic-parent');wrapper.before(document.querySelector('#bound-content'));wrapper.remove()})()");
+  await untilFrame("!Array.from(document.querySelector('[data-board-components]').shadowRoot.querySelectorAll('.ancestors button')).some(b=>b.textContent==='#dynamic-parent')");
+  await key('Escape');
+  await untilFrame("!document.querySelector('[data-board-components]')&&document.documentElement.getAttribute('data-board-selection')==='off'");
+  check('component selection exposes actual ancestor/child containment, captures an element reference and leaves authored DOM unchanged; Escape clears the isolated inspector');
   const componentCompose = await composeAfter(() => rightClick('#bound-content'));
   const componentAnchor = componentCompose.anchor;
   assert.equal(componentAnchor.binding.target.id, 'bound-content');
@@ -604,14 +635,14 @@ try {
     return evaluate("results.raw.filter(m=>m.type==='interaction-position').at(-1)");
   };
   await focusThread('component-question');
-  assert.equal(await frame("document.querySelector('#fold-component').open"),false);
+  assert.equal(await frame("document.querySelector('#fold-component').open"),true);
   await frame("document.querySelector('#fold-component').open=true");
   await untilFrame(`${marker}.dataset.location==='component'`);
   await frame("(()=>{const content=document.querySelector('#bound-content');const wrapper=document.createElement('details');wrapper.id='new-wrapper';wrapper.innerHTML='<summary id=new-summary>New wrapper</summary>';content.before(wrapper);wrapper.append(content)})()");
   await untilFrame(`${marker}.dataset.location==='collapsed'`);
   assert.ok(Math.abs((await location('[data-board-interaction=component-question]')).y-(await location('#new-summary')).y)<30);
   assert.equal(await frame("document.querySelector('#new-wrapper').open"),false);
-  check('component markers follow collapse, expand and a newly introduced details wrapper without mutating the original reference or opening authored controls');
+  check('passive component markers follow collapsed/new details wrappers without opening them; explicit sidebar focus reveals the native details container and preserves the original reference');
 
   await frame("(()=>{const wrapper=document.querySelector('#new-wrapper');wrapper.open=true;const clip=document.createElement('div');clip.id='css-clip';clip.style.cssText='height:0;overflow:hidden';const content=document.querySelector('#bound-content');content.before(clip);clip.append(content)})()");
   await untilFrame(`${marker}.dataset.location==='collapsed'`);
@@ -621,7 +652,7 @@ try {
   await frame("(()=>{const style=document.createElement('style');style.textContent='#new-wrapper[data-layout=shifted]{transform:translateX(65px)}';document.head.append(style);document.querySelector('#new-wrapper').setAttribute('data-layout','shifted')})()");
   await untilFrame(`Math.abs(parseFloat(${marker}.style.left)-(document.querySelector('#bound-content').getBoundingClientRect().left+document.querySelector('#bound-content').getBoundingClientRect().width*${componentAnchor.binding.relative.x}))<1`);
   await frame("document.querySelector('#new-wrapper').style.display='none'");
-  await untilFrame(`${marker}.dataset.location==='collapsed'`);
+  await untilFrame(`${marker}.dataset.location==='hidden'&&${marker}.hidden`);
   await frame("document.querySelector('#new-wrapper').style.display='block';document.querySelector('#bound-content').style.transform='translateX(70px)'");
   await untilFrame(`${marker}.dataset.location==='component'&&Math.abs(parseFloat(${marker}.style.left)-(document.querySelector('#bound-content').getBoundingClientRect().left+document.querySelector('#bound-content').getBoundingClientRect().width*${componentAnchor.binding.relative.x}))<1`);
   const nestedState = await frame("(()=>{const scroller=document.createElement('div');scroller.id='nested-scroller';scroller.style.cssText='height:160px;overflow:auto';const top=document.createElement('div');top.style.height='500px';const bottom=top.cloneNode();const content=document.querySelector('#bound-content');document.querySelector('#component-fixture').append(scroller);scroller.append(top,content,bottom);scroller.scrollTop=400;scroller.scrollIntoView({block:'center'});return true})()");
@@ -727,6 +758,130 @@ try {
   assert.equal(await evaluate("results.raw.filter(m=>m.type==='interaction-position'&&m.id==='deferred-focus').length"),positionsBeforeCancel);
   assert.equal(await frame("document.querySelector('[data-board-markers]').shadowRoot.querySelector('button').getAttribute('aria-pressed')"),'false');
   check('clearing the selected discussion cancels a focus deferred by screenshot capture, so its late completion cannot scroll or reopen the old thread');
+
+  await key('Escape');
+  await update('{interactions:[],selectedInteractionId:undefined}');
+  const tabHtml = `<section id="tab-fixture" style="padding:20px">
+    <div role="tablist" id="outer-tabs"><button type="button" id="tab-a" role="tab" aria-controls="panel-a" aria-selected="true">A</button><button type="button" id="tab-b" role="tab" aria-controls="panel-b" aria-selected="false">B</button></div>
+    <section role="tabpanel" id="panel-a"><p id="tab-a-content">The first tab</p></section>
+    <section role="tabpanel" id="panel-b" hidden>
+      <div role="tablist" id="inner-tabs"><button type="button" id="tab-b-one" role="tab" aria-controls="panel-b-one" aria-selected="true">B1</button><button type="button" id="tab-b-two" role="tab" aria-controls="panel-b-two" aria-selected="false">B2</button></div>
+      <section role="tabpanel" id="panel-b-one">Inner first</section>
+      <section role="tabpanel" id="panel-b-two" hidden><details id="tab-details" open><summary>More details</summary><div id="tab-scroller" style="overflow:auto;height:120px"><div style="height:400px"></div><article data-board-component="Nested chart" id="tab-target" style="height:60px;padding:12px">Target chart</article><div style="height:400px"></div></div></details></section>
+    </section>
+    <button id="unrelated-tab-action" type="button">An unrelated action</button>
+    <script>window.tabClicks=[];window.unrelatedClicks=0;document.querySelector('#unrelated-tab-action').onclick=()=>unrelatedClicks++;for(const button of document.querySelectorAll('#tab-fixture [role=tab]'))button.onclick=()=>{tabClicks.push(button.id);for(const peer of button.closest('[role=tablist]').querySelectorAll('[role=tab]')){peer.setAttribute('aria-selected',String(peer===button));document.getElementById(peer.getAttribute('aria-controls')).hidden=peer!==button}};</script>
+  </section>`;
+  const tabPatch={id:'tab-selection-fixture',selector:'body',operation:'append',html:tabHtml};
+  await update(`{boardRevision:hostProps.boardRevision+1,canvas:{...hostProps.canvas,revision:hostProps.canvas.revision+1,patches:[...hostProps.canvas.patches,${JSON.stringify(tabPatch)}]}}`);
+  await untilFrame("Boolean(document.querySelector('#tab-target'))");
+  await frame("document.querySelector('#tab-b').click();document.querySelector('#tab-b-two').click();document.querySelector('#tab-target').scrollIntoView({block:'center'})");
+  await update("{selectionMode:'component'}");
+  await click('#tab-target');
+  await untilFrame("document.querySelector('[data-board-components]')?.shadowRoot.querySelector('[aria-current=true]')?.textContent==='Nested chart'");
+  const tabCompose=await composeAfter(()=>click('[data-component-action="reference"]'));
+  const tabQuestion=interactionAt('tab-question',tabCompose.anchor);
+  await update(`{interactions:[${JSON.stringify(tabQuestion)}],selectedInteractionId:undefined}`);
+  const tabMarker="document.querySelector('[data-board-markers]').shadowRoot.querySelector('[data-board-interaction=tab-question]')";
+  await untilFrame(`${tabMarker}?.dataset.location==='component'`);
+  await frame("document.querySelector('#tab-a').click();document.querySelector('#tab-b-one').click();document.querySelector('#tab-details').open=false;document.querySelector('#tab-scroller').scrollTop=0;window.tabClicks=[]");
+  await untilFrame(`${tabMarker}.hidden&&${tabMarker}.dataset.location==='hidden'`);
+  assert.deepEqual(await frame('tabClicks'),[]);
+  assert.equal(await frame("document.querySelector('#tab-details').open"),false);
+  await focusThread('tab-question');
+  await untilFrame(`${tabMarker}.dataset.location==='component'&&!${tabMarker}.hidden`);
+  assert.deepEqual(await frame('tabClicks'),['tab-b','tab-b-two']);
+  assert.equal(await frame("document.querySelector('#tab-details').open"),true);
+  assert.ok(await frame("document.querySelector('#tab-scroller').scrollTop")>300);
+  assert.equal(await frame('unrelatedClicks'),0);
+  assert.deepEqual(await evaluate('hostProps.interactions[0].anchor'),tabCompose.anchor);
+  check('inactive tab markers disappear without ancestor ghosts; explicit focus activates unique nested ARIA tabs outside-in, opens details and scrolls the exact nested container');
+
+  await frame("document.querySelector('#tab-a').click();const ambiguous=document.querySelector('#tab-b').cloneNode(true);ambiguous.id='ambiguous-tab';document.querySelector('#outer-tabs').append(ambiguous);window.tabClicks=[]");
+  await untilFrame(`${tabMarker}.dataset.location==='hidden'`);
+  const unavailableTab=await focusThread('tab-question');
+  assert.equal(unavailableTab.location,'hidden');
+  assert.deepEqual(await frame('tabClicks'),[]);
+  assert.equal(await frame("document.querySelector('#panel-b').hidden"),true);
+  await frame("document.querySelector('#ambiguous-tab').remove();document.querySelector('#tab-b').setAttribute('aria-disabled','true')");
+  await focusThread('tab-question');
+  assert.equal(await frame("document.querySelector('#panel-b').hidden"),true);
+  assert.equal(await frame('unrelatedClicks'),0);
+  await frame("document.querySelector('#tab-b').removeAttribute('aria-disabled')");
+  await frame("(()=>{window.originalTabB=document.querySelector('#tab-b');const link=document.createElement('a');for(const attribute of originalTabB.attributes)link.setAttribute(attribute.name,attribute.value);link.href='https://example.com/';link.textContent='Linked tab';link.onclick=()=>unrelatedClicks++;originalTabB.replaceWith(link)})()");
+  await focusThread('tab-question');
+  assert.equal(await frame('unrelatedClicks'),0);
+  await frame("(()=>{document.querySelector('#tab-b').replaceWith(originalTabB);const form=document.createElement('form');form.id='tab-form';form.onsubmit=event=>{event.preventDefault();unrelatedClicks++};originalTabB.before(form);form.append(originalTabB);originalTabB.type='submit'})()");
+  await focusThread('tab-question');
+  assert.equal(await frame('unrelatedClicks'),0);
+  assert.deepEqual(await frame('tabClicks'),[]);
+  await frame("(()=>{const form=document.querySelector('#tab-form');form.before(originalTabB);form.remove();originalTabB.type='button'})()");
+  check('ambiguous, disabled, linked and submit ARIA controls remain hidden and unavailable; navigation never clicks unrelated authored controls');
+
+  await frame("window.revealCalls=[];window.stopReveal=board.onReveal(async({target,reason,signal})=>{revealCalls.push({id:target.id,reason,signal});window.revealAsk=await board.ask('Must not send from reveal');await new Promise(resolve=>{window.releaseReveal=resolve});if(!signal.aborted){document.querySelector('#tab-b').click();document.querySelector('#tab-b-two').click()}});true");
+  const revealAsksBefore=await evaluate('results.asks.length');
+  await evaluate("(()=>{const scope=results.raw.filter(m=>m.type==='ready').at(-1);document.querySelector('iframe').contentWindow.postMessage({...scope,type:'focus-interaction',id:'tab-question'},'*')})()");
+  await untilFrame('revealCalls.length===1&&Boolean(releaseReveal)');
+  assert.equal(await frame('revealCalls[0].reason'),'interaction');
+  assert.equal(await frame('revealAsk.status'),'cancelled');
+  await update('{selectedInteractionId:undefined,interactions:[]}');
+  await untilFrame('revealCalls[0].signal.aborted');
+  await frame('releaseReveal();stopReveal()');
+  await settleFrame();
+  assert.equal(await frame("document.querySelector('#panel-b').hidden"),true);
+  assert.equal(await evaluate('results.asks.length'),revealAsksBefore);
+  await frame("window.customReveals=0;window.stopCustomReveal=board.onReveal(({target,signal})=>{if(target.id==='tab-target'&&!signal.aborted){customReveals++;document.querySelector('#tab-b').click();document.querySelector('#tab-b-two').click()}});true");
+  await update(`{interactions:[${JSON.stringify(tabQuestion)}],selectedInteractionId:'tab-question'}`);
+  await focusThread('tab-question');
+  await untilFrame(`${tabMarker}.dataset.location==='component'`);
+  assert.equal(await frame('customReveals'),1);
+  await frame('stopCustomReveal()');
+  check('optional custom reveal hooks navigate only on explicit focus, carry cancellation across async work and cannot use the navigation gesture to send an agent message');
+
+  // A marker's current parentage wins over captured ancestors after authored reparenting.
+  await frame("document.querySelector('#panel-a').append(document.querySelector('#tab-target'));document.querySelector('#tab-a').click()");
+  await untilFrame(`${tabMarker}.dataset.location==='component'`);
+  assert.equal(await frame(`${tabMarker}.hidden`),false);
+  await frame("(()=>{const view=document.createElement('div');view.id='custom-view';document.querySelector('#tab-fixture').append(view);view.append(document.querySelector('#tab-target'));window.tabClicks=[]})()");
+  await untilFrame(`${tabMarker}.dataset.location==='component'`);
+  for (const [hide, restore] of [
+    ["view.hidden=true", "view.hidden=false"],
+    ["view.style.display='none'", "view.style.removeProperty('display')"],
+    ["view.style.contentVisibility='hidden'", "view.style.removeProperty('content-visibility')"],
+    ["view.style.visibility='hidden'", "view.style.removeProperty('visibility')"],
+    ["view.style.opacity='0'", "view.style.removeProperty('opacity')"],
+    ["view.setAttribute('aria-hidden','true')", "view.removeAttribute('aria-hidden')"],
+  ]) {
+    await frame(`(()=>{const view=document.querySelector('#custom-view');${hide}})()`);
+    await untilFrame(`${tabMarker}.dataset.location==='hidden'&&${tabMarker}.hidden`);
+    assert.equal((await focusThread('tab-question')).location,'hidden');
+    await frame(`(()=>{const view=document.querySelector('#custom-view');${restore}})()`);
+    await untilFrame(`${tabMarker}.dataset.location==='component'`);
+  }
+  assert.deepEqual(await frame('tabClicks'),[]);
+  await frame("document.querySelector('#custom-view').hidden=true;window.stopPlainReveal=board.onReveal(({target,signal})=>{if(target.id==='tab-target'&&!signal.aborted)document.querySelector('#custom-view').hidden=false});true");
+  await untilFrame(`${tabMarker}.hidden`);
+  await focusThread('tab-question');
+  await untilFrame(`${tabMarker}.dataset.location==='component'&&!${tabMarker}.hidden`);
+  await frame('stopPlainReveal()');
+  check('plain custom views need no component or ARIA schema: hidden/display/visibility/content-visibility/opacity boundaries suppress markers, and optional reveal callbacks restore their exact target');
+
+  await frame("document.querySelector('#custom-view').hidden=true;window.stopTimeoutReveal=board.onReveal(({signal})=>{window.timeoutSignal=signal;return new Promise(resolve=>{window.releaseTimeoutReveal=()=>{if(!signal.aborted)document.querySelector('#custom-view').hidden=false;resolve()}})});true");
+  await untilFrame(`${tabMarker}.hidden`);
+  await evaluate("(()=>{const scope=results.raw.filter(m=>m.type==='ready').at(-1);document.querySelector('iframe').contentWindow.postMessage({...scope,type:'focus-interaction',id:'tab-question'},'*')})()");
+  await untilFrame('Boolean(window.timeoutSignal?.aborted)',6000);
+  await frame('releaseTimeoutReveal();stopTimeoutReveal()');
+  await settleFrame();
+  assert.equal(await frame("document.querySelector('#custom-view').hidden"),true);
+  assert.equal(await frame(`${tabMarker}.hidden`),true);
+  const asksAfterTimeout=await evaluate('results.asks.length');
+  await frame("document.querySelector('#ask').scrollIntoView({block:'center'})");
+  await click('#ask');
+  await until(`results.asks.length===${asksAfterTimeout+1}`);
+  check('a timed-out custom reveal aborts and never performs late navigation; its controller is cleared so subsequent genuine user asks still work');
+  await update('{interactions:[],selectedInteractionId:undefined}');
+  await frame("document.querySelector('#tab-fixture').remove()");
+  check('a live component moved to another tab uses its current containment instead of the captured hidden parent');
 
   await key('Escape');
   await update('{interactions:[],selectedInteractionId:undefined}');
