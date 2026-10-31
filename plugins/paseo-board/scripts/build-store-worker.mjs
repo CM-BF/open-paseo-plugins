@@ -2,7 +2,8 @@ import { build } from "esbuild";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 const root = resolve(process.argv[2] || ".");
-const result = await build({ entryPoints: [resolve(root, "server/store-worker.ts")], bundle: true, platform: "node", format: "cjs", target: "node22", legalComments: "inline", write: false, logLevel: "silent" });
+// Keep module provenance relative to this plugin, including linked development dependencies.
+const result = await build({ absWorkingDir: root, preserveSymlinks: true, entryPoints: [resolve(root, "server/store-worker.ts")], bundle: true, platform: "node", format: "cjs", target: "node22", legalComments: "inline", write: false, logLevel: "silent" });
 const target = resolve(root, "server/assets/store-worker.txt");
 await mkdir(dirname(target), { recursive: true });
 const zodLicense = await readFile(resolve(root, "node_modules/zod/LICENSE"), "utf8");
