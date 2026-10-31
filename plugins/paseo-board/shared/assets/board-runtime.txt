@@ -176,7 +176,43 @@ function (initial, createFrameReceiver) {
     if (targets.length !== 1) throw new Error(`Patch selector must match exactly one element; matched ${targets.length}`);
     const target = targets[0];
     if (target === root || target === document.head || target === document.body) {
-      if (patch.operation === "replace" || patch.operation === "remove") throw new Error("Replacing document roots requires publishing a new document version");
+      if (["replace", "remove", "move", "copy", "text"].includes(patch.operation)) throw new Error("Replacing document roots requires publishing a new document version");
+    }
+    if (["move", "copy", "text"].includes(patch.operation)) {
+      if (!equalJson(componentIdentity(target), patch.sourceIdentity)) throw new Error("The edited component structure changed; reload its current authored version");
+      if (patch.operation === "text") {
+        const textNode = patch.textNodeIndex === undefined ? null : target.childNodes[patch.textNodeIndex];
+        if (textNode ? textNode.nodeType !== Node.TEXT_NODE || textNode.textContent !== patch.expectedText : target.children.length || target.textContent !== patch.expectedText) throw new Error("The edited text changed before this patch arrived");
+        capturePatchTargets(patch, target);
+        if (textNode) textNode.textContent = patch.text; else target.textContent = patch.text;
+        return;
+      }
+      const destinations = document.querySelectorAll(patch.destination);
+      if (destinations.length !== 1) throw new Error("Edit destination must match exactly one element");
+      const destination = destinations[0];
+      if (!equalJson(componentIdentity(destination), patch.destinationIdentity) || target === destination || target.contains(destination)) throw new Error("The edit destination changed or contains a cycle");
+      const parent = ["before", "after"].includes(patch.position) ? destination.parentNode : destination;
+      const before = patch.position === "before" ? destination : patch.position === "after" ? destination.nextSibling : patch.position === "prepend" ? destination.firstChild : null;
+      if (patch.operation === "copy") {
+        const template = document.createElement("template"); template.innerHTML = patch.html;
+        // Copy authoritative authored markup, never runtime listeners/closures. Defense in
+        // depth: copied scripts and inline handler attributes never execute on insertion.
+        for (const script of template.content.querySelectorAll("script")) script.remove();
+        for (const element of template.content.querySelectorAll("*")) for (const attribute of Array.from(element.attributes)) if (/^on/i.test(attribute.name)) element.removeAttribute(attribute.name);
+        const inserted = Array.from(template.content.children); capturePatchTargets(patch, target, inserted);
+        parent.insertBefore(template.content, before); return;
+      }
+      const focused = document.activeElement;
+      const restoreFocus = focused instanceof HTMLElement && target.contains(focused);
+      const caret = restoreFocus && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
+      capturePatchTargets(patch, target);
+      // New browsers preserve iframe/media/focus state with a same-document atomic move.
+      // The fallback still retains the actual node and listeners, then restores input caret.
+      if (typeof parent.moveBefore === "function" && target.isConnected && parent.isConnected) parent.moveBefore(target, before);
+      else parent.insertBefore(target, before);
+      if (restoreFocus && focused.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });
+      if (caret) try { focused.setSelectionRange(...caret); } catch {}
+      return;
     }
     if (patch.operation === "remove") { capturePatchTargets(patch, target); target.remove(); return; }
     const template = document.createElement("template");
@@ -247,6 +283,7 @@ function (initial, createFrameReceiver) {
       queueMarkerPositions();
       if (deferredSelection !== null) { const mode = deferredSelection; deferredSelection = null; setSelectionMode(mode); }
       drainMarkerFocus();
+      resumeComponentEdit();
     }
   };
 
@@ -811,14 +848,23 @@ function (initial, createFrameReceiver) {
     }
     Object.assign(overlay.style, { left: r.x + "px", top: r.y + "px", width: Math.max(2, r.width) + "px", height: Math.max(2, r.height) + "px" });
   };
-  // Selection is a read-only inspector over the author's real DOM. Optional labels improve
-  // discovery, but no IDs, wrappers or component registry are inserted into authored content.
+  // The inspector is an overlay over real authored DOM; edit proposals become durable
+  // only after the host's Save action. Ordinary author interactions never use this layer.
   let componentHost = null;
   let selectedComponent = null;
   let componentChoices = [];
   let componentParents = [];
   let componentChildren = [];
   let componentFrame = null;
+  let componentHover = null;
+  let componentShortcut = false;
+  let componentPointer = null;
+  let componentClipboard = null;
+  let componentDrag = null;
+  let componentText = null;
+  let componentPending = null;
+  let componentResume = null;
+  let componentNotice = "";
   const inComponents = (event) => componentHost && event.composedPath().includes(componentHost);
   const componentLabel = (node) => (node.getAttribute("data-board-component") || node.getAttribute("aria-label") || (node.id ? "#" + node.id : node.localName)).slice(0, 100);
   const componentBoundary = (node) => authorElement(node) && node.matches('[data-board-component],[id],section,article,main,aside,nav,header,footer,form,fieldset,details,summary,button,input,textarea,select,canvas,svg,table,ul,ol,li,p,h1,h2,h3,h4,h5,h6,[role]');
@@ -826,13 +872,41 @@ function (initial, createFrameReceiver) {
     for (let node = target; authorElement(node); node = node.parentElement) if (componentBoundary(node)) return node;
     return authorElement(target) ? target : null;
   };
+  const componentAncestors = (node) => {
+    const ancestors = [];
+    for (let parent = node; authorElement(parent) && ancestors.length < 16; parent = parent.parentElement) ancestors.unshift(parent);
+    return ancestors;
+  };
+  const selectableChildren = (node) => Array.from(node.children).filter(child => authorElement(child) && !child.matches("script,style,link,meta,template") && visibleBox(child)).slice(0, 41);
+  const componentTextRuns = (node) => node && !node.matches("script,style,textarea,input,select,option,canvas,iframe,object,embed")
+    ? Array.from(node.childNodes).flatMap((child, index) => child.nodeType === Node.TEXT_NODE && child.textContent.trim() ? [{ index, text: child.textContent }] : []) : [];
+  const setComponentNotice = (message) => { componentNotice = message; queueComponentOutline(); };
+  const clearComponentHover = () => { componentHover?.remove(); componentHover = null; };
+  const previewComponent = (node, label) => {
+    const box = node && visibleBox(node);
+    if (!box) { clearComponentHover(); return; }
+    if (!componentHover) {
+      componentHover = document.createElement("div"); componentHover.setAttribute("data-board-overlay", ""); componentHover.setAttribute("data-board-component-preview", "");
+      componentHover.style.cssText = "all:initial!important;position:fixed!important;z-index:2147483646!important;pointer-events:none!important;box-sizing:border-box!important;border:2px dashed #658aeb!important;background:#658aeb12!important;";
+      const tag = document.createElement("span"); tag.style.cssText = "position:absolute;left:0;top:0;max-width:80vw;white-space:nowrap;padding:2px 5px;color:#fff;background:#345bb4;font:12px/1.4 system-ui;";
+      componentHover.append(tag); root.append(componentHover);
+    }
+    Object.assign(componentHover.style, { left: box.left + "px", top: box.top + "px", width: box.width + "px", height: box.height + "px" });
+    componentHover.firstChild.textContent = label || componentLabel(node);
+  };
+  const updateComponentHover = () => {
+    if (!componentPointer || (!componentShortcut && selectionMode !== "component") || componentText || componentPending || componentDrag) { if (!componentDrag) clearComponentHover(); return; }
+    const node = componentAt(document.elementFromPoint(componentPointer.x, componentPointer.y));
+    previewComponent(node === selectedComponent ? null : node);
+  };
   const componentResize = new ResizeObserver(() => queueComponentOutline());
   const componentMutation = new MutationObserver(records => {
     if (records.some(record => !(record.target instanceof Element ? record.target : record.target.parentElement)?.closest("[data-board-overlay]")
       && !(record.type === "childList" && [...record.addedNodes, ...record.removedNodes].every(node => node instanceof Element && node.hasAttribute("data-board-overlay"))))) queueComponentOutline();
   });
   const clearComponent = () => {
-    componentHost?.remove(); componentHost = null; selectedComponent = null; componentChoices = []; componentParents = []; componentChildren = [];
+    componentHost?.remove(); componentHost = null; selectedComponent = null; componentChoices = []; componentParents = []; componentChildren = []; componentText = null;
+    clearComponentHover(); componentDrag = null;
     componentResize.disconnect(); componentMutation.disconnect();
     if (componentFrame !== null) cancelAnimationFrame(componentFrame);
     componentFrame = null;
@@ -840,79 +914,155 @@ function (initial, createFrameReceiver) {
   const positionComponent = () => {
     componentFrame = null;
     if (!componentHost || !selectedComponent) return;
-    if (selectedComponent.isConnected) {
-      const parents = componentAncestors(selectedComponent);
-      const children = selectableChildren(selectedComponent);
-      if (parents.length !== componentParents.length || parents.some((node, index) => node !== componentParents[index]) || children.length !== componentChildren.length || children.some((node, index) => node !== componentChildren[index])) {
-        selectComponent(selectedComponent); return;
-      }
+    if (selectedComponent.isConnected && !componentText && !componentDrag && !componentPending) {
+      const parents = componentAncestors(selectedComponent), children = selectableChildren(selectedComponent);
+      if (parents.length !== componentParents.length || parents.some((node, index) => node !== componentParents[index]) || children.length !== componentChildren.length || children.some((node, index) => node !== componentChildren[index])) { selectComponent(selectedComponent); return; }
       for (const button of componentHost.shadowRoot.querySelectorAll('[data-component-action="choose"]')) button.textContent = componentLabel(componentChoices[Number(button.dataset.componentIndex)]);
     }
-    const box = visibleBox(selectedComponent);
-    const outline = componentHost.shadowRoot.querySelector(".outline");
-    const reference = componentHost.shadowRoot.querySelector('[data-component-action="reference"]');
-    outline.hidden = !box; reference.disabled = !box;
+    const box = visibleBox(selectedComponent), shadow = componentHost.shadowRoot;
+    const outline = shadow.querySelector(".outline"); outline.hidden = !box;
     if (box) Object.assign(outline.style, { left: box.left + "px", top: box.top + "px", width: box.width + "px", height: box.height + "px" });
-    componentHost.shadowRoot.querySelector('[role="status"]').textContent = box ? "选择组件 · 查看真实包含关系" : "组件已隐藏或移除，请重新选择";
+    for (const button of shadow.querySelectorAll("button")) button.disabled = Boolean(componentPending) || (!box && button.dataset.componentAction !== "close");
+    shadow.querySelector('[data-component-action="paste"]').disabled ||= !componentClipboard?.node?.isConnected;
+    shadow.querySelector('[data-component-action="text"]').disabled ||= !componentTextRuns(selectedComponent).length;
+    shadow.querySelector('[role="status"]').textContent = componentPending ? componentPending.message || "等待保存 · 在画布上方确认这次修改" : !box ? "组件已隐藏或移除，请重新选择" : componentNotice || "选择组件 · ⌘ / Ctrl + Shift 悬停预览并点击";
+    for (const field of shadow.querySelectorAll("textarea,select")) field.disabled = Boolean(componentPending);
+    if (componentText && box) {
+      const editor = shadow.querySelector(".text-editor");
+      Object.assign(editor.style, { left: Math.max(8, Math.min(box.left, innerWidth - Math.min(480, innerWidth - 16))) + "px", top: Math.max(8, Math.min(box.top, innerHeight - 170)) + "px", width: Math.max(240, Math.min(480, innerWidth - 16)) + "px" });
+    }
   };
   const queueComponentOutline = () => { if (componentHost && componentFrame === null) componentFrame = requestAnimationFrame(positionComponent); };
-  const componentAncestors = (node) => {
-    const ancestors = [];
-    for (let parent = node; authorElement(parent) && ancestors.length < 16; parent = parent.parentElement) ancestors.unshift(parent);
-    return ancestors;
-  };
-  const selectableChildren = (node) => {
-    const children = [];
-    for (const child of node.children) {
-      if (authorElement(child) && !child.matches("script,style,link,meta,template") && visibleBox(child)) children.push(child);
-      if (children.length > 40) break;
-    }
-    return children;
-  };
   const selectComponent = (node) => {
-    if (!authorElement(node) || !node.isConnected) return;
-    clearComponent();
-    selectedComponent = node;
-    const host = document.createElement("div");
-    host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-components", "");
+    if (!authorElement(node) || !node.isConnected || componentPending) return;
+    clearComponent(); selectedComponent = node;
+    const host = document.createElement("div"); host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-components", "");
     host.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483647!important;pointer-events:none!important;";
     const shadow = host.attachShadow({ mode: "open" });
     shadow.innerHTML = `<style>
-      :host{color-scheme:normal}.outline{position:fixed;box-sizing:border-box;border:2px solid var(--host-iris,#658aeb);background:#658aeb12;pointer-events:none}.outline[hidden]{display:none}
-      .panel{position:absolute;bottom:12px;left:12px;max-width:min(620px,calc(100% - 24px));max-height:40vh;overflow:auto;box-sizing:border-box;padding:10px;border:1px solid var(--host-line-strong,#aaa);border-radius:10px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);font:12px/1.5 system-ui;box-shadow:0 3px 15px #0002;pointer-events:auto}
-      .row{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}button{font:inherit;padding:4px 8px;border:1px solid var(--host-line-strong,#ccc);border-radius:5px;color:inherit;background:transparent;cursor:pointer}button[aria-current=true]{border-color:var(--host-iris,#658aeb);font-weight:600}button:focus-visible{outline:2px solid var(--host-iris,#658aeb)}button:disabled{opacity:.5;cursor:default}.label{opacity:.7}
-    </style><div class="outline"></div><div class="panel" role="region" aria-label="组件选择"><div role="status"></div><div class="label">包含层级</div><div class="row ancestors"></div><div class="label">直接子组件</div><div class="row children"></div><div class="row"><button type="button" data-component-action="reference">引用组件</button><button type="button" data-component-action="close">完成选择 · Esc</button></div></div>`;
+      :host{color-scheme:normal}.outline{position:fixed;box-sizing:border-box;border:2px solid var(--host-iris,#658aeb);background:#658aeb12;pointer-events:none}.outline[hidden],[hidden]{display:none!important}
+      .panel,.text-editor{position:absolute;box-sizing:border-box;padding:10px;border:1px solid var(--host-line-strong,#aaa);border-radius:10px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);font:12px/1.5 system-ui;box-shadow:0 3px 15px #0002;pointer-events:auto}
+      .panel{bottom:12px;left:12px;max-width:min(700px,calc(100% - 24px));max-height:40vh;overflow:auto}.row{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}button,select,textarea{font:inherit;color:inherit;background:transparent}button,select{padding:4px 8px;border:1px solid var(--host-line-strong,#ccc);border-radius:5px}button{cursor:pointer}button[aria-current=true]{border-color:var(--host-iris,#658aeb);font-weight:600}button:focus-visible,textarea:focus-visible{outline:2px solid var(--host-iris,#658aeb)}button:disabled{opacity:.5;cursor:default}.label,.hint{opacity:.75}.hint{margin-top:6px}textarea{display:block;box-sizing:border-box;width:100%;min-height:74px;resize:vertical;margin-top:6px;border:1px solid var(--host-line-strong,#aaa);border-radius:4px;padding:6px}.text-editor{z-index:2}button[data-component-action=drag]{touch-action:none;cursor:grab}
+    </style><div class="outline"></div><div class="panel" role="region" aria-label="组件选择"><div role="status"></div><div class="label">包含层级</div><div class="row ancestors"></div><div class="label">直接子组件</div><div class="row children"></div><div class="row"><button type="button" data-component-action="drag">拖动组件</button><button type="button" data-component-action="cut">剪切</button><button type="button" data-component-action="copy">复制</button><select aria-label="粘贴位置" class="placement"><option value="append">放入末尾</option><option value="prepend">放入开头</option><option value="before">放在前面</option><option value="after">放在后面</option></select><button type="button" data-component-action="paste">粘贴到此处</button><button type="button" data-component-action="text">编辑文字</button></div><div class="row"><button type="button" data-component-action="reference">引用组件</button><button type="button" data-component-action="close">完成选择 · Esc</button></div><div class="hint">拖动时 Tab / Shift+Tab 切换目标层级，↑ 前面 · ↓ 后面 · ← 开头 · → 末尾。复制保留结构和样式，不复制运行中的 JS 状态。</div></div><div class="text-editor" hidden><label>编辑这段文字 <select class="text-runs" aria-label="文字段落"></select></label><textarea aria-label="组件文字" spellcheck="false"></textarea><div class="row"><button type="button" data-component-action="text-save">预览修改</button><button type="button" data-component-action="text-cancel">取消 · Esc</button></div></div>`;
     const addChoice = (element, container) => {
-      const button = document.createElement("button"); button.type = "button";
-      button.dataset.componentAction = "choose"; button.dataset.componentIndex = String(componentChoices.length);
-      button.textContent = componentLabel(element); button.setAttribute("aria-current", String(element === node));
-      componentChoices.push(element); container.append(button);
+      const button = document.createElement("button"); button.type = "button"; button.dataset.componentAction = "choose"; button.dataset.componentIndex = String(componentChoices.length);
+      button.textContent = componentLabel(element); button.setAttribute("aria-current", String(element === node)); componentChoices.push(element); container.append(button);
     };
-    const ancestors = componentAncestors(node);
-    componentParents = ancestors;
-    for (const parent of ancestors) addChoice(parent, shadow.querySelector(".ancestors"));
-    const children = selectableChildren(node);
-    componentChildren = children;
-    for (const child of children.slice(0, 40)) addChoice(child, shadow.querySelector(".children"));
-    if (!children.length) shadow.querySelector(".children").textContent = "没有可见子组件";
-    else if (children.length > 40) shadow.querySelector(".children").append(document.createTextNode("显示前 40 项；可直接点击画布选择其他组件"));
-    componentHost = host; root.append(host);
-    componentMutation.observe(root, { subtree: true, childList: true, attributes: true });
-    for (const parent of ancestors) componentResize.observe(parent);
+    componentParents = componentAncestors(node); for (const parent of componentParents) addChoice(parent, shadow.querySelector(".ancestors"));
+    componentChildren = selectableChildren(node); for (const child of componentChildren.slice(0, 40)) addChoice(child, shadow.querySelector(".children"));
+    if (!componentChildren.length) shadow.querySelector(".children").textContent = "没有可见子组件";
+    componentHost = host; root.append(host); componentMutation.observe(root, { subtree: true, childList: true, attributes: true });
+    for (const parent of componentParents) componentResize.observe(parent);
+    shadow.querySelector(".text-runs").addEventListener("change", () => {
+      if (!componentText) return;
+      const next = componentText.runs[Number(shadow.querySelector(".text-runs").value)]; componentText.run = next; shadow.querySelector("textarea").value = next.text;
+    });
     positionComponent();
+  };
+  const componentIdentity = (node) => {
+    if (!authorElement(node)) return null;
+    const elements = [node, ...node.querySelectorAll("*")];
+    if (elements.length > 2000) throw new Error("组件包含超过 2000 个元素，请选择更小的组件");
+    const indices = new Map(elements.map((element, index) => [element, index]));
+    const input = JSON.stringify(elements.map(element => [indices.get(element.parentElement) ?? -1, element.localName, element.id || "", element.getAttribute("role") || "", element.getAttribute("name") || "", element.getAttribute("type") || ""]));
+    if (!node.id && node.outerHTML.length > 240000) throw new Error("没有固定 ID 的组件过大，请选择更小的组件");
+    let hash = 2166136261; for (let i = 0; i < input.length; i++) hash = Math.imul(hash ^ input.charCodeAt(i), 16777619);
+    return { tag: node.localName, ...(node.id ? { id: node.id } : { authoredHtml: node.outerHTML }), fingerprint: (hash >>> 0).toString(16).padStart(8, "0") };
+  };
+  const componentPatch = (operation, node, extra = {}) => ({ operation, selector: selectorFor(node), sourceIdentity: componentIdentity(node), ...extra });
+  const proposeComponentEdit = (patch) => {
+    if (componentPending || applying || !selectedComponent?.isConnected) return;
+    const id = `${scope.sessionId}:component-${++sequence}`;
+    componentPending = { id, node: selectedComponent, patch };
+    clearComponentHover(); setComponentNotice("");
+    post({ type: "component-edit", id, request: { canvasBase: { revision: snapshot.canvas.revision, documentVersion: snapshot.canvas.documentVersion }, patch, sourceLabel: componentLabel(document.querySelector(patch.selector)), ...(patch.destination ? { destinationLabel: componentLabel(document.querySelector(patch.destination)) } : {}) } });
+    positionComponent();
+  };
+  const startComponentText = () => {
+    const runs = componentTextRuns(selectedComponent); if (!runs.length) return;
+    componentText = { runs, run: runs[0] }; const shadow = componentHost.shadowRoot;
+    const choices = shadow.querySelector(".text-runs"); choices.replaceChildren();
+    runs.forEach((run, index) => { const option = document.createElement("option"); option.value = String(index); option.textContent = run.text.trim().slice(0, 55); choices.append(option); });
+    choices.hidden = runs.length < 2; shadow.querySelector(".text-editor").hidden = false;
+    const textarea = shadow.querySelector("textarea"); textarea.value = runs[0].text; positionComponent(); textarea.focus(); textarea.select();
+  };
+  const cancelComponentText = () => { componentText = null; if (componentHost) componentHost.shadowRoot.querySelector(".text-editor").hidden = true; setComponentNotice(""); };
+  const saveComponentText = () => {
+    if (!componentText) return; const { run } = componentText; const text = componentHost.shadowRoot.querySelector("textarea").value;
+    if (text === run.text) { cancelComponentText(); return; }
+    if (text.length > 24000) { setComponentNotice("这段文字太长，请缩短后重试"); return; }
+    proposeComponentEdit(componentPatch("text", selectedComponent, { text, expectedText: run.text, textNodeIndex: run.index }));
+  };
+  const copyComponent = (mode) => {
+    componentClipboard = { mode, node: selectedComponent, identity: componentIdentity(selectedComponent) };
+    setComponentNotice(`${mode === "move" ? "已标记剪切" : "已复制"} ${componentLabel(selectedComponent)} · 选择目标组件后粘贴；原位置保持到保存`);
+  };
+  const pasteComponent = () => {
+    const source = componentClipboard?.node, destination = selectedComponent;
+    if (!source?.isConnected || !destination?.isConnected) { setComponentNotice("复制来源已移除，请重新选择"); return; }
+    if (source === destination || source.contains(destination)) { setComponentNotice("请选择来源组件之外的目标位置"); return; }
+    if (!equalJson(componentClipboard.identity, componentIdentity(source))) { setComponentNotice("来源内容已变化，请重新复制或剪切"); return; }
+    proposeComponentEdit(componentPatch(componentClipboard.mode, source, { destination: selectorFor(destination), destinationIdentity: componentIdentity(destination), position: componentHost.shadowRoot.querySelector(".placement").value }));
+  };
+  const componentDestinations = (point) => {
+    const hit = componentAt(document.elementFromPoint(point.x, point.y));
+    return hit ? componentAncestors(hit).reverse().filter(node => node !== selectedComponent && !selectedComponent.contains(node) && visibleBox(node)) : [];
+  };
+  const paintComponentDrag = () => {
+    if (!componentDrag) return; const destination = componentDrag.candidates[componentDrag.depth];
+    const names = { before: "前面", after: "后面", prepend: "放入开头", append: "放入末尾" };
+    previewComponent(destination, destination ? `${componentLabel(destination)} · ${names[componentDrag.position]} · 层级 ${componentDrag.depth + 1}/${componentDrag.candidates.length}` : "");
+    setComponentNotice(destination ? `目标 ${componentLabel(destination)} · ${names[componentDrag.position]}；Tab 切换上级，Shift+Tab 返回下级` : "移到目标组件上 · Esc 取消");
+  };
+  const startComponentDrag = (event) => {
+    if (componentPending || componentText || !selectedComponent?.isConnected) return;
+    componentDrag = { pointerId: event.pointerId, candidates: [], depth: 0, position: "append" };
+    clearComponentHover(); suppressPointerClick = true; try { root.setPointerCapture(event.pointerId); } catch {} paintComponentDrag();
+  };
+  const cancelComponentDrag = () => {
+    const active = componentDrag; componentDrag = null; clearComponentHover();
+    if (active) try { if (root.hasPointerCapture(active.pointerId)) root.releasePointerCapture(active.pointerId); } catch {}
+    setComponentNotice("");
+  };
+  const finishComponentDrag = () => {
+    const active = componentDrag, source = selectedComponent, destination = active?.candidates[active.depth]; cancelComponentDrag();
+    if (!source?.isConnected || !destination?.isConnected || source === destination || source.contains(destination)) return;
+    proposeComponentEdit(componentPatch("move", source, { destination: selectorFor(destination), destinationIdentity: componentIdentity(destination), position: active.position }));
   };
   const componentAction = (event) => {
     const button = event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-component-action"));
-    if (!event.isTrusted || !button || button.disabled) return;
-    if (button.dataset.componentAction === "choose") { selectComponent(componentChoices[Number(button.dataset.componentIndex)]); return; }
-    if (button.dataset.componentAction === "close") { setSelectionMode("off"); post({ type: "selection-end" }); return; }
+    if (!event.isTrusted || !button || button.disabled || componentPending) return;
+    const action = button.dataset.componentAction;
+    if (action === "choose") { componentNotice = ""; selectComponent(componentChoices[Number(button.dataset.componentIndex)]); return; }
+    if (action === "close") { setSelectionMode("off"); post({ type: "selection-end" }); return; }
+    if (action === "copy" || action === "cut") { copyComponent(action === "cut" ? "move" : "copy"); return; }
+    if (action === "paste") { pasteComponent(); return; }
+    if (action === "text") { startComponentText(); return; }
+    if (action === "text-save") { saveComponentText(); return; }
+    if (action === "text-cancel") { cancelComponentText(); return; }
     const target = selectedComponent;
-    if (button.dataset.componentAction !== "reference" || !target || !visibleBox(target)) return;
-    const box = target.getBoundingClientRect();
-    const region = rect(box);
+    if (action !== "reference" || !target || !visibleBox(target)) return;
+    const box = target.getBoundingClientRect(), region = rect(box);
     const anchor = { ...currentAnchor(), kind: "element", selector: selectorFor(target), rect: region, viewport: viewport(), binding: captureBinding(target, region) };
     const session = beginSelection({ x: Math.max(8, Math.min(box.left, innerWidth - 24)), y: Math.max(8, Math.min(box.top, innerHeight - 24)) });
     void finishSelection(session, anchor, region);
+  };
+  const resumeComponentEdit = () => {
+    if (!componentResume || snapshot.canvas.revision < componentResume.revision || queued || applying) return;
+    if (patchFailure) { componentResume = null; return; }
+    const resume = componentResume; componentResume = null;
+    if (resume.node?.isConnected) { selectionMode = "component"; paintSelectionMode(); selectComponent(resume.node); setComponentNotice("已保存"); }
+  };
+  const receiveComponentEdit = (message) => {
+    if (!componentPending || message.id !== componentPending.id || !message.result) return;
+    const result = message.result;
+    if (result.status === "unknown") { componentPending.message = result.message || "保存结果待确认，请在上方重试同一次修改"; positionComponent(); return; }
+    const pending = componentPending; componentPending = null;
+    if (result.status === "applied") {
+      if (pending.patch.operation === "move") componentClipboard = null;
+      componentResume = { node: pending.node, revision: result.canvasRevision || snapshot.canvas.revision + 1 };
+      selectionMode = "off"; clearComponent(); paintSelectionMode(); post({ type: "selection-end" }); void drain().then(resumeComponentEdit);
+    } else { setComponentNotice(result.status === "cancelled" ? "未保存；原组件保持不变" : result.message || "保存未成功，请重新选择最新组件后重试"); positionComponent(); }
   };
   window.addEventListener("scroll", queueComponentOutline, true);
   window.addEventListener("resize", queueComponentOutline);
@@ -1383,13 +1533,21 @@ function (initial, createFrameReceiver) {
     if (!event.isTrusted) return;
     lastGesture = performance.now();
     lastGesturePosition = eventPoint(event);
-    if (inComponents(event)) { event.stopImmediatePropagation(); return; }
+    if (inComponents(event)) {
+      const handle = event.composedPath().find(node => node instanceof Element && node.dataset.componentAction === "drag");
+      if (handle && !handle.disabled && event.button === 0) { event.preventDefault(); startComponentDrag(event); }
+      event.stopImmediatePropagation(); return;
+    }
     if (inMarkers(event)) { window.focus(); cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); event.stopImmediatePropagation(); return; }
     if (event.button === 0) { window.focus(); post({ type: "canvas-pointer" }); }
     suppressPointerClick = false;
     dismissedPointer = null;
     if (event.button !== 0) return;
-    if (selectionMode === "component") {
+    const shortcut = event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey && !isEditor(event);
+    if (selectionMode === "component" || shortcut) {
+      if (componentPending || componentText) { event.preventDefault(); event.stopImmediatePropagation(); return; }
+      if (shortcut && selectionMode !== "component") setSelectionMode("component");
+      componentNotice = "";
       event.preventDefault(); event.stopImmediatePropagation(); suppressPointerClick = true;
       selectComponent(componentAt(event.target)); return;
     }
@@ -1419,6 +1577,14 @@ function (initial, createFrameReceiver) {
     showOverlay({ x: pointer.x, y: pointer.y, width: 0, height: 0 });
   }, true);
   window.addEventListener("pointermove", (event) => {
+    if (!event.isTrusted) return;
+    componentPointer = eventPoint(event);
+    if (componentDrag) {
+      if (componentDrag.pointerId === event.pointerId) { componentDrag.candidates = componentDestinations(componentPointer); componentDrag.depth = Math.min(componentDrag.depth, Math.max(0, componentDrag.candidates.length - 1)); paintComponentDrag(); }
+      event.preventDefault(); event.stopImmediatePropagation(); return;
+    }
+    componentShortcut = event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey && !isEditor(event);
+    if (componentShortcut || selectionMode === "component") updateComponentHover(); else clearComponentHover();
     if (inComponents(event)) { event.stopImmediatePropagation(); return; }
     if (inMarkers(event) && !pointer) { event.stopImmediatePropagation(); return; }
     if (dismissedPointer === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); return; }
@@ -1431,6 +1597,7 @@ function (initial, createFrameReceiver) {
   }, true);
   window.addEventListener("pointerup", (event) => {
     if (!event.isTrusted || event.button !== 0) return;
+    if (componentDrag?.pointerId === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); try { finishComponentDrag(); } catch (failure) { setComponentNotice(failure.message); } return; }
     if (inComponents(event)) { event.stopImmediatePropagation(); return; }
     if (inMarkers(event)) { event.stopImmediatePropagation(); return; }
     if (dismissedPointer === event.pointerId) { dismissedPointer = null; event.preventDefault(); event.stopImmediatePropagation(); return; }
@@ -1472,7 +1639,7 @@ function (initial, createFrameReceiver) {
       void finishSelection(session, { ...currentAnchor(), kind: "region", selector: selectorFor(start.target), rect: region, viewport: viewport(), binding: captureBinding(start.target, region, true) }, region);
     }
   }, true);
-  window.addEventListener("pointercancel", () => { dismissedPointer = null; cancelSelection({ notify: true }); }, true);
+  window.addEventListener("pointercancel", () => { cancelComponentDrag(); dismissedPointer = null; cancelSelection({ notify: true }); }, true);
   window.addEventListener("lostpointercapture", (event) => {
     if (pointer?.pointerId === event.pointerId && !root.hasPointerCapture(event.pointerId)) cancelSelection({ notify: true });
   }, true);
@@ -1480,6 +1647,7 @@ function (initial, createFrameReceiver) {
     if (pointer && !event.relatedTarget && !root.hasPointerCapture(pointer.pointerId)) cancelSelection({ notify: true });
   }, true);
   window.addEventListener("blur", () => {
+    componentShortcut = false; clearComponentHover(); if (componentDrag) cancelComponentDrag();
     if (!selectionSession) return;
     // The host input takes focus before capture finishes. Keep its completed reference alive;
     // host dismissal/submission sends a generation-scoped cancellation explicitly.
@@ -1505,7 +1673,11 @@ function (initial, createFrameReceiver) {
     void finishSelection(session, selected.anchor, selected.region, Boolean(previous));
   }, true);
   window.addEventListener("click", (event) => {
-    if (inComponents(event)) { event.preventDefault(); event.stopImmediatePropagation(); componentAction(event); return; }
+    if (inComponents(event)) {
+      event.stopImmediatePropagation();
+      if (event.composedPath().some(node => node instanceof Element && node.matches("textarea,select,option"))) return;
+      event.preventDefault(); try { componentAction(event); } catch (failure) { setComponentNotice(failure.message || String(failure)); } return;
+    }
     if (inMarkers(event)) {
       event.preventDefault(); event.stopImmediatePropagation();
       const button = markerNode(event);
@@ -1552,13 +1724,39 @@ function (initial, createFrameReceiver) {
   window.addEventListener("keydown", (event) => {
     if (event.isTrusted) lastGesture = performance.now();
     if (!event.isTrusted) return;
+    if (componentDrag) {
+      if (event.key === "Escape") cancelComponentDrag();
+      else if (event.key === "Tab") { const size = componentDrag.candidates.length; if (size) componentDrag.depth = (componentDrag.depth + (event.shiftKey ? size - 1 : 1)) % size; paintComponentDrag(); }
+      else if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) { componentDrag.position = { ArrowUp: "before", ArrowDown: "after", ArrowLeft: "prepend", ArrowRight: "append" }[event.key]; paintComponentDrag(); }
+      else return;
+      event.preventDefault(); event.stopImmediatePropagation(); return;
+    }
+    if (componentText) {
+      if (event.key === "Escape" && !componentPending) { event.preventDefault(); cancelComponentText(); }
+      else if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.isComposing && !componentPending) { event.preventDefault(); saveComponentText(); }
+      event.stopImmediatePropagation(); return;
+    }
+    if (selectedComponent && !componentPending && !isEditor(event) && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && ["c", "x", "v"].includes(event.key.toLowerCase())) {
+      event.preventDefault(); event.stopImmediatePropagation();
+      try { if (event.key.toLowerCase() === "v") pasteComponent(); else copyComponent(event.key.toLowerCase() === "x" ? "move" : "copy"); } catch (failure) { setComponentNotice(failure.message); }
+      return;
+    }
+    if (!isEditor(event) && event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey) { componentShortcut = true; updateComponentHover(); }
     if (inComponents(event) && event.key !== "Escape") { event.stopImmediatePropagation(); return; }
     if (inMarkers(event)) { event.stopImmediatePropagation(); return; }
     if (event.target instanceof Element) { const r = event.target.getBoundingClientRect(); lastGesturePosition = { x: r.left, y: r.bottom }; }
     if (event.key === "Escape" && (selectionSession || selectionMode !== "off" || lastAnchor)) {
       event.preventDefault(); event.stopImmediatePropagation();
+      if (componentPending) return;
+      componentClipboard = null; componentNotice = ""; componentShortcut = false;
       selectionMode = "off"; cancelSelection({ notify: true }); post({ type: "selection-end" }); return;
     }
+  }, true);
+  window.addEventListener("keyup", (event) => {
+    if (!event.isTrusted) return;
+    componentShortcut = event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey && !isEditor(event);
+    if (componentDrag) return;
+    if (!componentShortcut) clearComponentHover(); else updateComponentHover();
   }, true);
   window.addEventListener("message", (event) => {
     const message = event.data;
@@ -1572,6 +1770,7 @@ function (initial, createFrameReceiver) {
     else if (message.type === "selection") setSelectionMode(message.mode);
     else if (message.type === "cancel-capture" && message.selectionId === selectionSession?.id) cancelSelection({ clear: false });
     else if (message.type === "clear-selection") { selectionMode = "off"; cancelSelection(); }
+    else if (message.type === "component-edit-result") receiveComponentEdit(message);
     else if (message.type === "ask-result") {
       const pending = pendingAsks.get(message.id);
       if (pending) { pendingAsks.delete(message.id); clearTimeout(pending.timer); pending.resolve(message.result && message.result.status === "submitted" ? message.result : cancelAsk); }
