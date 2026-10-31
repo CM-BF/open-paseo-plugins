@@ -15,7 +15,9 @@ export interface UpdatePosition {
 }
 export interface AskRequest { prompt: string; anchor?: Anchor; kind?: "question" | "change" | "fork"; position?: FramePosition }
 export type CaptureStatus = "pending" | "ready" | "failed";
-export interface SelectionCapture { selectionId: string; anchor: Anchor; status: "ready" | "failed" }
+export const CAPTURE_FAILURE_REASONS = ["content-changed", "too-complex", "unsupported-layout", "too-large", "timeout", "generation-failed"] as const;
+export type CaptureFailureReason = typeof CAPTURE_FAILURE_REASONS[number];
+export interface SelectionCapture { selectionId: string; anchor: Anchor; status: "ready" | "failed"; reason?: CaptureFailureReason }
 export interface ComposeRequest { selectionId?: string; captureStatus?: CaptureStatus; kind: "question" | "change" | "fork"; anchor: Anchor; position?: FramePosition }
 export interface InteractionMarker { id: string; text: string; status: Interaction["status"]; anchor?: Anchor; number: number }
 export interface AskResult { status: "submitted" | "cancelled"; outcome?: string | null }
@@ -94,6 +96,7 @@ export function readFrameMessage(value: unknown, scope: Pick<FrameScope, "boardI
     case "selection-capture":
       if (!short(value.selectionId, 160) || !validAnchor(value.anchor) || !["ready", "failed"].includes(value.status as string)) return null;
       if (value.status === "ready" ? !value.anchor.image : value.anchor.image !== undefined) return null;
+      if (value.reason !== undefined && (value.status !== "failed" || !CAPTURE_FAILURE_REASONS.includes(value.reason as CaptureFailureReason))) return null;
       break;
     case "selection-lock": if (!short(value.id, 160) || typeof value.active !== "boolean" || (value.dragging !== undefined && typeof value.dragging !== "boolean")) return null; break;
     case "compose": {

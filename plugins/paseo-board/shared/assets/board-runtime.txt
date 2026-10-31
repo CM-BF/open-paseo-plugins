@@ -1049,6 +1049,7 @@ function (initial, createFrameReceiver) {
     let timer;
     let abortListener;
     let captured;
+    let failureReason;
     try {
       const image = await Promise.race([
         queuedCapture(imageRegion, session.abort.signal),
@@ -1059,15 +1060,22 @@ function (initial, createFrameReceiver) {
         }),
       ]);
       captured = { ...anchor, image };
-    } catch {
+    } catch (cause) {
+      // Send only a bounded category, never arbitrary document/resource error text.
       // A failed image leaves the already-open input and its text/geometry usable.
+      const message = cause instanceof Error ? cause.message : "";
+      failureReason = /Canvas (?:layout |styling )?changed during capture/.test(message) ? "content-changed"
+        : /too complex to capture/.test(message) ? "too-complex"
+        : /cannot be captured accurately/.test(message) ? "unsupported-layout"
+        : /too large to capture|screenshot exceeds 3 MB/.test(message) ? "too-large"
+        : message === "Selection capture timed out" ? "timeout" : "generation-failed";
     } finally {
       clearTimeout(timer);
       if (abortListener) session.abort.signal.removeEventListener("abort", abortListener);
     }
     if (selectionSession !== session || session.abort.signal.aborted) return;
     lastAnchor = captured || anchor;
-    post({ type: "selection-capture", selectionId: session.id, anchor: lastAnchor, status: captured ? "ready" : "failed" });
+    post({ type: "selection-capture", selectionId: session.id, anchor: lastAnchor, status: captured ? "ready" : "failed", ...(!captured ? { reason: failureReason } : {}) });
     cancelSelection({ clear: false });
   };
   const setSelectionMode = (mode) => {

@@ -231,6 +231,42 @@ try {
   check('the focused input appears before held capture, accepts typing, validates image identity, and adds the real PNG without remounting or moving its caret');
 
   await frame('pauseNextCapture()'); await openAt(); await untilFrame('captureGate?.held===true');
+  await sendText('Draft survives a real decode failure');
+  await evaluate(`window.failedCaptureInput=document.querySelector(${JSON.stringify(input)});failedCaptureInput.setSelectionRange(3,9)`);
+  const failedCaptureMessage = await evaluate("hostFixture.raw.filter(item=>item.type==='compose').at(-1)");
+  await frame('failCapture()');
+  await until(`document.querySelector(${JSON.stringify(popover)}).textContent.includes('截图失败：无法生成图片')`);
+  const captureFailure = await evaluate("hostFixture.raw.filter(item=>item.type==='selection-capture').at(-1)");
+  assert.equal(captureFailure.status, 'failed');
+  assert.equal(captureFailure.reason, 'generation-failed');
+  assert.deepEqual(captureFailure.anchor, failedCaptureMessage.request.anchor);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)})===failedCaptureInput && document.activeElement===failedCaptureInput`), true);
+  assert.equal(await evaluate('failedCaptureInput.value'), 'Draft survives a real decode failure');
+  assert.deepEqual(await evaluate('({start:failedCaptureInput.selectionStart,end:failedCaptureInput.selectionEnd})'), { start: 3, end: 9 });
+  assert.equal(await submitCount(), 0);
+  await key('Escape'); await noPopover();
+  await hostClick('button[aria-label="清除引用"]');
+  check('a real screenshot decode rejection reaches the host as a bounded failure reason without changing the draft, focus, caret or frozen reference');
+
+  await frame('pauseNextCapture()'); await openAt(); await untilFrame('captureGate?.held===true');
+  const cancelledCaptureMessage = await evaluate("hostFixture.raw.filter(item=>item.type==='compose').at(-1)");
+  await sendText('Cancel before decode fails'); await key('Escape'); await noPopover();
+  await openAt(175,190); await sendText('New draft ignores old failure');
+  await evaluate(`window.newCaptureInput=document.querySelector(${JSON.stringify(input)});newCaptureInput.setSelectionRange(4,8)`);
+  await frame('failCapture()');
+  // A late failure from the cancelled selection must not update the new composer.
+  await frame(`parent.postMessage(${JSON.stringify({ ...cancelledCaptureMessage, type: 'selection-capture', status: 'failed', reason: 'too-large', anchor: cancelledCaptureMessage.request.anchor })},'*')`);
+  await until(`document.querySelector(${JSON.stringify(popover+' img')})`);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover)}).textContent.includes('截图失败')`), false);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)})===newCaptureInput && document.activeElement===newCaptureInput`), true);
+  assert.equal(await evaluate('newCaptureInput.value'), 'New draft ignores old failure');
+  assert.deepEqual(await evaluate('({start:newCaptureInput.selectionStart,end:newCaptureInput.selectionEnd})'), { start: 4, end: 8 });
+  assert.equal(await submitCount(), 0);
+  await key('Escape'); await noPopover();
+  await hostClick('button[aria-label="清除引用"]');
+  check('a cancelled capture can fail later without leaking its failure reason into the new focused draft or replacing its screenshot');
+
+  await frame('pauseNextCapture()'); await openAt(); await untilFrame('captureGate?.held===true');
   const oldSelection = await evaluate("hostFixture.raw.filter(item=>item.type==='compose').at(-1).selectionId");
   await sendText('Cancelled slow screenshot'); await key('Escape'); await noPopover();
   await openAt(175,190); await sendText('New draft stays here');

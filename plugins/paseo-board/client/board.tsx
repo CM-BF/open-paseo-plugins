@@ -4,7 +4,7 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { Markdown, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
 import { interactBoardRpc, markUpdatesSeenRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc, type Anchor, type Board, type Decision, type Interaction, type JsonData } from "../shared/contracts";
-import type { AskRequest, AskResult, ComposeRequest, CaptureStatus, SelectionCapture, FrameTheme, InteractionLocation, SelectionMode } from "../shared/frame-contract";
+import type { AskRequest, AskResult, ComposeRequest, CaptureStatus, CaptureFailureReason, SelectionCapture, FrameTheme, InteractionLocation, SelectionMode } from "../shared/frame-contract";
 import { interactionMarkers, sameSelectionAnchor } from "../shared/frame-contract";
 import { frameThemeFromColors } from "../shared/frame-theme";
 import { CanvasFrame, WebMessageInput, canRenderFrames, usePopoverDismiss } from "./web";
@@ -18,7 +18,15 @@ import { anchorPoint, interactionRoot, interactionThread, mergeInteractions, pop
 
 interface Props extends PluginSurfaceProps { boardId: string; onBack(): void }
 type Destination = "main" | "side" | "new-side";
-type Compose = { selectionId?: string; captureStatus?: CaptureStatus | "omitted"; kind: Interaction["kind"]; text: string; intentId?: string; destination?: Destination; anchor?: Anchor; sourceInteractionId?: string; resolve?: (result: AskResult) => void };
+type Compose = { selectionId?: string; captureStatus?: CaptureStatus | "omitted"; captureFailureReason?: CaptureFailureReason; kind: Interaction["kind"]; text: string; intentId?: string; destination?: Destination; anchor?: Anchor; sourceInteractionId?: string; resolve?: (result: AskResult) => void };
+const captureFailureNames: Record<CaptureFailureReason, string> = {
+  "content-changed": "截图过程中画布内容发生变化，请重新框选。",
+  "too-complex": "选区内容过于复杂，请缩小选区。",
+  "unsupported-layout": "选区包含暂不支持截图的页面布局。",
+  "too-large": "选区或图片过大，请缩小选区。",
+  timeout: "截图超时，请重新框选。",
+  "generation-failed": "无法生成图片，请重新框选。",
+};
 const statusNames: Record<Interaction["status"], string> = { saved: "已保存", sending: "发送中", delivered: "已送达", processing: "处理中", answered: "已有回复", applied: "已落实", rejected: "未采用", failed: "失败" };
 const kindNames: Record<Interaction["kind"], string> = { question: "消息", change: "消息", fork: "Fork", return: "转给主会话", reply: "Fork 回复" };
 
@@ -85,7 +93,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation }: Props) {
   const onSelectionCapture = useCallback((capture: SelectionCapture) => {
     const draft = composeRef.current;
     if (!draft || pending.current || draft.intentId || draft.captureStatus !== "pending" || draft.selectionId !== capture.selectionId || !draft.anchor || !sameSelectionAnchor(draft.anchor, capture.anchor)) return;
-    const next: Compose = { ...draft, anchor: capture.anchor, captureStatus: capture.status };
+    const next: Compose = { ...draft, anchor: capture.anchor, captureStatus: capture.status, captureFailureReason: capture.reason };
     composeRef.current = next; setCompose(next); setAnchor(capture.anchor);
   }, []);
   const onState = useCallback((state: JsonData) => stateWriter.current?.schedule(state), []);
@@ -233,7 +241,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation }: Props) {
           {thread.map(item => <InteractionContent key={item.id} item={item} board={board} frameTheme={frameTheme} unconfirmed={!board.interactions.some(saved => saved.id === item.id)} onRetry={() => retryUnconfirmed(item)} onFollow={(kind, text, resolve) => openCompose(kind, item, text, resolve)} onOpenAgent={() => { if (item.agentId && navigation) navigation.openAgent({ agentId: item.agentId }); }} />)}
           {compose ? <View style={{ gap: 10 }}>
             {!thread.length ? <AnchorPreview anchor={compose.anchor} compact captureStatus={compose.captureStatus} /> : null}
-            {compose.captureStatus ? <View style={{ minHeight: 36 }}><Copy small muted>{compose.captureStatus === "pending" ? "截图准备中；现在发送会保留文字和位置，不附图片。" : compose.captureStatus === "failed" ? "截图未完成；文字和位置已保留。" : compose.captureStatus === "omitted" ? "此次发送不附图片，保留原来的文字和位置。" : "已附选区截图。"}</Copy></View> : null}
+            {compose.captureStatus ? <View style={{ minHeight: 36 }}><Copy small muted>{compose.captureStatus === "pending" ? "截图准备中；现在发送会保留文字和位置，不附图片。" : compose.captureStatus === "failed" ? `截图失败：${captureFailureNames[compose.captureFailureReason ?? "generation-failed"]}文字和位置已保留。` : compose.captureStatus === "omitted" ? "此次发送不附图片，保留原来的文字和位置。" : "已附选区截图。"}</Copy></View> : null}
             {compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? <Copy small muted>引用来自旧画布版本；agent 会对照原来的位置和快照。</Copy> : null}
             <SideAgentPicker interactions={board.interactions} selectedId={board.sideAgentId} pending={Boolean(board.pendingSideInteractionId)} disabled={sending || sideTargetBlocked || Boolean(compose.intentId)} onSelect={chooseSideAgent} />
             {canRenderFrames ? <WebMessageInput value={compose.text} focusToken={inputFocusToken} disabled={sending || sideTargetBlocked} onChange={text => { const previous = composeRef.current; if (previous) { const next = { ...previous, text, intentId: undefined, destination: undefined }; composeRef.current = next; setCompose(next); } }} onSubmit={destination => { void submit(destination); }} onClose={closePopover} placeholder="想了解什么？或希望这里发生什么变化？" style={{ color: c.foreground, background: c.surface1, border: `1px solid ${c.border}`, borderRadius: 8, padding: 10, minHeight: 80, fontSize: 14 }} /> : <TextInput autoFocus accessibilityLabel="发给 agent 的消息" value={compose.text} editable={!sending && !sideTargetBlocked} multiline maxLength={24000} onChangeText={text => { const previous = composeRef.current; if (previous) { const next = { ...previous, text, intentId: undefined, destination: undefined }; composeRef.current = next; setCompose(next); } }} placeholder="想了解什么？或希望这里发生什么变化？" placeholderTextColor={c.foregroundMuted} style={{ color: c.foreground, backgroundColor: c.surface1, borderColor: c.border, borderWidth: 1, borderRadius: 8, padding: 10, minHeight: 80, textAlignVertical: "top" }} />}

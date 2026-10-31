@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, sameSelectionAnchor, validAnchor } from "./frame-contract";
+import { CAPTURE_FAILURE_REASONS, FRAME_CHANNEL, interactionMarkers, readFrameMessage, sameSelectionAnchor, validAnchor } from "./frame-contract";
 import { AnchorSchema, type Interaction } from "./contracts";
 const scope = { boardId: "board", sessionId: "session" };
 const message = (fields: object) => ({ channel: FRAME_CHANNEL, ...scope, ...fields });
@@ -34,6 +34,13 @@ describe("frame bridge validation", () => {
     expect(readFrameMessage(message({ type: "selection-capture", selectionId: "one", anchor, status: "failed" }), scope)).not.toBeNull();
     for (const bad of [{ selectionId: "" }, { status: "pending" }, { anchor }]) {
       expect(readFrameMessage(message({ type: "selection-capture", selectionId: "one", anchor: { ...anchor, image }, status: "ready", ...bad }), scope)).toBeNull();
+    }
+    for (const reason of CAPTURE_FAILURE_REASONS) {
+      expect(readFrameMessage(message({ type: "selection-capture", selectionId: "one", anchor, status: "failed", reason }), scope)).not.toBeNull();
+      expect(readFrameMessage(message({ type: "selection-capture", selectionId: "one", anchor: { ...anchor, image }, status: "ready", reason }), scope)).toBeNull();
+    }
+    for (const reason of ["", "other", "x".repeat(10000), {}, null, 1]) {
+      expect(readFrameMessage(message({ type: "selection-capture", selectionId: "one", anchor, status: "failed", reason }), scope)).toBeNull();
     }
     expect(sameSelectionAnchor(anchor, { ...anchor, image })).toBe(true);
     expect(sameSelectionAnchor(anchor, { ...anchor, canvasRevision: 2, image })).toBe(false);
