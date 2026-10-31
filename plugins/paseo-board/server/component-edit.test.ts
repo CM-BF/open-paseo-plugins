@@ -178,6 +178,69 @@ describe("durable user component edits", () => {
     expect(await store.read(initial.id)).toEqual(initial);
   });
 
+  it("moves into the real fixture's anonymous footer while its unique output holds a live runtime marker", async () => {
+    const source = '<main><article id="a">Source</article><footer class="muted">\n      <span>本页运行标记：<output id="demo-runtime-token"></output></span>\n      <span>输入、计数、标签和展开状态自动保存；不会自动发送消息。</span>\n    </footer><section id="right"></section></main>';
+    const initial = await create(source);
+    const live = documentFor(initial);
+    live.querySelector("#demo-runtime-token")!.textContent = "native-live-marker";
+    const move = request(initial, "move", "#a", { destination: "footer", destinationIdentity: componentIdentityFor(live.querySelector("footer")!) });
+    const moved = await store.edit(move);
+    expect(documentFor(moved).querySelector("footer > #a")!.textContent).toBe("Source");
+    expect(documentFor(moved).querySelector("#demo-runtime-token")!.textContent).toBe("");
+    expect(describeAuthoring((await new BoardStore(root).read(initial.id))!.canvas).replay.complete).toBe(true);
+    expect(await store.edit(move)).toEqual(moved);
+  });
+
+  it("copies an anonymous source using unique descendant identity but only the authoritative authored markup", async () => {
+    const initial = await create('<main><footer class="status"><span>Run: <output id="runtime">Authored</output></span><span>Keep</span></footer><section id="right"></section></main>');
+    const live = documentFor(initial), output = live.querySelector("#runtime")!;
+    output.textContent = "Live value must not be persisted";
+    output.setAttribute("data-live", "local state");
+    output.setAttribute("onmouseover", "runtimeOnly()");
+    const copy = request(initial, "copy", "footer", { sourceIdentity: componentIdentityFor(live.querySelector("footer")!) });
+    const copied = await store.edit(copy), clone = documentFor(copied).querySelector("#copied-0")!;
+    expect(clone.querySelector("output")!.textContent).toBe("Authored");
+    expect(clone.outerHTML).not.toContain("Live value");
+    expect(clone.outerHTML).not.toContain("data-live");
+    expect(clone.outerHTML).not.toContain("runtimeOnly");
+    expect(describeAuthoring((await new BoardStore(root).read(initial.id))!.canvas).replay.complete).toBe(true);
+  });
+
+  it("keeps anonymous text, attributes, containment and ambiguous descendant IDs guarded on both edit sides", async () => {
+    const initial = await create('<main><article id="a">Source</article><footer class="status"><span>Run: <output id="runtime">0</output></span><span>Keep</span></footer><section id="right"></section></main>');
+    const document = documentFor(initial), footer = document.querySelector("footer")!;
+    const mutate = (change: (live: typeof document) => void) => { const live = documentFor(initial); change(live); return componentIdentityFor(live.querySelector("footer")!); };
+    const changed = [
+      mutate(live => { live.querySelector("footer > span:last-child")!.textContent = "Another anonymous sibling"; }),
+      mutate(live => { live.querySelector("footer")!.setAttribute("class", "other-parent"); }),
+      mutate(live => { live.querySelector("footer > span:first-child")!.append(live.querySelector("footer > span:last-child")!); }),
+      mutate(live => { live.querySelector("#runtime")!.setAttribute("role", "button"); }),
+      mutate(live => { live.querySelector("#runtime")!.innerHTML = "<b>New structural child</b>"; }),
+      mutate(live => { live.querySelector("footer > span:last-child")!.append(live.querySelector("#runtime")!); }),
+      mutate(live => { live.querySelector("footer > span:last-child")!.innerHTML = '<output id="runtime">Duplicate</output>'; }),
+    ];
+    for (const identity of changed) {
+      await expect(store.edit(request(initial, "move", "#a", { destination: "footer", destinationIdentity: identity }))).rejects.toMatchObject({ code: "edit_conflict", details: { componentTarget: "destination", componentSelector: "footer" } });
+      await expect(store.edit(request(initial, "copy", "footer", { sourceIdentity: identity }))).rejects.toMatchObject({ code: "edit_conflict", details: { componentTarget: "source", componentSelector: "footer" } });
+    }
+    expect(componentIdentityFor(footer).authoredHtml).toContain("Keep");
+    expect(await store.read(initial.id)).toEqual(initial);
+  });
+
+  it("refuses a changed anonymous container when its otherwise stable descendant ID is duplicated elsewhere", async () => {
+    const initial = await create('<main><article id="a">Source</article><footer><output id="runtime">0</output></footer><aside><output id="runtime">Other</output></aside><section id="right"></section></main>');
+    const live = documentFor(initial); live.querySelector("footer output")!.textContent = "Live";
+    await expect(store.edit(request(initial, "move", "#a", { destination: "footer", destinationIdentity: componentIdentityFor(live.querySelector("footer")!) }))).rejects.toMatchObject({ code: "edit_conflict", details: { componentTarget: "destination" } });
+    expect(await store.read(initial.id)).toEqual(initial);
+  });
+
+  it("compares anonymous parsed content without mistaking entity spelling or attribute order for a different component", async () => {
+    const initial = await create('<main><p title="A &amp; B" class="copy">A &amp; B</p><section id="right"></section></main>');
+    const edit = request(initial, "text", "p", { text: "Edited" });
+    edit.patch.sourceIdentity!.authoredHtml = '<p class="copy" title="A &#38; B">A &#38; B</p>';
+    expect(documentFor(await store.edit(edit)).querySelector("p")!.textContent).toBe("Edited");
+  });
+
   it("includes actual containment in structural identity rather than only preorder tags", async () => {
     const document = new DOMParser().parseFromString('<main><section id="one"><div><i></i></div><b></b></section><section id="two"><div><i></i><b></b></div></section></main>', "text/html");
     const one = document.querySelector("#one")!, two = document.querySelector("#two")!;

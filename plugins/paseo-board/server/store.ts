@@ -12,7 +12,7 @@ import { assertId, assertJson, BoardStoreError, canonicalJson, ensureDirectory, 
 import { changeFeed, parseFeed } from "./feeds";
 import { applyDataPatch } from "./data-patch";
 import { summarizeBoard, sortBoardSummaries, type BoardCommitNotice } from "./board-events";
-import { prepareComponentPatch } from "./authored-source";
+import { ComponentSourceMismatch, prepareComponentPatch } from "./authored-source";
 
 export { BoardStoreError } from "./store-format";
 export type InteractionUpdate = Partial<Pick<Interaction, "status" | "agentId" | "response" | "responseRevision" | "responseSource" | "responseMethod" | "responseCanvas" | "resultReferences" | "error">>;
@@ -144,7 +144,7 @@ export class BoardStore {
 
   private prepareEdit(canvas: Board["canvas"], patch: CanvasPatch): CanvasPatch {
     try { return prepareComponentPatch(canvas, patch); }
-    catch (error) { throw new BoardStoreError("edit_conflict", error instanceof Error ? error.message : String(error), { selector: patch.selector, canvasBase: { revision: canvas.revision, documentVersion: canvas.documentVersion } }); }
+    catch (error) { throw new BoardStoreError("edit_conflict", error instanceof Error ? error.message : String(error), { selector: patch.selector, canvasBase: { revision: canvas.revision, documentVersion: canvas.documentVersion }, ...(error instanceof ComponentSourceMismatch ? { componentTarget: error.componentTarget, componentSelector: error.componentSelector } : {}) }); }
   }
 
   async publish(raw: PublishInput, actorAgentId?: string): Promise<Board> {

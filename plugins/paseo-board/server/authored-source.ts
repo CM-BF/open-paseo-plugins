@@ -10,7 +10,7 @@ export type AuthoringDescription = {
   replay: {
     complete: boolean;
     appliedPatchIds: string[];
-    failedPatch?: { id: string; selector: string; reason: string };
+    failedPatch?: { id: string; selector: string; reason: string; componentTarget?: "source" | "destination"; componentSelector?: string };
   };
   note: string;
 };
@@ -23,19 +23,67 @@ const rootTags = new Set(["html", "head", "body"]);
 const nonComponents = new Set(["script", "style", "link", "meta", "base", "title", "template", "noscript"]);
 const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
 
-function expectIdentity(document: AuthoredDocument, target: AuthoredElement, expected: ComponentIdentity | undefined) {
-  if (!expected) throw new Error("Component identity is required");
-  if (target.id && (Array.from(document.querySelectorAll("[id]")) as AuthoredElement[]).filter(node => node.id === target.id).length !== 1) throw new Error("Component has a duplicate ID");
+export class ComponentSourceMismatch extends Error {
+  constructor(message: string, readonly componentTarget: "source" | "destination", readonly componentSelector: string) {
+    super(message);
+    this.name = "ComponentSourceMismatch";
+  }
+}
+
+/**
+ * Anonymous selectors need content evidence in addition to their structural hash.
+ * Compare actual parsed nodes, not serializer bytes or string placeholders. A
+ * globally unique authored descendant ID has the same identity semantics as an
+ * ID-selected component: its live text/state may change while its complete
+ * structure remains the same. Everything outside those anchored descendants is
+ * still compared exactly, including anonymous text and attributes.
+ */
+function matchesAnonymousSource(document: AuthoredDocument, target: AuthoredElement, html: string | undefined): boolean {
+  if (html === undefined) return false;
+  if (html === target.outerHTML) return true;
+  const template = document.createElement("template", undefined);
+  template.innerHTML = html;
+  const roots = Array.from(template.content.childNodes) as Array<{ nodeType: number }>;
+  if (roots.length !== 1 || roots[0].nodeType !== 1) return false;
+  const captured = roots[0] as AuthoredElement;
+  const authoredIds = new Map<string, number>();
+  for (const element of Array.from(document.querySelectorAll("[id]")) as AuthoredElement[]) authoredIds.set(element.id, (authoredIds.get(element.id) ?? 0) + 1);
+  const capturedIds = new Map<string, number>();
+  for (const element of [captured, ...Array.from(captured.querySelectorAll("[id]")) as AuthoredElement[]]) if (element.id) capturedIds.set(element.id, (capturedIds.get(element.id) ?? 0) + 1);
+  type NodeShape = { nodeType: number; textContent: string | null; childNodes: ArrayLike<NodeShape> };
+  const attributes = (element: AuthoredElement) => JSON.stringify((Array.from(element.attributes) as Array<{ name: string; value: string }>).map(attribute => [attribute.name, attribute.value]).sort((a, b) => a[0].localeCompare(b[0])));
+  let visited = 0;
+  const matches = (authoredNode: NodeShape, capturedNode: NodeShape): boolean => {
+    if (++visited > 10000 || authoredNode.nodeType !== capturedNode.nodeType) return false;
+    if (authoredNode.nodeType !== 1) return authoredNode.textContent === capturedNode.textContent;
+    const authoredElement = authoredNode as AuthoredElement, capturedElement = capturedNode as AuthoredElement;
+    if (authoredElement.localName.toLowerCase() !== capturedElement.localName.toLowerCase() || authoredElement.id !== capturedElement.id) return false;
+    if (authoredElement !== target && authoredElement.id) {
+      if (authoredIds.get(authoredElement.id) !== 1 || capturedIds.get(capturedElement.id) !== 1) return false;
+      const authoredIdentity = componentIdentityFor(authoredElement), capturedIdentity = componentIdentityFor(capturedElement);
+      return authoredIdentity.tag === capturedIdentity.tag && authoredIdentity.id === capturedIdentity.id && authoredIdentity.fingerprint === capturedIdentity.fingerprint;
+    }
+    if (attributes(authoredElement) !== attributes(capturedElement)) return false;
+    const authoredChildren = Array.from(authoredNode.childNodes), capturedChildren = Array.from(capturedNode.childNodes);
+    return authoredChildren.length === capturedChildren.length && authoredChildren.every((node, index) => matches(node, capturedChildren[index]));
+  };
+  return matches(target, captured);
+}
+
+function expectIdentity(document: AuthoredDocument, target: AuthoredElement, expected: ComponentIdentity | undefined, side: "source" | "destination", selector: string) {
+  const mismatch = (message: string): never => { throw new ComponentSourceMismatch(message, side, selector); };
+  if (!expected) return mismatch("Component identity is required");
+  if (target.id && (Array.from(document.querySelectorAll("[id]")) as AuthoredElement[]).filter(node => node.id === target.id).length !== 1) return mismatch("Component has a duplicate ID");
   const current = componentIdentityFor(target);
   if (current.tag !== expected.tag || current.id !== expected.id || current.fingerprint !== expected.fingerprint) {
-    throw new Error("Component structure differs from the authored source; select an authored component again");
+    return mismatch("Component structure differs from the authored source; select an authored component again");
   }
-  if (!target.id && expected.authoredHtml !== target.outerHTML) throw new Error("Anonymous component no longer matches its authored source; select it again");
+  if (!target.id && !matchesAnonymousSource(document, target, expected.authoredHtml)) return mismatch("Anonymous component no longer matches its authored source; select it again");
 }
 
 function applyComponentPatch(document: AuthoredDocument, target: AuthoredElement, patch: CanvasPatch, targetFor: (selector: string) => AuthoredElement) {
   if (rootTags.has(target.localName) || nonComponents.has(target.localName)) throw new Error("Document roots and executable metadata cannot be edited as components");
-  expectIdentity(document, target, patch.sourceIdentity);
+  expectIdentity(document, target, patch.sourceIdentity, "source", patch.selector);
   if (patch.operation === "text") {
     if (["input", "textarea", "select"].includes(target.localName)) throw new Error("Use the control's native editing behavior");
     if (patch.text === undefined || patch.expectedText === undefined) throw new Error("Text edits require current and replacement text");
@@ -52,7 +100,7 @@ function applyComponentPatch(document: AuthoredDocument, target: AuthoredElement
   }
   if (!patch.destination || !patch.position) throw new Error("Component placement requires a destination and position");
   const destination = targetFor(patch.destination);
-  expectIdentity(document, destination, patch.destinationIdentity);
+  expectIdentity(document, destination, patch.destinationIdentity, "destination", patch.destination);
   if (rootTags.has(destination.localName) || nonComponents.has(destination.localName)) throw new Error("Select an authored content container instead of a document root");
   if (target === destination || target.contains(destination)) throw new Error("A component cannot be placed inside or relative to itself or its descendants");
   if (["append", "prepend"].includes(patch.position) && voidTags.has(destination.localName)) throw new Error("This element cannot contain components");
@@ -99,7 +147,11 @@ export function prepareComponentPatch(canvas: AuthoringCanvas, patch: CanvasPatc
   const next = { ...canvas, patches: [...canvas.patches, patch] };
   const selector = patch.operation === "copy" ? `#${patch.copyIdPrefix}-0` : undefined;
   const result = describeAuthoring(next, selector);
-  if (!result.replay.complete) throw new Error(result.replay.failedPatch?.reason ?? result.note);
+  if (!result.replay.complete) {
+    const failed = result.replay.failedPatch;
+    if (failed?.componentTarget && failed.componentSelector) throw new ComponentSourceMismatch(failed.reason, failed.componentTarget, failed.componentSelector);
+    throw new Error(failed?.reason ?? result.note);
+  }
   // Copies are authored snapshots. The browser must not accidentally copy ephemeral
   // rendered data, saved controls, closures or execute duplicate inline handlers.
   if (patch.operation === "copy" && result.target!.html.length > 2000000) throw new Error("Copied component exceeds the 2000000-character patch limit");
@@ -155,7 +207,7 @@ export function describeAuthoring(canvas: AuthoringCanvas, selector?: string): A
         applied.add(patch.id);
         result.replay.appliedPatchIds.push(patch.id);
       } catch (error) {
-        result.replay.failedPatch = { id: patch.id, selector: patch.selector, reason: errorMessage(error) };
+        result.replay.failedPatch = { id: patch.id, selector: patch.selector, reason: errorMessage(error), ...(error instanceof ComponentSourceMismatch ? { componentTarget: error.componentTarget, componentSelector: error.componentSelector } : {}) };
         result.note += " Replay stopped at the failed patch; no current source is returned. Inspect canvas.html together with the original canvas.patches journal.";
         return result;
       }
