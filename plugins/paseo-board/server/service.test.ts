@@ -303,6 +303,40 @@ describe("BoardService SDK adapter", () => {
     await expect(service.interact({ boardId: "board", intentId: "compact-main", kind: "question", destination: "side", text: "Explain the selected claim", anchor })).rejects.toHaveProperty("code", "idempotency_conflict");
   });
 
+  it.each([false, true])("sends and persists the selected component identity unchanged across retries (PNG: %s)", async (withImage) => {
+    let board = (await store.read("board"))!;
+    const anchor = {
+      kind: "element" as const, selector: "#target", boardRevision: board.revision, canvasRevision: board.canvas.revision,
+      rect: { x: 20, y: 40, width: 320, height: 120 },
+      binding: { documentVersion: board.canvas.documentVersion, key: "binding-component-reference",
+        target: { selector: "#target", tag: "main", id: "target", fingerprint: "57beb693" },
+        ancestors: [{ selector: "body", tag: "body", fingerprint: "cf30f19a" }], relative: { x: 0.5, y: 0.5 } },
+      ...(withImage ? { image: { mimeType: "image/png" as const, data: "cG5n" } } : {}),
+    };
+    const input = { boardId: "board", intentId: "component-reference", kind: "question" as const, destination: "main" as const, text: "Change this component", anchor };
+    await service.interact(input); await service.drain();
+    const sent = sdk.sends[0];
+    const context = JSON.parse(sent.text.match(/<board-context-untrusted-json>\n([^]*?)\n<\/board-context-untrusted-json>/)![1]);
+    expect(sent.id).toBe("owner");
+    expect(context.anchor).toEqual({ ...anchor, image: withImage ? { mimeType: "image/png", attached: true } : undefined });
+    expect(sent.text).toContain("The user selected an entire component");
+    expect(sent.text).toContain("captured selector");
+    expect(sent.text).toContain("binding fingerprint is not an edit identity or canvasBase");
+    expect(sent.text).not.toContain("cG5n");
+    expect(sent.options.images).toEqual(withImage ? [anchor.image] : undefined);
+    expect((await store.read("board"))!.interactions[0].anchor).toEqual(anchor);
+
+    board = (await store.read("board"))!;
+    await store.publish({ boardId: "board", expectedRevision: board.revision, canvasBase: canvasBase(board), eventId: "replace-selected-component", replaceDocument: true, html: '<main id="replacement">A different component</main>' });
+    await service.interact(input); await service.drain();
+    expect(sdk.sends).toHaveLength(1);
+    await expect(service.interact({ ...input, anchor: { ...anchor, selector: "#replacement" } })).rejects.toHaveProperty("code", "idempotency_conflict");
+    const restoredJournal = new ServiceJournal(join(dir, "service.json")); await restoredJournal.init();
+    expect(restoredJournal.get("board/component-reference")).toMatchObject({ input: { anchor }, request: { anchor }, prompt: sent.text });
+    const restoredStore = new BoardStore(dir); await restoredStore.init();
+    expect((await restoredStore.read("board"))!.interactions[0].anchor).toEqual(anchor);
+  });
+
   it("keeps full selected source text frozen on the interaction while only sending a bounded excerpt", async () => {
     await store.addInteraction({ boardId: "board", intentId: "source", kind: "question", text: "Original source question" }, "owner");
     const original = "Selected original response ".repeat(1000) + "UNIQUE_FROZEN_TAIL";

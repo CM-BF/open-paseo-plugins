@@ -1,5 +1,12 @@
 # Paseo Board publication and verification
 
+### 2026-10-31 — direct gestures implemented; clean integration pending
+
+- The user requested three direct actions after selecting a component: right-click to compose a component reference, drag the component body to move it, and double-click its text to edit in place. Existing reference/capture, structural move and guarded text-save machinery remain the implementation paths.
+- A right-click inside the selection references the selected component, including its selector, binding identity and frozen canvas version alongside the screenshot. A short movement threshold separates clicks/double-clicks from structural dragging. Text hit testing targets the actual direct text run; native input/editor paths and unselected authored controls keep their normal behavior.
+- Real Chromium passed all 76 canvas checks, including five new direct-gesture scenarios: complete selected-parent reference and PNG, interrupted drag cancellation, movement threshold and preview/commit, exact text-run double-click, and native/synthetic event boundaries. TypeScript and 59 service tests passed, including persisted reference identity and immutable retries with and without PNG. Independent review has no open findings; both direct press and toolbar drag catch oversized-identity failures.
+- Final generated assets, clean pinned-source verification and local installation are next. Local test installation remains authorized; all publication stays on draft PR #4 and main remains unchanged. Native acceptance has not yet been attempted for this revision.
+
 ### 2026-10-31 — source-position text editing installed; native acceptance unavailable
 
 - Text now edits at its original canvas location in an isolated layer with the source typography and wrapping, instead of a separate input window. Original nodes, child markup and controls remain intact until the existing host Save. The ordinary Save card has no second text field; failed or uncertain saves retain a read-only copyable draft.

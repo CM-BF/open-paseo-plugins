@@ -866,6 +866,8 @@ function (initial, createFrameReceiver) {
   let componentPointer = null;
   let componentClipboard = null;
   let componentDrag = null;
+  let componentPress = null;
+  let componentClick = null;
   let componentText = null;
   let componentPending = null;
   let componentResume = null;
@@ -931,7 +933,7 @@ function (initial, createFrameReceiver) {
   });
   const clearComponent = () => {
     componentText?.host.remove(); componentHost?.remove(); componentHost = null; selectedComponent = null; componentChoices = []; componentParents = []; componentChildren = []; componentText = null;
-    clearComponentHover(); clearComponentGhost(); clearComponentLayoutPreview(); componentDrag = null;
+    clearComponentHover(); clearComponentGhost(); clearComponentLayoutPreview(); componentDrag = null; componentPress = null; componentClick = null;
     componentResize.disconnect(); componentMutation.disconnect();
     if (componentFrame !== null) cancelAnimationFrame(componentFrame);
     componentFrame = null;
@@ -1287,7 +1289,7 @@ function (initial, createFrameReceiver) {
     text.run.editor.setAttribute("contenteditable",readonly?"false":"true");
     text.run.editor.setAttribute("aria-readonly",String(readonly));
   };
-  const startComponentText = () => {
+  const startComponentText = (preferredTextNode = null) => {
     if (componentText) { focusComponentText(); return; }
     const source=selectedComponent, runs=componentTextRuns(source); if (!runs.length) return;
     const svg=source.namespaceURI === "http://www.w3.org/2000/svg";
@@ -1348,7 +1350,7 @@ function (initial, createFrameReceiver) {
     const choices=componentHost.shadowRoot.querySelector(".text-runs");choices.replaceChildren();
     runs.forEach((run,index)=>{const option=document.createElement("option");option.value=String(index);option.textContent=run.text.trim().slice(0,55);choices.append(option);});choices.hidden=runs.length<2;
     for (const menu of componentHost.shadowRoot.querySelectorAll(".popover")) menu.hidden=true;
-    clearComponentHover();setComponentNotice("");positionComponent();chooseComponentTextRun(0,true);
+    clearComponentHover();setComponentNotice("");positionComponent();chooseComponentTextRun(Math.max(0,runs.findIndex(run=>run.node===preferredTextNode)),true);
   };
   const cancelComponentText = () => {
     componentText?.host.remove();componentText=null;setComponentNotice("");positionComponent();
@@ -1385,20 +1387,44 @@ function (initial, createFrameReceiver) {
     previewComponent(destination, destination ? `${componentLabel(destination)} · ${names[componentDrag.position]} · 层级 ${componentDrag.depth + 1}/${componentDrag.candidates.length}` : "");
     setComponentNotice(destination ? `目标 ${componentLabel(destination)} · ${names[componentDrag.position]}；Tab 切换上级，Shift+Tab 返回下级` : "移到目标组件上 · Esc 取消");
   };
-  const startComponentDrag = (event) => {
+  const componentGesture = () => ({node:selectedComponent,identity:componentIdentity(selectedComponent),canvasBase:{revision:snapshot.canvas.revision,documentVersion:snapshot.canvas.documentVersion}});
+  const componentGestureLive = gesture => {
+    try { return gesture && gesture.node===selectedComponent && gesture.node.isConnected && visibleBox(gesture.node)
+      && snapshot.canvas.revision===gesture.canvasBase.revision && snapshot.canvas.documentVersion===gesture.canvasBase.documentVersion
+      && (!queued || queued.snapshot.canvas.revision===gesture.canvasBase.revision && queued.snapshot.canvas.documentVersion===gesture.canvasBase.documentVersion)
+      && matchesComponentIdentity(gesture.node,gesture.identity); } catch { return false; }
+  };
+  const referenceComponent = position => {
+    const target=selectedComponent;if (!target?.isConnected || componentPending || componentText || componentDrag || applying || !visibleBox(target)) return;
+    const region=rect(target.getBoundingClientRect());
+    const anchor={...currentAnchor(),kind:"element",selector:selectorFor(target),rect:region,viewport:viewport(),binding:captureBinding(target,region)};
+    const session=beginSelection(position || {x:Math.max(8,Math.min(region.x-scrollX,innerWidth-24)),y:Math.max(8,Math.min(region.y-scrollY,innerHeight-24))});
+    void finishSelection(session,anchor,region);
+  };
+  const componentTextHit = event => {
+    const range=document.caretRangeFromPoint?.(event.clientX,event.clientY),caret=range?null:document.caretPositionFromPoint?.(event.clientX,event.clientY);
+    const node=range?.startContainer || caret?.offsetNode,source=node?.parentElement;
+    if (node?.nodeType!==Node.TEXT_NODE || !selectedComponent?.contains(node) || !authorElement(source)
+      || !componentTextRuns(source).some(run=>source.childNodes[run.index]===node)) return null;
+    const bounds=document.createRange();bounds.selectNodeContents(node);
+    return Array.from(bounds.getClientRects()).some(box=>event.clientX>=box.left-2 && event.clientX<=box.right+2 && event.clientY>=box.top-2 && event.clientY<=box.bottom+2) ? {node,source}:null;
+  };
+  const startComponentDrag = (event, gesture = componentGesture()) => {
     if (componentPending || componentText || !selectedComponent?.isConnected) return;
-    componentDrag = { pointerId: event.pointerId, candidates: [], depth: 0, position: "append" };
+    if (!componentGestureLive(gesture)) {setComponentNotice("组件已变化，请重新选择后拖动");return;}
+    componentPress=null;componentClick=null;componentDrag = { pointerId: event.pointerId, candidates: [], depth: 0, position: "append", gesture };
     clearComponentHover(); showComponentGhost(eventPoint(event)); suppressPointerClick = true; try { root.setPointerCapture(event.pointerId); } catch {} paintComponentDrag();
   };
   const cancelComponentDrag = () => {
-    const active = componentDrag; componentDrag = null; clearComponentHover(); clearComponentGhost();
+    const active = componentDrag; componentDrag = null; componentPress=null; componentClick=null; clearComponentHover(); clearComponentGhost();
     if (active) try { if (root.hasPointerCapture(active.pointerId)) root.releasePointerCapture(active.pointerId); } catch {}
     setComponentNotice("");
   };
   const finishComponentDrag = () => {
     const active = componentDrag, source = selectedComponent, destination = active?.candidates[active.depth]; cancelComponentDrag();
     if (!source?.isConnected || !destination?.isConnected || source === destination || source.contains(destination)) return;
-    proposeComponentEdit(componentPatch("move", source, { destination: selectorFor(destination), destinationIdentity: componentIdentity(destination), position: active.position }));
+    if (!componentGestureLive(active.gesture)) {setComponentNotice("组件已变化，请重新选择后拖动");return;}
+    proposeComponentEdit(componentPatch("move", source, { destination: selectorFor(destination), destinationIdentity: componentIdentity(destination), position: active.position }),active.gesture.canvasBase);
   };
   const componentAction = (event) => {
     const button = event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-component-action"));
@@ -1419,12 +1445,7 @@ function (initial, createFrameReceiver) {
     if (action === "text") { startComponentText(); return; }
     if (action === "text-save") { saveComponentText(); return; }
     if (action === "text-cancel") { cancelComponentText(); return; }
-    const target = selectedComponent;
-    if (action !== "reference" || !target || !visibleBox(target)) return;
-    const box = target.getBoundingClientRect(), region = rect(box);
-    const anchor = { ...currentAnchor(), kind: "element", selector: selectorFor(target), rect: region, viewport: viewport(), binding: captureBinding(target, region) };
-    const session = beginSelection({ x: Math.max(8, Math.min(box.left, innerWidth - 24)), y: Math.max(8, Math.min(box.top, innerHeight - 24)) });
-    void finishSelection(session, anchor, region);
+    if (action === "reference") referenceComponent();
   };
   const resumeComponentEdit = () => {
     if (!componentResume || snapshot.canvas.revision < componentResume.revision || queued || applying) return;
@@ -1922,7 +1943,7 @@ function (initial, createFrameReceiver) {
     if (inComponentPreview(event)) { if (event.button===0) { event.preventDefault();window.focus();componentLayoutPreview.viewport.focus({preventScroll:true}); } event.stopImmediatePropagation(); return; }
     if (inComponents(event)) {
       const handle = event.composedPath().find(node => node instanceof Element && node.dataset.componentAction === "drag");
-      if (handle && !handle.disabled && event.button === 0) { event.preventDefault(); startComponentDrag(event); }
+      if (handle && !handle.disabled && event.button === 0) { event.preventDefault();try {startComponentDrag(event);} catch(failure) {setComponentNotice(failure.message || String(failure));} }
       event.stopImmediatePropagation(); return;
     }
     if (inMarkers(event)) { window.focus(); cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); event.stopImmediatePropagation(); return; }
@@ -1932,7 +1953,13 @@ function (initial, createFrameReceiver) {
     if (event.button !== 0) return;
     const shortcut = event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey && !isEditor(event);
     if (selectionMode === "component" || shortcut) {
-      if (componentPending || componentText) { event.preventDefault(); event.stopImmediatePropagation(); return; }
+      if (isEditor(event)) return;
+      if (componentPending || componentText || componentDrag || applying) { event.preventDefault(); event.stopImmediatePropagation(); return; }
+      if (!shortcut && selectionMode === "component" && selectedComponent?.isConnected && selectedComponent.contains(event.target)) {
+        event.preventDefault();event.stopImmediatePropagation();suppressPointerClick=true;
+        try {componentPress={...componentGesture(),pointerId:event.pointerId,position:eventPoint(event)};} catch(failure) {componentPress=null;componentClick=null;setComponentNotice(failure.message || String(failure));}
+        return;
+      }
       if (shortcut && selectionMode !== "component") setSelectionMode("component");
       componentNotice = "";
       event.preventDefault(); event.stopImmediatePropagation(); suppressPointerClick = true;
@@ -1967,10 +1994,19 @@ function (initial, createFrameReceiver) {
     if (!event.isTrusted) return;
     componentPointer = eventPoint(event);
     if (inComponentPreview(event)) { clearComponentHover(); event.stopImmediatePropagation(); return; }
+    if (componentPress?.pointerId===event.pointerId) {
+      event.preventDefault();event.stopImmediatePropagation();
+      const press=componentPress;
+      if (!(event.buttons&1) || !componentGestureLive(press)) {componentPress=null;componentClick=null;return;}
+      if (Math.hypot(event.clientX-press.position.x,event.clientY-press.position.y)<6) return;
+      startComponentDrag(event,press);
+    }
     if (componentDrag) {
+      if (!componentGestureLive(componentDrag.gesture)) {cancelComponentDrag();setComponentNotice("组件已变化，请重新选择后拖动");return;}
       if (componentDrag.pointerId === event.pointerId) { componentDrag.candidates = componentDestinations(componentPointer); componentDrag.depth = Math.min(componentDrag.depth, Math.max(0, componentDrag.candidates.length - 1)); paintComponentDrag(); }
       event.preventDefault(); event.stopImmediatePropagation(); return;
     }
+    if (selectionMode === "component" && isEditor(event)) return;
     componentShortcut = event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey && !isEditor(event);
     if (componentShortcut || selectionMode === "component") updateComponentHover(); else clearComponentHover();
     if (inComponents(event)) { event.stopImmediatePropagation(); return; }
@@ -1986,6 +2022,11 @@ function (initial, createFrameReceiver) {
   window.addEventListener("pointerup", (event) => {
     if (!event.isTrusted || event.button !== 0) return;
     if (inComponentPreview(event)) { event.stopImmediatePropagation(); return; }
+    if (componentPress?.pointerId===event.pointerId) {
+      const press=componentPress;componentPress=null;componentClick=componentGestureLive(press)?{...press,finished:performance.now()}:null;
+      event.preventDefault();event.stopImmediatePropagation();return;
+    }
+    if (selectionMode==="component" && isEditor(event)) return;
     if (componentDrag?.pointerId === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); try { finishComponentDrag(); } catch (failure) { setComponentNotice(failure.message); } return; }
     if (inComponents(event)) { event.stopImmediatePropagation(); return; }
     if (inMarkers(event)) { event.stopImmediatePropagation(); return; }
@@ -2030,13 +2071,15 @@ function (initial, createFrameReceiver) {
   }, true);
   window.addEventListener("pointercancel", () => { cancelComponentDrag(); dismissedPointer = null; cancelSelection({ notify: true }); }, true);
   window.addEventListener("lostpointercapture", (event) => {
+    if (componentDrag?.pointerId===event.pointerId && !root.hasPointerCapture(event.pointerId)) cancelComponentDrag();
     if (pointer?.pointerId === event.pointerId && !root.hasPointerCapture(event.pointerId)) cancelSelection({ notify: true });
   }, true);
   window.addEventListener("pointerout", (event) => {
+    if (componentPress && !event.relatedTarget) {componentPress=null;componentClick=null;}
     if (pointer && !event.relatedTarget && !root.hasPointerCapture(pointer.pointerId)) cancelSelection({ notify: true });
   }, true);
   window.addEventListener("blur", () => {
-    componentShortcut = false; clearComponentHover(); if (componentDrag) cancelComponentDrag();
+    componentPress=null;componentClick=null;componentShortcut = false; clearComponentHover(); if (componentDrag) cancelComponentDrag();
     if (!selectionSession) return;
     // The host input takes focus before capture finishes. Keep its completed reference alive;
     // host dismissal/submission sends a generation-scoped cancellation explicitly.
@@ -2045,10 +2088,14 @@ function (initial, createFrameReceiver) {
   window.addEventListener("contextmenu", (event) => {
     if (!event.isTrusted) return;
     if (inComponentText(event)) { event.stopImmediatePropagation(); return; }
-    if (inComponents(event) || selectionMode === "component") { event.preventDefault(); event.stopImmediatePropagation(); return; }
+    if (inComponents(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; }
     if (inMarkers(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; }
-    if (event.shiftKey || isEditor(event)) { cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); return; }
-    if (applying) return;
+    if (event.shiftKey || isEditor(event)) { if (selectionMode!=="component") cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); return; }
+    if (componentPending || componentText || componentDrag || applying) {event.preventDefault();event.stopImmediatePropagation();return;}
+    if (selectionMode==="component" && selectedComponent?.isConnected && selectedComponent.contains(event.target)) {
+      event.preventDefault();event.stopImmediatePropagation();lastGesture=performance.now();
+      try {referenceComponent(eventPoint(event));} catch(failure) {setComponentNotice(failure.message || String(failure));}return;
+    }
     event.preventDefault();
     event.stopImmediatePropagation();
     lastGesture = performance.now();
@@ -2062,7 +2109,16 @@ function (initial, createFrameReceiver) {
     const session = beginSelection(point);
     void finishSelection(session, selected.anchor, selected.region, Boolean(previous));
   }, true);
+  window.addEventListener("dblclick",event=>{
+    if (!event.isTrusted || inComponentText(event) || selectionMode!=="component" || isEditor(event) || !selectedComponent?.contains(event.target)) return;
+    event.preventDefault();event.stopImmediatePropagation();
+    if (componentPending || componentText || componentDrag || applying || !componentClick || performance.now()-componentClick.finished>1000 || !componentGestureLive(componentClick)) return;
+    const hit=componentTextHit(event);componentClick=null;
+    if (!hit) return;
+    try {selectComponent(hit.source);startComponentText(hit.node);} catch(failure) {setComponentNotice(failure.message || String(failure));}
+  },true);
   window.addEventListener("click", (event) => {
+    if (selectionMode==="component" && isEditor(event) && authorElement(event.target)) return;
     if (inComponentText(event)) { event.stopImmediatePropagation(); return; }
     if (inComponentPreview(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; }
     if (inComponents(event)) {
@@ -2133,6 +2189,7 @@ function (initial, createFrameReceiver) {
     }
     if (event.isTrusted) lastGesture = performance.now();
     if (!event.isTrusted) return;
+    if (componentPress && event.key === "Escape") {componentPress=null;componentClick=null;event.preventDefault();event.stopImmediatePropagation();return;}
     if (componentDrag) {
       if (event.key === "Escape") cancelComponentDrag();
       else if (event.key === "Tab") { const size = componentDrag.candidates.length; if (size) componentDrag.depth = (componentDrag.depth + (event.shiftKey ? size - 1 : 1)) % size; paintComponentDrag(); }
