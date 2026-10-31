@@ -194,13 +194,17 @@ function (initial, createFrameReceiver) {
       const parent = ["before", "after"].includes(patch.position) ? destination.parentNode : destination;
       const before = patch.position === "before" ? destination : patch.position === "after" ? destination.nextSibling : patch.position === "prepend" ? destination.firstChild : null;
       if (patch.operation === "copy") {
-        const template = document.createElement("template"); template.innerHTML = patch.html;
+        // Parse in the source's actual namespace/context. An HTML template turns SVG
+        // subcomponents such as <g>/<rect> into invisible HTML unknown elements. Range
+        // parsing also retains SVG foreignObject's HTML integration points.
+        const range = document.createRange(); range.selectNode(target);
+        const content = range.createContextualFragment(patch.html);
         // Copy authoritative authored markup, never runtime listeners/closures. Defense in
         // depth: copied scripts and inline handler attributes never execute on insertion.
-        for (const script of template.content.querySelectorAll("script")) script.remove();
-        for (const element of template.content.querySelectorAll("*")) for (const attribute of Array.from(element.attributes)) if (/^on/i.test(attribute.name)) element.removeAttribute(attribute.name);
-        const inserted = Array.from(template.content.children); capturePatchTargets(patch, target, inserted);
-        parent.insertBefore(template.content, before); return;
+        for (const script of content.querySelectorAll("script")) script.remove();
+        for (const element of content.querySelectorAll("*")) for (const attribute of Array.from(element.attributes)) if (/^on/i.test(attribute.name)) element.removeAttribute(attribute.name);
+        const inserted = Array.from(content.children); capturePatchTargets(patch, target, inserted);
+        parent.insertBefore(content, before); return;
       }
       const focused = document.activeElement;
       const restoreFocus = focused instanceof HTMLElement && target.contains(focused);
@@ -943,7 +947,7 @@ function (initial, createFrameReceiver) {
       :host{color-scheme:normal}.outline{position:fixed;box-sizing:border-box;border:2px solid var(--host-iris,#658aeb);background:#658aeb12;pointer-events:none}.outline[hidden],[hidden]{display:none!important}
       .panel,.text-editor{position:absolute;box-sizing:border-box;padding:10px;border:1px solid var(--host-line-strong,#aaa);border-radius:10px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);font:12px/1.5 system-ui;box-shadow:0 3px 15px #0002;pointer-events:auto}
       .panel{bottom:12px;left:12px;max-width:min(700px,calc(100% - 24px));max-height:40vh;overflow:auto}.row{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}button,select,textarea{font:inherit;color:inherit;background:transparent}button,select{padding:4px 8px;border:1px solid var(--host-line-strong,#ccc);border-radius:5px}button{cursor:pointer}button[aria-current=true]{border-color:var(--host-iris,#658aeb);font-weight:600}button:focus-visible,textarea:focus-visible{outline:2px solid var(--host-iris,#658aeb)}button:disabled{opacity:.5;cursor:default}.label,.hint{opacity:.75}.hint{margin-top:6px}textarea{display:block;box-sizing:border-box;width:100%;min-height:74px;resize:vertical;margin-top:6px;border:1px solid var(--host-line-strong,#aaa);border-radius:4px;padding:6px}.text-editor{z-index:2}button[data-component-action=drag]{touch-action:none;cursor:grab}
-    </style><div class="outline"></div><div class="panel" role="region" aria-label="组件选择"><div role="status"></div><div class="label">包含层级</div><div class="row ancestors"></div><div class="label">直接子组件</div><div class="row children"></div><div class="row"><button type="button" data-component-action="drag">拖动组件</button><button type="button" data-component-action="cut">剪切</button><button type="button" data-component-action="copy">复制</button><select aria-label="粘贴位置" class="placement"><option value="append">放入末尾</option><option value="prepend">放入开头</option><option value="before">放在前面</option><option value="after">放在后面</option></select><button type="button" data-component-action="paste">粘贴到此处</button><button type="button" data-component-action="text">编辑文字</button></div><div class="row"><button type="button" data-component-action="reference">引用组件</button><button type="button" data-component-action="close">完成选择 · Esc</button></div><div class="hint">拖动时 Tab / Shift+Tab 切换目标层级，↑ 前面 · ↓ 后面 · ← 开头 · → 末尾。复制保留结构和样式，不复制运行中的 JS 状态。</div></div><div class="text-editor" hidden><label>编辑这段文字 <select class="text-runs" aria-label="文字段落"></select></label><textarea aria-label="组件文字" spellcheck="false"></textarea><div class="row"><button type="button" data-component-action="text-save">预览修改</button><button type="button" data-component-action="text-cancel">取消 · Esc</button></div></div>`;
+    </style><div class="outline"></div><div class="panel" role="region" aria-label="组件选择"><div role="status"></div><div class="label">包含层级</div><div class="row ancestors"></div><div class="label">直接子组件</div><div class="row children"></div><div class="row"><button type="button" data-component-action="drag">拖动组件</button><button type="button" data-component-action="cut">剪切</button><button type="button" data-component-action="copy">复制</button><select aria-label="粘贴位置" class="placement"><option value="append">放入末尾</option><option value="prepend">放入开头</option><option value="before">放在前面</option><option value="after">放在后面</option></select><button type="button" data-component-action="paste">粘贴到此处</button><button type="button" data-component-action="text">编辑文字</button></div><div class="row"><button type="button" data-component-action="reference">引用组件</button><button type="button" data-component-action="close">完成选择 · Esc</button></div><div class="hint">拖动时 Tab / Shift+Tab 切换目标层级，↑ 前面 · ↓ 后面 · ← 开头 · → 末尾。复制结构；不复制运行中的 JS 状态，依赖原 ID 的样式可能需调整。</div></div><div class="text-editor" hidden><label>编辑这段文字 <select class="text-runs" aria-label="文字段落"></select></label><textarea aria-label="组件文字" spellcheck="false"></textarea><div class="row"><button type="button" data-component-action="text-save">预览修改</button><button type="button" data-component-action="text-cancel">取消 · Esc</button></div></div>`;
     const addChoice = (element, container) => {
       const button = document.createElement("button"); button.type = "button"; button.dataset.componentAction = "choose"; button.dataset.componentIndex = String(componentChoices.length);
       button.textContent = componentLabel(element); button.setAttribute("aria-current", String(element === node)); componentChoices.push(element); container.append(button);
@@ -964,10 +968,10 @@ function (initial, createFrameReceiver) {
     const elements = [node, ...node.querySelectorAll("*")];
     if (elements.length > 2000) throw new Error("组件包含超过 2000 个元素，请选择更小的组件");
     const indices = new Map(elements.map((element, index) => [element, index]));
-    const input = JSON.stringify(elements.map(element => [indices.get(element.parentElement) ?? -1, element.localName, element.id || "", element.getAttribute("role") || "", element.getAttribute("name") || "", element.getAttribute("type") || ""]));
+    const input = JSON.stringify(elements.map(element => [indices.get(element.parentElement) ?? -1, element.localName.toLowerCase(), element.id || "", element.getAttribute("role") || "", element.getAttribute("name") || "", element.getAttribute("type") || ""]));
     if (!node.id && node.outerHTML.length > 240000) throw new Error("没有固定 ID 的组件过大，请选择更小的组件");
     let hash = 2166136261; for (let i = 0; i < input.length; i++) hash = Math.imul(hash ^ input.charCodeAt(i), 16777619);
-    return { tag: node.localName, ...(node.id ? { id: node.id } : { authoredHtml: node.outerHTML }), fingerprint: (hash >>> 0).toString(16).padStart(8, "0") };
+    return { tag: node.localName.toLowerCase(), ...(node.id ? { id: node.id } : { authoredHtml: node.outerHTML }), fingerprint: (hash >>> 0).toString(16).padStart(8, "0") };
   };
   const componentPatch = (operation, node, extra = {}) => ({ operation, selector: selectorFor(node), sourceIdentity: componentIdentity(node), ...extra });
   const proposeComponentEdit = (patch) => {
