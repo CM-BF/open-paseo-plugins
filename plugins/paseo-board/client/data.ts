@@ -6,8 +6,9 @@ import { boardChangesRpc, boardCheckRpc, readBoardRpc, type Board, type BoardCha
 import { mergeBoardSnapshot } from "./board-cache";
 import { BoardEventReceiver, connectBoardEvents, type BoardIndexSnapshot, type BoardLiveStatus } from "./board-events";
 import { BoardCompactSync, type BoardSyncVisibility } from "./compact-sync";
+import { getBoardSyncVisibility } from "./web";
 
-const visibility: BoardSyncVisibility | undefined = (globalThis as { document?: unknown }).document ? undefined : {
+const visibility: BoardSyncVisibility = getBoardSyncVisibility() ?? {
   visible: () => AppState.currentState == null || AppState.currentState === "active",
   subscribe(listener) { const subscription = AppState.addEventListener("change", listener); return () => subscription.remove(); },
 };

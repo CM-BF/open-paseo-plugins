@@ -1,6 +1,7 @@
 // Browser DOM access lives only in this module. Native callers use their compatibility view.
 import { createElement, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
 import { Platform } from "react-native";
+import type { BoardSyncVisibility } from "./compact-sync";
 import type { Anchor, Canvas, Interaction, JsonData } from "../shared/contracts";
 import { buildBoardDocument } from "../shared/document";
 import { createFrameDelta, emptyFrameDelta, transportSnapshot, type TransportSnapshot } from "../shared/frame-delta";
@@ -18,11 +19,22 @@ type BrowserWindow = {
 };
 const browser = globalThis as unknown as {
   window?: BrowserWindow;
-  document?: { activeElement: unknown };
+  document?: { activeElement: unknown; hidden: boolean; addEventListener(type: string, listener: () => void): void; removeEventListener(type: string, listener: () => void): void };
   navigator?: { userActivation?: { isActive: boolean } };
   crypto?: { getRandomValues(bytes: Uint8Array): Uint8Array };
 };
 export const canRenderFrames = Platform.OS === "web" && Boolean(browser.window && browser.document);
+export function getBoardSyncVisibility(): BoardSyncVisibility | undefined {
+  const page = Platform.OS === "web" ? browser.document : undefined;
+  if (!page) return undefined;
+  return {
+    visible: () => !page.hidden,
+    subscribe(listener) {
+      page.addEventListener("visibilitychange", listener);
+      return () => page.removeEventListener("visibilitychange", listener);
+    },
+  };
+}
 export interface CanvasFrameProps extends FrameSnapshot {
   boardId: string;
   title: string;

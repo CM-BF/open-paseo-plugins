@@ -5,15 +5,6 @@ export interface BoardSyncVisibility {
   visible(): boolean;
   subscribe(listener: () => void): () => void;
 }
-const page = (globalThis as { document?: { hidden: boolean; addEventListener(type: string, listener: () => void): void; removeEventListener(type: string, listener: () => void): void } }).document;
-const browserVisibility: BoardSyncVisibility = {
-  visible: () => !page?.hidden,
-  subscribe(listener) {
-    if (!page) return () => {};
-    page.addEventListener("visibilitychange", listener);
-    return () => page.removeEventListener("visibilitychange", listener);
-  },
-};
 
 /** One completion-scheduled, constant-size probe per visible host; no overlapping requests. */
 export class BoardCompactSync {
@@ -29,9 +20,9 @@ export class BoardCompactSync {
     check(cursor: BoardEventCursor): Promise<{ changed: boolean }>;
     recover(): Promise<void>;
     state(status: BoardLiveStatus, error?: unknown): void;
-    visibility?: BoardSyncVisibility;
+    visibility: BoardSyncVisibility;
     intervalMs?: number;
-  }) { this.visibility = options.visibility ?? browserVisibility; }
+  }) { this.visibility = options.visibility; }
 
   start(): void {
     if (!this.stopped) return;
