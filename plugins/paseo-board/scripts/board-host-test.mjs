@@ -148,6 +148,114 @@ try {
   await click('#control');
   await untilFrame('window.count===1');
   await frame("document.querySelector('#field').value='preserved draft'");
+  const titleInput = '[data-testid="board-title-input"]';
+  const renameCount = () => evaluate("hostFixture.calls.filter(item=>item.name==='board.rename').length");
+  const editTitle = async value => {
+    await hostClick('button[aria-label="修改 Board 名称"]');
+    await until(`document.activeElement===document.querySelector(${JSON.stringify(titleInput)})`);
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(titleInput)}).selectionStart`), 0);
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(titleInput)}).selectionEnd===document.querySelector(${JSON.stringify(titleInput)}).value.length`), true);
+    await sendText(value);
+  };
+  await editTitle('Cancelled title');
+  await key('Escape');
+  assert.equal(await renameCount(), 0);
+  assert.equal(await evaluate('hostFixture.board().title'), 'Host integration fixture');
+  await editTitle('   ');
+  await key('Enter');
+  assert.equal(await renameCount(), 0);
+  await key('Escape');
+  check('inline pencil opens the selected existing title; Escape and empty input do not issue rename writes');
+
+  await evaluate("hostFixture.renameMode('held')");
+  await editTitle('原位中文名称');
+  await evaluate(`document.querySelector(${JSON.stringify(titleInput)}).dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}))`);
+  await key('Enter');
+  assert.equal(await renameCount(), 0);
+  await evaluate(`document.querySelector(${JSON.stringify(titleInput)}).dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}))`);
+  await key('Enter');
+  assert.equal(await renameCount(), 0);
+  await evaluate('new Promise(resolve=>setTimeout(resolve,60))');
+  await key('Enter');
+  await until(`document.querySelector(${JSON.stringify(titleInput)})?.disabled`);
+  await key('Enter');
+  assert.equal(await renameCount(), 1);
+  await evaluate('hostFixture.acceptRename()');
+  await until(`!document.querySelector(${JSON.stringify(titleInput)})`);
+  assert.equal(await evaluate('hostFixture.board().title'), '原位中文名称');
+  assert.equal(await evaluate('hostFixture.ready'), 1);
+  assert.equal(await frame('window.boots'), 1);
+  assert.equal(await frame('window.count'), 1);
+  assert.equal(await frame("document.querySelector('#field').value"), 'preserved draft');
+  assert.deepEqual(await canvasRect(), original);
+  check('IME confirmation does not save; Enter saves once and renaming preserves the canvas instance, controls and draft');
+
+  await evaluate("hostFixture.renameMode('reject')");
+  await editTitle('Retry title');
+  await key('Enter');
+  await until("document.querySelector('button[aria-label=\"重试保存\"]')");
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(titleInput)}).value`), 'Retry title');
+  const firstRenameRequest = await evaluate("hostFixture.calls.filter(item=>item.name==='board.rename').at(-1).input");
+  await evaluate("hostFixture.renameMode('accept')");
+  await hostClick('button[aria-label="重试保存"]');
+  await until(`!document.querySelector(${JSON.stringify(titleInput)})`);
+  assert.deepEqual(await evaluate("hostFixture.calls.filter(item=>item.name==='board.rename').at(-1).input"), firstRenameRequest);
+  check('failed rename keeps the draft and retries the same immutable event ID and title condition');
+
+  await editTitle('My concurrent title');
+  await evaluate("hostFixture.renameElsewhere('Peer title');hostFixture.refetch()");
+  await until("document.querySelector('[data-testid=board-title]').textContent.includes('Peer title')");
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(titleInput)}).value`), 'My concurrent title');
+  const beforeConflictRename = await renameCount();
+  await key('Enter');
+  assert.equal(await renameCount(), beforeConflictRename);
+  await hostClick('button[aria-label="确认当前名称后继续编辑"]');
+  await hostClick('button[aria-label="保存名称"]');
+  await until(`!document.querySelector(${JSON.stringify(titleInput)})`);
+  assert.equal(await evaluate('hostFixture.board().title'), 'My concurrent title');
+  assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.rename').at(-1).input.expectedTitle"), 'Peer title');
+  check('a concurrent rename preserves typed text and requires explicit acknowledgement of the current title before replacing it');
+
+  await evaluate("hostFixture.renameMode('lost-response')");
+  await editTitle('Lost response title');
+  await key('Enter');
+  await until("document.querySelector('button[aria-label=\"重试保存\"]')");
+  const lostRequest = await evaluate("hostFixture.calls.filter(item=>item.name==='board.rename').at(-1).input");
+  await hostClick('button[aria-label="重试保存"]');
+  await until(`!document.querySelector(${JSON.stringify(titleInput)})`);
+  assert.deepEqual(await evaluate("hostFixture.calls.filter(item=>item.name==='board.rename').at(-1).input"), lostRequest);
+  assert.equal(await evaluate('hostFixture.board().title'), 'Lost response title');
+  await evaluate("hostFixture.renameMode('accept')");
+  await editTitle('Host integration fixture');
+  await key('Enter');
+  await until(`!document.querySelector(${JSON.stringify(titleInput)})`);
+  assert.equal(await evaluate('hostFixture.ready'), 1);
+  assert.equal(await frame("document.querySelector('#field').value"), 'preserved draft');
+  check('an uncertain rename response replays its receipt after the new title is observed without rewriting the live document');
+
+  if (process.env.BOARD_HOST_TEST_SCOPE === 'dashboard') {
+    await evaluate('hostFixture.index()');
+    await until("document.querySelector('[data-testid=board-status-host-fixture]')?.getAttribute('aria-label')==='空闲'");
+    await evaluate("window.otherBoardStatus=document.querySelector('[data-testid=board-status-another-board]');true");
+    const beforeIndexChanges = await evaluate("hostFixture.calls.filter(item=>item.name==='board.changes').length");
+    const beforeIndexReads = await evaluate("hostFixture.calls.filter(item=>item.name==='board.read').length");
+    await evaluate(`hostFixture.seed([{id:'dashboard-work',kind:'question',text:'Work status fixture',status:'processing',resultReferences:[],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}])`);
+    await until("document.querySelector('[data-testid=board-status-host-fixture]')?.getAttribute('aria-label')==='处理中'");
+    await evaluate("hostFixture.updateInteraction('dashboard-work',{status:'failed'})");
+    await until("document.querySelector('[data-testid=board-status-host-fixture]')?.getAttribute('aria-label')==='需要关注'");
+    await evaluate("hostFixture.updateInteraction('dashboard-work',{status:'applied'});hostFixture.renameElsewhere('Dashboard event name')");
+    await until("document.querySelector('[data-testid=board-status-host-fixture]')?.getAttribute('aria-label')==='空闲'&&document.querySelector('button[aria-label=\"打开 Dashboard event name\"]')");
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-status-another-board]')===window.otherBoardStatus"), true);
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-unread-another-board]').textContent"), '3 更新');
+    assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.changes').length"), beforeIndexChanges);
+    assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.read').length"), beforeIndexReads);
+    // Span the removed four-second dashboard poll period with no producer event.
+    await evaluate('new Promise(resolve=>setTimeout(resolve,4500))');
+    assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.changes').length"), beforeIndexChanges);
+    assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.read').length"), beforeIndexReads);
+    check('dashboard applies processing/error/idle and title commit events incrementally, preserves unrelated rows and unread badges, and stays quiet without polling');
+  }
+  if (!['rename', 'dashboard'].includes(process.env.BOARD_HOST_TEST_SCOPE)) {
   const beforeTicks = await frame('window.ticks');
   const point = await openAt();
   await until("document.querySelector('[data-testid=board-reference-bar]')?.textContent.includes('已引用')");
@@ -421,7 +529,7 @@ try {
   await closePopover();
   await click(marker(id));
   await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('The original question is answered here.')`);
-  check('polling updates the original marker through delivered, processing and answered; clicking it reopens text and a working sandboxed visual response at that location');
+  check('commit events update the original marker through delivered, processing and answered; clicking it reopens text and a working sandboxed visual response at that location');
 
   await evaluate("[...document.querySelectorAll('iframe')].find(frame=>frame.dataset.boardId!=='host-fixture').scrollIntoView({block:'nearest'})");
   await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
@@ -940,6 +1048,7 @@ try {
   await until(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('更新 11/11')`);
   assert.equal(await evaluate(seenUpdate('update-old-document')), false);
   check('the Board index shows per-project unread badges, and entering a Board focuses its newest unread location once without claiming an unavailable target was seen');
+  }
 
   const screenshot = await command('Page.captureScreenshot', { format: 'png' });
   if (process.env.BOARD_HOST_TEST_SCREENSHOT) await writeFile(process.env.BOARD_HOST_TEST_SCREENSHOT, Buffer.from(screenshot.data, 'base64'));

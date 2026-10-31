@@ -7,7 +7,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BoardView } from "../client/board";
 import { BoardHome } from "../client/home";
 import { DEFAULT_LIGHT_COLORS } from "../shared/frame-theme";
-import type { Board, CanvasUpdate, Interaction } from "../shared/contracts";
+import type { Board, BoardSummary, CanvasUpdate, Interaction } from "../shared/contracts";
+import { installBoardEventTransport, type BoardEventListener } from "../client/board-events";
 const global = globalThis as any;
 const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 const now = () => new Date().toISOString();
@@ -28,15 +29,37 @@ let submitMode: "held" | "accept" | "reject" = "held";
 let sideSequence = 0;
 let choiceMode: "held" | "accept" | "reject" | "lost-response" = "accept";
 let readFails = false;
+let renameMode: "held" | "accept" | "reject" | "lost-response" = "accept";
+let pendingRename: { input: any; resolve(value: Board): void; reject(error: Error): void } | undefined;
+const renameReceipts = new Map<string, string>();
 let pendingChoice: { input: any; resolve(value: Board): void; reject(error: Error): void } | undefined;
 const pending = new Map<string, { input: any; resolve(value: Interaction): void; reject(error: Error): void }>();
-const advance = () => { persisted = { ...persisted, revision: persisted.revision + 1, updatedAt: now() }; };
+const eventListeners = new Set<BoardEventListener>();
+let eventSequence = 0;
+const cursor = () => ({ epoch: "fixture", sequence: eventSequence });
+const summary = (): BoardSummary => ({ id: persisted.id, title: persisted.title, ownerAgentId: persisted.ownerAgentId, revision: persisted.revision, createdAt: persisted.createdAt, updatedAt: persisted.updatedAt, decisionCount: persisted.decisions.length, pendingCount: persisted.interactions.filter(item => !["answered", "applied", "rejected"].includes(item.status)).length, unreadUpdateCount: persisted.updates.filter(update => !persisted.seenUpdateIds.includes(update.id)).length, latestUpdateRevision: persisted.updates.at(-1)?.boardRevision ?? 0, status: persisted.interactions.some(item => item.status === "failed") ? "error" : persisted.interactions.some(item => ["saved", "sending", "delivered", "processing"].includes(item.status)) ? "processing" : "idle" });
+const summaries = () => [summary(), { ...summary(), id: "another-board", title: "Another project", unreadUpdateCount: 3, latestUpdateRevision: 4, status: "idle" as const }];
+installBoardEventTransport((_hostId, listener) => { eventListeners.add(listener); return () => { eventListeners.delete(listener); }; });
+const notify = (reason: "metadata" | "attention" = "metadata") => {
+  // Mutations such as addUpdate complete their persisted fields synchronously
+  // after advance(). Publish the fully committed projection at the microtask edge.
+  global.queueMicrotask(() => { eventSequence++; const event = { cursor: cursor(), summary: summary(), canvasRevision: persisted.canvas.revision, reason }; for (const listener of eventListeners) listener.change(copy(event)); });
+};
+const advance = () => { persisted = { ...persisted, revision: persisted.revision + 1, updatedAt: now() }; notify(); };
 const fixture: any = global.hostFixture = {
   raw: [] as any[], calls: [] as any[], links: [] as string[], openedAgents: [] as string[], anchors: [] as any[], focusRequests: [] as string[], updateRequests: [] as any[], updatePositions: [] as any[], ready: 0, responseClicks: 0, responseResults: [] as any[],
   board: () => copy(persisted),
   mode: (next: typeof submitMode) => { submitMode = next; },
   choiceMode: (next: typeof choiceMode) => { choiceMode = next; },
   readFails: (next: boolean) => { readFails = next; },
+  renameMode: (next: typeof renameMode) => { renameMode = next; },
+  renameElsewhere: (title: string) => { persisted.title = title; advance(); },
+  acceptRename: () => {
+    if (!pendingRename) throw new Error("No pending rename");
+    const request = pendingRename; pendingRename = undefined;
+    if (request.input.expectedTitle !== persisted.title) { request.reject(new Error("Board 名称已被修改，请核对当前名称后重试。")); return; }
+    persisted.title = request.input.title; advance(); renameReceipts.set(request.input.eventId, JSON.stringify(request.input)); request.resolve(copy(persisted));
+  },
   pendingChoice: () => pendingChoice?.input,
   acceptChoice: () => {
     if (!pendingChoice) throw new Error('No pending side choice');
@@ -75,13 +98,26 @@ const fixture: any = global.hostFixture = {
     fixture.calls.push({ name, input: copy(input) });
     if (name === "board.read" && readFails) throw new Error("Fixture read unavailable");
     if (name === "board.read") return input.sinceRevision === persisted.revision ? { board: null, unchanged: true } : { board: copy(persisted), unchanged: false };
-    if (name === "board.list") return { boards: [
-      { id: persisted.id, title: persisted.title, updatedAt: persisted.updatedAt, decisionCount: 0, pendingCount: 0, unreadUpdateCount: persisted.updates.filter(update => !persisted.seenUpdateIds.includes(update.id)).length, latestUpdateRevision: persisted.updates.at(-1)?.boardRevision ?? 0 },
-      { id: "another-board", title: "Another project", updatedAt: now(), decisionCount: 0, pendingCount: 0, unreadUpdateCount: 3, latestUpdateRevision: 4 },
-    ] };
+    if (name === "board.list") return { boards: summaries(), cursor: cursor() };
+    if (name === "board.changes") return { mode: "snapshot", boards: summaries(), cursor: cursor() };
+    if (name === "board.rename") {
+      const previous = renameReceipts.get(input.eventId);
+      if (previous) {
+        if (previous !== JSON.stringify(input)) throw new Error("Fixture rename idempotency conflict");
+        return copy(persisted);
+      }
+      if (renameMode === "reject") throw new Error("Fixture rename unavailable");
+      if (input.expectedTitle !== persisted.title) throw new Error("Board 名称已被修改，请核对当前名称后重试。");
+      if (renameMode === "lost-response") {
+        persisted.title = input.title; advance(); renameReceipts.set(input.eventId, JSON.stringify(input));
+        throw new Error("Fixture rename response lost");
+      }
+      return new Promise<Board>((resolve, reject) => { pendingRename = { input, resolve, reject }; if (renameMode === "accept") fixture.acceptRename(); });
+    }
     if (name === "board.updates-seen") {
       const live = new Set(persisted.updates.map(item => item.id));
       persisted.seenUpdateIds = [...new Set([...persisted.seenUpdateIds, ...input.updateIds])].filter((id: any) => live.has(id));
+      notify("attention");
       return copy(persisted);
     }
     if (name === "board.state") { persisted.userState = copy(input.state); return { saved: true }; }
