@@ -2,7 +2,7 @@
 
 This change extends the existing component inspector into an editing surface. The user can select an existing element, move it into another container, copy its structure, or edit text. Agent-authored HTML, CSS, scripts and existing publishing APIs remain available without a required component model.
 
-Implementation is complete in the PR branch. Final integrated build and local acceptance remain in progress; this document is the contract, not an acceptance receipt.
+Implementation, clean integrated verification and native desktop acceptance are complete in the PR branch. The verified build is installed locally for testing. [Verification and limits](verification/2026-10-31-component-editing.md) record the tested revision and distinguish native observations from isolated browser checks. Main remains unchanged pending explicit merge approval.
 
 ## Interaction
 
@@ -30,8 +30,8 @@ A marker on an anonymous component follows that same live DOM node when the comp
 
 Moves use the browser's state-preserving move operation when available, with an ordinary same-document move fallback that restores focused inputs and their caret. Older browsers may reset some embedded media/frame state on that fallback even though the element and its listeners are retained.
 
-## Verification plan
+## Verification
 
-Source checks cover revision conflicts, immutable retries, worker routing, invalid selectors, containment cycles, structural identity, mixed text, copied references and authored-source replay. Chromium checks cover held-modifier hover/click, normal inputs, drag cancellation and hierarchy choices, cut/paste, copy, text commit/cancel, listener/input preservation, host-only save authority, stale scopes and uncertain acknowledgements.
+The final clean source suite passed 288 tests in 21 files. Chromium passed 38 full host, 9 dashboard, 10 component-edit host and 64 canvas checks. These cover revision conflicts, immutable retries, worker routing, invalid selectors, containment cycles, structural identity, mixed text, copied references and authored-source replay; plus held-modifier hover/click, normal inputs, drag cancellation and hierarchy choices, cut/paste, copy, text commit/cancel, listener/input preservation, host-only save authority, stale scopes and uncertain acknowledgements.
 
-Final delivery also requires reproducible worker/client builds, packaged Helper startup, a backed-up local installation, and native testing on the retained interaction test Board. Only the existing feature PR is updated. Main remains unchanged until the user explicitly authorizes merging.
+Worker/client clean builds were byte-identical, Hermes passed, and the actual production Helper ran two workers with durable text/move/copy IPC and exact retry. A backed-up local installation preserved all four existing Boards. The native desktop walkthrough verified selection, text save, copy, delayed cut with cancel/save, a drag proposal and cancellation, preserved controls/runtime, and reopened persistence. Hover-only previews and drag hierarchy keys were verified in Chromium, not through the native automation tool. The existing feature PR remains the delivery route; main requires the user's explicit merge approval.
