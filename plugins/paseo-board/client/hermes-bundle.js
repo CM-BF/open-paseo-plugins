@@ -37,11 +37,11 @@ var __async = (__this, __arguments, generator) => {
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 
 // client/home.tsx
-import { useState as useState7 } from "react";
-import { Pressable as Pressable6, Text as Text7, View as View8 } from "react-native";
+import { useState as useState8 } from "react";
+import { Pressable as Pressable6, Text as Text8, View as View9 } from "react-native";
 import { useQuery as useQuery2 } from "@tanstack/react-query";
-import { usePaseo, useRpc as useRpc4 } from "@getpaseo/plugin/client";
-import { Modal as Modal2, ScrollView as ScrollView4, TextInput as TextInput3 } from "@getpaseo/plugin/client/ui";
+import { usePaseo, useRpc as useRpc5 } from "@getpaseo/plugin/client";
+import { Modal as Modal2, ScrollView as ScrollView4, TextInput as TextInput4 } from "@getpaseo/plugin/client/ui";
 
 // shared/contracts.ts
 import { defineRpc } from "@getpaseo/plugin";
@@ -122,11 +122,43 @@ var AnchorSchema = z.object({
     data: z.string().max(3e6)
   }).optional()
 });
+var ComponentIdentitySchema = z.object({
+  tag: z.string().min(1).max(100),
+  id: z.string().min(1).max(1e3).optional(),
+  // Structural identity excludes live text and control values.
+  fingerprint: z.string().regex(/^[a-f0-9]{8}$/),
+  authoredHtml: z.string().max(24e4).optional()
+});
 var CanvasPatchSchema = z.object({
   id: IdSchema,
   selector: z.string().min(1).max(1e3),
-  operation: z.enum(["append", "prepend", "replace", "remove"]),
-  html: z.string().max(2e6).default("")
+  operation: z.enum(["append", "prepend", "replace", "remove", "move", "copy", "text"]),
+  html: z.string().max(2e6).default(""),
+  sourceIdentity: ComponentIdentitySchema.optional(),
+  destinationIdentity: ComponentIdentitySchema.optional(),
+  destination: z.string().min(1).max(1e3).optional(),
+  position: z.enum(["before", "after", "append", "prepend"]).optional(),
+  copyIdPrefix: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,100}$/).optional(),
+  text: z.string().max(24e3).optional(),
+  expectedText: z.string().max(24e3).optional(),
+  textNodeIndex: z.number().int().min(0).max(1e4).optional()
+}).superRefine((patch, context) => {
+  if (!["move", "copy", "text"].includes(patch.operation)) return;
+  var missing = field => context.addIssue({
+    code: "custom",
+    path: [field],
+    message: `Component edit requires ${field}`
+  });
+  if (!patch.sourceIdentity) missing("sourceIdentity");
+  if (patch.operation === "text") {
+    if (patch.text === void 0) missing("text");
+    if (patch.expectedText === void 0) missing("expectedText");
+  } else {
+    if (!patch.destination) missing("destination");
+    if (!patch.destinationIdentity) missing("destinationIdentity");
+    if (!patch.position) missing("position");
+    if (patch.operation === "copy" && !patch.copyIdPrefix) missing("copyIdPrefix");
+  }
 });
 var CanvasSchema = z.object({
   revision: z.number().int().nonnegative(),
@@ -466,6 +498,12 @@ var RenameInputSchema = z.object({
   title: z.string().trim().min(1).max(200),
   eventId: IdSchema
 });
+var EditInputSchema = z.object({
+  boardId: IdSchema,
+  canvasBase: CanvasBaseSchema,
+  eventId: IdSchema,
+  patch: CanvasPatchSchema.refine(patch => ["move", "copy", "text"].includes(patch.operation) && patch.html === "", "User edits support move, copy and text operations without caller-supplied HTML")
+});
 var DecisionUpdateInputSchema = z.object({
   boardId: IdSchema,
   expectedRevision: z.number().int().nonnegative(),
@@ -529,6 +567,11 @@ var selectSideAgentRpc = defineRpc({
 var renameBoardRpc = defineRpc({
   name: "board.rename",
   input: RenameInputSchema,
+  output: BoardSchema
+});
+var editBoardRpc = defineRpc({
+  name: "board.edit",
+  input: EditInputSchema,
   output: BoardSchema
 });
 var recordDecisionRpc = defineRpc({
@@ -674,10 +717,10 @@ function timeLabel(at) {
 }
 
 // client/board.tsx
-import { useCallback as useCallback3, useEffect as useEffect6, useMemo as useMemo3, useRef as useRef5, useState as useState6 } from "react";
-import { Image, Text as Text6, View as View7 } from "react-native";
-import { openExternalUrl, useRpc as useRpc3 } from "@getpaseo/plugin/client";
-import { Markdown, Modal, ScrollView as ScrollView3, TextInput as TextInput2 } from "@getpaseo/plugin/client/ui";
+import { useCallback as useCallback4, useEffect as useEffect7, useMemo as useMemo3, useRef as useRef6, useState as useState7 } from "react";
+import { Image, Text as Text7, View as View8 } from "react-native";
+import { openExternalUrl, useRpc as useRpc4 } from "@getpaseo/plugin/client";
+import { Markdown, Modal, ScrollView as ScrollView3, TextInput as TextInput3 } from "@getpaseo/plugin/client/ui";
 
 // shared/frame-contract.ts
 var FRAME_CHANNEL = "paseo-board-frame-v1";
@@ -740,6 +783,9 @@ function readFrameMessage(value, scope) {
       if (value.location !== void 0 && !["target", "ancestor", "document"].includes(value.location)) return null;
       if (value.reason !== void 0 && !short(value.reason, 500)) return null;
       if (value.status === "focused" && (!position(value.position) || !value.location)) return null;
+      break;
+    case "component-edit":
+      if (!short(value.id, 160) || !validComponentEditRequest(value.request)) return null;
       break;
     case "anchor":
       if (!validAnchor(value.anchor) || value.selectionId !== void 0 && !short(value.selectionId, 160)) return null;
@@ -829,6 +875,19 @@ function sameSelectionAnchor(a, b) {
     ...b,
     image: void 0
   });
+}
+function validComponentEditRequest(value) {
+  if (!record(value) || !record(value.canvasBase) || !record(value.patch) || jsonSize(value) > 55e4) return false;
+  var base = value.canvasBase,
+    patch = value.patch;
+  if (!Number.isSafeInteger(base.revision) || Number(base.revision) < 0 || !Number.isSafeInteger(base.documentVersion) || Number(base.documentVersion) < 0) return false;
+  var identity = v => record(v) && short(v.tag, 100) && (v.id === void 0 || short(v.id, 1e3)) && typeof v.fingerprint === "string" && /^[a-f0-9]{8}$/.test(v.fingerprint) && (v.authoredHtml === void 0 || typeof v.authoredHtml === "string" && v.authoredHtml.length <= 24e4) && (v.id !== void 0 || typeof v.authoredHtml === "string") && Object.keys(v).every(key => ["tag", "id", "fingerprint", "authoredHtml"].includes(key));
+  if (!["move", "copy", "text"].includes(patch.operation) || !short(patch.selector, 1e3) || !identity(patch.sourceIdentity)) return false;
+  if (value.sourceLabel !== void 0 && !short(value.sourceLabel, 160) || value.destinationLabel !== void 0 && !short(value.destinationLabel, 160)) return false;
+  if (Object.keys(value).some(key => !["canvasBase", "patch", "sourceLabel", "destinationLabel"].includes(key)) || Object.keys(base).some(key => !["revision", "documentVersion"].includes(key))) return false;
+  if (Object.keys(patch).some(key => !["operation", "selector", "sourceIdentity", "destination", "destinationIdentity", "position", "text", "expectedText", "textNodeIndex"].includes(key))) return false;
+  if (patch.operation === "text") return typeof patch.text === "string" && patch.text.length <= 24e3 && typeof patch.expectedText === "string" && patch.expectedText.length <= 24e3 && (patch.textNodeIndex === void 0 || Number.isSafeInteger(patch.textNodeIndex) && Number(patch.textNodeIndex) >= 0 && Number(patch.textNodeIndex) <= 1e4) && patch.destination === void 0 && patch.destinationIdentity === void 0 && patch.position === void 0;
+  return short(patch.destination, 1e3) && identity(patch.destinationIdentity) && ["before", "after", "append", "prepend"].includes(patch.position) && patch.text === void 0 && patch.expectedText === void 0 && patch.textNodeIndex === void 0;
 }
 
 // shared/frame-theme.ts
@@ -1916,10 +1975,10 @@ var runtime_icons_default = '<script id="codex-visualization-lucide" async src="
 var runtime_tooltips_default = '<script>\n// Tooltips for [data-tooltip], positioned with floating-ui. The two scripts are inserted from\n// here instead of as parser-blocking tags, so they never hold DOMContentLoaded (or the\n// fragment code waiting for it); with async off they still run in order.\n(() => {\n  const sources = [\n    "https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js",\n    "https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js",\n  ];\n  const start = () => {\n    if (window.FloatingUIDOM == null) {\n      return;\n    }\n    const { autoUpdate, computePosition, flip, offset, shift, size } =\n      window.FloatingUIDOM;\n    const tooltipPlacements = new Set(["top", "right", "bottom", "left"]);\n    const tooltipId = `codex-visualization-tooltip-${\n      window.crypto?.randomUUID?.() ?? Date.now().toString(36)\n    }`;\n    const tooltipGap = 5;\n    const hoverDelay = 700;\n    const skipDelay = 300;\n    let activeTrigger = null;\n    let pendingTrigger = null;\n    let tooltip = null;\n    let openTimeout = null;\n    let autoUpdateCleanup = null;\n    let positionRequest = 0;\n    let skipDelayUntil = 0;\n\n    const getTrigger = (target) =>\n      target?.nodeType === Node.ELEMENT_NODE\n        ? target.closest("[data-tooltip]")\n        : null;\n    const containsTarget = (trigger, target) =>\n      target?.nodeType != null && trigger.contains(target);\n    const getContent = (trigger) =>\n      trigger.getAttribute("data-tooltip")?.trim() ?? "";\n    const getPlacement = (trigger) => {\n      const placement = trigger.getAttribute("data-tooltip-placement");\n      return tooltipPlacements.has(placement) ? placement : "top";\n    };\n    const getTooltip = () => {\n      if (tooltip == null) {\n        tooltip = document.createElement("div");\n        tooltip.id = tooltipId;\n        tooltip.className = "tooltip";\n        tooltip.setAttribute("role", "tooltip");\n      }\n      return tooltip;\n    };\n    const setDescribedBy = (trigger, described) => {\n      const ids = new Set(\n        (trigger.getAttribute("aria-describedby") ?? "")\n          .split(/\\s+/)\n          .filter(Boolean),\n      );\n      if (described) {\n        ids.add(tooltipId);\n      } else {\n        ids.delete(tooltipId);\n      }\n      if (ids.size === 0) {\n        trigger.removeAttribute("aria-describedby");\n      } else {\n        trigger.setAttribute("aria-describedby", [...ids].join(" "));\n      }\n    };\n    const clearOpenTimeout = () => {\n      if (openTimeout != null) {\n        window.clearTimeout(openTimeout);\n        openTimeout = null;\n      }\n      pendingTrigger = null;\n    };\n    const closeTooltip = (activateSkipDelay = true) => {\n      clearOpenTimeout();\n      positionRequest += 1;\n      autoUpdateCleanup?.();\n      autoUpdateCleanup = null;\n      if (activeTrigger == null) {\n        return;\n      }\n      setDescribedBy(activeTrigger, false);\n      activeTrigger = null;\n      tooltip?.remove();\n      if (activateSkipDelay) {\n        skipDelayUntil = Date.now() + skipDelay;\n      }\n    };\n    const updatePosition = (trigger, floating) => {\n      const request = ++positionRequest;\n      void computePosition(trigger, floating, {\n        middleware: [\n          offset(tooltipGap),\n          flip({ padding: tooltipGap }),\n          shift({ padding: tooltipGap }),\n          size({\n            padding: tooltipGap,\n            apply({ availableHeight, availableWidth, elements }) {\n              elements.floating.style.setProperty(\n                "--tooltip-available-width",\n                `${Math.max(0, availableWidth)}px`,\n              );\n              elements.floating.style.setProperty(\n                "--tooltip-available-height",\n                `${Math.max(0, availableHeight)}px`,\n              );\n            },\n          }),\n        ],\n        placement: getPlacement(trigger),\n        strategy: "fixed",\n      })\n        .then(({ x, y }) => {\n          if (activeTrigger !== trigger || request !== positionRequest) {\n            return;\n          }\n          const scale = window.devicePixelRatio || 1;\n          floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;\n          floating.style.visibility = "visible";\n        })\n        .catch(() => {\n          if (activeTrigger === trigger && request === positionRequest) {\n            closeTooltip(false);\n          }\n        });\n    };\n    const openTooltip = (trigger) => {\n      const content = getContent(trigger);\n      if (!trigger.isConnected || content.length === 0) {\n        return;\n      }\n      clearOpenTimeout();\n      if (activeTrigger === trigger) {\n        return;\n      }\n      closeTooltip();\n      const floating = getTooltip();\n      floating.textContent = content;\n      floating.style.visibility = "hidden";\n      floating.style.transform = "translate(0, 0)";\n      document.body.appendChild(floating);\n      activeTrigger = trigger;\n      setDescribedBy(trigger, true);\n      autoUpdateCleanup = autoUpdate(trigger, floating, () => {\n        updatePosition(trigger, floating);\n      });\n    };\n    const requestOpen = (trigger, immediate = false) => {\n      if (\n        getContent(trigger).length === 0 ||\n        activeTrigger === trigger ||\n        pendingTrigger === trigger\n      ) {\n        return;\n      }\n      clearOpenTimeout();\n      pendingTrigger = trigger;\n      const delay =\n        immediate || activeTrigger != null || Date.now() < skipDelayUntil\n          ? 0\n          : hoverDelay;\n      if (delay === 0) {\n        openTooltip(trigger);\n        return;\n      }\n      openTimeout = window.setTimeout(() => {\n        openTimeout = null;\n        pendingTrigger = null;\n        openTooltip(trigger);\n      }, delay);\n    };\n    const handlePointerOpen = (event) => {\n      if (event.pointerType === "touch") {\n        return;\n      }\n      const trigger = getTrigger(event.target);\n      if (trigger == null || containsTarget(trigger, event.relatedTarget)) {\n        return;\n      }\n      requestOpen(trigger);\n    };\n    const handleLeave = (event) => {\n      const trigger = getTrigger(event.target);\n      if (trigger == null || containsTarget(trigger, event.relatedTarget)) {\n        return;\n      }\n      if (activeTrigger === trigger || pendingTrigger === trigger) {\n        closeTooltip();\n      }\n    };\n    const handleFocusIn = (event) => {\n      const trigger = getTrigger(event.target);\n      if (trigger?.matches(":focus-visible")) {\n        requestOpen(trigger, true);\n      }\n    };\n    const handleKeyDown = (event) => {\n      if (event.key === "Escape") {\n        closeTooltip();\n      }\n    };\n    const handleContextMenu = (event) => {\n      const trigger = getTrigger(event.target);\n      if (activeTrigger === trigger || pendingTrigger === trigger) {\n        closeTooltip();\n      }\n    };\n    const destroy = () => {\n      closeTooltip(false);\n      document.removeEventListener("pointerover", handlePointerOpen);\n      document.removeEventListener("pointerout", handleLeave);\n      document.removeEventListener("focusin", handleFocusIn);\n      document.removeEventListener("focusout", handleLeave);\n      document.removeEventListener("keydown", handleKeyDown);\n      document.removeEventListener("contextmenu", handleContextMenu);\n      tooltip = null;\n    };\n\n    document.addEventListener("pointerover", handlePointerOpen);\n    document.addEventListener("pointerout", handleLeave);\n    document.addEventListener("focusin", handleFocusIn);\n    document.addEventListener("focusout", handleLeave);\n    document.addEventListener("keydown", handleKeyDown);\n    document.addEventListener("contextmenu", handleContextMenu);\n    window.addEventListener("pagehide", destroy, { once: true });\n  };\n  let last = null;\n  for (const src of sources) {\n    last = document.createElement("script");\n    last.src = src;\n    last.async = false;\n    document.head.append(last);\n  }\n  last.addEventListener("load", start, { once: true });\n})();\n</script>\n';
 
 // shared/assets/board-runtime.txt
-var board_runtime_default = 'function (initial, createFrameReceiver) {\n  "use strict";\n  const root = document.documentElement;\n  const scope = { channel: initial.channel, boardId: initial.boardId, sessionId: initial.sessionId };\n  let snapshot = initial;\n  let state = initial.userState;\n  let localStateDirty = false;\n  let selectionMode = "off";\n  let deferredSelection = null;\n  let queued = null;\n  let applying = false;\n  let captureBusy = false;\n  let selectionSession = null;\n  let suppressPointerClick = false;\n  let dismissedPointer = null;\n  let lastAnchor;\n  let pointer = null;\n  let textPointer = null;\n  let overlay = null;\n  let lastGesture = -Infinity;\n  let lastGesturePosition;\n  let patchFailure = null;\n  let pendingMarkerFocus = null;\n  let sequence = 0;\n  const applied = new Set();\n  const dataListeners = new Set();\n  const dataWatches = new Map();\n  const stateListeners = new Set();\n  const pendingAsks = new Map();\n  const revealListeners = new Set();\n  let markerReveal = null;\n  const post = (message) => window.parent.postMessage({ ...message, ...scope }, "*");\n  const copy = (value) => value === undefined ? undefined : structuredClone(value);\n  const error = (code, message, patchId) => post({ type: "error", error: { code, message: String(message).slice(0, 4000), ...(patchId ? { patchId } : {}) } });\n  const emitListeners = (listeners, value) => { for (const listener of listeners) { try { listener(copy(value)); } catch (e) { error("listener-error", e.message); } } };\n  const currentAnchor = () => ({ kind: "board", boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision });\n  const acting = () => !markerReveal && performance.now() - lastGesture < 1800 && navigator.userActivation && navigator.userActivation.isActive;\n  const cancelAsk = { status: "cancelled", outcome: null };\n  const ask = (input) => {\n    const request = typeof input === "string" ? { prompt: input } : input;\n    if (!request || typeof request.prompt !== "string" || !request.prompt.trim() || request.prompt.length > 24000) return Promise.reject(new TypeError("board.ask requires a prompt of 1\u201324000 characters"));\n    if (!acting() || pendingAsks.size >= 8 || selectionMode !== "off") return Promise.resolve(cancelAsk);\n    lastGesture = -Infinity;\n    const id = `ask-${++sequence}`;\n    return new Promise((resolve) => {\n      const timer = setTimeout(() => { pendingAsks.delete(id); resolve(cancelAsk); }, 120000);\n      pendingAsks.set(id, { resolve, timer });\n      post({ type: "ask", id, request: { prompt: request.prompt, anchor: bindAuthoredAnchor(request.anchor || lastAnchor || currentAnchor()), kind: request.kind || "question", position: lastGesturePosition } });\n    });\n  };\n  const saveState = (value) => {\n    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("board.saveState requires a JSON object");\n    const serialized = JSON.stringify(value);\n    if (serialized.length > 524288) throw new RangeError("board state exceeds 512 KiB");\n    state = JSON.parse(serialized);\n    localStateDirty = true;\n    post({ type: "state", state });\n    return copy(state);\n  };\n  const subscribe = (listeners, fn) => {\n    if (typeof fn !== "function") throw new TypeError("listener must be a function");\n    listeners.add(fn);\n    return () => listeners.delete(fn);\n  };\n  // Watch only selected JSON values. Changed paths filter unrelated subscriptions.\n  const watchSegments = (path) => {\n    if (typeof path !== "string" || path.length > 2000 || (path !== "" && !path.startsWith("/")) || /~(?![01])/.test(path)) throw new TypeError("watch requires a JSON Pointer (empty string means all data)");\n    const parts = path === "" ? [] : path.slice(1).split("/").map(part => part.replace(/~1/g, "/").replace(/~0/g, "~"));\n    if (parts.length > 64 || parts.some(part => ["__proto__", "prototype", "constructor"].includes(part))) throw new TypeError("watch path is not allowed");\n    return parts;\n  };\n  const readWatchedValue = (data, parts) => {\n    let value = data;\n    for (const part of parts) {\n      if (!value || typeof value !== "object" || !Object.prototype.hasOwnProperty.call(value, part)) return { exists: false };\n      if (Array.isArray(value) && !/^(0|[1-9][0-9]*)$/.test(part)) return { exists: false };\n      value = value[part];\n    }\n    return { exists: true, value };\n  };\n  const equalJson = (a, b) => {\n    if (a === b) return true;\n    if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return false;\n    const keys = Object.keys(a);\n    return keys.length === Object.keys(b).length && keys.every(key => Object.prototype.hasOwnProperty.call(b, key) && equalJson(a[key], b[key]));\n  };\n  const deliverWatch = (entry, listener, immediate = false) => {\n    if (!listener.active) return;\n    if (listener.schedule === "frame" && !immediate) {\n      if (listener.frame === null) listener.frame = requestAnimationFrame(() => { listener.frame = null; deliverWatch(entry, listener, true); });\n      return;\n    }\n    try { listener.fn(entry.current.exists ? copy(entry.current.value) : undefined, Object.freeze({ path: entry.path, exists: entry.current.exists, boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision })); }\n    catch (e) { error("listener-error", e instanceof Error ? e.message : String(e)); }\n  };\n  const emitWatches = (changedPaths) => {\n    const deliveries = [];\n    // Update every cache before calling authored code. A callback may subscribe\n    // to another existing path; its initial value must belong to this snapshot.\n    for (const entry of Array.from(dataWatches.values())) {\n      if (changedPaths && !changedPaths.some(path => path === entry.path || path.startsWith(entry.path + "/") || entry.path.startsWith(path + "/"))) continue;\n      const next = readWatchedValue(snapshot.canvas.data, entry.parts);\n      if (next.exists === entry.current.exists && equalJson(next.value, entry.current.value)) continue;\n      entry.current = next;\n      deliveries.push({ entry, listeners: Array.from(entry.listeners) });\n    }\n    for (const { entry, listeners } of deliveries) {\n      for (const listener of listeners) if (entry.listeners.has(listener)) deliverWatch(entry, listener);\n    }\n  };\n  const watch = (path, fn, options) => {\n    const parts = watchSegments(path);\n    if (typeof fn !== "function") throw new TypeError("watch listener must be a function");\n    if (options !== undefined && (!options || typeof options !== "object" || options.schedule !== "frame")) throw new TypeError("watch options require schedule: \'frame\'");\n    let entry = dataWatches.get(path);\n    if (!entry) { entry = { path, parts, current: readWatchedValue(snapshot.canvas.data, parts), listeners: new Set() }; dataWatches.set(path, entry); }\n    // Frame subscriptions are latest-state rendering, not a lossless event stream.\n    const listener = { fn, schedule: options?.schedule, frame: null, active: true };\n    entry.listeners.add(listener);\n    deliverWatch(entry, listener, true);\n    return () => { listener.active = false; if (listener.frame !== null) cancelAnimationFrame(listener.frame); entry.listeners.delete(listener); if (!entry.listeners.size && dataWatches.get(path) === entry) dataWatches.delete(path); };\n  };\n  // No SDK or execution primitive is exposed. Data and view state remain task-agnostic JSON.\n  Object.defineProperty(window, "board", { configurable: false, writable: false, value: Object.freeze({\n    getData: () => copy(snapshot.canvas.data),\n    onData: (fn) => subscribe(dataListeners, fn),\n    watch,\n    getState: () => copy(state),\n    restoreState: () => copy(state),\n    onState: (fn) => subscribe(stateListeners, fn),\n    saveState,\n    ask,\n    onReveal: (fn) => subscribe(revealListeners, fn),\n    getContext: () => ({ boardId: scope.boardId, documentVersion: initial.canvas.documentVersion, boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision }),\n  }) });\n  window.openai = Object.freeze({ sendFollowUpMessage: ask });\n\n  let appliedTheme = initial.theme;\n  const applyTheme = (theme) => {\n    if (!theme || !["light", "dark"].includes(theme.scheme) || !theme.tokens || typeof theme.tokens !== "object") return;\n    if (equalJson(appliedTheme, theme)) return;\n    if (appliedTheme?.scheme !== theme.scheme) root.setAttribute("data-theme", theme.scheme);\n    // The host scheme is a CSS-layer default. An authored fixed light/dark canvas may\n    // override color-scheme without each host refresh overwriting it with inline style.\n    for (const name of Object.keys(appliedTheme?.tokens || {})) if (!Object.prototype.hasOwnProperty.call(theme.tokens, name)) root.style.removeProperty("--" + name);\n    for (const [name, value] of Object.entries(theme.tokens)) if (appliedTheme?.tokens[name] !== value && /^host-[a-z0-9-]+$/.test(name) && typeof value === "string" && /^[#a-zA-Z0-9(),.%+*/ -]{1,200}$/.test(value)) root.style.setProperty("--" + name, value);\n    appliedTheme = theme;\n    window.dispatchEvent(new CustomEvent("paseo:themechange", { detail: { theme: theme.scheme, palette: "custom" } }));\n  };\n\n  const runScript = (old) => new Promise((resolve, reject) => {\n    const script = document.createElement("script");\n    for (const attribute of old.attributes) script.setAttribute(attribute.name, attribute.value);\n    script.textContent = old.textContent;\n    const executable = !script.type || /^(module|(?:text|application)\\/(?:java|ecma)script)$/i.test(script.type);\n    if (!executable) { old.replaceWith(script); resolve(); return; }\n    let scriptError;\n    let timer;\n    const finish = (failure) => { clearTimeout(timer); window.removeEventListener("error", onError); failure ? reject(failure) : resolve(); };\n    const onError = (event) => { scriptError = new Error(event.message || "Patch script failed"); };\n    window.addEventListener("error", onError);\n    const external = script.src || script.type === "module";\n    if (external) {\n      script.async = false;\n      script.addEventListener("load", () => finish(scriptError), { once: true });\n      script.addEventListener("error", () => finish(new Error("Patch script could not load")), { once: true });\n      timer = setTimeout(() => finish(new Error("Patch script timed out; it will not be retried")), 20000);\n    }\n    try { old.replaceWith(script); if (!external) finish(scriptError); } catch (e) { finish(e); }\n  });\n  const applyPatch = async (patch) => {\n    if (applied.has(patch.id)) return;\n    // Claim before mutation. A partial script failure must never run the same patch a second time.\n    applied.add(patch.id);\n    const targets = document.querySelectorAll(patch.selector);\n    if (targets.length !== 1) throw new Error(`Patch selector must match exactly one element; matched ${targets.length}`);\n    const target = targets[0];\n    if (target === root || target === document.head || target === document.body) {\n      if (patch.operation === "replace" || patch.operation === "remove") throw new Error("Replacing document roots requires publishing a new document version");\n    }\n    if (patch.operation === "remove") { capturePatchTargets(patch, target); target.remove(); return; }\n    const template = document.createElement("template");\n    template.innerHTML = patch.html;\n    const scripts = Array.from(template.content.querySelectorAll("script"));\n    capturePatchTargets(patch, target, Array.from(template.content.children));\n    if (patch.operation === "append") target.append(template.content);\n    else if (patch.operation === "prepend") target.prepend(template.content);\n    else if (patch.operation === "replace") target.replaceWith(template.content);\n    else throw new Error("Unknown patch operation");\n    for (const script of scripts) if (script.isConnected) await runScript(script);\n  };\n  const receiver = createFrameReceiver(initial, request => post({ type: "snapshot-request", ...request }));\n  let versionedTransport = false;\n  const enqueue = (update) => {\n    if (!update) return;\n    queued = queued ? { snapshot: update.snapshot,\n      changedPaths: queued.changedPaths === null || update.changedPaths === null ? null : [...new Set([...queued.changedPaths, ...update.changedPaths])],\n      patches: [...new Map([...queued.patches, ...update.patches].map(patch => [patch.id, patch])).values()] } : update;\n    void drain();\n  };\n  const receiveSnapshot = (next, version) => {\n    if (version !== undefined) { versionedTransport = true; enqueue(receiver.snapshot(next, version)); return; }\n    // Compatibility with older hosts. Versioned traffic exclusively uses the validated receiver.\n    if (versionedTransport) return;\n    if (!next || !next.canvas || next.canvas.documentVersion !== initial.canvas.documentVersion || next.boardRevision < (queued?.snapshot || snapshot).boardRevision) return;\n    enqueue({ snapshot: next, changedPaths: null, patches: next.canvas.patches });\n  };\n  const drain = async () => {\n    if (applying || selectionMode !== "off" || selectionSession || captureBusy) return;\n    if (!queued) { reportCanvasActivity(); drainMarkerFocus(); return; }\n    applying = true;\n    reportCanvasActivity();\n    try {\n      while (queued && selectionMode === "off" && !selectionSession && !captureBusy) {\n        const update = queued;\n        const next = update.snapshot;\n        queued = null;\n        const dataChanged = update.changedPaths === null ? !equalJson(snapshot.canvas.data, next.canvas.data) : update.changedPaths.length > 0;\n        const serverStateChanged = !equalJson(snapshot.userState, next.userState);\n        snapshot = next;\n        applyTheme(next.theme);\n        if (dataChanged) {\n          emitWatches(update.changedPaths);\n          emitListeners(dataListeners, next.canvas.data);\n          window.dispatchEvent(new CustomEvent("board:data", { detail: copy(next.canvas.data) }));\n        }\n        if (localStateDirty) {\n          // A slow acknowledgement for an earlier save must never overwrite newer local input.\n          if (equalJson(next.userState, state)) localStateDirty = false;\n        } else if (serverStateChanged && !equalJson(next.userState, state)) {\n          state = next.userState;\n          emitListeners(stateListeners, state);\n        }\n        if (patchFailure) continue;\n        for (const patch of update.patches) {\n          try { await applyPatch(patch); }\n          catch (e) {\n            patchFailure = patch.id;\n            error("patch-failed", `${e.message}. Later patches are paused until the document is republished.`, patch.id);\n            break;\n          }\n        }\n      }\n    } finally {\n      applying = false;\n      reportCanvasActivity();\n      queueMarkerPositions();\n      if (deferredSelection !== null) { const mode = deferredSelection; deferredSelection = null; setSelectionMode(mode); }\n      drainMarkerFocus();\n    }\n  };\n\n  // Selection is opt-in. In ordinary mode we never consume pointer, keyboard or drag events.\n  const selectorFor = (node) => {\n    if (!(node instanceof Element)) return undefined;\n    if (node.id) return "#" + CSS.escape(node.id);\n    const parts = [];\n    while (node && node !== document.body && parts.length < 12) {\n      if (node.id) { parts.unshift("#" + CSS.escape(node.id)); break; }\n      const name = node.localName;\n      if (!name) break;\n      const siblings = node.parentElement ? Array.from(node.parentElement.children).filter((n) => n.localName === name) : [];\n      parts.unshift(name + (siblings.length > 1 ? `:nth-of-type(${siblings.indexOf(node) + 1})` : ""));\n      node = node.parentElement;\n    }\n    return parts.length ? parts.join(" > ").slice(0, 1000) : undefined;\n  };\n  const viewport = () => ({ width: innerWidth, height: innerHeight, scrollX, scrollY });\n  const rect = (r) => ({ x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height });\n  // Identity metadata is optional and never changes the author\'s DOM or the original\n  // quote/PNG/coordinates. A live reference survives reparenting; stable IDs survive patches.\n  const bindingNodes = new Map();\n  const bindingFingerprint = (node) => {\n    const text = (node.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 1000);\n    const input = [node.localName, node.getAttribute("role"), node.getAttribute("name"), node.getAttribute("type"), node.getAttribute("aria-label"), text].join("\\n");\n    let hash = 2166136261;\n    for (let i = 0; i < input.length; i++) hash = Math.imul(hash ^ input.charCodeAt(i), 16777619);\n    return (hash >>> 0).toString(16).padStart(8, "0");\n  };\n  const authorElement = (node) => node instanceof Element && node !== root && node !== document.body && node !== document.head && !node.closest("[data-board-overlay]");\n  const identityFor = (node) => {\n    const selector = selectorFor(node);\n    if (!selector || !authorElement(node)) return null;\n    return { selector, tag: node.localName, ...(node.id && node.id.length <= 1000 ? { id: node.id } : {}), fingerprint: bindingFingerprint(node) };\n  };\n  const captureBinding = (target, region, enclose = false) => {\n    if (!(target instanceof Element)) return undefined;\n    // A region may span several components; select its enclosing context, not the element\n    // where the drag happened to start. Whole-page regions remain geometric references.\n    if (enclose) {\n      while (authorElement(target)) {\n        const r = rect(target.getBoundingClientRect());\n        if (region.x >= r.x - 1 && region.y >= r.y - 1 && region.x + region.width <= r.x + r.width + 1 && region.y + region.height <= r.y + r.height + 1) break;\n        target = target.parentElement;\n      }\n    }\n    const identity = identityFor(target);\n    if (!identity) return undefined;\n    const r = rect(target.getBoundingClientRect());\n    const ancestors = [];\n    const nodes = [target];\n    for (let parent = target.parentElement; authorElement(parent) && ancestors.length < 8; parent = parent.parentElement) {\n      const ancestor = identityFor(parent);\n      if (ancestor) { ancestors.push(ancestor); nodes.push(parent); }\n    }\n    const key = `binding-${++sequence}-${scope.sessionId}`.slice(0, 160);\n    const binding = { documentVersion: snapshot.canvas.documentVersion, key, target: identity, ancestors,\n      relative: { x: Math.max(0, Math.min(1, r.width ? (region.x - r.x) / r.width : 0)), y: Math.max(0, Math.min(1, r.height ? (region.y - r.y) / r.height : 0)) } };\n    bindingNodes.set(key, nodes);\n    // Unsent selections need no long-lived registry. Active marker bindings are retained.\n    if (bindingNodes.size > 600) {\n      const retained = new Set(markerItems.map(item => item.marker.anchor?.binding?.key));\n      for (const candidate of bindingNodes.keys()) if (candidate !== key && !retained.has(candidate)) { bindingNodes.delete(candidate); if (bindingNodes.size <= 500) break; }\n    }\n    return binding;\n  };\n  const bindAuthoredAnchor = (anchor) => {\n    if (!anchor || anchor.binding || !anchor.rect || !anchor.selector || anchor.canvasRevision !== snapshot.canvas.revision || anchor.boardRevision !== snapshot.boardRevision) return anchor;\n    try {\n      const targets = document.querySelectorAll(anchor.selector);\n      if (targets.length === 1) {\n        const binding = captureBinding(targets[0], anchor.rect, anchor.kind === "region");\n        if (binding) return { ...anchor, binding };\n      }\n    } catch {}\n    return anchor;\n  };\n  const resolveIdentity = (identity, cached, allowPath) => {\n    if (!identity) return null;\n    if (identity.id) {\n      let matches;\n      try { matches = document.querySelectorAll("#" + CSS.escape(identity.id)); } catch { return null; }\n      // Duplicate IDs are ambiguous even when one original node is still in memory.\n      if (matches.length !== 1 || matches[0].localName !== identity.tag) return null;\n      return matches[0];\n    }\n    if (cached) return cached.isConnected && authorElement(cached) ? cached : null;\n    if (!allowPath) return null;\n    try {\n      const matches = document.querySelectorAll(identity.selector);\n      if (matches.length === 1 && authorElement(matches[0]) && matches[0].localName === identity.tag && bindingFingerprint(matches[0]) === identity.fingerprint) return matches[0];\n    } catch {}\n    return null;\n  };\n  const visibleBox = (node, revealScroll = false) => {\n    if (!authorElement(node) || !node.isConnected || !node.getClientRects().length) return null;\n    const style = getComputedStyle(node);\n    if (style.visibility !== "visible" || style.display === "none" || style.contentVisibility === "hidden") return null;\n    const box = node.getBoundingClientRect();\n    let left = box.left, top = box.top, right = box.right, bottom = box.bottom;\n    // CSS accordions and nested scrollers can keep a child\'s layout box while completely\n    // clipping its pixels. Only visible pixels can host a marker; viewport clipping itself\n    // is excluded here because a sidebar action is allowed to scroll an offscreen component.\n    for (let parent = node.parentElement; authorElement(parent); parent = parent.parentElement) {\n      const css = getComputedStyle(parent);\n      if (css.contentVisibility === "hidden") return null;\n      if (parent.localName === "details" && !parent.open) {\n        const summary = Array.from(parent.children).find(child => child.localName === "summary");\n        if (!summary?.contains(node)) return null;\n      }\n      const clipX = /^(hidden|clip|auto|scroll)$/.test(css.overflowX) && !(revealScroll && /^(auto|scroll)$/.test(css.overflowX));\n      const clipY = /^(hidden|clip|auto|scroll)$/.test(css.overflowY) && !(revealScroll && /^(auto|scroll)$/.test(css.overflowY));\n      if (!clipX && !clipY) continue;\n      const r = parent.getBoundingClientRect();\n      const scaleX = parent.offsetWidth ? r.width / parent.offsetWidth : 1;\n      const scaleY = parent.offsetHeight ? r.height / parent.offsetHeight : 1;\n      if (clipX) { const x = r.left + parent.clientLeft * scaleX; left = Math.max(left, x); right = Math.min(right, x + parent.clientWidth * scaleX); }\n      if (clipY) { const y = r.top + parent.clientTop * scaleY; top = Math.max(top, y); bottom = Math.min(bottom, y + parent.clientHeight * scaleY); }\n    }\n    return right > left && bottom > top ? { left, top, right, bottom, width: right - left, height: bottom - top } : null;\n  };\n  const visibleContext = (target) => {\n    // Inspect current ancestors, not only captured ones: wrapping a stable component in a\n    // new <details> must work immediately. Opening or clicking authored controls is forbidden.\n    let folded;\n    let hiddenContent;\n    for (let node = target; authorElement(node); node = node.parentElement) {\n      if (getComputedStyle(node).contentVisibility === "hidden") hiddenContent = node;\n      if (node.localName === "details" && !node.open) {\n        const summary = Array.from(node.children).find(child => child.localName === "summary");\n        if (!summary || !summary.contains(target)) folded = summary || node;\n      }\n    }\n    if (folded && visibleBox(folded)) return folded;\n    for (let node = hiddenContent ? hiddenContent.parentElement : target; authorElement(node); node = node.parentElement) if (visibleBox(node)) return node;\n    return null;\n  };\n  // Only an explicit, unique ARIA relationship may activate an authored tab. Never\n  // infer navigation from class names, labels or nearby buttons.\n  const tabForPanel = (panel) => {\n    if (!panel.id || panel.getAttribute("role") !== "tabpanel" || document.querySelectorAll("#" + CSS.escape(panel.id)).length !== 1) return null;\n    const tabs = Array.from(document.querySelectorAll(\'[role="tab"][aria-controls]\')).filter(tab => tab.getAttribute("aria-controls")?.trim() === panel.id);\n    if (tabs.length !== 1) return null;\n    const tab = tabs[0];\n    const list = tab.closest(\'[role="tablist"]\');\n    if (!list || !authorElement(tab) || typeof tab.click !== "function" || tab.matches(":disabled,[aria-disabled=true]") || !["true", "false"].includes(tab.getAttribute("aria-selected"))) return null;\n    if (tab.localName === "a" || tab.closest("a[href]") || (tab.form && ((tab.localName === "button" && tab.type !== "button") || (tab.localName === "input" && tab.type !== "button")))) return null;\n    return tab;\n  };\n  const hiddenMarkerBoundary = (target) => {\n    if (!authorElement(target)) return null;\n    // Custom views need no ARIA/component schema to suppress markers. Hard hidden\n    // ancestors never fall back to a visible dashboard shell. Native closed details\n    // and scroll/accordion clipping remain distinguishable and may use their summary.\n    if (getComputedStyle(target).visibility !== "visible") return target;\n    for (let node = target; node instanceof Element; node = node.parentElement) {\n      const style = getComputedStyle(node);\n      if (node.hidden || node.getAttribute("aria-hidden") === "true" || style.display === "none" || style.contentVisibility === "hidden" || Number(style.opacity) === 0) return node;\n      if (node.getAttribute("role") === "tabpanel" && tabForPanel(node)?.getAttribute("aria-selected") === "false") return node;\n    }\n    return null;\n  };\n  const resolvedBindingNodes = (anchor) => {\n    const binding = anchor?.binding;\n    if (!binding || binding.documentVersion !== snapshot.canvas.documentVersion) return [];\n    const cached = bindingNodes.get(binding.key) || [];\n    const nodes = [binding.target, ...binding.ancestors].map((identity, index) => resolveIdentity(identity, cached[index], anchor.canvasRevision === snapshot.canvas.revision));\n    // Keep detached non-ID references as tombstones; never reuse a replacement at its path.\n    bindingNodes.set(binding.key, nodes.map((node, index) => node || cached[index]));\n    return nodes;\n  };\n  const markerLocation = (anchor) => {\n    const binding = anchor?.binding;\n    if (binding && binding.documentVersion === snapshot.canvas.documentVersion) {\n      const nodes = resolvedBindingNodes(anchor);\n      const target = nodes[0];\n      const panel = hiddenMarkerBoundary(target || nodes.slice(1).find(Boolean));\n      if (panel) return { rect: null, mode: "hidden", tracked: [...nodes.filter(Boolean), panel] };\n      const context = target ? visibleContext(target) : nodes.slice(1).map(node => node && visibleContext(node)).find(Boolean);\n      if (context) {\n        const r = rect(context.getBoundingClientRect());\n        const visible = rect(visibleBox(context));\n        const direct = context === target;\n        return { rect: { x: Math.max(visible.x, Math.min(visible.x + visible.width, r.x + (direct ? binding.relative.x * r.width : Math.min(8, r.width / 2)))), y: Math.max(visible.y, Math.min(visible.y + visible.height, r.y + (direct ? binding.relative.y * r.height : Math.min(8, r.height / 2)))), width: 0, height: 0 }, node: context,\n          focusNode: target && visibleBox(target, true) ? target : context,\n          mode: direct ? "component" : target ? "collapsed" : "ancestor", tracked: nodes.filter(Boolean) };\n      }\n      return { rect: anchor.rect, mode: "snapshot", tracked: nodes.filter(Boolean) };\n    }\n    // Legacy selectors only described surrounding context; never guess a live binding.\n    return { rect: anchor?.rect, mode: "snapshot", tracked: [] };\n  };\n  // Update navigation consumes explicit publish records only. It never turns arbitrary\n  // author DOM mutations into activity, and its finite overlays do not change the canvas.\n  const updatePatchTargets = new Map();\n  const updateTargets = new Map();\n  const rememberBounded = (map, key, value) => {\n    map.set(key, value);\n    while (map.size > 160) map.delete(map.keys().next().value);\n    return value;\n  };\n  const capturedTarget = (node) => {\n    const identity = identityFor(node);\n    return identity ? { identity, node } : null;\n  };\n  const resolveUpdateTarget = (saved) => saved && resolveIdentity(saved.identity, saved.node, false);\n  const capturePatchTargets = (patch, target, inserted = []) => rememberBounded(updatePatchTargets, patch.id, {\n    documentVersion: snapshot.canvas.documentVersion, selector: patch.selector, operation: patch.operation,\n    target: capturedTarget(target), parent: capturedTarget(target.parentElement),\n    inserted: inserted.filter(node => authorElement(node) && !node.matches("script,style,link,meta,template")).map(capturedTarget).filter(Boolean).slice(0, 12),\n  });\n  const updateContext = (target) => {\n    if (visibleBox(target, true)) return target;\n    let folded;\n    for (let node = target; authorElement(node); node = node.parentElement) {\n      if (node.localName === "details" && !node.open) {\n        const summary = Array.from(node.children).find(child => child.localName === "summary");\n        if (summary && !summary.contains(target) && visibleBox(summary, true)) folded = summary;\n      }\n    }\n    if (folded) return folded;\n    // Hidden authored views have no implied visible location. Climbing to main (or any\n    // ordinary ancestor) would highlight unrelated content and falsely acknowledge it.\n    return null;\n  };\n  const findUpdateTarget = (update, index) => {\n    const hint = update.targets[index];\n    if (!hint || typeof hint.selector !== "string" || hint.selector.length > 1000) return null;\n    const patch = hint.patchId && updatePatchTargets.get(hint.patchId);\n    if (patch && patch.documentVersion === update.documentVersion && patch.selector === hint.selector && patch.operation === hint.operation) {\n      if (patch.operation === "remove") {\n        const parent = resolveUpdateTarget(patch.parent);\n        return parent ? { node: parent, ancestor: true } : null;\n      }\n      const inserted = patch.inserted.map(resolveUpdateTarget).find(Boolean);\n      const node = patch.inserted.length ? inserted : resolveUpdateTarget(patch.target);\n      return node ? { node, ancestor: false } : null;\n    }\n    // Removal cannot be reconstructed from a newly matching selector after a cold start.\n    if (hint.operation === "remove") return null;\n    const key = `${update.id}:${index}`;\n    const saved = updateTargets.get(key);\n    if (saved) { const node = resolveUpdateTarget(saved); return node ? { node, ancestor: false } : null; }\n    let matches;\n    try { matches = document.querySelectorAll(hint.selector); } catch { return null; }\n    if (matches.length !== 1 || !authorElement(matches[0])) return null;\n    const node = matches[0];\n    // Path selectors are only meaningful in the exact revision; an ID explicitly declares\n    // stable component identity, but still cannot cross a document replacement.\n    if (update.canvasRevision !== snapshot.canvas.revision && (!node.id || hint.selector !== "#" + CSS.escape(node.id))) return null;\n    rememberBounded(updateTargets, key, capturedTarget(node));\n    return { node, ancestor: false };\n  };\n  let updateHighlight;\n  let updateHighlightTimer;\n  let updateHighlightFrame;\n  const clearUpdateHighlight = () => {\n    clearTimeout(updateHighlightTimer); updateHighlightTimer = null;\n    if (updateHighlightFrame) cancelAnimationFrame(updateHighlightFrame);\n    updateHighlightFrame = null;\n    updateHighlight?.host.remove(); updateHighlight = null;\n  };\n  const positionUpdateHighlight = () => {\n    updateHighlightFrame = null;\n    if (!updateHighlight) return false;\n    const box = updateHighlight.node ? visibleBox(updateHighlight.node) : { left: 6, top: 6, right: innerWidth - 6, bottom: innerHeight - 6 };\n    if (!box) { clearUpdateHighlight(); return false; }\n    const left = Math.max(4, box.left - 3), top = Math.max(4, box.top - 3);\n    const right = Math.min(innerWidth - 4, box.right + 3), bottom = Math.min(innerHeight - 4, box.bottom + 3);\n    if (right <= left || bottom <= top) { clearUpdateHighlight(); return false; }\n    updateHighlight.host.style.setProperty("left", left + "px", "important");\n    updateHighlight.host.style.setProperty("top", top + "px", "important");\n    updateHighlight.host.style.setProperty("width", right - left + "px", "important");\n    updateHighlight.host.style.setProperty("height", bottom - top + "px", "important");\n    return true;\n  };\n  const queueUpdateHighlight = () => { if (updateHighlight && !updateHighlightFrame) updateHighlightFrame = requestAnimationFrame(positionUpdateHighlight); };\n  const showUpdateHighlight = (node) => {\n    clearUpdateHighlight();\n    const host = document.createElement("div");\n    host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-update-highlight", "");\n    host.setAttribute("aria-hidden", "true");\n    host.style.cssText = "all:initial!important;position:fixed!important;display:block!important;z-index:2147483646!important;pointer-events:none!important;";\n    const shadow = host.attachShadow({ mode: "open" });\n    shadow.innerHTML = `<style>:host{color-scheme:normal}.ring{position:absolute;inset:0;box-sizing:border-box;border:3px solid #fff;border-radius:8px;box-shadow:0 0 0 3px #224ee8,0 0 0 5px #0a173b80;animation:board-update-flash .65s ease-in-out 3;pointer-events:none}@keyframes board-update-flash{0%,100%{opacity:.15}50%{opacity:1}}@media(prefers-reduced-motion:reduce){.ring{animation:none;opacity:1}}</style><div class="ring"></div>`;\n    root.append(host); updateHighlight = { host, node };\n    if (!positionUpdateHighlight()) return false;\n    updateHighlightTimer = setTimeout(clearUpdateHighlight, matchMedia("(prefers-reduced-motion:reduce)").matches ? 1000 : 2050);\n    return true;\n  };\n  let hostComposing = false;\n  const activePointers = new Set();\n  let activityUntil = 0;\n  let activityTimer;\n  let reportedActivity = false;\n  const editableActive = () => document.hasFocus() && document.activeElement instanceof Element\n    && (document.activeElement.matches("input,textarea,select") || document.activeElement.isContentEditable);\n  const updateHardBusy = () => hostComposing || activePointers.size > 0 || editableActive() || selectionMode !== "off" || selectionSession || captureBusy || applying || queued;\n  const reportCanvasActivity = () => {\n    clearTimeout(activityTimer); activityTimer = null;\n    const delay = activityUntil - performance.now();\n    const busy = Boolean(updateHardBusy() || delay > 0);\n    if (busy !== reportedActivity) { reportedActivity = busy; post({ type: "canvas-activity", busy }); }\n    if (delay > 0) activityTimer = setTimeout(reportCanvasActivity, delay + 1);\n  };\n  const noteCanvasActivity = (event) => {\n    if (!event.isTrusted) return;\n    activityUntil = performance.now() + 1200;\n    clearUpdateHighlight();\n    reportCanvasActivity();\n  };\n  window.addEventListener("pointerdown", event => { if (event.isTrusted) { activePointers.add(event.pointerId); noteCanvasActivity(event); } }, true);\n  for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) window.addEventListener(name, event => { if (event.isTrusted) { activePointers.delete(event.pointerId); reportCanvasActivity(); } }, true);\n  for (const name of ["keydown", "wheel", "focusin", "focusout"]) window.addEventListener(name, event => { noteCanvasActivity(event); if (name === "focusout") queueMicrotask(reportCanvasActivity); }, true);\n  window.addEventListener("blur", () => { activePointers.clear(); queueMicrotask(reportCanvasActivity); });\n  window.addEventListener("scroll", queueUpdateHighlight, true);\n  window.addEventListener("resize", queueUpdateHighlight);\n  window.addEventListener("pagehide", () => { clearUpdateHighlight(); clearTimeout(activityTimer); });\n  const focusUpdate = (message) => {\n    const update = message.update;\n    const index = message.targetIndex === undefined ? 0 : message.targetIndex;\n    if (typeof message.requestId !== "string" || !message.requestId || message.requestId.length > 160\n      || !Number.isSafeInteger(message.token) || message.token < 0 || !Number.isSafeInteger(index) || index < 0 || index > 100\n      || !update || typeof update.id !== "string" || !update.id || update.id.length > 160\n      || !Number.isSafeInteger(update.documentVersion) || update.documentVersion < 0 || !Number.isSafeInteger(update.canvasRevision)\n      || !Array.isArray(update.targets) || update.targets.length > 100 || !["patch", "data", "document"].includes(update.kind)) return;\n    const reply = (status, fields = {}) => post({ type: "update-position", requestId: message.requestId, id: update.id, token: message.token,\n      targetIndex: index, documentVersion: update.documentVersion, status, ...fields });\n    clearUpdateHighlight();\n    if (update.documentVersion !== snapshot.canvas.documentVersion) { reply("unavailable", { reason: "\u5C5E\u4E8E\u53E6\u4E00\u7248\u753B\u5E03\uFF0C\u4FDD\u7559\u539F\u66F4\u65B0\u8BB0\u5F55" }); return; }\n    if (updateHardBusy() || (message.automatic && performance.now() < activityUntil)) {\n      // The host retries after canvas-activity false; never keep a hidden scroll request\n      // that could surprise the user after they have moved on to a different update.\n      reportCanvasActivity(); reply("deferred", { reason: "\u6B63\u5728\u4EA4\u4E92\uFF0C\u7A0D\u540E\u5B9A\u4F4D" }); return;\n    }\n    if (update.canvasRevision > snapshot.canvas.revision) { reply("unavailable", { reason: "\u5BF9\u5E94\u753B\u5E03\u7248\u672C\u5C1A\u672A\u8F7D\u5165" }); return; }\n    if (!update.targets.length) {\n      if (update.kind !== "document") { reply("unavailable", { reason: "\u6B64\u6B21\u6570\u636E\u66F4\u65B0\u672A\u6307\u5B9A\u753B\u5E03\u4F4D\u7F6E" }); return; }\n      window.scrollTo({ left: 0, top: 0, behavior: "instant" });\n      if (showUpdateHighlight(null)) reply("focused", { location: "document", position: { x: 12, y: 12 } });\n      else reply("unavailable", { reason: "\u753B\u5E03\u5F53\u524D\u4E0D\u53EF\u89C1" });\n      return;\n    }\n    const target = findUpdateTarget(update, index);\n    if (!target) { reply("unavailable", { reason: "\u539F\u7EC4\u4EF6\u5DF2\u79FB\u9664\u3001\u8EAB\u4EFD\u4E0D\u660E\u786E\u6216\u5F53\u524D\u4E0D\u53EF\u89C1" }); return; }\n    const node = updateContext(target.node);\n    if (!node) { reply("unavailable", { reason: "\u7EC4\u4EF6\u5F53\u524D\u9690\u85CF\u6216\u88AB\u88C1\u526A\uFF0C\u663E\u793A\u540E\u53EF\u7EE7\u7EED\u5B9A\u4F4D" }); return; }\n    node.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });\n    const box = visibleBox(node);\n    if (!box || !showUpdateHighlight(node)) { reply("unavailable", { reason: "\u7EC4\u4EF6\u5F53\u524D\u4E0D\u53EF\u89C1" }); return; }\n    reply("focused", { location: target.ancestor || node !== target.node ? "ancestor" : "target",\n      position: { x: Math.max(8, Math.min(innerWidth - 8, box.left + box.width / 2)), y: Math.max(8, Math.min(innerHeight - 8, box.top + box.height / 2)) } });\n  };\n\n  // Host-owned discussions are independent from the authored document and its patch journal.\n  let markerHost;\n  let markerItems = [];\n  let selectedMarkerId;\n  let markerPositionFrame;\n  let lastSelectedPosition;\n  const markerLabels = { saved: "\u5DF2\u63D0\u4EA4", sending: "\u53D1\u9001\u4E2D", delivered: "\u7B49\u5F85\u56DE\u7B54", processing: "\u5904\u7406\u4E2D", answered: "\u5DF2\u56DE\u7B54", applied: "\u5DF2\u843D\u5B9E", rejected: "\u672A\u91C7\u7EB3", failed: "\u5931\u8D25" };\n  const inMarkers = (event) => markerHost && event.composedPath().includes(markerHost);\n  const markerNode = (event) => event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-board-interaction"));\n  const positionMarkers = () => {\n    markerPositionFrame = null;\n    if (!markerHost) return;\n    const overlap = new Map();\n    const observed = new Set();\n    let unanchored = 0;\n    for (const item of markerItems) {\n      const button = item.button;\n      const anchor = item.marker.anchor;\n      const location = markerLocation(anchor);\n      const saved = location.rect;\n      const stale = Boolean(anchor && anchor.canvasRevision !== snapshot.canvas.revision);\n      item.location = location;\n      for (const node of location.tracked) observed.add(node);\n      // ResizeObserver includes new wrapper ancestors introduced after selection.\n      for (let node = location.node, depth = 0; authorElement(node) && depth < 16; node = node.parentElement, depth++) observed.add(node);\n      const x = saved ? saved.x - scrollX : 12;\n      const y = saved ? saved.y - scrollY : 12 + unanchored++ * 34;\n      const key = `${Math.round(x / 28)}:${Math.round(y / 28)}`;\n      const offset = overlap.get(key) || 0;\n      overlap.set(key, offset + 1);\n      const left = x + offset * 24;\n      const top = y + offset * 10;\n      const visible = left >= -20 && left < innerWidth && top >= -20 && top < innerHeight;\n      button.hidden = !visible || location.mode === "hidden";\n      button.style.left = left + "px";\n      button.style.top = top + "px";\n      button.dataset.stale = String(stale);\n      button.dataset.location = location.mode;\n      button.dataset.status = item.marker.status;\n      button.dataset.active = String(["saved", "sending", "delivered", "processing"].includes(item.marker.status));\n      button.setAttribute("aria-pressed", String(item.marker.id === selectedMarkerId));\n      const status = markerLabels[item.marker.status] || "\u5DF2\u63D0\u4EA4";\n      let face = button.firstElementChild;\n      if (!face) { face = document.createElement("span"); face.className = "face"; face.setAttribute("aria-hidden", "true"); button.append(face); }\n      face.textContent = String(item.marker.number);\n      const locationLabel = location.mode === "hidden" ? "\u7EC4\u4EF6\u5F53\u524D\u9690\u85CF\uFF1B\u53EF\u4ECE\u4FA7\u680F\u8BF7\u6C42\u5B9A\u4F4D" : location.mode === "collapsed" ? "\u7EC4\u4EF6\u5F53\u524D\u4E0D\u53EF\u89C1\uFF0C\u6807\u8BB0\u663E\u793A\u5728\u53EF\u89C1\u4E0A\u5C42" : location.mode === "ancestor" ? "\u539F\u7EC4\u4EF6\u65E0\u6CD5\u552F\u4E00\u5B9A\u4F4D\uFF0C\u6807\u8BB0\u663E\u793A\u5728\u539F\u4E0A\u5C42" : location.mode === "snapshot" && saved ? "\u539F\u59CB\u5FEB\u7167\u4F4D\u7F6E" : "";\n      button.title = `${item.marker.text}\\n${status}${locationLabel ? " \xB7 " + locationLabel : ""}${!saved ? " \xB7 \u672A\u6307\u5B9A\u53EF\u5B9A\u4F4D\u7684\u5C40\u90E8\u4F4D\u7F6E\u3002" : ""}${stale ? ` \xB7 \u753B\u5E03\u5DF2\u66F4\u65B0\uFF1B\u5F15\u7528\u4ECD\u4E3A r${anchor.canvasRevision}\uFF0C\u8BF7\u6838\u5BF9\u539F\u59CB\u5FEB\u7167\u3002` : ""}`;\n      button.setAttribute("aria-label", `${item.marker.number}. ${item.marker.text}\uFF0C${status}${locationLabel ? "\uFF0C" + locationLabel : ""}${saved ? stale ? "\uFF0C\u65E7\u7248\u672C\u4F4D\u7F6E" : "" : "\uFF0C\u6574\u677F\u8BA8\u8BBA"}`);\n      if (item.marker.id === selectedMarkerId) {\n        const next = { id: item.marker.id, x: left, y: top, location: location.mode };\n        if (JSON.stringify(next) !== JSON.stringify(lastSelectedPosition)) {\n          lastSelectedPosition = next;\n          post({ type: "interaction-position", id: next.id, position: { x: next.x, y: next.y }, location: next.location });\n        }\n      }\n    }\n    syncMarkerObservers(observed);\n  };\n  const queueMarkerPositions = () => { if (!markerPositionFrame && markerItems.length) markerPositionFrame = requestAnimationFrame(positionMarkers); };\n  let markerMutationTimer;\n  const queueLayoutPositions = () => {\n    // At most one layout pass per 100ms for continuously changing authored DOM. There is\n    // no polling/RAF loop; quiet canvases cost nothing and overlay writes are excluded.\n    if (!markerMutationTimer && markerItems.length) markerMutationTimer = setTimeout(() => { markerMutationTimer = null; queueMarkerPositions(); }, 100);\n  };\n  const markerResizeObserver = new ResizeObserver(queueLayoutPositions);\n  const observedMarkerNodes = new Set();\n  const markerMutationObserver = new MutationObserver(records => {\n    if (records.some(record => !(record.target instanceof Element ? record.target : record.target.parentElement)?.closest("[data-board-overlay]")\n      && !(record.type === "childList" && [...record.addedNodes, ...record.removedNodes].every(node => node instanceof Element && node.hasAttribute("data-board-overlay"))))) queueLayoutPositions();\n  });\n  let markerObserving = false;\n  const syncMarkerObservers = (nodes) => {\n    if (markerItems.length && document.body) nodes.add(document.body);\n    for (const node of observedMarkerNodes) if (!nodes.has(node)) { markerResizeObserver.unobserve(node); observedMarkerNodes.delete(node); }\n    for (const node of nodes) if (!observedMarkerNodes.has(node)) { markerResizeObserver.observe(node); observedMarkerNodes.add(node); }\n    if (markerItems.length && !markerObserving) {\n      markerMutationObserver.observe(root, { subtree: true, childList: true, characterData: true, attributes: true });\n      markerObserving = true;\n    } else if (!markerItems.length && markerObserving) { markerMutationObserver.disconnect(); markerObserving = false; }\n  };\n  const drainMarkerFocus = () => {\n    if (pendingMarkerFocus && !applying && !queued && !selectionSession && !captureBusy && selectionMode === "off") {\n      const id = pendingMarkerFocus; pendingMarkerFocus = null; focusInteraction(id);\n    }\n  };\n  const cancelMarkerReveal = () => { markerReveal?.abort(); markerReveal = null; };\n  const revealTarget = async (target, controller) => {\n    const current = () => markerReveal === controller && !controller.signal.aborted && target.isConnected;\n    // A callback can reveal custom navigation, but gets no user-activation/message lease.\n    // Async implementations must honor signal; the runtime also revalidates after awaits.\n    for (const listener of [...revealListeners]) {\n      if (!current()) return false;\n      try { await listener(Object.freeze({ target, reason: "interaction", signal: controller.signal })); }\n      catch (cause) { if (current()) error("reveal-error", cause instanceof Error ? cause.message : String(cause)); }\n    }\n    if (!current()) return false;\n    const ancestors = [];\n    for (let node = target; authorElement(node); node = node.parentElement) ancestors.unshift(node);\n    for (const node of ancestors) {\n      if (!current()) return false;\n      if (node.localName === "details" && !node.open) node.open = true;\n      if (node.getAttribute("role") === "tabpanel") {\n        const tab = tabForPanel(node);\n        if (tab && tab.getAttribute("aria-selected") === "false" && visibleBox(tab, true)) {\n          tab.click();\n          // Let authored frameworks commit their state before inspecting nested tabs.\n          await new Promise(resolve => requestAnimationFrame(resolve));\n          if (!current() || tab.getAttribute("aria-selected") !== "true") return false;\n        }\n      }\n    }\n    return current();\n  };\n  const focusInteraction = async (id) => {\n    cancelMarkerReveal();\n    const item = markerItems.find(item => item.marker.id === id);\n    if (!item) return;\n    if (applying || queued || selectionSession || captureBusy || selectionMode !== "off") { pendingMarkerFocus = id; return; }\n    selectedMarkerId = id;\n    lastGesture = -Infinity;\n    const controller = new AbortController();\n    markerReveal = controller;\n    const target = resolvedBindingNodes(item.marker.anchor)[0];\n    if (target) {\n      // The signal also bounds callbacks that ignore cancellation or never settle.\n      let timer;\n      await Promise.race([revealTarget(target, controller), new Promise(resolve => {\n        controller.signal.addEventListener("abort", () => resolve(false), { once: true });\n        timer = setTimeout(() => { controller.abort(); resolve(false); }, 3000);\n      })]);\n      clearTimeout(timer);\n    }\n    if (markerReveal !== controller || controller.signal.aborted || selectedMarkerId !== id || !markerItems.some(current => current.marker.id === id && current.marker.anchor?.binding?.key === item.marker.anchor?.binding?.key)) {\n      if (markerReveal === controller) markerReveal = null;\n      return;\n    }\n    markerReveal = null;\n    const location = markerLocation(item.marker.anchor);\n    if (location.focusNode) location.focusNode.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });\n    lastSelectedPosition = undefined;\n    positionMarkers();\n    const box = item.button.getBoundingClientRect();\n    // A missing/legacy reference still opens beside the viewport rather than disappearing\n    // offscreen. An unavailable reference is never scrolled onto an unrelated element.\n    const position = { x: Math.max(12, Math.min(innerWidth - 38, box.left)), y: Math.max(12, Math.min(innerHeight - 38, box.top)) };\n    post({ type: "interaction-position", id, position, location: item.location.mode });\n  };\n  const renderMarkers = (markers, selectedId) => {\n    // A host overview can reopen a thread using its captured viewport as a fallback. Always\n    // send this document\'s current position on re-selection, even if it has not moved since\n    // the previous opening (the host may have discarded that position while closed).\n    if (selectedMarkerId !== selectedId) { lastSelectedPosition = undefined; cancelMarkerReveal(); }\n    if (pendingMarkerFocus && pendingMarkerFocus !== selectedId) pendingMarkerFocus = null;\n    selectedMarkerId = selectedId;\n    if (!markerHost) {\n      markerHost = document.createElement("div");\n      markerHost.setAttribute("data-board-markers", "");\n      markerHost.setAttribute("data-board-overlay", "");\n      markerHost.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;width:100%!important;height:100%!important;z-index:2147483645!important;pointer-events:none!important;";\n      const shadow = markerHost.attachShadow({ mode: "open" });\n      shadow.innerHTML = `<style>\n        :host{color-scheme:normal}\n        button{all:initial;box-sizing:border-box;position:absolute;display:grid;place-items:center;width:26px;height:26px;padding:0;pointer-events:auto;border-radius:50%;background:transparent;opacity:.5;cursor:pointer;transition:opacity .15s ease}\n        button[hidden]{display:none}\n        .face{box-sizing:border-box;display:grid;place-items:center;width:18px;height:18px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 1px 4px #0002;font:10px/1 system-ui,-apple-system,sans-serif}\n        button:hover,button:focus-visible,button[aria-pressed=true]{opacity:1}\n        button:focus-visible{outline:2px solid var(--host-iris,#658aeb);outline-offset:1px}\n        button[aria-pressed=true] .face{border-width:2px}\n        button[data-status=failed] .face,button[data-status=rejected] .face{border-color:#cc6256}\n        button[data-status=answered] .face,button[data-status=applied] .face{border-color:#46846b}\n        button[data-stale=true] .face{border-color:#bd8c35}\n        button[data-active=true]::before{content:"";position:absolute;inset:1px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;pointer-events:none;animation:board-halo 2s ease-in-out infinite}\n        button[data-active=true]::after{content:"";position:absolute;right:0;top:0;width:6px;height:6px;border:1px solid var(--host-iris,#658aeb);border-right-color:transparent;border-bottom-color:transparent;border-radius:50%;background:var(--host-sheet,#fff);pointer-events:none;animation:board-orbit 1.25s linear infinite}\n        @keyframes board-halo{0%,100%{opacity:.15;transform:scale(.96)}50%{opacity:.55;transform:scale(1.03)}}\n        @keyframes board-orbit{to{transform:rotate(360deg)}}\n        @media(prefers-reduced-motion:reduce){button{transition:none}button[data-active=true]::before,button[data-active=true]::after{animation:none}button[data-active=true]::before{opacity:.3}button[data-active=true]::after{border-style:solid}}\n      </style>`;\n      root.append(markerHost);\n    }\n    // Preserve focused buttons while receiving progress, and never replace author controls.\n    const old = new Map(markerItems.map(item => [item.marker.id, item.button]));\n    markerItems = markers.map(marker => {\n      const button = old.get(marker.id) || document.createElement("button");\n      old.delete(marker.id);\n      button.type = "button";\n      button.setAttribute("data-board-interaction", marker.id);\n      if (!button.isConnected) markerHost.shadowRoot.append(button);\n      return { marker, button };\n    });\n    for (const button of old.values()) button.remove();\n    markerHost.style.setProperty("visibility", selectionMode === "off" && !pointer?.temporary ? "visible" : "hidden", "important");\n    positionMarkers();\n  };\n  window.addEventListener("scroll", queueMarkerPositions, true);\n  window.addEventListener("resize", queueMarkerPositions);\n  document.addEventListener("transitionend", queueLayoutPositions, true);\n  document.addEventListener("animationend", queueLayoutPositions, true);\n  document.addEventListener("load", queueLayoutPositions, true);\n  const clearOverlay = () => { if (overlay) overlay.remove(); overlay = null; };\n  const showOverlay = (r) => {\n    if (!overlay) {\n      overlay = document.createElement("div");\n      overlay.setAttribute("data-board-overlay", "");\n      overlay.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;border:2px solid #658aeb;background:#658aeb22;box-sizing:border-box;";\n      document.body.append(overlay);\n    }\n    Object.assign(overlay.style, { left: r.x + "px", top: r.y + "px", width: Math.max(2, r.width) + "px", height: Math.max(2, r.height) + "px" });\n  };\n  // Selection is a read-only inspector over the author\'s real DOM. Optional labels improve\n  // discovery, but no IDs, wrappers or component registry are inserted into authored content.\n  let componentHost = null;\n  let selectedComponent = null;\n  let componentChoices = [];\n  let componentParents = [];\n  let componentChildren = [];\n  let componentFrame = null;\n  const inComponents = (event) => componentHost && event.composedPath().includes(componentHost);\n  const componentLabel = (node) => (node.getAttribute("data-board-component") || node.getAttribute("aria-label") || (node.id ? "#" + node.id : node.localName)).slice(0, 100);\n  const componentBoundary = (node) => authorElement(node) && node.matches(\'[data-board-component],[id],section,article,main,aside,nav,header,footer,form,fieldset,details,summary,button,input,textarea,select,canvas,svg,table,ul,ol,li,p,h1,h2,h3,h4,h5,h6,[role]\');\n  const componentAt = (target) => {\n    for (let node = target; authorElement(node); node = node.parentElement) if (componentBoundary(node)) return node;\n    return authorElement(target) ? target : null;\n  };\n  const componentResize = new ResizeObserver(() => queueComponentOutline());\n  const componentMutation = new MutationObserver(records => {\n    if (records.some(record => !(record.target instanceof Element ? record.target : record.target.parentElement)?.closest("[data-board-overlay]")\n      && !(record.type === "childList" && [...record.addedNodes, ...record.removedNodes].every(node => node instanceof Element && node.hasAttribute("data-board-overlay"))))) queueComponentOutline();\n  });\n  const clearComponent = () => {\n    componentHost?.remove(); componentHost = null; selectedComponent = null; componentChoices = []; componentParents = []; componentChildren = [];\n    componentResize.disconnect(); componentMutation.disconnect();\n    if (componentFrame !== null) cancelAnimationFrame(componentFrame);\n    componentFrame = null;\n  };\n  const positionComponent = () => {\n    componentFrame = null;\n    if (!componentHost || !selectedComponent) return;\n    if (selectedComponent.isConnected) {\n      const parents = componentAncestors(selectedComponent);\n      const children = selectableChildren(selectedComponent);\n      if (parents.length !== componentParents.length || parents.some((node, index) => node !== componentParents[index]) || children.length !== componentChildren.length || children.some((node, index) => node !== componentChildren[index])) {\n        selectComponent(selectedComponent); return;\n      }\n      for (const button of componentHost.shadowRoot.querySelectorAll(\'[data-component-action="choose"]\')) button.textContent = componentLabel(componentChoices[Number(button.dataset.componentIndex)]);\n    }\n    const box = visibleBox(selectedComponent);\n    const outline = componentHost.shadowRoot.querySelector(".outline");\n    const reference = componentHost.shadowRoot.querySelector(\'[data-component-action="reference"]\');\n    outline.hidden = !box; reference.disabled = !box;\n    if (box) Object.assign(outline.style, { left: box.left + "px", top: box.top + "px", width: box.width + "px", height: box.height + "px" });\n    componentHost.shadowRoot.querySelector(\'[role="status"]\').textContent = box ? "\u9009\u62E9\u7EC4\u4EF6 \xB7 \u67E5\u770B\u771F\u5B9E\u5305\u542B\u5173\u7CFB" : "\u7EC4\u4EF6\u5DF2\u9690\u85CF\u6216\u79FB\u9664\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9";\n  };\n  const queueComponentOutline = () => { if (componentHost && componentFrame === null) componentFrame = requestAnimationFrame(positionComponent); };\n  const componentAncestors = (node) => {\n    const ancestors = [];\n    for (let parent = node; authorElement(parent) && ancestors.length < 16; parent = parent.parentElement) ancestors.unshift(parent);\n    return ancestors;\n  };\n  const selectableChildren = (node) => {\n    const children = [];\n    for (const child of node.children) {\n      if (authorElement(child) && !child.matches("script,style,link,meta,template") && visibleBox(child)) children.push(child);\n      if (children.length > 40) break;\n    }\n    return children;\n  };\n  const selectComponent = (node) => {\n    if (!authorElement(node) || !node.isConnected) return;\n    clearComponent();\n    selectedComponent = node;\n    const host = document.createElement("div");\n    host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-components", "");\n    host.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483647!important;pointer-events:none!important;";\n    const shadow = host.attachShadow({ mode: "open" });\n    shadow.innerHTML = `<style>\n      :host{color-scheme:normal}.outline{position:fixed;box-sizing:border-box;border:2px solid var(--host-iris,#658aeb);background:#658aeb12;pointer-events:none}.outline[hidden]{display:none}\n      .panel{position:absolute;bottom:12px;left:12px;max-width:min(620px,calc(100% - 24px));max-height:40vh;overflow:auto;box-sizing:border-box;padding:10px;border:1px solid var(--host-line-strong,#aaa);border-radius:10px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);font:12px/1.5 system-ui;box-shadow:0 3px 15px #0002;pointer-events:auto}\n      .row{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}button{font:inherit;padding:4px 8px;border:1px solid var(--host-line-strong,#ccc);border-radius:5px;color:inherit;background:transparent;cursor:pointer}button[aria-current=true]{border-color:var(--host-iris,#658aeb);font-weight:600}button:focus-visible{outline:2px solid var(--host-iris,#658aeb)}button:disabled{opacity:.5;cursor:default}.label{opacity:.7}\n    </style><div class="outline"></div><div class="panel" role="region" aria-label="\u7EC4\u4EF6\u9009\u62E9"><div role="status"></div><div class="label">\u5305\u542B\u5C42\u7EA7</div><div class="row ancestors"></div><div class="label">\u76F4\u63A5\u5B50\u7EC4\u4EF6</div><div class="row children"></div><div class="row"><button type="button" data-component-action="reference">\u5F15\u7528\u7EC4\u4EF6</button><button type="button" data-component-action="close">\u5B8C\u6210\u9009\u62E9 \xB7 Esc</button></div></div>`;\n    const addChoice = (element, container) => {\n      const button = document.createElement("button"); button.type = "button";\n      button.dataset.componentAction = "choose"; button.dataset.componentIndex = String(componentChoices.length);\n      button.textContent = componentLabel(element); button.setAttribute("aria-current", String(element === node));\n      componentChoices.push(element); container.append(button);\n    };\n    const ancestors = componentAncestors(node);\n    componentParents = ancestors;\n    for (const parent of ancestors) addChoice(parent, shadow.querySelector(".ancestors"));\n    const children = selectableChildren(node);\n    componentChildren = children;\n    for (const child of children.slice(0, 40)) addChoice(child, shadow.querySelector(".children"));\n    if (!children.length) shadow.querySelector(".children").textContent = "\u6CA1\u6709\u53EF\u89C1\u5B50\u7EC4\u4EF6";\n    else if (children.length > 40) shadow.querySelector(".children").append(document.createTextNode("\u663E\u793A\u524D 40 \u9879\uFF1B\u53EF\u76F4\u63A5\u70B9\u51FB\u753B\u5E03\u9009\u62E9\u5176\u4ED6\u7EC4\u4EF6"));\n    componentHost = host; root.append(host);\n    componentMutation.observe(root, { subtree: true, childList: true, attributes: true });\n    for (const parent of ancestors) componentResize.observe(parent);\n    positionComponent();\n  };\n  const componentAction = (event) => {\n    const button = event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-component-action"));\n    if (!event.isTrusted || !button || button.disabled) return;\n    if (button.dataset.componentAction === "choose") { selectComponent(componentChoices[Number(button.dataset.componentIndex)]); return; }\n    if (button.dataset.componentAction === "close") { setSelectionMode("off"); post({ type: "selection-end" }); return; }\n    const target = selectedComponent;\n    if (button.dataset.componentAction !== "reference" || !target || !visibleBox(target)) return;\n    const box = target.getBoundingClientRect();\n    const region = rect(box);\n    const anchor = { ...currentAnchor(), kind: "element", selector: selectorFor(target), rect: region, viewport: viewport(), binding: captureBinding(target, region) };\n    const session = beginSelection({ x: Math.max(8, Math.min(box.left, innerWidth - 24)), y: Math.max(8, Math.min(box.top, innerHeight - 24)) });\n    void finishSelection(session, anchor, region);\n  };\n  window.addEventListener("scroll", queueComponentOutline, true);\n  window.addEventListener("resize", queueComponentOutline);\n  let captureLibrary;\n  const loadCapture = () => {\n    if (!captureLibrary) {\n      const url = URL.createObjectURL(new Blob([initial.captureModule], { type: "text/javascript" }));\n      captureLibrary = import(url).finally(() => URL.revokeObjectURL(url));\n    }\n    return captureLibrary;\n  };\n  const captureOverlay = (node) => node instanceof Element && !!node.closest("[data-board-overlay],[data-board-markers],[data-board-capture-status]");\n  const captureTask = () => new Promise(resolve => setTimeout(resolve, 0));\n  // Keep the layout tree, but do not copy thousands of computed styles in off-selection\n  // subtrees. A shallow placeholder is safe only when its used size does not depend on its\n  // children and their margins cannot collapse through it. Overlapping/overflowing descendants\n  // keep every ancestor on their path. Unknown paint effects conservatively keep their subtree.\n  // Layout boxes survive closed details/content-visibility, while display:contents and\n  // visibility overrides can still paint descendants. Suppress only whole paint subtrees.\n  const capturePaintSuppressed = (node, cache = new Map()) => {\n    if (!node) return false;\n    if (cache.has(node)) return cache.get(node);\n    const parent = node.parentElement;\n    const summary = parent?.matches("details:not([open])") && Array.from(parent.children).find(child => child.tagName === "SUMMARY");\n    const hidden = getComputedStyle(node).display === "none" || Boolean(parent && (\n      getComputedStyle(parent).contentVisibility === "hidden" ||\n      (parent.matches("details:not([open])") && node !== summary && getComputedStyle(parent, "::details-content").contentVisibility === "hidden") ||\n      capturePaintSuppressed(parent, cache)));\n    cache.set(node, hidden);\n    return hidden;\n  };\n  const captureDefinition = node => {\n    for (; node; node = node.parentElement) if (node instanceof SVGElement && node.matches("defs,filter,clipPath,mask,pattern,linearGradient,radialGradient,symbol")) return true;\n    return false;\n  };\n  const captureReferenceIds = (node, style) => {\n    const ids = new Set();\n    const add = value => {\n      if (!value || value.startsWith("data:")) return;\n      if (value.startsWith("#")) { ids.add(value.slice(1)); return; }\n      try {\n        const url = new URL(value, document.baseURI);\n        if (url.hash && url.href.split("#")[0] === document.URL.split("#")[0]) ids.add(decodeURIComponent(url.hash.slice(1)));\n      } catch {}\n    };\n    // Navigation hrefs, data attributes and unused CSS variables are not paint edges.\n    if (node instanceof SVGElement && node.localName !== "a") {\n      add(node.getAttribute("href"));\n      add(node.getAttribute("xlink:href"));\n    }\n    for (const [property, value] of style) {\n      if (property.startsWith("--") || (property === "content" && !value.startsWith("url("))) continue;\n      for (const match of value.matchAll(/url\\(\\s*["\']?([^"\')\\s]+)["\']?\\s*\\)/g)) add(match[1]);\n    }\n    return ids;\n  };\n  const capturePlan = async (region, signal) => {\n    const nodes = Array.from(document.querySelectorAll("*"));\n    if (nodes.length > 20000) throw new Error("Selected document is too complex to capture; the geometric anchor is still saved");\n    const needed = new Set([root]);\n    const candidates = new Map();\n    const forced = new Set();\n    const paintHidden = new Map();\n    let slice = performance.now();\n    const keep = node => { for (; node && !needed.has(node); node = node.parentElement) needed.add(node); };\n    const intersects = r => r.right >= region.x && r.bottom >= region.y && r.left <= region.x + region.width && r.top <= region.y + region.height;\n    for (const node of nodes) {\n      signal.throwIfAborted();\n      if (performance.now() - slice > 8) { await captureTask(); signal.throwIfAborted(); slice = performance.now(); }\n      if (captureOverlay(node) || node.matches("script,style,link,meta,head")) continue;\n      const style = getComputedStyle(node);\n      if (capturePaintSuppressed(node, paintHidden) || captureDefinition(node)) {\n        candidates.set(node, null);\n        continue;\n      }\n      if (forced.has(node.parentElement)) { forced.add(node); keep(node); continue; }\n      const bounds = node.getBoundingClientRect();\n      // Shadows can paint outside the border box. This deliberately generous bound includes\n      // spread, offsets and the blur tail; filters and pseudo content have no safe cheap bound.\n      const shadow = [style.boxShadow, style.textShadow].join(" ").replace(/rgba?\\([^)]*\\)/g, "");\n      const bleed = 2 + 3 * Array.from(shadow.matchAll(/(-?[\\d.]+)px/g), match => Math.abs(Number(match[1]))).reduce((sum, value) => sum + value, 0);\n      const box = { left: bounds.left + scrollX - bleed, top: bounds.top + scrollY - bleed, right: bounds.right + scrollX + bleed, bottom: bounds.bottom + scrollY + bleed };\n      const pseudo = ["::before", "::after"].some(part => !["none", "normal"].includes(getComputedStyle(node, part).content));\n      if (node.shadowRoot || style.filter !== "none" || (style.backdropFilter && style.backdropFilter !== "none") || pseudo) { forced.add(node); keep(node); }\n      else if (intersects(box)) keep(node);\n      const block = ["block", "flex", "grid", "flow-root"].includes(style.display);\n      const closedMargins = style.display !== "block" || style.overflowY !== "visible" ||\n        (parseFloat(style.paddingTop) + parseFloat(style.borderTopWidth) > 0 && parseFloat(style.paddingBottom) + parseFloat(style.borderBottomWidth) > 0);\n      if (node instanceof HTMLElement && block && closedMargins && /^\\d+(\\.\\d+)?px$/.test(style.width) && /^\\d+(\\.\\d+)?px$/.test(style.height)) {\n        candidates.set(node, { width: style.width, height: style.height });\n      }\n    }\n    if (needed.size > 1800) throw new Error("Selected area is too complex to capture promptly; the geometric anchor is still saved");\n    const geometry = new Map();\n    const styles = new Map();\n    const pseudoStyles = new Map();\n    const references = new Set();\n    // Hidden SVG resources can paint through a visible use/fill/filter reference. Follow\n    // those dependencies (including indirect references) rather than ignoring hidden DOM.\n    for (const node of needed) {\n      if (needed.size > 1800) throw new Error("Selected area is too complex to capture promptly; the geometric anchor is still saved");\n      signal.throwIfAborted();\n      if (performance.now() - slice > 8) { await captureTask(); signal.throwIfAborted(); slice = performance.now(); }\n      geometry.set(node, captureGeometry(node));\n      const style = getComputedStyle(node);\n      const recorded = new Map(Array.from(style, property => [property, style.getPropertyValue(property)]));\n      styles.set(node, recorded);\n      const pseudos = ["::before", "::after"].map(part => {\n        const style = getComputedStyle(node, part);\n        return new Map(["none", "normal"].includes(style.content) ? [["content", style.content]] : Array.from(style, property => [property, style.getPropertyValue(property)]));\n      });\n      pseudoStyles.set(node, pseudos);\n      for (const id of new Set([recorded, ...pseudos].flatMap(style => Array.from(captureReferenceIds(node, style))))) {\n        if (references.has(id)) continue;\n        references.add(id);\n        const resource = document.getElementById(id);\n        if (!resource) continue;\n        keep(resource);\n        for (const child of resource.querySelectorAll("*")) keep(child);\n      }\n    }\n    const prune = new Map();\n    for (const [node, size] of candidates) if (!needed.has(node)) prune.set(node, size);\n    const suppressedRoots = Array.from(paintHidden).filter(([node, hidden]) => hidden && !paintHidden.get(node.parentElement)).map(([node]) => node);\n    return { prune, needed, geometry, styles, pseudoStyles, references, suppressedRoots, outsideMutations: false };\n\n  };\n  const captureGeometry = node => {\n    const bounds = node.getBoundingClientRect();\n    return [bounds.x, bounds.y, bounds.width, bounds.height, node.scrollLeft, node.scrollTop];\n  };\n  const captureLayoutMatches = plan => plan.suppressedRoots.every(node => !node.isConnected || capturePaintSuppressed(node)) &&\n    Array.from(plan.geometry).every(([node, before]) => node.isConnected && captureGeometry(node).every((value, index) => Math.abs(value - before[index]) < 0.01));\n  const captureStylesMatch = plan => !plan.outsideMutations || Array.from(plan.styles).every(([node, recorded]) => {\n    const style = getComputedStyle(node);\n    if (!Array.from(recorded).every(([property, value]) => style.getPropertyValue(property) === value)) return false;\n    return plan.pseudoStyles.get(node).every((recorded, index) => {\n      const style = getComputedStyle(node, index === 0 ? "::before" : "::after");\n      return Array.from(recorded).every(([property, value]) => style.getPropertyValue(property) === value);\n    });\n  });\n  const captureMutationIsOutside = (record, plan, region) => {\n    const target = record.target instanceof Element ? record.target : record.target.parentElement;\n    if (!target || plan.needed.has(target)) return false;\n    // Even an off-selection mutation may create new overflowing pixels. Inspect only its\n    // affected subtree; unknown paint effects stay conservative instead of accepting a stale\n    // screenshot. The selected layout and computed styles are validated independently.\n    const affected = [target, ...target.querySelectorAll("*")];\n    if (affected.length > 2000) return false;\n    const paintHidden = new Map();\n    return affected.every(node => {\n      if (plan.needed.has(node) || (node.id && plan.references.has(node.id))) return false;\n      if (capturePaintSuppressed(node, paintHidden)) return true;\n      const style = getComputedStyle(node);\n      if (node.shadowRoot || style.filter !== "none" || (style.backdropFilter && style.backdropFilter !== "none") ||\n        ["::before", "::after"].some(part => !["none", "normal"].includes(getComputedStyle(node, part).content))) return false;\n      const bounds = node.getBoundingClientRect();\n      const shadow = [style.boxShadow, style.textShadow].join(" ").replace(/rgba?\\([^)]*\\)/g, "");\n      const bleed = 4 + 3 * Array.from(shadow.matchAll(/(-?[\\d.]+)px/g), match => Math.abs(Number(match[1]))).reduce((sum, value) => sum + value, 0);\n      return bounds.right + scrollX + bleed < region.x || bounds.bottom + scrollY + bleed < region.y ||\n        bounds.left + scrollX - bleed > region.x + region.width || bounds.top + scrollY - bleed > region.y + region.height;\n    });\n  };\n  const captureFrozenRegion = async (region, signal, planReady) => {\n    signal.throwIfAborted();\n    const width = Math.max(root.scrollWidth, innerWidth);\n    const height = Math.max(root.scrollHeight, innerHeight);\n    const ratio = Math.min(devicePixelRatio || 1, 2, 16384 / region.width, 16384 / region.height, Math.sqrt(16777216 / (region.width * region.height)));\n    if (!Number.isFinite(ratio) || ratio < 0.5) throw new Error("Selection is too large to capture; the geometric anchor is still saved");\n    const api = await loadCapture();\n    signal.throwIfAborted();\n    const plan = await capturePlan(region, signal);\n    planReady(plan);\n    signal.throwIfAborted();\n    window.dispatchEvent(new CustomEvent("paseo:capture", { detail: { mime: "image/png", scale: ratio } }));\n    const shots = new Map();\n    const original = HTMLCanvasElement.prototype.toDataURL;\n    // Freeze fresh pixels per capture, never reuse a previous selection\'s dynamic bitmap.\n    for (const canvas of document.querySelectorAll("canvas")) {\n      let skipped = captureOverlay(canvas);\n      for (let parent = canvas; parent && !skipped; parent = parent.parentElement) skipped = plan.prune.has(parent);\n      if (!skipped) { try { shots.set(canvas, original.call(canvas)); } catch {} }\n    }\n    const startScroll = { x: scrollX, y: scrollY };\n    HTMLCanvasElement.prototype.toDataURL = function (...args) { return args.length === 0 && shots.has(this) ? shots.get(this) : original.apply(this, args); };\n    const parentStyles = new WeakMap();\n    let cloned = 0;\n    let slice = performance.now();\n    const started = slice;\n    const check = () => {\n      signal.throwIfAborted();\n      if (scrollX !== startScroll.x || scrollY !== startScroll.y) throw new Error("Canvas changed during capture; the geometric anchor is still saved");\n      if (cloned > 1800 || performance.now() - started > 3500) throw new Error("Selected area is too complex to capture promptly; the geometric anchor is still saved");\n    };\n    try {\n      const svg = await api.toSvg(root, {\n        width, height, captureViewport: region, skipFonts: true, style: { margin: "0" },\n        filter: node => node.nodeName !== "SCRIPT" && !captureOverlay(node),\n        filterChildren: node => !plan.prune.has(node),\n        // Computed values already resolve var(). Preserve custom-property inheritance instead\n        // of redundantly copying the same theme tokens onto every single descendant.\n        filterStyleProperty: (node, property, value, computedValue) => {\n          const recorded = plan.styles.get(node);\n          if (recorded) {\n            // The library normalizes font-size and SVG path d for its cloned output.\n            // Validate the original computed value, not that serialization transform.\n            if (recorded.get(property) !== computedValue) throw new Error("Canvas styling changed during capture; the geometric anchor is still saved");\n          }\n          if (!property.startsWith("--") || !node.parentElement) return true;\n          let style = parentStyles.get(node.parentElement);\n          if (!style) { style = getComputedStyle(node.parentElement); parentStyles.set(node.parentElement, style); }\n          return style.getPropertyValue(property) !== value;\n        },\n        beforeSerialize: async () => { await captureTask(); check(); },\n        beforeClone: async node => {\n          if (node instanceof Element) cloned++;\n          check();\n          if (performance.now() - slice > 8) { await captureTask(); check(); slice = performance.now(); }\n        },\n        afterClone: (source, clone) => {\n          if (!(source instanceof Element) || !(clone instanceof Element)) return;\n          if (clone.style) { clone.style.animation = "none"; clone.style.transition = "none"; }\n          const sourceStyle = getComputedStyle(source);\n          if (["sticky", "fixed"].includes(sourceStyle.position) && !plan.needed.has(source)) { clone.style.opacity = "0"; return; }\n          if (sourceStyle.position === "sticky") throw new Error("Sticky content cannot be captured accurately; the geometric anchor is still saved");\n          if (sourceStyle.position === "fixed") {\n            for (let parent = source.parentElement; parent && parent !== root; parent = parent.parentElement) {\n              const style = getComputedStyle(parent);\n              if (style.transform !== "none" || style.filter !== "none" || style.perspective !== "none" || parent.scrollTop || parent.scrollLeft) throw new Error("Transformed fixed content cannot be captured accurately; the geometric anchor is still saved");\n            }\n            const bounds = source.getBoundingClientRect();\n            clone.style.left = bounds.left + scrollX + "px";\n            clone.style.top = bounds.top + scrollY + "px";\n            clone.style.right = "auto";\n            clone.style.bottom = "auto";\n          }\n          const size = plan.prune.get(source);\n          if (size && clone.style) {\n            for (const key of ["width", "minWidth", "maxWidth"]) clone.style[key] = size.width;\n            for (const key of ["height", "minHeight", "maxHeight"]) clone.style[key] = size.height;\n          }\n          if ((source.scrollTop || source.scrollLeft) && source !== root && source !== document.body) {\n            // Translate already-laid-out direct children inside the original clipping box.\n            // A raw text scroller cannot be wrapped without changing line layout.\n            if (Array.from(source.childNodes).some(node => node.nodeType === 3 && node.textContent.trim())) throw new Error("This text scroller cannot be captured accurately; the geometric anchor is still saved");\n            clone.style.overflow = "hidden";\n            for (const child of clone.children) if (child.style) child.style.transform = `translate(${-source.scrollLeft}px, ${-source.scrollTop}px) ${child.style.transform === "none" ? "" : child.style.transform}`;\n          }\n        },\n      });\n      check();\n      if (!captureLayoutMatches(plan)) throw new Error("Canvas layout changed during capture; the geometric anchor is still saved");\n      if (!captureStylesMatch(plan)) throw new Error("Canvas styling changed during capture; the geometric anchor is still saved");\n      // Keep the original foreignObject/layout dimensions, but decode and allocate only the\n      // requested SVG viewport. Page length must not reduce a small selection\'s pixel ratio.\n      await captureTask();\n      check();\n      const image = new Image();\n      image.decoding = "async";\n      const ready = new Promise((resolve, reject) => { image.onload = resolve; image.onerror = () => reject(new Error("Selection image could not be decoded")); });\n      image.src = svg;\n      await ready;\n      check();\n      if (!captureLayoutMatches(plan)) throw new Error("Canvas layout changed during capture; the geometric anchor is still saved");\n      if (!captureStylesMatch(plan)) throw new Error("Canvas styling changed during capture; the geometric anchor is still saved");\n      const cropped = document.createElement("canvas");\n      cropped.width = Math.max(1, Math.round(region.width * ratio));\n      cropped.height = Math.max(1, Math.round(region.height * ratio));\n      const context = cropped.getContext("2d");\n      if (!context) throw new Error("Screenshot canvas unavailable");\n      context.drawImage(image, 0, 0, cropped.width, cropped.height);\n      const data = cropped.toDataURL("image/png").split(",")[1];\n      if (data.length > 3000000) throw new Error("Selection screenshot exceeds 3 MB; select a smaller area");\n      return { mimeType: "image/png", data };\n    } finally { HTMLCanvasElement.prototype.toDataURL = original; }\n  };\n  const captureRegion = async (region, signal) => {\n    // A cooperative clone spans several browser tasks. Pause CSS/Web Animations at their\n    // current displayed frame and resume only animations that were running before capture.\n    const controller = new AbortController();\n    const cancel = () => controller.abort(signal.reason);\n    if (signal.aborted) cancel(); else signal.addEventListener("abort", cancel, { once: true });\n    let plan;\n    let buffered = [];\n    const validate = records => {\n      const changed = records.filter(record => !captureOverlay(record.target) && (record.type !== "attributes" || record.oldValue !== record.target.getAttribute(record.attributeName)) &&\n        (record.type !== "childList" || [...record.addedNodes, ...record.removedNodes].some(node => !captureOverlay(node))));\n      if (!changed.length) return;\n      if (!plan) { buffered.push(...changed); return; }\n      if (!captureLayoutMatches(plan) || changed.some(record => !captureMutationIsOutside(record, plan, region))) {\n        controller.abort(new Error("Canvas changed during capture; the geometric anchor is still saved"));\n      } else {\n        // A hidden/outside mutation can affect already-cloned selected styles via :has().\n        plan.outsideMutations = true;\n      }\n    };\n    const observer = new MutationObserver(validate);\n    observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeOldValue: true });\n    const animations = document.getAnimations().filter(animation => animation.playState === "running" && !captureOverlay(animation.effect?.target));\n    for (const animation of animations) animation.pause();\n    try { return await captureFrozenRegion(region, controller.signal, ready => { plan = ready; validate(buffered); buffered = []; }); }\n    finally {\n      observer.disconnect();\n      signal.removeEventListener("abort", cancel);\n      for (const animation of animations) if (animation.playState === "paused") animation.play();\n    }\n  };\n  // A cancelled capture still owns its html-to-image clone until it settles. Serializing the\n  // underlying work prevents overlapping temporary canvas hooks from restoring one another.\n  let captureTail = Promise.resolve();\n  const queuedCapture = (region, signal) => {\n    const result = captureTail.catch(() => {}).then(() => captureRegion(region, signal));\n    captureTail = result.catch(() => {});\n    return result;\n  };\n  const isEditor = (event) => event.composedPath().some(node => node instanceof Element && (node.matches("input,textarea,select") || node.isContentEditable));\n  const startsTextSelection = (event) => {\n    if (isEditor(event) || !(event.target instanceof Element) || event.target.closest("button,a,input,textarea,select,canvas,svg,[draggable=true],[role=button],[role=slider]")) return false;\n    const range = document.caretRangeFromPoint?.(event.clientX, event.clientY);\n    const caret = range ? null : document.caretPositionFromPoint?.(event.clientX, event.clientY);\n    const node = range?.startContainer || caret?.offsetNode;\n    return node?.nodeType === 3 && Boolean(node.textContent?.trim()) && event.target.contains(node);\n  };\n  const paintSelectionMode = () => {\n    const mode = pointer?.temporary ? "region" : selectionMode;\n    root.setAttribute("data-board-selection", mode);\n    root.style.cursor = mode === "off" ? "" : mode === "text" ? "text" : "crosshair";\n    if (markerHost) markerHost.style.setProperty("visibility", mode === "off" ? "visible" : "hidden", "important");\n  };\n  const releasePointer = () => {\n    const active = pointer;\n    pointer = null;\n    textPointer = null;\n    if (active) { try { if (root.hasPointerCapture(active.pointerId)) root.releasePointerCapture(active.pointerId); } catch {} }\n  };\n  const eventPoint = (event) => ({ x: Math.max(0, Math.min(event.clientX, innerWidth)), y: Math.max(0, Math.min(event.clientY, innerHeight)) });\n  const cancelSelection = ({ release = true, clear = true, notify = false, drainUpdates = true } = {}) => {\n    cancelMarkerReveal();\n    const previous = selectionSession;\n    selectionSession = null;\n    releasePointer();\n    captureBusy = false;\n    clearOverlay();\n    clearComponent();\n    if (clear) lastAnchor = undefined;\n    if (previous) {\n      previous.abort.abort();\n      previous.indicator?.remove();\n      if (release) post({ type: "selection-lock", id: previous.id, active: false });\n    }\n    paintSelectionMode();\n    if (notify) post({ type: "selection-clear" });\n    reportCanvasActivity();\n    if (drainUpdates) void drain();\n  };\n  const beginSelection = (position, dragging = false) => {\n    window.focus();\n    cancelSelection({ release: false, drainUpdates: false });\n    const session = { id: `${scope.sessionId}:selection-${++sequence}`, abort: new AbortController(), indicator: null, anchor: null, position };\n    selectionSession = session;\n    reportCanvasActivity();\n    // Replace the lease atomically, with a fresh generation so old pixels cannot match it.\n    post({ type: "selection-lock", id: session.id, active: true, dragging });\n    return session;\n  };\n  const showCaptureStatus = (session) => {\n    if (selectionSession !== session || session.indicator) return;\n    const host = document.createElement("div");\n    host.setAttribute("data-board-capture-status", "");\n    host.setAttribute("data-board-overlay", "");\n    host.style.cssText = `all:initial;position:fixed;z-index:2147483647;pointer-events:none;left:${Math.max(8, Math.min(session.position.x + 12, innerWidth - 220))}px;top:${Math.max(8, Math.min(session.position.y + 12, innerHeight - 44))}px;`;\n    const shadow = host.attachShadow({ mode: "open" });\n    shadow.innerHTML = `<style>div{padding:8px 12px;border:1px solid var(--host-line-strong,#d0d0d0);border-radius:8px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 4px 14px #0002;font:12px/1.5 system-ui,-apple-system,sans-serif}</style><div role="status">\u6B63\u5728\u622A\u53D6\u5F15\u7528\u2026 \xB7 Esc \u53D6\u6D88</div>`;\n    session.indicator = host;\n    document.body.append(host);\n  };\n  const finishSelection = async (session, anchor, imageRegion, reuse = false) => {\n    if (selectionSession !== session) return;\n    releasePointer();\n    selectionMode = "off";\n    paintSelectionMode();\n    const needsCapture = !reuse && imageRegion && imageRegion.width > 0 && imageRegion.height > 0;\n    // This immutable reference is available immediately; capture adds only pixels later.\n    session.anchor = anchor;\n    lastAnchor = anchor;\n    captureBusy = Boolean(needsCapture);\n    post({ type: "selection-lock", id: session.id, active: true, dragging: false });\n    post({ type: "selection-end" });\n    post({ type: "anchor", anchor, selectionId: session.id });\n    post({ type: "compose", automatic: true, selectionId: session.id, request: { kind: "question", anchor, position: session.position, ...(needsCapture ? { captureStatus: "pending" } : {}) } });\n    if (!needsCapture) { cancelSelection({ clear: false }); return; }\n    showCaptureStatus(session);\n    // Promise microtasks do not permit painting or input. Give the host its messages, React\n    // commit and a painted frame before DOM capture begins. The capture implementation must\n    // also yield during its work to keep input responsive throughout.\n    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0))));\n    if (selectionSession !== session || session.abort.signal.aborted) return;\n    let timer;\n    let abortListener;\n    let captured;\n    let failureReason;\n    try {\n      const image = await Promise.race([\n        queuedCapture(imageRegion, session.abort.signal),\n        new Promise((_, reject) => {\n          timer = setTimeout(() => reject(new Error("Selection capture timed out")), 15000);\n          abortListener = () => reject(new DOMException("\u9009\u533A\u5DF2\u53D6\u6D88", "AbortError"));\n          session.abort.signal.addEventListener("abort", abortListener, { once: true });\n        }),\n      ]);\n      captured = { ...anchor, image };\n    } catch (cause) {\n      // Send only a bounded category, never arbitrary document/resource error text.\n      // A failed image leaves the already-open input and its text/geometry usable.\n      const message = cause instanceof Error ? cause.message : "";\n      failureReason = /Canvas (?:layout |styling )?changed during capture/.test(message) ? "content-changed"\n        : /too complex to capture/.test(message) ? "too-complex"\n        : /cannot be captured accurately/.test(message) ? "unsupported-layout"\n        : /too large to capture|screenshot exceeds 3 MB/.test(message) ? "too-large"\n        : message === "Selection capture timed out" ? "timeout" : "generation-failed";\n    } finally {\n      clearTimeout(timer);\n      if (abortListener) session.abort.signal.removeEventListener("abort", abortListener);\n    }\n    if (selectionSession !== session || session.abort.signal.aborted) return;\n    lastAnchor = captured || anchor;\n    post({ type: "selection-capture", selectionId: session.id, anchor: lastAnchor, status: captured ? "ready" : "failed", ...(!captured ? { reason: failureReason } : {}) });\n    cancelSelection({ clear: false });\n  };\n  const setSelectionMode = (mode) => {\n    if (!["off", "text", "region", "point", "component"].includes(mode)) return;\n    if (applying) { deferredSelection = mode; return; }\n    if (mode === selectionMode) return;\n    cancelSelection({ drainUpdates: false });\n    cancelMarkerReveal();\n    selectionMode = mode;\n    paintSelectionMode();\n    reportCanvasActivity();\n    if (mode === "off") void drain();\n  };\n  const selectedText = (point) => {\n    const selected = window.getSelection();\n    if (!selected || !selected.rangeCount || selected.isCollapsed || !selected.toString().trim()) return null;\n    const range = selected.getRangeAt(0);\n    if (point && !Array.from(range.getClientRects()).some(r => point.x >= r.left && point.x <= r.right && point.y >= r.top && point.y <= r.bottom)) return null;\n    const node = range.commonAncestorContainer;\n    const region = rect(range.getBoundingClientRect());\n    const target = node.nodeType === 1 ? node : node.parentElement;\n    return { anchor: { ...currentAnchor(), kind: "text", text: selected.toString().slice(0, 12000), selector: selectorFor(target), rect: region, viewport: viewport(), binding: captureBinding(target, region) }, region };\n  };\n  const pointSelection = (point, target) => {\n    const position = { x: point.x + scrollX, y: point.y + scrollY, width: 0, height: 0 };\n    return { anchor: { ...currentAnchor(), kind: "point", selector: selectorFor(target), rect: position, viewport: viewport(), binding: captureBinding(target, position) },\n      region: { x: Math.max(0, Math.min(position.x - 120, root.scrollWidth - Math.min(240, innerWidth))), y: Math.max(0, position.y - 80), width: Math.min(240, innerWidth), height: 160 } };\n  };\n  const containsAnchor = (anchor, point, target) => {\n    if (!anchor?.rect || anchor.boardRevision !== snapshot.boardRevision || anchor.canvasRevision !== snapshot.canvas.revision) return false;\n    if (anchor.binding) {\n      const location = markerLocation(anchor);\n      if (location.mode !== "component" || !(target instanceof Element) || !location.node.contains(target)\n        || Math.abs(location.rect.x - anchor.rect.x) > 1 || Math.abs(location.rect.y - anchor.rect.y) > 1) return false;\n    }\n    const { x, y, width, height } = anchor.rect;\n    const margin = anchor.kind === "point" ? 6 : 0;\n    return point.x + scrollX >= x - margin && point.x + scrollX <= x + width + margin && point.y + scrollY >= y - margin && point.y + scrollY <= y + height + margin;\n  };\n  window.addEventListener("pointerdown", (event) => {\n    if (!event.isTrusted) return;\n    lastGesture = performance.now();\n    lastGesturePosition = eventPoint(event);\n    if (inComponents(event)) { event.stopImmediatePropagation(); return; }\n    if (inMarkers(event)) { window.focus(); cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); event.stopImmediatePropagation(); return; }\n    if (event.button === 0) { window.focus(); post({ type: "canvas-pointer" }); }\n    suppressPointerClick = false;\n    dismissedPointer = null;\n    if (event.button !== 0) return;\n    if (selectionMode === "component") {\n      event.preventDefault(); event.stopImmediatePropagation(); suppressPointerClick = true;\n      selectComponent(componentAt(event.target)); return;\n    }\n    const temporary = selectionMode === "off" && event.altKey && !isEditor(event);\n    if (selectionMode === "off" && !temporary) {\n      const wasCapturing = captureBusy;\n      cancelSelection({ notify: Boolean(selectionSession || lastAnchor) });\n      // Cancelling an unfinished capture must not activate a control beneath its preview.\n      if (wasCapturing) { dismissedPointer = event.pointerId; suppressPointerClick = true; event.preventDefault(); event.stopImmediatePropagation(); return; }\n      // Freeze the displayed revision during an ordinary native text drag, but let the\n      // browser perform selection. Editors and author-controlled drags keep native behavior.\n      if (!applying && startsTextSelection(event)) {\n        const position = eventPoint(event);\n        textPointer = { pointerId: event.pointerId, position, beforeText: window.getSelection()?.toString() || "", session: beginSelection(position, true) };\n      }\n      return;\n    }\n    if (applying) return;\n    event.stopImmediatePropagation();\n    const session = beginSelection({ x: event.clientX, y: event.clientY }, true);\n    suppressPointerClick = true;\n    if (selectionMode === "text" && !temporary) return;\n    event.preventDefault();\n    pointer = { x: event.clientX, y: event.clientY, target: event.target, pointerId: event.pointerId, temporary, session };\n    try { root.setPointerCapture(event.pointerId); } catch {}\n    paintSelectionMode();\n    showOverlay({ x: pointer.x, y: pointer.y, width: 0, height: 0 });\n  }, true);\n  window.addEventListener("pointermove", (event) => {\n    if (inComponents(event)) { event.stopImmediatePropagation(); return; }\n    if (inMarkers(event) && !pointer) { event.stopImmediatePropagation(); return; }\n    if (dismissedPointer === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (!pointer && selectionMode === "off") return;\n    event.stopImmediatePropagation();\n    if (!pointer || event.pointerId !== pointer.pointerId) return;\n    event.preventDefault();\n    const point = eventPoint(event);\n    showOverlay({ x: Math.min(pointer.x, point.x), y: Math.min(pointer.y, point.y), width: Math.abs(point.x - pointer.x), height: Math.abs(point.y - pointer.y) });\n  }, true);\n  window.addEventListener("pointerup", (event) => {\n    if (!event.isTrusted || event.button !== 0) return;\n    if (inComponents(event)) { event.stopImmediatePropagation(); return; }\n    if (inMarkers(event)) { event.stopImmediatePropagation(); return; }\n    if (dismissedPointer === event.pointerId) { dismissedPointer = null; event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (textPointer?.pointerId === event.pointerId) {\n      const start = textPointer;\n      textPointer = null;\n      const position = eventPoint(event);\n      const changed = (window.getSelection()?.toString() || "") !== start.beforeText;\n      const text = changed || Math.hypot(position.x - start.position.x, position.y - start.position.y) >= 3 ? selectedText() : null;\n      if (text) {\n        suppressPointerClick = true;\n        start.session.position = position;\n        void finishSelection(start.session, text.anchor, text.region);\n      } else cancelSelection();\n      return;\n    }\n    if (!pointer && selectionMode === "off") return;\n    event.stopImmediatePropagation();\n    const session = selectionSession;\n    if (!session) return;\n    if (selectionMode === "text" && !pointer) {\n      const text = selectedText();\n      session.position = eventPoint(event);\n      if (text) void finishSelection(session, text.anchor, text.region);\n      else cancelSelection();\n      return;\n    }\n    event.preventDefault();\n    if (!pointer || pointer.pointerId !== event.pointerId) return;\n    const start = pointer;\n    const point = eventPoint(event);\n    const isPoint = selectionMode === "point" || Math.hypot(point.x - start.x, point.y - start.y) < 5;\n    session.position = point;\n    if (isPoint) {\n      const selected = pointSelection(session.position, start.target);\n      void finishSelection(session, selected.anchor, selected.region);\n    } else {\n      const region = { x: Math.min(start.x, point.x) + scrollX, y: Math.min(start.y, point.y) + scrollY, width: Math.abs(point.x - start.x), height: Math.abs(point.y - start.y) };\n      void finishSelection(session, { ...currentAnchor(), kind: "region", selector: selectorFor(start.target), rect: region, viewport: viewport(), binding: captureBinding(start.target, region, true) }, region);\n    }\n  }, true);\n  window.addEventListener("pointercancel", () => { dismissedPointer = null; cancelSelection({ notify: true }); }, true);\n  window.addEventListener("lostpointercapture", (event) => {\n    if (pointer?.pointerId === event.pointerId && !root.hasPointerCapture(event.pointerId)) cancelSelection({ notify: true });\n  }, true);\n  window.addEventListener("pointerout", (event) => {\n    if (pointer && !event.relatedTarget && !root.hasPointerCapture(pointer.pointerId)) cancelSelection({ notify: true });\n  }, true);\n  window.addEventListener("blur", () => {\n    if (!selectionSession) return;\n    // The host input takes focus before capture finishes. Keep its completed reference alive;\n    // host dismissal/submission sends a generation-scoped cancellation explicitly.\n    if (!selectionSession.anchor) cancelSelection({ notify: true });\n  });\n  window.addEventListener("contextmenu", (event) => {\n    if (!event.isTrusted) return;\n    if (inComponents(event) || selectionMode === "component") { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (inMarkers(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (event.shiftKey || isEditor(event)) { cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); return; }\n    if (applying) return;\n    event.preventDefault();\n    event.stopImmediatePropagation();\n    lastGesture = performance.now();\n    let point = { x: event.clientX, y: event.clientY };\n    if (point.x === 0 && point.y === 0 && event.target instanceof Element) {\n      const r = event.target.getBoundingClientRect(); point = { x: r.left + r.width / 2, y: r.top + r.height / 2 };\n    }\n    const previous = lastAnchor?.image && containsAnchor(lastAnchor, point, event.target) ? copy(lastAnchor) : null;\n    const text = !previous ? selectedText(point) : null;\n    const selected = previous ? { anchor: previous, region: null } : text || pointSelection(point, event.target);\n    const session = beginSelection(point);\n    void finishSelection(session, selected.anchor, selected.region, Boolean(previous));\n  }, true);\n  window.addEventListener("click", (event) => {\n    if (inComponents(event)) { event.preventDefault(); event.stopImmediatePropagation(); componentAction(event); return; }\n    if (inMarkers(event)) {\n      event.preventDefault(); event.stopImmediatePropagation();\n      const button = markerNode(event);\n      if (!event.isTrusted || !button || !navigator.userActivation?.isActive) return;\n      const bounds = button.getBoundingClientRect();\n      post({ type: "open-interaction", id: button.getAttribute("data-board-interaction"), position: { x: bounds.left, y: bounds.top }, location: button.dataset.location });\n      return;\n    }\n    if ((event.detail > 0 && suppressPointerClick) || selectionMode !== "off" || pointer) {\n      suppressPointerClick = false;\n      event.preventDefault(); event.stopImmediatePropagation(); return;\n    }\n    if (event.isTrusted) lastGesture = performance.now();\n    const path = event.composedPath();\n    const link = path.find((node) => node instanceof Element && node.matches("a[href],area[href]"));\n    if (!link) return;\n    const href = link.getAttribute("href") || "";\n    event.preventDefault();\n    if (href.startsWith("#")) { try { document.getElementById(decodeURIComponent(href.slice(1)))?.scrollIntoView(); } catch {} }\n    else if (/^https?:\\/\\//i.test(href) && event.isTrusted && acting()) post({ type: "open-link", url: href });\n  }, true);\n  const submitForm = (form, submitter) => {\n    if (!form.noValidate && !(submitter && submitter.formNoValidate) && !form.reportValidity()) return;\n    const event = new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: submitter || null });\n    if (!form.dispatchEvent(event)) return;\n    if (form.method === "dialog") form.closest("dialog")?.close(submitter?.value);\n  };\n  const isSubmitter = (node) => node && node.form && ["submit", "image"].includes(node.type);\n  document.addEventListener("click", (event) => {\n    if (selectionMode !== "off") return;\n    const button = event.composedPath().find((node) => node instanceof Element && node.matches("button,input"));\n    if (isSubmitter(button) && !button.disabled) setTimeout(() => { if (!event.defaultPrevented) submitForm(button.form, button); }, 0);\n  }, true);\n  document.addEventListener("keydown", (event) => {\n    const field = event.target;\n    if (selectionMode !== "off" || event.key !== "Enter" || event.isComposing || field.tagName !== "INPUT" || !field.form) return;\n    const fields = Array.from(field.form.elements);\n    if (fields.some(isSubmitter)) return;\n    const implicit = ["text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number"];\n    if (!implicit.includes(field.type) || fields.filter((n) => n.tagName === "INPUT" && implicit.includes(n.type)).length > 1) return;\n    setTimeout(() => { if (!event.defaultPrevented) submitForm(field.form, null); }, 0);\n  }, true);\n  HTMLFormElement.prototype.requestSubmit = function (submitter) { submitForm(this, submitter || null); };\n  window.addEventListener("keydown", (event) => {\n    if (event.isTrusted) lastGesture = performance.now();\n    if (!event.isTrusted) return;\n    if (inComponents(event) && event.key !== "Escape") { event.stopImmediatePropagation(); return; }\n    if (inMarkers(event)) { event.stopImmediatePropagation(); return; }\n    if (event.target instanceof Element) { const r = event.target.getBoundingClientRect(); lastGesturePosition = { x: r.left, y: r.bottom }; }\n    if (event.key === "Escape" && (selectionSession || selectionMode !== "off" || lastAnchor)) {\n      event.preventDefault(); event.stopImmediatePropagation();\n      selectionMode = "off"; cancelSelection({ notify: true }); post({ type: "selection-end" }); return;\n    }\n  }, true);\n  window.addEventListener("message", (event) => {\n    const message = event.data;\n    if (!event.isTrusted || event.source !== window.parent || !message || message.channel !== scope.channel || message.boardId !== scope.boardId || message.sessionId !== scope.sessionId) return;\n    if (message.type === "snapshot") receiveSnapshot(message.snapshot, message.version);\n    else if (message.type === "delta") { versionedTransport = true; enqueue(receiver.delta(message.delta)); }\n    else if (message.type === "interactions" && Array.isArray(message.markers)) renderMarkers(message.markers, message.selectedId);\n    else if (message.type === "focus-update") focusUpdate(message);\n    else if (message.type === "host-activity" && typeof message.composing === "boolean") { hostComposing = message.composing; reportCanvasActivity(); }\n    else if (message.type === "focus-interaction" && typeof message.id === "string") focusInteraction(message.id);\n    else if (message.type === "selection") setSelectionMode(message.mode);\n    else if (message.type === "cancel-capture" && message.selectionId === selectionSession?.id) cancelSelection({ clear: false });\n    else if (message.type === "clear-selection") { selectionMode = "off"; cancelSelection(); }\n    else if (message.type === "ask-result") {\n      const pending = pendingAsks.get(message.id);\n      if (pending) { pendingAsks.delete(message.id); clearTimeout(pending.timer); pending.resolve(message.result && message.result.status === "submitted" ? message.result : cancelAsk); }\n    }\n  });\n  const reportedErrors = new Set();\n  window.addEventListener("error", (event) => {\n    const message = event.message || "Canvas resource could not load";\n    if (reportedErrors.has(message) || reportedErrors.size >= 12) return;\n    reportedErrors.add(message);\n    error("runtime-error", message);\n  });\n  window.addEventListener("unhandledrejection", (event) => {\n    const message = event.reason && event.reason.message || String(event.reason || "Unhandled promise rejection");\n    if (reportedErrors.has(message) || reportedErrors.size >= 12) return;\n    reportedErrors.add(message);\n    error("runtime-error", message);\n  });\n  const ready = () => {\n    post({ type: "ready", capabilities: { frameDelta: 1 } });\n    receiveSnapshot(initial);\n  };\n  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready, { once: true });\n  else ready();\n}\n';
+var board_runtime_default = 'function (initial, createFrameReceiver) {\n  "use strict";\n  const root = document.documentElement;\n  const scope = { channel: initial.channel, boardId: initial.boardId, sessionId: initial.sessionId };\n  let snapshot = initial;\n  let state = initial.userState;\n  let localStateDirty = false;\n  let selectionMode = "off";\n  let deferredSelection = null;\n  let queued = null;\n  let applying = false;\n  let captureBusy = false;\n  let selectionSession = null;\n  let suppressPointerClick = false;\n  let dismissedPointer = null;\n  let lastAnchor;\n  let pointer = null;\n  let textPointer = null;\n  let overlay = null;\n  let lastGesture = -Infinity;\n  let lastGesturePosition;\n  let patchFailure = null;\n  let pendingMarkerFocus = null;\n  let sequence = 0;\n  const applied = new Set();\n  const dataListeners = new Set();\n  const dataWatches = new Map();\n  const stateListeners = new Set();\n  const pendingAsks = new Map();\n  const revealListeners = new Set();\n  let markerReveal = null;\n  const post = (message) => window.parent.postMessage({ ...message, ...scope }, "*");\n  const copy = (value) => value === undefined ? undefined : structuredClone(value);\n  const error = (code, message, patchId) => post({ type: "error", error: { code, message: String(message).slice(0, 4000), ...(patchId ? { patchId } : {}) } });\n  const emitListeners = (listeners, value) => { for (const listener of listeners) { try { listener(copy(value)); } catch (e) { error("listener-error", e.message); } } };\n  const currentAnchor = () => ({ kind: "board", boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision });\n  const acting = () => !markerReveal && performance.now() - lastGesture < 1800 && navigator.userActivation && navigator.userActivation.isActive;\n  const cancelAsk = { status: "cancelled", outcome: null };\n  const ask = (input) => {\n    const request = typeof input === "string" ? { prompt: input } : input;\n    if (!request || typeof request.prompt !== "string" || !request.prompt.trim() || request.prompt.length > 24000) return Promise.reject(new TypeError("board.ask requires a prompt of 1\u201324000 characters"));\n    if (!acting() || pendingAsks.size >= 8 || selectionMode !== "off") return Promise.resolve(cancelAsk);\n    lastGesture = -Infinity;\n    const id = `ask-${++sequence}`;\n    return new Promise((resolve) => {\n      const timer = setTimeout(() => { pendingAsks.delete(id); resolve(cancelAsk); }, 120000);\n      pendingAsks.set(id, { resolve, timer });\n      post({ type: "ask", id, request: { prompt: request.prompt, anchor: bindAuthoredAnchor(request.anchor || lastAnchor || currentAnchor()), kind: request.kind || "question", position: lastGesturePosition } });\n    });\n  };\n  const saveState = (value) => {\n    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("board.saveState requires a JSON object");\n    const serialized = JSON.stringify(value);\n    if (serialized.length > 524288) throw new RangeError("board state exceeds 512 KiB");\n    state = JSON.parse(serialized);\n    localStateDirty = true;\n    post({ type: "state", state });\n    return copy(state);\n  };\n  const subscribe = (listeners, fn) => {\n    if (typeof fn !== "function") throw new TypeError("listener must be a function");\n    listeners.add(fn);\n    return () => listeners.delete(fn);\n  };\n  // Watch only selected JSON values. Changed paths filter unrelated subscriptions.\n  const watchSegments = (path) => {\n    if (typeof path !== "string" || path.length > 2000 || (path !== "" && !path.startsWith("/")) || /~(?![01])/.test(path)) throw new TypeError("watch requires a JSON Pointer (empty string means all data)");\n    const parts = path === "" ? [] : path.slice(1).split("/").map(part => part.replace(/~1/g, "/").replace(/~0/g, "~"));\n    if (parts.length > 64 || parts.some(part => ["__proto__", "prototype", "constructor"].includes(part))) throw new TypeError("watch path is not allowed");\n    return parts;\n  };\n  const readWatchedValue = (data, parts) => {\n    let value = data;\n    for (const part of parts) {\n      if (!value || typeof value !== "object" || !Object.prototype.hasOwnProperty.call(value, part)) return { exists: false };\n      if (Array.isArray(value) && !/^(0|[1-9][0-9]*)$/.test(part)) return { exists: false };\n      value = value[part];\n    }\n    return { exists: true, value };\n  };\n  const equalJson = (a, b) => {\n    if (a === b) return true;\n    if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return false;\n    const keys = Object.keys(a);\n    return keys.length === Object.keys(b).length && keys.every(key => Object.prototype.hasOwnProperty.call(b, key) && equalJson(a[key], b[key]));\n  };\n  const deliverWatch = (entry, listener, immediate = false) => {\n    if (!listener.active) return;\n    if (listener.schedule === "frame" && !immediate) {\n      if (listener.frame === null) listener.frame = requestAnimationFrame(() => { listener.frame = null; deliverWatch(entry, listener, true); });\n      return;\n    }\n    try { listener.fn(entry.current.exists ? copy(entry.current.value) : undefined, Object.freeze({ path: entry.path, exists: entry.current.exists, boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision })); }\n    catch (e) { error("listener-error", e instanceof Error ? e.message : String(e)); }\n  };\n  const emitWatches = (changedPaths) => {\n    const deliveries = [];\n    // Update every cache before calling authored code. A callback may subscribe\n    // to another existing path; its initial value must belong to this snapshot.\n    for (const entry of Array.from(dataWatches.values())) {\n      if (changedPaths && !changedPaths.some(path => path === entry.path || path.startsWith(entry.path + "/") || entry.path.startsWith(path + "/"))) continue;\n      const next = readWatchedValue(snapshot.canvas.data, entry.parts);\n      if (next.exists === entry.current.exists && equalJson(next.value, entry.current.value)) continue;\n      entry.current = next;\n      deliveries.push({ entry, listeners: Array.from(entry.listeners) });\n    }\n    for (const { entry, listeners } of deliveries) {\n      for (const listener of listeners) if (entry.listeners.has(listener)) deliverWatch(entry, listener);\n    }\n  };\n  const watch = (path, fn, options) => {\n    const parts = watchSegments(path);\n    if (typeof fn !== "function") throw new TypeError("watch listener must be a function");\n    if (options !== undefined && (!options || typeof options !== "object" || options.schedule !== "frame")) throw new TypeError("watch options require schedule: \'frame\'");\n    let entry = dataWatches.get(path);\n    if (!entry) { entry = { path, parts, current: readWatchedValue(snapshot.canvas.data, parts), listeners: new Set() }; dataWatches.set(path, entry); }\n    // Frame subscriptions are latest-state rendering, not a lossless event stream.\n    const listener = { fn, schedule: options?.schedule, frame: null, active: true };\n    entry.listeners.add(listener);\n    deliverWatch(entry, listener, true);\n    return () => { listener.active = false; if (listener.frame !== null) cancelAnimationFrame(listener.frame); entry.listeners.delete(listener); if (!entry.listeners.size && dataWatches.get(path) === entry) dataWatches.delete(path); };\n  };\n  // No SDK or execution primitive is exposed. Data and view state remain task-agnostic JSON.\n  Object.defineProperty(window, "board", { configurable: false, writable: false, value: Object.freeze({\n    getData: () => copy(snapshot.canvas.data),\n    onData: (fn) => subscribe(dataListeners, fn),\n    watch,\n    getState: () => copy(state),\n    restoreState: () => copy(state),\n    onState: (fn) => subscribe(stateListeners, fn),\n    saveState,\n    ask,\n    onReveal: (fn) => subscribe(revealListeners, fn),\n    getContext: () => ({ boardId: scope.boardId, documentVersion: initial.canvas.documentVersion, boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision }),\n  }) });\n  window.openai = Object.freeze({ sendFollowUpMessage: ask });\n\n  let appliedTheme = initial.theme;\n  const applyTheme = (theme) => {\n    if (!theme || !["light", "dark"].includes(theme.scheme) || !theme.tokens || typeof theme.tokens !== "object") return;\n    if (equalJson(appliedTheme, theme)) return;\n    if (appliedTheme?.scheme !== theme.scheme) root.setAttribute("data-theme", theme.scheme);\n    // The host scheme is a CSS-layer default. An authored fixed light/dark canvas may\n    // override color-scheme without each host refresh overwriting it with inline style.\n    for (const name of Object.keys(appliedTheme?.tokens || {})) if (!Object.prototype.hasOwnProperty.call(theme.tokens, name)) root.style.removeProperty("--" + name);\n    for (const [name, value] of Object.entries(theme.tokens)) if (appliedTheme?.tokens[name] !== value && /^host-[a-z0-9-]+$/.test(name) && typeof value === "string" && /^[#a-zA-Z0-9(),.%+*/ -]{1,200}$/.test(value)) root.style.setProperty("--" + name, value);\n    appliedTheme = theme;\n    window.dispatchEvent(new CustomEvent("paseo:themechange", { detail: { theme: theme.scheme, palette: "custom" } }));\n  };\n\n  const runScript = (old) => new Promise((resolve, reject) => {\n    const script = document.createElement("script");\n    for (const attribute of old.attributes) script.setAttribute(attribute.name, attribute.value);\n    script.textContent = old.textContent;\n    const executable = !script.type || /^(module|(?:text|application)\\/(?:java|ecma)script)$/i.test(script.type);\n    if (!executable) { old.replaceWith(script); resolve(); return; }\n    let scriptError;\n    let timer;\n    const finish = (failure) => { clearTimeout(timer); window.removeEventListener("error", onError); failure ? reject(failure) : resolve(); };\n    const onError = (event) => { scriptError = new Error(event.message || "Patch script failed"); };\n    window.addEventListener("error", onError);\n    const external = script.src || script.type === "module";\n    if (external) {\n      script.async = false;\n      script.addEventListener("load", () => finish(scriptError), { once: true });\n      script.addEventListener("error", () => finish(new Error("Patch script could not load")), { once: true });\n      timer = setTimeout(() => finish(new Error("Patch script timed out; it will not be retried")), 20000);\n    }\n    try { old.replaceWith(script); if (!external) finish(scriptError); } catch (e) { finish(e); }\n  });\n  const applyPatch = async (patch) => {\n    if (applied.has(patch.id)) return;\n    // Claim before mutation. A partial script failure must never run the same patch a second time.\n    applied.add(patch.id);\n    const targets = document.querySelectorAll(patch.selector);\n    if (targets.length !== 1) throw new Error(`Patch selector must match exactly one element; matched ${targets.length}`);\n    const target = targets[0];\n    if (target === root || target === document.head || target === document.body) {\n      if (["replace", "remove", "move", "copy", "text"].includes(patch.operation)) throw new Error("Replacing document roots requires publishing a new document version");\n    }\n    if (["move", "copy", "text"].includes(patch.operation)) {\n      if (!equalJson(componentIdentity(target), patch.sourceIdentity)) throw new Error("The edited component structure changed; reload its current authored version");\n      if (patch.operation === "text") {\n        const textNode = patch.textNodeIndex === undefined ? null : target.childNodes[patch.textNodeIndex];\n        if (textNode ? textNode.nodeType !== Node.TEXT_NODE || textNode.textContent !== patch.expectedText : target.children.length || target.textContent !== patch.expectedText) throw new Error("The edited text changed before this patch arrived");\n        capturePatchTargets(patch, target);\n        if (textNode) textNode.textContent = patch.text; else target.textContent = patch.text;\n        return;\n      }\n      const destinations = document.querySelectorAll(patch.destination);\n      if (destinations.length !== 1) throw new Error("Edit destination must match exactly one element");\n      const destination = destinations[0];\n      if (!equalJson(componentIdentity(destination), patch.destinationIdentity) || target === destination || target.contains(destination)) throw new Error("The edit destination changed or contains a cycle");\n      const parent = ["before", "after"].includes(patch.position) ? destination.parentNode : destination;\n      const before = patch.position === "before" ? destination : patch.position === "after" ? destination.nextSibling : patch.position === "prepend" ? destination.firstChild : null;\n      if (patch.operation === "copy") {\n        // Parse in the source\'s actual namespace/context. An HTML template turns SVG\n        // subcomponents such as <g>/<rect> into invisible HTML unknown elements. Range\n        // parsing also retains SVG foreignObject\'s HTML integration points.\n        const range = document.createRange(); range.selectNode(target);\n        const content = range.createContextualFragment(patch.html);\n        // Copy authoritative authored markup, never runtime listeners/closures. Defense in\n        // depth: copied scripts and inline handler attributes never execute on insertion.\n        for (const script of content.querySelectorAll("script")) script.remove();\n        for (const element of content.querySelectorAll("*")) for (const attribute of Array.from(element.attributes)) if (/^on/i.test(attribute.name)) element.removeAttribute(attribute.name);\n        const inserted = Array.from(content.children); capturePatchTargets(patch, target, inserted);\n        parent.insertBefore(content, before); return;\n      }\n      const focused = document.activeElement;\n      const restoreFocus = focused instanceof HTMLElement && target.contains(focused);\n      const caret = restoreFocus && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;\n      capturePatchTargets(patch, target);\n      // New browsers preserve iframe/media/focus state with a same-document atomic move.\n      // The fallback still retains the actual node and listeners, then restores input caret.\n      if (typeof parent.moveBefore === "function" && target.isConnected && parent.isConnected) parent.moveBefore(target, before);\n      else parent.insertBefore(target, before);\n      if (restoreFocus && focused.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });\n      if (caret) try { focused.setSelectionRange(...caret); } catch {}\n      return;\n    }\n    if (patch.operation === "remove") { capturePatchTargets(patch, target); target.remove(); return; }\n    const template = document.createElement("template");\n    template.innerHTML = patch.html;\n    const scripts = Array.from(template.content.querySelectorAll("script"));\n    capturePatchTargets(patch, target, Array.from(template.content.children));\n    if (patch.operation === "append") target.append(template.content);\n    else if (patch.operation === "prepend") target.prepend(template.content);\n    else if (patch.operation === "replace") target.replaceWith(template.content);\n    else throw new Error("Unknown patch operation");\n    for (const script of scripts) if (script.isConnected) await runScript(script);\n  };\n  const receiver = createFrameReceiver(initial, request => post({ type: "snapshot-request", ...request }));\n  let versionedTransport = false;\n  const enqueue = (update) => {\n    if (!update) return;\n    queued = queued ? { snapshot: update.snapshot,\n      changedPaths: queued.changedPaths === null || update.changedPaths === null ? null : [...new Set([...queued.changedPaths, ...update.changedPaths])],\n      patches: [...new Map([...queued.patches, ...update.patches].map(patch => [patch.id, patch])).values()] } : update;\n    void drain();\n  };\n  const receiveSnapshot = (next, version) => {\n    if (version !== undefined) { versionedTransport = true; enqueue(receiver.snapshot(next, version)); return; }\n    // Compatibility with older hosts. Versioned traffic exclusively uses the validated receiver.\n    if (versionedTransport) return;\n    if (!next || !next.canvas || next.canvas.documentVersion !== initial.canvas.documentVersion || next.boardRevision < (queued?.snapshot || snapshot).boardRevision) return;\n    enqueue({ snapshot: next, changedPaths: null, patches: next.canvas.patches });\n  };\n  const drain = async () => {\n    if (applying || selectionMode !== "off" || selectionSession || captureBusy) return;\n    if (!queued) { reportCanvasActivity(); drainMarkerFocus(); return; }\n    applying = true;\n    reportCanvasActivity();\n    try {\n      while (queued && selectionMode === "off" && !selectionSession && !captureBusy) {\n        const update = queued;\n        const next = update.snapshot;\n        queued = null;\n        const dataChanged = update.changedPaths === null ? !equalJson(snapshot.canvas.data, next.canvas.data) : update.changedPaths.length > 0;\n        const serverStateChanged = !equalJson(snapshot.userState, next.userState);\n        snapshot = next;\n        applyTheme(next.theme);\n        if (dataChanged) {\n          emitWatches(update.changedPaths);\n          emitListeners(dataListeners, next.canvas.data);\n          window.dispatchEvent(new CustomEvent("board:data", { detail: copy(next.canvas.data) }));\n        }\n        if (localStateDirty) {\n          // A slow acknowledgement for an earlier save must never overwrite newer local input.\n          if (equalJson(next.userState, state)) localStateDirty = false;\n        } else if (serverStateChanged && !equalJson(next.userState, state)) {\n          state = next.userState;\n          emitListeners(stateListeners, state);\n        }\n        if (patchFailure) continue;\n        for (const patch of update.patches) {\n          try { await applyPatch(patch); }\n          catch (e) {\n            patchFailure = patch.id;\n            error("patch-failed", `${e.message}. Later patches are paused until the document is republished.`, patch.id);\n            break;\n          }\n        }\n      }\n    } finally {\n      applying = false;\n      reportCanvasActivity();\n      queueMarkerPositions();\n      if (deferredSelection !== null) { const mode = deferredSelection; deferredSelection = null; setSelectionMode(mode); }\n      drainMarkerFocus();\n      resumeComponentEdit();\n    }\n  };\n\n  // Selection is opt-in. In ordinary mode we never consume pointer, keyboard or drag events.\n  const selectorFor = (node) => {\n    if (!(node instanceof Element)) return undefined;\n    if (node.id) return "#" + CSS.escape(node.id);\n    const parts = [];\n    while (node && node !== document.body && parts.length < 12) {\n      if (node.id) { parts.unshift("#" + CSS.escape(node.id)); break; }\n      const name = node.localName;\n      if (!name) break;\n      const siblings = node.parentElement ? Array.from(node.parentElement.children).filter((n) => n.localName === name) : [];\n      parts.unshift(name + (siblings.length > 1 ? `:nth-of-type(${siblings.indexOf(node) + 1})` : ""));\n      node = node.parentElement;\n    }\n    return parts.length ? parts.join(" > ").slice(0, 1000) : undefined;\n  };\n  const viewport = () => ({ width: innerWidth, height: innerHeight, scrollX, scrollY });\n  const rect = (r) => ({ x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height });\n  // Identity metadata is optional and never changes the author\'s DOM or the original\n  // quote/PNG/coordinates. A live reference survives reparenting; stable IDs survive patches.\n  const bindingNodes = new Map();\n  const bindingFingerprint = (node) => {\n    const text = (node.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 1000);\n    const input = [node.localName, node.getAttribute("role"), node.getAttribute("name"), node.getAttribute("type"), node.getAttribute("aria-label"), text].join("\\n");\n    let hash = 2166136261;\n    for (let i = 0; i < input.length; i++) hash = Math.imul(hash ^ input.charCodeAt(i), 16777619);\n    return (hash >>> 0).toString(16).padStart(8, "0");\n  };\n  const authorElement = (node) => node instanceof Element && node !== root && node !== document.body && node !== document.head && !node.closest("[data-board-overlay]");\n  const identityFor = (node) => {\n    const selector = selectorFor(node);\n    if (!selector || !authorElement(node)) return null;\n    return { selector, tag: node.localName, ...(node.id && node.id.length <= 1000 ? { id: node.id } : {}), fingerprint: bindingFingerprint(node) };\n  };\n  const captureBinding = (target, region, enclose = false) => {\n    if (!(target instanceof Element)) return undefined;\n    // A region may span several components; select its enclosing context, not the element\n    // where the drag happened to start. Whole-page regions remain geometric references.\n    if (enclose) {\n      while (authorElement(target)) {\n        const r = rect(target.getBoundingClientRect());\n        if (region.x >= r.x - 1 && region.y >= r.y - 1 && region.x + region.width <= r.x + r.width + 1 && region.y + region.height <= r.y + r.height + 1) break;\n        target = target.parentElement;\n      }\n    }\n    const identity = identityFor(target);\n    if (!identity) return undefined;\n    const r = rect(target.getBoundingClientRect());\n    const ancestors = [];\n    const nodes = [target];\n    for (let parent = target.parentElement; authorElement(parent) && ancestors.length < 8; parent = parent.parentElement) {\n      const ancestor = identityFor(parent);\n      if (ancestor) { ancestors.push(ancestor); nodes.push(parent); }\n    }\n    const key = `binding-${++sequence}-${scope.sessionId}`.slice(0, 160);\n    const binding = { documentVersion: snapshot.canvas.documentVersion, key, target: identity, ancestors,\n      relative: { x: Math.max(0, Math.min(1, r.width ? (region.x - r.x) / r.width : 0)), y: Math.max(0, Math.min(1, r.height ? (region.y - r.y) / r.height : 0)) } };\n    bindingNodes.set(key, nodes);\n    // Unsent selections need no long-lived registry. Active marker bindings are retained.\n    if (bindingNodes.size > 600) {\n      const retained = new Set(markerItems.map(item => item.marker.anchor?.binding?.key));\n      for (const candidate of bindingNodes.keys()) if (candidate !== key && !retained.has(candidate)) { bindingNodes.delete(candidate); if (bindingNodes.size <= 500) break; }\n    }\n    return binding;\n  };\n  const bindAuthoredAnchor = (anchor) => {\n    if (!anchor || anchor.binding || !anchor.rect || !anchor.selector || anchor.canvasRevision !== snapshot.canvas.revision || anchor.boardRevision !== snapshot.boardRevision) return anchor;\n    try {\n      const targets = document.querySelectorAll(anchor.selector);\n      if (targets.length === 1) {\n        const binding = captureBinding(targets[0], anchor.rect, anchor.kind === "region");\n        if (binding) return { ...anchor, binding };\n      }\n    } catch {}\n    return anchor;\n  };\n  const resolveIdentity = (identity, cached, allowPath) => {\n    if (!identity) return null;\n    if (identity.id) {\n      let matches;\n      try { matches = document.querySelectorAll("#" + CSS.escape(identity.id)); } catch { return null; }\n      // Duplicate IDs are ambiguous even when one original node is still in memory.\n      if (matches.length !== 1 || matches[0].localName !== identity.tag) return null;\n      return matches[0];\n    }\n    if (cached) return cached.isConnected && authorElement(cached) ? cached : null;\n    if (!allowPath) return null;\n    try {\n      const matches = document.querySelectorAll(identity.selector);\n      if (matches.length === 1 && authorElement(matches[0]) && matches[0].localName === identity.tag && bindingFingerprint(matches[0]) === identity.fingerprint) return matches[0];\n    } catch {}\n    return null;\n  };\n  const visibleBox = (node, revealScroll = false) => {\n    if (!authorElement(node) || !node.isConnected || !node.getClientRects().length) return null;\n    const style = getComputedStyle(node);\n    if (style.visibility !== "visible" || style.display === "none" || style.contentVisibility === "hidden") return null;\n    const box = node.getBoundingClientRect();\n    let left = box.left, top = box.top, right = box.right, bottom = box.bottom;\n    // CSS accordions and nested scrollers can keep a child\'s layout box while completely\n    // clipping its pixels. Only visible pixels can host a marker; viewport clipping itself\n    // is excluded here because a sidebar action is allowed to scroll an offscreen component.\n    for (let parent = node.parentElement; authorElement(parent); parent = parent.parentElement) {\n      const css = getComputedStyle(parent);\n      if (css.contentVisibility === "hidden") return null;\n      if (parent.localName === "details" && !parent.open) {\n        const summary = Array.from(parent.children).find(child => child.localName === "summary");\n        if (!summary?.contains(node)) return null;\n      }\n      const clipX = /^(hidden|clip|auto|scroll)$/.test(css.overflowX) && !(revealScroll && /^(auto|scroll)$/.test(css.overflowX));\n      const clipY = /^(hidden|clip|auto|scroll)$/.test(css.overflowY) && !(revealScroll && /^(auto|scroll)$/.test(css.overflowY));\n      if (!clipX && !clipY) continue;\n      const r = parent.getBoundingClientRect();\n      const scaleX = parent.offsetWidth ? r.width / parent.offsetWidth : 1;\n      const scaleY = parent.offsetHeight ? r.height / parent.offsetHeight : 1;\n      if (clipX) { const x = r.left + parent.clientLeft * scaleX; left = Math.max(left, x); right = Math.min(right, x + parent.clientWidth * scaleX); }\n      if (clipY) { const y = r.top + parent.clientTop * scaleY; top = Math.max(top, y); bottom = Math.min(bottom, y + parent.clientHeight * scaleY); }\n    }\n    return right > left && bottom > top ? { left, top, right, bottom, width: right - left, height: bottom - top } : null;\n  };\n  const visibleContext = (target) => {\n    // Inspect current ancestors, not only captured ones: wrapping a stable component in a\n    // new <details> must work immediately. Opening or clicking authored controls is forbidden.\n    let folded;\n    let hiddenContent;\n    for (let node = target; authorElement(node); node = node.parentElement) {\n      if (getComputedStyle(node).contentVisibility === "hidden") hiddenContent = node;\n      if (node.localName === "details" && !node.open) {\n        const summary = Array.from(node.children).find(child => child.localName === "summary");\n        if (!summary || !summary.contains(target)) folded = summary || node;\n      }\n    }\n    if (folded && visibleBox(folded)) return folded;\n    for (let node = hiddenContent ? hiddenContent.parentElement : target; authorElement(node); node = node.parentElement) if (visibleBox(node)) return node;\n    return null;\n  };\n  // Only an explicit, unique ARIA relationship may activate an authored tab. Never\n  // infer navigation from class names, labels or nearby buttons.\n  const tabForPanel = (panel) => {\n    if (!panel.id || panel.getAttribute("role") !== "tabpanel" || document.querySelectorAll("#" + CSS.escape(panel.id)).length !== 1) return null;\n    const tabs = Array.from(document.querySelectorAll(\'[role="tab"][aria-controls]\')).filter(tab => tab.getAttribute("aria-controls")?.trim() === panel.id);\n    if (tabs.length !== 1) return null;\n    const tab = tabs[0];\n    const list = tab.closest(\'[role="tablist"]\');\n    if (!list || !authorElement(tab) || typeof tab.click !== "function" || tab.matches(":disabled,[aria-disabled=true]") || !["true", "false"].includes(tab.getAttribute("aria-selected"))) return null;\n    if (tab.localName === "a" || tab.closest("a[href]") || (tab.form && ((tab.localName === "button" && tab.type !== "button") || (tab.localName === "input" && tab.type !== "button")))) return null;\n    return tab;\n  };\n  const hiddenMarkerBoundary = (target) => {\n    if (!authorElement(target)) return null;\n    // Custom views need no ARIA/component schema to suppress markers. Hard hidden\n    // ancestors never fall back to a visible dashboard shell. Native closed details\n    // and scroll/accordion clipping remain distinguishable and may use their summary.\n    if (getComputedStyle(target).visibility !== "visible") return target;\n    for (let node = target; node instanceof Element; node = node.parentElement) {\n      const style = getComputedStyle(node);\n      if (node.hidden || node.getAttribute("aria-hidden") === "true" || style.display === "none" || style.contentVisibility === "hidden" || Number(style.opacity) === 0) return node;\n      if (node.getAttribute("role") === "tabpanel" && tabForPanel(node)?.getAttribute("aria-selected") === "false") return node;\n    }\n    return null;\n  };\n  const resolvedBindingNodes = (anchor) => {\n    const binding = anchor?.binding;\n    if (!binding || binding.documentVersion !== snapshot.canvas.documentVersion) return [];\n    const cached = bindingNodes.get(binding.key) || [];\n    const nodes = [binding.target, ...binding.ancestors].map((identity, index) => resolveIdentity(identity, cached[index], anchor.canvasRevision === snapshot.canvas.revision));\n    // Keep detached non-ID references as tombstones; never reuse a replacement at its path.\n    bindingNodes.set(binding.key, nodes.map((node, index) => node || cached[index]));\n    return nodes;\n  };\n  const markerLocation = (anchor) => {\n    const binding = anchor?.binding;\n    if (binding && binding.documentVersion === snapshot.canvas.documentVersion) {\n      const nodes = resolvedBindingNodes(anchor);\n      const target = nodes[0];\n      const panel = hiddenMarkerBoundary(target || nodes.slice(1).find(Boolean));\n      if (panel) return { rect: null, mode: "hidden", tracked: [...nodes.filter(Boolean), panel] };\n      const context = target ? visibleContext(target) : nodes.slice(1).map(node => node && visibleContext(node)).find(Boolean);\n      if (context) {\n        const r = rect(context.getBoundingClientRect());\n        const visible = rect(visibleBox(context));\n        const direct = context === target;\n        return { rect: { x: Math.max(visible.x, Math.min(visible.x + visible.width, r.x + (direct ? binding.relative.x * r.width : Math.min(8, r.width / 2)))), y: Math.max(visible.y, Math.min(visible.y + visible.height, r.y + (direct ? binding.relative.y * r.height : Math.min(8, r.height / 2)))), width: 0, height: 0 }, node: context,\n          focusNode: target && visibleBox(target, true) ? target : context,\n          mode: direct ? "component" : target ? "collapsed" : "ancestor", tracked: nodes.filter(Boolean) };\n      }\n      return { rect: anchor.rect, mode: "snapshot", tracked: nodes.filter(Boolean) };\n    }\n    // Legacy selectors only described surrounding context; never guess a live binding.\n    return { rect: anchor?.rect, mode: "snapshot", tracked: [] };\n  };\n  // Update navigation consumes explicit publish records only. It never turns arbitrary\n  // author DOM mutations into activity, and its finite overlays do not change the canvas.\n  const updatePatchTargets = new Map();\n  const updateTargets = new Map();\n  const rememberBounded = (map, key, value) => {\n    map.set(key, value);\n    while (map.size > 160) map.delete(map.keys().next().value);\n    return value;\n  };\n  const capturedTarget = (node) => {\n    const identity = identityFor(node);\n    return identity ? { identity, node } : null;\n  };\n  const resolveUpdateTarget = (saved) => saved && resolveIdentity(saved.identity, saved.node, false);\n  const capturePatchTargets = (patch, target, inserted = []) => rememberBounded(updatePatchTargets, patch.id, {\n    documentVersion: snapshot.canvas.documentVersion, selector: patch.selector, operation: patch.operation,\n    target: capturedTarget(target), parent: capturedTarget(target.parentElement),\n    inserted: inserted.filter(node => authorElement(node) && !node.matches("script,style,link,meta,template")).map(capturedTarget).filter(Boolean).slice(0, 12),\n  });\n  const updateContext = (target) => {\n    if (visibleBox(target, true)) return target;\n    let folded;\n    for (let node = target; authorElement(node); node = node.parentElement) {\n      if (node.localName === "details" && !node.open) {\n        const summary = Array.from(node.children).find(child => child.localName === "summary");\n        if (summary && !summary.contains(target) && visibleBox(summary, true)) folded = summary;\n      }\n    }\n    if (folded) return folded;\n    // Hidden authored views have no implied visible location. Climbing to main (or any\n    // ordinary ancestor) would highlight unrelated content and falsely acknowledge it.\n    return null;\n  };\n  const findUpdateTarget = (update, index) => {\n    const hint = update.targets[index];\n    if (!hint || typeof hint.selector !== "string" || hint.selector.length > 1000) return null;\n    const patch = hint.patchId && updatePatchTargets.get(hint.patchId);\n    if (patch && patch.documentVersion === update.documentVersion && patch.selector === hint.selector && patch.operation === hint.operation) {\n      if (patch.operation === "remove") {\n        const parent = resolveUpdateTarget(patch.parent);\n        return parent ? { node: parent, ancestor: true } : null;\n      }\n      const inserted = patch.inserted.map(resolveUpdateTarget).find(Boolean);\n      const node = patch.inserted.length ? inserted : resolveUpdateTarget(patch.target);\n      return node ? { node, ancestor: false } : null;\n    }\n    // Removal cannot be reconstructed from a newly matching selector after a cold start.\n    if (hint.operation === "remove") return null;\n    const key = `${update.id}:${index}`;\n    const saved = updateTargets.get(key);\n    if (saved) { const node = resolveUpdateTarget(saved); return node ? { node, ancestor: false } : null; }\n    let matches;\n    try { matches = document.querySelectorAll(hint.selector); } catch { return null; }\n    if (matches.length !== 1 || !authorElement(matches[0])) return null;\n    const node = matches[0];\n    // Path selectors are only meaningful in the exact revision; an ID explicitly declares\n    // stable component identity, but still cannot cross a document replacement.\n    if (update.canvasRevision !== snapshot.canvas.revision && (!node.id || hint.selector !== "#" + CSS.escape(node.id))) return null;\n    rememberBounded(updateTargets, key, capturedTarget(node));\n    return { node, ancestor: false };\n  };\n  let updateHighlight;\n  let updateHighlightTimer;\n  let updateHighlightFrame;\n  const clearUpdateHighlight = () => {\n    clearTimeout(updateHighlightTimer); updateHighlightTimer = null;\n    if (updateHighlightFrame) cancelAnimationFrame(updateHighlightFrame);\n    updateHighlightFrame = null;\n    updateHighlight?.host.remove(); updateHighlight = null;\n  };\n  const positionUpdateHighlight = () => {\n    updateHighlightFrame = null;\n    if (!updateHighlight) return false;\n    const box = updateHighlight.node ? visibleBox(updateHighlight.node) : { left: 6, top: 6, right: innerWidth - 6, bottom: innerHeight - 6 };\n    if (!box) { clearUpdateHighlight(); return false; }\n    const left = Math.max(4, box.left - 3), top = Math.max(4, box.top - 3);\n    const right = Math.min(innerWidth - 4, box.right + 3), bottom = Math.min(innerHeight - 4, box.bottom + 3);\n    if (right <= left || bottom <= top) { clearUpdateHighlight(); return false; }\n    updateHighlight.host.style.setProperty("left", left + "px", "important");\n    updateHighlight.host.style.setProperty("top", top + "px", "important");\n    updateHighlight.host.style.setProperty("width", right - left + "px", "important");\n    updateHighlight.host.style.setProperty("height", bottom - top + "px", "important");\n    return true;\n  };\n  const queueUpdateHighlight = () => { if (updateHighlight && !updateHighlightFrame) updateHighlightFrame = requestAnimationFrame(positionUpdateHighlight); };\n  const showUpdateHighlight = (node) => {\n    clearUpdateHighlight();\n    const host = document.createElement("div");\n    host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-update-highlight", "");\n    host.setAttribute("aria-hidden", "true");\n    host.style.cssText = "all:initial!important;position:fixed!important;display:block!important;z-index:2147483646!important;pointer-events:none!important;";\n    const shadow = host.attachShadow({ mode: "open" });\n    shadow.innerHTML = `<style>:host{color-scheme:normal}.ring{position:absolute;inset:0;box-sizing:border-box;border:3px solid #fff;border-radius:8px;box-shadow:0 0 0 3px #224ee8,0 0 0 5px #0a173b80;animation:board-update-flash .65s ease-in-out 3;pointer-events:none}@keyframes board-update-flash{0%,100%{opacity:.15}50%{opacity:1}}@media(prefers-reduced-motion:reduce){.ring{animation:none;opacity:1}}</style><div class="ring"></div>`;\n    root.append(host); updateHighlight = { host, node };\n    if (!positionUpdateHighlight()) return false;\n    updateHighlightTimer = setTimeout(clearUpdateHighlight, matchMedia("(prefers-reduced-motion:reduce)").matches ? 1000 : 2050);\n    return true;\n  };\n  let hostComposing = false;\n  const activePointers = new Set();\n  let activityUntil = 0;\n  let activityTimer;\n  let reportedActivity = false;\n  const editableActive = () => document.hasFocus() && document.activeElement instanceof Element\n    && (document.activeElement.matches("input,textarea,select") || document.activeElement.isContentEditable);\n  const updateHardBusy = () => hostComposing || activePointers.size > 0 || editableActive() || selectionMode !== "off" || selectionSession || captureBusy || applying || queued;\n  const reportCanvasActivity = () => {\n    clearTimeout(activityTimer); activityTimer = null;\n    const delay = activityUntil - performance.now();\n    const busy = Boolean(updateHardBusy() || delay > 0);\n    if (busy !== reportedActivity) { reportedActivity = busy; post({ type: "canvas-activity", busy }); }\n    if (delay > 0) activityTimer = setTimeout(reportCanvasActivity, delay + 1);\n  };\n  const noteCanvasActivity = (event) => {\n    if (!event.isTrusted) return;\n    activityUntil = performance.now() + 1200;\n    clearUpdateHighlight();\n    reportCanvasActivity();\n  };\n  window.addEventListener("pointerdown", event => { if (event.isTrusted) { activePointers.add(event.pointerId); noteCanvasActivity(event); } }, true);\n  for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) window.addEventListener(name, event => { if (event.isTrusted) { activePointers.delete(event.pointerId); reportCanvasActivity(); } }, true);\n  for (const name of ["keydown", "wheel", "focusin", "focusout"]) window.addEventListener(name, event => { noteCanvasActivity(event); if (name === "focusout") queueMicrotask(reportCanvasActivity); }, true);\n  window.addEventListener("blur", () => { activePointers.clear(); queueMicrotask(reportCanvasActivity); });\n  window.addEventListener("scroll", queueUpdateHighlight, true);\n  window.addEventListener("resize", queueUpdateHighlight);\n  window.addEventListener("pagehide", () => { clearUpdateHighlight(); clearTimeout(activityTimer); });\n  const focusUpdate = (message) => {\n    const update = message.update;\n    const index = message.targetIndex === undefined ? 0 : message.targetIndex;\n    if (typeof message.requestId !== "string" || !message.requestId || message.requestId.length > 160\n      || !Number.isSafeInteger(message.token) || message.token < 0 || !Number.isSafeInteger(index) || index < 0 || index > 100\n      || !update || typeof update.id !== "string" || !update.id || update.id.length > 160\n      || !Number.isSafeInteger(update.documentVersion) || update.documentVersion < 0 || !Number.isSafeInteger(update.canvasRevision)\n      || !Array.isArray(update.targets) || update.targets.length > 100 || !["patch", "data", "document"].includes(update.kind)) return;\n    const reply = (status, fields = {}) => post({ type: "update-position", requestId: message.requestId, id: update.id, token: message.token,\n      targetIndex: index, documentVersion: update.documentVersion, status, ...fields });\n    clearUpdateHighlight();\n    if (update.documentVersion !== snapshot.canvas.documentVersion) { reply("unavailable", { reason: "\u5C5E\u4E8E\u53E6\u4E00\u7248\u753B\u5E03\uFF0C\u4FDD\u7559\u539F\u66F4\u65B0\u8BB0\u5F55" }); return; }\n    if (updateHardBusy() || (message.automatic && performance.now() < activityUntil)) {\n      // The host retries after canvas-activity false; never keep a hidden scroll request\n      // that could surprise the user after they have moved on to a different update.\n      reportCanvasActivity(); reply("deferred", { reason: "\u6B63\u5728\u4EA4\u4E92\uFF0C\u7A0D\u540E\u5B9A\u4F4D" }); return;\n    }\n    if (update.canvasRevision > snapshot.canvas.revision) { reply("unavailable", { reason: "\u5BF9\u5E94\u753B\u5E03\u7248\u672C\u5C1A\u672A\u8F7D\u5165" }); return; }\n    if (!update.targets.length) {\n      if (update.kind !== "document") { reply("unavailable", { reason: "\u6B64\u6B21\u6570\u636E\u66F4\u65B0\u672A\u6307\u5B9A\u753B\u5E03\u4F4D\u7F6E" }); return; }\n      window.scrollTo({ left: 0, top: 0, behavior: "instant" });\n      if (showUpdateHighlight(null)) reply("focused", { location: "document", position: { x: 12, y: 12 } });\n      else reply("unavailable", { reason: "\u753B\u5E03\u5F53\u524D\u4E0D\u53EF\u89C1" });\n      return;\n    }\n    const target = findUpdateTarget(update, index);\n    if (!target) { reply("unavailable", { reason: "\u539F\u7EC4\u4EF6\u5DF2\u79FB\u9664\u3001\u8EAB\u4EFD\u4E0D\u660E\u786E\u6216\u5F53\u524D\u4E0D\u53EF\u89C1" }); return; }\n    const node = updateContext(target.node);\n    if (!node) { reply("unavailable", { reason: "\u7EC4\u4EF6\u5F53\u524D\u9690\u85CF\u6216\u88AB\u88C1\u526A\uFF0C\u663E\u793A\u540E\u53EF\u7EE7\u7EED\u5B9A\u4F4D" }); return; }\n    node.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });\n    const box = visibleBox(node);\n    if (!box || !showUpdateHighlight(node)) { reply("unavailable", { reason: "\u7EC4\u4EF6\u5F53\u524D\u4E0D\u53EF\u89C1" }); return; }\n    reply("focused", { location: target.ancestor || node !== target.node ? "ancestor" : "target",\n      position: { x: Math.max(8, Math.min(innerWidth - 8, box.left + box.width / 2)), y: Math.max(8, Math.min(innerHeight - 8, box.top + box.height / 2)) } });\n  };\n\n  // Host-owned discussions are independent from the authored document and its patch journal.\n  let markerHost;\n  let markerItems = [];\n  let selectedMarkerId;\n  let markerPositionFrame;\n  let lastSelectedPosition;\n  const markerLabels = { saved: "\u5DF2\u63D0\u4EA4", sending: "\u53D1\u9001\u4E2D", delivered: "\u7B49\u5F85\u56DE\u7B54", processing: "\u5904\u7406\u4E2D", answered: "\u5DF2\u56DE\u7B54", applied: "\u5DF2\u843D\u5B9E", rejected: "\u672A\u91C7\u7EB3", failed: "\u5931\u8D25" };\n  const inMarkers = (event) => markerHost && event.composedPath().includes(markerHost);\n  const markerNode = (event) => event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-board-interaction"));\n  const positionMarkers = () => {\n    markerPositionFrame = null;\n    if (!markerHost) return;\n    const overlap = new Map();\n    const observed = new Set();\n    let unanchored = 0;\n    for (const item of markerItems) {\n      const button = item.button;\n      const anchor = item.marker.anchor;\n      const location = markerLocation(anchor);\n      const saved = location.rect;\n      const stale = Boolean(anchor && anchor.canvasRevision !== snapshot.canvas.revision);\n      item.location = location;\n      for (const node of location.tracked) observed.add(node);\n      // ResizeObserver includes new wrapper ancestors introduced after selection.\n      for (let node = location.node, depth = 0; authorElement(node) && depth < 16; node = node.parentElement, depth++) observed.add(node);\n      const x = saved ? saved.x - scrollX : 12;\n      const y = saved ? saved.y - scrollY : 12 + unanchored++ * 34;\n      const key = `${Math.round(x / 28)}:${Math.round(y / 28)}`;\n      const offset = overlap.get(key) || 0;\n      overlap.set(key, offset + 1);\n      const left = x + offset * 24;\n      const top = y + offset * 10;\n      const visible = left >= -20 && left < innerWidth && top >= -20 && top < innerHeight;\n      button.hidden = !visible || location.mode === "hidden";\n      button.style.left = left + "px";\n      button.style.top = top + "px";\n      button.dataset.stale = String(stale);\n      button.dataset.location = location.mode;\n      button.dataset.status = item.marker.status;\n      button.dataset.active = String(["saved", "sending", "delivered", "processing"].includes(item.marker.status));\n      button.setAttribute("aria-pressed", String(item.marker.id === selectedMarkerId));\n      const status = markerLabels[item.marker.status] || "\u5DF2\u63D0\u4EA4";\n      let face = button.firstElementChild;\n      if (!face) { face = document.createElement("span"); face.className = "face"; face.setAttribute("aria-hidden", "true"); button.append(face); }\n      face.textContent = String(item.marker.number);\n      const locationLabel = location.mode === "hidden" ? "\u7EC4\u4EF6\u5F53\u524D\u9690\u85CF\uFF1B\u53EF\u4ECE\u4FA7\u680F\u8BF7\u6C42\u5B9A\u4F4D" : location.mode === "collapsed" ? "\u7EC4\u4EF6\u5F53\u524D\u4E0D\u53EF\u89C1\uFF0C\u6807\u8BB0\u663E\u793A\u5728\u53EF\u89C1\u4E0A\u5C42" : location.mode === "ancestor" ? "\u539F\u7EC4\u4EF6\u65E0\u6CD5\u552F\u4E00\u5B9A\u4F4D\uFF0C\u6807\u8BB0\u663E\u793A\u5728\u539F\u4E0A\u5C42" : location.mode === "snapshot" && saved ? "\u539F\u59CB\u5FEB\u7167\u4F4D\u7F6E" : "";\n      button.title = `${item.marker.text}\\n${status}${locationLabel ? " \xB7 " + locationLabel : ""}${!saved ? " \xB7 \u672A\u6307\u5B9A\u53EF\u5B9A\u4F4D\u7684\u5C40\u90E8\u4F4D\u7F6E\u3002" : ""}${stale ? ` \xB7 \u753B\u5E03\u5DF2\u66F4\u65B0\uFF1B\u5F15\u7528\u4ECD\u4E3A r${anchor.canvasRevision}\uFF0C\u8BF7\u6838\u5BF9\u539F\u59CB\u5FEB\u7167\u3002` : ""}`;\n      button.setAttribute("aria-label", `${item.marker.number}. ${item.marker.text}\uFF0C${status}${locationLabel ? "\uFF0C" + locationLabel : ""}${saved ? stale ? "\uFF0C\u65E7\u7248\u672C\u4F4D\u7F6E" : "" : "\uFF0C\u6574\u677F\u8BA8\u8BBA"}`);\n      if (item.marker.id === selectedMarkerId) {\n        const next = { id: item.marker.id, x: left, y: top, location: location.mode };\n        if (JSON.stringify(next) !== JSON.stringify(lastSelectedPosition)) {\n          lastSelectedPosition = next;\n          post({ type: "interaction-position", id: next.id, position: { x: next.x, y: next.y }, location: next.location });\n        }\n      }\n    }\n    syncMarkerObservers(observed);\n  };\n  const queueMarkerPositions = () => { if (!markerPositionFrame && markerItems.length) markerPositionFrame = requestAnimationFrame(positionMarkers); };\n  let markerMutationTimer;\n  const queueLayoutPositions = () => {\n    // At most one layout pass per 100ms for continuously changing authored DOM. There is\n    // no polling/RAF loop; quiet canvases cost nothing and overlay writes are excluded.\n    if (!markerMutationTimer && markerItems.length) markerMutationTimer = setTimeout(() => { markerMutationTimer = null; queueMarkerPositions(); }, 100);\n  };\n  const markerResizeObserver = new ResizeObserver(queueLayoutPositions);\n  const observedMarkerNodes = new Set();\n  const markerMutationObserver = new MutationObserver(records => {\n    if (records.some(record => !(record.target instanceof Element ? record.target : record.target.parentElement)?.closest("[data-board-overlay]")\n      && !(record.type === "childList" && [...record.addedNodes, ...record.removedNodes].every(node => node instanceof Element && node.hasAttribute("data-board-overlay"))))) queueLayoutPositions();\n  });\n  let markerObserving = false;\n  const syncMarkerObservers = (nodes) => {\n    if (markerItems.length && document.body) nodes.add(document.body);\n    for (const node of observedMarkerNodes) if (!nodes.has(node)) { markerResizeObserver.unobserve(node); observedMarkerNodes.delete(node); }\n    for (const node of nodes) if (!observedMarkerNodes.has(node)) { markerResizeObserver.observe(node); observedMarkerNodes.add(node); }\n    if (markerItems.length && !markerObserving) {\n      markerMutationObserver.observe(root, { subtree: true, childList: true, characterData: true, attributes: true });\n      markerObserving = true;\n    } else if (!markerItems.length && markerObserving) { markerMutationObserver.disconnect(); markerObserving = false; }\n  };\n  const drainMarkerFocus = () => {\n    if (pendingMarkerFocus && !applying && !queued && !selectionSession && !captureBusy && selectionMode === "off") {\n      const id = pendingMarkerFocus; pendingMarkerFocus = null; focusInteraction(id);\n    }\n  };\n  const cancelMarkerReveal = () => { markerReveal?.abort(); markerReveal = null; };\n  const revealTarget = async (target, controller) => {\n    const current = () => markerReveal === controller && !controller.signal.aborted && target.isConnected;\n    // A callback can reveal custom navigation, but gets no user-activation/message lease.\n    // Async implementations must honor signal; the runtime also revalidates after awaits.\n    for (const listener of [...revealListeners]) {\n      if (!current()) return false;\n      try { await listener(Object.freeze({ target, reason: "interaction", signal: controller.signal })); }\n      catch (cause) { if (current()) error("reveal-error", cause instanceof Error ? cause.message : String(cause)); }\n    }\n    if (!current()) return false;\n    const ancestors = [];\n    for (let node = target; authorElement(node); node = node.parentElement) ancestors.unshift(node);\n    for (const node of ancestors) {\n      if (!current()) return false;\n      if (node.localName === "details" && !node.open) node.open = true;\n      if (node.getAttribute("role") === "tabpanel") {\n        const tab = tabForPanel(node);\n        if (tab && tab.getAttribute("aria-selected") === "false" && visibleBox(tab, true)) {\n          tab.click();\n          // Let authored frameworks commit their state before inspecting nested tabs.\n          await new Promise(resolve => requestAnimationFrame(resolve));\n          if (!current() || tab.getAttribute("aria-selected") !== "true") return false;\n        }\n      }\n    }\n    return current();\n  };\n  const focusInteraction = async (id) => {\n    cancelMarkerReveal();\n    const item = markerItems.find(item => item.marker.id === id);\n    if (!item) return;\n    if (applying || queued || selectionSession || captureBusy || selectionMode !== "off") { pendingMarkerFocus = id; return; }\n    selectedMarkerId = id;\n    lastGesture = -Infinity;\n    const controller = new AbortController();\n    markerReveal = controller;\n    const target = resolvedBindingNodes(item.marker.anchor)[0];\n    if (target) {\n      // The signal also bounds callbacks that ignore cancellation or never settle.\n      let timer;\n      await Promise.race([revealTarget(target, controller), new Promise(resolve => {\n        controller.signal.addEventListener("abort", () => resolve(false), { once: true });\n        timer = setTimeout(() => { controller.abort(); resolve(false); }, 3000);\n      })]);\n      clearTimeout(timer);\n    }\n    if (markerReveal !== controller || controller.signal.aborted || selectedMarkerId !== id || !markerItems.some(current => current.marker.id === id && current.marker.anchor?.binding?.key === item.marker.anchor?.binding?.key)) {\n      if (markerReveal === controller) markerReveal = null;\n      return;\n    }\n    markerReveal = null;\n    const location = markerLocation(item.marker.anchor);\n    if (location.focusNode) location.focusNode.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });\n    lastSelectedPosition = undefined;\n    positionMarkers();\n    const box = item.button.getBoundingClientRect();\n    // A missing/legacy reference still opens beside the viewport rather than disappearing\n    // offscreen. An unavailable reference is never scrolled onto an unrelated element.\n    const position = { x: Math.max(12, Math.min(innerWidth - 38, box.left)), y: Math.max(12, Math.min(innerHeight - 38, box.top)) };\n    post({ type: "interaction-position", id, position, location: item.location.mode });\n  };\n  const renderMarkers = (markers, selectedId) => {\n    // A host overview can reopen a thread using its captured viewport as a fallback. Always\n    // send this document\'s current position on re-selection, even if it has not moved since\n    // the previous opening (the host may have discarded that position while closed).\n    if (selectedMarkerId !== selectedId) { lastSelectedPosition = undefined; cancelMarkerReveal(); }\n    if (pendingMarkerFocus && pendingMarkerFocus !== selectedId) pendingMarkerFocus = null;\n    selectedMarkerId = selectedId;\n    if (!markerHost) {\n      markerHost = document.createElement("div");\n      markerHost.setAttribute("data-board-markers", "");\n      markerHost.setAttribute("data-board-overlay", "");\n      markerHost.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;width:100%!important;height:100%!important;z-index:2147483645!important;pointer-events:none!important;";\n      const shadow = markerHost.attachShadow({ mode: "open" });\n      shadow.innerHTML = `<style>\n        :host{color-scheme:normal}\n        button{all:initial;box-sizing:border-box;position:absolute;display:grid;place-items:center;width:26px;height:26px;padding:0;pointer-events:auto;border-radius:50%;background:transparent;opacity:.5;cursor:pointer;transition:opacity .15s ease}\n        button[hidden]{display:none}\n        .face{box-sizing:border-box;display:grid;place-items:center;width:18px;height:18px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 1px 4px #0002;font:10px/1 system-ui,-apple-system,sans-serif}\n        button:hover,button:focus-visible,button[aria-pressed=true]{opacity:1}\n        button:focus-visible{outline:2px solid var(--host-iris,#658aeb);outline-offset:1px}\n        button[aria-pressed=true] .face{border-width:2px}\n        button[data-status=failed] .face,button[data-status=rejected] .face{border-color:#cc6256}\n        button[data-status=answered] .face,button[data-status=applied] .face{border-color:#46846b}\n        button[data-stale=true] .face{border-color:#bd8c35}\n        button[data-active=true]::before{content:"";position:absolute;inset:1px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;pointer-events:none;animation:board-halo 2s ease-in-out infinite}\n        button[data-active=true]::after{content:"";position:absolute;right:0;top:0;width:6px;height:6px;border:1px solid var(--host-iris,#658aeb);border-right-color:transparent;border-bottom-color:transparent;border-radius:50%;background:var(--host-sheet,#fff);pointer-events:none;animation:board-orbit 1.25s linear infinite}\n        @keyframes board-halo{0%,100%{opacity:.15;transform:scale(.96)}50%{opacity:.55;transform:scale(1.03)}}\n        @keyframes board-orbit{to{transform:rotate(360deg)}}\n        @media(prefers-reduced-motion:reduce){button{transition:none}button[data-active=true]::before,button[data-active=true]::after{animation:none}button[data-active=true]::before{opacity:.3}button[data-active=true]::after{border-style:solid}}\n      </style>`;\n      root.append(markerHost);\n    }\n    // Preserve focused buttons while receiving progress, and never replace author controls.\n    const old = new Map(markerItems.map(item => [item.marker.id, item.button]));\n    markerItems = markers.map(marker => {\n      const button = old.get(marker.id) || document.createElement("button");\n      old.delete(marker.id);\n      button.type = "button";\n      button.setAttribute("data-board-interaction", marker.id);\n      if (!button.isConnected) markerHost.shadowRoot.append(button);\n      return { marker, button };\n    });\n    for (const button of old.values()) button.remove();\n    markerHost.style.setProperty("visibility", selectionMode === "off" && !pointer?.temporary ? "visible" : "hidden", "important");\n    positionMarkers();\n  };\n  window.addEventListener("scroll", queueMarkerPositions, true);\n  window.addEventListener("resize", queueMarkerPositions);\n  document.addEventListener("transitionend", queueLayoutPositions, true);\n  document.addEventListener("animationend", queueLayoutPositions, true);\n  document.addEventListener("load", queueLayoutPositions, true);\n  const clearOverlay = () => { if (overlay) overlay.remove(); overlay = null; };\n  const showOverlay = (r) => {\n    if (!overlay) {\n      overlay = document.createElement("div");\n      overlay.setAttribute("data-board-overlay", "");\n      overlay.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;border:2px solid #658aeb;background:#658aeb22;box-sizing:border-box;";\n      document.body.append(overlay);\n    }\n    Object.assign(overlay.style, { left: r.x + "px", top: r.y + "px", width: Math.max(2, r.width) + "px", height: Math.max(2, r.height) + "px" });\n  };\n  // The inspector is an overlay over real authored DOM; edit proposals become durable\n  // only after the host\'s Save action. Ordinary author interactions never use this layer.\n  let componentHost = null;\n  let selectedComponent = null;\n  let componentChoices = [];\n  let componentParents = [];\n  let componentChildren = [];\n  let componentFrame = null;\n  let componentHover = null;\n  let componentShortcut = false;\n  let componentPointer = null;\n  let componentClipboard = null;\n  let componentDrag = null;\n  let componentText = null;\n  let componentPending = null;\n  let componentResume = null;\n  let componentNotice = "";\n  const inComponents = (event) => componentHost && event.composedPath().includes(componentHost);\n  const componentLabel = (node) => (node.getAttribute("data-board-component") || node.getAttribute("aria-label") || (node.id ? "#" + node.id : node.localName)).slice(0, 100);\n  const componentBoundary = (node) => authorElement(node) && node.matches(\'[data-board-component],[id],section,article,main,aside,nav,header,footer,form,fieldset,details,summary,button,input,textarea,select,canvas,svg,table,ul,ol,li,p,h1,h2,h3,h4,h5,h6,[role]\');\n  const componentAt = (target) => {\n    for (let node = target; authorElement(node); node = node.parentElement) if (componentBoundary(node)) return node;\n    return authorElement(target) ? target : null;\n  };\n  const componentAncestors = (node) => {\n    const ancestors = [];\n    for (let parent = node; authorElement(parent) && ancestors.length < 16; parent = parent.parentElement) ancestors.unshift(parent);\n    return ancestors;\n  };\n  const selectableChildren = (node) => Array.from(node.children).filter(child => authorElement(child) && !child.matches("script,style,link,meta,template") && visibleBox(child)).slice(0, 41);\n  const componentTextRuns = (node) => node && !node.matches("script,style,textarea,input,select,option,canvas,iframe,object,embed")\n    ? Array.from(node.childNodes).flatMap((child, index) => child.nodeType === Node.TEXT_NODE && child.textContent.trim() ? [{ index, text: child.textContent }] : []) : [];\n  const setComponentNotice = (message) => { componentNotice = message; queueComponentOutline(); };\n  const clearComponentHover = () => { componentHover?.remove(); componentHover = null; };\n  const previewComponent = (node, label) => {\n    const box = node && visibleBox(node);\n    if (!box) { clearComponentHover(); return; }\n    if (!componentHover) {\n      componentHover = document.createElement("div"); componentHover.setAttribute("data-board-overlay", ""); componentHover.setAttribute("data-board-component-preview", "");\n      componentHover.style.cssText = "all:initial!important;position:fixed!important;z-index:2147483646!important;pointer-events:none!important;box-sizing:border-box!important;border:2px dashed #658aeb!important;background:#658aeb12!important;";\n      const tag = document.createElement("span"); tag.style.cssText = "position:absolute;left:0;top:0;max-width:80vw;white-space:nowrap;padding:2px 5px;color:#fff;background:#345bb4;font:12px/1.4 system-ui;";\n      componentHover.append(tag); root.append(componentHover);\n    }\n    Object.assign(componentHover.style, { left: box.left + "px", top: box.top + "px", width: box.width + "px", height: box.height + "px" });\n    componentHover.firstChild.textContent = label || componentLabel(node);\n  };\n  const updateComponentHover = () => {\n    if (!componentPointer || (!componentShortcut && selectionMode !== "component") || componentText || componentPending || componentDrag) { if (!componentDrag) clearComponentHover(); return; }\n    const node = componentAt(document.elementFromPoint(componentPointer.x, componentPointer.y));\n    previewComponent(node === selectedComponent ? null : node);\n  };\n  const componentResize = new ResizeObserver(() => queueComponentOutline());\n  const componentMutation = new MutationObserver(records => {\n    if (records.some(record => !(record.target instanceof Element ? record.target : record.target.parentElement)?.closest("[data-board-overlay]")\n      && !(record.type === "childList" && [...record.addedNodes, ...record.removedNodes].every(node => node instanceof Element && node.hasAttribute("data-board-overlay"))))) queueComponentOutline();\n  });\n  const clearComponent = () => {\n    componentHost?.remove(); componentHost = null; selectedComponent = null; componentChoices = []; componentParents = []; componentChildren = []; componentText = null;\n    clearComponentHover(); componentDrag = null;\n    componentResize.disconnect(); componentMutation.disconnect();\n    if (componentFrame !== null) cancelAnimationFrame(componentFrame);\n    componentFrame = null;\n  };\n  const positionComponent = () => {\n    componentFrame = null;\n    if (!componentHost || !selectedComponent) return;\n    if (selectedComponent.isConnected && !componentText && !componentDrag && !componentPending) {\n      const parents = componentAncestors(selectedComponent), children = selectableChildren(selectedComponent);\n      if (parents.length !== componentParents.length || parents.some((node, index) => node !== componentParents[index]) || children.length !== componentChildren.length || children.some((node, index) => node !== componentChildren[index])) { selectComponent(selectedComponent); return; }\n      for (const button of componentHost.shadowRoot.querySelectorAll(\'[data-component-action="choose"]\')) button.textContent = componentLabel(componentChoices[Number(button.dataset.componentIndex)]);\n    }\n    const box = visibleBox(selectedComponent), shadow = componentHost.shadowRoot;\n    const outline = shadow.querySelector(".outline"); outline.hidden = !box;\n    if (box) Object.assign(outline.style, { left: box.left + "px", top: box.top + "px", width: box.width + "px", height: box.height + "px" });\n    for (const button of shadow.querySelectorAll("button")) button.disabled = Boolean(componentPending) || (!box && button.dataset.componentAction !== "close");\n    shadow.querySelector(\'[data-component-action="paste"]\').disabled ||= !componentClipboard?.node?.isConnected;\n    shadow.querySelector(\'[data-component-action="text"]\').disabled ||= !componentTextRuns(selectedComponent).length;\n    shadow.querySelector(\'[role="status"]\').textContent = componentPending ? componentPending.message || "\u7B49\u5F85\u4FDD\u5B58 \xB7 \u5728\u753B\u5E03\u4E0A\u65B9\u786E\u8BA4\u8FD9\u6B21\u4FEE\u6539" : !box ? "\u7EC4\u4EF6\u5DF2\u9690\u85CF\u6216\u79FB\u9664\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9" : componentNotice || "\u9009\u62E9\u7EC4\u4EF6 \xB7 \u2318 / Ctrl + Shift \u60AC\u505C\u9884\u89C8\u5E76\u70B9\u51FB";\n    for (const field of shadow.querySelectorAll("textarea,select")) field.disabled = Boolean(componentPending);\n    if (componentText && box) {\n      const editor = shadow.querySelector(".text-editor");\n      Object.assign(editor.style, { left: Math.max(8, Math.min(box.left, innerWidth - Math.min(480, innerWidth - 16))) + "px", top: Math.max(8, Math.min(box.top, innerHeight - 170)) + "px", width: Math.max(240, Math.min(480, innerWidth - 16)) + "px" });\n    }\n  };\n  const queueComponentOutline = () => { if (componentHost && componentFrame === null) componentFrame = requestAnimationFrame(positionComponent); };\n  const selectComponent = (node) => {\n    if (!authorElement(node) || !node.isConnected || componentPending) return;\n    clearComponent(); selectedComponent = node;\n    const host = document.createElement("div"); host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-components", "");\n    host.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483647!important;pointer-events:none!important;";\n    const shadow = host.attachShadow({ mode: "open" });\n    shadow.innerHTML = `<style>\n      :host{color-scheme:normal}.outline{position:fixed;box-sizing:border-box;border:2px solid var(--host-iris,#658aeb);background:#658aeb12;pointer-events:none}.outline[hidden],[hidden]{display:none!important}\n      .panel,.text-editor{position:absolute;box-sizing:border-box;padding:10px;border:1px solid var(--host-line-strong,#aaa);border-radius:10px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);font:12px/1.5 system-ui;box-shadow:0 3px 15px #0002;pointer-events:auto}\n      .panel{bottom:12px;left:12px;max-width:min(700px,calc(100% - 24px));max-height:40vh;overflow:auto}.row{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}button,select,textarea{font:inherit;color:inherit;background:transparent}button,select{padding:4px 8px;border:1px solid var(--host-line-strong,#ccc);border-radius:5px}button{cursor:pointer}button[aria-current=true]{border-color:var(--host-iris,#658aeb);font-weight:600}button:focus-visible,textarea:focus-visible{outline:2px solid var(--host-iris,#658aeb)}button:disabled{opacity:.5;cursor:default}.label,.hint{opacity:.75}.hint{margin-top:6px}textarea{display:block;box-sizing:border-box;width:100%;min-height:74px;resize:vertical;margin-top:6px;border:1px solid var(--host-line-strong,#aaa);border-radius:4px;padding:6px}.text-editor{z-index:2}button[data-component-action=drag]{touch-action:none;cursor:grab}\n    </style><div class="outline"></div><div class="panel" role="region" aria-label="\u7EC4\u4EF6\u9009\u62E9"><div role="status"></div><div class="label">\u5305\u542B\u5C42\u7EA7</div><div class="row ancestors"></div><div class="label">\u76F4\u63A5\u5B50\u7EC4\u4EF6</div><div class="row children"></div><div class="row"><button type="button" data-component-action="drag">\u62D6\u52A8\u7EC4\u4EF6</button><button type="button" data-component-action="cut">\u526A\u5207</button><button type="button" data-component-action="copy">\u590D\u5236</button><select aria-label="\u7C98\u8D34\u4F4D\u7F6E" class="placement"><option value="append">\u653E\u5165\u672B\u5C3E</option><option value="prepend">\u653E\u5165\u5F00\u5934</option><option value="before">\u653E\u5728\u524D\u9762</option><option value="after">\u653E\u5728\u540E\u9762</option></select><button type="button" data-component-action="paste">\u7C98\u8D34\u5230\u6B64\u5904</button><button type="button" data-component-action="text">\u7F16\u8F91\u6587\u5B57</button></div><div class="row"><button type="button" data-component-action="reference">\u5F15\u7528\u7EC4\u4EF6</button><button type="button" data-component-action="close">\u5B8C\u6210\u9009\u62E9 \xB7 Esc</button></div><div class="hint">\u62D6\u52A8\u65F6 Tab / Shift+Tab \u5207\u6362\u76EE\u6807\u5C42\u7EA7\uFF0C\u2191 \u524D\u9762 \xB7 \u2193 \u540E\u9762 \xB7 \u2190 \u5F00\u5934 \xB7 \u2192 \u672B\u5C3E\u3002\u590D\u5236\u7ED3\u6784\uFF1B\u4E0D\u590D\u5236\u8FD0\u884C\u4E2D\u7684 JS \u72B6\u6001\uFF0C\u4F9D\u8D56\u539F ID \u7684\u6837\u5F0F\u53EF\u80FD\u9700\u8C03\u6574\u3002</div></div><div class="text-editor" hidden><label>\u7F16\u8F91\u8FD9\u6BB5\u6587\u5B57 <select class="text-runs" aria-label="\u6587\u5B57\u6BB5\u843D"></select></label><textarea aria-label="\u7EC4\u4EF6\u6587\u5B57" spellcheck="false"></textarea><div class="row"><button type="button" data-component-action="text-save">\u9884\u89C8\u4FEE\u6539</button><button type="button" data-component-action="text-cancel">\u53D6\u6D88 \xB7 Esc</button></div></div>`;\n    const addChoice = (element, container) => {\n      const button = document.createElement("button"); button.type = "button"; button.dataset.componentAction = "choose"; button.dataset.componentIndex = String(componentChoices.length);\n      button.textContent = componentLabel(element); button.setAttribute("aria-current", String(element === node)); componentChoices.push(element); container.append(button);\n    };\n    componentParents = componentAncestors(node); for (const parent of componentParents) addChoice(parent, shadow.querySelector(".ancestors"));\n    componentChildren = selectableChildren(node); for (const child of componentChildren.slice(0, 40)) addChoice(child, shadow.querySelector(".children"));\n    if (!componentChildren.length) shadow.querySelector(".children").textContent = "\u6CA1\u6709\u53EF\u89C1\u5B50\u7EC4\u4EF6";\n    componentHost = host; root.append(host); componentMutation.observe(root, { subtree: true, childList: true, attributes: true });\n    for (const parent of componentParents) componentResize.observe(parent);\n    shadow.querySelector(".text-runs").addEventListener("change", () => {\n      if (!componentText) return;\n      const next = componentText.runs[Number(shadow.querySelector(".text-runs").value)]; componentText.run = next; shadow.querySelector("textarea").value = next.text;\n    });\n    positionComponent();\n  };\n  const componentIdentity = (node) => {\n    if (!authorElement(node)) return null;\n    const elements = [node, ...node.querySelectorAll("*")];\n    if (elements.length > 2000) throw new Error("\u7EC4\u4EF6\u5305\u542B\u8D85\u8FC7 2000 \u4E2A\u5143\u7D20\uFF0C\u8BF7\u9009\u62E9\u66F4\u5C0F\u7684\u7EC4\u4EF6");\n    const indices = new Map(elements.map((element, index) => [element, index]));\n    const input = JSON.stringify(elements.map(element => [indices.get(element.parentElement) ?? -1, element.localName.toLowerCase(), element.id || "", element.getAttribute("role") || "", element.getAttribute("name") || "", element.getAttribute("type") || ""]));\n    if (!node.id && node.outerHTML.length > 240000) throw new Error("\u6CA1\u6709\u56FA\u5B9A ID \u7684\u7EC4\u4EF6\u8FC7\u5927\uFF0C\u8BF7\u9009\u62E9\u66F4\u5C0F\u7684\u7EC4\u4EF6");\n    let hash = 2166136261; for (let i = 0; i < input.length; i++) hash = Math.imul(hash ^ input.charCodeAt(i), 16777619);\n    return { tag: node.localName.toLowerCase(), ...(node.id ? { id: node.id } : { authoredHtml: node.outerHTML }), fingerprint: (hash >>> 0).toString(16).padStart(8, "0") };\n  };\n  const componentPatch = (operation, node, extra = {}) => ({ operation, selector: selectorFor(node), sourceIdentity: componentIdentity(node), ...extra });\n  const proposeComponentEdit = (patch) => {\n    if (componentPending || applying || !selectedComponent?.isConnected) return;\n    const id = `${scope.sessionId}:component-${++sequence}`;\n    componentPending = { id, node: selectedComponent, patch };\n    clearComponentHover(); setComponentNotice("");\n    post({ type: "component-edit", id, request: { canvasBase: { revision: snapshot.canvas.revision, documentVersion: snapshot.canvas.documentVersion }, patch, sourceLabel: componentLabel(document.querySelector(patch.selector)), ...(patch.destination ? { destinationLabel: componentLabel(document.querySelector(patch.destination)) } : {}) } });\n    positionComponent();\n  };\n  const startComponentText = () => {\n    const runs = componentTextRuns(selectedComponent); if (!runs.length) return;\n    componentText = { runs, run: runs[0] }; const shadow = componentHost.shadowRoot;\n    const choices = shadow.querySelector(".text-runs"); choices.replaceChildren();\n    runs.forEach((run, index) => { const option = document.createElement("option"); option.value = String(index); option.textContent = run.text.trim().slice(0, 55); choices.append(option); });\n    choices.hidden = runs.length < 2; shadow.querySelector(".text-editor").hidden = false;\n    const textarea = shadow.querySelector("textarea"); textarea.value = runs[0].text; positionComponent(); textarea.focus(); textarea.select();\n  };\n  const cancelComponentText = () => { componentText = null; if (componentHost) componentHost.shadowRoot.querySelector(".text-editor").hidden = true; setComponentNotice(""); };\n  const saveComponentText = () => {\n    if (!componentText) return; const { run } = componentText; const text = componentHost.shadowRoot.querySelector("textarea").value;\n    if (text === run.text) { cancelComponentText(); return; }\n    if (text.length > 24000) { setComponentNotice("\u8FD9\u6BB5\u6587\u5B57\u592A\u957F\uFF0C\u8BF7\u7F29\u77ED\u540E\u91CD\u8BD5"); return; }\n    proposeComponentEdit(componentPatch("text", selectedComponent, { text, expectedText: run.text, textNodeIndex: run.index }));\n  };\n  const copyComponent = (mode) => {\n    componentClipboard = { mode, node: selectedComponent, identity: componentIdentity(selectedComponent) };\n    setComponentNotice(`${mode === "move" ? "\u5DF2\u6807\u8BB0\u526A\u5207" : "\u5DF2\u590D\u5236"} ${componentLabel(selectedComponent)} \xB7 \u9009\u62E9\u76EE\u6807\u7EC4\u4EF6\u540E\u7C98\u8D34\uFF1B\u539F\u4F4D\u7F6E\u4FDD\u6301\u5230\u4FDD\u5B58`);\n  };\n  const pasteComponent = () => {\n    const source = componentClipboard?.node, destination = selectedComponent;\n    if (!source?.isConnected || !destination?.isConnected) { setComponentNotice("\u590D\u5236\u6765\u6E90\u5DF2\u79FB\u9664\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9"); return; }\n    if (source === destination || source.contains(destination)) { setComponentNotice("\u8BF7\u9009\u62E9\u6765\u6E90\u7EC4\u4EF6\u4E4B\u5916\u7684\u76EE\u6807\u4F4D\u7F6E"); return; }\n    if (!equalJson(componentClipboard.identity, componentIdentity(source))) { setComponentNotice("\u6765\u6E90\u5185\u5BB9\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u590D\u5236\u6216\u526A\u5207"); return; }\n    proposeComponentEdit(componentPatch(componentClipboard.mode, source, { destination: selectorFor(destination), destinationIdentity: componentIdentity(destination), position: componentHost.shadowRoot.querySelector(".placement").value }));\n  };\n  const componentDestinations = (point) => {\n    const hit = componentAt(document.elementFromPoint(point.x, point.y));\n    return hit ? componentAncestors(hit).reverse().filter(node => node !== selectedComponent && !selectedComponent.contains(node) && visibleBox(node)) : [];\n  };\n  const paintComponentDrag = () => {\n    if (!componentDrag) return; const destination = componentDrag.candidates[componentDrag.depth];\n    const names = { before: "\u524D\u9762", after: "\u540E\u9762", prepend: "\u653E\u5165\u5F00\u5934", append: "\u653E\u5165\u672B\u5C3E" };\n    previewComponent(destination, destination ? `${componentLabel(destination)} \xB7 ${names[componentDrag.position]} \xB7 \u5C42\u7EA7 ${componentDrag.depth + 1}/${componentDrag.candidates.length}` : "");\n    setComponentNotice(destination ? `\u76EE\u6807 ${componentLabel(destination)} \xB7 ${names[componentDrag.position]}\uFF1BTab \u5207\u6362\u4E0A\u7EA7\uFF0CShift+Tab \u8FD4\u56DE\u4E0B\u7EA7` : "\u79FB\u5230\u76EE\u6807\u7EC4\u4EF6\u4E0A \xB7 Esc \u53D6\u6D88");\n  };\n  const startComponentDrag = (event) => {\n    if (componentPending || componentText || !selectedComponent?.isConnected) return;\n    componentDrag = { pointerId: event.pointerId, candidates: [], depth: 0, position: "append" };\n    clearComponentHover(); suppressPointerClick = true; try { root.setPointerCapture(event.pointerId); } catch {} paintComponentDrag();\n  };\n  const cancelComponentDrag = () => {\n    const active = componentDrag; componentDrag = null; clearComponentHover();\n    if (active) try { if (root.hasPointerCapture(active.pointerId)) root.releasePointerCapture(active.pointerId); } catch {}\n    setComponentNotice("");\n  };\n  const finishComponentDrag = () => {\n    const active = componentDrag, source = selectedComponent, destination = active?.candidates[active.depth]; cancelComponentDrag();\n    if (!source?.isConnected || !destination?.isConnected || source === destination || source.contains(destination)) return;\n    proposeComponentEdit(componentPatch("move", source, { destination: selectorFor(destination), destinationIdentity: componentIdentity(destination), position: active.position }));\n  };\n  const componentAction = (event) => {\n    const button = event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-component-action"));\n    if (!event.isTrusted || !button || button.disabled || componentPending) return;\n    const action = button.dataset.componentAction;\n    if (action === "choose") { componentNotice = ""; selectComponent(componentChoices[Number(button.dataset.componentIndex)]); return; }\n    if (action === "close") { setSelectionMode("off"); post({ type: "selection-end" }); return; }\n    if (action === "copy" || action === "cut") { copyComponent(action === "cut" ? "move" : "copy"); return; }\n    if (action === "paste") { pasteComponent(); return; }\n    if (action === "text") { startComponentText(); return; }\n    if (action === "text-save") { saveComponentText(); return; }\n    if (action === "text-cancel") { cancelComponentText(); return; }\n    const target = selectedComponent;\n    if (action !== "reference" || !target || !visibleBox(target)) return;\n    const box = target.getBoundingClientRect(), region = rect(box);\n    const anchor = { ...currentAnchor(), kind: "element", selector: selectorFor(target), rect: region, viewport: viewport(), binding: captureBinding(target, region) };\n    const session = beginSelection({ x: Math.max(8, Math.min(box.left, innerWidth - 24)), y: Math.max(8, Math.min(box.top, innerHeight - 24)) });\n    void finishSelection(session, anchor, region);\n  };\n  const resumeComponentEdit = () => {\n    if (!componentResume || snapshot.canvas.revision < componentResume.revision || queued || applying) return;\n    if (patchFailure) { componentResume = null; return; }\n    const resume = componentResume; componentResume = null;\n    if (resume.node?.isConnected) { selectionMode = "component"; paintSelectionMode(); selectComponent(resume.node); setComponentNotice("\u5DF2\u4FDD\u5B58"); }\n  };\n  const receiveComponentEdit = (message) => {\n    if (!componentPending || message.id !== componentPending.id || !message.result) return;\n    const result = message.result;\n    if (result.status === "unknown") { componentPending.message = result.message || "\u4FDD\u5B58\u7ED3\u679C\u5F85\u786E\u8BA4\uFF0C\u8BF7\u5728\u4E0A\u65B9\u91CD\u8BD5\u540C\u4E00\u6B21\u4FEE\u6539"; positionComponent(); return; }\n    const pending = componentPending; componentPending = null;\n    if (result.status === "applied") {\n      if (pending.patch.operation === "move") componentClipboard = null;\n      componentResume = { node: pending.node, revision: result.canvasRevision || snapshot.canvas.revision + 1 };\n      selectionMode = "off"; clearComponent(); paintSelectionMode(); post({ type: "selection-end" }); void drain().then(resumeComponentEdit);\n    } else { setComponentNotice(result.status === "cancelled" ? "\u672A\u4FDD\u5B58\uFF1B\u539F\u7EC4\u4EF6\u4FDD\u6301\u4E0D\u53D8" : result.message || "\u4FDD\u5B58\u672A\u6210\u529F\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u6700\u65B0\u7EC4\u4EF6\u540E\u91CD\u8BD5"); positionComponent(); }\n  };\n  window.addEventListener("scroll", queueComponentOutline, true);\n  window.addEventListener("resize", queueComponentOutline);\n  let captureLibrary;\n  const loadCapture = () => {\n    if (!captureLibrary) {\n      const url = URL.createObjectURL(new Blob([initial.captureModule], { type: "text/javascript" }));\n      captureLibrary = import(url).finally(() => URL.revokeObjectURL(url));\n    }\n    return captureLibrary;\n  };\n  const captureOverlay = (node) => node instanceof Element && !!node.closest("[data-board-overlay],[data-board-markers],[data-board-capture-status]");\n  const captureTask = () => new Promise(resolve => setTimeout(resolve, 0));\n  // Keep the layout tree, but do not copy thousands of computed styles in off-selection\n  // subtrees. A shallow placeholder is safe only when its used size does not depend on its\n  // children and their margins cannot collapse through it. Overlapping/overflowing descendants\n  // keep every ancestor on their path. Unknown paint effects conservatively keep their subtree.\n  // Layout boxes survive closed details/content-visibility, while display:contents and\n  // visibility overrides can still paint descendants. Suppress only whole paint subtrees.\n  const capturePaintSuppressed = (node, cache = new Map()) => {\n    if (!node) return false;\n    if (cache.has(node)) return cache.get(node);\n    const parent = node.parentElement;\n    const summary = parent?.matches("details:not([open])") && Array.from(parent.children).find(child => child.tagName === "SUMMARY");\n    const hidden = getComputedStyle(node).display === "none" || Boolean(parent && (\n      getComputedStyle(parent).contentVisibility === "hidden" ||\n      (parent.matches("details:not([open])") && node !== summary && getComputedStyle(parent, "::details-content").contentVisibility === "hidden") ||\n      capturePaintSuppressed(parent, cache)));\n    cache.set(node, hidden);\n    return hidden;\n  };\n  const captureDefinition = node => {\n    for (; node; node = node.parentElement) if (node instanceof SVGElement && node.matches("defs,filter,clipPath,mask,pattern,linearGradient,radialGradient,symbol")) return true;\n    return false;\n  };\n  const captureReferenceIds = (node, style) => {\n    const ids = new Set();\n    const add = value => {\n      if (!value || value.startsWith("data:")) return;\n      if (value.startsWith("#")) { ids.add(value.slice(1)); return; }\n      try {\n        const url = new URL(value, document.baseURI);\n        if (url.hash && url.href.split("#")[0] === document.URL.split("#")[0]) ids.add(decodeURIComponent(url.hash.slice(1)));\n      } catch {}\n    };\n    // Navigation hrefs, data attributes and unused CSS variables are not paint edges.\n    if (node instanceof SVGElement && node.localName !== "a") {\n      add(node.getAttribute("href"));\n      add(node.getAttribute("xlink:href"));\n    }\n    for (const [property, value] of style) {\n      if (property.startsWith("--") || (property === "content" && !value.startsWith("url("))) continue;\n      for (const match of value.matchAll(/url\\(\\s*["\']?([^"\')\\s]+)["\']?\\s*\\)/g)) add(match[1]);\n    }\n    return ids;\n  };\n  const capturePlan = async (region, signal) => {\n    const nodes = Array.from(document.querySelectorAll("*"));\n    if (nodes.length > 20000) throw new Error("Selected document is too complex to capture; the geometric anchor is still saved");\n    const needed = new Set([root]);\n    const candidates = new Map();\n    const forced = new Set();\n    const paintHidden = new Map();\n    let slice = performance.now();\n    const keep = node => { for (; node && !needed.has(node); node = node.parentElement) needed.add(node); };\n    const intersects = r => r.right >= region.x && r.bottom >= region.y && r.left <= region.x + region.width && r.top <= region.y + region.height;\n    for (const node of nodes) {\n      signal.throwIfAborted();\n      if (performance.now() - slice > 8) { await captureTask(); signal.throwIfAborted(); slice = performance.now(); }\n      if (captureOverlay(node) || node.matches("script,style,link,meta,head")) continue;\n      const style = getComputedStyle(node);\n      if (capturePaintSuppressed(node, paintHidden) || captureDefinition(node)) {\n        candidates.set(node, null);\n        continue;\n      }\n      if (forced.has(node.parentElement)) { forced.add(node); keep(node); continue; }\n      const bounds = node.getBoundingClientRect();\n      // Shadows can paint outside the border box. This deliberately generous bound includes\n      // spread, offsets and the blur tail; filters and pseudo content have no safe cheap bound.\n      const shadow = [style.boxShadow, style.textShadow].join(" ").replace(/rgba?\\([^)]*\\)/g, "");\n      const bleed = 2 + 3 * Array.from(shadow.matchAll(/(-?[\\d.]+)px/g), match => Math.abs(Number(match[1]))).reduce((sum, value) => sum + value, 0);\n      const box = { left: bounds.left + scrollX - bleed, top: bounds.top + scrollY - bleed, right: bounds.right + scrollX + bleed, bottom: bounds.bottom + scrollY + bleed };\n      const pseudo = ["::before", "::after"].some(part => !["none", "normal"].includes(getComputedStyle(node, part).content));\n      if (node.shadowRoot || style.filter !== "none" || (style.backdropFilter && style.backdropFilter !== "none") || pseudo) { forced.add(node); keep(node); }\n      else if (intersects(box)) keep(node);\n      const block = ["block", "flex", "grid", "flow-root"].includes(style.display);\n      const closedMargins = style.display !== "block" || style.overflowY !== "visible" ||\n        (parseFloat(style.paddingTop) + parseFloat(style.borderTopWidth) > 0 && parseFloat(style.paddingBottom) + parseFloat(style.borderBottomWidth) > 0);\n      if (node instanceof HTMLElement && block && closedMargins && /^\\d+(\\.\\d+)?px$/.test(style.width) && /^\\d+(\\.\\d+)?px$/.test(style.height)) {\n        candidates.set(node, { width: style.width, height: style.height });\n      }\n    }\n    if (needed.size > 1800) throw new Error("Selected area is too complex to capture promptly; the geometric anchor is still saved");\n    const geometry = new Map();\n    const styles = new Map();\n    const pseudoStyles = new Map();\n    const references = new Set();\n    // Hidden SVG resources can paint through a visible use/fill/filter reference. Follow\n    // those dependencies (including indirect references) rather than ignoring hidden DOM.\n    for (const node of needed) {\n      if (needed.size > 1800) throw new Error("Selected area is too complex to capture promptly; the geometric anchor is still saved");\n      signal.throwIfAborted();\n      if (performance.now() - slice > 8) { await captureTask(); signal.throwIfAborted(); slice = performance.now(); }\n      geometry.set(node, captureGeometry(node));\n      const style = getComputedStyle(node);\n      const recorded = new Map(Array.from(style, property => [property, style.getPropertyValue(property)]));\n      styles.set(node, recorded);\n      const pseudos = ["::before", "::after"].map(part => {\n        const style = getComputedStyle(node, part);\n        return new Map(["none", "normal"].includes(style.content) ? [["content", style.content]] : Array.from(style, property => [property, style.getPropertyValue(property)]));\n      });\n      pseudoStyles.set(node, pseudos);\n      for (const id of new Set([recorded, ...pseudos].flatMap(style => Array.from(captureReferenceIds(node, style))))) {\n        if (references.has(id)) continue;\n        references.add(id);\n        const resource = document.getElementById(id);\n        if (!resource) continue;\n        keep(resource);\n        for (const child of resource.querySelectorAll("*")) keep(child);\n      }\n    }\n    const prune = new Map();\n    for (const [node, size] of candidates) if (!needed.has(node)) prune.set(node, size);\n    const suppressedRoots = Array.from(paintHidden).filter(([node, hidden]) => hidden && !paintHidden.get(node.parentElement)).map(([node]) => node);\n    return { prune, needed, geometry, styles, pseudoStyles, references, suppressedRoots, outsideMutations: false };\n\n  };\n  const captureGeometry = node => {\n    const bounds = node.getBoundingClientRect();\n    return [bounds.x, bounds.y, bounds.width, bounds.height, node.scrollLeft, node.scrollTop];\n  };\n  const captureLayoutMatches = plan => plan.suppressedRoots.every(node => !node.isConnected || capturePaintSuppressed(node)) &&\n    Array.from(plan.geometry).every(([node, before]) => node.isConnected && captureGeometry(node).every((value, index) => Math.abs(value - before[index]) < 0.01));\n  const captureStylesMatch = plan => !plan.outsideMutations || Array.from(plan.styles).every(([node, recorded]) => {\n    const style = getComputedStyle(node);\n    if (!Array.from(recorded).every(([property, value]) => style.getPropertyValue(property) === value)) return false;\n    return plan.pseudoStyles.get(node).every((recorded, index) => {\n      const style = getComputedStyle(node, index === 0 ? "::before" : "::after");\n      return Array.from(recorded).every(([property, value]) => style.getPropertyValue(property) === value);\n    });\n  });\n  const captureMutationIsOutside = (record, plan, region) => {\n    const target = record.target instanceof Element ? record.target : record.target.parentElement;\n    if (!target || plan.needed.has(target)) return false;\n    // Even an off-selection mutation may create new overflowing pixels. Inspect only its\n    // affected subtree; unknown paint effects stay conservative instead of accepting a stale\n    // screenshot. The selected layout and computed styles are validated independently.\n    const affected = [target, ...target.querySelectorAll("*")];\n    if (affected.length > 2000) return false;\n    const paintHidden = new Map();\n    return affected.every(node => {\n      if (plan.needed.has(node) || (node.id && plan.references.has(node.id))) return false;\n      if (capturePaintSuppressed(node, paintHidden)) return true;\n      const style = getComputedStyle(node);\n      if (node.shadowRoot || style.filter !== "none" || (style.backdropFilter && style.backdropFilter !== "none") ||\n        ["::before", "::after"].some(part => !["none", "normal"].includes(getComputedStyle(node, part).content))) return false;\n      const bounds = node.getBoundingClientRect();\n      const shadow = [style.boxShadow, style.textShadow].join(" ").replace(/rgba?\\([^)]*\\)/g, "");\n      const bleed = 4 + 3 * Array.from(shadow.matchAll(/(-?[\\d.]+)px/g), match => Math.abs(Number(match[1]))).reduce((sum, value) => sum + value, 0);\n      return bounds.right + scrollX + bleed < region.x || bounds.bottom + scrollY + bleed < region.y ||\n        bounds.left + scrollX - bleed > region.x + region.width || bounds.top + scrollY - bleed > region.y + region.height;\n    });\n  };\n  const captureFrozenRegion = async (region, signal, planReady) => {\n    signal.throwIfAborted();\n    const width = Math.max(root.scrollWidth, innerWidth);\n    const height = Math.max(root.scrollHeight, innerHeight);\n    const ratio = Math.min(devicePixelRatio || 1, 2, 16384 / region.width, 16384 / region.height, Math.sqrt(16777216 / (region.width * region.height)));\n    if (!Number.isFinite(ratio) || ratio < 0.5) throw new Error("Selection is too large to capture; the geometric anchor is still saved");\n    const api = await loadCapture();\n    signal.throwIfAborted();\n    const plan = await capturePlan(region, signal);\n    planReady(plan);\n    signal.throwIfAborted();\n    window.dispatchEvent(new CustomEvent("paseo:capture", { detail: { mime: "image/png", scale: ratio } }));\n    const shots = new Map();\n    const original = HTMLCanvasElement.prototype.toDataURL;\n    // Freeze fresh pixels per capture, never reuse a previous selection\'s dynamic bitmap.\n    for (const canvas of document.querySelectorAll("canvas")) {\n      let skipped = captureOverlay(canvas);\n      for (let parent = canvas; parent && !skipped; parent = parent.parentElement) skipped = plan.prune.has(parent);\n      if (!skipped) { try { shots.set(canvas, original.call(canvas)); } catch {} }\n    }\n    const startScroll = { x: scrollX, y: scrollY };\n    HTMLCanvasElement.prototype.toDataURL = function (...args) { return args.length === 0 && shots.has(this) ? shots.get(this) : original.apply(this, args); };\n    const parentStyles = new WeakMap();\n    let cloned = 0;\n    let slice = performance.now();\n    const started = slice;\n    const check = () => {\n      signal.throwIfAborted();\n      if (scrollX !== startScroll.x || scrollY !== startScroll.y) throw new Error("Canvas changed during capture; the geometric anchor is still saved");\n      if (cloned > 1800 || performance.now() - started > 3500) throw new Error("Selected area is too complex to capture promptly; the geometric anchor is still saved");\n    };\n    try {\n      const svg = await api.toSvg(root, {\n        width, height, captureViewport: region, skipFonts: true, style: { margin: "0" },\n        filter: node => node.nodeName !== "SCRIPT" && !captureOverlay(node),\n        filterChildren: node => !plan.prune.has(node),\n        // Computed values already resolve var(). Preserve custom-property inheritance instead\n        // of redundantly copying the same theme tokens onto every single descendant.\n        filterStyleProperty: (node, property, value, computedValue) => {\n          const recorded = plan.styles.get(node);\n          if (recorded) {\n            // The library normalizes font-size and SVG path d for its cloned output.\n            // Validate the original computed value, not that serialization transform.\n            if (recorded.get(property) !== computedValue) throw new Error("Canvas styling changed during capture; the geometric anchor is still saved");\n          }\n          if (!property.startsWith("--") || !node.parentElement) return true;\n          let style = parentStyles.get(node.parentElement);\n          if (!style) { style = getComputedStyle(node.parentElement); parentStyles.set(node.parentElement, style); }\n          return style.getPropertyValue(property) !== value;\n        },\n        beforeSerialize: async () => { await captureTask(); check(); },\n        beforeClone: async node => {\n          if (node instanceof Element) cloned++;\n          check();\n          if (performance.now() - slice > 8) { await captureTask(); check(); slice = performance.now(); }\n        },\n        afterClone: (source, clone) => {\n          if (!(source instanceof Element) || !(clone instanceof Element)) return;\n          if (clone.style) { clone.style.animation = "none"; clone.style.transition = "none"; }\n          const sourceStyle = getComputedStyle(source);\n          if (["sticky", "fixed"].includes(sourceStyle.position) && !plan.needed.has(source)) { clone.style.opacity = "0"; return; }\n          if (sourceStyle.position === "sticky") throw new Error("Sticky content cannot be captured accurately; the geometric anchor is still saved");\n          if (sourceStyle.position === "fixed") {\n            for (let parent = source.parentElement; parent && parent !== root; parent = parent.parentElement) {\n              const style = getComputedStyle(parent);\n              if (style.transform !== "none" || style.filter !== "none" || style.perspective !== "none" || parent.scrollTop || parent.scrollLeft) throw new Error("Transformed fixed content cannot be captured accurately; the geometric anchor is still saved");\n            }\n            const bounds = source.getBoundingClientRect();\n            clone.style.left = bounds.left + scrollX + "px";\n            clone.style.top = bounds.top + scrollY + "px";\n            clone.style.right = "auto";\n            clone.style.bottom = "auto";\n          }\n          const size = plan.prune.get(source);\n          if (size && clone.style) {\n            for (const key of ["width", "minWidth", "maxWidth"]) clone.style[key] = size.width;\n            for (const key of ["height", "minHeight", "maxHeight"]) clone.style[key] = size.height;\n          }\n          if ((source.scrollTop || source.scrollLeft) && source !== root && source !== document.body) {\n            // Translate already-laid-out direct children inside the original clipping box.\n            // A raw text scroller cannot be wrapped without changing line layout.\n            if (Array.from(source.childNodes).some(node => node.nodeType === 3 && node.textContent.trim())) throw new Error("This text scroller cannot be captured accurately; the geometric anchor is still saved");\n            clone.style.overflow = "hidden";\n            for (const child of clone.children) if (child.style) child.style.transform = `translate(${-source.scrollLeft}px, ${-source.scrollTop}px) ${child.style.transform === "none" ? "" : child.style.transform}`;\n          }\n        },\n      });\n      check();\n      if (!captureLayoutMatches(plan)) throw new Error("Canvas layout changed during capture; the geometric anchor is still saved");\n      if (!captureStylesMatch(plan)) throw new Error("Canvas styling changed during capture; the geometric anchor is still saved");\n      // Keep the original foreignObject/layout dimensions, but decode and allocate only the\n      // requested SVG viewport. Page length must not reduce a small selection\'s pixel ratio.\n      await captureTask();\n      check();\n      const image = new Image();\n      image.decoding = "async";\n      const ready = new Promise((resolve, reject) => { image.onload = resolve; image.onerror = () => reject(new Error("Selection image could not be decoded")); });\n      image.src = svg;\n      await ready;\n      check();\n      if (!captureLayoutMatches(plan)) throw new Error("Canvas layout changed during capture; the geometric anchor is still saved");\n      if (!captureStylesMatch(plan)) throw new Error("Canvas styling changed during capture; the geometric anchor is still saved");\n      const cropped = document.createElement("canvas");\n      cropped.width = Math.max(1, Math.round(region.width * ratio));\n      cropped.height = Math.max(1, Math.round(region.height * ratio));\n      const context = cropped.getContext("2d");\n      if (!context) throw new Error("Screenshot canvas unavailable");\n      context.drawImage(image, 0, 0, cropped.width, cropped.height);\n      const data = cropped.toDataURL("image/png").split(",")[1];\n      if (data.length > 3000000) throw new Error("Selection screenshot exceeds 3 MB; select a smaller area");\n      return { mimeType: "image/png", data };\n    } finally { HTMLCanvasElement.prototype.toDataURL = original; }\n  };\n  const captureRegion = async (region, signal) => {\n    // A cooperative clone spans several browser tasks. Pause CSS/Web Animations at their\n    // current displayed frame and resume only animations that were running before capture.\n    const controller = new AbortController();\n    const cancel = () => controller.abort(signal.reason);\n    if (signal.aborted) cancel(); else signal.addEventListener("abort", cancel, { once: true });\n    let plan;\n    let buffered = [];\n    const validate = records => {\n      const changed = records.filter(record => !captureOverlay(record.target) && (record.type !== "attributes" || record.oldValue !== record.target.getAttribute(record.attributeName)) &&\n        (record.type !== "childList" || [...record.addedNodes, ...record.removedNodes].some(node => !captureOverlay(node))));\n      if (!changed.length) return;\n      if (!plan) { buffered.push(...changed); return; }\n      if (!captureLayoutMatches(plan) || changed.some(record => !captureMutationIsOutside(record, plan, region))) {\n        controller.abort(new Error("Canvas changed during capture; the geometric anchor is still saved"));\n      } else {\n        // A hidden/outside mutation can affect already-cloned selected styles via :has().\n        plan.outsideMutations = true;\n      }\n    };\n    const observer = new MutationObserver(validate);\n    observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeOldValue: true });\n    const animations = document.getAnimations().filter(animation => animation.playState === "running" && !captureOverlay(animation.effect?.target));\n    for (const animation of animations) animation.pause();\n    try { return await captureFrozenRegion(region, controller.signal, ready => { plan = ready; validate(buffered); buffered = []; }); }\n    finally {\n      observer.disconnect();\n      signal.removeEventListener("abort", cancel);\n      for (const animation of animations) if (animation.playState === "paused") animation.play();\n    }\n  };\n  // A cancelled capture still owns its html-to-image clone until it settles. Serializing the\n  // underlying work prevents overlapping temporary canvas hooks from restoring one another.\n  let captureTail = Promise.resolve();\n  const queuedCapture = (region, signal) => {\n    const result = captureTail.catch(() => {}).then(() => captureRegion(region, signal));\n    captureTail = result.catch(() => {});\n    return result;\n  };\n  const isEditor = (event) => event.composedPath().some(node => node instanceof Element && (node.matches("input,textarea,select") || node.isContentEditable));\n  const startsTextSelection = (event) => {\n    if (isEditor(event) || !(event.target instanceof Element) || event.target.closest("button,a,input,textarea,select,canvas,svg,[draggable=true],[role=button],[role=slider]")) return false;\n    const range = document.caretRangeFromPoint?.(event.clientX, event.clientY);\n    const caret = range ? null : document.caretPositionFromPoint?.(event.clientX, event.clientY);\n    const node = range?.startContainer || caret?.offsetNode;\n    return node?.nodeType === 3 && Boolean(node.textContent?.trim()) && event.target.contains(node);\n  };\n  const paintSelectionMode = () => {\n    const mode = pointer?.temporary ? "region" : selectionMode;\n    root.setAttribute("data-board-selection", mode);\n    root.style.cursor = mode === "off" ? "" : mode === "text" ? "text" : "crosshair";\n    if (markerHost) markerHost.style.setProperty("visibility", mode === "off" ? "visible" : "hidden", "important");\n  };\n  const releasePointer = () => {\n    const active = pointer;\n    pointer = null;\n    textPointer = null;\n    if (active) { try { if (root.hasPointerCapture(active.pointerId)) root.releasePointerCapture(active.pointerId); } catch {} }\n  };\n  const eventPoint = (event) => ({ x: Math.max(0, Math.min(event.clientX, innerWidth)), y: Math.max(0, Math.min(event.clientY, innerHeight)) });\n  const cancelSelection = ({ release = true, clear = true, notify = false, drainUpdates = true } = {}) => {\n    cancelMarkerReveal();\n    const previous = selectionSession;\n    selectionSession = null;\n    releasePointer();\n    captureBusy = false;\n    clearOverlay();\n    clearComponent();\n    if (clear) lastAnchor = undefined;\n    if (previous) {\n      previous.abort.abort();\n      previous.indicator?.remove();\n      if (release) post({ type: "selection-lock", id: previous.id, active: false });\n    }\n    paintSelectionMode();\n    if (notify) post({ type: "selection-clear" });\n    reportCanvasActivity();\n    if (drainUpdates) void drain();\n  };\n  const beginSelection = (position, dragging = false) => {\n    window.focus();\n    cancelSelection({ release: false, drainUpdates: false });\n    const session = { id: `${scope.sessionId}:selection-${++sequence}`, abort: new AbortController(), indicator: null, anchor: null, position };\n    selectionSession = session;\n    reportCanvasActivity();\n    // Replace the lease atomically, with a fresh generation so old pixels cannot match it.\n    post({ type: "selection-lock", id: session.id, active: true, dragging });\n    return session;\n  };\n  const showCaptureStatus = (session) => {\n    if (selectionSession !== session || session.indicator) return;\n    const host = document.createElement("div");\n    host.setAttribute("data-board-capture-status", "");\n    host.setAttribute("data-board-overlay", "");\n    host.style.cssText = `all:initial;position:fixed;z-index:2147483647;pointer-events:none;left:${Math.max(8, Math.min(session.position.x + 12, innerWidth - 220))}px;top:${Math.max(8, Math.min(session.position.y + 12, innerHeight - 44))}px;`;\n    const shadow = host.attachShadow({ mode: "open" });\n    shadow.innerHTML = `<style>div{padding:8px 12px;border:1px solid var(--host-line-strong,#d0d0d0);border-radius:8px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 4px 14px #0002;font:12px/1.5 system-ui,-apple-system,sans-serif}</style><div role="status">\u6B63\u5728\u622A\u53D6\u5F15\u7528\u2026 \xB7 Esc \u53D6\u6D88</div>`;\n    session.indicator = host;\n    document.body.append(host);\n  };\n  const finishSelection = async (session, anchor, imageRegion, reuse = false) => {\n    if (selectionSession !== session) return;\n    releasePointer();\n    selectionMode = "off";\n    paintSelectionMode();\n    const needsCapture = !reuse && imageRegion && imageRegion.width > 0 && imageRegion.height > 0;\n    // This immutable reference is available immediately; capture adds only pixels later.\n    session.anchor = anchor;\n    lastAnchor = anchor;\n    captureBusy = Boolean(needsCapture);\n    post({ type: "selection-lock", id: session.id, active: true, dragging: false });\n    post({ type: "selection-end" });\n    post({ type: "anchor", anchor, selectionId: session.id });\n    post({ type: "compose", automatic: true, selectionId: session.id, request: { kind: "question", anchor, position: session.position, ...(needsCapture ? { captureStatus: "pending" } : {}) } });\n    if (!needsCapture) { cancelSelection({ clear: false }); return; }\n    showCaptureStatus(session);\n    // Promise microtasks do not permit painting or input. Give the host its messages, React\n    // commit and a painted frame before DOM capture begins. The capture implementation must\n    // also yield during its work to keep input responsive throughout.\n    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0))));\n    if (selectionSession !== session || session.abort.signal.aborted) return;\n    let timer;\n    let abortListener;\n    let captured;\n    let failureReason;\n    try {\n      const image = await Promise.race([\n        queuedCapture(imageRegion, session.abort.signal),\n        new Promise((_, reject) => {\n          timer = setTimeout(() => reject(new Error("Selection capture timed out")), 15000);\n          abortListener = () => reject(new DOMException("\u9009\u533A\u5DF2\u53D6\u6D88", "AbortError"));\n          session.abort.signal.addEventListener("abort", abortListener, { once: true });\n        }),\n      ]);\n      captured = { ...anchor, image };\n    } catch (cause) {\n      // Send only a bounded category, never arbitrary document/resource error text.\n      // A failed image leaves the already-open input and its text/geometry usable.\n      const message = cause instanceof Error ? cause.message : "";\n      failureReason = /Canvas (?:layout |styling )?changed during capture/.test(message) ? "content-changed"\n        : /too complex to capture/.test(message) ? "too-complex"\n        : /cannot be captured accurately/.test(message) ? "unsupported-layout"\n        : /too large to capture|screenshot exceeds 3 MB/.test(message) ? "too-large"\n        : message === "Selection capture timed out" ? "timeout" : "generation-failed";\n    } finally {\n      clearTimeout(timer);\n      if (abortListener) session.abort.signal.removeEventListener("abort", abortListener);\n    }\n    if (selectionSession !== session || session.abort.signal.aborted) return;\n    lastAnchor = captured || anchor;\n    post({ type: "selection-capture", selectionId: session.id, anchor: lastAnchor, status: captured ? "ready" : "failed", ...(!captured ? { reason: failureReason } : {}) });\n    cancelSelection({ clear: false });\n  };\n  const setSelectionMode = (mode) => {\n    if (!["off", "text", "region", "point", "component"].includes(mode)) return;\n    if (applying) { deferredSelection = mode; return; }\n    if (mode === selectionMode) return;\n    cancelSelection({ drainUpdates: false });\n    cancelMarkerReveal();\n    selectionMode = mode;\n    paintSelectionMode();\n    reportCanvasActivity();\n    if (mode === "off") void drain();\n  };\n  const selectedText = (point) => {\n    const selected = window.getSelection();\n    if (!selected || !selected.rangeCount || selected.isCollapsed || !selected.toString().trim()) return null;\n    const range = selected.getRangeAt(0);\n    if (point && !Array.from(range.getClientRects()).some(r => point.x >= r.left && point.x <= r.right && point.y >= r.top && point.y <= r.bottom)) return null;\n    const node = range.commonAncestorContainer;\n    const region = rect(range.getBoundingClientRect());\n    const target = node.nodeType === 1 ? node : node.parentElement;\n    return { anchor: { ...currentAnchor(), kind: "text", text: selected.toString().slice(0, 12000), selector: selectorFor(target), rect: region, viewport: viewport(), binding: captureBinding(target, region) }, region };\n  };\n  const pointSelection = (point, target) => {\n    const position = { x: point.x + scrollX, y: point.y + scrollY, width: 0, height: 0 };\n    return { anchor: { ...currentAnchor(), kind: "point", selector: selectorFor(target), rect: position, viewport: viewport(), binding: captureBinding(target, position) },\n      region: { x: Math.max(0, Math.min(position.x - 120, root.scrollWidth - Math.min(240, innerWidth))), y: Math.max(0, position.y - 80), width: Math.min(240, innerWidth), height: 160 } };\n  };\n  const containsAnchor = (anchor, point, target) => {\n    if (!anchor?.rect || anchor.boardRevision !== snapshot.boardRevision || anchor.canvasRevision !== snapshot.canvas.revision) return false;\n    if (anchor.binding) {\n      const location = markerLocation(anchor);\n      if (location.mode !== "component" || !(target instanceof Element) || !location.node.contains(target)\n        || Math.abs(location.rect.x - anchor.rect.x) > 1 || Math.abs(location.rect.y - anchor.rect.y) > 1) return false;\n    }\n    const { x, y, width, height } = anchor.rect;\n    const margin = anchor.kind === "point" ? 6 : 0;\n    return point.x + scrollX >= x - margin && point.x + scrollX <= x + width + margin && point.y + scrollY >= y - margin && point.y + scrollY <= y + height + margin;\n  };\n  window.addEventListener("pointerdown", (event) => {\n    if (!event.isTrusted) return;\n    lastGesture = performance.now();\n    lastGesturePosition = eventPoint(event);\n    if (inComponents(event)) {\n      const handle = event.composedPath().find(node => node instanceof Element && node.dataset.componentAction === "drag");\n      if (handle && !handle.disabled && event.button === 0) { event.preventDefault(); startComponentDrag(event); }\n      event.stopImmediatePropagation(); return;\n    }\n    if (inMarkers(event)) { window.focus(); cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); event.stopImmediatePropagation(); return; }\n    if (event.button === 0) { window.focus(); post({ type: "canvas-pointer" }); }\n    suppressPointerClick = false;\n    dismissedPointer = null;\n    if (event.button !== 0) return;\n    const shortcut = event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey && !isEditor(event);\n    if (selectionMode === "component" || shortcut) {\n      if (componentPending || componentText) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n      if (shortcut && selectionMode !== "component") setSelectionMode("component");\n      componentNotice = "";\n      event.preventDefault(); event.stopImmediatePropagation(); suppressPointerClick = true;\n      selectComponent(componentAt(event.target)); return;\n    }\n    const temporary = selectionMode === "off" && event.altKey && !isEditor(event);\n    if (selectionMode === "off" && !temporary) {\n      const wasCapturing = captureBusy;\n      cancelSelection({ notify: Boolean(selectionSession || lastAnchor) });\n      // Cancelling an unfinished capture must not activate a control beneath its preview.\n      if (wasCapturing) { dismissedPointer = event.pointerId; suppressPointerClick = true; event.preventDefault(); event.stopImmediatePropagation(); return; }\n      // Freeze the displayed revision during an ordinary native text drag, but let the\n      // browser perform selection. Editors and author-controlled drags keep native behavior.\n      if (!applying && startsTextSelection(event)) {\n        const position = eventPoint(event);\n        textPointer = { pointerId: event.pointerId, position, beforeText: window.getSelection()?.toString() || "", session: beginSelection(position, true) };\n      }\n      return;\n    }\n    if (applying) return;\n    event.stopImmediatePropagation();\n    const session = beginSelection({ x: event.clientX, y: event.clientY }, true);\n    suppressPointerClick = true;\n    if (selectionMode === "text" && !temporary) return;\n    event.preventDefault();\n    pointer = { x: event.clientX, y: event.clientY, target: event.target, pointerId: event.pointerId, temporary, session };\n    try { root.setPointerCapture(event.pointerId); } catch {}\n    paintSelectionMode();\n    showOverlay({ x: pointer.x, y: pointer.y, width: 0, height: 0 });\n  }, true);\n  window.addEventListener("pointermove", (event) => {\n    if (!event.isTrusted) return;\n    componentPointer = eventPoint(event);\n    if (componentDrag) {\n      if (componentDrag.pointerId === event.pointerId) { componentDrag.candidates = componentDestinations(componentPointer); componentDrag.depth = Math.min(componentDrag.depth, Math.max(0, componentDrag.candidates.length - 1)); paintComponentDrag(); }\n      event.preventDefault(); event.stopImmediatePropagation(); return;\n    }\n    componentShortcut = event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey && !isEditor(event);\n    if (componentShortcut || selectionMode === "component") updateComponentHover(); else clearComponentHover();\n    if (inComponents(event)) { event.stopImmediatePropagation(); return; }\n    if (inMarkers(event) && !pointer) { event.stopImmediatePropagation(); return; }\n    if (dismissedPointer === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (!pointer && selectionMode === "off") return;\n    event.stopImmediatePropagation();\n    if (!pointer || event.pointerId !== pointer.pointerId) return;\n    event.preventDefault();\n    const point = eventPoint(event);\n    showOverlay({ x: Math.min(pointer.x, point.x), y: Math.min(pointer.y, point.y), width: Math.abs(point.x - pointer.x), height: Math.abs(point.y - pointer.y) });\n  }, true);\n  window.addEventListener("pointerup", (event) => {\n    if (!event.isTrusted || event.button !== 0) return;\n    if (componentDrag?.pointerId === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); try { finishComponentDrag(); } catch (failure) { setComponentNotice(failure.message); } return; }\n    if (inComponents(event)) { event.stopImmediatePropagation(); return; }\n    if (inMarkers(event)) { event.stopImmediatePropagation(); return; }\n    if (dismissedPointer === event.pointerId) { dismissedPointer = null; event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (textPointer?.pointerId === event.pointerId) {\n      const start = textPointer;\n      textPointer = null;\n      const position = eventPoint(event);\n      const changed = (window.getSelection()?.toString() || "") !== start.beforeText;\n      const text = changed || Math.hypot(position.x - start.position.x, position.y - start.position.y) >= 3 ? selectedText() : null;\n      if (text) {\n        suppressPointerClick = true;\n        start.session.position = position;\n        void finishSelection(start.session, text.anchor, text.region);\n      } else cancelSelection();\n      return;\n    }\n    if (!pointer && selectionMode === "off") return;\n    event.stopImmediatePropagation();\n    const session = selectionSession;\n    if (!session) return;\n    if (selectionMode === "text" && !pointer) {\n      const text = selectedText();\n      session.position = eventPoint(event);\n      if (text) void finishSelection(session, text.anchor, text.region);\n      else cancelSelection();\n      return;\n    }\n    event.preventDefault();\n    if (!pointer || pointer.pointerId !== event.pointerId) return;\n    const start = pointer;\n    const point = eventPoint(event);\n    const isPoint = selectionMode === "point" || Math.hypot(point.x - start.x, point.y - start.y) < 5;\n    session.position = point;\n    if (isPoint) {\n      const selected = pointSelection(session.position, start.target);\n      void finishSelection(session, selected.anchor, selected.region);\n    } else {\n      const region = { x: Math.min(start.x, point.x) + scrollX, y: Math.min(start.y, point.y) + scrollY, width: Math.abs(point.x - start.x), height: Math.abs(point.y - start.y) };\n      void finishSelection(session, { ...currentAnchor(), kind: "region", selector: selectorFor(start.target), rect: region, viewport: viewport(), binding: captureBinding(start.target, region, true) }, region);\n    }\n  }, true);\n  window.addEventListener("pointercancel", () => { cancelComponentDrag(); dismissedPointer = null; cancelSelection({ notify: true }); }, true);\n  window.addEventListener("lostpointercapture", (event) => {\n    if (pointer?.pointerId === event.pointerId && !root.hasPointerCapture(event.pointerId)) cancelSelection({ notify: true });\n  }, true);\n  window.addEventListener("pointerout", (event) => {\n    if (pointer && !event.relatedTarget && !root.hasPointerCapture(pointer.pointerId)) cancelSelection({ notify: true });\n  }, true);\n  window.addEventListener("blur", () => {\n    componentShortcut = false; clearComponentHover(); if (componentDrag) cancelComponentDrag();\n    if (!selectionSession) return;\n    // The host input takes focus before capture finishes. Keep its completed reference alive;\n    // host dismissal/submission sends a generation-scoped cancellation explicitly.\n    if (!selectionSession.anchor) cancelSelection({ notify: true });\n  });\n  window.addEventListener("contextmenu", (event) => {\n    if (!event.isTrusted) return;\n    if (inComponents(event) || selectionMode === "component") { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (inMarkers(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (event.shiftKey || isEditor(event)) { cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); return; }\n    if (applying) return;\n    event.preventDefault();\n    event.stopImmediatePropagation();\n    lastGesture = performance.now();\n    let point = { x: event.clientX, y: event.clientY };\n    if (point.x === 0 && point.y === 0 && event.target instanceof Element) {\n      const r = event.target.getBoundingClientRect(); point = { x: r.left + r.width / 2, y: r.top + r.height / 2 };\n    }\n    const previous = lastAnchor?.image && containsAnchor(lastAnchor, point, event.target) ? copy(lastAnchor) : null;\n    const text = !previous ? selectedText(point) : null;\n    const selected = previous ? { anchor: previous, region: null } : text || pointSelection(point, event.target);\n    const session = beginSelection(point);\n    void finishSelection(session, selected.anchor, selected.region, Boolean(previous));\n  }, true);\n  window.addEventListener("click", (event) => {\n    if (inComponents(event)) {\n      event.stopImmediatePropagation();\n      if (event.composedPath().some(node => node instanceof Element && node.matches("textarea,select,option"))) return;\n      event.preventDefault(); try { componentAction(event); } catch (failure) { setComponentNotice(failure.message || String(failure)); } return;\n    }\n    if (inMarkers(event)) {\n      event.preventDefault(); event.stopImmediatePropagation();\n      const button = markerNode(event);\n      if (!event.isTrusted || !button || !navigator.userActivation?.isActive) return;\n      const bounds = button.getBoundingClientRect();\n      post({ type: "open-interaction", id: button.getAttribute("data-board-interaction"), position: { x: bounds.left, y: bounds.top }, location: button.dataset.location });\n      return;\n    }\n    if ((event.detail > 0 && suppressPointerClick) || selectionMode !== "off" || pointer) {\n      suppressPointerClick = false;\n      event.preventDefault(); event.stopImmediatePropagation(); return;\n    }\n    if (event.isTrusted) lastGesture = performance.now();\n    const path = event.composedPath();\n    const link = path.find((node) => node instanceof Element && node.matches("a[href],area[href]"));\n    if (!link) return;\n    const href = link.getAttribute("href") || "";\n    event.preventDefault();\n    if (href.startsWith("#")) { try { document.getElementById(decodeURIComponent(href.slice(1)))?.scrollIntoView(); } catch {} }\n    else if (/^https?:\\/\\//i.test(href) && event.isTrusted && acting()) post({ type: "open-link", url: href });\n  }, true);\n  const submitForm = (form, submitter) => {\n    if (!form.noValidate && !(submitter && submitter.formNoValidate) && !form.reportValidity()) return;\n    const event = new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: submitter || null });\n    if (!form.dispatchEvent(event)) return;\n    if (form.method === "dialog") form.closest("dialog")?.close(submitter?.value);\n  };\n  const isSubmitter = (node) => node && node.form && ["submit", "image"].includes(node.type);\n  document.addEventListener("click", (event) => {\n    if (selectionMode !== "off") return;\n    const button = event.composedPath().find((node) => node instanceof Element && node.matches("button,input"));\n    if (isSubmitter(button) && !button.disabled) setTimeout(() => { if (!event.defaultPrevented) submitForm(button.form, button); }, 0);\n  }, true);\n  document.addEventListener("keydown", (event) => {\n    const field = event.target;\n    if (selectionMode !== "off" || event.key !== "Enter" || event.isComposing || field.tagName !== "INPUT" || !field.form) return;\n    const fields = Array.from(field.form.elements);\n    if (fields.some(isSubmitter)) return;\n    const implicit = ["text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number"];\n    if (!implicit.includes(field.type) || fields.filter((n) => n.tagName === "INPUT" && implicit.includes(n.type)).length > 1) return;\n    setTimeout(() => { if (!event.defaultPrevented) submitForm(field.form, null); }, 0);\n  }, true);\n  HTMLFormElement.prototype.requestSubmit = function (submitter) { submitForm(this, submitter || null); };\n  window.addEventListener("keydown", (event) => {\n    if (event.isTrusted) lastGesture = performance.now();\n    if (!event.isTrusted) return;\n    if (componentDrag) {\n      if (event.key === "Escape") cancelComponentDrag();\n      else if (event.key === "Tab") { const size = componentDrag.candidates.length; if (size) componentDrag.depth = (componentDrag.depth + (event.shiftKey ? size - 1 : 1)) % size; paintComponentDrag(); }\n      else if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) { componentDrag.position = { ArrowUp: "before", ArrowDown: "after", ArrowLeft: "prepend", ArrowRight: "append" }[event.key]; paintComponentDrag(); }\n      else return;\n      event.preventDefault(); event.stopImmediatePropagation(); return;\n    }\n    if (componentText) {\n      if (event.key === "Escape" && !componentPending) { event.preventDefault(); cancelComponentText(); }\n      else if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.isComposing && !componentPending) { event.preventDefault(); saveComponentText(); }\n      event.stopImmediatePropagation(); return;\n    }\n    if (selectedComponent && !componentPending && !isEditor(event) && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && ["c", "x", "v"].includes(event.key.toLowerCase())) {\n      event.preventDefault(); event.stopImmediatePropagation();\n      try { if (event.key.toLowerCase() === "v") pasteComponent(); else copyComponent(event.key.toLowerCase() === "x" ? "move" : "copy"); } catch (failure) { setComponentNotice(failure.message); }\n      return;\n    }\n    if (!isEditor(event) && event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey) { componentShortcut = true; updateComponentHover(); }\n    if (inComponents(event) && event.key !== "Escape") { event.stopImmediatePropagation(); return; }\n    if (inMarkers(event)) { event.stopImmediatePropagation(); return; }\n    if (event.target instanceof Element) { const r = event.target.getBoundingClientRect(); lastGesturePosition = { x: r.left, y: r.bottom }; }\n    if (event.key === "Escape" && (selectionSession || selectionMode !== "off" || lastAnchor)) {\n      event.preventDefault(); event.stopImmediatePropagation();\n      if (componentPending) return;\n      componentClipboard = null; componentNotice = ""; componentShortcut = false;\n      selectionMode = "off"; cancelSelection({ notify: true }); post({ type: "selection-end" }); return;\n    }\n  }, true);\n  window.addEventListener("keyup", (event) => {\n    if (!event.isTrusted) return;\n    componentShortcut = event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey && !isEditor(event);\n    if (componentDrag) return;\n    if (!componentShortcut) clearComponentHover(); else updateComponentHover();\n  }, true);\n  window.addEventListener("message", (event) => {\n    const message = event.data;\n    if (!event.isTrusted || event.source !== window.parent || !message || message.channel !== scope.channel || message.boardId !== scope.boardId || message.sessionId !== scope.sessionId) return;\n    if (message.type === "snapshot") receiveSnapshot(message.snapshot, message.version);\n    else if (message.type === "delta") { versionedTransport = true; enqueue(receiver.delta(message.delta)); }\n    else if (message.type === "interactions" && Array.isArray(message.markers)) renderMarkers(message.markers, message.selectedId);\n    else if (message.type === "focus-update") focusUpdate(message);\n    else if (message.type === "host-activity" && typeof message.composing === "boolean") { hostComposing = message.composing; reportCanvasActivity(); }\n    else if (message.type === "focus-interaction" && typeof message.id === "string") focusInteraction(message.id);\n    else if (message.type === "selection") setSelectionMode(message.mode);\n    else if (message.type === "cancel-capture" && message.selectionId === selectionSession?.id) cancelSelection({ clear: false });\n    else if (message.type === "clear-selection") { selectionMode = "off"; cancelSelection(); }\n    else if (message.type === "component-edit-result") receiveComponentEdit(message);\n    else if (message.type === "ask-result") {\n      const pending = pendingAsks.get(message.id);\n      if (pending) { pendingAsks.delete(message.id); clearTimeout(pending.timer); pending.resolve(message.result && message.result.status === "submitted" ? message.result : cancelAsk); }\n    }\n  });\n  const reportedErrors = new Set();\n  window.addEventListener("error", (event) => {\n    const message = event.message || "Canvas resource could not load";\n    if (reportedErrors.has(message) || reportedErrors.size >= 12) return;\n    reportedErrors.add(message);\n    error("runtime-error", message);\n  });\n  window.addEventListener("unhandledrejection", (event) => {\n    const message = event.reason && event.reason.message || String(event.reason || "Unhandled promise rejection");\n    if (reportedErrors.has(message) || reportedErrors.size >= 12) return;\n    reportedErrors.add(message);\n    error("runtime-error", message);\n  });\n  const ready = () => {\n    post({ type: "ready", capabilities: { frameDelta: 1 } });\n    receiveSnapshot(initial);\n  };\n  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready, { once: true });\n  else ready();\n}\n';
 
 // shared/assets/frame-delta.txt
-var frame_delta_default = 'function (initial, requestSnapshot) {\n  "use strict";\n  // This factory is injected verbatim and tested directly: it has no DOM or host dependencies.\n  let received = initial;\n  let version = 0;\n  let recovering = false;\n  const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);\n  const record = value => value !== null && typeof value === "object" && !Array.isArray(value);\n  const integer = value => Number.isSafeInteger(value) && value >= 0;\n  const json = value => {\n    const pending = [{ value }], ancestors = new Set();\n    while (pending.length) {\n      const entry = pending.pop(), item = entry.value;\n      if (entry.exit) { ancestors.delete(item); continue; }\n      if (item === null || typeof item === "string" || typeof item === "boolean") continue;\n      if (typeof item === "number") { if (!Number.isFinite(item)) return false; continue; }\n      if (!item || typeof item !== "object" || ancestors.has(item)) return false;\n      if (!Array.isArray(item) && ![Object.prototype, null].includes(Object.getPrototypeOf(item))) return false;\n      ancestors.add(item); pending.push({ value: item, exit: true });\n      for (const key of Object.keys(item)) pending.push({ value: item[key] });\n    }\n    return true;\n  };\n  const theme = value => record(value) && ["light", "dark"].includes(value.scheme) && record(value.tokens)\n    && Object.entries(value.tokens).every(([key, item]) => /^host-[a-z0-9-]+$/.test(key) && typeof item === "string" && /^[#a-zA-Z0-9(),.%+*/ -]{1,200}$/.test(item));\n  const patches = value => Array.isArray(value) && value.every(patch => record(patch) && typeof patch.id === "string" && patch.id.length > 0 && patch.id.length <= 160\n    && typeof patch.selector === "string" && patch.selector.length > 0 && patch.selector.length <= 1000\n    && ["append", "prepend", "replace", "remove"].includes(patch.operation)\n    && (patch.operation === "remove" && patch.html === undefined || typeof patch.html === "string" && patch.html.length <= 2000000))\n    && new Set(value.map(patch => patch.id)).size === value.length;\n  const fail = reason => {\n    if (!recovering) { recovering = true; requestSnapshot({ documentVersion: initial.canvas.documentVersion, version, reason }); }\n    return null;\n  };\n  const segments = path => {\n    if (typeof path !== "string" || path.length > 2000 || (path !== "" && !path.startsWith("/")) || /~(?![01])/.test(path)) throw new Error("Invalid data pointer");\n    const parts = path === "" ? [] : path.slice(1).split("/").map(part => part.replace(/~1/g, "/").replace(/~0/g, "~"));\n    if (parts.length > 64 || parts.some(part => ["__proto__", "prototype", "constructor"].includes(part))) throw new Error("Unsafe data pointer");\n    return parts;\n  };\n  const apply = (data, change) => {\n    if (!record(change) || !["set", "remove", "append"].includes(change.op)) throw new Error("Invalid data operation");\n    const parts = segments(change.path);\n    if (change.op === "set" && !json(change.value)) throw new Error("Invalid data value");\n    if (change.op === "append" && (!integer(change.offset) || !Array.isArray(change.values) || !change.values.length || !json(change.values))) throw new Error("Invalid array tail");\n    const update = (value, index) => {\n      if (index === parts.length) {\n        if (change.op === "set") return change.value;\n        if (change.op === "append" && Array.isArray(value) && value.length === change.offset) return value.concat(change.values);\n        throw new Error("Invalid data target");\n      }\n      if (!value || typeof value !== "object") throw new Error("Missing data parent");\n      const key = parts[index], last = index === parts.length - 1;\n      if (Array.isArray(value) && (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length)) throw new Error("Invalid array index");\n      if (!own(value, key) && !(last && change.op === "set" && !Array.isArray(value))) throw new Error("Missing data target");\n      const result = Array.isArray(value) ? value.slice() : { ...value };\n      if (last && change.op === "remove") {\n        if (Array.isArray(result)) throw new Error("Array removal requires a replacement");\n        delete result[key];\n      } else result[key] = update(value[key], index + 1);\n      return result;\n    };\n    const result = update(data, 0);\n    if (!record(result)) throw new Error("Data root must be an object");\n    return result;\n  };\n  return {\n    snapshot(next, nextVersion) {\n      if (!integer(nextVersion) || nextVersion <= version) return null;\n      if (!record(next) || !record(next.canvas) || next.canvas.documentVersion !== initial.canvas.documentVersion\n        || !integer(next.boardRevision) || next.boardRevision < received.boardRevision || !integer(next.canvas.revision) || next.canvas.revision < received.canvas.revision\n        || !record(next.canvas.data) || !json(next.canvas.data) || !record(next.userState) || !json(next.userState) || !patches(next.canvas.patches) || !theme(next.theme)) return fail("invalid-snapshot");\n      received = next; version = nextVersion; recovering = false;\n      return { snapshot: next, changedPaths: null, patches: next.canvas.patches };\n    },\n    delta(delta) {\n      if (!record(delta) || !integer(delta.version)) return fail("invalid-delta");\n      // Already received versions cannot undo or replay newer data/patches.\n      if (delta.version <= version) return null;\n      if (recovering) return null;\n      const base = delta.base;\n      if (delta.protocol !== 1 || !record(base) || base.version !== version || delta.version !== version + 1\n        || base.documentVersion !== initial.canvas.documentVersion || base.boardRevision !== received.boardRevision\n        || base.canvasRevision !== received.canvas.revision || base.patchCount !== received.canvas.patches.length) return fail("baseline-mismatch");\n      if (!integer(delta.boardRevision) || delta.boardRevision < received.boardRevision || !integer(delta.canvasRevision) || delta.canvasRevision < received.canvas.revision\n        || !Array.isArray(delta.data) || delta.data.length > 10000 || !patches(delta.patches)\n        || own(delta, "userState") && (!record(delta.userState) || !json(delta.userState)) || own(delta, "theme") && !theme(delta.theme)) return fail("invalid-delta");\n      const ids = new Set(received.canvas.patches.map(patch => patch.id));\n      if (delta.patches.some(patch => ids.has(patch.id))) return fail("duplicate-patch");\n      try {\n        let data = received.canvas.data;\n        for (const change of delta.data) data = apply(data, change);\n        // Commit only after every operation and the complete envelope passed validation.\n        received = { ...received, boardRevision: delta.boardRevision,\n          canvas: { ...received.canvas, revision: delta.canvasRevision, data, patches: received.canvas.patches.concat(delta.patches) },\n          ...(own(delta, "userState") ? { userState: delta.userState } : {}), ...(own(delta, "theme") ? { theme: delta.theme } : {}) };\n        version = delta.version;\n        return { snapshot: received, changedPaths: delta.data.map(change => change.path), patches: delta.patches };\n      } catch { return fail("invalid-data-change"); }\n    },\n  };\n}\n';
+var frame_delta_default = 'function (initial, requestSnapshot) {\n  "use strict";\n  // This factory is injected verbatim and tested directly: it has no DOM or host dependencies.\n  let received = initial;\n  let version = 0;\n  let recovering = false;\n  const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);\n  const record = value => value !== null && typeof value === "object" && !Array.isArray(value);\n  const integer = value => Number.isSafeInteger(value) && value >= 0;\n  const json = value => {\n    const pending = [{ value }], ancestors = new Set();\n    while (pending.length) {\n      const entry = pending.pop(), item = entry.value;\n      if (entry.exit) { ancestors.delete(item); continue; }\n      if (item === null || typeof item === "string" || typeof item === "boolean") continue;\n      if (typeof item === "number") { if (!Number.isFinite(item)) return false; continue; }\n      if (!item || typeof item !== "object" || ancestors.has(item)) return false;\n      if (!Array.isArray(item) && ![Object.prototype, null].includes(Object.getPrototypeOf(item))) return false;\n      ancestors.add(item); pending.push({ value: item, exit: true });\n      for (const key of Object.keys(item)) pending.push({ value: item[key] });\n    }\n    return true;\n  };\n  const theme = value => record(value) && ["light", "dark"].includes(value.scheme) && record(value.tokens)\n    && Object.entries(value.tokens).every(([key, item]) => /^host-[a-z0-9-]+$/.test(key) && typeof item === "string" && /^[#a-zA-Z0-9(),.%+*/ -]{1,200}$/.test(item));\n  const componentIdentity = value => record(value) && typeof value.tag === "string" && value.tag.length > 0 && value.tag.length <= 100\n    && (value.id === undefined || typeof value.id === "string" && value.id.length > 0 && value.id.length <= 1000)\n    && (value.authoredHtml === undefined || typeof value.authoredHtml === "string" && value.authoredHtml.length <= 240000)\n    && typeof value.fingerprint === "string" && /^[a-f0-9]{8}$/.test(value.fingerprint);\n  const componentPatch = patch => componentIdentity(patch.sourceIdentity) && (patch.operation === "text"\n    ? typeof patch.text === "string" && patch.text.length <= 24000 && typeof patch.expectedText === "string" && patch.expectedText.length <= 24000\n      && (patch.textNodeIndex === undefined || Number.isInteger(patch.textNodeIndex) && patch.textNodeIndex >= 0 && patch.textNodeIndex <= 10000)\n    : componentIdentity(patch.destinationIdentity) && typeof patch.destination === "string" && patch.destination.length > 0 && patch.destination.length <= 1000\n      && ["before", "after", "append", "prepend"].includes(patch.position)\n      && (patch.operation === "move" || typeof patch.copyIdPrefix === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,100}$/.test(patch.copyIdPrefix)));\n  const patches = value => Array.isArray(value) && value.every(patch => record(patch) && typeof patch.id === "string" && patch.id.length > 0 && patch.id.length <= 160\n    && typeof patch.selector === "string" && patch.selector.length > 0 && patch.selector.length <= 1000\n    && (["append", "prepend", "replace", "remove"].includes(patch.operation) || ["move", "copy", "text"].includes(patch.operation) && componentPatch(patch))\n    && (patch.operation === "remove" && patch.html === undefined || typeof patch.html === "string" && patch.html.length <= 2000000))\n    && new Set(value.map(patch => patch.id)).size === value.length;\n  const fail = reason => {\n    if (!recovering) { recovering = true; requestSnapshot({ documentVersion: initial.canvas.documentVersion, version, reason }); }\n    return null;\n  };\n  const segments = path => {\n    if (typeof path !== "string" || path.length > 2000 || (path !== "" && !path.startsWith("/")) || /~(?![01])/.test(path)) throw new Error("Invalid data pointer");\n    const parts = path === "" ? [] : path.slice(1).split("/").map(part => part.replace(/~1/g, "/").replace(/~0/g, "~"));\n    if (parts.length > 64 || parts.some(part => ["__proto__", "prototype", "constructor"].includes(part))) throw new Error("Unsafe data pointer");\n    return parts;\n  };\n  const apply = (data, change) => {\n    if (!record(change) || !["set", "remove", "append"].includes(change.op)) throw new Error("Invalid data operation");\n    const parts = segments(change.path);\n    if (change.op === "set" && !json(change.value)) throw new Error("Invalid data value");\n    if (change.op === "append" && (!integer(change.offset) || !Array.isArray(change.values) || !change.values.length || !json(change.values))) throw new Error("Invalid array tail");\n    const update = (value, index) => {\n      if (index === parts.length) {\n        if (change.op === "set") return change.value;\n        if (change.op === "append" && Array.isArray(value) && value.length === change.offset) return value.concat(change.values);\n        throw new Error("Invalid data target");\n      }\n      if (!value || typeof value !== "object") throw new Error("Missing data parent");\n      const key = parts[index], last = index === parts.length - 1;\n      if (Array.isArray(value) && (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length)) throw new Error("Invalid array index");\n      if (!own(value, key) && !(last && change.op === "set" && !Array.isArray(value))) throw new Error("Missing data target");\n      const result = Array.isArray(value) ? value.slice() : { ...value };\n      if (last && change.op === "remove") {\n        if (Array.isArray(result)) throw new Error("Array removal requires a replacement");\n        delete result[key];\n      } else result[key] = update(value[key], index + 1);\n      return result;\n    };\n    const result = update(data, 0);\n    if (!record(result)) throw new Error("Data root must be an object");\n    return result;\n  };\n  return {\n    snapshot(next, nextVersion) {\n      if (!integer(nextVersion) || nextVersion <= version) return null;\n      if (!record(next) || !record(next.canvas) || next.canvas.documentVersion !== initial.canvas.documentVersion\n        || !integer(next.boardRevision) || next.boardRevision < received.boardRevision || !integer(next.canvas.revision) || next.canvas.revision < received.canvas.revision\n        || !record(next.canvas.data) || !json(next.canvas.data) || !record(next.userState) || !json(next.userState) || !patches(next.canvas.patches) || !theme(next.theme)) return fail("invalid-snapshot");\n      received = next; version = nextVersion; recovering = false;\n      return { snapshot: next, changedPaths: null, patches: next.canvas.patches };\n    },\n    delta(delta) {\n      if (!record(delta) || !integer(delta.version)) return fail("invalid-delta");\n      // Already received versions cannot undo or replay newer data/patches.\n      if (delta.version <= version) return null;\n      if (recovering) return null;\n      const base = delta.base;\n      if (delta.protocol !== 1 || !record(base) || base.version !== version || delta.version !== version + 1\n        || base.documentVersion !== initial.canvas.documentVersion || base.boardRevision !== received.boardRevision\n        || base.canvasRevision !== received.canvas.revision || base.patchCount !== received.canvas.patches.length) return fail("baseline-mismatch");\n      if (!integer(delta.boardRevision) || delta.boardRevision < received.boardRevision || !integer(delta.canvasRevision) || delta.canvasRevision < received.canvas.revision\n        || !Array.isArray(delta.data) || delta.data.length > 10000 || !patches(delta.patches)\n        || own(delta, "userState") && (!record(delta.userState) || !json(delta.userState)) || own(delta, "theme") && !theme(delta.theme)) return fail("invalid-delta");\n      const ids = new Set(received.canvas.patches.map(patch => patch.id));\n      if (delta.patches.some(patch => ids.has(patch.id))) return fail("duplicate-patch");\n      try {\n        let data = received.canvas.data;\n        for (const change of delta.data) data = apply(data, change);\n        // Commit only after every operation and the complete envelope passed validation.\n        received = { ...received, boardRevision: delta.boardRevision,\n          canvas: { ...received.canvas, revision: delta.canvasRevision, data, patches: received.canvas.patches.concat(delta.patches) },\n          ...(own(delta, "userState") ? { userState: delta.userState } : {}), ...(own(delta, "theme") ? { theme: delta.theme } : {}) };\n        version = delta.version;\n        return { snapshot: received, changedPaths: delta.data.map(change => change.path), patches: delta.patches };\n      } catch { return fail("invalid-data-change"); }\n    },\n  };\n}\n';
 
 // shared/assets/html-to-image.txt
 var html_to_image_default = '/*\n * html-to-image 1.11.11 (https://github.com/bubkoo/html-to-image), MIT license.\n * Bundled from its ES module build into one self-contained module.\n * Paseo adaptation: optional clone/style/scheduling hooks and a cropped SVG viewport\n * support cooperative scheduling and layout-preserving subtree snapshots.\n * Upstream minified code is otherwise unchanged; hooks are covered by capture-performance.mjs.\n *\n * MIT License\n *\n * Copyright (c) 2017-2023 W.Y.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a copy\n * of this software and associated documentation files (the "Software"), to deal\n * in the Software without restriction, including without limitation the rights\n * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n * copies of the Software, and to permit persons to whom the Software is\n * furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in all\n * copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n * SOFTWARE.\n */\nfunction A(t,e){if(t.match(/^[a-z]+:\\/\\//i))return t;if(t.match(/^\\/\\//))return window.location.protocol+t;if(t.match(/^[a-z]+:/i))return t;let n=document.implementation.createHTMLDocument(),r=n.createElement("base"),o=n.createElement("a");return n.head.appendChild(r),n.body.appendChild(o),e&&(r.href=e),o.href=t,o.href}var U=(()=>{let t=0,e=()=>`0000${(Math.random()*36**4<<0).toString(36)}`.slice(-4);return()=>(t+=1,`u${e()}${t}`)})();function f(t){let e=[];for(let n=0,r=t.length;n<r;n++)e.push(t[n]);return e}function x(t,e){let r=(t.ownerDocument.defaultView||window).getComputedStyle(t).getPropertyValue(e);return r?parseFloat(r.replace("px","")):0}function K(t){let e=x(t,"border-left-width"),n=x(t,"border-right-width");return t.clientWidth+e+n}function Q(t){let e=x(t,"border-top-width"),n=x(t,"border-bottom-width");return t.clientHeight+e+n}function b(t,e={}){let n=e.width||K(t),r=e.height||Q(t);return{width:n,height:r}}function v(){let t,e;try{e=process}catch{}let n=e&&e.env?e.env.devicePixelRatio:null;return n&&(t=parseInt(n,10),Number.isNaN(t)&&(t=1)),t||window.devicePixelRatio||1}var u=16384;function F(t){(t.width>u||t.height>u)&&(t.width>u&&t.height>u?t.width>t.height?(t.height*=u/t.width,t.width=u):(t.width*=u/t.height,t.height=u):t.width>u?(t.height*=u/t.width,t.width=u):(t.width*=u/t.height,t.height=u))}function k(t,e={}){return t.toBlob?new Promise(n=>{t.toBlob(n,e.type?e.type:"image/png",e.quality?e.quality:1)}):new Promise(n=>{let r=window.atob(t.toDataURL(e.type?e.type:void 0,e.quality?e.quality:void 0).split(",")[1]),o=r.length,i=new Uint8Array(o);for(let s=0;s<o;s+=1)i[s]=r.charCodeAt(s);n(new Blob([i],{type:e.type?e.type:"image/png"}))})}function g(t){return new Promise((e,n)=>{let r=new Image;r.decode=()=>e(r),r.onload=()=>e(r),r.onerror=n,r.crossOrigin="anonymous",r.decoding="async",r.src=t})}async function Y(t){return Promise.resolve().then(()=>new XMLSerializer().serializeToString(t)).then(encodeURIComponent).then(e=>`data:image/svg+xml;charset=utf-8,${e}`)}async function M(t,e,n,a={}){if(a.beforeSerialize)await a.beforeSerialize();let r="http://www.w3.org/2000/svg",o=document.createElementNS(r,"svg"),i=document.createElementNS(r,"foreignObject");return o.setAttribute("width",`${e}`),o.setAttribute("height",`${n}`),o.setAttribute("viewBox",`0 0 ${e} ${n}`),i.setAttribute("width","100%"),i.setAttribute("height","100%"),i.setAttribute("x","0"),i.setAttribute("y","0"),i.setAttribute("externalResourcesRequired","true"),o.appendChild(i),i.appendChild(t),a.captureViewport&&(o.setAttribute("width",a.captureViewport.width),o.setAttribute("height",a.captureViewport.height),o.setAttribute("viewBox",`${a.captureViewport.x} ${a.captureViewport.y} ${a.captureViewport.width} ${a.captureViewport.height}`),i.setAttribute("width",e),i.setAttribute("height",n)),Y(o)}var l=(t,e)=>{if(t instanceof e)return!0;let n=Object.getPrototypeOf(t);return n===null?!1:n.constructor.name===e.name||l(n,e)};function Z(t){let e=t.getPropertyValue("content");return`${t.cssText} content: \'${e.replace(/\'|"/g,"")}\';`}function N(t){return f(t).map(e=>{let n=t.getPropertyValue(e),r=t.getPropertyPriority(e);return`${e}: ${n}${r?" !important":""};`}).join(" ")}function tt(t,e,n){let r=`.${t}:${e}`,o=n.cssText?Z(n):N(n);return document.createTextNode(`${r}{${o}}`)}function O(t,e,n){let r=window.getComputedStyle(t,n),o=r.getPropertyValue("content");if(o===""||o==="none")return;let i=U();try{e.className=`${e.className} ${i}`}catch{return}let s=document.createElement("style");s.appendChild(tt(i,n,r)),e.appendChild(s)}function V(t,e){O(t,e,":before"),O(t,e,":after")}var H="application/font-woff",W="image/jpeg",et={woff:H,woff2:H,ttf:"application/font-truetype",eot:"application/vnd.ms-fontobject",png:"image/png",jpg:W,jpeg:W,gif:"image/gif",tiff:"image/tiff",svg:"image/svg+xml",webp:"image/webp"};function rt(t){let e=/\\.([^./]*?)$/g.exec(t);return e?e[1]:""}function d(t){let e=rt(t).toLowerCase();return et[e]||""}function nt(t){return t.split(/,/)[1]}function y(t){return t.search(/^(data:)/)!==-1}function T(t,e){return`data:${e};base64,${t}`}async function L(t,e,n){let r=await fetch(t,e);if(r.status===404)throw new Error(`Resource "${r.url}" not found`);let o=await r.blob();return new Promise((i,s)=>{let a=new FileReader;a.onerror=s,a.onloadend=()=>{try{i(n({res:r,result:a.result}))}catch(c){s(c)}},a.readAsDataURL(o)})}var P={};function ot(t,e,n){let r=t.replace(/\\?.*/,"");return n&&(r=t),/ttf|otf|eot|woff2?/i.test(r)&&(r=r.replace(/.*\\//,"")),e?`[${e}]${r}`:r}async function p(t,e,n){let r=ot(t,e,n.includeQueryParams);if(P[r]!=null)return P[r];n.cacheBust&&(t+=(/\\?/.test(t)?"&":"?")+new Date().getTime());let o;try{let i=await L(t,n.fetchRequestInit,({res:s,result:a})=>(e||(e=s.headers.get("Content-Type")||""),nt(a)));o=T(i,e)}catch(i){o=n.imagePlaceholder||"";let s=`Failed to fetch resource: ${t}`;i&&(s=typeof i=="string"?i:i.message),s&&console.warn(s)}return P[r]=o,o}async function it(t){let e=t.toDataURL();return e==="data:,"?t.cloneNode(!1):g(e)}async function st(t,e){if(t.currentSrc){let i=document.createElement("canvas"),s=i.getContext("2d");i.width=t.clientWidth,i.height=t.clientHeight,s?.drawImage(t,0,0,i.width,i.height);let a=i.toDataURL();return g(a)}let n=t.poster,r=d(n),o=await p(n,r,e);return g(o)}async function at(t){var e;try{if(!((e=t?.contentDocument)===null||e===void 0)&&e.body)return await w(t.contentDocument.body,{},!0)}catch{}return t.cloneNode(!1)}async function ct(t,e){return l(t,HTMLCanvasElement)?it(t):l(t,HTMLVideoElement)?st(t,e):l(t,HTMLIFrameElement)?at(t):t.cloneNode(!1)}var lt=t=>t.tagName!=null&&t.tagName.toUpperCase()==="SLOT";async function ut(t,e,n){if(n.filterChildren&&!n.filterChildren(t))return e;var r,o;let i=[];return lt(t)&&t.assignedNodes?i=f(t.assignedNodes()):l(t,HTMLIFrameElement)&&(!((r=t.contentDocument)===null||r===void 0)&&r.body)?i=f(t.contentDocument.body.childNodes):i=f(((o=t.shadowRoot)!==null&&o!==void 0?o:t).childNodes),i.length===0||l(t,HTMLVideoElement)||await i.reduce((s,a)=>s.then(()=>w(a,n)).then(c=>{c&&e.appendChild(c)}),Promise.resolve()),e}function ft(t,e,a={}){let n=e.style;if(!n)return;let r=window.getComputedStyle(t);r.cssText?(n.cssText=r.cssText,n.transformOrigin=r.transformOrigin):f(r).forEach(o=>{let i=r.getPropertyValue(o),s=i;o==="font-size"&&i.endsWith("px")&&(i=`${Math.floor(parseFloat(i.substring(0,i.length-2)))-.1}px`),l(t,HTMLIFrameElement)&&o==="display"&&i==="inline"&&(i="block"),o==="d"&&e.getAttribute("d")&&(i=`path(${e.getAttribute("d")})`),(!a.filterStyleProperty||a.filterStyleProperty(t,o,i,s))&&n.setProperty(o,i,r.getPropertyPriority(o))})}function mt(t,e){l(t,HTMLTextAreaElement)&&(e.innerHTML=t.value),l(t,HTMLInputElement)&&e.setAttribute("value",t.value)}function ht(t,e){if(l(t,HTMLSelectElement)){let r=Array.from(e.children).find(o=>t.value===o.getAttribute("value"));r&&r.setAttribute("selected","")}}function gt(t,e,n){return l(e,Element)&&(ft(t,e,n),V(t,e),mt(t,e),ht(t,e)),e}async function dt(t,e){let n=t.querySelectorAll?t.querySelectorAll("use"):[];if(n.length===0)return t;let r={};for(let i=0;i<n.length;i++){let a=n[i].getAttribute("xlink:href");if(a){let c=t.querySelector(a),h=document.querySelector(a);!c&&h&&!r[a]&&(r[a]=await w(h,e,!0))}}let o=Object.values(r);if(o.length){let i="http://www.w3.org/1999/xhtml",s=document.createElementNS(i,"svg");s.setAttribute("xmlns",i),s.style.position="absolute",s.style.width="0",s.style.height="0",s.style.overflow="hidden",s.style.display="none";let a=document.createElementNS(i,"defs");s.appendChild(a);for(let c=0;c<o.length;c++)a.appendChild(o[c]);t.appendChild(s)}return t}async function w(t,e,n){if(!n&&e.filter&&!e.filter(t))return null;if(e.beforeClone)await e.beforeClone(t);return Promise.resolve(t).then(r=>ct(r,e)).then(r=>ut(t,r,e)).then(r=>gt(t,r,e)).then(r=>{if(e.afterClone)e.afterClone(t,r);return r}).then(r=>dt(r,e))}var _=/url\\(([\'"]?)([^\'"]+?)\\1\\)/g,pt=/url\\([^)]+\\)\\s*format\\((["\']?)([^"\']+)\\1\\)/g,yt=/src:\\s*(?:url\\([^)]+\\)\\s*format\\([^)]+\\)[,;]\\s*)+/g;function wt(t){let e=t.replace(/([.*+?^${}()|\\[\\]\\/\\\\])/g,"\\\\$1");return new RegExp(`(url\\\\([\'"]?)(${e})([\'"]?\\\\))`,"g")}function xt(t){let e=[];return t.replace(_,(n,r,o)=>(e.push(o),n)),e.filter(n=>!y(n))}async function bt(t,e,n,r,o){try{let i=n?A(e,n):e,s=d(e),a;if(o){let c=await o(i);a=T(c,s)}else a=await p(i,s,r);return t.replace(wt(e),`$1${a}$3`)}catch{}return t}function St(t,{preferredFontFormat:e}){return e?t.replace(yt,n=>{for(;;){let[r,,o]=pt.exec(n)||[];if(!o)return"";if(o===e)return`src: ${r};`}}):t}function $(t){return t.search(_)!==-1}async function S(t,e,n){if(!$(t))return t;let r=St(t,n);return xt(r).reduce((i,s)=>i.then(a=>bt(a,s,e,n)),Promise.resolve(r))}async function E(t,e,n){var r;let o=(r=e.style)===null||r===void 0?void 0:r.getPropertyValue(t);if(o){let i=await S(o,null,n);return e.style.setProperty(t,i,e.style.getPropertyPriority(t)),!0}return!1}async function Et(t,e){await E("background",t,e)||await E("background-image",t,e),await E("mask",t,e)||await E("mask-image",t,e)}async function Rt(t,e){let n=l(t,HTMLImageElement);if(!(n&&!y(t.src))&&!(l(t,SVGImageElement)&&!y(t.href.baseVal)))return;let r=n?t.src:t.href.baseVal,o=await p(r,d(r),e);await new Promise((i,s)=>{t.onload=i,t.onerror=s;let a=t;a.decode&&(a.decode=i),a.loading==="lazy"&&(a.loading="eager"),n?(t.srcset="",t.src=o):t.href.baseVal=o})}async function Ct(t,e){let r=f(t.childNodes).map(o=>D(o,e));await Promise.all(r).then(()=>t)}async function D(t,e){l(t,Element)&&(await Et(t,e),await Rt(t,e),await Ct(t,e))}function B(t,e){let{style:n}=t;e.backgroundColor&&(n.backgroundColor=e.backgroundColor),e.width&&(n.width=`${e.width}px`),e.height&&(n.height=`${e.height}px`);let r=e.style;return r!=null&&Object.keys(r).forEach(o=>{n[o]=r[o]}),t}var q={};async function j(t){let e=q[t];if(e!=null)return e;let r=await(await fetch(t)).text();return e={url:t,cssText:r},q[t]=e,e}async function z(t,e){let n=t.cssText,r=/url\\(["\']?([^"\')]+)["\']?\\)/g,i=(n.match(/url\\([^)]+\\)/g)||[]).map(async s=>{let a=s.replace(r,"$1");return a.startsWith("https://")||(a=new URL(a,t.url).href),L(a,e.fetchRequestInit,({result:c})=>(n=n.replace(s,`url(${c})`),[s,c]))});return Promise.all(i).then(()=>n)}function G(t){if(t==null)return[];let e=[],n=/(\\/\\*[\\s\\S]*?\\*\\/)/gi,r=t.replace(n,""),o=new RegExp("((@.*?keyframes [\\\\s\\\\S]*?){([\\\\s\\\\S]*?}\\\\s*?)})","gi");for(;;){let c=o.exec(r);if(c===null)break;e.push(c[0])}r=r.replace(o,"");let i=/@import[\\s\\S]*?url\\([^)]*\\)[\\s\\S]*?;/gi,s="((\\\\s*?(?:\\\\/\\\\*[\\\\s\\\\S]*?\\\\*\\\\/)?\\\\s*?@media[\\\\s\\\\S]*?){([\\\\s\\\\S]*?)}\\\\s*?})|(([\\\\s\\\\S]*?){([\\\\s\\\\S]*?)})",a=new RegExp(s,"gi");for(;;){let c=i.exec(r);if(c===null){if(c=a.exec(r),c===null)break;i.lastIndex=a.lastIndex}else a.lastIndex=i.lastIndex;e.push(c[0])}return e}async function Pt(t,e){let n=[],r=[];return t.forEach(o=>{if("cssRules"in o)try{f(o.cssRules||[]).forEach((i,s)=>{if(i.type===CSSRule.IMPORT_RULE){let a=s+1,c=i.href,h=j(c).then(m=>z(m,e)).then(m=>G(m).forEach(C=>{try{o.insertRule(C,C.startsWith("@import")?a+=1:o.cssRules.length)}catch(J){console.error("Error inserting rule from remote css",{rule:C,error:J})}})).catch(m=>{console.error("Error loading remote css",m.toString())});r.push(h)}})}catch(i){let s=t.find(a=>a.href==null)||document.styleSheets[0];o.href!=null&&r.push(j(o.href).then(a=>z(a,e)).then(a=>G(a).forEach(c=>{s.insertRule(c,o.cssRules.length)})).catch(a=>{console.error("Error loading remote stylesheet",a)})),console.error("Error inlining remote css file",i)}}),Promise.all(r).then(()=>(t.forEach(o=>{if("cssRules"in o)try{f(o.cssRules||[]).forEach(i=>{n.push(i)})}catch(i){console.error(`Error while reading CSS rules from ${o.href}`,i)}}),n))}function Tt(t){return t.filter(e=>e.type===CSSRule.FONT_FACE_RULE).filter(e=>$(e.style.getPropertyValue("src")))}async function Lt(t,e){if(t.ownerDocument==null)throw new Error("Provided element is not within a Document");let n=f(t.ownerDocument.styleSheets),r=await Pt(n,e);return Tt(r)}async function I(t,e){let n=await Lt(t,e);return(await Promise.all(n.map(o=>{let i=o.parentStyleSheet?o.parentStyleSheet.href:null;return S(o.cssText,i,e)}))).join(`\n`)}async function X(t,e){let n=e.fontEmbedCSS!=null?e.fontEmbedCSS:e.skipFonts?null:await I(t,e);if(n){let r=document.createElement("style"),o=document.createTextNode(n);r.appendChild(o),t.firstChild?t.insertBefore(r,t.firstChild):t.appendChild(r)}}async function $t(t,e={}){let{width:n,height:r}=b(t,e),o=await w(t,e,!0);return await X(o,e),await D(o,e),B(o,e),await M(o,n,r,e)}async function R(t,e={}){let{width:n,height:r}=b(t,e),o=await $t(t,e),i=await g(o),s=document.createElement("canvas"),a=s.getContext("2d"),c=e.pixelRatio||v(),h=e.canvasWidth||n,m=e.canvasHeight||r;return s.width=h*c,s.height=m*c,e.skipAutoScale||F(s),s.style.width=`${h}`,s.style.height=`${m}`,e.backgroundColor&&(a.fillStyle=e.backgroundColor,a.fillRect(0,0,s.width,s.height)),a.drawImage(i,0,0,s.width,s.height),s}async function oe(t,e={}){let{width:n,height:r}=b(t,e);return(await R(t,e)).getContext("2d").getImageData(0,0,n,r).data}async function ie(t,e={}){return(await R(t,e)).toDataURL()}async function se(t,e={}){return(await R(t,e)).toDataURL("image/jpeg",e.quality||1)}async function ae(t,e={}){let n=await R(t,e);return await k(n)}async function ce(t,e={}){return I(t,e)}export{ce as getFontEmbedCSS,ae as toBlob,R as toCanvas,se as toJpeg,oe as toPixelData,ie as toPng,$t as toSvg};\n';
@@ -2217,6 +2276,7 @@ function CanvasFrame(props) {
   useLayoutEffect(() => {
     if (!canRenderFrames || !browser.window) return;
     var waiting = /* @__PURE__ */new Set();
+    var pendingEdits = /* @__PURE__ */new Set();
     var cancelledSelections = /* @__PURE__ */new Set();
     var composedSelections = /* @__PURE__ */new Set();
     var disposed = false;
@@ -2310,6 +2370,36 @@ function CanvasFrame(props) {
             redraw(n => n + 1);
             break;
           }
+        case "component-edit":
+          {
+            var origin = document.current;
+            var key = origin.sessionId + ":" + message.id;
+            if (pendingEdits.has(key)) break;
+            var answer = result => {
+              if (disposed || document.current?.sessionId !== origin.sessionId) return;
+              send({
+                type: "component-edit-result",
+                id: message.id,
+                result
+              });
+            };
+            if (!current.onComponentEdit || pendingEdits.size || message.request.canvasBase.documentVersion !== origin.version || message.request.canvasBase.revision !== current.canvas.revision) {
+              answer({
+                status: "rejected",
+                message: "\u5F53\u524D\u7F16\u8F91\u4E0D\u53EF\u7528\u6216\u753B\u5E03\u5DF2\u66F4\u65B0\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u7EC4\u4EF6\u3002"
+              });
+              break;
+            }
+            pendingEdits.add(key);
+            Promise.resolve().then(() => current.onComponentEdit(message.request)).catch(() => ({
+              status: "rejected",
+              message: "\u65E0\u6CD5\u51C6\u5907\u8FD9\u6B21\u4FEE\u6539\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u7EC4\u4EF6\u3002"
+            })).then(result => {
+              pendingEdits.delete(key);
+              answer(result);
+            });
+            break;
+          }
         case "anchor":
           if ((message.selectionId !== void 0 ? message.selectionId === interactionLock.current?.id : current.selectionMode !== "off") && message.anchor.boardRevision <= current.boardRevision && message.anchor.canvasRevision <= current.canvas.revision) {
             if (interactionLock.current?.anchor) break;
@@ -2320,10 +2410,10 @@ function CanvasFrame(props) {
         case "compose":
           {
             var lock = interactionLock.current;
-            var key = document.current.sessionId + ":" + message.selectionId;
+            var _key = document.current.sessionId + ":" + message.selectionId;
             var automatic = message.automatic === true && browser.document?.activeElement === frame.current && lock?.dragging === false && lock.anchor && JSON.stringify(lock.anchor) === JSON.stringify(message.request.anchor);
-            if ((userActing() || automatic) && message.selectionId === lock?.id && !composedSelections.has(key) && message.request.anchor.boardRevision <= current.boardRevision && message.request.anchor.canvasRevision <= current.canvas.revision) {
-              composedSelections.add(key);
+            if ((userActing() || automatic) && message.selectionId === lock?.id && !composedSelections.has(_key) && message.request.anchor.boardRevision <= current.boardRevision && message.request.anchor.canvasRevision <= current.canvas.revision) {
+              composedSelections.add(_key);
               lock.capturePending = message.request.captureStatus === "pending";
               current.onCompose?.({
                 ...message.request,
@@ -2335,8 +2425,8 @@ function CanvasFrame(props) {
         case "selection-capture":
           {
             var _lock = interactionLock.current;
-            var _key = document.current.sessionId + ":" + message.selectionId;
-            if (_lock?.id !== message.selectionId || !_lock.capturePending || !_lock.anchor || !composedSelections.has(_key) || !sameSelectionAnchor(_lock.anchor, message.anchor)) break;
+            var _key2 = document.current.sessionId + ":" + message.selectionId;
+            if (_lock?.id !== message.selectionId || !_lock.capturePending || !_lock.anchor || !composedSelections.has(_key2) || !sameSelectionAnchor(_lock.anchor, message.anchor)) break;
             _lock.capturePending = false;
             current.onSelectionCapture?.(message);
             break;
@@ -2363,11 +2453,11 @@ function CanvasFrame(props) {
           break;
         case "ask":
           {
-            var origin = document.current;
-            var _key2 = origin.sessionId + ":" + message.id;
-            if (waiting.has(_key2)) break;
-            var answer = result => {
-              if (disposed || document.current?.sessionId !== origin.sessionId) return;
+            var _origin = document.current;
+            var _key3 = _origin.sessionId + ":" + message.id;
+            if (waiting.has(_key3)) break;
+            var _answer = result => {
+              if (disposed || document.current?.sessionId !== _origin.sessionId) return;
               send({
                 type: "ask-result",
                 id: message.id,
@@ -2375,13 +2465,13 @@ function CanvasFrame(props) {
               });
             };
             if (waiting.size >= 8 || !userActing() || current.selectionMode !== "off") {
-              answer({
+              _answer({
                 status: "cancelled",
                 outcome: null
               });
               break;
             }
-            waiting.add(_key2);
+            waiting.add(_key3);
             Promise.resolve().then(() => current.onAsk(message.request)).catch(e => {
               current.onError({
                 code: "ask-failed",
@@ -2392,8 +2482,8 @@ function CanvasFrame(props) {
                 outcome: null
               };
             }).then(result => {
-              waiting.delete(_key2);
-              answer(result);
+              waiting.delete(_key3);
+              _answer(result);
             });
             break;
           }
@@ -2416,11 +2506,19 @@ function CanvasFrame(props) {
     browser.window.addEventListener("pointercancel", onOuterRelease, true);
     return () => {
       disposed = true;
+      latest.current.onEditScopeChange?.();
       browser.window?.removeEventListener("message", onMessage);
       browser.window?.removeEventListener("pointerup", onOuterRelease, true);
       browser.window?.removeEventListener("pointercancel", onOuterRelease, true);
     };
   }, []);
+  var editScope = useRef(rendered.sessionId);
+  useEffect(() => {
+    if (editScope.current !== rendered.sessionId) {
+      editScope.current = rendered.sessionId;
+      latest.current.onEditScopeChange?.();
+    }
+  }, [rendered.sessionId]);
   useEffect(() => {
     if (!ready.current) return;
     syncSnapshot();
@@ -3048,21 +3146,334 @@ function useBoard(hostId, boardId) {
   };
 }
 
-// client/board-title.tsx
-import { useEffect as useEffect4, useRef as useRef3, useState as useState3 } from "react";
-import { Pressable as Pressable2, Text as Text2, View as View2 } from "react-native";
+// client/component-editor.tsx
+import { useCallback as useCallback2, useEffect as useEffect3, useRef as useRef2, useState as useState3 } from "react";
+import { Text as Text2, View as View2 } from "react-native";
 import { useRpc as useRpc2 } from "@getpaseo/plugin/client";
+import { TextInput } from "@getpaseo/plugin/client/ui";
+
+// client/component-edit-writer.ts
+var sameBase = (a, b) => a.revision === b.revision && a.documentVersion === b.documentVersion;
+var confirmedRefusals = /* @__PURE__ */new Set(["invalid_input", "revision_conflict", "edit_conflict", "idempotency_conflict", "unauthorized", "forbidden", "board_not_found", "not_found"]);
+function immutable(value) {
+  if (value && typeof value === "object") {
+    for (var child of Object.values(value)) immutable(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+var ComponentEditWriter = /*#__PURE__*/function () {
+  function ComponentEditWriter() {
+    _classCallCheck(this, ComponentEditWriter);
+    __publicField(this, "draft", null);
+    __publicField(this, "resolve");
+    __publicField(this, "listeners", /* @__PURE__ */new Set());
+    __publicField(this, "snapshot", () => this.draft);
+    __publicField(this, "subscribe", listener => {
+      this.listeners.add(listener);
+      return () => {
+        this.listeners.delete(listener);
+      };
+    });
+  }
+  return _createClass(ComponentEditWriter, [{
+    key: "changed",
+    value: function changed() {
+      for (var listener of this.listeners) listener();
+    }
+  }, {
+    key: "propose",
+    value: function propose(boardId, input, eventId) {
+      if (this.draft) return Promise.resolve({
+        status: "rejected",
+        message: "\u8BF7\u5148\u4FDD\u5B58\u6216\u53D6\u6D88\u5F53\u524D\u4FEE\u6539\u3002"
+      });
+      var proposed = JSON.parse(JSON.stringify(input));
+      this.draft = {
+        status: "review",
+        sourceLabel: proposed.sourceLabel,
+        destinationLabel: proposed.destinationLabel,
+        request: immutable({
+          boardId,
+          canvasBase: proposed.canvasBase,
+          eventId,
+          patch: {
+            ...proposed.patch,
+            id: eventId,
+            ...(proposed.patch.operation === "copy" ? {
+              copyIdPrefix: eventId
+            } : {})
+          }
+        })
+      };
+      var result = new Promise(resolve => {
+        this.resolve = resolve;
+      });
+      this.changed();
+      return result;
+    }
+  }, {
+    key: "editText",
+    value: function editText(text) {
+      if (this.draft?.status !== "review" || this.draft.request.patch.operation !== "text" || text.length > 24e3) return;
+      this.draft = {
+        ...this.draft,
+        request: immutable({
+          ...this.draft.request,
+          patch: {
+            ...this.draft.request.patch,
+            text
+          }
+        })
+      };
+      this.changed();
+    }
+  }, {
+    key: "invalidate",
+    value: function invalidate(base) {
+      if (this.draft?.status !== "review" || base && sameBase(base, this.draft.request.canvasBase)) return;
+      var message = "\u753B\u5E03\u5DF2\u66F4\u65B0\uFF0C\u8FD9\u6B21\u4FEE\u6539\u5C1A\u672A\u4FDD\u5B58\u3002\u8BF7\u91CD\u65B0\u9009\u62E9\u7EC4\u4EF6\u3002";
+      this.draft = {
+        ...this.draft,
+        status: "rejected",
+        error: message
+      };
+      this.resolve?.({
+        status: "rejected",
+        message
+      });
+      this.resolve = void 0;
+      this.changed();
+    }
+  }, {
+    key: "cancel",
+    value: function cancel() {
+      if (!this.draft || this.draft.status === "saving" || this.draft.status === "unknown") return;
+      this.resolve?.({
+        status: "cancelled"
+      });
+      this.resolve = void 0;
+      this.draft = null;
+      this.changed();
+    }
+  }, {
+    key: "save",
+    value: function save(commit, accepted, refresh) {
+      return __async(this, null, function* () {
+        var draft = this.draft;
+        if (!draft || draft.status === "saving" || draft.status === "rejected") return;
+        this.draft = {
+          ...draft,
+          status: "saving",
+          error: void 0
+        };
+        this.changed();
+        try {
+          var board = yield commit(draft.request);
+          accepted(board);
+          this.resolve?.({
+            status: "applied",
+            canvasRevision: board.canvas.revision
+          });
+          this.resolve = void 0;
+          this.draft = null;
+          this.changed();
+        } catch (error) {
+          var code = error?.code;
+          var known = typeof code === "string" && confirmedRefusals.has(code);
+          var detail = error instanceof Error ? error.message : String(error);
+          var message = known ? `\u4FEE\u6539\u672A\u4FDD\u5B58\uFF1A${detail}\u3002\u8BF7\u91CD\u65B0\u9009\u62E9\u7EC4\u4EF6\u3002` : `\u8FD8\u672A\u786E\u8BA4\u4FDD\u5B58\u7ED3\u679C\uFF1A${detail}\u3002\u91CD\u8BD5\u4F1A\u6838\u5BF9\u540C\u4E00\u6B21\u4FEE\u6539\uFF0C\u4E0D\u4F1A\u91CD\u590D\u6267\u884C\u3002`;
+          this.draft = {
+            ...draft,
+            status: known ? "rejected" : "unknown",
+            error: message
+          };
+          if (known) {
+            this.resolve?.({
+              status: "rejected",
+              message
+            });
+            this.resolve = void 0;
+          }
+          this.changed();
+          void refresh().catch(() => void 0);
+        }
+      });
+    }
+  }]);
+}();
+
+// client/component-editor.tsx
+import { Fragment, jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
+var writers = /* @__PURE__ */new Map();
+function useComponentEditor(hostId, boardId, board, accept, refresh) {
+  var key = JSON.stringify([hostId, boardId]);
+  var writerRef = useRef2(void 0);
+  if (writerRef.current?.key !== key) {
+    var writer2 = writers.get(key);
+    if (!writer2) {
+      writer2 = new ComponentEditWriter();
+      writers.set(key, writer2);
+    }
+    writerRef.current = {
+      key,
+      writer: writer2
+    };
+  }
+  var writer = writerRef.current.writer;
+  var [draft, setDraft] = useState3(writer.snapshot());
+  var edit = useRpc2(editBoardRpc);
+  var currentBoard = useRef2(board);
+  currentBoard.current = board;
+  useEffect3(() => {
+    setDraft(writer.snapshot());
+    var dispose = writer.subscribe(() => setDraft(writer.snapshot()));
+    return () => {
+      dispose();
+      writer.cancel();
+      if (!writer.snapshot()) writers.delete(key);
+    };
+  }, [writer, key]);
+  useEffect3(() => {
+    if (board) writer.invalidate(board.canvas);
+  }, [writer, board?.canvas.revision, board?.canvas.documentVersion]);
+  var propose = useCallback2(request => {
+    var live = currentBoard.current;
+    if (!live || live.canvas.revision !== request.canvasBase.revision || live.canvas.documentVersion !== request.canvasBase.documentVersion) return Promise.resolve({
+      status: "rejected",
+      message: "\u753B\u5E03\u5DF2\u66F4\u65B0\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u7EC4\u4EF6\u3002"
+    });
+    return writer.propose(boardId, request, localId("component-edit"));
+  }, [writer, boardId]);
+  return {
+    draft,
+    propose,
+    invalidate: () => writer.invalidate(),
+    cancel: () => writer.cancel(),
+    editText: text => writer.editText(text),
+    save: () => {
+      if (currentBoard.current) writer.invalidate(currentBoard.current.canvas);
+      return writer.save(edit, accept, refresh);
+    }
+  };
+}
+function ComponentEditPanel({
+  editor
+}) {
+  var c = useColors(),
+    draft = editor.draft;
+  if (!draft) return null;
+  var patch = draft.request.patch;
+  var destination = {
+    before: "\u4E4B\u524D",
+    after: "\u4E4B\u540E",
+    prepend: "\u5185\u90E8\u5F00\u5934",
+    append: "\u5185\u90E8\u672B\u5C3E"
+  }[patch.position ?? "append"];
+  var source = draft.sourceLabel || patch.selector;
+  return /* @__PURE__ */jsxs2(View2, {
+    testID: "board-component-edit",
+    style: {
+      position: "absolute",
+      bottom: 12,
+      left: 12,
+      right: 12,
+      maxWidth: 560,
+      padding: 12,
+      gap: 8,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 9,
+      backgroundColor: c.surface0,
+      shadowColor: "#000",
+      shadowOpacity: 0.18,
+      shadowRadius: 12
+    },
+    children: [/* @__PURE__ */jsx2(Text2, {
+      style: {
+        color: c.foreground,
+        fontWeight: "600"
+      },
+      children: patch.operation === "text" ? "\u4FEE\u6539\u6587\u5B57" : patch.operation === "copy" ? "\u590D\u5236\u7EC4\u4EF6" : "\u79FB\u52A8\u7EC4\u4EF6"
+    }), /* @__PURE__ */jsx2(Text2, {
+      numberOfLines: 2,
+      style: {
+        color: c.foreground,
+        fontSize: 12
+      },
+      children: patch.operation === "text" ? source : `${source} \u2192 ${draft.destinationLabel || patch.destination} \xB7 ${destination}`
+    }), patch.operation === "text" ? /* @__PURE__ */jsxs2(Fragment, {
+      children: [/* @__PURE__ */jsxs2(Text2, {
+        numberOfLines: 3,
+        style: {
+          color: c.foregroundMuted,
+          fontSize: 12
+        },
+        children: ["\u539F\u6587\uFF1A", patch.expectedText || "\uFF08\u7A7A\uFF09"]
+      }), /* @__PURE__ */jsx2(TextInput, {
+        testID: "board-component-edit-text",
+        accessibilityLabel: "\u7EC4\u4EF6\u7684\u65B0\u6587\u5B57",
+        value: patch.text ?? "",
+        multiline: true,
+        maxLength: 24e3,
+        editable: draft.status === "review",
+        onChangeText: editor.editText,
+        style: {
+          color: c.foreground,
+          backgroundColor: c.surface1,
+          padding: 9,
+          minHeight: 54,
+          maxHeight: 140,
+          borderWidth: 1,
+          borderColor: c.border,
+          borderRadius: 5
+        }
+      })]
+    }) : null, draft.error ? /* @__PURE__ */jsx2(Text2, {
+      numberOfLines: 4,
+      accessibilityRole: "alert",
+      style: {
+        color: c.statusDanger,
+        fontSize: 12
+      },
+      children: draft.error
+    }) : null, /* @__PURE__ */jsxs2(View2, {
+      style: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 6
+      },
+      children: [draft.status !== "rejected" ? /* @__PURE__ */jsx2(Action, {
+        primary: true,
+        label: draft.status === "saving" ? "\u4FDD\u5B58\u4FEE\u6539\u4E2D\u2026" : draft.status === "unknown" ? "\u91CD\u8BD5\u540C\u4E00\u6B21\u4FEE\u6539" : "\u4FDD\u5B58\u4FEE\u6539",
+        disabled: draft.status === "saving",
+        onPress: () => {
+          void editor.save();
+        }
+      }) : null, /* @__PURE__ */jsx2(Action, {
+        label: draft.status === "rejected" ? "\u5173\u95ED\u4FEE\u6539\u63D0\u793A" : "\u53D6\u6D88\u4FEE\u6539",
+        disabled: draft.status === "saving" || draft.status === "unknown",
+        onPress: editor.cancel
+      })]
+    })]
+  });
+}
+
+// client/board-title.tsx
+import { useEffect as useEffect5, useRef as useRef4, useState as useState4 } from "react";
+import { Pressable as Pressable2, Text as Text3, View as View3 } from "react-native";
+import { useRpc as useRpc3 } from "@getpaseo/plugin/client";
 import { Icon as Icon2 } from "@getpaseo/plugin/client/ui";
 
 // client/title-input.tsx
-import { createElement as createElement2, useEffect as useEffect3, useRef as useRef2 } from "react";
-import { TextInput } from "@getpaseo/plugin/client/ui";
-import { jsx as jsx2 } from "react/jsx-runtime";
+import { createElement as createElement2, useEffect as useEffect4, useRef as useRef3 } from "react";
+import { TextInput as TextInput2 } from "@getpaseo/plugin/client/ui";
+import { jsx as jsx3 } from "react/jsx-runtime";
 function TitleInput(props) {
-  var input = useRef2(null);
-  var composing = useRef2(false);
-  var compositionEnded = useRef2(0);
-  useEffect3(() => {
+  var input = useRef3(null);
+  var composing = useRef3(false);
+  var compositionEnded = useRef3(0);
+  useEffect4(() => {
     input.current?.focus();
     input.current?.select?.();
   }, []);
@@ -3079,7 +3490,7 @@ function TitleInput(props) {
     fontSize: 16,
     fontWeight: "600"
   };
-  if (!canRenderFrames) return /* @__PURE__ */jsx2(TextInput, {
+  if (!canRenderFrames) return /* @__PURE__ */jsx3(TextInput2, {
     ref: input,
     value: props.value,
     onChangeText: props.onChange,
@@ -3132,19 +3543,19 @@ function TitleInput(props) {
 }
 
 // client/board-title.tsx
-import { Fragment, jsx as jsx3, jsxs as jsxs2 } from "react/jsx-runtime";
+import { Fragment as Fragment2, jsx as jsx4, jsxs as jsxs3 } from "react/jsx-runtime";
 function BoardTitle({
   board,
   onAccepted,
   onRefresh
 }) {
   var c = useColors();
-  var rename = useRpc2(renameBoardRpc);
-  var [draft, setDraft] = useState3(null);
-  var [saving, setSaving] = useState3(false);
-  var pending = useRef3(false);
-  var mounted = useRef3(true);
-  useEffect4(() => {
+  var rename = useRpc3(renameBoardRpc);
+  var [draft, setDraft] = useState4(null);
+  var [saving, setSaving] = useState4(false);
+  var pending = useRef4(false);
+  var mounted = useRef4(true);
+  useEffect5(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
@@ -3191,21 +3602,21 @@ function BoardTitle({
       if (mounted.current) setSaving(false);
     }
   });
-  return /* @__PURE__ */jsxs2(View2, {
+  return /* @__PURE__ */jsxs3(View3, {
     style: {
       flex: 1,
       minWidth: 160,
       gap: 6
     },
     testID: "board-title",
-    children: [/* @__PURE__ */jsx3(View2, {
+    children: [/* @__PURE__ */jsx4(View3, {
       style: {
         flexDirection: "row",
         alignItems: "center",
         gap: 5
       },
-      children: draft ? /* @__PURE__ */jsxs2(Fragment, {
-        children: [/* @__PURE__ */jsx3(TitleInput, {
+      children: draft ? /* @__PURE__ */jsxs3(Fragment2, {
+        children: [/* @__PURE__ */jsx4(TitleInput, {
           value: draft.value,
           disabled: saving,
           color: c.foreground,
@@ -3223,19 +3634,19 @@ function BoardTitle({
             void submit();
           },
           onCancel: cancel
-        }), /* @__PURE__ */jsx3(Action, {
+        }), /* @__PURE__ */jsx4(Action, {
           label: saving ? "\u4FDD\u5B58\u4E2D\u2026" : draft.request ? "\u91CD\u8BD5\u4FDD\u5B58" : "\u4FDD\u5B58\u540D\u79F0",
           disabled: saving || !draft.value.trim() || changedElsewhere && !draft.request,
           onPress: () => {
             void submit();
           }
-        }), /* @__PURE__ */jsx3(Action, {
+        }), /* @__PURE__ */jsx4(Action, {
           label: "\u53D6\u6D88\u6539\u540D",
           disabled: saving,
           onPress: cancel
         })]
-      }) : /* @__PURE__ */jsxs2(Fragment, {
-        children: [/* @__PURE__ */jsx3(Text2, {
+      }) : /* @__PURE__ */jsxs3(Fragment2, {
+        children: [/* @__PURE__ */jsx4(Text3, {
           numberOfLines: 1,
           style: {
             color: c.foreground,
@@ -3244,7 +3655,7 @@ function BoardTitle({
             flexShrink: 1
           },
           children: board.title
-        }), /* @__PURE__ */jsx3(Pressable2, {
+        }), /* @__PURE__ */jsx4(Pressable2, {
           accessibilityRole: "button",
           accessibilityLabel: "\u4FEE\u6539 Board \u540D\u79F0",
           onPress: () => setDraft({
@@ -3258,29 +3669,29 @@ function BoardTitle({
             borderRadius: 5,
             backgroundColor: pressed ? c.surface2 : "transparent"
           }),
-          children: /* @__PURE__ */jsx3(Icon2, {
+          children: /* @__PURE__ */jsx4(Icon2, {
             name: "Pencil",
             size: 15,
             color: c.foregroundMuted
           })
         })]
       })
-    }), draft?.error ? /* @__PURE__ */jsx3(Text2, {
+    }), draft?.error ? /* @__PURE__ */jsx4(Text3, {
       accessibilityRole: "alert",
       style: {
         color: c.statusDanger,
         fontSize: 12
       },
       children: draft.error
-    }) : null, draft && changedElsewhere && !saving ? /* @__PURE__ */jsxs2(View2, {
+    }) : null, draft && changedElsewhere && !saving ? /* @__PURE__ */jsxs3(View3, {
       style: {
         gap: 5
       },
-      children: [/* @__PURE__ */jsxs2(Copy, {
+      children: [/* @__PURE__ */jsxs3(Copy, {
         muted: true,
         small: true,
         children: ["\u5F53\u524D\u540D\u79F0\u5DF2\u53D8\u4E3A\u300C", board.title, "\u300D\u3002\u4F60\u7684\u8F93\u5165\u5DF2\u4FDD\u7559\u3002"]
-      }), /* @__PURE__ */jsx3(Action, {
+      }), /* @__PURE__ */jsx4(Action, {
         label: "\u786E\u8BA4\u5F53\u524D\u540D\u79F0\u540E\u7EE7\u7EED\u7F16\u8F91",
         onPress: () => setDraft({
           ...draft,
@@ -3294,8 +3705,8 @@ function BoardTitle({
 }
 
 // client/connection-status.tsx
-import { View as View3 } from "react-native";
-import { jsx as jsx4, jsxs as jsxs3 } from "react/jsx-runtime";
+import { View as View4 } from "react-native";
+import { jsx as jsx5, jsxs as jsxs4 } from "react/jsx-runtime";
 var labels = {
   connecting: "\u72B6\u6001\u68C0\u67E5\u4E2D",
   checking: "\u5DF2\u540C\u6B65",
@@ -3309,7 +3720,7 @@ function BoardConnectionStatus({
 }) {
   var c = useColors();
   var color = status === "connected" || status === "checking" ? c.statusSuccess : status === "disconnected" || status === "unsupported" ? c.statusDanger : c.foregroundMuted;
-  return /* @__PURE__ */jsxs3(View3, {
+  return /* @__PURE__ */jsxs4(View4, {
     testID: "board-connection-status",
     accessibilityLabel: `\u5B9E\u65F6\u540C\u6B65\uFF1A${labels[status]}`,
     style: {
@@ -3317,14 +3728,14 @@ function BoardConnectionStatus({
       alignItems: "center",
       gap: 6
     },
-    children: [/* @__PURE__ */jsx4(View3, {
+    children: [/* @__PURE__ */jsx5(View4, {
       style: {
         width: 7,
         height: 7,
         borderRadius: 4,
         backgroundColor: color
       }
-    }), /* @__PURE__ */jsxs3(Copy, {
+    }), /* @__PURE__ */jsxs4(Copy, {
       muted: true,
       small: true,
       children: ["\u5B9E\u65F6\u540C\u6B65 \xB7 ", labels[status]]
@@ -3404,9 +3815,9 @@ function createStateWriter(save, onError) {
 }
 
 // client/discussion-rail.tsx
-import { Pressable as Pressable3, Text as Text3, View as View4 } from "react-native";
+import { Pressable as Pressable3, Text as Text4, View as View5 } from "react-native";
 import { ScrollView } from "@getpaseo/plugin/client/ui";
-import { jsx as jsx5, jsxs as jsxs4 } from "react/jsx-runtime";
+import { jsx as jsx6, jsxs as jsxs5 } from "react/jsx-runtime";
 function DiscussionRail({
   markers,
   compact,
@@ -3416,7 +3827,7 @@ function DiscussionRail({
   onOpen
 }) {
   var c = useColors();
-  return /* @__PURE__ */jsxs4(View4, {
+  return /* @__PURE__ */jsxs5(View5, {
     testID: "board-discussion-rail",
     accessibilityLabel: "\u753B\u5E03\u8BA8\u8BBA\u7D22\u5F15",
     style: {
@@ -3427,14 +3838,14 @@ function DiscussionRail({
       borderColor: c.border,
       backgroundColor: c.surface0
     },
-    children: [/* @__PURE__ */jsx5(View4, {
+    children: [/* @__PURE__ */jsx6(View5, {
       style: {
         paddingHorizontal: compact ? 4 : 12,
         paddingVertical: 12,
         borderBottomWidth: 1,
         borderColor: c.border
       },
-      children: /* @__PURE__ */jsx5(Text3, {
+      children: /* @__PURE__ */jsx6(Text4, {
         numberOfLines: 1,
         style: {
           color: c.foregroundMuted,
@@ -3443,7 +3854,7 @@ function DiscussionRail({
         },
         children: compact ? `${markers.length}` : `\u8BA8\u8BBA \xB7 ${markers.length}`
       })
-    }), /* @__PURE__ */jsxs4(ScrollView, {
+    }), /* @__PURE__ */jsxs5(ScrollView, {
       testID: "board-discussion-list",
       style: {
         flex: 1,
@@ -3454,7 +3865,7 @@ function DiscussionRail({
         gap: 4
       },
       keyboardShouldPersistTaps: "handled",
-      children: [!markers.length ? /* @__PURE__ */jsx5(Text3, {
+      children: [!markers.length ? /* @__PURE__ */jsx6(Text4, {
         style: {
           paddingVertical: 12,
           color: c.foregroundMuted,
@@ -3467,7 +3878,7 @@ function DiscussionRail({
         var active = ["saved", "sending", "delivered", "processing"].includes(marker.status);
         var color = marker.status === "failed" ? c.statusDanger : active ? c.accent : c.foregroundMuted;
         var label = `${marker.number} \xB7 ${statusNames2[marker.status]} \xB7 ${marker.text}`;
-        return /* @__PURE__ */jsxs4(Pressable3, {
+        return /* @__PURE__ */jsxs5(Pressable3, {
           testID: `board-discussion-${marker.id}`,
           accessibilityRole: "button",
           accessibilityLabel: label,
@@ -3491,7 +3902,7 @@ function DiscussionRail({
             backgroundColor: selected || pressed ? c.surface2 : "transparent",
             opacity: disabled ? 0.5 : 1
           }),
-          children: [/* @__PURE__ */jsx5(View4, {
+          children: [/* @__PURE__ */jsx6(View5, {
             style: {
               width: 24,
               height: 24,
@@ -3503,7 +3914,7 @@ function DiscussionRail({
               borderRadius: 12,
               backgroundColor: c.surface1
             },
-            children: /* @__PURE__ */jsx5(Text3, {
+            children: /* @__PURE__ */jsx6(Text4, {
               style: {
                 fontSize: marker.number > 99 ? 9 : 11,
                 fontWeight: "600",
@@ -3511,13 +3922,13 @@ function DiscussionRail({
               },
               children: marker.number
             })
-          }), !compact ? /* @__PURE__ */jsxs4(View4, {
+          }), !compact ? /* @__PURE__ */jsxs5(View5, {
             style: {
               flex: 1,
               minWidth: 0,
               gap: 4
             },
-            children: [/* @__PURE__ */jsx5(Text3, {
+            children: [/* @__PURE__ */jsx6(Text4, {
               numberOfLines: 2,
               style: {
                 color: c.foreground,
@@ -3527,7 +3938,7 @@ function DiscussionRail({
                 overflow: "hidden"
               },
               children: marker.text.replace(/\s+/g, " ")
-            }), /* @__PURE__ */jsx5(Text3, {
+            }), /* @__PURE__ */jsx6(Text4, {
               numberOfLines: 1,
               style: {
                 color,
@@ -3543,10 +3954,10 @@ function DiscussionRail({
 }
 
 // client/side-agent-picker.tsx
-import { useMemo, useState as useState4 } from "react";
-import { Pressable as Pressable4, Text as Text4, View as View5 } from "react-native";
+import { useMemo, useState as useState5 } from "react";
+import { Pressable as Pressable4, Text as Text5, View as View6 } from "react-native";
 import { ScrollView as ScrollView2 } from "@getpaseo/plugin/client/ui";
-import { jsx as jsx6, jsxs as jsxs5 } from "react/jsx-runtime";
+import { jsx as jsx7, jsxs as jsxs6 } from "react/jsx-runtime";
 function SideAgentPicker({
   interactions,
   selectedId,
@@ -3555,7 +3966,7 @@ function SideAgentPicker({
   onSelect
 }) {
   var c = useColors();
-  var [open, setOpen] = useState4(false);
+  var [open, setOpen] = useState5(false);
   var choices = useMemo(() => {
     var agents = /* @__PURE__ */new Map();
     for (var item of interactions) if (item.kind === "fork" && item.agentId && !agents.has(item.agentId)) agents.set(item.agentId, {
@@ -3566,32 +3977,32 @@ function SideAgentPicker({
     return [...agents.values()];
   }, [interactions]);
   var current = choices.find(item => item.id === selectedId);
-  return /* @__PURE__ */jsxs5(View5, {
+  return /* @__PURE__ */jsxs6(View6, {
     testID: "board-side-agent-picker",
     style: {
       gap: 6
     },
-    children: [/* @__PURE__ */jsxs5(View5, {
+    children: [/* @__PURE__ */jsxs6(View6, {
       style: {
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
         flexWrap: "wrap"
       },
-      children: [/* @__PURE__ */jsx6(Copy, {
+      children: [/* @__PURE__ */jsx7(Copy, {
         small: true,
         muted: true,
         children: "Side \u76EE\u6807"
-      }), /* @__PURE__ */jsx6(Action, {
+      }), /* @__PURE__ */jsx7(Action, {
         label: `${pending ? "\u65C1\u652F\u5EFA\u7ACB\u4E2D" : selectedId ? current?.label ?? "\u5F53\u524D\u65C1\u652F" : "\u9996\u6B21\u53D1\u9001\u65F6\u65B0\u5EFA"} \u25BE`,
         disabled,
         onPress: () => setOpen(value => !value)
       })]
-    }), pending ? /* @__PURE__ */jsx6(Copy, {
+    }), pending ? /* @__PURE__ */jsx7(Copy, {
       small: true,
       muted: true,
       children: "Side \u53D1\u9001\u5C06\u7EE7\u7EED\u6B63\u5728\u5EFA\u7ACB\u7684\u65C1\u652F\uFF1B\u4E5F\u53EF\u6539\u9009\u4EE5\u524D\u7684\u65C1\u652F\u3002"
-    }) : null, open ? /* @__PURE__ */jsx6(View5, {
+    }) : null, open ? /* @__PURE__ */jsx7(View6, {
       testID: "board-side-agent-options",
       style: {
         borderWidth: 1,
@@ -3599,7 +4010,7 @@ function SideAgentPicker({
         borderRadius: 8,
         overflow: "hidden"
       },
-      children: /* @__PURE__ */jsxs5(ScrollView2, {
+      children: /* @__PURE__ */jsxs6(ScrollView2, {
         style: {
           maxHeight: 156
         },
@@ -3608,11 +4019,11 @@ function SideAgentPicker({
           gap: 3
         },
         keyboardShouldPersistTaps: "handled",
-        children: [!choices.length ? /* @__PURE__ */jsx6(Copy, {
+        children: [!choices.length ? /* @__PURE__ */jsx7(Copy, {
           small: true,
           muted: true,
           children: "\u8FD8\u6CA1\u6709\u65C1\u652F\u3002Side \u53D1\u9001\u4F1A\u5EFA\u7ACB\u4E00\u4E2A\uFF0C\u5E76\u5728\u4E4B\u540E\u7EE7\u7EED\u4F7F\u7528\u3002"
-        }) : null, choices.map(item => /* @__PURE__ */jsxs5(Pressable4, {
+        }) : null, choices.map(item => /* @__PURE__ */jsxs6(Pressable4, {
           testID: `board-side-agent-${item.id}`,
           accessibilityRole: "button",
           accessibilityLabel: `\u4F7F\u7528${item.label}\uFF1A${item.text}`,
@@ -3634,14 +4045,14 @@ function SideAgentPicker({
             borderRadius: 5,
             backgroundColor: pressed || !pending && selectedId === item.id ? c.surface2 : c.surface0
           }),
-          children: [/* @__PURE__ */jsxs5(Text4, {
+          children: [/* @__PURE__ */jsxs6(Text5, {
             style: {
               color: c.foreground,
               fontSize: 12,
               fontWeight: "600"
             },
             children: [item.label, !pending && selectedId === item.id ? " \xB7 \u5F53\u524D" : ""]
-          }), /* @__PURE__ */jsx6(Text4, {
+          }), /* @__PURE__ */jsx7(Text5, {
             numberOfLines: 2,
             style: {
               color: c.foregroundMuted,
@@ -3657,9 +4068,9 @@ function SideAgentPicker({
 }
 
 // client/update-navigation.tsx
-import { useCallback as useCallback2, useEffect as useEffect5, useMemo as useMemo2, useRef as useRef4, useState as useState5 } from "react";
-import { Pressable as Pressable5, Text as Text5, View as View6 } from "react-native";
-import { jsx as jsx7, jsxs as jsxs6 } from "react/jsx-runtime";
+import { useCallback as useCallback3, useEffect as useEffect6, useMemo as useMemo2, useRef as useRef5, useState as useState6 } from "react";
+import { Pressable as Pressable5, Text as Text6, View as View7 } from "react-native";
+import { jsx as jsx8, jsxs as jsxs7 } from "react/jsx-runtime";
 var placesFor = updates => updates.flatMap(update => Array.from({
   length: Math.max(1, update.targets.length)
 }, (_, targetIndex) => ({
@@ -3670,13 +4081,13 @@ var placesFor = updates => updates.flatMap(update => Array.from({
 function useUpdateNavigation(board, blocked, markSeen) {
   var updates = board?.updates ?? [];
   var places = useMemo2(() => placesFor(updates), [updates]);
-  var [follow, setFollow] = useState5(true);
-  var [busy, setBusy] = useState5(false);
-  var [currentKey, setCurrentKey] = useState5();
-  var [request, setRequest] = useState5();
-  var [status, setStatus] = useState5("idle");
-  var [automaticCandidate, setAutomaticCandidate] = useState5();
-  var latest = useRef4({
+  var [follow, setFollow] = useState6(true);
+  var [busy, setBusy] = useState6(false);
+  var [currentKey, setCurrentKey] = useState6();
+  var [request, setRequest] = useState6();
+  var [status, setStatus] = useState6("idle");
+  var [automaticCandidate, setAutomaticCandidate] = useState6();
+  var latest = useRef5({
     board,
     blocked,
     busy,
@@ -3690,14 +4101,14 @@ function useUpdateNavigation(board, blocked, markSeen) {
     places,
     markSeen
   };
-  var pending = useRef4(void 0);
-  var token = useRef4(0);
-  var known = useRef4({
+  var pending = useRef5(void 0);
+  var token = useRef5(0);
+  var known = useRef5({
     initialized: false
   });
-  var focused = useRef4(/* @__PURE__ */new Map());
-  var acknowledging = useRef4(/* @__PURE__ */new Set());
-  var show = useCallback2((place, automatic) => {
+  var focused = useRef5(/* @__PURE__ */new Map());
+  var acknowledging = useRef5(/* @__PURE__ */new Set());
+  var show = useCallback3((place, automatic) => {
     var next = {
       update: place.update,
       targetIndex: place.targetIndex,
@@ -3709,7 +4120,7 @@ function useUpdateNavigation(board, blocked, markSeen) {
     setRequest(next);
     setStatus("locating");
   }, []);
-  useEffect5(() => {
+  useEffect6(() => {
     if (!board) return;
     var newest = updates.at(-1)?.id;
     if (!known.current.initialized || known.current.newest !== newest) {
@@ -3725,20 +4136,20 @@ function useUpdateNavigation(board, blocked, markSeen) {
     var live = new Set(updates.map(item => item.id));
     for (var id of focused.current.keys()) if (!live.has(id)) focused.current.delete(id);
   }, [board, updates]);
-  useEffect5(() => {
+  useEffect6(() => {
     if (!follow || blocked || busy || !automaticCandidate) return;
     var place = places.find(item => item.update.id === automaticCandidate);
     setAutomaticCandidate(void 0);
     if (place) show(place, true);
   }, [follow, blocked, busy, automaticCandidate, places, show]);
-  useEffect5(() => {
+  useEffect6(() => {
     if (!blocked || !pending.current?.automatic) return;
     setAutomaticCandidate(pending.current.update.id);
     pending.current = void 0;
     setRequest(void 0);
     setStatus("deferred");
   }, [blocked]);
-  var onActivity = useCallback2(active => {
+  var onActivity = useCallback3(active => {
     setBusy(active);
     if (active && pending.current?.automatic) {
       setAutomaticCandidate(pending.current.update.id);
@@ -3747,7 +4158,7 @@ function useUpdateNavigation(board, blocked, markSeen) {
       setStatus("deferred");
     }
   }, []);
-  var onPosition = useCallback2(result => {
+  var onPosition = useCallback3(result => {
     var expected = pending.current;
     var current = latest.current;
     if (!expected || result.id !== expected.update.id || result.token !== expected.token || result.targetIndex !== (expected.targetIndex ?? 0) || result.documentVersion !== expected.update.documentVersion || result.status === "focused" && current.board?.canvas.documentVersion !== result.documentVersion) return;
@@ -3819,7 +4230,7 @@ function UpdateNavigation({
     blocked,
     toggleFollow
   } = navigation;
-  var button = (label, text, onPress, disabled) => /* @__PURE__ */jsx7(Pressable5, {
+  var button = (label, text, onPress, disabled) => /* @__PURE__ */jsx8(Pressable5, {
     accessibilityRole: "button",
     accessibilityLabel: label,
     disabled,
@@ -3835,7 +4246,7 @@ function UpdateNavigation({
       borderRadius: 5,
       opacity: disabled ? 0.4 : 1
     },
-    children: /* @__PURE__ */jsx7(Text5, {
+    children: /* @__PURE__ */jsx8(Text6, {
       style: {
         color: c.foreground,
         fontSize: 12
@@ -3844,7 +4255,7 @@ function UpdateNavigation({
     })
   });
   var note = status === "unavailable" ? "\u4F4D\u7F6E\u4E0D\u53EF\u7528" : status === "seen-error" ? "\u5DF2\u770B\u672A\u4FDD\u5B58" : status === "deferred" || busy || blocked ? "\u6682\u7F13" : "";
-  return /* @__PURE__ */jsxs6(View6, {
+  return /* @__PURE__ */jsxs7(View7, {
     testID: "board-update-navigation",
     accessibilityLabel: "\u753B\u5E03\u66F4\u65B0\u5B9A\u4F4D",
     style: {
@@ -3853,7 +4264,7 @@ function UpdateNavigation({
       gap: 2,
       flexShrink: 0
     },
-    children: [button("\u4E0A\u4E00\u5904\u66F4\u65B0", "\u2039", () => move(-1), blocked || !total), /* @__PURE__ */jsxs6(Text5, {
+    children: [button("\u4E0A\u4E00\u5904\u66F4\u65B0", "\u2039", () => move(-1), blocked || !total), /* @__PURE__ */jsxs7(Text6, {
       testID: "board-update-position",
       numberOfLines: 1,
       style: {
@@ -3934,7 +4345,7 @@ ${request.prompt ?? ""}`.slice(0, 24e3);
 }
 
 // client/board.tsx
-import { Fragment as Fragment2, jsx as jsx8, jsxs as jsxs7 } from "react/jsx-runtime";
+import { Fragment as Fragment3, jsx as jsx9, jsxs as jsxs8 } from "react/jsx-runtime";
 var captureFailureNames = {
   "content-changed": "\u622A\u56FE\u8FC7\u7A0B\u4E2D\u753B\u5E03\u5185\u5BB9\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u6846\u9009\u3002",
   "too-complex": "\u9009\u533A\u5185\u5BB9\u8FC7\u4E8E\u590D\u6742\uFF0C\u8BF7\u7F29\u5C0F\u9009\u533A\u3002",
@@ -3961,9 +4372,9 @@ var kindNames = {
   reply: "Fork \u56DE\u590D"
 };
 function BoardView(props) {
-  return /* @__PURE__ */jsx8(ColorContext.Provider, {
+  return /* @__PURE__ */jsx9(ColorContext.Provider, {
     value: props.theme.colors,
-    children: /* @__PURE__ */jsx8(BoardContent, {
+    children: /* @__PURE__ */jsx9(BoardContent, {
       ...props
     })
   });
@@ -3978,41 +4389,42 @@ function BoardContent({
   var c = useColors();
   var query = useBoard(host.id, boardId);
   var board = query.data;
-  var send = useRpc3(interactBoardRpc);
-  var save = useRpc3(saveStateRpc);
-  var record2 = useRpc3(recordDecisionRpc);
-  var selectSide = useRpc3(selectSideAgentRpc);
-  var markUpdatesSeen = useRpc3(markUpdatesSeenRpc);
-  var [selectionMode, setSelectionMode] = useState6("off");
-  var [anchor, setAnchor] = useState6();
-  var [selectionClearToken, setSelectionClearToken] = useState6(0);
-  var [selectionCaptureCancelId, setSelectionCaptureCancelId] = useState6();
-  var [drawer, setDrawer] = useState6(null);
-  var [compose, setCompose] = useState6(null);
-  var composeRef = useRef5(compose);
+  var componentEditor = useComponentEditor(host.id, boardId, board, query.accept, query.refetch);
+  var send = useRpc4(interactBoardRpc);
+  var save = useRpc4(saveStateRpc);
+  var record2 = useRpc4(recordDecisionRpc);
+  var selectSide = useRpc4(selectSideAgentRpc);
+  var markUpdatesSeen = useRpc4(markUpdatesSeenRpc);
+  var [selectionMode, setSelectionMode] = useState7("off");
+  var [anchor, setAnchor] = useState7();
+  var [selectionClearToken, setSelectionClearToken] = useState7(0);
+  var [selectionCaptureCancelId, setSelectionCaptureCancelId] = useState7();
+  var [drawer, setDrawer] = useState7(null);
+  var [compose, setCompose] = useState7(null);
+  var composeRef = useRef6(compose);
   composeRef.current = compose;
-  var [sending, setSending] = useState6(false);
-  var pending = useRef5(false);
-  var sideChoicePending = useRef5(false);
-  var [choosingSide, setChoosingSide] = useState6(false);
-  var [sideChoiceUncertain, setSideChoiceUncertain] = useState6(false);
+  var [sending, setSending] = useState7(false);
+  var pending = useRef6(false);
+  var sideChoicePending = useRef6(false);
+  var [choosingSide, setChoosingSide] = useState7(false);
+  var [sideChoiceUncertain, setSideChoiceUncertain] = useState7(false);
   var sideTargetBlocked = choosingSide || sideChoiceUncertain;
-  var [inputFocusToken, setInputFocusToken] = useState6(0);
-  var [message, setMessage] = useState6(null);
-  var [frameError, setFrameError] = useState6(null);
-  var [height, setHeight] = useState6(500);
-  var [width, setWidth] = useState6(900);
-  var [stageWidth, setStageWidth] = useState6(900);
-  var [popoverHeight, setPopoverHeight] = useState6(300);
-  var [popoverPoint, setPopoverPoint] = useState6({
+  var [inputFocusToken, setInputFocusToken] = useState7(0);
+  var [message, setMessage] = useState7(null);
+  var [frameError, setFrameError] = useState7(null);
+  var [height, setHeight] = useState7(500);
+  var [width, setWidth] = useState7(900);
+  var [stageWidth, setStageWidth] = useState7(900);
+  var [popoverHeight, setPopoverHeight] = useState7(300);
+  var [popoverPoint, setPopoverPoint] = useState7({
     x: 24,
     y: 24
   });
-  var [selectedInteractionId, setSelectedInteractionId] = useState6();
-  var [focusInteraction, setFocusInteraction] = useState6();
-  var [interactionLocation, setInteractionLocation] = useState6();
-  var [optimistic, setOptimistic] = useState6([]);
-  var updatesBlocked = Boolean(compose || selectedInteractionId || drawer || sending || selectionMode !== "off");
+  var [selectedInteractionId, setSelectedInteractionId] = useState7();
+  var [focusInteraction, setFocusInteraction] = useState7();
+  var [interactionLocation, setInteractionLocation] = useState7();
+  var [optimistic, setOptimistic] = useState7([]);
+  var updatesBlocked = Boolean(componentEditor.draft || compose || selectedInteractionId || drawer || sending || selectionMode !== "off");
   var updateNavigation = useUpdateNavigation(board, updatesBlocked, id => __async(null, null, function* () {
     query.accept(yield markUpdatesSeen({
       boardId,
@@ -4026,13 +4438,13 @@ function BoardContent({
     width,
     height
   }, popoverHeight);
-  var stateWriter = useRef5(null);
+  var stateWriter = useRef6(null);
   var frameTheme = useMemo3(() => frameThemeFromColors(theme.colors), [theme.colors]);
-  var onAnchor = useCallback3(next => {
+  var onAnchor = useCallback4(next => {
     setAnchor(next);
     setSelectionMode("off");
   }, []);
-  var onAsk = useCallback3(request => new Promise(resolve => {
+  var onAsk = useCallback4(request => new Promise(resolve => {
     if (composeRef.current || pending.current) {
       resolve({
         status: "cancelled",
@@ -4052,7 +4464,7 @@ function BoardContent({
     composeRef.current = next;
     setCompose(next);
   }), []);
-  var onCompose = useCallback3(request => {
+  var onCompose = useCallback4(request => {
     if (composeRef.current || pending.current) return;
     var next = {
       kind: "question",
@@ -4070,7 +4482,7 @@ function BoardContent({
     composeRef.current = next;
     setCompose(next);
   }, []);
-  var onSelectionCapture = useCallback3(capture => {
+  var onSelectionCapture = useCallback4(capture => {
     var draft = composeRef.current;
     if (!draft || pending.current || draft.intentId || draft.captureStatus !== "pending" || draft.selectionId !== capture.selectionId || !draft.anchor || !sameSelectionAnchor(draft.anchor, capture.anchor)) return;
     var next = {
@@ -4083,8 +4495,8 @@ function BoardContent({
     setCompose(next);
     setAnchor(capture.anchor);
   }, []);
-  var onState = useCallback3(state => stateWriter.current?.schedule(state), []);
-  useEffect6(() => {
+  var onState = useCallback4(state => stateWriter.current?.schedule(state), []);
+  useEffect7(() => {
     var writer = createStateWriter(state => save({
       boardId,
       state
@@ -4095,14 +4507,14 @@ function BoardContent({
       if (stateWriter.current === writer) stateWriter.current = null;
     };
   }, [save, boardId]);
-  useEffect6(() => {
+  useEffect7(() => {
     setFrameError(null);
   }, [board?.canvas.documentVersion]);
-  useEffect6(() => {
+  useEffect7(() => {
     var persisted = new Set(board?.interactions.map(item => item.id));
     setOptimistic(items => items.some(item => persisted.has(item.id)) ? items.filter(item => !persisted.has(item.id)) : items);
   }, [board?.interactions]);
-  useEffect6(() => () => {
+  useEffect7(() => () => {
     if (!pending.current) composeRef.current?.resolve?.({
       status: "cancelled"
     });
@@ -4317,84 +4729,84 @@ function BoardContent({
     board: "\u6574\u4E2A\u753B\u5E03",
     text: "\u9009\u4E2D\u6587\u5B57"
   }[anchor.kind] : "\u6574\u4E2A\u753B\u5E03";
-  if (!board) return /* @__PURE__ */jsxs7(View7, {
+  if (!board) return /* @__PURE__ */jsxs8(View8, {
     style: {
       flex: 1,
       padding: 24,
       gap: 16,
       backgroundColor: c.surface0
     },
-    children: [/* @__PURE__ */jsx8(Action, {
+    children: [/* @__PURE__ */jsx9(Action, {
       label: "\u6240\u6709 Boards",
       onPress: onBack
-    }), /* @__PURE__ */jsx8(Notice, {
+    }), /* @__PURE__ */jsx9(Notice, {
       text: query.isPending ? "\u6B63\u5728\u6253\u5F00\u2026" : query.error ? errorMessage(query.error) : "\u8FD9\u5757 Board \u4E0D\u5B58\u5728\u3002",
       error: !!query.error
     })]
   });
-  return /* @__PURE__ */jsxs7(View7, {
+  return /* @__PURE__ */jsxs8(View8, {
     style: {
       flex: 1,
       minHeight: 0,
       backgroundColor: c.surface0
     },
-    children: [/* @__PURE__ */jsxs7(View7, {
+    children: [/* @__PURE__ */jsxs8(View8, {
       style: {
         padding: 10,
         gap: 8,
         borderBottomWidth: 1,
         borderColor: c.border
       },
-      children: [/* @__PURE__ */jsxs7(View7, {
+      children: [/* @__PURE__ */jsxs8(View8, {
         style: {
           flexDirection: "row",
           alignItems: "center",
           flexWrap: "wrap",
           gap: 8
         },
-        children: [/* @__PURE__ */jsx8(Action, {
+        children: [/* @__PURE__ */jsx9(Action, {
           label: "Boards",
           icon: "PanelsTopLeft",
           onPress: onBack
-        }), /* @__PURE__ */jsx8(BoardTitle, {
+        }), /* @__PURE__ */jsx9(BoardTitle, {
           board,
           onAccepted: query.accept,
           onRefresh: query.refetch
-        }), /* @__PURE__ */jsx8(Action, {
+        }), /* @__PURE__ */jsx9(Action, {
           label: `\u51B3\u7B56 ${board.decisions.filter(d => !["dismissed", "superseded"].includes(d.status)).length}`,
           onPress: () => setDrawer("decisions")
-        }), /* @__PURE__ */jsx8(Action, {
+        }), /* @__PURE__ */jsx9(Action, {
           label: "\u8BA8\u8BBA",
           icon: "MessagesSquare",
           onPress: () => setDrawer("threads")
-        }), /* @__PURE__ */jsx8(Action, {
+        }), /* @__PURE__ */jsx9(Action, {
           label: "\u53D8\u5316",
           icon: "History",
           onPress: () => setDrawer("history")
         })]
-      }), /* @__PURE__ */jsxs7(View7, {
+      }), /* @__PURE__ */jsxs8(View8, {
         style: {
           flexDirection: "row",
           alignItems: "center",
           flexWrap: "wrap",
           gap: 6
         },
-        children: [canRenderFrames && [["off", "\u4EA4\u4E92", "MousePointer2"], ["component", "\u9009\u7EC4\u4EF6", "Component"], ["text", "\u9009\u6587\u5B57", "TextSelect"], ["region", "\u6846\u9009", "Scan"], ["point", "\u6307\u5B9A\u4F4D\u7F6E", "MapPin"]].map(([mode, label, icon]) => /* @__PURE__ */jsx8(Action, {
+        children: [canRenderFrames && [["off", "\u4EA4\u4E92", "MousePointer2"], ["component", "\u9009\u7EC4\u4EF6", "Component"], ["text", "\u9009\u6587\u5B57", "TextSelect"], ["region", "\u6846\u9009", "Scan"], ["point", "\u6307\u5B9A\u4F4D\u7F6E", "MapPin"]].map(([mode, label, icon]) => /* @__PURE__ */jsx9(Action, {
           label,
           icon,
           active: selectionMode === mode,
           onPress: () => setSelectionMode(mode)
-        }, mode)), /* @__PURE__ */jsx8(View7, {
+        }, mode)), /* @__PURE__ */jsx9(View8, {
           style: {
             flex: 1
           }
-        }), /* @__PURE__ */jsx8(Action, {
+        }), /* @__PURE__ */jsx9(Action, {
           label: "\u53D1\u6D88\u606F",
           icon: "MessageCircle",
           onPress: () => openCompose("question")
         })]
       })]
-    }), /* @__PURE__ */jsxs7(View7, {
+    }), /* @__PURE__ */jsxs8(View8, {
       testID: "board-reference-bar",
       style: {
         height: 38,
@@ -4405,24 +4817,24 @@ function BoardContent({
         gap: 8,
         backgroundColor: c.surface1
       },
-      children: [/* @__PURE__ */jsx8(Text6, {
+      children: [/* @__PURE__ */jsx9(Text7, {
         numberOfLines: 1,
         style: {
           color: c.foregroundMuted,
           flex: 1,
           fontSize: 12
         },
-        children: anchor ? `\u5DF2\u5F15\u7528 r${anchor.boardRevision} \xB7 ${selectedText}` : selectionMode === "component" ? "\u70B9\u51FB\u9009\u62E9\u7EC4\u4EF6\uFF0C\u6CBF\u5305\u542B\u5173\u7CFB\u9009\u62E9\u5BB9\u5668\u3002Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : selectionMode === "text" ? "\u62D6\u9009\u6587\u5B57\uFF0C\u76F4\u63A5\u5728\u65C1\u8FB9\u63D0\u95EE\u3002Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : selectionMode === "region" ? "\u62D6\u51FA\u4E00\u4E2A\u533A\u57DF\uFF0C\u53EF\u5305\u542B\u56FE\u7247\u3001\u56FE\u8868\u6216\u7A7A\u767D\u3002Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : selectionMode === "point" ? "\u70B9\u51FB\u9700\u8981\u6DFB\u52A0\u6216\u4FEE\u6539\u5185\u5BB9\u7684\u4F4D\u7F6E\u3002Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : "\u53F3\u952E\u5C31\u5730\u4EA4\u6D41 \xB7 Option / Alt + \u62D6\u52A8\u6846\u9009"
-      }), canRenderFrames ? /* @__PURE__ */jsx8(UpdateNavigation, {
+        children: anchor ? `\u5DF2\u5F15\u7528 r${anchor.boardRevision} \xB7 ${selectedText}` : selectionMode === "component" ? "\u70B9\u51FB\u9009\u62E9\u7EC4\u4EF6 \xB7 \u62D6\u52A8\u624B\u67C4\u65F6\u6309 Tab / Shift+Tab \u9009\u62E9\u5BB9\u5668\u5C42\u7EA7 \xB7 Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : selectionMode === "text" ? "\u62D6\u9009\u6587\u5B57\uFF0C\u76F4\u63A5\u5728\u65C1\u8FB9\u63D0\u95EE\u3002Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : selectionMode === "region" ? "\u62D6\u51FA\u4E00\u4E2A\u533A\u57DF\uFF0C\u53EF\u5305\u542B\u56FE\u7247\u3001\u56FE\u8868\u6216\u7A7A\u767D\u3002Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : selectionMode === "point" ? "\u70B9\u51FB\u9700\u8981\u6DFB\u52A0\u6216\u4FEE\u6539\u5185\u5BB9\u7684\u4F4D\u7F6E\u3002Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : "\u2318 / Ctrl + Shift \u6309\u4F4F\u9009\u7EC4\u4EF6 \xB7 \u53F3\u952E\u4EA4\u6D41 \xB7 Option / Alt + \u62D6\u52A8\u6846\u9009"
+      }), canRenderFrames ? /* @__PURE__ */jsx9(UpdateNavigation, {
         navigation: updateNavigation
-      }) : null, anchor ? /* @__PURE__ */jsx8(Action, {
+      }) : null, anchor ? /* @__PURE__ */jsx9(Action, {
         label: "\u6E05\u9664\u5F15\u7528",
         onPress: () => {
           setAnchor(void 0);
           setSelectionClearToken(value => value + 1);
         }
       }) : null]
-    }), /* @__PURE__ */jsxs7(View7, {
+    }), /* @__PURE__ */jsxs8(View8, {
       testID: "board-stage",
       style: {
         flex: 1,
@@ -4430,7 +4842,7 @@ function BoardContent({
         flexDirection: "row"
       },
       onLayout: event => setStageWidth(event.nativeEvent.layout.width),
-      children: [/* @__PURE__ */jsxs7(View7, {
+      children: [/* @__PURE__ */jsxs8(View8, {
         testID: "board-canvas-container",
         style: {
           flex: 1,
@@ -4443,7 +4855,7 @@ function BoardContent({
           setHeight(Math.max(180, event.nativeEvent.layout.height));
           setWidth(event.nativeEvent.layout.width);
         },
-        children: [canRenderFrames ? /* @__PURE__ */jsx8(CanvasFrame, {
+        children: [canRenderFrames ? /* @__PURE__ */jsx9(CanvasFrame, {
           boardId: board.id,
           title: board.title,
           canvas: board.canvas,
@@ -4475,6 +4887,17 @@ function BoardContent({
           onAsk,
           onCompose,
           onSelectionCapture,
+          onComponentEdit: request => {
+            if (composeRef.current || pending.current) return Promise.resolve({
+              status: "rejected",
+              message: "\u4EA4\u6D41\u8349\u7A3F\u5DF2\u4FDD\u7559\uFF0C\u8BF7\u5148\u5173\u95ED\u8F93\u5165\u6846\u518D\u7F16\u8F91\u7EC4\u4EF6\u3002"
+            });
+            return componentEditor.propose(request).then(result => {
+              if (result.status === "applied") setSelectionMode("off");
+              return result;
+            });
+          },
+          onEditScopeChange: componentEditor.invalidate,
           onCanvasPointer: closePopover,
           onState,
           onError: error => setFrameError(`${error.message}${error.patchId ? `\uFF08${error.patchId}\uFF09` : ""}`),
@@ -4486,28 +4909,30 @@ function BoardContent({
           onOpenLink: url => {
             void openExternalUrl(url).catch(e => setMessage(errorMessage(e)));
           }
-        }) : /* @__PURE__ */jsxs7(ScrollView3, {
+        }) : /* @__PURE__ */jsxs8(ScrollView3, {
           contentContainerStyle: {
             padding: 24,
             gap: 16
           },
-          children: [/* @__PURE__ */jsx8(Notice, {
+          children: [/* @__PURE__ */jsx9(Notice, {
             text: "\u624B\u673A\u517C\u5BB9\u89C6\u56FE\u3002\u5B8C\u6574\u7684\u81EA\u7531\u753B\u5E03\u3001\u52A8\u753B\u548C\u9875\u9762\u4EA4\u4E92\u5728\u684C\u9762\u7248\u4F7F\u7528\uFF1B\u8FD9\u91CC\u53EF\u4EE5\u67E5\u770B\u6458\u8981\u3001\u51B3\u7B56\u5E76\u4E0E agent \u4EA4\u6D41\u3002"
-          }), /* @__PURE__ */jsx8(Markdown, {
+          }), /* @__PURE__ */jsx9(Markdown, {
             children: typeof board.canvas.data.summary === "string" ? board.canvas.data.summary : "Agent \u5C1A\u672A\u63D0\u4F9B\u6587\u5B57\u6458\u8981\u3002\u4F60\u53EF\u4EE5\u76F4\u63A5\u63D0\u95EE\uFF0C\u56DE\u590D\u4F1A\u51FA\u73B0\u5728\u8BA8\u8BBA\u91CC\u3002"
           })]
-        }), query.error || query.liveError || frameError || message && !compose && !selectedInteractionId ? /* @__PURE__ */jsx8(View7, {
+        }), /* @__PURE__ */jsx9(ComponentEditPanel, {
+          editor: componentEditor
+        }), query.error || query.liveError || frameError || message && !compose && !selectedInteractionId ? /* @__PURE__ */jsx9(View8, {
           style: {
             position: "absolute",
             left: 8,
             right: 8,
             top: 8
           },
-          children: /* @__PURE__ */jsx8(Notice, {
+          children: /* @__PURE__ */jsx9(Notice, {
             error: true,
             text: query.error ? "\u8FDE\u63A5\u6682\u65F6\u4E2D\u65AD\u3002\u5F53\u524D\u662F\u4E0A\u6B21\u6536\u5230\u7684\u5185\u5BB9\uFF0C\u5C1A\u672A\u786E\u8BA4\u6700\u65B0\u72B6\u6001\u3002" : query.liveError ? errorMessage(query.liveError) : frameError || message || ""
           })
-        }) : null, compose || selectedInteractionId ? /* @__PURE__ */jsxs7(View7, {
+        }) : null, compose || selectedInteractionId ? /* @__PURE__ */jsxs8(View8, {
           testID: "board-local-popover",
           accessibilityLabel: "\u539F\u4F4D\u4EA4\u6D41",
           onLayout: event => setPopoverHeight(event.nativeEvent.layout.height),
@@ -4528,7 +4953,7 @@ function BoardContent({
             },
             elevation: 10
           },
-          children: [/* @__PURE__ */jsxs7(View7, {
+          children: [/* @__PURE__ */jsxs8(View8, {
             style: {
               flexDirection: "row",
               alignItems: "center",
@@ -4537,19 +4962,19 @@ function BoardContent({
               borderBottomWidth: 1,
               borderColor: c.border
             },
-            children: [/* @__PURE__ */jsx8(Text6, {
+            children: [/* @__PURE__ */jsx9(Text7, {
               style: {
                 color: c.foreground,
                 fontWeight: "600",
                 flex: 1
               },
               children: compose ? "\u53D1\u7ED9 agent" : "\u8FD9\u91CC\u7684\u8BA8\u8BBA"
-            }), !canRenderFrames ? /* @__PURE__ */jsx8(Action, {
+            }), !canRenderFrames ? /* @__PURE__ */jsx9(Action, {
               label: "\u5173\u95ED",
               disabled: sending,
               onPress: closePopover
             }) : null]
-          }), /* @__PURE__ */jsxs7(ScrollView3, {
+          }), /* @__PURE__ */jsxs8(ScrollView3, {
             style: {
               flexShrink: 1
             },
@@ -4558,7 +4983,7 @@ function BoardContent({
               gap: 16
             },
             keyboardShouldPersistTaps: "handled",
-            children: [interactionLocation && interactionLocation.id === selectedInteractionId && interactionLocation.location !== "component" ? /* @__PURE__ */jsx8(Copy, {
+            children: [interactionLocation && interactionLocation.id === selectedInteractionId && interactionLocation.location !== "component" ? /* @__PURE__ */jsx9(Copy, {
               small: true,
               muted: true,
               children: {
@@ -4567,7 +4992,7 @@ function BoardContent({
                 hidden: "\u7EC4\u4EF6\u5F53\u524D\u9690\u85CF \xB7 \u53EF\u4ECE\u4FA7\u680F\u8BF7\u6C42\u5B9A\u4F4D",
                 snapshot: "\u672A\u5B9A\u4F4D\u5230\u5F53\u524D\u7EC4\u4EF6 \xB7 \u53EF\u67E5\u770B\u539F\u59CB\u5F15\u7528"
               }[interactionLocation.location]
-            }) : null, thread.map(item => /* @__PURE__ */jsx8(InteractionContent, {
+            }) : null, thread.map(item => /* @__PURE__ */jsx9(InteractionContent, {
               item,
               board,
               frameTheme,
@@ -4579,34 +5004,34 @@ function BoardContent({
                   agentId: item.agentId
                 });
               }
-            }, item.id)), compose ? /* @__PURE__ */jsxs7(View7, {
+            }, item.id)), compose ? /* @__PURE__ */jsxs8(View8, {
               style: {
                 gap: 10
               },
-              children: [!thread.length ? /* @__PURE__ */jsx8(AnchorPreview, {
+              children: [!thread.length ? /* @__PURE__ */jsx9(AnchorPreview, {
                 anchor: compose.anchor,
                 compact: true,
                 captureStatus: compose.captureStatus
-              }) : null, compose.captureStatus ? /* @__PURE__ */jsx8(View7, {
+              }) : null, compose.captureStatus ? /* @__PURE__ */jsx9(View8, {
                 style: {
                   minHeight: 36
                 },
-                children: /* @__PURE__ */jsx8(Copy, {
+                children: /* @__PURE__ */jsx9(Copy, {
                   small: true,
                   muted: true,
                   children: compose.captureStatus === "pending" ? "\u622A\u56FE\u51C6\u5907\u4E2D\uFF1B\u73B0\u5728\u53D1\u9001\u4F1A\u4FDD\u7559\u6587\u5B57\u548C\u4F4D\u7F6E\uFF0C\u4E0D\u9644\u56FE\u7247\u3002" : compose.captureStatus === "failed" ? `\u622A\u56FE\u5931\u8D25\uFF1A${captureFailureNames[compose.captureFailureReason ?? "generation-failed"]}\u6587\u5B57\u548C\u4F4D\u7F6E\u5DF2\u4FDD\u7559\u3002` : compose.captureStatus === "omitted" ? "\u6B64\u6B21\u53D1\u9001\u4E0D\u9644\u56FE\u7247\uFF0C\u4FDD\u7559\u539F\u6765\u7684\u6587\u5B57\u548C\u4F4D\u7F6E\u3002" : "\u5DF2\u9644\u9009\u533A\u622A\u56FE\u3002"
                 })
-              }) : null, compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsx8(Copy, {
+              }) : null, compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsx9(Copy, {
                 small: true,
                 muted: true,
                 children: "\u5F15\u7528\u6765\u81EA\u65E7\u753B\u5E03\u7248\u672C\uFF1Bagent \u4F1A\u5BF9\u7167\u539F\u6765\u7684\u4F4D\u7F6E\u548C\u5FEB\u7167\u3002"
-              }) : null, /* @__PURE__ */jsx8(SideAgentPicker, {
+              }) : null, /* @__PURE__ */jsx9(SideAgentPicker, {
                 interactions: board.interactions,
                 selectedId: board.sideAgentId,
                 pending: Boolean(board.pendingSideInteractionId),
                 disabled: sending || sideTargetBlocked || Boolean(compose.intentId),
                 onSelect: chooseSideAgent
-              }), canRenderFrames ? /* @__PURE__ */jsx8(WebMessageInput, {
+              }), canRenderFrames ? /* @__PURE__ */jsx9(WebMessageInput, {
                 value: compose.text,
                 focusToken: inputFocusToken,
                 disabled: sending || sideTargetBlocked,
@@ -4637,7 +5062,7 @@ function BoardContent({
                   minHeight: 80,
                   fontSize: 14
                 }
-              }) : /* @__PURE__ */jsx8(TextInput2, {
+              }) : /* @__PURE__ */jsx9(TextInput3, {
                 autoFocus: true,
                 accessibilityLabel: "\u53D1\u7ED9 agent \u7684\u6D88\u606F",
                 value: compose.text,
@@ -4669,13 +5094,13 @@ function BoardContent({
                   minHeight: 80,
                   textAlignVertical: "top"
                 }
-              }), !board.ownerAgentId ? /* @__PURE__ */jsx8(Notice, {
+              }), !board.ownerAgentId ? /* @__PURE__ */jsx9(Notice, {
                 error: true,
                 text: "\u8FD9\u5757 Board \u5C1A\u672A\u5173\u8054\u8D1F\u8D23\u7684 agent\u3002\u8BF7\u8BA9 agent \u63A5\u7BA1\u540E\u518D\u53D1\u9001\u3002"
-              }) : null, message ? /* @__PURE__ */jsx8(Notice, {
+              }) : null, message ? /* @__PURE__ */jsx9(Notice, {
                 error: true,
                 text: message
-              }) : null, sideChoiceUncertain ? /* @__PURE__ */jsx8(Action, {
+              }) : null, sideChoiceUncertain ? /* @__PURE__ */jsx9(Action, {
                 label: choosingSide ? "\u6B63\u5728\u6838\u5BF9 Side \u76EE\u6807\u2026" : "\u6838\u5BF9 Side \u76EE\u6807",
                 disabled: choosingSide,
                 onPress: () => {
@@ -4683,7 +5108,7 @@ function BoardContent({
                     if (confirmed) setMessage(null);
                   });
                 }
-              }) : null, /* @__PURE__ */jsx8(View7, {
+              }) : null, /* @__PURE__ */jsx9(View8, {
                 style: {
                   flexDirection: "row",
                   alignItems: "center",
@@ -4691,22 +5116,22 @@ function BoardContent({
                   flexWrap: "wrap",
                   justifyContent: "flex-end"
                 },
-                children: compose.intentId ? /* @__PURE__ */jsx8(Action, {
+                children: compose.intentId ? /* @__PURE__ */jsx9(Action, {
                   label: sending ? "\u53D1\u9001\u4E2D\u2026" : "\u91CD\u8BD5\u539F\u53D1\u9001",
                   disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                   primary: true,
                   onPress: () => {
                     void submit(compose.destination ?? "main");
                   }
-                }) : /* @__PURE__ */jsxs7(Fragment2, {
-                  children: [/* @__PURE__ */jsx8(Action, {
+                }) : /* @__PURE__ */jsxs8(Fragment3, {
+                  children: [/* @__PURE__ */jsx9(Action, {
                     label: board.sideAgentId || board.pendingSideInteractionId ? "Side \u53D1\u9001" : "\u65B0\u5EFA Side \u5E76\u53D1\u9001",
                     icon: "GitBranch",
                     disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                     onPress: () => {
                       void submit("side");
                     }
-                  }), /* @__PURE__ */jsx8(Action, {
+                  }), /* @__PURE__ */jsx9(Action, {
                     label: "\u4E3B\u4F1A\u8BDD\u53D1\u9001",
                     disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                     primary: true,
@@ -4715,11 +5140,11 @@ function BoardContent({
                     }
                   })]
                 })
-              }), compose.intentId ? /* @__PURE__ */jsx8(Copy, {
+              }), compose.intentId ? /* @__PURE__ */jsx9(Copy, {
                 small: true,
                 muted: true,
                 children: "\u91CD\u8BD5\u6CBF\u539F\u76EE\u6807\u7EE7\u7EED\uFF1B\u4FEE\u6539\u6587\u5B57\u540E\u53EF\u4F5C\u4E3A\u65B0\u6D88\u606F\u53D1\u9001\u3002"
-              }) : null, /* @__PURE__ */jsx8(Copy, {
+              }) : null, /* @__PURE__ */jsx9(Copy, {
                 small: true,
                 muted: true,
                 children: "Enter \u4E3B\u4F1A\u8BDD \xB7 \u2318 / Ctrl + Enter \u5F53\u524D Side \u2318 / Ctrl + Option / Alt + Enter \u65B0 Side \xB7 Shift+Enter \u6362\u884C"
@@ -4727,7 +5152,7 @@ function BoardContent({
             }) : null]
           })]
         }) : null]
-      }), canRenderFrames ? /* @__PURE__ */jsx8(DiscussionRail, {
+      }), canRenderFrames ? /* @__PURE__ */jsx9(DiscussionRail, {
         markers,
         compact: stageWidth < 720,
         selectedId: selectedInteractionId,
@@ -4735,7 +5160,7 @@ function BoardContent({
         statusNames,
         onOpen: locateInteraction
       }) : null]
-    }), /* @__PURE__ */jsxs7(View7, {
+    }), /* @__PURE__ */jsxs8(View8, {
       style: {
         paddingHorizontal: 12,
         paddingVertical: 5,
@@ -4746,32 +5171,32 @@ function BoardContent({
         justifyContent: "space-between",
         gap: 8
       },
-      children: [canRenderFrames ? /* @__PURE__ */jsx8(Copy, {
+      children: [canRenderFrames ? /* @__PURE__ */jsx9(Copy, {
         small: true,
         muted: true,
         children: "\u9009\u4E2D\u6587\u5B57 / Option + \u62D6\u52A8 / \u53F3\u952E\uFF0C\u5373\u53EF\u8F93\u5165 \xB7 Esc \u53D6\u6D88"
-      }) : null, /* @__PURE__ */jsxs7(View7, {
+      }) : null, /* @__PURE__ */jsxs8(View8, {
         style: {
           flexDirection: "row",
           alignItems: "center",
           gap: 12
         },
-        children: [/* @__PURE__ */jsx8(BoardConnectionStatus, {
+        children: [/* @__PURE__ */jsx9(BoardConnectionStatus, {
           status: query.error ? "disconnected" : query.liveStatus
-        }), /* @__PURE__ */jsxs7(Copy, {
+        }), /* @__PURE__ */jsxs8(Copy, {
           small: true,
           muted: true,
           children: ["r", board.revision, " \xB7 ", timeLabel(board.updatedAt)]
         })]
       })]
-    }), /* @__PURE__ */jsx8(Modal, {
+    }), /* @__PURE__ */jsx9(Modal, {
       title: drawer === "decisions" ? "Agent \u505A\u8FC7\u7684\u9ED8\u8BA4\u51B3\u7B56" : drawer === "threads" ? "\u56F4\u7ED5\u753B\u5E03\u7684\u8BA8\u8BBA" : "\u53D1\u751F\u4E86\u4EC0\u4E48\u53D8\u5316",
       open: drawer !== null,
       onOpenChange: open => {
         if (!open) setDrawer(null);
       },
-      children: /* @__PURE__ */jsxs7(Modal.Content, {
-        children: [drawer === "decisions" ? /* @__PURE__ */jsx8(DecisionList, {
+      children: /* @__PURE__ */jsxs8(Modal.Content, {
+        children: [drawer === "decisions" ? /* @__PURE__ */jsx9(DecisionList, {
           board,
           onUpdate: updateDecision,
           onQuestion: decision => {
@@ -4794,47 +5219,47 @@ function BoardContent({
             composeRef.current = draft;
             setCompose(draft);
           }
-        }) : null, drawer === "threads" ? /* @__PURE__ */jsxs7(View7, {
+        }) : null, drawer === "threads" ? /* @__PURE__ */jsxs8(View8, {
           style: {
             gap: 20
           },
-          children: [!board.interactions.length ? /* @__PURE__ */jsx8(Copy, {
+          children: [!board.interactions.length ? /* @__PURE__ */jsx9(Copy, {
             muted: true,
             children: "\u6307\u7740\u753B\u5E03\u63D0\u95EE\u3001\u63D0\u51FA\u4FEE\u6539\uFF0C\u6216\u5F00\u4E00\u4E2A\u72EC\u7ACB\u8BA8\u8BBA\u3002\u4EA4\u6D41\u4F1A\u4FDD\u7559\u5F53\u65F6\u7684\u5F15\u7528\u548C\u7248\u672C\u3002"
-          }) : null, [...interactions].filter(item => interactionRoot(item.id, interactions) === item.id).reverse().map(interaction => /* @__PURE__ */jsxs7(View7, {
+          }) : null, [...interactions].filter(item => interactionRoot(item.id, interactions) === item.id).reverse().map(interaction => /* @__PURE__ */jsxs8(View8, {
             style: {
               borderBottomWidth: 1,
               borderColor: c.border,
               paddingBottom: 18,
               gap: 10
             },
-            children: [/* @__PURE__ */jsxs7(Copy, {
+            children: [/* @__PURE__ */jsxs8(Copy, {
               small: true,
               muted: true,
               children: [kindNames[interaction.kind], " \xB7 ", statusNames[interactionThread(interaction.id, interactions).at(-1)?.status ?? interaction.status], " \xB7 ", timeLabel(interaction.createdAt)]
-            }), /* @__PURE__ */jsx8(Copy, {
+            }), /* @__PURE__ */jsx9(Copy, {
               children: interaction.text
-            }), /* @__PURE__ */jsx8(Action, {
+            }), /* @__PURE__ */jsx9(Action, {
               label: "\u539F\u4F4D\u67E5\u770B\u548C\u7EE7\u7EED\u4EA4\u6D41",
               onPress: () => locateInteraction(interaction.id)
             })]
           }, interaction.id))]
-        }) : null, drawer === "history" ? /* @__PURE__ */jsxs7(View7, {
+        }) : null, drawer === "history" ? /* @__PURE__ */jsxs8(View8, {
           style: {
             gap: 14
           },
-          children: [[...board.events].reverse().slice(0, 100).map(event => /* @__PURE__ */jsxs7(View7, {
+          children: [[...board.events].reverse().slice(0, 100).map(event => /* @__PURE__ */jsxs8(View8, {
             style: {
               gap: 3
             },
-            children: [/* @__PURE__ */jsx8(Copy, {
+            children: [/* @__PURE__ */jsx9(Copy, {
               children: event.summary
-            }), /* @__PURE__ */jsxs7(Copy, {
+            }), /* @__PURE__ */jsxs8(Copy, {
               muted: true,
               small: true,
               children: ["r", event.revision, " \xB7 ", event.source, " \xB7 ", timeLabel(event.at)]
             })]
-          }, event.id)), !board.events.length ? /* @__PURE__ */jsx8(Copy, {
+          }, event.id)), !board.events.length ? /* @__PURE__ */jsx9(Copy, {
             muted: true,
             children: "\u8FD8\u6CA1\u6709\u53D8\u5316\u3002"
           }) : null]
@@ -4854,33 +5279,33 @@ function InteractionContent({
 }) {
   var c = useColors();
   var discussion = item.kind === "fork" || item.kind === "reply";
-  var [showSnapshot, setShowSnapshot] = useState6(false);
-  var [visualState, setVisualState] = useState6({});
-  var [visualError, setVisualError] = useState6();
+  var [showSnapshot, setShowSnapshot] = useState7(false);
+  var [visualState, setVisualState] = useState7({});
+  var [visualError, setVisualError] = useState7();
   var stale = item.anchor && item.anchor.canvasRevision !== board.canvas.revision;
   var follow = text => onFollow(discussion ? "reply" : "question", text);
-  return /* @__PURE__ */jsxs7(View7, {
+  return /* @__PURE__ */jsxs8(View8, {
     style: {
       gap: 10,
       paddingBottom: 14,
       borderBottomWidth: 1,
       borderColor: c.border
     },
-    children: [/* @__PURE__ */jsxs7(Copy, {
+    children: [/* @__PURE__ */jsxs8(Copy, {
       small: true,
       muted: true,
       children: [kindNames[item.kind], " \xB7 ", statusNames[item.status], " \xB7 ", timeLabel(item.createdAt)]
-    }), /* @__PURE__ */jsx8(Copy, {
+    }), /* @__PURE__ */jsx9(Copy, {
       children: item.text
-    }), stale ? /* @__PURE__ */jsxs7(Copy, {
+    }), stale ? /* @__PURE__ */jsxs8(Copy, {
       small: true,
       muted: true,
       children: ["\u65E7\u5F15\u7528 \xB7 \u753B\u5E03 v", item.anchor.canvasRevision, "\uFF0C\u5F53\u524D v", board.canvas.revision, "\u3002\u5F15\u7528\u4FDD\u7559\u63D0\u95EE\u65F6\u5185\u5BB9\uFF1B\u6807\u8BB0\u53EF\u8DDF\u968F\u4ECD\u80FD\u786E\u8BA4\u7684\u7EC4\u4EF6\uFF0C\u8BF7\u6838\u5BF9\u5F53\u524D\u5185\u5BB9\u3002"]
-    }) : null, showSnapshot ? /* @__PURE__ */jsx8(AnchorPreview, {
+    }) : null, showSnapshot ? /* @__PURE__ */jsx9(AnchorPreview, {
       anchor: item.anchor
-    }) : null, item.response ? /* @__PURE__ */jsx8(Markdown, {
+    }) : null, item.response ? /* @__PURE__ */jsx9(Markdown, {
       children: item.response
-    }) : null, item.responseCanvas && canRenderFrames ? /* @__PURE__ */jsx8(View7, {
+    }) : null, item.responseCanvas && canRenderFrames ? /* @__PURE__ */jsx9(View8, {
       style: {
         height: 260,
         borderWidth: 1,
@@ -4888,7 +5313,7 @@ function InteractionContent({
         borderRadius: 8,
         overflow: "hidden"
       },
-      children: /* @__PURE__ */jsx8(CanvasFrame, {
+      children: /* @__PURE__ */jsx9(CanvasFrame, {
         boardId: `${board.id}.response.${item.id}`,
         title: "Agent \u7684\u53EF\u4EA4\u4E92\u56DE\u7B54",
         canvas: item.responseCanvas,
@@ -4906,33 +5331,33 @@ function InteractionContent({
           void openExternalUrl(url).catch(error => setVisualError(errorMessage(error)));
         }
       })
-    }) : null, item.responseCanvas && !canRenderFrames ? /* @__PURE__ */jsx8(Copy, {
+    }) : null, item.responseCanvas && !canRenderFrames ? /* @__PURE__ */jsx9(Copy, {
       small: true,
       muted: true,
       children: "\u8FD9\u6761\u56DE\u590D\u5305\u542B\u53EF\u4EA4\u4E92\u56FE\u89E3\uFF0C\u8BF7\u5728\u684C\u9762\u67E5\u770B\u3002"
-    }) : null, item.error || visualError ? /* @__PURE__ */jsx8(Notice, {
+    }) : null, item.error || visualError ? /* @__PURE__ */jsx9(Notice, {
       error: true,
       text: item.error || visualError || ""
-    }) : null, item.resultReferences.length ? /* @__PURE__ */jsxs7(Copy, {
+    }) : null, item.resultReferences.length ? /* @__PURE__ */jsxs8(Copy, {
       small: true,
       muted: true,
       children: ["\u4F9D\u636E\uFF1A", item.resultReferences.join(" \xB7 ")]
-    }) : null, /* @__PURE__ */jsxs7(View7, {
+    }) : null, /* @__PURE__ */jsxs8(View8, {
       style: {
         flexDirection: "row",
         flexWrap: "wrap",
         gap: 6
       },
-      children: [item.anchor ? /* @__PURE__ */jsx8(Action, {
+      children: [item.anchor ? /* @__PURE__ */jsx9(Action, {
         label: showSnapshot ? "\u6536\u8D77\u539F\u59CB\u5F15\u7528" : "\u539F\u59CB\u5F15\u7528",
         onPress: () => setShowSnapshot(value => !value)
-      }) : null, unconfirmed && item.status === "failed" ? /* @__PURE__ */jsx8(Action, {
+      }) : null, unconfirmed && item.status === "failed" ? /* @__PURE__ */jsx9(Action, {
         label: "\u91CD\u8BD5\u53D1\u9001",
         onPress: onRetry
-      }) : null, !unconfirmed && (!discussion || item.agentId) ? /* @__PURE__ */jsx8(Action, {
+      }) : null, !unconfirmed && (!discussion || item.agentId) ? /* @__PURE__ */jsx9(Action, {
         label: "\u7EE7\u7EED\u4EA4\u6D41",
         onPress: () => follow()
-      }) : null, item.agentId ? /* @__PURE__ */jsx8(Action, {
+      }) : null, item.agentId ? /* @__PURE__ */jsx9(Action, {
         label: "\u4F1A\u8BDD",
         onPress: onOpenAgent
       }) : null]
@@ -4945,15 +5370,15 @@ function AnchorPreview({
   captureStatus
 }) {
   if (!anchor) return null;
-  return /* @__PURE__ */jsxs7(View7, {
+  return /* @__PURE__ */jsxs8(View8, {
     style: {
       gap: 6
     },
-    children: [/* @__PURE__ */jsxs7(Copy, {
+    children: [/* @__PURE__ */jsxs8(Copy, {
       muted: true,
       small: true,
       children: ["\u5F15\u7528 r", anchor.boardRevision, " \xB7 ", anchor.text || (anchor.kind === "point" ? "\u6307\u5B9A\u4F4D\u7F6E" : anchor.kind === "region" ? "\u6846\u9009\u533A\u57DF" : "\u753B\u5E03"), anchor.rect ? ` \xB7 (${Math.round(anchor.rect.x)}, ${Math.round(anchor.rect.y)})` : ""]
-    }), anchor.image ? /* @__PURE__ */jsx8(Image, {
+    }), anchor.image ? /* @__PURE__ */jsx9(Image, {
       source: {
         uri: `data:${anchor.image.mimeType};base64,${anchor.image.data}`
       },
@@ -4963,12 +5388,12 @@ function AnchorPreview({
         height: compact ? 72 : 150
       },
       accessibilityLabel: "\u63D0\u95EE\u65F6\u7684\u753B\u9762\u5FEB\u7167"
-    }) : captureStatus ? /* @__PURE__ */jsx8(View7, {
+    }) : captureStatus ? /* @__PURE__ */jsx9(View8, {
       style: {
         height: compact ? 72 : 150,
         justifyContent: "center"
       },
-      children: /* @__PURE__ */jsx8(Copy, {
+      children: /* @__PURE__ */jsx9(Copy, {
         small: true,
         muted: true,
         children: captureStatus === "pending" ? "\u622A\u56FE\u51C6\u5907\u4E2D\u2026" : "\u672A\u9644\u56FE\u7247"
@@ -4982,38 +5407,38 @@ function DecisionList({
   onQuestion
 }) {
   var c = useColors();
-  var [showDismissed, setShowDismissed] = useState6(false);
+  var [showDismissed, setShowDismissed] = useState7(false);
   var basisNames = {
     explicit: "Agent \u660E\u786E\u8BB0\u5F55",
     observed: "\u89C2\u5BDF\u5230\u7684\u884C\u4E3A\u53D8\u5316",
     inferred: "\u5F85\u6838\u5B9E\u7684\u53EF\u80FD\u51B3\u7B56"
   };
   var decisions = board.decisions.filter(d => showDismissed || !["dismissed", "superseded"].includes(d.status)).sort((a, b) => Number(b.status === "questioned") - Number(a.status === "questioned") || b.updatedAt.localeCompare(a.updatedAt));
-  return /* @__PURE__ */jsxs7(View7, {
+  return /* @__PURE__ */jsxs8(View8, {
     style: {
       gap: 18
     },
-    children: [/* @__PURE__ */jsx8(Copy, {
+    children: [/* @__PURE__ */jsx9(Copy, {
       muted: true,
       children: "\u8BB0\u5F55 agent \u5728\u5DE5\u4F5C\u9014\u4E2D\u81EA\u884C\u4F5C\u51FA\u7684\u9009\u62E9\u3002\u63A8\u65AD\u4E0E\u4E8B\u5B9E\u5206\u5F00\uFF1B\u6CA1\u6709\u8BF4\u51FA\u7684\u7406\u7531\u4F1A\u6807\u4E3A\u201C\u672A\u8BF4\u660E\u201D\u3002"
-    }), /* @__PURE__ */jsxs7(Copy, {
+    }), /* @__PURE__ */jsxs8(Copy, {
       small: true,
       muted: true,
       children: [board.extraction.lastCheckedAt ? `\u6700\u8FD1\u68C0\u67E5\uFF1A${timeLabel(board.extraction.lastCheckedAt)}` : "\u5C1A\u672A\u5B8C\u6210\u4F1A\u8BDD\u68C0\u67E5", board.extraction.note ? ` \xB7 ${board.extraction.note}` : ""]
-    }), !decisions.length ? /* @__PURE__ */jsx8(Copy, {
+    }), !decisions.length ? /* @__PURE__ */jsx9(Copy, {
       children: "\u5C1A\u65E0\u5DF2\u8BB0\u5F55\u7684\u51B3\u7B56\u3002\u8FD9\u4E0D\u4EE3\u8868 agent \u6CA1\u6709\u4F5C\u8FC7\u9ED8\u8BA4\u9009\u62E9\u3002"
-    }) : null, decisions.map(decision => /* @__PURE__ */jsxs7(View7, {
+    }) : null, decisions.map(decision => /* @__PURE__ */jsxs8(View8, {
       style: {
         gap: 8,
         paddingBottom: 16,
         borderBottomWidth: 1,
         borderColor: c.border
       },
-      children: [/* @__PURE__ */jsxs7(Copy, {
+      children: [/* @__PURE__ */jsxs8(Copy, {
         small: true,
         muted: true,
         children: [basisNames[decision.basis], decision.status === "questioned" ? " \xB7 \u5DF2\u8D28\u7591" : decision.status === "dismissed" ? " \xB7 \u5DF2\u6392\u9664" : decision.status === "superseded" ? " \xB7 \u5DF2\u53D6\u4EE3" : ""]
-      }), /* @__PURE__ */jsx8(Text6, {
+      }), /* @__PURE__ */jsx9(Text7, {
         selectable: true,
         style: {
           color: c.foreground,
@@ -5022,45 +5447,45 @@ function DecisionList({
           lineHeight: 23
         },
         children: decision.choice
-      }), /* @__PURE__ */jsx8(Copy, {
+      }), /* @__PURE__ */jsx9(Copy, {
         children: decision.rationale || "\u7406\u7531\u672A\u8BF4\u660E"
-      }), decision.impact ? /* @__PURE__ */jsxs7(Copy, {
+      }), decision.impact ? /* @__PURE__ */jsxs8(Copy, {
         muted: true,
         children: ["\u5F71\u54CD\uFF1A", decision.impact]
-      }) : null, decision.evidence.map((evidence, i) => /* @__PURE__ */jsxs7(View7, {
+      }) : null, decision.evidence.map((evidence, i) => /* @__PURE__ */jsxs8(View8, {
         style: {
           gap: 2
         },
-        children: [/* @__PURE__ */jsxs7(Copy, {
+        children: [/* @__PURE__ */jsxs8(Copy, {
           small: true,
           muted: true,
           children: [evidence.kind, " \xB7 ", evidence.reference]
-        }), evidence.excerpt ? /* @__PURE__ */jsx8(Copy, {
+        }), evidence.excerpt ? /* @__PURE__ */jsx9(Copy, {
           small: true,
           children: evidence.excerpt
         }) : null]
-      }, i)), /* @__PURE__ */jsxs7(View7, {
+      }, i)), /* @__PURE__ */jsxs8(View8, {
         style: {
           flexDirection: "row",
           gap: 8,
           flexWrap: "wrap"
         },
-        children: [/* @__PURE__ */jsx8(Action, {
+        children: [/* @__PURE__ */jsx9(Action, {
           label: "\u56F4\u7ED5\u8FD9\u6761\u51B3\u7B56\u63D0\u95EE",
           onPress: () => onQuestion(decision)
-        }), decision.status === "active" ? /* @__PURE__ */jsx8(Action, {
+        }), decision.status === "active" ? /* @__PURE__ */jsx9(Action, {
           label: "\u6807\u4E3A\u6709\u5F02\u8BAE",
           onPress: () => {
             void onUpdate(decision, "questioned");
           }
-        }) : null, decision.basis === "inferred" ? /* @__PURE__ */jsx8(Action, {
+        }) : null, decision.basis === "inferred" ? /* @__PURE__ */jsx9(Action, {
           label: "\u8FD9\u4E0D\u662F\u4E00\u4E2A\u51B3\u7B56",
           onPress: () => {
             void onUpdate(decision, "dismissed");
           }
         }) : null]
       })]
-    }, decision.id)), /* @__PURE__ */jsx8(Action, {
+    }, decision.id)), /* @__PURE__ */jsx9(Action, {
       label: showDismissed ? "\u9690\u85CF\u5DF2\u6392\u9664\u4E0E\u88AB\u53D6\u4EE3\u7684\u51B3\u7B56" : "\u67E5\u770B\u5DF2\u6392\u9664\u4E0E\u88AB\u53D6\u4EE3\u7684\u51B3\u7B56",
       onPress: () => setShowDismissed(value => !value)
     })]
@@ -5068,17 +5493,17 @@ function DecisionList({
 }
 
 // client/home.tsx
-import { jsx as jsx9, jsxs as jsxs8 } from "react/jsx-runtime";
+import { jsx as jsx10, jsxs as jsxs9 } from "react/jsx-runtime";
 var EMPTY_CANVAS = `<style>main{padding:clamp(24px,8vw,100px);max-width:760px;margin:auto}h1{font-size:clamp(30px,5vw,54px);letter-spacing:-.04em}p{line-height:1.8;opacity:.65}#content{min-height:30vh}</style><main><p>YOUR SHARED SURFACE</p><h1>\u4ECE\u4E00\u4E2A\u95EE\u9898\u5F00\u59CB\u3002</h1><p>\u8BA9 agent \u6839\u636E\u773C\u524D\u7684\u4EFB\u52A1\u7EC4\u7EC7\u8FD9\u91CC\u3002\u89E3\u91CA\u3001\u56FE\u8868\u3001\u52A8\u753B\u548C\u4E92\u52A8\u5DE5\u5177\uFF0C\u90FD\u53EF\u4EE5\u5728\u540C\u4E00\u5757\u753B\u5E03\u4E0A\u4E0D\u65AD\u751F\u957F\u3002</p><div id="content"></div></main>`;
 function BoardHome(props) {
-  var [selected, setSelected] = useState7(props.initialBoardId);
-  return selected ? /* @__PURE__ */jsx9(BoardView, {
+  var [selected, setSelected] = useState8(props.initialBoardId);
+  return selected ? /* @__PURE__ */jsx10(BoardView, {
     ...props,
     boardId: selected,
     onBack: () => setSelected(void 0)
-  }, `${props.host.id}:${selected}`) : /* @__PURE__ */jsx9(ColorContext.Provider, {
+  }, `${props.host.id}:${selected}`) : /* @__PURE__ */jsx10(ColorContext.Provider, {
     value: props.theme.colors,
-    children: /* @__PURE__ */jsx9(BoardIndex, {
+    children: /* @__PURE__ */jsx10(BoardIndex, {
       ...props,
       onSelect: setSelected
     })
@@ -5091,15 +5516,15 @@ function BoardIndex({
   onSelect
 }) {
   var c = useColors();
-  var create = useRpc4(createBoardRpc);
+  var create = useRpc5(createBoardRpc);
   var paseo = usePaseo();
   var boards = useBoardList(host.id, workspaceId);
-  var [creating, setCreating] = useState7(false);
-  var [title, setTitle] = useState7("");
-  var [owner, setOwner] = useState7(agentId);
-  var [pending, setPending] = useState7(false);
-  var [failure, setFailure] = useState7(null);
-  var [draftId, setDraftId] = useState7(() => localId("board"));
+  var [creating, setCreating] = useState8(false);
+  var [title, setTitle] = useState8("");
+  var [owner, setOwner] = useState8(agentId);
+  var [pending, setPending] = useState8(false);
+  var [failure, setFailure] = useState8(null);
+  var [draftId, setDraftId] = useState8(() => localId("board"));
   var agents = useQuery2({
     queryKey: ["paseo-board-owners", host.id],
     queryFn: () => paseo.agents.list(),
@@ -5129,12 +5554,12 @@ function BoardIndex({
       setPending(false);
     }
   });
-  return /* @__PURE__ */jsxs8(View8, {
+  return /* @__PURE__ */jsxs9(View9, {
     style: {
       flex: 1,
       backgroundColor: c.surface0
     },
-    children: [/* @__PURE__ */jsxs8(ScrollView4, {
+    children: [/* @__PURE__ */jsxs9(ScrollView4, {
       contentContainerStyle: {
         padding: 28,
         gap: 24,
@@ -5142,18 +5567,18 @@ function BoardIndex({
         width: "100%",
         alignSelf: "center"
       },
-      children: [/* @__PURE__ */jsxs8(View8, {
+      children: [/* @__PURE__ */jsxs9(View9, {
         style: {
           flexDirection: "row",
           alignItems: "center",
           gap: 16
         },
-        children: [/* @__PURE__ */jsxs8(View8, {
+        children: [/* @__PURE__ */jsxs9(View9, {
           style: {
             flex: 1,
             gap: 7
           },
-          children: [/* @__PURE__ */jsx9(Text7, {
+          children: [/* @__PURE__ */jsx10(Text8, {
             style: {
               color: c.foreground,
               fontSize: 28,
@@ -5161,11 +5586,11 @@ function BoardIndex({
               letterSpacing: -0.7
             },
             children: "Boards"
-          }), /* @__PURE__ */jsx9(Copy, {
+          }), /* @__PURE__ */jsx10(Copy, {
             muted: true,
             children: "\u56DE\u5230\u9879\u76EE\u7684\u73B0\u72B6\uFF0C\u6307\u7740\u5185\u5BB9\u4E0E agent \u4EA4\u6D41\u3002"
           })]
-        }), /* @__PURE__ */jsx9(Action, {
+        }), /* @__PURE__ */jsx10(Action, {
           label: "\u65B0\u5EFA Board",
           icon: "Plus",
           primary: true,
@@ -5174,29 +5599,29 @@ function BoardIndex({
             setCreating(true);
           }
         })]
-      }), /* @__PURE__ */jsx9(BoardConnectionStatus, {
+      }), /* @__PURE__ */jsx10(BoardConnectionStatus, {
         status: boards.liveStatus
-      }), boards.error ? /* @__PURE__ */jsx9(Notice, {
+      }), boards.error ? /* @__PURE__ */jsx10(Notice, {
         error: true,
         text: errorMessage(boards.error)
-      }) : null, boards.liveError ? /* @__PURE__ */jsx9(Notice, {
+      }) : null, boards.liveError ? /* @__PURE__ */jsx10(Notice, {
         error: true,
         text: errorMessage(boards.liveError)
-      }) : null, boards.isPending ? /* @__PURE__ */jsx9(Copy, {
+      }) : null, boards.isPending ? /* @__PURE__ */jsx10(Copy, {
         muted: true,
         children: "\u6B63\u5728\u8BFB\u53D6\u2026"
-      }) : null, boards.data?.boards.length === 0 ? /* @__PURE__ */jsxs8(View8, {
+      }) : null, boards.data?.boards.length === 0 ? /* @__PURE__ */jsxs9(View9, {
         style: {
           paddingVertical: 60,
           gap: 14
         },
-        children: [/* @__PURE__ */jsx9(Copy, {
+        children: [/* @__PURE__ */jsx10(Copy, {
           children: "\u8FD8\u6CA1\u6709 Board\u3002"
-        }), /* @__PURE__ */jsx9(Copy, {
+        }), /* @__PURE__ */jsx10(Copy, {
           muted: true,
           children: "\u4F60\u53EF\u4EE5\u8BA9 agent \u4E3A\u5F53\u524D\u4EFB\u52A1\u5EFA\u7ACB\u4E00\u5757\u6301\u7EED\u66F4\u65B0\u7684\u81EA\u7531\u753B\u5E03\uFF0C\u6216\u5148\u5173\u8054\u4E00\u4E2A agent \u5F00\u59CB\u3002"
         })]
-      }) : null, boards.data?.boards.map(board => /* @__PURE__ */jsxs8(Pressable6, {
+      }) : null, boards.data?.boards.map(board => /* @__PURE__ */jsxs9(Pressable6, {
         accessibilityRole: "button",
         accessibilityLabel: `\u6253\u5F00 ${board.title}`,
         onPress: () => onSelect(board.id),
@@ -5211,13 +5636,13 @@ function BoardIndex({
           backgroundColor: pressed ? c.surface2 : c.surface1,
           gap: 10
         }),
-        children: [/* @__PURE__ */jsxs8(View8, {
+        children: [/* @__PURE__ */jsxs9(View9, {
           style: {
             flexDirection: "row",
             alignItems: "center",
             gap: 12
           },
-          children: [/* @__PURE__ */jsx9(Text7, {
+          children: [/* @__PURE__ */jsx10(Text8, {
             style: {
               color: c.foreground,
               fontSize: 19,
@@ -5225,7 +5650,7 @@ function BoardIndex({
               flex: 1
             },
             children: board.title
-          }), /* @__PURE__ */jsxs8(View8, {
+          }), /* @__PURE__ */jsxs9(View9, {
             testID: `board-status-${board.id}`,
             accessibilityLabel: board.status === "processing" ? "\u5DE5\u4F5C\uFF1A\u5904\u7406\u4E2D" : board.status === "error" ? "\u5DE5\u4F5C\uFF1A\u9700\u8981\u5173\u6CE8" : "\u5DE5\u4F5C\uFF1A\u7A7A\u95F2",
             style: {
@@ -5233,19 +5658,19 @@ function BoardIndex({
               alignItems: "center",
               gap: 6
             },
-            children: [/* @__PURE__ */jsx9(View8, {
+            children: [/* @__PURE__ */jsx10(View9, {
               style: {
                 width: 7,
                 height: 7,
                 borderRadius: 4,
                 backgroundColor: board.status === "processing" ? c.accent : board.status === "error" ? c.statusDanger : c.foregroundMuted
               }
-            }), /* @__PURE__ */jsxs8(Copy, {
+            }), /* @__PURE__ */jsxs9(Copy, {
               muted: true,
               small: true,
               children: ["\u5DE5\u4F5C \xB7 ", board.status === "processing" ? "\u5904\u7406\u4E2D" : board.status === "error" ? "\u9700\u8981\u5173\u6CE8" : "\u7A7A\u95F2"]
             })]
-          }), board.unreadUpdateCount > 0 ? /* @__PURE__ */jsx9(View8, {
+          }), board.unreadUpdateCount > 0 ? /* @__PURE__ */jsx10(View9, {
             testID: `board-unread-${board.id}`,
             accessibilityLabel: `${board.unreadUpdateCount} \u5904\u672A\u770B\u66F4\u65B0`,
             style: {
@@ -5254,7 +5679,7 @@ function BoardIndex({
               paddingVertical: 3,
               borderRadius: 12
             },
-            children: /* @__PURE__ */jsxs8(Text7, {
+            children: /* @__PURE__ */jsxs9(Text8, {
               style: {
                 color: c.accentForeground,
                 fontSize: 12,
@@ -5263,30 +5688,30 @@ function BoardIndex({
               children: [board.unreadUpdateCount, " \u66F4\u65B0"]
             })
           }) : null]
-        }), /* @__PURE__ */jsxs8(Copy, {
+        }), /* @__PURE__ */jsxs9(Copy, {
           muted: true,
           small: true,
           children: [board.decisionCount, " \u4E2A agent \u51B3\u7B56 \xB7 ", board.pendingCount, " \u4E2A\u5F85\u843D\u5B9E\u4EA4\u6D41"]
-        }), /* @__PURE__ */jsxs8(Copy, {
+        }), /* @__PURE__ */jsxs9(Copy, {
           muted: true,
           small: true,
           children: ["\u66F4\u65B0\u4E8E ", timeLabel(board.updatedAt)]
         })]
       }, board.id))]
-    }), /* @__PURE__ */jsx9(Modal2, {
+    }), /* @__PURE__ */jsx10(Modal2, {
       title: "\u65B0\u5EFA Board",
       open: creating,
       onOpenChange: open => {
         if (!pending) setCreating(open);
       },
-      children: /* @__PURE__ */jsx9(Modal2.Content, {
-        children: /* @__PURE__ */jsxs8(View8, {
+      children: /* @__PURE__ */jsx10(Modal2.Content, {
+        children: /* @__PURE__ */jsxs9(View9, {
           style: {
             gap: 16
           },
-          children: [/* @__PURE__ */jsx9(Copy, {
+          children: [/* @__PURE__ */jsx10(Copy, {
             children: "\u5173\u8054\u8D1F\u8D23\u7684 agent\u3002\u753B\u5E03\u5185\u5BB9\u548C\u5E03\u5C40\u7531\u5B83\u968F\u4EFB\u52A1\u81EA\u7531\u6784\u5EFA\u3002"
-          }), /* @__PURE__ */jsx9(TextInput3, {
+          }), /* @__PURE__ */jsx10(TextInput4, {
             value: title,
             onChangeText: setTitle,
             editable: !pending,
@@ -5301,17 +5726,17 @@ function BoardIndex({
               borderRadius: 8,
               padding: 12
             }
-          }), /* @__PURE__ */jsx9(Copy, {
+          }), /* @__PURE__ */jsx10(Copy, {
             muted: true,
             small: true,
             children: "\u8D1F\u8D23\u7684 agent"
-          }), agents.error ? /* @__PURE__ */jsx9(Notice, {
+          }), agents.error ? /* @__PURE__ */jsx10(Notice, {
             error: true,
             text: errorMessage(agents.error)
-          }) : null, agents.isPending ? /* @__PURE__ */jsx9(Copy, {
+          }) : null, agents.isPending ? /* @__PURE__ */jsx10(Copy, {
             muted: true,
             children: "\u8BFB\u53D6\u4F1A\u8BDD\u2026"
-          }) : null, /* @__PURE__ */jsx9(ScrollView4, {
+          }) : null, /* @__PURE__ */jsx10(ScrollView4, {
             style: {
               maxHeight: 250
             },
@@ -5320,26 +5745,26 @@ function BoardIndex({
             },
             children: agents.data?.entries.filter(entry => entry.agent.status !== "closed" && (!workspaceId || entry.agent.workspaceId === workspaceId)).map(({
               agent
-            }) => /* @__PURE__ */jsx9(Action, {
+            }) => /* @__PURE__ */jsx10(Action, {
               label: agent.title || `Agent ${agent.id.slice(0, 8)}`,
               active: owner === agent.id,
               disabled: pending,
               onPress: () => setOwner(agent.id)
             }, agent.id))
-          }), failure ? /* @__PURE__ */jsx9(Notice, {
+          }), failure ? /* @__PURE__ */jsx10(Notice, {
             error: true,
             text: failure
-          }) : null, /* @__PURE__ */jsxs8(View8, {
+          }) : null, /* @__PURE__ */jsxs9(View9, {
             style: {
               flexDirection: "row",
               justifyContent: "flex-end",
               gap: 8
             },
-            children: [/* @__PURE__ */jsx9(Action, {
+            children: [/* @__PURE__ */jsx10(Action, {
               label: "\u53D6\u6D88",
               disabled: pending,
               onPress: () => setCreating(false)
-            }), /* @__PURE__ */jsx9(Action, {
+            }), /* @__PURE__ */jsx10(Action, {
               label: pending ? "\u521B\u5EFA\u4E2D\u2026" : "\u521B\u5EFA",
               primary: true,
               disabled: pending || !owner || !title.trim(),
@@ -5355,26 +5780,26 @@ function BoardIndex({
 }
 
 // index.client.tsx
-import { jsx as jsx10 } from "react/jsx-runtime";
+import { jsx as jsx11 } from "react/jsx-runtime";
 function Screen(props) {
-  return /* @__PURE__ */jsx10(BoardHome, {
+  return /* @__PURE__ */jsx11(BoardHome, {
     ...props,
     initialBoardId: props.params.boardId
   }, `${props.host.id}:${props.params.boardId ?? "all"}`);
 }
 function AgentPanel(props) {
-  return /* @__PURE__ */jsx10(BoardHome, {
+  return /* @__PURE__ */jsx11(BoardHome, {
     ...props,
     agentId: props.params.agentId
   }, `${props.host.id}:${props.workspaceId}:${props.params.agentId}`);
 }
 function WorkspacePanel(props) {
-  return /* @__PURE__ */jsx10(BoardHome, {
+  return /* @__PURE__ */jsx11(BoardHome, {
     ...props
   }, `${props.host.id}:${props.workspaceId}`);
 }
 function Sidebar(props) {
-  return /* @__PURE__ */jsx10(SidebarRow, {
+  return /* @__PURE__ */jsx11(SidebarRow, {
     label: "Boards",
     icon: "PanelsTopLeft",
     active: props.currentScreen?.screenId === "boards",
