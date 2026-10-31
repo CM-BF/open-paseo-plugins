@@ -129,6 +129,18 @@ describe("iframe received baseline", () => {
     expect(requests).toHaveLength(1);
     expect(receiver.snapshot(second, 3)?.snapshot).toEqual(second);
   });
+  it("validates deeply nested JSON without adding a depth limit and rejects cycles", () => {
+    const { first, receiver, requests } = setup();
+    let deep: Record<string, unknown> = { end: true };
+    for (let index = 0; index < 1000; index++) deep = { next: deep };
+    const second = changed(first, { deep });
+    expect(receiver.snapshot(second, 2)?.snapshot.canvas.data).toBe(second.canvas.data);
+    const shared = { n: 1 }, third = changed(second, { a: shared, b: shared });
+    expect(receiver.delta(delta(second, third, 2))?.snapshot.canvas.data).toEqual(third.canvas.data);
+    const cycle: Record<string, unknown> = {}; cycle.self = cycle;
+    expect(receiver.snapshot(changed(third, cycle), 4)).toBeNull();
+    expect(requests).toHaveLength(1);
+  });
   it("accepts escaped object keys, compact arrays and safe root JSON with prototype-named properties", () => {
     const { first, receiver } = setup();
     const second = changed(first, { rows: Array.from({ length: 10 }, (_, n) => n), "a/b": { "~": 1 } });

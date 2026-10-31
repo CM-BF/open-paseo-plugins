@@ -7,13 +7,19 @@ function (initial, requestSnapshot) {
   const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
   const record = value => value !== null && typeof value === "object" && !Array.isArray(value);
   const integer = value => Number.isSafeInteger(value) && value >= 0;
-  const json = (value, depth = 0) => {
-    if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-    if (typeof value === "number") return Number.isFinite(value);
-    if (!value || typeof value !== "object" || depth > 128) return false;
-    if (Array.isArray(value)) return value.every(item => json(item, depth + 1));
-    if (![Object.prototype, null].includes(Object.getPrototypeOf(value))) return false;
-    return Object.keys(value).every(key => json(value[key], depth + 1));
+  const json = value => {
+    const pending = [{ value }], ancestors = new Set();
+    while (pending.length) {
+      const entry = pending.pop(), item = entry.value;
+      if (entry.exit) { ancestors.delete(item); continue; }
+      if (item === null || typeof item === "string" || typeof item === "boolean") continue;
+      if (typeof item === "number") { if (!Number.isFinite(item)) return false; continue; }
+      if (!item || typeof item !== "object" || ancestors.has(item)) return false;
+      if (!Array.isArray(item) && ![Object.prototype, null].includes(Object.getPrototypeOf(item))) return false;
+      ancestors.add(item); pending.push({ value: item, exit: true });
+      for (const key of Object.keys(item)) pending.push({ value: item[key] });
+    }
+    return true;
   };
   const theme = value => record(value) && ["light", "dark"].includes(value.scheme) && record(value.tokens)
     && Object.entries(value.tokens).every(([key, item]) => /^host-[a-z0-9-]+$/.test(key) && typeof item === "string" && /^[#a-zA-Z0-9(),.%+*/ -]{1,200}$/.test(item));
