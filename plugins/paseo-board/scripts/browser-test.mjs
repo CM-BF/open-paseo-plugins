@@ -74,7 +74,11 @@ try {
     const origin = await evaluate(`(()=>{const r=document.querySelector('iframe').getBoundingClientRect();return {x:r.x,y:r.y}})()`);
     return { x: origin.x + box.x, y: origin.y + box.y, width: box.width, height: box.height };
   };
-  const click = async (selector) => { const b = await location(selector); await clickPoint(b.x + b.width / 2, b.y + b.height / 2); };
+  const click = async (selector) => {
+    const menu = await frame(`(()=>{const element=document.querySelector('[data-board-components]')?.shadowRoot.querySelector(${JSON.stringify(selector)});const menu=element?.closest('.popover');return menu?.hidden?(menu.classList.contains('relations')?'hierarchy':'more'):null})()`);
+    if (menu) { const toggle = await location(`[data-component-action="${menu}"]`); await clickPoint(toggle.x+toggle.width/2,toggle.y+toggle.height/2); }
+    const b = await location(selector); await clickPoint(b.x + b.width / 2, b.y + b.height / 2);
+  };
   const rightClickPoint = async (x, y, modifiers = 0) => {
     await command('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, modifiers });
     await command('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'right', buttons: 2, clickCount: 1, modifiers });
@@ -618,20 +622,26 @@ try {
   await update(`{boardRevision:hostProps.boardRevision+1,canvas:{...hostProps.canvas,revision:hostProps.canvas.revision+1,patches:[...hostProps.canvas.patches,{id:'editing-fixture',operation:'append',selector:'body',html:${JSON.stringify(editFixtureHtml)}}]}}`);
   await untilFrame("Boolean(document.querySelector('#edit-source'))");
   await frame("document.querySelector('#editing-fixture').scrollIntoView({block:'start'})");
+  await frame("(()=>{const style=document.createElement('style');style.id='preview-style-fixture';style.textContent=':root{--preview-test-gap:29px}body #editing-fixture{gap:var(--preview-test-gap)!important}#edit-area-a{border:3px solid rgb(80,90,110);box-sizing:border-box}';document.head.append(style);customElements.define('preview-constructor-check',class extends HTMLElement{constructor(){super();window.previewConstructors=(window.previewConstructors||0)+1}});const custom=document.createElement('preview-constructor-check');custom.style.cssText='display:block;width:11px;height:7px';document.querySelector('#editing-fixture').append(custom)})()");
   const editOrigin = await location('#edit-source');
   await command('Input.dispatchMouseEvent', {type:'mouseMoved',x:editOrigin.x+5,y:editOrigin.y+5,modifiers:12});
   await untilFrame("document.querySelector('[data-board-component-preview]')?.textContent==='#edit-source'");
+  const hoverGeometry = await frame("(()=>{const a=document.querySelector('[data-board-component-preview]').getBoundingClientRect(),b=document.querySelector('#edit-source').getBoundingClientRect();return {preview:{x:a.x,y:a.y,width:a.width,height:a.height},target:{x:b.x,y:b.y,width:b.width,height:b.height},delta:{x:a.x-b.x,y:a.y-b.y,width:a.width-b.width,height:a.height-b.height}}})()");
+  assert.ok(hoverGeometry.preview.width>0 && hoverGeometry.preview.height>0,JSON.stringify(hoverGeometry));
+  assert.ok(Object.values(hoverGeometry.delta).every(value=>Math.abs(value)<1),JSON.stringify(hoverGeometry));
   assert.equal(await frame("document.querySelector('#edit-source').hasAttribute('data-board-overlay')"),false);
   await command('Input.dispatchMouseEvent', {type:'mousePressed',x:editOrigin.x+5,y:editOrigin.y+5,button:'left',clickCount:1,modifiers:12});
   await command('Input.dispatchMouseEvent', {type:'mouseReleased',x:editOrigin.x+5,y:editOrigin.y+5,button:'left',clickCount:1,modifiers:12});
   await untilFrame("document.querySelector('[data-board-components]')?.shadowRoot.querySelector('[aria-current=true]')?.textContent==='#edit-source'");
   await command('Input.dispatchKeyEvent',{type:'keyUp',key:'Shift',code:'ShiftLeft',modifiers:0});
   await untilFrame("!document.querySelector('[data-board-component-preview]')");
-  const pickEditComponent = async (selector) => {
+  const toolbarGeometry = await frame("(()=>{const s=document.querySelector('[data-board-components]').shadowRoot,r=s.querySelector('.panel').getBoundingClientRect();return {width:r.width,height:r.height,menusHidden:Array.from(s.querySelectorAll('.popover')).every(p=>p.hidden),outline:s.querySelector('.outline').getBoundingClientRect().width}})()");
+  assert.ok(toolbarGeometry.height<=76 && toolbarGeometry.width<=610 && toolbarGeometry.menusHidden && toolbarGeometry.outline>100,JSON.stringify(toolbarGeometry));
+  const pickEditComponent = async (selector, label=selector) => {
     await frame(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center'})`);
     await update("{selectionMode:'component'}");
     const box = await location(selector); await clickPoint(box.x+5,box.y+5);
-    await untilFrame(`document.querySelector('[data-board-components]')?.shadowRoot.querySelector('[aria-current=true]')?.textContent===${JSON.stringify(selector)}`);
+    await untilFrame(`document.querySelector('[data-board-components]')?.shadowRoot.querySelector('[aria-current=true]')?.textContent===${JSON.stringify(label)}`);
   };
   check('holding Cmd/Ctrl+Shift previews the hovered component before clicking, enters persistent selection, and removes only its overlay on modifier release');
 
@@ -644,8 +654,24 @@ try {
   await until(`results.componentEdits.length===${editRequestCount+1}`);
   assert.equal(await frame("document.querySelector('#edit-source').parentElement.id"),'edit-area-a');
   assert.equal(await frame("document.querySelector('#edit-area-b').children.length"),0);
+  await untilFrame("document.querySelector('[data-board-component-layout]')?.shadowRoot.querySelector('#edit-area-b > #edit-source')");
+  assert.equal(await frame("document.querySelectorAll('#edit-source').length"),1);
+  const previewLayout = await frame("(()=>{const shadow=document.querySelector('[data-board-component-layout]').shadowRoot,original=document.querySelector('#edit-area-a'),cloned=shadow.querySelector('#edit-area-a'),placed=shadow.querySelector('#edit-area-b > #edit-source'),target=shadow.querySelector('#edit-area-b'),style=getComputedStyle(target),r=placed.getBoundingClientRect(),t=target.getBoundingClientRect();return {gap:getComputedStyle(shadow.querySelector('#editing-fixture')).gap,border:getComputedStyle(cloned).borderTopWidth,rootWidth:shadow.querySelector('html').getBoundingClientRect().width,realRootWidth:document.documentElement.clientWidth,width:cloned.getBoundingClientRect().width,realWidth:original.getBoundingClientRect().width,placedLeft:r.left,targetLeft:t.left+parseFloat(style.paddingLeft)+parseFloat(style.borderLeftWidth),placedWidth:r.width,targetContentWidth:target.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight),bodyMargin:getComputedStyle(shadow.querySelector('body')).margin,originalBodyMargin:getComputedStyle(document.body).margin,constructors:window.previewConstructors,hasCustom:shadow.querySelector('preview-constructor-check')!==null}})()");
+  assert.equal(previewLayout.gap,'29px'); assert.equal(previewLayout.border,'3px');
+  assert.ok(Math.abs(previewLayout.width-previewLayout.realWidth)<1 && Math.abs(previewLayout.rootWidth-previewLayout.realRootWidth)<1,JSON.stringify(previewLayout));
+  assert.ok(Math.abs(previewLayout.placedLeft-previewLayout.targetLeft)<1 && Math.abs(previewLayout.placedWidth-previewLayout.targetContentWidth)<1,JSON.stringify(previewLayout));
+  assert.equal(previewLayout.bodyMargin,previewLayout.originalBodyMargin); assert.equal(previewLayout.constructors,1); assert.equal(previewLayout.hasCustom,false);
+  assert.equal(await frame("document.querySelector('[data-board-component-layout]').shadowRoot.querySelector('script,[onclick]')===null"),true);
+  await click('[data-component-action="preview-toggle"]');
+  assert.equal(await frame("getComputedStyle(document.querySelector('[data-board-component-layout]')).display"),'none');
+  await click('[data-component-action="preview-toggle"]');
+  assert.notEqual(await frame("getComputedStyle(document.querySelector('[data-board-component-layout]')).display"),'none');
+  await click('[data-component-action="preview-toggle"]');
+  await command('Input.dispatchMouseEvent',{type:'mouseMoved',x:editOrigin.x+5,y:editOrigin.y+5,modifiers:12});
+  await untilFrame("document.querySelector('[data-board-component-preview]')?.textContent.includes('先处理待保存修改')");
   await evaluate(`finishComponentEdit(${editRequestCount},{status:'cancelled'})`);
   await untilFrame("document.querySelector('[data-board-components]').shadowRoot.querySelector('[role=status]').textContent.includes('未保存')");
+  assert.equal(await frame("document.querySelector('[data-board-component-layout]')===null"),true);
   check('copy and paste stage one bounded host edit without changing authored DOM; synthetic actions cannot propose edits and cancellation leaves the source intact');
 
   await pickEditComponent('#edit-source');
@@ -724,6 +750,8 @@ try {
   await command('Input.dispatchMouseEvent',{type:'mousePressed',x:handle.x+handle.width/2,y:handle.y+handle.height/2,button:'left',clickCount:1});
   await command('Input.dispatchMouseEvent',{type:'mouseMoved',x:target.x+5,y:target.y+5,button:'left',buttons:1});
   await untilFrame("document.querySelector('[data-board-component-preview]')?.textContent.includes('#edit-drag-leaf')");
+  const dragVisual = await frame("(()=>{const g=document.querySelector('[data-board-component-ghost]'),line=document.querySelector('[data-board-component-drop-line]');return {ghost:g?.shadowRoot.textContent.includes('Updated leading text'),scripts:g?.shadowRoot.querySelectorAll('script,[onclick]').length,width:g?.getBoundingClientRect().width,lineWidth:line?.getBoundingClientRect().width}})()");
+  assert.ok(dragVisual.ghost && dragVisual.scripts===0 && dragVisual.width>80 && dragVisual.lineWidth>20,JSON.stringify(dragVisual));
   await command('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});
   await command('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});
   await untilFrame("document.querySelector('[data-board-component-preview]')?.textContent.includes('#edit-drag-inner')");
@@ -734,11 +762,55 @@ try {
   assert.equal(await evaluate(`results.componentEdits[${dragIndex}].patch.destination`),'#edit-drag-inner');
   assert.equal(await evaluate(`results.componentEdits[${dragIndex}].patch.position`),'append');
   assert.equal(await frame('editSource.parentElement.id'),'edit-area-b');
+  console.log('MEASURE drag-preview',JSON.stringify(await frame("(()=>{const h=document.querySelector('[data-board-component-layout]');return {preview:Boolean(h),sourceParent:h?.shadowRoot.querySelector('#edit-source')?.parentElement.id,status:document.querySelector('[data-board-components]')?.shadowRoot.querySelector('[role=status]').textContent,elements:document.querySelectorAll('*').length}})()")));
+  await untilFrame("document.querySelector('[data-board-component-layout]')?.shadowRoot.querySelector('#edit-drag-inner > #edit-source')");
+  assert.equal(await frame("document.querySelector('[data-board-component-ghost]')===null && document.querySelector('[data-board-component-drop-line]')===null"),true);
+  await frame("document.querySelector('#edit-drag-inner').setAttribute('data-live-change','1')");
+  await untilFrame("!document.querySelector('[data-board-component-layout]')");
   await evaluate(`finishComponentEdit(${dragIndex},{status:'cancelled'})`);
   await untilFrame("document.querySelector('[data-board-components]').shadowRoot.querySelector('[role=status]').textContent.includes('未保存')");
   await key('Escape');
   await update("{selectionMode:'off'}");
-  check('dedicated drag handles preview destinations, Tab chooses the actual parent container, arrow keys choose insertion placement, and dropping only stages a cancellable edit');
+  check('compact controls retain visible component outlines; drag ghosts and insertion lines show the chosen hierarchy, and an isolated static layout preview reflows only copies then clears on cancellation or source changes');
+  const previewEdgeHtml = `<article id=preview-scroll-source style="width:120px;height:48px;background:rgb(80,180,130)">Preview source<button id=preview-original-button>Native</button></article><section id=preview-scroll-target style="width:260px;height:130px;overflow:auto;padding:8px;border:2px solid;display:flex;align-items:flex-start"><div style="width:700px;height:400px;flex:none">Spacer</div></section><style>#preview-scroll-target>#preview-scroll-source{width:120px;flex:none;margin-top:340px}</style>`;
+  await frame(`(()=>{const section=document.createElement('section');section.id='preview-edge-fixture';section.style.cssText='display:flex;gap:30px;padding:20px;min-height:320px';section.innerHTML=${JSON.stringify(previewEdgeHtml)};document.body.append(section);window.previewOriginalClicks=0;document.querySelector('#preview-original-button').addEventListener('click',()=>window.previewOriginalClicks++);const hidden=document.createElement('section');hidden.hidden=true;hidden.id='preview-hidden-history';hidden.textContent='x'.repeat(1600000);section.append(hidden)})()`);
+  await pickEditComponent('#preview-scroll-source');await click('[data-component-action="copy"]');await pickEditComponent('#preview-scroll-target');
+  const scrollPreviewIndex=await evaluate('results.componentEdits.length');await click('[data-component-action="paste"]');await until(`results.componentEdits.length===${scrollPreviewIndex+1}`);
+  await untilFrame("Boolean(document.querySelector('[data-board-component-layout]'))");
+  const scrollPreview=await frame("(()=>{const h=document.querySelector('[data-board-component-layout]'),s=h.shadowRoot,t=s.querySelector('#preview-scroll-target'),n=s.querySelector('[data-board-preview-inserted]'),a=t.getBoundingClientRect(),b=n.getBoundingClientRect();return {scrollLeft:t.scrollLeft,scrollTop:t.scrollTop,originalLeft:document.querySelector('#preview-scroll-target').scrollLeft,originalTop:document.querySelector('#preview-scroll-target').scrollTop,xVisible:b.left>=a.left&&b.right<=a.right,yVisible:b.top>=a.top&&b.bottom<=a.bottom,bottom:b.bottom,safeBottom:innerHeight-Math.min(180,innerHeight*.3),hiddenBytes:s.querySelector('#preview-hidden-history').textContent.length,originalParent:document.querySelector('#preview-scroll-source').parentElement.id}})()");
+  assert.ok(scrollPreview.scrollLeft>0&&scrollPreview.scrollTop>0&&scrollPreview.originalLeft===0&&scrollPreview.originalTop===0&&scrollPreview.xVisible&&scrollPreview.yVisible&&scrollPreview.bottom<=scrollPreview.safeBottom,JSON.stringify(scrollPreview));
+  assert.equal(scrollPreview.hiddenBytes,0);assert.equal(scrollPreview.originalParent,'preview-edge-fixture');
+  const previewClick=await frame("(()=>{const r=document.querySelector('[data-board-component-layout]').shadowRoot.querySelector('[data-board-preview-inserted] button').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()");
+  const previewOrigin=await evaluate("(()=>{const r=document.querySelector('iframe').getBoundingClientRect();return{x:r.x,y:r.y}})()");await clickPoint(previewClick.x+previewOrigin.x,previewClick.y+previewOrigin.y);
+  assert.equal(await frame('previewOriginalClicks'),0);
+  const beforePreviewTab=await frame("(()=>{const h=document.querySelector('[data-board-component-layout]');return {focused:document.hasFocus(),host:document.activeElement===h,viewport:h.shadowRoot.activeElement===h.shadowRoot.querySelector('[tabindex]'),pointer:getComputedStyle(h.shadowRoot.querySelector('[tabindex]')).pointerEvents}})()");
+  assert.deepEqual(beforePreviewTab,{focused:true,host:true,viewport:true,pointer:'auto'});
+  const previewWheelBefore=await frame("({preview:document.querySelector('[data-board-component-layout]').shadowRoot.querySelector('[tabindex]').scrollTop,original:scrollY})");
+  await command('Input.dispatchMouseEvent',{type:'mouseWheel',x:previewClick.x+previewOrigin.x,y:previewClick.y+previewOrigin.y,deltaY:-30,deltaX:0});
+  await untilFrame(`document.querySelector('[data-board-component-layout]').shadowRoot.querySelector('[tabindex]').scrollTop!==${previewWheelBefore.preview}`);
+  assert.equal(await frame('scrollY'),previewWheelBefore.original);
+  await command('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});await command('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});
+  const previewTabFocus={frame:await frame("(()=>{const h=document.querySelector('[data-board-component-layout]');return {focused:document.hasFocus(),previewActive:document.activeElement===h,innerActive:h.shadowRoot.activeElement?.tagName}})()"),host:await evaluate("({tag:document.activeElement?.tagName,id:document.activeElement?.id})")};
+  assert.ok(!previewTabFocus.frame.focused || !previewTabFocus.frame.previewActive,JSON.stringify(previewTabFocus));
+  assert.equal(await frame("document.querySelector('[data-board-components]').shadowRoot.activeElement?.dataset.componentAction"),'preview-toggle');
+  await command('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});await command('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});
+  assert.equal(await frame("document.hasFocus() && document.activeElement===document.querySelector('[data-board-component-layout]')"),false);
+  await clickPoint(previewClick.x+previewOrigin.x,previewClick.y+previewOrigin.y);await key('Escape');
+  assert.equal(await frame("getComputedStyle(document.querySelector('[data-board-component-layout]')).display"),'none');
+  assert.equal(await frame("document.querySelector('[data-board-components]').shadowRoot.activeElement?.dataset.componentAction"),'preview-toggle');
+  await frame("document.querySelector('#preview-scroll-source').firstChild.data='Changed live source'");await untilFrame("!document.querySelector('[data-board-component-layout]')");
+  await evaluate(`finishComponentEdit(${scrollPreviewIndex},{status:'cancelled'})`);await settleFrame();
+  await pickEditComponent('#preview-scroll-source');await frame("document.querySelector('#preview-scroll-source').setAttribute('data-large-preview','x'.repeat(1600000))");await click('[data-component-action="copy"]');await pickEditComponent('#preview-scroll-target');
+  const boundedPreviewIndex=await evaluate('results.componentEdits.length');await click('[data-component-action="paste"]');await until(`results.componentEdits.length===${boundedPreviewIndex+1}`);
+  assert.equal(await frame("document.querySelector('[data-board-component-layout]')===null"),true);assert.match(await frame("document.querySelector('[data-board-components]').shadowRoot.querySelector('[role=status]').textContent"),/内容较大/);
+  await evaluate(`finishComponentEdit(${boundedPreviewIndex},{status:'cancelled'})`);await frame("document.querySelector('#preview-scroll-source').removeAttribute('data-large-preview')");
+  await frame("(()=>{const c=document.createElement('canvas');c.id='preview-large-canvas';c.width=4096;c.height=4096;c.style.cssText='width:100px;height:60px';document.querySelector('#preview-scroll-source').append(c)})()");
+  await pickEditComponent('#preview-scroll-source');await click('[data-component-action="copy"]');await pickEditComponent('#preview-scroll-target');const bitmapIndex=await evaluate('results.componentEdits.length');await click('[data-component-action="paste"]');await until(`results.componentEdits.length===${bitmapIndex+1}`);
+  await untilFrame("Boolean(document.querySelector('[data-board-component-layout]'))");assert.equal(await frame("document.querySelector('[data-board-component-layout]').shadowRoot.querySelector('#preview-large-canvas').localName"),'div');assert.match(await frame("document.querySelector('[data-board-component-layout]').shadowRoot.querySelector('[data-board-preview-status]').textContent"),/占位/);
+  await evaluate(`finishComponentEdit(${bitmapIndex},{status:'cancelled'})`);await key('Escape');await update("{selectionMode:'off'}");await frame("document.querySelector('#preview-edge-fixture').remove()");
+  console.log('MEASURE component-edit-visuals',JSON.stringify({hoverGeometry,toolbarGeometry,previewLayout,dragVisual,scrollPreview,previewTabFocus}));
+  check('static previews reveal both nested scroll axes without moving the original, block copied controls, avoid keyboard traps, discard text-node changes, skip hidden history and bound attribute/bitmap cost');
+
   const svgCopyHtml = `<section id="svg-copy-fixture" style="display:flex;align-items:flex-start;gap:20px;padding:20px;min-height:480px"><svg id="svg-copy-source" width="300" height="180" viewBox="0 0 300 180"><g id="svg-source-group"><rect id="svg-source-shape" x="10" y="10" width="120" height="60" fill="rgb(180,45,90)"></rect><foreignObject id="svg-source-foreign" x="140" y="10" width="130" height="60"><div id="svg-source-html" xmlns="http://www.w3.org/1999/xhtml">HTML in SVG</div></foreignObject></g></svg><svg id="svg-copy-destination" width="300" height="180" viewBox="0 0 300 180" style="background:#edf2ff"></svg></section>`;
   await update(`{boardRevision:hostProps.boardRevision+1,canvas:{...hostProps.canvas,revision:hostProps.canvas.revision+1,patches:[...hostProps.canvas.patches,{id:'svg-copy-fixture',operation:'append',selector:'body',html:${JSON.stringify(svgCopyHtml)}}]}}`);
   await untilFrame("Boolean(document.querySelector('#svg-source-shape'))");
@@ -779,6 +851,15 @@ try {
   assert.deepEqual(await frame(svgCopyState),expectedSvgCopy);
   assert.equal(await frame("document.querySelectorAll('#copied-svg-0').length"),1);
   check('browser SVG identities match the actual server preparer; authoritative copies preserve rendered SVG geometry and foreignObject HTML both live and after cold replay');
+  const anonymousFooterHtml='<section id="anonymous-footer-fixture" style="padding:20px;min-height:320px"><article id="anonymous-footer-source" style="padding:16px;background:#e1f3e8">Move to a live footer</article><footer style="padding:20px;min-height:80px"><span>Run: <output id="anonymous-runtime-token">authored-token</output></span><span> stable text</span></footer><script>window.anonymousOriginal=document.querySelector("#anonymous-footer-source");document.querySelector("#anonymous-runtime-token").textContent=Math.random().toString(36).slice(2);</script></section>';
+  await update(`{boardRevision:hostProps.boardRevision+1,canvas:{...hostProps.canvas,revision:hostProps.canvas.revision+1,patches:[...hostProps.canvas.patches,{id:'anonymous-footer-fixture',operation:'append',selector:'body',html:${JSON.stringify(anonymousFooterHtml)}}]}}`);await untilFrame("Boolean(document.querySelector('#anonymous-footer-source'))");
+  await pickEditComponent('#anonymous-footer-source');await click('[data-component-action="cut"]');await pickEditComponent('#anonymous-footer-fixture > footer','footer');const anonymousIndex=await evaluate('results.componentEdits.length');await click('[data-component-action="paste"]');await until(`results.componentEdits.length===${anonymousIndex+1}`);
+  const anonymousRequest=await evaluate(`results.componentEdits[${anonymousIndex}]`),anonymousPrepared=svgServer.prepareComponentPatch({html:anonymousFooterHtml,patches:[],revision:anonymousRequest.canvasBase.revision,documentVersion:anonymousRequest.canvasBase.documentVersion},{...anonymousRequest.patch,id:`saved-edit-${anonymousIndex}`,html:''});
+  await frame("document.querySelector('#anonymous-runtime-token').textContent='changed-after-selection'");await commitEdit(anonymousIndex,anonymousPrepared);
+  assert.equal(await frame("document.querySelector('#anonymous-footer-source')===anonymousOriginal && anonymousOriginal.parentElement.localName==='footer'"),true);
+  const errorsBeforeAnonymousReload=await evaluate('results.errors.length'),anonymousReloadReady=await evaluate('results.ready');await key('Escape');await update("{selectionMode:'off'}");await evaluate('reconnect()');await until(`results.ready===${anonymousReloadReady+1}`);await untilFrame("document.querySelector('#anonymous-footer-fixture > footer > #anonymous-footer-source')!==null");
+  assert.notEqual(await frame("document.querySelector('#anonymous-runtime-token').textContent"),'changed-after-selection');assert.equal(await evaluate('results.errors.length'),errorsBeforeAnonymousReload);
+  check('a browser-captured anonymous footer with a uniquely identified runtime value passes the actual server preparer, preserves live node identity and replays after a new random value on cold mount');
   await frame("document.querySelector('#bound-content').scrollIntoView({block:'center'})");
   const componentCompose = await composeAfter(() => rightClick('#bound-content'));
   const componentAnchor = componentCompose.anchor;
