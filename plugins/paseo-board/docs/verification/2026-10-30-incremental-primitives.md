@@ -34,4 +34,10 @@ Upstream polling, host-side delta calculation, atomic whole-Board persistence an
 
 Lost-response recovery is fault-injected in source tests, not injected into the live daemon. Native desktop acceptance is separate from the isolated renderer's compact/two-theme and protocol checks. Smaller transport messages do not prove arbitrary authored code draws incrementally.
 
-Private evidence lives under `~/.paseo/verification/paseo-board/incremental-primitives-20261030/`: combined source/build logs, install receipt, actual producer receipt, canonical MCP traces, parser regressions and native observations. Screenshots and user content are not included in the public repository.
+## Fixture cleanup and release
+
+After acceptance, four exact fixture Boards were backed up and quarantined, and only their service-journal entries were removed while the Board plugin was stopped. The plugin was then enabled and verified running again. Public SDK operations archived the three exact fixture workspaces; their on-disk evidence remains available. The original three Boards retained their canvas and saved-state hashes, the existing owner was preserved, and primary daemon/worker process IDs were unchanged. No other plugin was changed and no older user-data snapshot was restored.
+
+The publication checkpoint contains the tested runtime at `d2f8b45` plus documentation. The bounded release operation verifies installed tracked bytes, records the push result and independently confirms the exact GitHub main commit. Its private release receipt is the authority for publication success; this document records the completed acceptance and cleanup, not a predicted push outcome.
+
+Private evidence lives under `~/.paseo/verification/paseo-board/incremental-primitives-20261030/`: combined source/build logs, install receipt, actual producer receipt, canonical MCP traces, parser regressions, native observations, finalization and release receipts. Screenshots and user content are not included in the public repository.
