@@ -241,6 +241,77 @@ try {
   assert.equal(await frame("document.querySelector('#field').value"), 'preserved draft');
   check('an uncertain rename response replays its receipt after the new title is observed without rewriting the live document');
 
+  if (process.env.BOARD_HOST_TEST_SCOPE === 'component-edit') {
+    const panel = '[data-testid="board-component-edit"]';
+    const editCount = () => evaluate("hostFixture.calls.filter(item=>item.name==='board.edit').length");
+    const base = () => evaluate('({revision:hostFixture.board().canvas.revision,documentVersion:hostFixture.board().canvas.documentVersion})');
+    // Use the protocol's real identity builder. Runtime parity is checked separately;
+    // this fixture must not silently keep an obsolete hash when the schema evolves.
+    const identity = async selector => frame(`(${await evaluate('hostFixture.componentIdentitySource')})(document.querySelector(${JSON.stringify(selector)}))`);
+    let proposalIndex = 0;
+    const makeEdit = async text => ({ canvasBase: await base(), patch: { operation: 'text', selector: '#words', sourceIdentity: await identity('#words'), expectedText: await frame("document.querySelector('#words').textContent"), text } });
+    const postProposal = async (request, overrides = {}) => {
+      const current = await evaluate('hostFixture.mainReady()');
+      const message = { channel:'paseo-board-frame-v1',boardId:'host-fixture',sessionId:current.sessionId,type:'component-edit',id:'fixture-edit-'+(++proposalIndex),request,...overrides };
+      await frame(`parent.postMessage(${JSON.stringify(message)},'*');true`);
+      return message;
+    };
+    const showProposal = async request => { const message=await postProposal(request);await until(`document.querySelector(${JSON.stringify(panel)})`);return message; };
+    const clearProposal = async () => { await hostClick('button[aria-label="取消修改"]');await until(`!document.querySelector(${JSON.stringify(panel)})`); };
+    const request = await makeEdit('Host edit retained');
+    await postProposal(request,{boardId:'wrong-board'});await postProposal(request,{sessionId:'old-session'});
+    await evaluate(`window.postMessage({channel:'paseo-board-frame-v1',boardId:'host-fixture',sessionId:hostFixture.mainReady().sessionId,type:'component-edit',id:'wrong-window',request:${JSON.stringify(request)}},'*')`);
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(panel)})`),false);assert.equal(await editCount(),0);
+    await showProposal(request);assert.equal(await editCount(),0);
+    await clearProposal();assert.equal(await editCount(),0);assert.equal(await submitCount(),0);
+    assert.equal(await frame("document.querySelector('#words').textContent"),request.patch.expectedText);
+    check('untrusted proposals only stage host-owned Save/Cancel controls; wrong scopes/windows and cancelling never write or send agent messages');
+
+    await showProposal(request);await hostClick('button[aria-label="保存修改"]');
+    await until(`!document.querySelector(${JSON.stringify(panel)})`);await untilFrame("document.querySelector('#words').textContent==='Host edit retained'");
+    assert.equal(await frame('window.boots'),1);assert.equal(await frame("document.querySelector('#field').value"),'preserved draft');
+    const firstEdit = await evaluate("hostFixture.calls.find(item=>item.name==='board.edit').input");
+    assert.match(firstEdit.eventId,/^component-edit-/);assert.equal(firstEdit.patch.id,firstEdit.eventId);assert.deepEqual(firstEdit.canvasBase,request.canvasBase);
+    assert.equal(await submitCount(),0);
+    check('a real host Save commits the scoped semantic patch and updates the live frame without resetting controls or sending a message');
+
+    await showProposal(await makeEdit('Will be invalidated'));
+    await evaluate("hostFixture.renameElsewhere('Metadata does not invalidate editing')");
+    await until("document.querySelector('[data-testid=board-title]')?.textContent.includes('Metadata does not invalidate editing')");
+    assert.equal(await evaluate(`!!document.querySelector('button[aria-label="保存修改"]')`),true);
+    const countBeforeConflict=await editCount();await evaluate('hostFixture.updateCanvas()');
+    await until("document.querySelector('[data-testid=board-component-edit]')?.textContent.includes('重新选择组件')");
+    assert.equal(await evaluate(`!!document.querySelector('button[aria-label="保存修改"]')`),false);assert.equal(await editCount(),countBeforeConflict);
+    await hostClick('button[aria-label="关闭修改提示"]');
+    check('title changes preserve the proposal while a changed canvas refuses stale saves without silently rebasing the request');
+
+    await evaluate("hostFixture.editMode('lost-response')");
+    await showProposal(await makeEdit('Committed once despite lost ACK'));await hostClick('button[aria-label="保存修改"]');
+    await until(`document.querySelector('button[aria-label="重试同一次修改"]')`);
+    const lostRequest = await evaluate("hostFixture.calls.filter(item=>item.name==='board.edit').at(-1).input");
+    const patchCount = await evaluate('hostFixture.board().canvas.patches.length');
+    await remountMainFrame();
+    await until(`document.querySelector('button[aria-label="重试同一次修改"]')`);
+    await evaluate("hostFixture.editMode('accept')");await hostClick('button[aria-label="重试同一次修改"]');
+    await until(`!document.querySelector(${JSON.stringify(panel)})`);
+    assert.deepEqual(await evaluate("hostFixture.calls.filter(item=>item.name==='board.edit').at(-1).input"),lostRequest);
+    assert.equal(await evaluate('hostFixture.board().canvas.patches.length'),patchCount);
+    await untilFrame("document.querySelector('#words').textContent==='Committed once despite lost ACK'");
+    check('an ambiguous save survives view remount and retries the exact event ID, canvas base and payload without duplicating a patch');
+
+    await showProposal(await makeEdit('Never written after remount'));const beforeRemount=await editCount();
+    await remountMainFrame();assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(panel)})`),false);assert.equal(await editCount(),beforeRemount);
+    await openAt();await sendText('Draft survives an unrelated editing proposal');
+    const draft = await evaluate(`document.querySelector(${JSON.stringify(input)}).value`);
+    await postProposal(await makeEdit('Must not disturb composing'));
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(panel)})`),false);
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)}).value`),draft);assert.equal(await evaluate(`document.activeElement===document.querySelector(${JSON.stringify(input)})`),true);
+    assert.equal(await editCount(),beforeRemount);assert.equal(await submitCount(),0);await key('Escape');
+    check('remount cancels unsaved proposals and an open composer retains its exact draft and focus when authored code proposes an edit');
+  }
+
   if (process.env.BOARD_HOST_TEST_SCOPE === 'dashboard') {
     await evaluate('hostFixture.index()');
     await until("document.querySelector('[data-testid=board-status-host-fixture]')?.getAttribute('aria-label')==='工作：空闲'");
@@ -309,7 +380,7 @@ try {
     assert.equal(await countCalls('board.read'), compactInitial.reads);
     check('compact probes are single-flight and display failure and recovery independently from Board work status');
   }
-  if (!['rename', 'dashboard'].includes(process.env.BOARD_HOST_TEST_SCOPE)) {
+  if (!['rename', 'dashboard', 'component-edit'].includes(process.env.BOARD_HOST_TEST_SCOPE)) {
   const beforeTicks = await frame('window.ticks');
   const point = await openAt();
   await until("document.querySelector('[data-testid=board-reference-bar]')?.textContent.includes('已引用')");

@@ -8,6 +8,7 @@ import { BoardView } from "../client/board";
 import { BoardHome } from "../client/home";
 import { DEFAULT_LIGHT_COLORS } from "../shared/frame-theme";
 import type { Board, BoardChange, BoardEventCursor, BoardSummary, CanvasUpdate, Interaction } from "../shared/contracts";
+import { componentIdentityFor } from "../shared/component-identity";
 import { installBoardEventTransport, type BoardEventListener } from "../client/board-events";
 const global = globalThis as any;
 const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -32,6 +33,8 @@ let readFails = false;
 let renameMode: "held" | "accept" | "reject" | "lost-response" = "accept";
 let pendingRename: { input: any; resolve(value: Board): void; reject(error: Error): void } | undefined;
 const renameReceipts = new Map<string, string>();
+let editMode: "accept" | "reject" | "lost-response" = "accept";
+const editReceipts = new Map<string, string>();
 let pendingChoice: { input: any; resolve(value: Board): void; reject(error: Error): void } | undefined;
 const pending = new Map<string, { input: any; resolve(value: Interaction): void; reject(error: Error): void }>();
 const eventListeners = new Set<BoardEventListener>();
@@ -58,11 +61,13 @@ const notify = (reason: "metadata" | "attention" = "metadata") => {
 };
 const advance = () => { persisted = { ...persisted, revision: persisted.revision + 1, updatedAt: now() }; notify(); };
 const fixture: any = global.hostFixture = {
+  componentIdentitySource: componentIdentityFor.toString(),
   raw: [] as any[], calls: [] as any[], links: [] as string[], openedAgents: [] as string[], anchors: [] as any[], focusRequests: [] as string[], updateRequests: [] as any[], updatePositions: [] as any[], ready: 0, responseClicks: 0, responseResults: [] as any[],
   board: () => copy(persisted),
   mode: (next: typeof submitMode) => { submitMode = next; },
   choiceMode: (next: typeof choiceMode) => { choiceMode = next; },
   readFails: (next: boolean) => { readFails = next; },
+  editMode: (next: typeof editMode) => { editMode = next; },
   renameMode: (next: typeof renameMode) => { renameMode = next; },
   eventDisconnect: (unsupported = false) => { for (const listener of eventListeners) listener.error(Object.assign(new Error(unsupported ? "Fixture host does not support events" : "Fixture event connection lost"), { code: unsupported ? "plugin_events_unsupported" : "plugin_events_disconnected" })); },
   eventReconnect: () => { for (const listener of eventListeners) listener.reconnect(); },
@@ -119,6 +124,19 @@ const fixture: any = global.hostFixture = {
     if (name === "board.check") {
       const result = () => { if (checkFails) throw new Error("Fixture compact check unavailable"); return { changed: input.cursor.epoch !== "fixture" || input.cursor.sequence !== eventSequence }; };
       return holdCheck ? new Promise((resolve, reject) => pendingChecks.push(() => { try { resolve(result()); } catch (error) { reject(error); } })) : result();
+    }
+    if (name === "board.edit") {
+      const previous = editReceipts.get(input.eventId);
+      if (previous) {
+        if (previous !== JSON.stringify(input)) throw Object.assign(new Error("Fixture edit receipt conflict"), { code: "idempotency_conflict" });
+        return copy(persisted);
+      }
+      if (input.canvasBase.documentVersion !== persisted.canvas.documentVersion || input.canvasBase.revision !== persisted.canvas.revision) throw Object.assign(new Error("Fixture canvas changed"), { code: "revision_conflict" });
+      if (editMode === "reject") throw Object.assign(new Error("Fixture authored component changed"), { code: "edit_conflict" });
+      persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, patches: [...persisted.canvas.patches, { ...copy(input.patch), html: "", at: now(), source: "user" }] };
+      advance(); editReceipts.set(input.eventId, JSON.stringify(input));
+      if (editMode === "lost-response") throw new Error("Fixture component save response lost");
+      return copy(persisted);
     }
     if (name === "board.rename") {
       const previous = renameReceipts.get(input.eventId);
