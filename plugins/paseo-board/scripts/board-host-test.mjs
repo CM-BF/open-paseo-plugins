@@ -276,6 +276,32 @@ try {
     assert.equal(await submitCount(),0);
     check('a real host Save commits the scoped semantic patch and updates the live frame without resetting controls or sending a message');
 
+    const canvasBeforeRefusal = await evaluate('JSON.stringify(hostFixture.board().canvas)');
+    const frameBeforeRefusal = await evaluate(`JSON.stringify(document.querySelector('[data-testid="paseo-board-canvas"]').getBoundingClientRect().toJSON())`);
+    await evaluate("hostFixture.editMode('handler-error')");
+    await showProposal(await makeEdit('保留这段文字草稿'));
+    await hostClick('button[aria-label="保存修改"]');
+    await until(`document.querySelector('button[aria-label="重试同一次修改"]')`);
+    const refusedRequest = await evaluate("hostFixture.calls.filter(item=>item.name==='board.edit').at(-1).input");
+    assert.equal(await evaluate(`document.querySelector('button[aria-label="取消修改"]').getAttribute('aria-disabled')`),'true');
+    assert.doesNotMatch(await evaluate(`document.querySelector(${JSON.stringify(panel)}).textContent`),/handler_error|Anonymous|requestType/);
+    // An exact retry on the upgraded typed protocol resolves the old uncertain
+    // request without changing the canvas or quietly creating a new request.
+    await evaluate("hostFixture.editMode('reject')");await hostClick('button[aria-label="重试同一次修改"]');
+    await until(`document.querySelector('button[aria-label="关闭修改提示"]')`);
+    assert.deepEqual(await evaluate("hostFixture.calls.filter(item=>item.name==='board.edit').at(-1).input"),refusedRequest);
+    assert.equal(await evaluate(`document.querySelector('[data-testid="board-component-edit-text"]').value`),'保留这段文字草稿');
+    assert.notEqual(await evaluate(`document.querySelector('button[aria-label="关闭修改提示"]').getAttribute('aria-disabled')`),'true');
+    assert.equal(await evaluate('JSON.stringify(hostFixture.board().canvas)'),canvasBeforeRefusal);
+    assert.equal(await evaluate(`JSON.stringify(document.querySelector('[data-testid="paseo-board-canvas"]').getBoundingClientRect().toJSON())`),frameBeforeRefusal);
+    const refusalBox = await evaluate(`document.querySelector(${JSON.stringify(panel)}).getBoundingClientRect().toJSON()`);
+    assert.ok(refusalBox.width <= 340 && refusalBox.height <= 230,JSON.stringify(refusalBox));
+    await hostClick('button[aria-label="关闭修改提示"]');await until(`!document.querySelector(${JSON.stringify(panel)})`);
+    await evaluate("hostFixture.editMode('accept')");
+    await showProposal(await makeEdit('Selection is available again'));await clearProposal();
+    assert.equal(await submitCount(),0);
+    check('generic handler errors keep their exact retry; a typed authored-source refusal unlocks cancellation and reselection, retains text and fits a compact card without moving the canvas');
+
     await showProposal(await makeEdit('Will be invalidated'));
     await evaluate("hostFixture.renameElsewhere('Metadata does not invalidate editing')");
     await until("document.querySelector('[data-testid=board-title]')?.textContent.includes('Metadata does not invalidate editing')");

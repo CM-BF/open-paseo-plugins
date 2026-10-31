@@ -266,6 +266,12 @@ export type InteractInput = z.input<typeof InteractInputSchema>;
 export type SelectSideAgentInput = z.input<typeof SelectSideAgentInputSchema>;
 export type RenameInput = z.input<typeof RenameInputSchema>;
 export type EditInput = z.input<typeof EditInputSchema>;
+export const EditRefusalCodeSchema = z.enum(["invalid_input", "revision_conflict", "edit_conflict", "idempotency_conflict", "unauthorized", "forbidden", "board_not_found", "not_found", "size_limit"]);
+export const EditResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("applied"), eventId: IdSchema, board: BoardSchema }),
+  z.object({ status: z.literal("rejected"), eventId: IdSchema, code: EditRefusalCodeSchema, componentTarget: z.enum(["source", "destination"]).optional() }),
+]);
+export type EditResult = z.infer<typeof EditResultSchema>;
 export type ComponentIdentity = z.infer<typeof ComponentIdentitySchema>;
 export type JsonData = z.infer<typeof JsonDataSchema>;
 export type MarkUpdatesSeenInput = z.input<typeof MarkUpdatesSeenInputSchema>;
@@ -278,7 +284,7 @@ export const emitBoardRpc = defineRpc({ name: "board.emit", input: EmitInputSche
 export const interactBoardRpc = defineRpc({ name: "board.interact", input: InteractInputSchema, output: InteractionSchema });
 export const selectSideAgentRpc = defineRpc({ name: "board.side-agent", input: SelectSideAgentInputSchema, output: BoardSchema });
 export const renameBoardRpc = defineRpc({ name: "board.rename", input: RenameInputSchema, output: BoardSchema });
-export const editBoardRpc = defineRpc({ name: "board.edit", input: EditInputSchema, output: BoardSchema });
+export const editBoardRpc = defineRpc({ name: "board.edit", input: EditInputSchema, output: EditResultSchema });
 export const recordDecisionRpc = defineRpc({ name: "board.decision", input: DecisionUpdateInputSchema, output: BoardSchema });
 export const saveStateRpc = defineRpc({ name: "board.state", input: StateInputSchema, output: z.object({ saved: z.boolean() }) });
 export const markUpdatesSeenRpc = defineRpc({ name: "board.updates-seen", input: MarkUpdatesSeenInputSchema, output: BoardSchema });

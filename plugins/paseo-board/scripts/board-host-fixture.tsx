@@ -33,7 +33,7 @@ let readFails = false;
 let renameMode: "held" | "accept" | "reject" | "lost-response" = "accept";
 let pendingRename: { input: any; resolve(value: Board): void; reject(error: Error): void } | undefined;
 const renameReceipts = new Map<string, string>();
-let editMode: "accept" | "reject" | "lost-response" = "accept";
+let editMode: "accept" | "reject" | "handler-error" | "lost-response" = "accept";
 const editReceipts = new Map<string, string>();
 let pendingChoice: { input: any; resolve(value: Board): void; reject(error: Error): void } | undefined;
 const pending = new Map<string, { input: any; resolve(value: Interaction): void; reject(error: Error): void }>();
@@ -128,15 +128,16 @@ const fixture: any = global.hostFixture = {
     if (name === "board.edit") {
       const previous = editReceipts.get(input.eventId);
       if (previous) {
-        if (previous !== JSON.stringify(input)) throw Object.assign(new Error("Fixture edit receipt conflict"), { code: "idempotency_conflict" });
-        return copy(persisted);
+        if (previous !== JSON.stringify(input)) return { status: "rejected", eventId: input.eventId, code: "idempotency_conflict" };
+        return { status: "applied", eventId: input.eventId, board: copy(persisted) };
       }
-      if (input.canvasBase.documentVersion !== persisted.canvas.documentVersion || input.canvasBase.revision !== persisted.canvas.revision) throw Object.assign(new Error("Fixture canvas changed"), { code: "revision_conflict" });
-      if (editMode === "reject") throw Object.assign(new Error("Fixture authored component changed"), { code: "edit_conflict" });
+      if (input.canvasBase.documentVersion !== persisted.canvas.documentVersion || input.canvasBase.revision !== persisted.canvas.revision) return { status: "rejected", eventId: input.eventId, code: "revision_conflict" };
+      if (editMode === "reject") return { status: "rejected", eventId: input.eventId, code: "edit_conflict" };
+      if (editMode === "handler-error") throw Object.assign(new Error("Request failed: Anonymous component no longer matches its authored source; select it again requestType=plugin.rpc.invoke.request code=handler_error"), { requestType: "plugin.rpc.invoke.request", code: "handler_error" });
       persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, patches: [...persisted.canvas.patches, { ...copy(input.patch), html: "", at: now(), source: "user" }] };
       advance(); editReceipts.set(input.eventId, JSON.stringify(input));
       if (editMode === "lost-response") throw new Error("Fixture component save response lost");
-      return copy(persisted);
+      return { status: "applied", eventId: input.eventId, board: copy(persisted) };
     }
     if (name === "board.rename") {
       const previous = renameReceipts.get(input.eventId);

@@ -1,4 +1,4 @@
-import type { Board, CanvasBase, EditInput } from "../shared/contracts";
+import type { Board, CanvasBase, EditInput, EditResult } from "../shared/contracts";
 import type { ComponentEditRequest, ComponentEditResult } from "../shared/frame-contract";
 
 export interface EditDraft {
@@ -6,7 +6,17 @@ export interface EditDraft {
   status: "review" | "saving" | "unknown" | "rejected"; error?: string;
 }
 const sameBase = (a: CanvasBase, b: CanvasBase) => a.revision === b.revision && a.documentVersion === b.documentVersion;
-const confirmedRefusals = new Set(["invalid_input", "revision_conflict", "edit_conflict", "idempotency_conflict", "unauthorized", "forbidden", "board_not_found", "not_found"]);
+const refusalMessages = {
+  invalid_input: "这次修改无法保存，请重新选择组件。",
+  revision_conflict: "画布已更新，这次修改未保存。请重新选择组件。",
+  edit_conflict: "组件与已保存内容不一致，这次修改未保存。请重新选择组件。",
+  idempotency_conflict: "这次修改与已有保存记录冲突，请重新选择组件。",
+  unauthorized: "当前无法修改这块画板，请确认访问权限。",
+  forbidden: "当前无法修改这块画板，请确认访问权限。",
+  board_not_found: "画板已不存在，这次修改未保存。",
+  not_found: "画板已不存在，这次修改未保存。",
+  size_limit: "修改内容过大，这次修改未保存。请缩小范围。",
+};
 function immutable<T>(value: T): T {
   if (value && typeof value === "object") { for (const child of Object.values(value)) immutable(child); Object.freeze(value); }
   return value;
@@ -46,22 +56,32 @@ export class ComponentEditWriter {
     if (!this.draft || this.draft.status === "saving" || this.draft.status === "unknown") return;
     this.resolve?.({ status: "cancelled" }); this.resolve = undefined; this.draft = null; this.changed();
   }
-  async save(commit: (input: EditInput) => Promise<Board>, accepted: (board: Board) => void, refresh: () => Promise<unknown>) {
+  async save(commit: (input: EditInput) => Promise<EditResult>, accepted: (board: Board) => void, refresh: () => Promise<unknown>) {
     const draft = this.draft;
     if (!draft || draft.status === "saving" || draft.status === "rejected") return;
     this.draft = { ...draft, status: "saving", error: undefined }; this.changed();
     try {
-      const board = await commit(draft.request);
+      const result = await commit(draft.request);
+      // Do not release an uncertain request for an unrelated/malformed receipt.
+      if (!result || result.eventId !== draft.request.eventId) throw new Error("Mismatched component edit receipt");
+      if (result.status === "rejected" && Object.hasOwn(refusalMessages, result.code)) {
+        const message = result.code === "edit_conflict" && result.componentTarget
+          ? `${result.componentTarget === "destination" ? "目标容器" : "所选组件"}与已保存内容不一致，这次修改未保存。请重新选择${result.componentTarget === "destination" ? "目标" : "组件"}。`
+          : refusalMessages[result.code];
+        this.draft = { ...draft, status: "rejected", error: message };
+        this.resolve?.({ status: "rejected", message }); this.resolve = undefined;
+        this.changed(); void refresh().catch(() => undefined); return;
+      }
+      if (result.status !== "applied" || result.board?.id !== draft.request.boardId) throw new Error("Invalid component edit receipt");
+      const board = result.board;
       accepted(board);
       this.resolve?.({ status: "applied", canvasRevision: board.canvas.revision }); this.resolve = undefined;
       this.draft = null; this.changed();
-    } catch (error) {
-      const code = (error as { code?: string })?.code;
-      const known = typeof code === "string" && confirmedRefusals.has(code);
-      const detail = error instanceof Error ? error.message : String(error);
-      const message = known ? `修改未保存：${detail}。请重新选择组件。` : `还未确认保存结果：${detail}。重试会核对同一次修改，不会重复执行。`;
-      this.draft = { ...draft, status: known ? "rejected" : "unknown", error: message };
-      if (known) { this.resolve?.({ status: "rejected", message }); this.resolve = undefined; }
+    } catch {
+      // In particular, handler_error is not a domain refusal. It can wrap a
+      // failure after commit, and matching its English message is unsafe.
+      const message = "保存结果待确认。重试只核对这次修改，不会重复执行。";
+      this.draft = { ...draft, status: "unknown", error: message };
       this.changed();
       void refresh().catch(() => undefined);
     }
