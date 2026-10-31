@@ -25565,6 +25565,11 @@ var EditInputSchema = external_exports.object({
 var DecisionUpdateInputSchema = external_exports.object({ boardId: IdSchema, expectedRevision: external_exports.number().int().nonnegative(), eventId: IdSchema, decision: DecisionInputSchema });
 var StateInputSchema = external_exports.object({ boardId: IdSchema, state: JsonDataSchema });
 var MarkUpdatesSeenInputSchema = external_exports.object({ boardId: IdSchema, updateIds: external_exports.array(IdSchema).max(80) });
+var EditRefusalCodeSchema = external_exports.enum(["invalid_input", "revision_conflict", "edit_conflict", "idempotency_conflict", "unauthorized", "forbidden", "board_not_found", "not_found", "size_limit"]);
+var EditResultSchema = external_exports.discriminatedUnion("status", [
+  external_exports.object({ status: external_exports.literal("applied"), eventId: IdSchema, board: BoardSchema }),
+  external_exports.object({ status: external_exports.literal("rejected"), eventId: IdSchema, code: EditRefusalCodeSchema, componentTarget: external_exports.enum(["source", "destination"]).optional() })
+]);
 var listBoardsRpc = defineRpc({ name: "board.list", input: external_exports.object({ workspaceId: external_exports.string().optional() }), output: external_exports.object({ boards: external_exports.array(BoardSummarySchema), cursor: BoardEventCursorSchema.optional() }) });
 var readBoardRpc = defineRpc({ name: "board.read", input: external_exports.object({ boardId: IdSchema, sinceRevision: external_exports.number().optional() }), output: external_exports.object({ board: BoardSchema.nullable(), unchanged: external_exports.boolean().default(false) }) });
 var createBoardRpc = defineRpc({ name: "board.create", input: CreateInputSchema, output: BoardSchema });
@@ -25573,7 +25578,7 @@ var emitBoardRpc = defineRpc({ name: "board.emit", input: EmitInputSchema, outpu
 var interactBoardRpc = defineRpc({ name: "board.interact", input: InteractInputSchema, output: InteractionSchema });
 var selectSideAgentRpc = defineRpc({ name: "board.side-agent", input: SelectSideAgentInputSchema, output: BoardSchema });
 var renameBoardRpc = defineRpc({ name: "board.rename", input: RenameInputSchema, output: BoardSchema });
-var editBoardRpc = defineRpc({ name: "board.edit", input: EditInputSchema, output: BoardSchema });
+var editBoardRpc = defineRpc({ name: "board.edit", input: EditInputSchema, output: EditResultSchema });
 var recordDecisionRpc = defineRpc({ name: "board.decision", input: DecisionUpdateInputSchema, output: BoardSchema });
 var saveStateRpc = defineRpc({ name: "board.state", input: StateInputSchema, output: external_exports.object({ saved: external_exports.boolean() }) });
 var markUpdatesSeenRpc = defineRpc({ name: "board.updates-seen", input: MarkUpdatesSeenInputSchema, output: BoardSchema });
@@ -36522,18 +36527,61 @@ var errorMessage = (error62) => error62 instanceof Error ? error62.message : Str
 var rootTags = /* @__PURE__ */ new Set(["html", "head", "body"]);
 var nonComponents = /* @__PURE__ */ new Set(["script", "style", "link", "meta", "base", "title", "template", "noscript"]);
 var voidTags = /* @__PURE__ */ new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
-function expectIdentity(document, target, expected) {
-  if (!expected) throw new Error("Component identity is required");
-  if (target.id && Array.from(document.querySelectorAll("[id]")).filter((node2) => node2.id === target.id).length !== 1) throw new Error("Component has a duplicate ID");
+var ComponentSourceMismatch = class extends Error {
+  constructor(message, componentTarget, componentSelector) {
+    super(message);
+    this.componentTarget = componentTarget;
+    this.componentSelector = componentSelector;
+    this.name = "ComponentSourceMismatch";
+  }
+  componentTarget;
+  componentSelector;
+};
+function matchesAnonymousSource(document, target, html) {
+  if (html === void 0) return false;
+  if (html === target.outerHTML) return true;
+  const template = document.createElement("template", void 0);
+  template.innerHTML = html;
+  const roots = Array.from(template.content.childNodes);
+  if (roots.length !== 1 || roots[0].nodeType !== 1) return false;
+  const captured = roots[0];
+  const authoredIds = /* @__PURE__ */ new Map();
+  for (const element of Array.from(document.querySelectorAll("[id]"))) authoredIds.set(element.id, (authoredIds.get(element.id) ?? 0) + 1);
+  const capturedIds = /* @__PURE__ */ new Map();
+  for (const element of [captured, ...Array.from(captured.querySelectorAll("[id]"))]) if (element.id) capturedIds.set(element.id, (capturedIds.get(element.id) ?? 0) + 1);
+  const attributes = (element) => JSON.stringify(Array.from(element.attributes).map((attribute2) => [attribute2.name, attribute2.value]).sort((a, b) => a[0].localeCompare(b[0])));
+  let visited = 0;
+  const matches2 = (authoredNode, capturedNode) => {
+    if (++visited > 1e4 || authoredNode.nodeType !== capturedNode.nodeType) return false;
+    if (authoredNode.nodeType !== 1) return authoredNode.textContent === capturedNode.textContent;
+    const authoredElement = authoredNode, capturedElement = capturedNode;
+    if (authoredElement.localName.toLowerCase() !== capturedElement.localName.toLowerCase() || authoredElement.id !== capturedElement.id) return false;
+    if (authoredElement !== target && authoredElement.id) {
+      if (authoredIds.get(authoredElement.id) !== 1 || capturedIds.get(capturedElement.id) !== 1) return false;
+      const authoredIdentity = componentIdentityFor(authoredElement), capturedIdentity = componentIdentityFor(capturedElement);
+      return authoredIdentity.tag === capturedIdentity.tag && authoredIdentity.id === capturedIdentity.id && authoredIdentity.fingerprint === capturedIdentity.fingerprint;
+    }
+    if (attributes(authoredElement) !== attributes(capturedElement)) return false;
+    const authoredChildren = Array.from(authoredNode.childNodes), capturedChildren = Array.from(capturedNode.childNodes);
+    return authoredChildren.length === capturedChildren.length && authoredChildren.every((node2, index) => matches2(node2, capturedChildren[index]));
+  };
+  return matches2(target, captured);
+}
+function expectIdentity(document, target, expected, side, selector) {
+  const mismatch = (message) => {
+    throw new ComponentSourceMismatch(message, side, selector);
+  };
+  if (!expected) return mismatch("Component identity is required");
+  if (target.id && Array.from(document.querySelectorAll("[id]")).filter((node2) => node2.id === target.id).length !== 1) return mismatch("Component has a duplicate ID");
   const current = componentIdentityFor(target);
   if (current.tag !== expected.tag || current.id !== expected.id || current.fingerprint !== expected.fingerprint) {
-    throw new Error("Component structure differs from the authored source; select an authored component again");
+    return mismatch("Component structure differs from the authored source; select an authored component again");
   }
-  if (!target.id && expected.authoredHtml !== target.outerHTML) throw new Error("Anonymous component no longer matches its authored source; select it again");
+  if (!target.id && !matchesAnonymousSource(document, target, expected.authoredHtml)) return mismatch("Anonymous component no longer matches its authored source; select it again");
 }
 function applyComponentPatch(document, target, patch, targetFor) {
   if (rootTags.has(target.localName) || nonComponents.has(target.localName)) throw new Error("Document roots and executable metadata cannot be edited as components");
-  expectIdentity(document, target, patch.sourceIdentity);
+  expectIdentity(document, target, patch.sourceIdentity, "source", patch.selector);
   if (patch.operation === "text") {
     if (["input", "textarea", "select"].includes(target.localName)) throw new Error("Use the control's native editing behavior");
     if (patch.text === void 0 || patch.expectedText === void 0) throw new Error("Text edits require current and replacement text");
@@ -36550,7 +36598,7 @@ function applyComponentPatch(document, target, patch, targetFor) {
   }
   if (!patch.destination || !patch.position) throw new Error("Component placement requires a destination and position");
   const destination = targetFor(patch.destination);
-  expectIdentity(document, destination, patch.destinationIdentity);
+  expectIdentity(document, destination, patch.destinationIdentity, "destination", patch.destination);
   if (rootTags.has(destination.localName) || nonComponents.has(destination.localName)) throw new Error("Select an authored content container instead of a document root");
   if (target === destination || target.contains(destination)) throw new Error("A component cannot be placed inside or relative to itself or its descendants");
   if (["append", "prepend"].includes(patch.position) && voidTags.has(destination.localName)) throw new Error("This element cannot contain components");
@@ -36601,7 +36649,11 @@ function prepareComponentPatch(canvas, patch) {
   const next = { ...canvas, patches: [...canvas.patches, patch] };
   const selector = patch.operation === "copy" ? `#${patch.copyIdPrefix}-0` : void 0;
   const result = describeAuthoring(next, selector);
-  if (!result.replay.complete) throw new Error(result.replay.failedPatch?.reason ?? result.note);
+  if (!result.replay.complete) {
+    const failed = result.replay.failedPatch;
+    if (failed?.componentTarget && failed.componentSelector) throw new ComponentSourceMismatch(failed.reason, failed.componentTarget, failed.componentSelector);
+    throw new Error(failed?.reason ?? result.note);
+  }
   if (patch.operation === "copy" && result.target.html.length > 2e6) throw new Error("Copied component exceeds the 2000000-character patch limit");
   return patch.operation === "copy" ? { ...patch, html: result.target.html } : patch;
 }
@@ -36649,7 +36701,7 @@ function describeAuthoring(canvas, selector) {
         applied.add(patch.id);
         result.replay.appliedPatchIds.push(patch.id);
       } catch (error62) {
-        result.replay.failedPatch = { id: patch.id, selector: patch.selector, reason: errorMessage(error62) };
+        result.replay.failedPatch = { id: patch.id, selector: patch.selector, reason: errorMessage(error62), ...error62 instanceof ComponentSourceMismatch ? { componentTarget: error62.componentTarget, componentSelector: error62.componentSelector } : {} };
         result.note += " Replay stopped at the failed patch; no current source is returned. Inspect canvas.html together with the original canvas.patches journal.";
         return result;
       }
@@ -36794,7 +36846,7 @@ var BoardStore = class {
     try {
       return prepareComponentPatch(canvas, patch);
     } catch (error62) {
-      throw new BoardStoreError("edit_conflict", error62 instanceof Error ? error62.message : String(error62), { selector: patch.selector, canvasBase: { revision: canvas.revision, documentVersion: canvas.documentVersion } });
+      throw new BoardStoreError("edit_conflict", error62 instanceof Error ? error62.message : String(error62), { selector: patch.selector, canvasBase: { revision: canvas.revision, documentVersion: canvas.documentVersion }, ...error62 instanceof ComponentSourceMismatch ? { componentTarget: error62.componentTarget, componentSelector: error62.componentSelector } : {} });
     }
   }
   async publish(raw, actorAgentId) {
