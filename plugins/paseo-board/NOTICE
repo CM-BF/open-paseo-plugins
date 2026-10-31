@@ -9,8 +9,8 @@ interactive boards; no installed-plugin internals are imported at runtime.
 The copied files shared/assets/visualize.css.txt, runtime-icons.txt and
 runtime-tooltips.txt contain work derived from OpenAI Codex
 (https://github.com/openai/codex), tag rust-v0.146.0,
-codex-rs/tui/src/inline_visualization/assets. They reached paseo-visualize through
-an intermediate adaptation and were further modified by paseo-visualize.
+codex-rs/tui/src/inline_visualization/assets. These files are modified for
+paseo-visualize and Paseo Board.
 
   OpenAI Codex
   Copyright 2025 OpenAI

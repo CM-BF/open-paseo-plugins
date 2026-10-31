@@ -2,7 +2,7 @@
 
 ### 2026-10-31 — stylesheet provenance wording cleanup
 
-- Removed the intermediate project's display name from stylesheet comments and the explanatory provenance paragraph. Preserved the upstream OpenAI source/tag/path, author copyrights, Apache license and the fact that intermediate adaptations preceded this plugin.
+- Simplified the stylesheet comments and NOTICE to identify OpenAI Codex and the local adaptations. Preserved the upstream source/tag/path, author copyrights and Apache license.
 - Regenerated the client bundle from the source asset. Case-insensitive scanning found no remaining occurrences in all 90 tracked plugin files. CSS after the header is byte-identical, and the generated bundle changes only by that embedded header. Copyright and license lines remain intact; installation and publication receipts are recorded separately.
 
 ### 2026-10-31 — runtime dependency preparation verified
