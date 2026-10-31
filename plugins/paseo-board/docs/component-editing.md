@@ -2,7 +2,7 @@
 
 This change extends the existing component inspector into an editing surface. The user can select an existing element, move it into another container, copy its structure, or edit text. Agent-authored HTML, CSS, scripts and existing publishing APIs remain available without a required component model.
 
-The initial PR build is installed locally for testing. User feedback exposed missing visible hover geometry, an oversized inspector, absent drag/result previews and a definite save refusal that left editing locked. Follow-up fixes are being integrated; their installation and native acceptance are recorded separately from the [initial verification](verification/2026-10-31-component-editing.md). Main remains unchanged pending explicit merge approval.
+The locally installed PR build now includes fixes for visible selection outlines, compact controls, drag/result previews and definite save refusals that previously left editing locked. Clean verification and native acceptance of these fixes are recorded in the [feedback-fix verification](verification/2026-10-31-component-edit-polish.md), separately from the [initial implementation](verification/2026-10-31-component-editing.md). Delivery remains on draft PR #4; main requires explicit merge approval.
 
 ## Interaction
 
@@ -34,6 +34,12 @@ A marker on an anonymous component follows that same live DOM node when the comp
 Moves use the browser's state-preserving move operation when available, with an ordinary same-document move fallback that restores focused inputs and their caret. Older browsers may reset some embedded media/frame state on that fallback even though the element and its listeners are retained.
 
 ## Verification
+
+The feedback-fix runtime `6bbc490` passed fresh clean-archive checks: TypeScript, 298 source tests in 22 files, 38 full host, 9 dashboard, 12 component-edit host and 66 canvas Chromium checks. The 125 browser checks include repeated title checks across host scopes. New assertions verify a nonzero target-aligned hover rectangle, compact toolbar bounds, visible drag copies/insertion lines, preview reflow and both scroll axes, preview-only focus/wheel behavior, and placement clear of the actual host Save card at desktop and compact sizes. Both generated assets rebuild byte-for-byte; Hermes and actual production Helper packaging with two workers pass.
+
+The backed-up local installation preserved all four Boards. In the actual desktop app, modifier-click selection showed a visible outline and compact toolbar; cut/paste into the previously failing anonymous footer showed a green layout preview. Original/preview comparison and cancellation preserved the exact canvas, state and interactions. Host Save succeeded and reopening preserved the move. A second native move restored the original container, and another reopen preserved that layout and saved controls. The two test moves remain in the durable journal; no agent message was sent. Native coordinate dragging failed in the automation tool before dispatch, so hover-only previews, drag ghosts and drag hierarchy keys in this round are verified by Chromium rather than the native tool. See the linked feedback-fix report for evidence and limits.
+
+### Initial implementation record
 
 The initial clean source suite passed 288 tests in 21 files. Chromium passed 38 full host, 9 dashboard, 10 component-edit host and 64 canvas checks. These covered revision conflicts, immutable retries, worker routing, invalid selectors, containment cycles, structural identity, mixed text, copied references and authored-source replay; plus held-modifier hover/click, normal inputs, drag cancellation and hierarchy choices, cut/paste, copy, text commit/cancel, listener/input preservation, host-only save authority, stale scopes and uncertain acknowledgements. They did not establish correct hover rectangle geometry or a visible post-drop layout; follow-up regression assertions address those gaps.
 
