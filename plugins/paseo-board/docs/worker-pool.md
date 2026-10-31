@@ -1,7 +1,7 @@
 # Board storage workers (PR implementation)
 
-This change is under review. It has not replaced the installed plugin, and it must
-not merge into main until the user explicitly approves. Existing hosts use the
+This change is under review. Local installation for user testing is authorized,
+but it must not merge into main until the user explicitly approves. Existing hosts use the
 user-approved compact status probes: commits update an in-memory index, and an
 idle probe does not read Board files or histories. Optional host push work is
 kept separate. The client must accurately report its synchronization state.

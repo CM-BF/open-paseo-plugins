@@ -98,7 +98,7 @@ Forks separate conversation context while sharing the Board's mutation surface. 
 
 Recent committed canvas changes retain their own targets and writer identity. The update navigator locates and briefly highlights each target; it marks an update seen only after all its targets are confirmed visible. Manual browsing pauses automatic following, while input and gestures defer movement. Missing targets remain unread.
 
-Seen receipts do not advance content revision. Another already-open Board client using revision-only polling may retain older read status until a full read or content change; the Board index performs full summary queries. This does not change the current client's confirmed receipt or acknowledge unrelated updates.
+Seen receipts do not advance content revision. They emit their own commit sequence so another open client can recover the updated attention state. The index is updated after durable commits; foreground compatibility checks compare an in-memory cursor and fetch only changed summaries. The corresponding active Board query refreshes when its own commit is observed, including a same-content-revision seen receipt. This does not acknowledge unrelated updates.
 
 ## Component selection and explicit marker navigation
 
@@ -108,4 +108,4 @@ Marker placement resolves the current live element before checking visibility, s
 
 Only an explicit sidebar focus request runs navigation. Optional `board.onReveal` callbacks receive `{target, reason:"interaction", signal}`; sequential callback work, native details opening and unique ARIA tab activation share an abortable request. A newer request, canvas interaction or selection change cancels it, and a three-second deadline clears a stalled request. Callbacks must honor their signal before mutating author state; arbitrary JavaScript cannot be forcibly cancelled. The runtime independently verifies request identity after awaits and grants no message activation. Tab activation requires a unique `aria-controls` relationship, an enabled tab within a tablist and explicit `aria-selected`; ambiguous or unknown controls, links and submit controls are not activated. Non-ARIA custom navigation requires the optional callback rather than inferred clicks or CSS edits.
 
-These changes are being verified in the isolated Chromium renderer and contract tests on the PR branch. No local installation or live-daemon acceptance is implied; the main branch remains the installed compatibility baseline.
+These changes are being verified in the isolated Chromium renderer and contract tests on the PR branch. Local installation for user testing was subsequently authorized, separately from merging the PR; native acceptance is recorded only after that installation is exercised. Main remains unchanged until explicit approval.
