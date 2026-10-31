@@ -199,6 +199,76 @@ try {
   assert.deepEqual(await canvasRect(), original);
   check('ordinary text selection and Alt-drag open the focused input immediately; clicks inside keep it open, and clicking the canvas outside closes it without sending');
 
+  // A closed details subtree still runs authored RAF callbacks. Its invisible pixels
+  // must not poison a screenshot of visible content or cause the composer to lose focus.
+  await frame(`(()=>{
+    const fold=document.createElement('details');fold.id='hidden-capture-animation';
+    fold.style.cssText='position:absolute;left:120px;top:140px;width:100px';
+    fold.innerHTML='<summary>Hidden animation</summary><svg width="100" height="70" viewBox="0 0 100 70"><circle id="hidden-capture-traveler" cy="35" r="8" /></svg>';
+    document.body.append(fold);window.hiddenCaptureFrames=0;
+    const animate=()=>{const circle=document.querySelector('#hidden-capture-traveler');if(!circle)return;circle.setAttribute('cx',String(20+(hiddenCaptureFrames++%60)));requestAnimationFrame(animate)};requestAnimationFrame(animate);
+  })()`);
+  for (const visibility of ['closed-details','hidden-tab']) for (const kind of ['point','region']) {
+    await frame(`document.querySelector('#hidden-capture-animation').open=${visibility === 'hidden-tab'};document.querySelector('#hidden-capture-animation').style.display=${JSON.stringify(visibility === 'hidden-tab' ? 'none' : '')}`);
+    console.log(`CASE hidden animation ${visibility} ${kind}`);
+    await frame('pauseNextCapture()');
+    const beforeHiddenAnimation = await frame('({frames:hiddenCaptureFrames,scroll:[scrollX,scrollY],size:[innerWidth,innerHeight]})');
+    const beforeCaptureCount = await evaluate("hostFixture.raw.filter(item=>item.type==='selection-capture').length");
+    if (kind === 'point') await openAt(160,190);
+    else {
+      const bounds=await canvasRect();
+      assert.equal(await frame("document.elementFromPoint(160,190)?.id"),'point', 'Region starts on ordinary canvas content, outside native text inputs');
+      await drag({x:bounds.x+160,y:bounds.y+190},{x:bounds.x+300,y:bounds.y+270},1);
+      await until(`document.querySelector(${JSON.stringify(input)})`,18000);
+    }
+    await untilFrame("captureGate?.held===true || !document.querySelector('[data-board-capture-status]')");
+    assert.equal(await frame('captureGate?.held'),true,`Closed animation must reach image decode: ${JSON.stringify(await evaluate("hostFixture.raw.filter(item=>item.type==='selection-capture').map(({status,reason,selectionId})=>({status,reason,selectionId})).at(-1)"))}`);
+    await sendText(`Hidden animation ${kind} draft`);
+    await evaluate(`window.hiddenAnimationInput=document.querySelector(${JSON.stringify(input)});hiddenAnimationInput.setSelectionRange(2,7)`);
+    const frozenHiddenAnchor=await evaluate("hostFixture.raw.filter(item=>item.type==='compose').at(-1).request.anchor");
+    await untilFrame(`hiddenCaptureFrames>${beforeHiddenAnimation.frames+3}`);
+    await frame('releaseCapture()');
+    await until(`hostFixture.raw.filter(item=>item.type==='selection-capture').length>${beforeCaptureCount}`);
+    const result=await evaluate("hostFixture.raw.filter(item=>item.type==='selection-capture').at(-1)");
+    assert.equal(result.status,'ready', `${visibility} ${kind}`);
+    await until(`document.querySelector(${JSON.stringify(popover+' img')}) && document.querySelector(${JSON.stringify(popover)}).textContent.includes('已附选区截图')`);
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover)}).textContent.includes('截图失败')`),false);
+    assert.equal(result.anchor.kind,kind);
+    const {image: hiddenImage,...hiddenReference}=result.anchor;
+    assert.ok(hiddenImage?.data.startsWith('iVBORw0KGgo'));
+    assert.deepEqual(hiddenReference,frozenHiddenAnchor);
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)})===hiddenAnimationInput && document.activeElement===hiddenAnimationInput`),true);
+    assert.equal(await evaluate('hiddenAnimationInput.value'),`Hidden animation ${kind} draft`);
+    assert.deepEqual(await evaluate('({start:hiddenAnimationInput.selectionStart,end:hiddenAnimationInput.selectionEnd})'),{start:2,end:7});
+    const afterHiddenAnimation=await frame('({frames:hiddenCaptureFrames,scroll:[scrollX,scrollY],size:[innerWidth,innerHeight]})');
+    assert.ok(afterHiddenAnimation.frames>beforeHiddenAnimation.frames+3);
+    assert.deepEqual(afterHiddenAnimation.scroll,beforeHiddenAnimation.scroll);
+    assert.deepEqual(afterHiddenAnimation.size,beforeHiddenAnimation.size);
+    assert.deepEqual(await canvasRect(),original);
+    assert.equal(await submitCount(),0);
+    await key('Escape');await noPopover();await hostClick('button[aria-label="清除引用"]');
+  }
+  check('right-click and region screenshots ignore closed-details and hidden-tab animated subtrees while its RAF keeps running, preserving the input caret, focus, text, viewport and frozen reference');
+
+  await frame('pauseNextCapture()');await openAt(160,190);await untilFrame('captureGate?.held===true');
+  await sendText('Visible content must stay consistent');
+  await evaluate(`window.visibleMutationInput=document.querySelector(${JSON.stringify(input)});visibleMutationInput.setSelectionRange(1,6)`);
+  const frozenVisibleAnchor=await evaluate("hostFixture.raw.filter(item=>item.type==='compose').at(-1).request.anchor");
+  await frame("document.querySelector('#point').textContent='Actual visible content changed'");
+  await frame('releaseCapture()');
+  await until(`document.querySelector(${JSON.stringify(popover)}).textContent.includes('截图失败：截图过程中画布内容发生变化')`);
+  const visibleFailure=await evaluate("hostFixture.raw.filter(item=>item.type==='selection-capture').at(-1)");
+  assert.equal(visibleFailure.status,'failed');assert.equal(visibleFailure.reason,'content-changed');
+  assert.deepEqual(visibleFailure.anchor,frozenVisibleAnchor);
+  assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(popover+' img')})`),false);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)})===visibleMutationInput && document.activeElement===visibleMutationInput`),true);
+  assert.equal(await evaluate('visibleMutationInput.value'),'Visible content must stay consistent');
+  assert.deepEqual(await evaluate('({start:visibleMutationInput.selectionStart,end:visibleMutationInput.selectionEnd})'),{start:1,end:6});
+  assert.equal(await submitCount(),0);
+  await key('Escape');await noPopover();await hostClick('button[aria-label="清除引用"]');
+  await frame("document.querySelector('#hidden-capture-animation').remove();document.querySelector('#point').textContent='Point here'");
+  check('a real visible DOM mutation still rejects the pending capture with content-changed and preserves the focused draft and original reference');
+
   await frame('pauseNextCapture()');
   const captureStart = await evaluate('performance.now()');
   await openAt();
