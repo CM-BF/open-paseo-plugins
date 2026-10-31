@@ -937,6 +937,16 @@ try {
   await evaluate(`(()=>{const b=hostFixture.board();const now=new Date().toISOString();hostFixture.seed([...b.interactions,...[{id:'rail-bound',text:'Bound offscreen source',anchor:${JSON.stringify(offscreenAnchor)}},{id:'rail-folding',text:'Bound folded source',anchor:${JSON.stringify(foldingAnchor)}}].map(item=>({...item,kind:'question',status:'answered',response:'A persistent component discussion.',resultReferences:[],createdAt:now,updatedAt:now}))]);hostFixture.refetch()})()`);
   await until(`document.querySelectorAll(${JSON.stringify(rail + ' button')}).length===${baseRailRoots + 29}`);
   await frame("document.querySelector('#folding').open=false;scrollTo(0,0)");
+  const foldingMarker = `document.querySelector('[data-board-markers]').shadowRoot.querySelector(${JSON.stringify(marker('rail-folding'))})`;
+  await untilFrame(`${foldingMarker}?.dataset.location==='collapsed'`);
+  assert.equal(await frame("document.querySelector('#folding').open"), false);
+  await frame("document.querySelector('#folding').hidden=true");
+  await untilFrame(`${foldingMarker}.dataset.location==='hidden'&&${foldingMarker}.hidden`);
+  assert.equal(await frame("document.querySelector('#folding').hidden"), true);
+  assert.equal(await frame("document.querySelector('#folding').open"), false);
+  await frame("document.querySelector('#folding').hidden=false");
+  await untilFrame(`${foldingMarker}.dataset.location==='collapsed'`);
+  assert.equal(await frame('window.authorClicks'), 0);
   await evaluate(`document.querySelector(${JSON.stringify(railItem('rail-bound'))}).scrollIntoView({block:'nearest'})`);
   await railClick('rail-bound');
   await untilFrame("scrollY>0 && document.querySelector('#far').getBoundingClientRect().top>=0 && document.querySelector('#far').getBoundingClientRect().top<innerHeight");
@@ -945,9 +955,10 @@ try {
   await railClick('rail-bound');
   await untilFrame("scrollY>0 && document.querySelector('#far').getBoundingClientRect().top<innerHeight");
   await railClick('rail-folding');
-  await untilFrame(`document.querySelector('[data-board-markers]').shadowRoot.querySelector(${JSON.stringify(marker('rail-folding'))})?.dataset.location==='collapsed'`);
-  await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('组件当前不可见')`);
-  assert.equal(await frame("document.querySelector('#folding').open"), false);
+  await untilFrame(`document.querySelector('#folding').open&&${foldingMarker}?.dataset.location==='component'&&!${foldingMarker}.hidden`);
+  await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('Bound folded source')`);
+  await untilFrame(`(()=>{const target=document.querySelector('#folding-body').getBoundingClientRect();const marker=${foldingMarker};return target.top>=0&&target.bottom<=innerHeight&&Math.abs(parseFloat(marker.style.left)-(target.left+target.width*${foldingAnchor.binding.relative.x}))<1&&Math.abs(parseFloat(marker.style.top)-(target.top+target.height*${foldingAnchor.binding.relative.y}))<1})()`);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover)}).textContent.includes('组件当前不可见')`), false);
   assert.equal(await frame('window.authorClicks'), 0);
   const revisionBeforeRemoval = await evaluate('hostFixture.board().canvas.revision');
   await frame("document.querySelector('#folding').remove()");
@@ -961,7 +972,7 @@ try {
   assert.deepEqual(await canvasRect(), original);
   await closePopover();
   await frame('scrollTo(0,0)');
-  check('real captured component anchors let repeated rail clicks locate offscreen content and closed summaries; deleted targets remain readable with an explicit unavailable-location notice, without expanding components or sending messages');
+  check('passive markers preserve collapsed/hidden containers; explicit rail clicks reveal native details and locate the exact bound component, while deleted targets remain readable without authored clicks or message submission');
 
   await closePopover();
   await command('Emulation.setDeviceMetricsOverride', { width: 900, height: 650, deviceScaleFactor: 1, mobile: false });
