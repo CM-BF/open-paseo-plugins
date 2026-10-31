@@ -856,13 +856,12 @@ function (initial, createFrameReceiver) {
         filterChildren: node => !plan.prune.has(node),
         // Computed values already resolve var(). Preserve custom-property inheritance instead
         // of redundantly copying the same theme tokens onto every single descendant.
-        filterStyleProperty: (node, property, value) => {
+        filterStyleProperty: (node, property, value, computedValue) => {
           const recorded = plan.styles.get(node);
           if (recorded) {
-            let expected = recorded.get(property);
-            // Match the pinned library's font-size normalization before comparing its input.
-            if (property === "font-size" && expected?.endsWith("px")) expected = `${Math.floor(parseFloat(expected)) - 0.1}px`;
-            if (expected !== value) throw new Error("Canvas styling changed during capture; the geometric anchor is still saved");
+            // The library normalizes font-size and SVG path d for its cloned output.
+            // Validate the original computed value, not that serialization transform.
+            if (recorded.get(property) !== computedValue) throw new Error("Canvas styling changed during capture; the geometric anchor is still saved");
           }
           if (!property.startsWith("--") || !node.parentElement) return true;
           let style = parentStyles.get(node.parentElement);
