@@ -167,6 +167,78 @@ try {
   await untilFrame('!board.getData().left');
   check('a subscription added during another renderer receives the current snapshot once, never an old value labelled with a new revision');
 
+  await frame(`(()=>{window.subtreeCalls={parent:[],child:[],sibling:[]};window.subtreeStops=[board.watch('/tree',v=>subtreeCalls.parent.push(v)),board.watch('/tree/child/n',v=>subtreeCalls.child.push(v)),board.watch('/other',v=>subtreeCalls.sibling.push(v))];return true})()`);
+  await update('{canvas:{...hostProps.canvas,data:{n:1,tree:{child:{n:1}},other:0}}}');
+  await untilFrame('board.getData().tree?.child.n===1');
+  await update('{canvas:{...hostProps.canvas,data:{n:1,tree:{child:{n:2}},other:0}}}');
+  await untilFrame('board.getData().tree?.child.n===2');
+  assert.deepEqual(await frame('[subtreeCalls.parent.length,subtreeCalls.child.length,subtreeCalls.sibling.length]'),[3,3,2]);
+  await update('{canvas:{...hostProps.canvas,data:{n:1,tree:null,other:0}}}');
+  await untilFrame('board.getData().tree===null');
+  assert.equal(await frame('subtreeCalls.child.at(-1)===undefined'),true);
+  await frame('subtreeStops.forEach(off=>off())');
+  check('delta path filtering notifies ancestor and descendant watches while skipping unrelated siblings');
+
+  await frame(`(()=>{window.savedRaf=window.requestAnimationFrame;window.savedCancelRaf=window.cancelAnimationFrame;window.heldFrames=new Map();window.frameSequence=100000;window.requestAnimationFrame=fn=>{const id=++frameSequence;heldFrames.set(id,fn);return id};window.cancelAnimationFrame=id=>heldFrames.delete(id);window.frameValues=[];window.syncValues=[];window.cancelledValues=[];window.frameOff=board.watch('/burst',(v,c)=>frameValues.push({v,revision:c.canvasRevision}),{schedule:'frame'});window.syncOff=board.watch('/burst',v=>syncValues.push(v));window.cancelOff=board.watch('/burst',v=>cancelledValues.push(v),{schedule:'frame'});return true})()`);
+  await update('{canvas:{...hostProps.canvas,data:{n:1,burst:1}}}'); await untilFrame('board.getData().burst===1');
+  await update('{canvas:{...hostProps.canvas,data:{n:1,burst:2}}}'); await untilFrame('board.getData().burst===2');
+  assert.deepEqual(await frame('[frameValues.length,syncValues.length,cancelledValues.length]'),[1,3,1]);
+  await frame('cancelOff();window.requestAnimationFrame=savedRaf;window.cancelAnimationFrame=savedCancelRaf;for(const fn of heldFrames.values())fn(performance.now());heldFrames.clear()');
+  assert.deepEqual(await frame('frameValues'),[{revision:2},{v:2,revision:2}]);
+  assert.equal(await frame('cancelledValues.length'),1);
+  await frame('frameOff();syncOff()');
+  check('optional frame watches render immediately then deliver the latest value once per frame; sync watches stay synchronous and unsubscribe cancels a queued render');
+
+  await frame(`(()=>{window.themeWrites=[];window.themeEvents=0;window.themeObserver=new MutationObserver(records=>themeWrites.push(...records.map(r=>r.attributeName)));themeObserver.observe(document.documentElement,{attributes:true,attributeFilter:['style','data-theme']});window.themeListener=()=>themeEvents++;window.addEventListener('paseo:themechange',themeListener);return true})()`);
+  await evaluate("setTheme('light')");
+  await update('{canvas:{...hostProps.canvas,data:{n:1,themeCheck:true}}}'); await untilFrame('board.getData().themeCheck===true');
+  assert.deepEqual(await frame('[themeWrites.length,themeEvents]'),[0,0]);
+  await evaluate("setTheme('dark')"); await untilFrame('document.documentElement.dataset.theme==="dark"');
+  assert.equal(await frame('themeEvents'),1);
+  await frame('themeWrites=[]'); await evaluate("setTheme('dark')"); await settleFrame();
+  assert.deepEqual(await frame('[themeWrites.length,themeEvents]'),[0,1]);
+  await evaluate("setTheme('light')"); await untilFrame('document.documentElement.dataset.theme==="light"');
+  assert.equal(await frame('themeEvents'),2);
+  await frame("themeObserver.disconnect();window.removeEventListener('paseo:themechange',themeListener)");
+  check('equal host themes produce zero CSS mutations and no themechange; each changed theme emits once');
+
+  await update('{canvas:{...hostProps.canvas,data:{n:1,records:Array.from({length:20000},(_,id)=>({id,text:"x".repeat(80)}))}}}');
+  await untilFrame('board.getData().records?.length===20000');
+  const fullDataBytes = await evaluate('JSON.stringify(hostProps.canvas.data).length');
+  await frame('window.heapSentinel={zoom:2.75};window.heapReference=heapSentinel;document.querySelector("#paint").style.transform="scale(1.25)";document.querySelector("#field").focus()');
+  await update('{canvas:{...hostProps.canvas,data:{...hostProps.canvas.data,n:2}}}'); await untilFrame('board.getData().n===2');
+  const scalarTransfer = await frame('transportLog.at(-1)');
+  assert.equal(scalarTransfer.type,'delta'); assert.deepEqual(scalarTransfer.paths,['/n']); assert.equal(scalarTransfer.html,false); assert.equal(scalarTransfer.theme,false);
+  assert.ok(scalarTransfer.bytes<600 && fullDataBytes>2000000);
+  await update('{canvas:{...hostProps.canvas,data:{...hostProps.canvas.data,records:[...hostProps.canvas.data.records,{id:20000,text:"tail"}]}}}'); await untilFrame('board.getData().records.length===20001');
+  const appendTransfer = await frame('transportLog.at(-1)'); assert.deepEqual(appendTransfer.ops,['append']); assert.ok(appendTransfer.bytes<700);
+  assert.equal(await frame('heapSentinel===heapReference && heapSentinel.zoom===2.75'),true);
+  assert.equal(await frame('document.querySelector("#paint").style.transform'),'scale(1.25)');
+  assert.equal(await frame('document.activeElement.id'),'field'); assert.equal(await frame('boots'),1);
+  assert.equal(await frame('document.querySelector("#field").value'),'keep typed input');
+  console.log(`PAYLOAD full-data=${fullDataBytes} scalar-delta=${scalarTransfer.bytes} append-delta=${appendTransfer.bytes}`);
+  check('large data scalar edits and record appends transfer compact deltas while input/focus/zoom and the JS heap remain intact');
+
+  // Inject an actual ahead-of-baseline delta through the scoped parent channel. The host must
+  // answer the receiver's recovery request with a full snapshot, without changing the iframe.
+  const recoveryReady = await evaluate('results.ready'); const recoveryRequests = await evaluate('results.raw.filter(m=>m.type==="snapshot-request").length');
+  const corrupted = await frame('({...lastTransport,delta:{...lastTransport.delta,version:lastTransport.delta.version+2,base:{...lastTransport.delta.base,version:lastTransport.delta.version+1}}})');
+  await evaluate(`document.querySelector('iframe').contentWindow.postMessage(${JSON.stringify(corrupted)},'*')`);
+  await until(`results.raw.filter(m=>m.type==='snapshot-request').length===${recoveryRequests+1}`);
+  await untilFrame('transportLog.at(-1).type==="snapshot"');
+  assert.equal(await frame('board.getData().records.length'),20001); assert.equal(await frame('heapSentinel===heapReference'),true); assert.equal(await evaluate('results.ready'),recoveryReady);
+  const duplicate = await frame('lastTransport');
+  await evaluate(`document.querySelector('iframe').contentWindow.postMessage(${JSON.stringify(duplicate)},'*')`); await settleFrame();
+  assert.equal(await evaluate('results.raw.filter(m=>m.type==="snapshot-request").length'),recoveryRequests+1);
+  await frame(`window.dispatchEvent(new MessageEvent('message',{source:parent,data:{...lastTransport,version:lastTransport.version+100,snapshot:{...lastTransport.snapshot,canvas:{...lastTransport.snapshot.canvas,data:{forged:true}}}}}))`);
+  assert.equal(await frame('board.getData().forged===undefined'),true);
+  const downgrade = { ...duplicate, version: undefined, protocol: undefined, snapshot: { ...duplicate.snapshot, canvas: { ...duplicate.snapshot.canvas, data: { downgraded: true } } } };
+  await evaluate(`document.querySelector('iframe').contentWindow.postMessage(${JSON.stringify(downgrade)},'*')`); await settleFrame();
+  assert.equal(await frame('board.getData().downgraded===undefined'),true);
+  await update('{canvas:{...hostProps.canvas,data:{n:1}}}'); await untilFrame('board.getData().n===1 && !board.getData().records');
+  await frame('document.querySelector("#paint").style.transform=""');
+  check('gapped transport requests one complete recovery without remounting; duplicate recovery and synthetic parent messages cannot undo state');
+
   const patch = { id: 'patch-one', selector: '#target', operation: 'append', html: '<button id="new-control">New animation</button><script>window.patchRuns=(window.patchRuns||0)+1;document.querySelector("#new-control").onclick=()=>window.patchClicks=(window.patchClicks||0)+1</script>' };
   await update(`{boardRevision:3,canvas:{...hostProps.canvas,revision:3,patches:[${JSON.stringify(patch)}]}}`);
   await frame("new Promise(resolve=>{const tick=()=>window.patchRuns?resolve():setTimeout(tick,10);tick()})");
@@ -302,6 +374,11 @@ try {
   await rightClick('#target');
   await untilFrame('captureGate?.held===true');
   await update("{boardRevision:6,canvas:{...hostProps.canvas,revision:6,data:{n:4},patches:[...hostProps.canvas.patches,{id:'during-capture',selector:'#target',operation:'append',html:'<div id=after-capture>new</div>'}]}}");
+  await untilFrame('transportLog.at(-1).patchIds.includes("during-capture")');
+  await update("{canvas:{...hostProps.canvas,data:{n:4,captureTail:[1,2]},patches:[...hostProps.canvas.patches,{id:'during-capture-two',selector:'#target',operation:'append',html:'<div id=after-capture-two>second</div><script>window.capturePatchRuns=(window.capturePatchRuns||0)+1</script>'}]}}");
+  await untilFrame('transportLog.at(-1).patchIds.includes("during-capture-two")');
+  await update("{canvas:{...hostProps.canvas,data:{n:4,captureTail:[1,2,3]}}}");
+  await untilFrame('transportLog.at(-1).paths?.includes("/captureTail")');
   assert.equal(await frame('board.getData().n'),3);
   assert.equal(await frame("Boolean(document.querySelector('#after-capture'))"),false);
   await frame('new Promise(resolve=>{const check=()=>navigator.userActivation.isActive?setTimeout(check,20):resolve();check()})');
@@ -311,6 +388,9 @@ try {
   assert.equal(delayed.anchor.canvasRevision,frozen.canvasRevision);
   assert.equal(delayed.anchor.boardRevision,frozen.boardRevision);
   await untilFrame("board.getData().n===4 && Boolean(document.querySelector('#after-capture'))");
+  await untilFrame('window.capturePatchRuns===1');
+  assert.deepEqual(await frame('board.getData().captureTail'),[1,2,3]);
+  assert.equal(await frame('document.querySelectorAll("#after-capture-two").length'),1);
   check('a slow capture freezes data, patches and revision; its original gesture opens input before capture and accepts pixels after activation expires');
 
   await frame('pauseNextCapture()'); await rightClick('#target'); await untilFrame('captureGate?.held===true');

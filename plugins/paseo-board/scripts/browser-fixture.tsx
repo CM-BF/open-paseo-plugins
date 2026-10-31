@@ -12,6 +12,8 @@ const fragment = `<style>body{padding:24px;margin:0}#target{min-height:120px}but
 <button id="dragbox" type="button">Draggable canvas control</button><div id="editing"><textarea id="textarea">Editable notes</textarea><div id="editable" contenteditable="true"><span id="editable-child">Editable rich text</span></div></div>
 <script>
 window.boots=(window.boots||0)+1;window.ticks=0;window.count=0;window.changes=[];window.restored=board.restoreState();
+window.transportLog=[];window.lastTransport=null;
+window.addEventListener('message',e=>{if(e.source!==parent||e.data?.channel!=='paseo-board-frame-v1'||!['snapshot','delta'].includes(e.data.type))return;const m=e.data;window.lastTransport=m;window.transportLog.push({type:m.type,version:m.version??m.delta?.version,base:m.delta?.base,bytes:JSON.stringify(m).length,paths:m.delta?.data.map(d=>d.path),ops:m.delta?.data.map(d=>d.op),patchIds:(m.delta?.patches||m.snapshot?.canvas.patches).map(p=>p.id),html:!!m.snapshot?.canvas.html,theme:!!m.delta?.theme,state:!!m.delta?.userState})});
 window.controlEvents={downs:0,moves:0,clicks:0,contexts:[]};let dragging;
 const dragbox=document.querySelector('#dragbox');dragbox.onpointerdown=e=>{if(e.button!==0)return;controlEvents.downs++;dragging={x:e.clientX,y:e.clientY,left:parseFloat(dragbox.style.left||'740'),top:parseFloat(dragbox.style.top||'90')}};
 window.addEventListener('pointermove',e=>{if(!dragging)return;controlEvents.moves++;dragbox.style.left=dragging.left+e.clientX-dragging.x+'px';dragbox.style.top=dragging.top+e.clientY-dragging.y+'px'});

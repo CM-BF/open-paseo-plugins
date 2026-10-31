@@ -22,7 +22,8 @@ export interface AskResult { status: "submitted" | "cancelled"; outcome?: string
 export interface FrameScope { channel: typeof FRAME_CHANNEL; boardId: string; sessionId: string }
 export interface FrameSnapshot { canvas: Canvas; boardRevision: number; userState: JsonData; theme: FrameTheme }
 export type FrameMessage = FrameScope & (
-  | { type: "ready" }
+  | { type: "ready"; capabilities?: { frameDelta: 1 } }
+  | { type: "snapshot-request"; documentVersion: number; version: number; reason: string }
   | { type: "canvas-pointer" }
   | { type: "canvas-activity"; busy: boolean }
   | ({ type: "update-position" } & UpdatePosition)
@@ -70,7 +71,13 @@ export function interactionMarkers(interactions: readonly Interaction[]): Intera
 export function readFrameMessage(value: unknown, scope: Pick<FrameScope, "boardId" | "sessionId">): FrameMessage | null {
   if (!record(value) || value.channel !== FRAME_CHANNEL || value.boardId !== scope.boardId || value.sessionId !== scope.sessionId) return null;
   switch (value.type) {
-    case "ready": case "canvas-pointer": case "selection-end": case "selection-clear": break;
+    case "ready":
+      if (value.capabilities !== undefined && (!record(value.capabilities) || value.capabilities.frameDelta !== 1)) return null;
+      break;
+    case "snapshot-request":
+      if (!Number.isSafeInteger(value.documentVersion) || Number(value.documentVersion) < 0 || !Number.isSafeInteger(value.version) || Number(value.version) < 0 || !short(value.reason, 100)) return null;
+      break;
+    case "canvas-pointer": case "selection-end": case "selection-clear": break;
     case "canvas-activity": if (typeof value.busy !== "boolean") return null; break;
     case "update-position":
       if (!short(value.requestId, 160) || !short(value.id, 160)

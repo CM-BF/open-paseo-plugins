@@ -3,11 +3,12 @@ import { createElement, useEffect, useLayoutEffect, useRef, useState, type React
 import { Platform } from "react-native";
 import type { Anchor, Canvas, Interaction, JsonData } from "../shared/contracts";
 import { buildBoardDocument } from "../shared/document";
+import { createFrameDelta, emptyFrameDelta, transportSnapshot, type TransportSnapshot } from "../shared/frame-delta";
 import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, sameSelectionAnchor, type SelectionCapture, type AskRequest, type AskResult, type ComposeRequest, type FrameError, type FramePosition, type FrameSnapshot, type FrameTheme, type InteractionLocation, type FocusUpdateRequest, type UpdatePosition, type SelectionMode } from "../shared/frame-contract";
 
 type FrameWindow = { postMessage(message: unknown, origin: string): void };
 type Frame = { contentWindow: FrameWindow | null };
-type MessageEvent = { source: unknown; data: unknown };
+type MessageEvent = { source: unknown; data: unknown; isTrusted: boolean };
 type OuterPointerEvent = { isTrusted: boolean; target?: { closest?(selector: string): unknown }; preventDefault(): void };
 type BrowserWindow = {
   addEventListener(name: "message", fn: (event: MessageEvent) => void): void;
@@ -81,6 +82,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   const [, redraw] = useState(0);
   if (interactionLock.current?.boardId !== props.boardId) interactionLock.current = null;
   const ready = useRef(false);
+  const transport = useRef<{ sessionId: string; capable: boolean; version: number; snapshot: TransportSnapshot } | null>(null);
   const focused = useRef<string | undefined>(undefined);
   const updateSent = useRef<string | undefined>(undefined);
   const updatePending = useRef<{ requestId: string; id: string; token: number; targetIndex: number; documentVersion: number } | undefined>(undefined);
@@ -92,6 +94,19 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   const send = (payload: Record<string, unknown>) => {
     const current = document.current!;
     frame.current?.contentWindow?.postMessage({ ...payload, channel: FRAME_CHANNEL, boardId: current.boardId, sessionId: current.sessionId }, "*");
+  };
+  const syncSnapshot = (force = false) => {
+    const current = latest.current;
+    // A locked old document must not receive the replacement document's data or patches.
+    if (document.current?.version !== current.canvas.documentVersion) return;
+    const next = transportSnapshot({ canvas: current.canvas, boardRevision: current.boardRevision, userState: effectiveState(), theme: current.theme });
+    const previous = transport.current;
+    if (!previous?.capable) { send({ type: "snapshot", snapshot: next }); return; }
+    const delta = force ? null : createFrameDelta(previous.snapshot, next, previous.version);
+    if (delta && emptyFrameDelta(delta)) return;
+    const version = previous.version + 1;
+    send(delta ? { type: "delta", delta } : { type: "snapshot", protocol: 1, version, snapshot: next });
+    transport.current = { ...previous, version, snapshot: next };
   };
   const focusRequestedInteraction = () => {
     const current = latest.current;
@@ -123,7 +138,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
     const sync = () => {
       const current = latest.current;
       send({ type: "selection", mode: current.selectionMode });
-      send({ type: "snapshot", snapshot: { canvas: current.canvas, boardRevision: current.boardRevision, userState: effectiveState(), theme: current.theme } });
+      syncSnapshot(true);
       send({ type: "interactions", markers: interactionMarkers(current.interactions || []), selectedId: current.selectedInteractionId });
       send({ type: "host-activity", composing: Boolean(current.composerActive) });
       focusRequestedInteraction();
@@ -131,12 +146,20 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
     };
     const userActing = () => browser.document?.activeElement === frame.current && browser.navigator?.userActivation?.isActive === true;
     const onMessage = (event: MessageEvent) => {
-      if (disposed || event.source !== frame.current?.contentWindow || !document.current) return;
+      if (disposed || !event.isTrusted || event.source !== frame.current?.contentWindow || !document.current) return;
       const message = readFrameMessage(event.data, document.current);
       if (!message) return;
       const current = latest.current;
       switch (message.type) {
-        case "ready": ready.current = true; sync(); current.onReady?.(); break;
+        case "ready":
+          ready.current = true;
+          transport.current = { sessionId: document.current.sessionId, capable: message.capabilities?.frameDelta === 1,
+            version: transport.current?.sessionId === document.current.sessionId ? transport.current.version : 0,
+            snapshot: transportSnapshot({ canvas: current.canvas, boardRevision: current.boardRevision, userState: effectiveState(), theme: current.theme }) };
+          sync(); current.onReady?.(); break;
+        case "snapshot-request":
+          if (ready.current && transport.current?.capable && message.documentVersion === document.current.version) syncSnapshot(true);
+          break;
         case "canvas-pointer": if (userActing()) current.onCanvasPointer?.(); break;
         case "canvas-activity": current.onCanvasActivity?.(message.busy); break;
         case "update-position": {
@@ -257,7 +280,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
 
   useEffect(() => {
     if (!ready.current) return;
-    send({ type: "snapshot", snapshot: { canvas: props.canvas, boardRevision: props.boardRevision, userState: effectiveState(), theme: props.theme } });
+    syncSnapshot();
   }, [props.canvas, props.boardRevision, props.userState, props.theme]);
   useEffect(() => {
     if (ready.current) send({ type: "interactions", markers: interactionMarkers(props.interactions || []), selectedId: props.selectedInteractionId });

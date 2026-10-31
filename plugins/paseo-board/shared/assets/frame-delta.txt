@@ -1,0 +1,96 @@
+function (initial, requestSnapshot) {
+  "use strict";
+  // This factory is injected verbatim and tested directly: it has no DOM or host dependencies.
+  let received = initial;
+  let version = 0;
+  let recovering = false;
+  const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+  const record = value => value !== null && typeof value === "object" && !Array.isArray(value);
+  const integer = value => Number.isSafeInteger(value) && value >= 0;
+  const json = (value, depth = 0) => {
+    if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+    if (typeof value === "number") return Number.isFinite(value);
+    if (!value || typeof value !== "object" || depth > 128) return false;
+    if (Array.isArray(value)) return value.every(item => json(item, depth + 1));
+    if (![Object.prototype, null].includes(Object.getPrototypeOf(value))) return false;
+    return Object.keys(value).every(key => json(value[key], depth + 1));
+  };
+  const theme = value => record(value) && ["light", "dark"].includes(value.scheme) && record(value.tokens)
+    && Object.entries(value.tokens).every(([key, item]) => /^host-[a-z0-9-]+$/.test(key) && typeof item === "string" && /^[#a-zA-Z0-9(),.%+*/ -]{1,200}$/.test(item));
+  const patches = value => Array.isArray(value) && value.every(patch => record(patch) && typeof patch.id === "string" && patch.id.length > 0 && patch.id.length <= 160
+    && typeof patch.selector === "string" && patch.selector.length > 0 && patch.selector.length <= 1000
+    && ["append", "prepend", "replace", "remove"].includes(patch.operation)
+    && (patch.operation === "remove" && patch.html === undefined || typeof patch.html === "string" && patch.html.length <= 2000000))
+    && new Set(value.map(patch => patch.id)).size === value.length;
+  const fail = reason => {
+    if (!recovering) { recovering = true; requestSnapshot({ documentVersion: initial.canvas.documentVersion, version, reason }); }
+    return null;
+  };
+  const segments = path => {
+    if (typeof path !== "string" || path.length > 2000 || (path !== "" && !path.startsWith("/")) || /~(?![01])/.test(path)) throw new Error("Invalid data pointer");
+    const parts = path === "" ? [] : path.slice(1).split("/").map(part => part.replace(/~1/g, "/").replace(/~0/g, "~"));
+    if (parts.length > 64 || parts.some(part => ["__proto__", "prototype", "constructor"].includes(part))) throw new Error("Unsafe data pointer");
+    return parts;
+  };
+  const apply = (data, change) => {
+    if (!record(change) || !["set", "remove", "append"].includes(change.op)) throw new Error("Invalid data operation");
+    const parts = segments(change.path);
+    if (change.op === "set" && !json(change.value)) throw new Error("Invalid data value");
+    if (change.op === "append" && (!integer(change.offset) || !Array.isArray(change.values) || !change.values.length || !json(change.values))) throw new Error("Invalid array tail");
+    const update = (value, index) => {
+      if (index === parts.length) {
+        if (change.op === "set") return change.value;
+        if (change.op === "append" && Array.isArray(value) && value.length === change.offset) return value.concat(change.values);
+        throw new Error("Invalid data target");
+      }
+      if (!value || typeof value !== "object") throw new Error("Missing data parent");
+      const key = parts[index], last = index === parts.length - 1;
+      if (Array.isArray(value) && (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length)) throw new Error("Invalid array index");
+      if (!own(value, key) && !(last && change.op === "set" && !Array.isArray(value))) throw new Error("Missing data target");
+      const result = Array.isArray(value) ? value.slice() : { ...value };
+      if (last && change.op === "remove") {
+        if (Array.isArray(result)) throw new Error("Array removal requires a replacement");
+        delete result[key];
+      } else result[key] = update(value[key], index + 1);
+      return result;
+    };
+    const result = update(data, 0);
+    if (!record(result)) throw new Error("Data root must be an object");
+    return result;
+  };
+  return {
+    snapshot(next, nextVersion) {
+      if (!integer(nextVersion) || nextVersion <= version) return null;
+      if (!record(next) || !record(next.canvas) || next.canvas.documentVersion !== initial.canvas.documentVersion
+        || !integer(next.boardRevision) || next.boardRevision < received.boardRevision || !integer(next.canvas.revision) || next.canvas.revision < received.canvas.revision
+        || !record(next.canvas.data) || !json(next.canvas.data) || !record(next.userState) || !json(next.userState) || !patches(next.canvas.patches) || !theme(next.theme)) return fail("invalid-snapshot");
+      received = next; version = nextVersion; recovering = false;
+      return { snapshot: next, changedPaths: null, patches: next.canvas.patches };
+    },
+    delta(delta) {
+      if (!record(delta) || !integer(delta.version)) return fail("invalid-delta");
+      // Already received versions cannot undo or replay newer data/patches.
+      if (delta.version <= version) return null;
+      if (recovering) return null;
+      const base = delta.base;
+      if (delta.protocol !== 1 || !record(base) || base.version !== version || delta.version !== version + 1
+        || base.documentVersion !== initial.canvas.documentVersion || base.boardRevision !== received.boardRevision
+        || base.canvasRevision !== received.canvas.revision || base.patchCount !== received.canvas.patches.length) return fail("baseline-mismatch");
+      if (!integer(delta.boardRevision) || delta.boardRevision < received.boardRevision || !integer(delta.canvasRevision) || delta.canvasRevision < received.canvas.revision
+        || !Array.isArray(delta.data) || delta.data.length > 10000 || !patches(delta.patches)
+        || own(delta, "userState") && (!record(delta.userState) || !json(delta.userState)) || own(delta, "theme") && !theme(delta.theme)) return fail("invalid-delta");
+      const ids = new Set(received.canvas.patches.map(patch => patch.id));
+      if (delta.patches.some(patch => ids.has(patch.id))) return fail("duplicate-patch");
+      try {
+        let data = received.canvas.data;
+        for (const change of delta.data) data = apply(data, change);
+        // Commit only after every operation and the complete envelope passed validation.
+        received = { ...received, boardRevision: delta.boardRevision,
+          canvas: { ...received.canvas, revision: delta.canvasRevision, data, patches: received.canvas.patches.concat(delta.patches) },
+          ...(own(delta, "userState") ? { userState: delta.userState } : {}), ...(own(delta, "theme") ? { theme: delta.theme } : {}) };
+        version = delta.version;
+        return { snapshot: received, changedPaths: delta.data.map(change => change.path), patches: delta.patches };
+      } catch { return fail("invalid-data-change"); }
+    },
+  };
+}

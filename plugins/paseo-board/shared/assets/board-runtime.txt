@@ -1,4 +1,4 @@
-function (initial) {
+function (initial, createFrameReceiver) {
   "use strict";
   const root = document.documentElement;
   const scope = { channel: initial.channel, boardId: initial.boardId, sessionId: initial.sessionId };
@@ -28,7 +28,7 @@ function (initial) {
   const stateListeners = new Set();
   const pendingAsks = new Map();
   const post = (message) => window.parent.postMessage({ ...message, ...scope }, "*");
-  const copy = (value) => JSON.parse(JSON.stringify(value));
+  const copy = (value) => value === undefined ? undefined : structuredClone(value);
   const error = (code, message, patchId) => post({ type: "error", error: { code, message: String(message).slice(0, 4000), ...(patchId ? { patchId } : {}) } });
   const emitListeners = (listeners, value) => { for (const listener of listeners) { try { listener(copy(value)); } catch (e) { error("listener-error", e.message); } } };
   const currentAnchor = () => ({ kind: "board", boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision });
@@ -60,8 +60,7 @@ function (initial) {
     listeners.add(fn);
     return () => listeners.delete(fn);
   };
-  // Watch only selected JSON values. Snapshots remain whole; this avoids cloning
-  // the entire data object for each renderer and rerendering unrelated components.
+  // Watch only selected JSON values. Changed paths filter unrelated subscriptions.
   const watchSegments = (path) => {
     if (typeof path !== "string" || path.length > 2000 || (path !== "" && !path.startsWith("/")) || /~(?![01])/.test(path)) throw new TypeError("watch requires a JSON Pointer (empty string means all data)");
     const parts = path === "" ? [] : path.slice(1).split("/").map(part => part.replace(/~1/g, "/").replace(/~0/g, "~"));
@@ -83,34 +82,41 @@ function (initial) {
     const keys = Object.keys(a);
     return keys.length === Object.keys(b).length && keys.every(key => Object.prototype.hasOwnProperty.call(b, key) && equalJson(a[key], b[key]));
   };
-  const deliverWatch = (entry, fn) => {
-    try { fn(entry.current.exists ? copy(entry.current.value) : undefined, Object.freeze({ path: entry.path, exists: entry.current.exists, boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision })); }
+  const deliverWatch = (entry, listener, immediate = false) => {
+    if (!listener.active) return;
+    if (listener.schedule === "frame" && !immediate) {
+      if (listener.frame === null) listener.frame = requestAnimationFrame(() => { listener.frame = null; deliverWatch(entry, listener, true); });
+      return;
+    }
+    try { listener.fn(entry.current.exists ? copy(entry.current.value) : undefined, Object.freeze({ path: entry.path, exists: entry.current.exists, boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision })); }
     catch (e) { error("listener-error", e instanceof Error ? e.message : String(e)); }
   };
-  const emitWatches = () => {
+  const emitWatches = (changedPaths) => {
     const deliveries = [];
     // Update every cache before calling authored code. A callback may subscribe
     // to another existing path; its initial value must belong to this snapshot.
     for (const entry of Array.from(dataWatches.values())) {
+      if (changedPaths && !changedPaths.some(path => path === entry.path || path.startsWith(entry.path + "/") || entry.path.startsWith(path + "/"))) continue;
       const next = readWatchedValue(snapshot.canvas.data, entry.parts);
       if (next.exists === entry.current.exists && equalJson(next.value, entry.current.value)) continue;
       entry.current = next;
       deliveries.push({ entry, listeners: Array.from(entry.listeners) });
     }
     for (const { entry, listeners } of deliveries) {
-      for (const fn of listeners) if (entry.listeners.has(fn)) deliverWatch(entry, fn);
+      for (const listener of listeners) if (entry.listeners.has(listener)) deliverWatch(entry, listener);
     }
   };
-  const watch = (path, fn) => {
+  const watch = (path, fn, options) => {
     const parts = watchSegments(path);
     if (typeof fn !== "function") throw new TypeError("watch listener must be a function");
+    if (options !== undefined && (!options || typeof options !== "object" || options.schedule !== "frame")) throw new TypeError("watch options require schedule: 'frame'");
     let entry = dataWatches.get(path);
     if (!entry) { entry = { path, parts, current: readWatchedValue(snapshot.canvas.data, parts), listeners: new Set() }; dataWatches.set(path, entry); }
-    // A separate wrapper gives each subscription its own lifetime, even with the same callback.
-    const listener = (value, context) => fn(value, context);
+    // Frame subscriptions are latest-state rendering, not a lossless event stream.
+    const listener = { fn, schedule: options?.schedule, frame: null, active: true };
     entry.listeners.add(listener);
-    deliverWatch(entry, listener);
-    return () => { entry.listeners.delete(listener); if (!entry.listeners.size && dataWatches.get(path) === entry) dataWatches.delete(path); };
+    deliverWatch(entry, listener, true);
+    return () => { listener.active = false; if (listener.frame !== null) cancelAnimationFrame(listener.frame); entry.listeners.delete(listener); if (!entry.listeners.size && dataWatches.get(path) === entry) dataWatches.delete(path); };
   };
   // No SDK or execution primitive is exposed. Data and view state remain task-agnostic JSON.
   Object.defineProperty(window, "board", { configurable: false, writable: false, value: Object.freeze({
@@ -126,13 +132,16 @@ function (initial) {
   }) });
   window.openai = Object.freeze({ sendFollowUpMessage: ask });
 
+  let appliedTheme = initial.theme;
   const applyTheme = (theme) => {
     if (!theme || !["light", "dark"].includes(theme.scheme) || !theme.tokens || typeof theme.tokens !== "object") return;
-    root.setAttribute("data-theme", theme.scheme);
+    if (equalJson(appliedTheme, theme)) return;
+    if (appliedTheme?.scheme !== theme.scheme) root.setAttribute("data-theme", theme.scheme);
     // The host scheme is a CSS-layer default. An authored fixed light/dark canvas may
     // override color-scheme without each host refresh overwriting it with inline style.
-    for (const name of Array.from(root.style)) if (name.startsWith("--host-")) root.style.removeProperty(name);
-    for (const [name, value] of Object.entries(theme.tokens)) if (/^host-[a-z0-9-]+$/.test(name) && typeof value === "string" && /^[#a-zA-Z0-9(),.%+*/ -]{1,200}$/.test(value)) root.style.setProperty("--" + name, value);
+    for (const name of Object.keys(appliedTheme?.tokens || {})) if (!Object.prototype.hasOwnProperty.call(theme.tokens, name)) root.style.removeProperty("--" + name);
+    for (const [name, value] of Object.entries(theme.tokens)) if (appliedTheme?.tokens[name] !== value && /^host-[a-z0-9-]+$/.test(name) && typeof value === "string" && /^[#a-zA-Z0-9(),.%+*/ -]{1,200}$/.test(value)) root.style.setProperty("--" + name, value);
+    appliedTheme = theme;
     window.dispatchEvent(new CustomEvent("paseo:themechange", { detail: { theme: theme.scheme, palette: "custom" } }));
   };
 
@@ -177,10 +186,21 @@ function (initial) {
     else throw new Error("Unknown patch operation");
     for (const script of scripts) if (script.isConnected) await runScript(script);
   };
-  const receiveSnapshot = (next) => {
-    if (!next || !next.canvas || next.canvas.documentVersion !== initial.canvas.documentVersion || next.boardRevision < snapshot.boardRevision) return;
-    queued = next;
+  const receiver = createFrameReceiver(initial, request => post({ type: "snapshot-request", ...request }));
+  let versionedTransport = false;
+  const enqueue = (update) => {
+    if (!update) return;
+    queued = queued ? { snapshot: update.snapshot,
+      changedPaths: queued.changedPaths === null || update.changedPaths === null ? null : [...new Set([...queued.changedPaths, ...update.changedPaths])],
+      patches: [...new Map([...queued.patches, ...update.patches].map(patch => [patch.id, patch])).values()] } : update;
     void drain();
+  };
+  const receiveSnapshot = (next, version) => {
+    if (version !== undefined) { versionedTransport = true; enqueue(receiver.snapshot(next, version)); return; }
+    // Compatibility with older hosts. Versioned traffic exclusively uses the validated receiver.
+    if (versionedTransport) return;
+    if (!next || !next.canvas || next.canvas.documentVersion !== initial.canvas.documentVersion || next.boardRevision < (queued?.snapshot || snapshot).boardRevision) return;
+    enqueue({ snapshot: next, changedPaths: null, patches: next.canvas.patches });
   };
   const drain = async () => {
     if (applying || selectionMode !== "off" || selectionSession || captureBusy) return;
@@ -189,26 +209,27 @@ function (initial) {
     reportCanvasActivity();
     try {
       while (queued && selectionMode === "off" && !selectionSession && !captureBusy) {
-        const next = queued;
+        const update = queued;
+        const next = update.snapshot;
         queued = null;
-        const dataChanged = JSON.stringify(snapshot.canvas.data) !== JSON.stringify(next.canvas.data);
-        const serverStateChanged = JSON.stringify(snapshot.userState) !== JSON.stringify(next.userState);
+        const dataChanged = update.changedPaths === null ? !equalJson(snapshot.canvas.data, next.canvas.data) : update.changedPaths.length > 0;
+        const serverStateChanged = !equalJson(snapshot.userState, next.userState);
         snapshot = next;
         applyTheme(next.theme);
         if (dataChanged) {
-          emitWatches();
+          emitWatches(update.changedPaths);
           emitListeners(dataListeners, next.canvas.data);
           window.dispatchEvent(new CustomEvent("board:data", { detail: copy(next.canvas.data) }));
         }
         if (localStateDirty) {
           // A slow acknowledgement for an earlier save must never overwrite newer local input.
-          if (JSON.stringify(next.userState) === JSON.stringify(state)) localStateDirty = false;
-        } else if (serverStateChanged && JSON.stringify(next.userState) !== JSON.stringify(state)) {
+          if (equalJson(next.userState, state)) localStateDirty = false;
+        } else if (serverStateChanged && !equalJson(next.userState, state)) {
           state = next.userState;
           emitListeners(stateListeners, state);
         }
         if (patchFailure) continue;
-        for (const patch of next.canvas.patches) {
+        for (const patch of update.patches) {
           try { await applyPatch(patch); }
           catch (e) {
             patchFailure = patch.id;
@@ -1258,8 +1279,9 @@ function (initial) {
   }, true);
   window.addEventListener("message", (event) => {
     const message = event.data;
-    if (event.source !== window.parent || !message || message.channel !== scope.channel || message.boardId !== scope.boardId || message.sessionId !== scope.sessionId) return;
-    if (message.type === "snapshot") receiveSnapshot(message.snapshot);
+    if (!event.isTrusted || event.source !== window.parent || !message || message.channel !== scope.channel || message.boardId !== scope.boardId || message.sessionId !== scope.sessionId) return;
+    if (message.type === "snapshot") receiveSnapshot(message.snapshot, message.version);
+    else if (message.type === "delta") { versionedTransport = true; enqueue(receiver.delta(message.delta)); }
     else if (message.type === "interactions" && Array.isArray(message.markers)) renderMarkers(message.markers, message.selectedId);
     else if (message.type === "focus-update") focusUpdate(message);
     else if (message.type === "host-activity" && typeof message.composing === "boolean") { hostComposing = message.composing; reportCanvasActivity(); }
@@ -1286,7 +1308,7 @@ function (initial) {
     error("runtime-error", message);
   });
   const ready = () => {
-    post({ type: "ready" });
+    post({ type: "ready", capabilities: { frameDelta: 1 } });
     receiveSnapshot(initial);
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready, { once: true });

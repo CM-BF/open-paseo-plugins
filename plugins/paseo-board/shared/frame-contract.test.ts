@@ -4,6 +4,14 @@ import { AnchorSchema, type Interaction } from "./contracts";
 const scope = { boardId: "board", sessionId: "session" };
 const message = (fields: object) => ({ channel: FRAME_CHANNEL, ...scope, ...fields });
 describe("frame bridge validation", () => {
+  it("negotiates deltas without requiring them from older runtimes and scopes recovery requests", () => {
+    expect(readFrameMessage(message({ type: "ready", capabilities: { frameDelta: 1 } }), scope)).not.toBeNull();
+    expect(readFrameMessage(message({ type: "ready" }), scope)).not.toBeNull();
+    expect(readFrameMessage(message({ type: "ready", capabilities: { frameDelta: 2 } }), scope)).toBeNull();
+    const request = message({ type: "snapshot-request", documentVersion: 2, version: 5, reason: "baseline-mismatch" });
+    expect(readFrameMessage(request, scope)).not.toBeNull();
+    for (const bad of [{ boardId: "wrong" }, { sessionId: "old" }, { version: -1 }, { version: 1.5 }, { documentVersion: NaN }, { reason: "" }]) expect(readFrameMessage({ ...request, ...bad }, scope)).toBeNull();
+  });
   it("separates a blank native composer from nonempty generated asks", () => {
     const anchor = { boardRevision: 1, canvasRevision: 1, kind: "point", rect: { x: 20, y: 30, width: 0, height: 0 } };
     expect(readFrameMessage(message({ type: "compose", selectionId: "selected", request: { kind: "question", anchor } }), scope)).not.toBeNull();
