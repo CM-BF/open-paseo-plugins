@@ -4,14 +4,15 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 import {
   BoardSchema, CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, InteractInputSchema,
-  InteractionSchema, PublishInputSchema, RespondInputSchema, StateInputSchema, MarkUpdatesSeenInputSchema, RenameInputSchema,
+  InteractionSchema, PublishInputSchema, RespondInputSchema, StateInputSchema, MarkUpdatesSeenInputSchema, RenameInputSchema, EditInputSchema,
   type Board, type BoardSummary, type CreateInput, type DecisionInput, type EmitInput, type CanvasUpdate,
-  type FeedInput, type FeedResult, type InteractInput, type Interaction, type PublishInput, type RespondInput, type MarkUpdatesSeenInput, type CanvasBase, type DataPatch, type RenameInput,
+  type FeedInput, type FeedResult, type InteractInput, type Interaction, type PublishInput, type RespondInput, type MarkUpdatesSeenInput, type CanvasBase, type DataPatch, type RenameInput, type EditInput, type CanvasPatch,
 } from "../shared/contracts";
 import { assertId, assertJson, BoardStoreError, canonicalJson, ensureDirectory, fingerprint, parseInput, readEnvelope, serialized, writeEnvelope, type Envelope } from "./store-format";
 import { changeFeed, parseFeed } from "./feeds";
 import { applyDataPatch } from "./data-patch";
 import { summarizeBoard, sortBoardSummaries, type BoardCommitNotice } from "./board-events";
+import { prepareComponentPatch } from "./authored-source";
 
 export { BoardStoreError } from "./store-format";
 export type InteractionUpdate = Partial<Pick<Interaction, "status" | "agentId" | "response" | "responseRevision" | "responseSource" | "responseMethod" | "responseCanvas" | "resultReferences" | "error">>;
@@ -127,6 +128,25 @@ export class BoardStore {
     }, input.eventId);
   }
 
+  async edit(raw: EditInput): Promise<Board> {
+    const input = parseInput(EditInputSchema, raw);
+    return this.mutate(input.boardId, "edit", input, (board, at) => {
+      this.expectCanvas(board, input.canvasBase);
+      if (board.canvas.patches.some(patch => patch.id === input.patch.id)) throw new BoardStoreError("idempotency_conflict", "Component patch ID already exists");
+      const patch = this.prepareEdit(board.canvas, input.patch);
+      board.canvas.patches.push(patch);
+      board.canvas.revision++;
+      const selector = patch.operation === "copy" ? `#${patch.copyIdPrefix}-0` : patch.operation === "move" ? patch.destination! : patch.selector;
+      this.canvasUpdate(board, input.eventId, at, "patch", [{ selector, operation: patch.operation, patchId: patch.id }]);
+      this.event(board, input.eventId, "user", "component-edit", `Component ${patch.operation}`, at);
+    }, input.eventId);
+  }
+
+  private prepareEdit(canvas: Board["canvas"], patch: CanvasPatch): CanvasPatch {
+    try { return prepareComponentPatch(canvas, patch); }
+    catch (error) { throw new BoardStoreError("edit_conflict", error instanceof Error ? error.message : String(error), { selector: patch.selector, canvasBase: { revision: canvas.revision, documentVersion: canvas.documentVersion } }); }
+  }
+
   async publish(raw: PublishInput, actorAgentId?: string): Promise<Board> {
     const input = parseInput(PublishInputSchema, raw);
     if (input.html !== undefined && input.patch !== undefined) throw new BoardStoreError("invalid_input", "Publish accepts either a full document or a patch, not both");
@@ -154,7 +174,7 @@ export class BoardStore {
       }
       if (input.patch) {
         if (board.canvas.patches.some(patch => patch.id === input.patch!.id)) throw new BoardStoreError("idempotency_conflict", `Patch ${input.patch.id} already exists in this document`);
-        board.canvas.patches.push(input.patch);
+        board.canvas.patches.push(["move", "copy", "text"].includes(input.patch.operation) ? this.prepareEdit(board.canvas, input.patch) : input.patch);
       }
       const dataChanged = canonicalJson(nextData) !== canonicalJson(board.canvas.data);
       board.canvas.data = nextData;
@@ -193,7 +213,7 @@ export class BoardStore {
         if (input.html !== undefined) { canvas.html = input.html; canvas.documentVersion++; canvas.patches = []; }
         if (input.patch) {
           if (canvas.patches.some(patch => patch.id === input.patch!.id)) throw new BoardStoreError("idempotency_conflict", `Response patch ${input.patch.id} already exists`);
-          canvas.patches.push(input.patch);
+          canvas.patches.push(["move", "copy", "text"].includes(input.patch.operation) ? this.prepareEdit(canvas, input.patch) : input.patch);
         }
         if (input.data !== undefined) canvas.data = { ...canvas.data, ...input.data };
         canvas.revision++;

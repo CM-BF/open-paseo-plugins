@@ -60,11 +60,35 @@ export const AnchorSchema = z.object({
   viewport: z.object({ width: z.number().positive(), height: z.number().positive(), scrollX: z.number(), scrollY: z.number() }).optional(),
   image: z.object({ mimeType: z.literal("image/png"), data: z.string().max(3000000) }).optional(),
 });
+export const ComponentIdentitySchema = z.object({
+  tag: z.string().min(1).max(100), id: z.string().min(1).max(1000).optional(),
+  // Structural identity excludes live text and control values.
+  fingerprint: z.string().regex(/^[a-f0-9]{8}$/),
+  authoredHtml: z.string().max(240000).optional(),
+});
 export const CanvasPatchSchema = z.object({
   id: IdSchema,
   selector: z.string().min(1).max(1000),
-  operation: z.enum(["append", "prepend", "replace", "remove"]),
+  operation: z.enum(["append", "prepend", "replace", "remove", "move", "copy", "text"]),
   html: z.string().max(2000000).default(""),
+  sourceIdentity: ComponentIdentitySchema.optional(), destinationIdentity: ComponentIdentitySchema.optional(),
+  destination: z.string().min(1).max(1000).optional(), position: z.enum(["before", "after", "append", "prepend"]).optional(),
+  copyIdPrefix: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,100}$/).optional(),
+  text: z.string().max(24000).optional(), expectedText: z.string().max(24000).optional(),
+  textNodeIndex: z.number().int().min(0).max(10000).optional(),
+}).superRefine((patch, context) => {
+  if (!["move", "copy", "text"].includes(patch.operation)) return;
+  const missing = (field: string) => context.addIssue({ code: "custom", path: [field], message: `Component edit requires ${field}` });
+  if (!patch.sourceIdentity) missing("sourceIdentity");
+  if (patch.operation === "text") {
+    if (patch.text === undefined) missing("text");
+    if (patch.expectedText === undefined) missing("expectedText");
+  } else {
+    if (!patch.destination) missing("destination");
+    if (!patch.destinationIdentity) missing("destinationIdentity");
+    if (!patch.position) missing("position");
+    if (patch.operation === "copy" && !patch.copyIdPrefix) missing("copyIdPrefix");
+  }
 });
 export const CanvasSchema = z.object({
   revision: z.number().int().nonnegative(),
@@ -216,6 +240,10 @@ export const EmitInputSchema = z.object({ boardId: IdSchema, eventId: IdSchema, 
 export const InteractInputSchema = z.object({ boardId: IdSchema, intentId: IdSchema, kind: z.enum(["question", "change", "fork", "return", "reply"]), destination: DestinationSchema.optional(), text: z.string().min(1).max(24000), anchor: AnchorSchema.optional(), sourceInteractionId: IdSchema.optional() });
 export const SelectSideAgentInputSchema = z.object({ boardId: IdSchema, agentId: z.string().min(1).max(160), expectedRevision: z.number().int().nonnegative(), eventId: IdSchema });
 export const RenameInputSchema = z.object({ boardId: IdSchema, expectedTitle: z.string(), title: z.string().trim().min(1).max(200), eventId: IdSchema });
+export const EditInputSchema = z.object({
+  boardId: IdSchema, canvasBase: CanvasBaseSchema, eventId: IdSchema,
+  patch: CanvasPatchSchema.refine(patch => ["move", "copy", "text"].includes(patch.operation) && patch.html === "", "User edits support move, copy and text operations without caller-supplied HTML"),
+});
 export const DecisionUpdateInputSchema = z.object({ boardId: IdSchema, expectedRevision: z.number().int().nonnegative(), eventId: IdSchema, decision: DecisionInputSchema });
 export const StateInputSchema = z.object({ boardId: IdSchema, state: JsonDataSchema });
 export const MarkUpdatesSeenInputSchema = z.object({ boardId: IdSchema, updateIds: z.array(IdSchema).max(80) });
@@ -237,6 +265,8 @@ export type EmitInput = z.input<typeof EmitInputSchema>;
 export type InteractInput = z.input<typeof InteractInputSchema>;
 export type SelectSideAgentInput = z.input<typeof SelectSideAgentInputSchema>;
 export type RenameInput = z.input<typeof RenameInputSchema>;
+export type EditInput = z.input<typeof EditInputSchema>;
+export type ComponentIdentity = z.infer<typeof ComponentIdentitySchema>;
 export type JsonData = z.infer<typeof JsonDataSchema>;
 export type MarkUpdatesSeenInput = z.input<typeof MarkUpdatesSeenInputSchema>;
 
@@ -248,6 +278,7 @@ export const emitBoardRpc = defineRpc({ name: "board.emit", input: EmitInputSche
 export const interactBoardRpc = defineRpc({ name: "board.interact", input: InteractInputSchema, output: InteractionSchema });
 export const selectSideAgentRpc = defineRpc({ name: "board.side-agent", input: SelectSideAgentInputSchema, output: BoardSchema });
 export const renameBoardRpc = defineRpc({ name: "board.rename", input: RenameInputSchema, output: BoardSchema });
+export const editBoardRpc = defineRpc({ name: "board.edit", input: EditInputSchema, output: BoardSchema });
 export const recordDecisionRpc = defineRpc({ name: "board.decision", input: DecisionUpdateInputSchema, output: BoardSchema });
 export const saveStateRpc = defineRpc({ name: "board.state", input: StateInputSchema, output: z.object({ saved: z.boolean() }) });
 export const markUpdatesSeenRpc = defineRpc({ name: "board.updates-seen", input: MarkUpdatesSeenInputSchema, output: BoardSchema });

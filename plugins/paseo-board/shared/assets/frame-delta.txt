@@ -23,9 +23,19 @@ function (initial, requestSnapshot) {
   };
   const theme = value => record(value) && ["light", "dark"].includes(value.scheme) && record(value.tokens)
     && Object.entries(value.tokens).every(([key, item]) => /^host-[a-z0-9-]+$/.test(key) && typeof item === "string" && /^[#a-zA-Z0-9(),.%+*/ -]{1,200}$/.test(item));
+  const componentIdentity = value => record(value) && typeof value.tag === "string" && value.tag.length > 0 && value.tag.length <= 100
+    && (value.id === undefined || typeof value.id === "string" && value.id.length > 0 && value.id.length <= 1000)
+    && (value.authoredHtml === undefined || typeof value.authoredHtml === "string" && value.authoredHtml.length <= 240000)
+    && typeof value.fingerprint === "string" && /^[a-f0-9]{8}$/.test(value.fingerprint);
+  const componentPatch = patch => componentIdentity(patch.sourceIdentity) && (patch.operation === "text"
+    ? typeof patch.text === "string" && patch.text.length <= 24000 && typeof patch.expectedText === "string" && patch.expectedText.length <= 24000
+      && (patch.textNodeIndex === undefined || Number.isInteger(patch.textNodeIndex) && patch.textNodeIndex >= 0 && patch.textNodeIndex <= 10000)
+    : componentIdentity(patch.destinationIdentity) && typeof patch.destination === "string" && patch.destination.length > 0 && patch.destination.length <= 1000
+      && ["before", "after", "append", "prepend"].includes(patch.position)
+      && (patch.operation === "move" || typeof patch.copyIdPrefix === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,100}$/.test(patch.copyIdPrefix)));
   const patches = value => Array.isArray(value) && value.every(patch => record(patch) && typeof patch.id === "string" && patch.id.length > 0 && patch.id.length <= 160
     && typeof patch.selector === "string" && patch.selector.length > 0 && patch.selector.length <= 1000
-    && ["append", "prepend", "replace", "remove"].includes(patch.operation)
+    && (["append", "prepend", "replace", "remove"].includes(patch.operation) || ["move", "copy", "text"].includes(patch.operation) && componentPatch(patch))
     && (patch.operation === "remove" && patch.html === undefined || typeof patch.html === "string" && patch.html.length <= 2000000))
     && new Set(value.map(patch => patch.id)).size === value.length;
   const fail = reason => {

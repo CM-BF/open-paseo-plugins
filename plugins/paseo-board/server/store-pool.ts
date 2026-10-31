@@ -231,6 +231,7 @@ export class BoardStorePool implements BoardStoreApi {
   emit: BoardStore["emit"] = (...args) => this.call("emit", args[0].boardId, args);
   feed: BoardStore["feed"] = (...args) => this.call("feed", args[0].boardId, args);
   rename: BoardStore["rename"] = (...args) => this.call("rename", args[0].boardId, args);
+  edit: BoardStore["edit"] = (...args) => this.call("edit", args[0].boardId, args);
   recordDecision: BoardStore["recordDecision"] = (...args) => this.call("recordDecision", args[0].boardId, args);
   saveState: BoardStore["saveState"] = (...args) => this.call("saveState", args[0].boardId, args);
   markUpdatesSeen: BoardStore["markUpdatesSeen"] = (...args) => this.call("markUpdatesSeen", args[0].boardId, args);

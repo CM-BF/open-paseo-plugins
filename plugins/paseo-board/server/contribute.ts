@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { createBoardRpc, emitBoardRpc, feedBoardRpc, interactBoardRpc, listBoardsRpc, publishBoardRpc, readBoardRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc, markUpdatesSeenRpc, renameBoardRpc, boardChangesRpc, boardCheckRpc, boardChangedEvent, type BoardChange } from "../shared/contracts";
+import { createBoardRpc, editBoardRpc, emitBoardRpc, feedBoardRpc, interactBoardRpc, listBoardsRpc, publishBoardRpc, readBoardRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc, markUpdatesSeenRpc, renameBoardRpc, boardChangesRpc, boardCheckRpc, boardChangedEvent, type BoardChange } from "../shared/contracts";
 import { BoardStorePool } from "./store-pool";
 import { BoardService } from "./service";
 import { ServiceJournal } from "./journal";
@@ -54,6 +54,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   server.handle(boardChangesRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.changesSince(input.cursor, input.compact); });
   server.handle(boardCheckRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return { changed: store.hasChanges(input.cursor) }; });
   server.handle(renameBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.rename(input); });
+  server.handle(editBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.edit(input); });
   server.handle(readBoardRpc, async (input, { paseo }) => {
     capture(paseo); await checkReady(); const board = await store.read(input.boardId);
     const unchanged = !!board && board.revision === input.sinceRevision;

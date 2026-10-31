@@ -6,6 +6,11 @@ import { BoardStorePool, type StorePoolOptions } from "./store-pool";
 import { boardPartition } from "./store-worker-protocol";
 import workerSource from "./assets/store-worker.txt";
 import type { BoardChange } from "../shared/contracts";
+import { build } from "esbuild";
+import { fileURLToPath } from "node:url";
+import { DOMParser } from "linkedom";
+import { componentIdentityFor } from "../shared/component-identity";
+import { describeAuthoring } from "./authored-source";
 
 describe("bounded Board worker processes", () => {
   let directory: string;
@@ -39,6 +44,30 @@ describe("bounded Board worker processes", () => {
     expect((await store.summarySnapshot()).boards.find(board => board.id === "one")?.title).toBe("third");
     expect(store.diagnostics().map(slot => slot.pid)).toEqual(pids);
     remove();
+  });
+
+  it("dispatches component edits through real workers with durable exact retries and fresh source replay", async () => {
+    // Build only in memory: package verification separately proves the committed asset.
+    // This exercises the source protocol even while a concurrent integration build is pending.
+    const pluginRoot = fileURLToPath(new URL("../", import.meta.url));
+    const compiled = await build({ absWorkingDir: pluginRoot, preserveSymlinks: true, entryPoints: [join(pluginRoot, "server/store-worker.ts")], bundle: true, platform: "node", format: "cjs", target: "node22", write: false, logLevel: "silent" });
+    const store = pool({ workers: 2, workerSource: compiled.outputFiles[0].text });
+    const created = await store.create({ id: "edited", title: "Edited", html: '<main><section id="left"><p id="text">Old</p></section><section id="right"></section></main>' });
+    const document = new DOMParser().parseFromString(created.canvas.html, "text/html");
+    const text = { boardId: created.id, canvasBase: { revision: 1, documentVersion: 1 }, eventId: "text", patch: { id: "text", operation: "text" as const, selector: "#text", sourceIdentity: componentIdentityFor(document.querySelector("#text")!), expectedText: "Old", text: "Written in worker" } };
+    const edited = await store.edit(text);
+    const moved = await store.edit({ boardId: created.id, canvasBase: { revision: edited.canvas.revision, documentVersion: 1 }, eventId: "move", patch: { id: "move", operation: "move", selector: "#text", sourceIdentity: text.patch.sourceIdentity, destination: "#right", destinationIdentity: componentIdentityFor(document.querySelector("#right")!), position: "append" } });
+    const pids = store.diagnostics().map(slot => slot.pid);
+    expect(new Set(pids).size).toBe(2); expect(pids).not.toContain(process.pid);
+    expect(await store.edit(text)).toEqual(moved);
+    await expect(store.edit({ ...text, patch: { ...text.patch, text: "Different retry" } })).rejects.toMatchObject({ code: "idempotency_conflict" });
+    await expect(store.edit({ ...text, eventId: "stale", patch: { ...text.patch, id: "stale" } })).rejects.toMatchObject({ code: "revision_conflict" });
+    const read = (await store.read(created.id))!;
+    const source = describeAuthoring(read.canvas);
+    expect(source.replay.complete).toBe(true);
+    expect(source.materializedAuthoredHtml).toContain('<section id="right"><p id="text">Written in worker</p></section>');
+    expect(read.canvas.patches).toHaveLength(2);
+    expect(store.diagnostics().map(slot => slot.pid)).toEqual(pids);
   });
 
   it("enforces queue and byte budgets before startup and snapshots caller-owned input", async () => {

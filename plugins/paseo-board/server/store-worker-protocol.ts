@@ -1,4 +1,4 @@
-export const STORE_METHODS = ["read", "create", "publish", "respond", "emit", "feed", "rename", "recordDecision", "saveState", "markUpdatesSeen", "addInteraction", "updateInteraction", "projectSideAgent", "updateExtraction"] as const;
+export const STORE_METHODS = ["read", "create", "publish", "respond", "emit", "feed", "rename", "edit", "recordDecision", "saveState", "markUpdatesSeen", "addInteraction", "updateInteraction", "projectSideAgent", "updateExtraction"] as const;
 export type StoreMethod = typeof STORE_METHODS[number];
 
 /** Stable across restarts; every access to a Board reaches the same process. */
