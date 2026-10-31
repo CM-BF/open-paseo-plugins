@@ -1,5 +1,12 @@
 # Paseo Board publication and verification
 
+### 2026-10-31 — interaction and event architecture (in progress, PR only)
+
+- User requested inline title editing, event-driven dashboard status, bounded worker processes, component selection with containment, and marker navigation across tabs/containers. Agent-authored arbitrary HTML/JS remains supported without a mandatory component schema.
+- Changes are isolated on `sw/board-interaction-next`. No main push, merge or live installation is authorized for this work; main updates reach another computer automatically. User approval is required before merging the PR.
+- Implementation is split across metadata/UI, commit events/index, component selection/reveal, and worker isolation. Current host APIs do not expose custom plugin event delivery; a companion host PR or explicit pending capability is needed for strict cross-device push. Periodic reads will not be presented as event delivery.
+- Event/index source validation: 72 tests passed across the commit hub, client receiver, store, feeds and cache suites. Coverage includes same-revision attention changes, durable commit boundaries, bounded gap recovery, partition summaries and idle clients issuing no periodic requests. The native event transport still requires a companion host change; fixture adapters are not production push verification. No new runtime or native acceptance is claimed.
+
 ### 2026-10-31 — stylesheet provenance wording cleanup
 
 - Simplified the stylesheet comments and NOTICE to identify OpenAI Codex and the local adaptations. Preserved the upstream source/tag/path, author copyrights and Apache license.
@@ -35,7 +42,7 @@ Provide a persistent, fully interactive, task-independent conversation canvas fo
 | Questions, forks, selected-reply return and default decisions | Complete; documented source and live fixture checks |
 | Option/Alt selection and right-click actions | Complete; 25 browser scenarios and native desktop checks |
 | Self-contained public build and fresh checkout validation | Complete; clean dependency install and source checks passed |
-| Direct publication to remote main | Authorized by user; this change targets main |
+| Publication workflow | Historical releases are on main; subsequent Board changes require a PR and explicit user approval before merging |
 
 ## Verification records
 
