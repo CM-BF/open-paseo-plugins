@@ -59,6 +59,30 @@ describe("BoardService SDK adapter", () => {
   });
   afterEach(async () => { await service.dispose(); await rm(dir, { recursive: true, force: true }); });
 
+  it("authorizes realtime samples in storage without reading a full Board in the coordinator", async () => {
+    const read = vi.spyOn(store, "read");
+    const input = { boardId: "board", sourceId: "source", action: "open", path: "/live/value", expectedGeneration: 0, requestId: "open" };
+    await expect(service.execute("feed", input, { agentId: "intruder", cwd: dir })).rejects.toMatchObject({ code: "forbidden" });
+    await service.execute("feed", input, { agentId: "owner", cwd: dir });
+    await service.execute("feed", { boardId: "board", sourceId: "source", action: "set", generation: 1, seq: 1, value: 42 }, { agentId: "owner", cwd: dir });
+    expect(read).not.toHaveBeenCalled();
+    read.mockRestore();
+    expect((await store.read("board"))?.canvas.data).toMatchObject({ live: { value: 42 } });
+  });
+
+  it("reestablishes a failed timeline subscription from its error event and releases recovery on shutdown", async () => {
+    await service.reconcile();
+    const timeline = sdk.api.agents.ref("owner").timeline;
+    const initial = sdk.subscribers.get("owner")!;
+    initial({ event: { type: "error", error: "subscription lost" } });
+    expect(sdk.subscribers.has("owner")).toBe(false);
+    await vi.waitFor(() => expect(timeline.subscribe).toHaveBeenCalledTimes(2), { timeout: 1500 });
+    expect(sdk.subscribers.get("owner")).not.toBe(initial);
+    sdk.subscribers.get("owner")!({ event: { type: "error", error: "second failure" } });
+    await service.dispose();
+    expect(sdk.subscribers.has("owner")).toBe(false);
+  });
+
   it("provides compact inspection under the same reader authorization without changing full reads", async () => {
     const compact = await service.execute("read", { boardId: "board", view: "inspect", dataPaths: ["/temperature"], selector: "#target" }, { agentId: "owner", cwd: dir });
     expect(compact).toMatchObject({ view: "inspect", data: [{ path: "/temperature", exists: true, value: 10 }], source: { target: { text: '<main id="target">Existing visualization</main>' } } });

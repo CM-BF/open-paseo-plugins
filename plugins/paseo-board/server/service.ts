@@ -42,7 +42,7 @@ ${JSON.stringify(context)}
 }
 
 export class BoardService {
-  readonly store: BoardStore;
+  readonly store: Pick<BoardStore, keyof BoardStore>;
   readonly journal: ServiceJournal;
   private paseo?: Paseo;
   private stopped = false;
@@ -53,10 +53,12 @@ export class BoardService {
   private outcomes = new Set<Promise<void>>();
   private subscriptions = new Map<string, ReturnType<Agent["timeline"]["subscribe"]>>();
   private refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private subscriptionRetries = new Map<string, ReturnType<typeof setTimeout>>();
+  private subscriptionFailures = new Map<string, number[]>();
   private scan?: Promise<void>;
   private log: (message: string) => void;
 
-  constructor(store: BoardStore, journal: ServiceJournal, log: (message: string) => void = console.warn) {
+  constructor(store: Pick<BoardStore, keyof BoardStore>, journal: ServiceJournal, log: (message: string) => void = console.warn) {
     this.store = store; this.journal = journal; this.log = log;
   }
   capture(paseo: Paseo): void { this.paseo = paseo; }
@@ -94,6 +96,10 @@ export class BoardService {
       void this.reconcile().catch((error) => this.log(`board reconcile: ${describe(error)}`));
       return result;
     }
+    // Feed authority is checked against the persisted Board inside the owning
+    // worker. Do not transfer a full canvas/history through the coordinator for
+    // each realtime sample just to repeat that same authorization check.
+    if (operation === "feed") return this.store.feed(parseInput(FeedInputSchema, input), actor?.agentId);
     const board = await this.requireBoard(z.string().parse(input.boardId));
     if (operation === "respond") {
       const parsed = RespondInputSchema.parse(await this.withHtmlFile(input));
@@ -123,7 +129,6 @@ export class BoardService {
         if (actor) parsed.decision.authorAgentId = actor.agentId;
         return this.store.recordDecision(parsed);
       }
-      case "feed": return this.store.feed(parseInput(FeedInputSchema, input), actor?.agentId);
       case "emit": return this.store.emit(EmitInputSchema.parse(input), actor?.agentId);
     }
   }
@@ -395,7 +400,11 @@ export class BoardService {
   private async watch(agentId: string): Promise<void> {
     if (this.stopped || !this.paseo || this.subscriptions.has(agentId)) return;
     const subscription = this.paseo.agents.ref(agentId).timeline.subscribe((update) => {
-      if (update.event.type === "error") { this.subscriptions.get(agentId)?.(); this.subscriptions.delete(agentId); return; }
+      if (update.event.type === "error") {
+        this.subscriptions.get(agentId)?.(); this.subscriptions.delete(agentId);
+        this.retrySubscription(agentId);
+        return;
+      }
       if (update.event.type === "replacement") {
         void this.journal.progress(agentId, undefined, undefined).then(() => this.scheduleHistory(agentId));
       } else if (update.event.type === "turn_completed" || update.event.type === "turn_failed" || update.event.type === "turn_canceled") {
@@ -405,10 +414,24 @@ export class BoardService {
     });
     this.subscriptions.set(agentId, subscription);
     try { await subscription.ready; }
-    catch (error) { subscription(); this.subscriptions.delete(agentId); throw error; }
+    catch (error) { subscription(); this.subscriptions.delete(agentId); this.retrySubscription(agentId); throw error; }
     if (this.stopped) { subscription(); this.subscriptions.delete(agentId); return; }
     // The subscription is live-only. Pull missed history, also after subscription_restored events.
     this.scheduleHistory(agentId);
+  }
+  private retrySubscription(agentId: string): void {
+    if (this.stopped || this.subscriptionRetries.has(agentId)) return;
+    const now = Date.now();
+    const failures = (this.subscriptionFailures.get(agentId) ?? []).filter(at => now - at < 60000);
+    if (failures.length >= 5) { this.log(`board subscription ${agentId}: repeated failures; waiting for a lifecycle/reconnect event`); return; }
+    const delay = [250, 1000, 2500, 5000, 15000][failures.length];
+    this.subscriptionFailures.set(agentId, [...failures, now]);
+    const timer = setTimeout(() => {
+      this.subscriptionRetries.delete(agentId);
+      void this.watch(agentId).catch(error => this.log(`board subscription recovery: ${describe(error)}`));
+    }, delay);
+    (timer as unknown as { unref?: () => void }).unref?.();
+    this.subscriptionRetries.set(agentId, timer);
   }
   async syncHistory(agentId: string): Promise<void> {
     const running = this.histories.get(agentId);
@@ -609,6 +632,7 @@ export class BoardService {
       try { await this.watch(agentId); } catch (error) { this.log(`board subscribe ${agentId}: ${describe(error)}`); }
     }
     for (const [id, subscription] of this.subscriptions) if (!wanted.has(id)) { subscription(); this.subscriptions.delete(id); }
+    for (const [id, timer] of this.subscriptionRetries) if (!wanted.has(id)) { clearTimeout(timer); this.subscriptionRetries.delete(id); this.subscriptionFailures.delete(id); }
   }
   async drain(includeOutcomes = false): Promise<void> {
     while (this.preparations.size || this.flights.size || this.histories.size || (includeOutcomes && this.outcomes.size) || this.scan) {
@@ -619,8 +643,10 @@ export class BoardService {
   async dispose(): Promise<void> {
     this.stopped = true;
     for (const timer of this.refreshTimers.values()) clearTimeout(timer);
+    for (const timer of this.subscriptionRetries.values()) clearTimeout(timer);
     for (const subscription of this.subscriptions.values()) subscription();
     this.refreshTimers.clear(); this.subscriptions.clear();
+    this.subscriptionRetries.clear(); this.subscriptionFailures.clear();
     await this.drain(true);
   }
 }

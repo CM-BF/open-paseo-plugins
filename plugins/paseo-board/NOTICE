@@ -30,3 +30,14 @@ original MIT license is retained at the top of the file. These adaptations are C
 The optional icon/tooltip runtimes load lucide 1.17.0 (ISC),
 @floating-ui/core 1.7.3 and @floating-ui/dom 1.7.4 (MIT) from unpkg.com at view time;
 those dependencies are not redistributed here.
+
+server/assets/store-worker.txt bundles Zod and the Paseo SDK contract helpers.
+The generated worker includes Zod's MIT license and attribution.
+
+  Zod
+  Copyright (c) 2025 Colin McDonnell
+  Licensed under the MIT License.
+
+  Paseo (@getpaseo/plugin)
+  Copyright (c) 2025-present Mohamed Boudra
+  Licensed under the Apache License, Version 2.0 (LICENSE-APACHE-2.0).
