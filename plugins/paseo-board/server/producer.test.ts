@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile, stat, mkdir } from "node:fs/promises"
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { createServer } from "node:net";
 import { BoardStore } from "./store";
 import { BoardService } from "./service";
 import { ServiceJournal } from "./journal";
@@ -138,6 +139,153 @@ describe("installed latest-state producer and feed transport", () => {
     bridge.dispatch = dispatch;
     expect(await run('const f=await createFeed(config); console.log(JSON.stringify(await f.retry()));')).toEqual(ack);
     expect((await store.read("board"))!.revision).toBe(committed.revision);
+  });
+
+  it("runs ordered records across real producer restarts and snapshots caller-owned batches", async () => {
+    const first = await run(`const f=await createFeed({...config,mode:'records'});
+      const records=[{n:1},null]; const policy={attention:'quiet'};
+      const pending=f.append(records,policy); records[0].n=99; records.push('late'); policy.attention='milestone';
+      const ack=await pending; let immutable; try{f.mode='latest';}catch{immutable=true;}
+      console.log(JSON.stringify({ack,mode:f.mode,immutable}));`);
+    expect(first).toMatchObject({ mode: "records", immutable: true, ack: { generation: 1, seq: 1, recordCount: 2 } });
+    const next = await run(`const f=await createFeed({...config,mode:'records'}); console.log(JSON.stringify(await f.append([{n:2}],{attention:'milestone'})));`);
+    expect(next).toMatchObject({ generation: 1, seq: 2, recordCount: 3 });
+    const board = (await store.read("board"))!;
+    expect(board.canvas.data.live).toEqual({ a: [{ n: 1 }, null, { n: 2 }] });
+    expect(board.updates).toHaveLength(1); expect(board.interactions).toHaveLength(0);
+    const journal = await readFile(join(dir, "producer.json"), "utf8");
+    expect(journal).not.toContain("own-token"); expect(journal).not.toContain('"records":[');
+    expect((await stat(join(dir, "producer.json"))).mode & 0o777).toBe(0o600);
+  });
+
+  it("replays a lost records ACK once after restart and retains the immutable unknown batch", async () => {
+    const dispatch = bridge.dispatch.bind(bridge); let attempts = 0;
+    bridge.dispatch = async line => { const response = await dispatch(line); if (JSON.parse(line).input.action === "append") { attempts++; return undefined; } return response; };
+    const first = await run(`const f=await createFeed({...config,mode:'records'}); let unknown,blocked,reopen,restart;
+      try{await f.append([{n:1},'one']);}catch(e){unknown={code:e.code,causeCode:e.causeCode,confirmed:e.confirmed};}
+      try{await f.append([{n:2}]);}catch(e){blocked=e.code;}
+      try{await f.reopen({discardRejected:true});}catch(e){reopen=e.code;}
+      try{await createFeed({...config,mode:'records',restart:true});}catch(e){restart=e.code;}
+      console.log(JSON.stringify({unknown,blocked,reopen,restart}));`);
+    expect(first).toEqual({ unknown: { code: "outcome_unknown", causeCode: "SyntaxError", confirmed: false }, blocked: "pending_write", reopen: "pending_write", restart: "pending_write" });
+    expect(attempts).toBe(3);
+    const journal = JSON.parse(await readFile(join(dir, "producer.json"), "utf8"));
+    expect(journal).toMatchObject({ seq: 0, pending: { action: "append", seq: 1, records: [{ n: 1 }, "one"] }, lastError: { confirmed: false } });
+    expect((await store.read("board"))!.canvas.data.live).toEqual({ a: [{ n: 1 }, "one"] });
+    bridge.dispatch = dispatch;
+    const next = await run(`const f=await createFeed({...config,mode:'records'}); const replay=await f.retry(); const ack=await f.append([{n:2}]); console.log(JSON.stringify({replay,ack}));`);
+    expect(next).toMatchObject({ replay: { seq: 1, recordCount: 2 }, ack: { seq: 2, recordCount: 3 } });
+    expect((await store.read("board"))!.canvas.data.live).toEqual({ a: [{ n: 1 }, "one", { n: 2 }] });
+  });
+
+  it("preserves records on a confirmed capacity rejection and explicit new generation", async () => {
+    const result = await run(`const f=await createFeed({...config,mode:'records',capacity:{maxRecords:3}});
+      await f.append([1,2]); let error,blocked;
+      try{await f.append([3,4]);}catch(e){error={code:e.code,confirmed:e.confirmed,details:e.details};}
+      try{await f.append([3]);}catch(e){blocked=e.code;}
+      const status=await f.status(); await f.reopen({discardRejected:true}); const ack=await f.append([3]);
+      console.log(JSON.stringify({error,blocked,remote:status.remote.source,ack}));`);
+    expect(result).toMatchObject({ error: { code: "capacity_exceeded", confirmed: true, details: { recordCount: 2, attemptedRecordCount: 4, maxRecords: 3 } }, blocked: "pending_write", remote: { recordCount: 2, seq: 1, capacity: { maxRecords: 3 } }, ack: { generation: 2, seq: 1, recordCount: 3 } });
+    expect((await store.read("board"))!.canvas.data.live).toEqual({ a: [1, 2, 3] });
+  });
+
+  it("rejects local invalid records and wrong modes before journaling, then keeps accepting valid data", async () => {
+    const result = await run(`const f=await createFeed({...config,mode:'records'}); const rejected=[];
+      let deep=0;for(let i=0;i<65;i++)deep=[deep];
+      for(const value of [[],[undefined],[NaN],[()=>0],[new Date()],Array(1),Array(1001).fill(0),['x'.repeat(256000)],[deep]]) {
+        try{await f.append(value);rejected.push('WRONG');}catch(e){rejected.push(e.code);}
+      }
+      let setMode,configMode;try{await f.set([]);}catch(e){setMode=e.code;}
+      try{await createFeed(config);}catch(e){configMode=e.code;}
+      const ack=await f.append([true]); console.log(JSON.stringify({rejected,setMode,configMode,ack}));`);
+    expect(result.rejected).toEqual(["invalid_input", "invalid_input", "invalid_input", "invalid_input", "invalid_input", "invalid_input", "invalid_input", "size_limit", "size_limit"]);
+    expect(result).toMatchObject({ setMode: "mode_conflict", configMode: "state_conflict", ack: { seq: 1, recordCount: 1 } });
+    const latest = await run(`const f=await createFeed({...config,sourceId:'latest',path:'/latest',stateFile:config.stateFile+'.latest'});try{await f.append([1]);}catch(e){console.log(JSON.stringify({code:e.code,mode:f.mode}));}`);
+    expect(latest).toEqual({ code: "mode_conflict", mode: "latest" });
+  });
+
+  it("guards records manual edits, cross-writer claims and wire validation through CLI/MCP", async () => {
+    await run(`const f=await createFeed({...config,mode:'records'});await f.append([1]);`);
+    await store.addInteraction({ boardId: "board", intentId: "side-records", kind: "fork", text: "Side" }, "side");
+    await service.journal.bind("side-token", { agentId: "side", cwd: dir });
+    const invoke = (input: object, binding = "own-token") => bridge.dispatch(JSON.stringify({ protocol: 1, client: "mcp", operation: "feed", binding, input }));
+    const request = { action: "append", boardId: "board", sourceId: "worker", generation: 1, seq: 2, records: [2] };
+    expect(await invoke({ ...request, actorAgentId: "owner" }, "side-token")).toMatchObject({ ok: false, error: { code: "forbidden" } });
+    expect(await invoke({ action: "open", boardId: "board", sourceId: "other", path: "/live/a", mode: "records", requestId: "other", expectedGeneration: 0 }, "side-token")).toMatchObject({ ok: false, error: { code: "path_conflict" } });
+    for (const records of [[], Array(1001).fill(0)]) expect(await invoke({ ...request, records })).toMatchObject({ ok: false, error: { code: "invalid_input" } });
+    expect(await invoke({ ...request, records: ["x".repeat(256000)] })).toMatchObject({ ok: false, error: { code: "size_limit" } });
+    const board = (await store.read("board"))!;
+    await store.publish({ boardId: "board", expectedRevision: board.revision, eventId: "records-manual", dataPatch: [{ path: "/live/a", operation: "set", expected: { exists: true, value: [1] }, value: [1, "manual"] }] });
+    expect(await run(`const f=await createFeed({...config,mode:'records'});try{await f.append([2]);}catch(e){console.log(JSON.stringify({code:e.code}));}`)).toEqual({ code: "data_conflict" });
+    const reopened = await run(`const f=await createFeed({...config,mode:'records',restart:true});console.log(JSON.stringify(await f.append([2])));`);
+    expect(reopened).toMatchObject({ generation: 2, seq: 1, recordCount: 3 });
+    const cli = await exec(runtimePaths(dir).cli, ["feed", "--json", JSON.stringify({ ...request, generation: 2, seq: 2, records: [3] })], { env: { ...process.env, PASEO_BOARD_BINDING: "own-token" }, timeout: 5000 });
+    expect(JSON.parse(cli.stdout).ack).toMatchObject({ recordCount: 4, seq: 2 });
+    expect((await store.read("board"))!.canvas.data.live).toEqual({ a: [1, "manual", 2, 3] });
+  });
+
+  it("keeps records post-rename failures unknown and recovers without appending twice", async () => {
+    await run(`await createFeed({...config,mode:'records'});`);
+    syncFault.directory = join(dir, "data/boards"); syncFault.remaining = 1;
+    const dispatch = bridge.dispatch.bind(bridge); let attempts = 0;
+    bridge.dispatch = async line => {
+      if (JSON.parse(line).input.action !== "append") return dispatch(line);
+      if (++attempts === 1) return dispatch(line);
+      return { ok: false, error: { code: "EIO", message: "Still unknown" } };
+    };
+    expect(await run(`const f=await createFeed({...config,mode:'records'});try{await f.append(['durable']);}catch(e){console.log(JSON.stringify({code:e.code}));}`)).toEqual({ code: "outcome_unknown" });
+    const before = (await store.read("board"))!; expect(before.canvas.data.live).toEqual({ a: ["durable"] });
+    bridge.dispatch = dispatch;
+    expect(await run(`const f=await createFeed({...config,mode:'records'});console.log(JSON.stringify(await f.retry()));`)).toEqual(before.feeds![0].lastAck);
+    expect((await store.read("board"))!.revision).toBe(before.revision);
+  });
+
+  it("classifies a truncated response as unknown, retains its cause and recovers the committed batch", async () => {
+    await run(`await createFeed({...config,mode:'records'});`);
+    const dispatch = bridge.dispatch.bind(bridge); await bridge.close();
+    let attempts = 0;
+    const broken = createServer(socket => {
+      let text = '', submitted = false;
+      socket.on('data', chunk => {
+        text += chunk.toString('utf8');
+        if (submitted || !text.includes('\n')) return;
+        submitted = true;
+        const line = text.split('\n')[0], isAppend = JSON.parse(line).input.action === "append";
+        if (isAppend) attempts++;
+        void dispatch(line).then(response => socket.end(isAppend ? '{"ok":true,"result":' : JSON.stringify(response) + '\n'));
+      });
+    });
+    try {
+      await new Promise<void>(resolve => broken.listen(runtimePaths(dir).socket, resolve));
+      expect(await run(`const f=await createFeed({...config,mode:'records'});try{await f.append(['truncated']);}catch(e){console.log(JSON.stringify({code:e.code,causeCode:e.causeCode,confirmed:e.confirmed}));}`)).toEqual({ code: "outcome_unknown", causeCode: "unexpected_eof", confirmed: false });
+    } finally { await new Promise<void>(resolve => broken.close(() => resolve())); }
+    bridge = new BoardBridge(service); await bridge.start(runtimePaths(dir).socket);
+    expect(attempts).toBe(3);
+    const journal = JSON.parse(await readFile(join(dir, "producer.json"), "utf8"));
+    expect(journal).toMatchObject({ pending: { records: ["truncated"] }, lastError: { causeCode: "unexpected_eof", confirmed: false } });
+    expect(await run(`const f=await createFeed({...config,mode:'records'});console.log(JSON.stringify(await f.retry()));`)).toMatchObject({ seq: 1, recordCount: 1 });
+    expect((await store.read("board"))!.canvas.data.live).toEqual({ a: ["truncated"] });
+  });
+
+  it("guards retry against missing, changed and already settled pending requests without returning an older ACK", async () => {
+    const dispatch = bridge.dispatch.bind(bridge); let attempts = 0;
+    bridge.dispatch = async line => {
+      const result = await dispatch(line), input = JSON.parse(line).input;
+      if (input.action === "set" && input.seq === 2 && ++attempts <= 3) return undefined;
+      return result;
+    };
+    const result = await run(`const f=await createFeed(config); await f.set('older');
+      let absent,unknown,changed,settled; const value='x'.repeat(255990);
+      try{await f.retry({action:'set',seq:2,value});}catch(e){absent=e.code;}
+      try{await f.set(value);}catch(e){unknown=e.code;}
+      const pending=(await f.status()).local.pending;
+      try{await f.retry({...pending,value:'changed'});}catch(e){changed=e.code;}
+      const ack=await f.retry(pending);
+      try{await f.retry(pending);}catch(e){settled=e.code;}
+      console.log(JSON.stringify({absent,unknown,changed,settled,ack}));`);
+    expect(result).toMatchObject({ absent: "retry_mismatch", unknown: "outcome_unknown", changed: "retry_mismatch", settled: "retry_mismatch", ack: { seq: 2 } });
+    expect(attempts).toBe(4);
+    expect((await store.read("board"))!.canvas.data.live).toEqual({ a: "x".repeat(255990) });
   });
 
 });

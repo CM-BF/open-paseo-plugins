@@ -7,7 +7,7 @@ import {
   PublishInputSchema, ReadInputSchema, RespondInputSchema, SelectSideAgentInputSchema, type Board, type Interaction, type InteractInput, type SelectSideAgentInput,
 } from "../shared/contracts";
 import { BoardStore, BoardStoreError } from "./store";
-import { canonicalJson } from "./store-format";
+import { canonicalJson, parseInput } from "./store-format";
 import { ServiceJournal, deliveryKey, type Binding, type Delivery } from "./journal";
 import { discussionConfig, isBusy, type Agent, type Paseo, type TimelinePage } from "./sdk";
 import { extractCandidates } from "./extraction";
@@ -123,7 +123,7 @@ export class BoardService {
         if (actor) parsed.decision.authorAgentId = actor.agentId;
         return this.store.recordDecision(parsed);
       }
-      case "feed": return this.store.feed(FeedInputSchema.parse(input), actor?.agentId);
+      case "feed": return this.store.feed(parseInput(FeedInputSchema, input), actor?.agentId);
       case "emit": return this.store.emit(EmitInputSchema.parse(input), actor?.agentId);
     }
   }

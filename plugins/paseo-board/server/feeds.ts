@@ -1,5 +1,5 @@
 import type { Board, FeedAck, FeedInput, FeedResult, FeedState } from "../shared/contracts";
-import { FeedInputSchema } from "../shared/contracts";
+import { FeedCapacitySchema, FeedInputSchema } from "../shared/contracts";
 import { pointer } from "./data-patch";
 import { assertJson, BoardStoreError, canonicalJson, fingerprint, parseInput } from "./store-format";
 
@@ -34,11 +34,31 @@ function assertSourceActor(source: FeedState, actor?: string): void {
 }
 export function parseFeed(input: FeedInput): ReturnType<typeof FeedInputSchema.parse> {
   const parsed = parseInput(FeedInputSchema, input);
-  if (parsed.action === "set") {
-    assertJson(parsed.value, "Feed value");
-    if (Buffer.byteLength(JSON.stringify(parsed.value)) > FEED_VALUE_LIMIT) throw new BoardStoreError("size_limit", `Feed values must be at most ${FEED_VALUE_LIMIT} bytes`);
+  if (parsed.action === "open") {
+    if (parsed.mode === "records") parsed.capacity ??= FeedCapacitySchema.parse({});
+    else {
+      if (parsed.capacity) throw new BoardStoreError("mode_conflict", "Capacity is only available for records feeds");
+      // Preserve the immutable open digest of existing latest-state producers.
+      delete parsed.mode;
+    }
+  }
+  if (parsed.action === "set" || parsed.action === "append") {
+    const value = parsed.action === "set" ? parsed.value : parsed.records;
+    assertJson(value, "Feed payload");
+    if (Buffer.byteLength(JSON.stringify(value)) > FEED_VALUE_LIMIT) throw new BoardStoreError("size_limit", `Feed payloads must be at most ${FEED_VALUE_LIMIT} bytes`);
   }
   return parsed;
+}
+function recordStats(value: { exists: boolean; value?: unknown }): { recordCount: number; recordBytes: number } {
+  if (value.exists && !Array.isArray(value.value)) throw new BoardStoreError("data_conflict", "Records feed path must be absent or an existing JSON array");
+  const records = value.exists ? value.value as unknown[] : [];
+  return { recordCount: records.length, recordBytes: Buffer.byteLength(JSON.stringify(records), "utf8") };
+}
+function assertCapacity(stats: ReturnType<typeof recordStats>, capacity: NonNullable<FeedState["capacity"]>, current = stats): void {
+  if (stats.recordCount > capacity.maxRecords || stats.recordBytes > capacity.maxBytes) throw new BoardStoreError("capacity_exceeded", "Records feed capacity exceeded; the entire batch was rejected and existing records retained", {
+    recordCount: current.recordCount, recordBytes: current.recordBytes,
+    attemptedRecordCount: stats.recordCount, attemptedRecordBytes: stats.recordBytes, ...capacity,
+  });
 }
 export type FeedChange = { result: FeedResult; changed: boolean; dataChanged?: boolean; eventId?: string; targets?: string[] };
 /** Called under the Board's existing serialized, atomic envelope transaction. */
@@ -60,14 +80,20 @@ export function changeFeed(board: Board, input: ReturnType<typeof parseFeed>, at
       return { result: { source, ack: source.openAck }, changed: false };
     }
     if ((source?.generation ?? 0) !== input.expectedGeneration) throw new BoardStoreError("generation_conflict", "Feed generation changed; inspect before explicitly replacing it", { currentGeneration: source?.generation ?? 0 });
+    const mode = input.mode ?? "latest";
+    if (source && source.mode !== mode) throw new BoardStoreError("mode_conflict", "A source cannot change feed mode across generations");
+    if (source?.mode === "records" && source.path !== input.path) throw new BoardStoreError("path_conflict", "A records source cannot move its retained array to another path");
     const conflict = sources.find(item => !item.closed && item.sourceId !== input.sourceId && overlapping(item.path, input.path));
     if (conflict) throw new BoardStoreError("path_conflict", "Another active source owns this path or its ancestor/descendant", { sourceId: conflict.sourceId, path: conflict.path });
     if (!source && sources.length >= 64) throw new BoardStoreError("size_limit", "A Board can retain at most 64 feed identities");
+    const current = feedValue(board.canvas.data, input.path);
+    const stats = mode === "records" ? recordStats(current) : undefined;
+    if (stats) assertCapacity(stats, input.capacity!);
     const generation = input.expectedGeneration + 1;
-    const openAck = ack(generation, 0);
-    const next: FeedState = { sourceId: input.sourceId, path: input.path, generation, actorAgentId, closed: false, seq: 0, openedAt: at,
+    const openAck = { ...ack(generation, 0), ...stats };
+    const next: FeedState = { sourceId: input.sourceId, path: input.path, mode, ...(stats && { capacity: input.capacity, ...stats }), generation, actorAgentId, closed: false, seq: 0, openedAt: at,
       focusSelectors: input.focusSelectors, openRequestId: input.requestId, openFingerprint: digest, openAck,
-      valueFingerprint: fingerprint("feed-value", feedValue(board.canvas.data, input.path)), receipts: [] };
+      valueFingerprint: fingerprint("feed-value", current), receipts: [] };
     if (source) sources[sources.indexOf(source)] = next; else sources.push(next);
     return { result: { source: next, ack: openAck }, changed: true };
   }
@@ -79,22 +105,28 @@ export function changeFeed(board: Board, input: ReturnType<typeof parseFeed>, at
     return { result: { source }, changed: true };
   }
   if (source.closed) throw new BoardStoreError("source_closed", "This producer generation is closed");
-  const digest = fingerprint("feed-set", input);
+  if (source.mode !== (input.action === "append" ? "records" : "latest")) throw new BoardStoreError("mode_conflict", "Use append for records feeds and set for latest-state feeds");
+  const digest = fingerprint(`feed-${input.action}`, input);
   const previous = source.receipts.find(item => item.seq === input.seq);
   if (previous) {
-    if (previous.fingerprint !== digest) throw new BoardStoreError("idempotency_conflict", "A feed sequence identifies one immutable value and attention policy", { seq: input.seq });
+    if (previous.fingerprint !== digest) throw new BoardStoreError("idempotency_conflict", "A feed sequence identifies one immutable payload and attention policy", { seq: input.seq });
     return { result: { source, ack: previous.ack }, changed: false };
   }
   if (input.seq !== source.seq + 1) throw new BoardStoreError("sequence_conflict", "Feed writes must use the next sequence; old receipts outside the retained window are not replayed", { expectedSeq: source.seq + 1, receivedSeq: input.seq });
-  if (source.valueFingerprint !== fingerprint("feed-value", feedValue(board.canvas.data, source.path))) throw new BoardStoreError("data_conflict", "This feed path was edited outside its source; inspect and explicitly reopen a generation before overwriting it", { path: source.path });
-  const dataChanged = canonicalJson(feedValue(board.canvas.data, source.path)) !== canonicalJson({ exists: true, value: input.value });
-  if (dataChanged) { assign(board.canvas.data, source.path, input.value); board.canvas.revision++; }
-  const accepted = ack(source.generation, input.seq);
+  const current = feedValue(board.canvas.data, source.path);
+  if (source.valueFingerprint !== fingerprint("feed-value", current)) throw new BoardStoreError("data_conflict", "This feed path was edited outside its source; inspect and explicitly reopen a generation before continuing", { path: source.path });
+  const value = input.action === "append" ? [...(current.exists ? current.value as unknown[] : []), ...input.records] : input.value;
+  const stats = input.action === "append" ? recordStats({ exists: true, value }) : undefined;
+  if (stats) assertCapacity(stats, source.capacity!, recordStats(current));
+  const dataChanged = input.action === "append" || canonicalJson(current) !== canonicalJson({ exists: true, value });
+  if (dataChanged) { assign(board.canvas.data, source.path, value); board.canvas.revision++; }
+  const accepted = { ...ack(source.generation, input.seq), ...stats };
+  if (stats) Object.assign(source, stats);
   source.seq = input.seq;
   source.lastAck = accepted;
   source.lastAcceptedAt = at;
   delete source.lastError;
-  source.valueFingerprint = fingerprint("feed-value", { exists: true, value: input.value });
+  source.valueFingerprint = fingerprint("feed-value", { exists: true, value });
   source.receipts.push({ seq: input.seq, fingerprint: digest, ack: accepted });
   source.receipts = source.receipts.slice(-32);
   return { result: { source, ack: accepted }, changed: true, dataChanged,

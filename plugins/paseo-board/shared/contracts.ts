@@ -86,15 +86,23 @@ export const DataPatchSchema = z.object({
 });
 export const DataPatchesSchema = z.array(DataPatchSchema).min(1).max(100);
 export const FocusSelectorsSchema = z.array(z.string().min(1).max(1000)).max(12);
-// Latest-state feeds carry arbitrary JSON. Their identities are bound by the transport,
+// Feeds carry arbitrary JSON. Their identities are bound by the transport,
 // never by an agent-supplied actor or a transferable per-feed credential.
+export const FeedCapacitySchema = z.object({
+  maxRecords: z.number().int().min(1).max(50_000).default(10_000),
+  maxBytes: z.number().int().min(2).max(1_500_000).default(1_000_000),
+}).strict();
+export const FEED_BATCH_RECORD_LIMIT = 1_000;
 export const FeedAckSchema = z.object({
   boardId: IdSchema, sourceId: IdSchema, generation: z.number().int().positive(),
   seq: z.number().int().nonnegative(), revision: z.number().int().nonnegative(),
   canvasRevision: z.number().int().nonnegative(), acceptedAt: z.string(),
+  recordCount: z.number().int().nonnegative().optional(), recordBytes: z.number().int().nonnegative().optional(),
 });
 export const FeedStateSchema = z.object({
   sourceId: IdSchema, path: z.string(), generation: z.number().int().positive(),
+  mode: z.enum(["latest", "records"]).default("latest"), capacity: FeedCapacitySchema.optional(),
+  recordCount: z.number().int().nonnegative().optional(), recordBytes: z.number().int().nonnegative().optional(),
   actorAgentId: z.string().optional(), closed: z.boolean(), seq: z.number().int().nonnegative(),
   openedAt: z.string(), lastAcceptedAt: z.string().optional(),
   focusSelectors: FocusSelectorsSchema.default([]),
@@ -108,9 +116,12 @@ export const FeedStateSchema = z.object({
 const FeedIdentityShape = { boardId: IdSchema, sourceId: IdSchema };
 export const FeedInputSchema = z.discriminatedUnion("action", [
   z.object({ ...FeedIdentityShape, action: z.literal("open"), path: z.string().min(1).max(2000),
-    requestId: IdSchema, expectedGeneration: z.number().int().nonnegative(), focusSelectors: FocusSelectorsSchema.default([]) }),
+    requestId: IdSchema, expectedGeneration: z.number().int().nonnegative(), focusSelectors: FocusSelectorsSchema.default([]),
+    mode: z.enum(["latest", "records"]).optional(), capacity: FeedCapacitySchema.optional() }),
   z.object({ ...FeedIdentityShape, action: z.literal("set"), generation: z.number().int().positive(), seq: z.number().int().positive(),
     value: z.unknown(), attention: z.enum(["quiet", "milestone"]).default("quiet"), focusSelectors: FocusSelectorsSchema.optional() }),
+  z.object({ ...FeedIdentityShape, action: z.literal("append"), generation: z.number().int().positive(), seq: z.number().int().positive(),
+    records: z.array(z.unknown()).min(1).max(FEED_BATCH_RECORD_LIMIT), attention: z.enum(["quiet", "milestone"]).default("quiet"), focusSelectors: FocusSelectorsSchema.optional() }),
   z.object({ ...FeedIdentityShape, action: z.literal("close"), generation: z.number().int().positive() }),
   z.object({ ...FeedIdentityShape, action: z.literal("status") }),
 ]);

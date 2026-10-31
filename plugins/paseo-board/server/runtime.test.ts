@@ -167,6 +167,9 @@ describe("installed CLI and stdio MCP transport", () => {
       expect(toolValue(await call("tools/call", { name: "board_feed", arguments: { action: "open", boardId: "bound-board", sourceId: "mcp-source", path: "/live/mcp", requestId: "mcp-open", expectedGeneration: 0 } }))).toMatchObject({ source: { actorAgentId: "owner" }, ack: { generation: 1, seq: 0 } });
       expect(toolValue(await call("tools/call", { name: "board_feed", arguments: { action: "set", boardId: "bound-board", sourceId: "mcp-source", generation: 1, seq: 1, value: { free: "JSON" } } }))).toMatchObject({ ack: { seq: 1 } });
       expect((await service.store.read("bound-board"))!.canvas.data).toEqual({ live: { mcp: { free: "JSON" } } });
+      expect(toolValue(await call("tools/call", { name: "board_feed", arguments: { action: "open", boardId: "bound-board", sourceId: "mcp-records", path: "/records", mode: "records", capacity: { maxRecords: 5 }, requestId: "mcp-records-open", expectedGeneration: 0 } }))).toMatchObject({ source: { mode: "records", capacity: { maxRecords: 5 } } });
+      expect(toolValue(await call("tools/call", { name: "board_feed", arguments: { action: "append", boardId: "bound-board", sourceId: "mcp-records", generation: 1, seq: 1, records: [{ arbitrary: true }, null] } }))).toMatchObject({ ack: { seq: 1, recordCount: 2 } });
+      expect((await service.store.read("bound-board"))!.canvas.data.records).toEqual([{ arbitrary: true }, null]);
       await service.store.addInteraction({ boardId: "bound-board", intentId: "owner-question", kind: "question", text: "Explain" }, "owner");
       const answered = await call("tools/call", { name: "board_respond", arguments: { boardId: "bound-board", interactionId: "owner-question", eventId: "response", expectedResponseRevision: 0, response: "Explicit answer", html: "<canvas></canvas>" } });
       expect(answered).not.toHaveProperty("result.isError", true);

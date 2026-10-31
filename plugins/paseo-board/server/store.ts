@@ -223,14 +223,15 @@ export class BoardStore {
           this.event(envelope.board, eventId, actorAgentId ?? "user", `feed-${input.action}`, `Feed ${input.sourceId}: ${input.action}`, at);
           envelope.board.revision++;
           envelope.board.updatedAt = at;
-          // Latest-state feeds are not an event-log archive. Keep immutable
-          // provenance/ACK evidence without copying every potentially large value.
-          const payload = input.action === "set" ? {
+          // Retain immutable provenance/ACK evidence without duplicating payloads.
+          // Records live in the ordinary canvas array; append history is compact.
+          const payload = input.action === "set" || input.action === "append" ? {
             boardId: input.boardId, sourceId: input.sourceId, action: input.action,
             path: change.result.source.path, generation: input.generation, seq: input.seq,
             attention: input.attention, focusSelectors: input.focusSelectors,
             valueFingerprint: change.result.source.valueFingerprint,
-            valueBytes: Buffer.byteLength(JSON.stringify(input.value), "utf8"), actorAgentId, ack: change.result.ack,
+            valueBytes: Buffer.byteLength(JSON.stringify(input.action === "set" ? input.value : input.records), "utf8"),
+            ...(input.action === "append" && { appendedCount: input.records.length, payloadFingerprint: fingerprint("feed-append", input) }), actorAgentId, ack: change.result.ack,
           } : { ...input, actorAgentId };
           envelope.history.push({ revision: envelope.board.revision, at, operation: "feed", payload });
           assertJson(envelope.board.canvas.data, "Canvas data");
@@ -240,8 +241,9 @@ export class BoardStore {
           // Errors are operational inspection metadata, not successful data/sequence updates.
           // Only the current source's actual writer can annotate its diagnostic.
           envelope.board = before;
+          envelope.history.length = before.revision;
           const source = before.feeds?.find(item => item.sourceId === input.sourceId);
-          if (source && source.actorAgentId === actorAgentId && input.action === "set" && source.generation === input.generation && error instanceof BoardStoreError) {
+          if (source && source.actorAgentId === actorAgentId && (input.action === "set" || input.action === "append") && source.generation === input.generation && error instanceof BoardStoreError) {
             source.lastError = { code: error.code, message: error.message.slice(0, 1000), at };
             await writeEnvelope(path, envelope);
           }

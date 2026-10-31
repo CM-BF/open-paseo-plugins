@@ -1,4 +1,4 @@
-/** Installed dependency-free latest-state producer SDK. */
+/** Installed dependency-free latest-state and ordered-record producer SDK. */
 export const PRODUCER_SOURCE = String.raw`
 import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
@@ -10,7 +10,7 @@ import { StringDecoder } from 'node:string_decoder';
 const LIMIT = 256000;
 // These codes are raised before a feed transaction commits. Generic service/I/O
 // failures may follow rename and must never authorize discarding a pending value.
-const rejectionCodes = new Set(['invalid_input', 'size_limit', 'forbidden', 'not_found', 'generation_conflict', 'source_closed', 'idempotency_conflict', 'sequence_conflict', 'data_conflict', 'path_conflict', 'backpressure']);
+const rejectionCodes = new Set(['invalid_input', 'size_limit', 'forbidden', 'not_found', 'generation_conflict', 'source_closed', 'idempotency_conflict', 'sequence_conflict', 'data_conflict', 'path_conflict', 'mode_conflict', 'capacity_exceeded', 'backpressure']);
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const canonical = value => JSON.stringify(sort(value));
 function sort(value) {
@@ -18,18 +18,18 @@ function sort(value) {
   if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, sort(value[key])]));
   return value;
 }
-function json(value) {
+function json(value, byteLimit = LIMIT, maxDepth = 64, maxNodes = 100000) {
   let count = 0;
   const visit = (item, depth) => {
-    if (++count > 100000 || depth > 64) throw fail('size_limit', 'Feed value is too complex');
+    if (++count > maxNodes || depth > maxDepth) throw fail('size_limit', 'Feed value is too complex');
     if (item === null || typeof item === 'string' || typeof item === 'boolean' || typeof item === 'number' && Number.isFinite(item)) return;
-    if (Array.isArray(item)) { item.forEach(x => visit(x, depth + 1)); return; }
+    if (Array.isArray(item)) { for (const x of item) visit(x, depth + 1); return; }
     if (item && typeof item === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(item))) { Object.values(item).forEach(x => visit(x, depth + 1)); return; }
     throw fail('invalid_input', 'Feed values must be finite JSON');
   };
   visit(value, 0);
   const text = JSON.stringify(value);
-  if (Buffer.byteLength(text) > LIMIT) throw fail('size_limit', 'Feed value exceeds 256000 bytes');
+  if (Buffer.byteLength(text) > byteLimit) throw fail('size_limit', 'Feed JSON exceeds ' + byteLimit + ' bytes');
   return JSON.parse(text);
 }
 async function regular(path) {
@@ -85,7 +85,13 @@ function transport(root, binding, input) {
     const socket = createConnection(join(root, 'bridge.sock'));
     let text = '', done = false;
     const decoder = new StringDecoder('utf8');
-    const finish = (error, result) => { if (done) return; done = true; socket.destroy(); error ? reject(error) : resolve(result); };
+    const finish = (error, result) => {
+      if (done) return; done = true; socket.destroy();
+      // A lost, malformed or interrupted response cannot establish rejection.
+      // Keep a stable public code while retaining a transport cause when supplied.
+      if (error && error.confirmed !== true) error = Object.assign(fail('outcome_unknown', error.message), { confirmed: false, causeCode: error.causeCode ?? error.code ?? error.name, details: error.details });
+      error ? reject(error) : resolve(result);
+    };
     socket.setTimeout(15000, () => finish(fail('outcome_unknown', 'Board timed out; this exact pending value is retained')));
     socket.on('error', error => finish(error));
     socket.on('connect', () => socket.write(JSON.stringify({ protocol: 1, client: 'cli', binding, operation: 'feed', input }) + '\n'));
@@ -102,23 +108,34 @@ function transport(root, binding, input) {
         else finish(null, response.result);
       } catch (error) { finish(error); }
     });
-    socket.on('end', () => { if (!done) finish(fail('outcome_unknown', 'Board closed before acknowledgement; pending value retained')); });
+    socket.on('end', () => { if (!done) finish(Object.assign(fail('outcome_unknown', 'Board closed before acknowledgement; pending value retained'), { causeCode: 'unexpected_eof' })); });
   });
 }
 
-/** Latest JSON state, with one durable pending operation and bounded identical retries.
+/** Latest JSON state or bounded ordered records, with one durable pending operation.
  * Import from the installed runtime lib/feed.mjs. Inherit PASEO_BOARD_BINDING from
  * the owning agent; no credentials are accepted in options or written to disk.
  */
 export async function createFeed(options) {
   const { boardId, sourceId, path, focusSelectors = [] } = options;
+  const mode = options.mode ?? 'latest';
+  if (!['latest', 'records'].includes(mode)) throw fail('invalid_input', 'mode must be latest or records');
+  if (mode === 'latest' && options.capacity !== undefined) throw fail('mode_conflict', 'Capacity is only available for records feeds');
+  let capacity;
+  if (mode === 'records') {
+    const raw = options.capacity ?? {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => !['maxRecords', 'maxBytes'].includes(key))) throw fail('invalid_input', 'capacity accepts maxRecords and maxBytes');
+    capacity = { maxRecords: raw.maxRecords === undefined ? 10000 : raw.maxRecords, maxBytes: raw.maxBytes === undefined ? 1000000 : raw.maxBytes };
+    if (!Number.isSafeInteger(capacity.maxRecords) || capacity.maxRecords < 1 || capacity.maxRecords > 50000 || !Number.isSafeInteger(capacity.maxBytes) || capacity.maxBytes < 2 || capacity.maxBytes > 1500000) throw fail('invalid_input', 'capacity requires maxRecords 1..50000 and maxBytes 2..1500000');
+  }
   if (!options.stateFile || !options.stateFile.startsWith('/')) throw fail('invalid_input', 'stateFile must be an absolute durable path owned by this producer');
   const root = process.env.PASEO_BOARD_HOME || resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const binding = process.env.PASEO_BOARD_BINDING;
   if (!root || !binding) throw fail('forbidden', 'Use the installed Board runtime and inherit this agent’s PASEO_BOARD_BINDING');
   const stateFile = resolve(options.stateFile);
   await mkdir(dirname(stateFile), { recursive: true, mode: 0o700 });
-  const config = json({ boardId, sourceId, path, focusSelectors });
+  // Omit latest's new optional fields so existing journal identities remain valid.
+  const config = json({ boardId, sourceId, path, focusSelectors, ...(mode === 'records' ? { mode, capacity } : {}) });
   let active = false;
   let pinned;
   let ownedOpenRequestId;
@@ -147,16 +164,21 @@ export async function createFeed(options) {
       }
     }
   }
+  function assertSource(source) {
+    if (source?.sourceId !== sourceId || source?.path !== path) throw fail('outcome_unknown', 'Source receipt does not match this feed');
+    if ((source.mode ?? 'latest') !== mode || mode === 'records' && canonical(source.capacity) !== canonical(capacity)) throw fail('outcome_unknown', 'Source mode or capacity does not match this feed; pending payload retained');
+  }
   async function settle(state) {
     if (!state.pending) return state.lastAck;
     const request = state.pending;
     try {
       const result = await send(request);
-      if (result.source?.sourceId !== sourceId || result.source?.path !== path) throw fail('outcome_unknown', 'Source receipt does not match this feed');
+      assertSource(result.source);
       if (state.actorAgentId && result.source.actorAgentId !== state.actorAgentId) throw fail('forbidden', 'Feed writer identity changed');
       if (request.action !== 'close') {
         const ack = result.ack;
         if (!ack || ack.boardId !== boardId || ack.sourceId !== sourceId || !Number.isSafeInteger(ack.revision) || ack.generation !== (request.action === 'open' ? request.expectedGeneration + 1 : request.generation) || ack.seq !== (request.action === 'open' ? 0 : request.seq)) throw fail('outcome_unknown', 'Unconfirmed sequence receipt; pending value retained');
+        if (mode === 'records' && (!Number.isSafeInteger(ack.recordCount) || ack.recordCount < 0 || ack.recordCount > capacity.maxRecords || !Number.isSafeInteger(ack.recordBytes) || ack.recordBytes < 2 || ack.recordBytes > capacity.maxBytes)) throw fail('outcome_unknown', 'Unconfirmed records receipt; pending batch retained');
         state.generation = ack.generation; state.seq = ack.seq; state.lastAck = ack; state.actorAgentId = result.source.actorAgentId;
         if (request.action === 'open') state.generationRequestId = request.requestId;
       } else state.closed = true;
@@ -165,7 +187,7 @@ export async function createFeed(options) {
       if (request.action === 'open' && ownedOpenRequestId === request.requestId) { pinned = pin(state); ownedOpenRequestId = undefined; }
       return result.ack ?? result.source;
     } catch (error) {
-      state.lastError = { code: error.code ?? 'outcome_unknown', message: error.message, at: new Date().toISOString(), confirmed: error.confirmed === true };
+      state.lastError = { code: error.code ?? 'outcome_unknown', message: error.message, causeCode: error.causeCode, at: new Date().toISOString(), confirmed: error.confirmed === true };
       await atomic(stateFile, state);
       throw error;
     }
@@ -191,21 +213,41 @@ export async function createFeed(options) {
     if (state.pending) await settle(state);
     else {
       const result = await send({ boardId, sourceId, action: 'status' });
+      assertSource(result.source);
       if (state.actorAgentId !== result.source.actorAgentId || state.generation !== result.source.generation || result.source.closed) throw fail('generation_conflict', 'Feed generation changed or closed; inspect and explicitly reopen it');
     }
     pinned = pin(state);
   });
-  return {
-    set: (value, policy = {}) => exclusive(async () => {
+  async function write(action, value, policy = {}) {
+    if (mode !== (action === 'append' ? 'records' : 'latest')) throw fail('mode_conflict', 'Use append for records feeds and set for latest-state feeds');
+    // Snapshot before the first await. The retained request never aliases caller data.
+    const payload = json(value);
+    if (action === 'append' && (!Array.isArray(payload) || payload.length < 1 || payload.length > 1000)) throw fail('invalid_input', 'append requires 1..1000 JSON records');
+    const attention = policy.attention ?? 'quiet';
+    const focus = policy.focusSelectors === undefined ? {} : { focusSelectors: json(policy.focusSelectors) };
+    return exclusive(async () => {
       const state = await load(); assertPinned(state);
-      const request = { boardId, sourceId, action: 'set', generation: state.generation, seq: state.seq + 1, value: json(value), attention: policy.attention ?? 'quiet', ...(policy.focusSelectors ? { focusSelectors: json(policy.focusSelectors) } : {}) };
+      const request = { boardId, sourceId, action, generation: state.generation, seq: state.seq + 1, ...(action === 'append' ? { records: payload } : { value: payload }), attention, ...focus };
       if (state.closed) throw fail('source_closed', 'Feed is closed');
       if (state.pending && canonical(state.pending) !== canonical(request)) throw fail('pending_write', 'Reconcile the retained pending value with retry(); do not replace it with a new value');
       state.pending = request;
       await atomic(stateFile, state);
       return settle(state);
-    }),
-    retry: () => exclusive(async () => { const state = await load(); assertPinned(state); return settle(state); }),
+    });
+  }
+  return {
+    get mode() { return mode; },
+    set: (value, policy) => write('set', value, policy),
+    append: (records, policy) => write('append', records, policy),
+    retry: async expectedRequest => {
+      // The request wrapper adds one level and a few nodes to a valid payload.
+      const expected = expectedRequest === undefined ? undefined : canonical(json(expectedRequest, 600000, 65, 100100));
+      return exclusive(async () => {
+        const state = await load(); assertPinned(state);
+        if (expected !== undefined && canonical(state.pending) !== expected) throw fail('retry_mismatch', 'The retained operation changed or settled; this retry cannot acknowledge another payload');
+        return settle(state);
+      });
+    },
     status: () => exclusive(async () => ({ local: await load(), remote: await send({ boardId, sourceId, action: 'status' }) })),
     reopen: (options = {}) => exclusive(async () => {
       const state = await load();

@@ -60,6 +60,7 @@ export function inspectBoard(board: Board, input: z.output<typeof ReadInputSchem
     unreadUpdateCount: board.updates.filter(item => !board.seenUpdateIds.includes(item.id)).length,
     feeds: [...(board.feeds ?? [])].sort((a, b) => (b.lastAcceptedAt ?? b.openedAt).localeCompare(a.lastAcceptedAt ?? a.openedAt)).slice(0, limit).map(source => ({
       sourceId: source.sourceId, path: source.path, generation: source.generation, actorAgentId: source.actorAgentId,
+      mode: source.mode, capacity: source.capacity, recordCount: source.recordCount, recordBytes: source.recordBytes,
       closed: source.closed, seq: source.seq, openedAt: source.openedAt, lastAcceptedAt: source.lastAcceptedAt,
       lastAck: source.lastAck, lastError: source.lastError,
     })),
