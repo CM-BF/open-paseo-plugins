@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 const root = resolve(process.argv[2] || ".");
 // Keep module provenance relative to this plugin, including linked development dependencies.
-const result = await build({ absWorkingDir: root, preserveSymlinks: true, entryPoints: [resolve(root, "server/store-worker.ts")], bundle: true, platform: "node", format: "cjs", target: "node22", legalComments: "inline", metafile: true, write: false, logLevel: "silent" });
+const result = await build({ absWorkingDir: root, preserveSymlinks: true, entryPoints: [resolve(root, "server/store-worker.ts")], bundle: true, platform: "node", format: "cjs", target: "node22", loader: { ".txt": "text" }, legalComments: "inline", metafile: true, write: false, logLevel: "silent" });
 const target = resolve(root, "server/assets/store-worker.txt");
 await mkdir(dirname(target), { recursive: true });
 // Discover every package actually emitted, including nested dependency versions.

@@ -11,6 +11,11 @@ import { BoardBridge } from "./bridge";
 import { runtimePaths, writeRuntime, linkSkills } from "./runtime";
 import { boardInstructions, replaceInstructions } from "./prompts";
 import type { Paseo } from "./sdk";
+import { copyBoardRpc } from "../shared/board-copy";
+import { BoardCopies } from "./board-copy";
+import { ReleaseRepository } from "./static-release";
+import { GitHubPagesManager } from "./github-pages";
+import { registerPublicationRpc } from "./publication-rpc";
 
 export interface ContributeOptions { rootDir?: string; runtimeDir?: string; home?: string; linkSkills?: boolean; eventTransport?: { publish(change: BoardChange): void }; onService?: (service: BoardService) => void }
 
@@ -22,6 +27,9 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   const journal = new ServiceJournal(join(root, "service.json"));
   const log = (message: string) => console.warn(`[paseo-board] ${message}`);
   const service = new BoardService(store, journal, log);
+  const copies = new BoardCopies(join(root, "copies"), store, board => store.materializeAuthoredHtml(board.id, board.canvas));
+  const releases = new ReleaseRepository(join(root, "releases"), store);
+  const pages = new GitHubPagesManager(join(root, "pages"), releases);
   const bridge = new BoardBridge(service);
   const removers: Array<() => void> = [];
   let stopped = false;
@@ -50,6 +58,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     void ready.then(() => service.reconcile()).catch((error) => log(String(error)));
   };
   const checkReady = async () => { await ready; if (stopped) throw new Error("Board service stopped"); };
+  registerPublicationRpc(server, { ready: checkReady, requireBoard: id => service.requireBoard(id), releases, pages });
 
   server.handle(listBoardsRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.summarySnapshot(input); });
   server.handle(boardChangesRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.changesSince(input.cursor, input.compact); });
@@ -62,6 +71,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     return { board: unchanged ? null : board, unchanged };
   });
   server.handle(createBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); const board = await store.create(input); void service.reconcile(); return board; });
+  server.handle(copyBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return copies.copy(input); });
   server.handle(publishBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.publish(input); });
   server.handle(emitBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.emit(input); });
   server.handle(feedBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.feed(input); });

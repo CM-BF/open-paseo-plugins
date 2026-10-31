@@ -382,7 +382,7 @@ export function usePopoverDismiss(active: boolean, onDismiss: () => void, preser
         if (preserveInput) event.preventDefault();
         return;
       }
-      if (!event.target?.closest?.('[data-testid="board-local-popover"]')) latest.current();
+      if (!event.target?.closest?.('[data-testid="board-local-popover"], [data-testid="board-offline-draft"]')) latest.current();
     };
     browser.window.addEventListener("pointerdown", dismiss, true);
     return () => browser.window?.removeEventListener("pointerdown", dismiss, true);

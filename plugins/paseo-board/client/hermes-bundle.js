@@ -37,11 +37,11 @@ var __async = (__this, __arguments, generator) => {
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 
 // client/home.tsx
-import { useState as useState8 } from "react";
-import { Pressable as Pressable6, Text as Text8, View as View9 } from "react-native";
+import { useState as useState11 } from "react";
+import { Pressable as Pressable8, Text as Text10, View as View12 } from "react-native";
 import { useQuery as useQuery2 } from "@tanstack/react-query";
-import { usePaseo, useRpc as useRpc5 } from "@getpaseo/plugin/client";
-import { Modal as Modal2, ScrollView as ScrollView4, TextInput as TextInput4 } from "@getpaseo/plugin/client/ui";
+import { usePaseo, useRpc as useRpc6 } from "@getpaseo/plugin/client";
+import { Modal as Modal3, ScrollView as ScrollView6, TextInput as TextInput5 } from "@getpaseo/plugin/client/ui";
 
 // shared/contracts.ts
 import { defineRpc } from "@getpaseo/plugin";
@@ -642,11 +642,13 @@ function Action({
   onPress,
   active,
   disabled,
-  primary
+  primary,
+  testID
 }) {
   var c = useColors();
   var color = primary ? c.accentForeground : c.foreground;
   return /* @__PURE__ */jsxs(Pressable, {
+    testID,
     accessibilityRole: "button",
     accessibilityLabel: label,
     accessibilityState: {
@@ -728,10 +730,10 @@ function timeLabel(at) {
 }
 
 // client/board.tsx
-import { useCallback as useCallback4, useEffect as useEffect7, useMemo as useMemo3, useRef as useRef6, useState as useState7 } from "react";
-import { Image, Text as Text7, View as View8 } from "react-native";
-import { openExternalUrl, useRpc as useRpc4 } from "@getpaseo/plugin/client";
-import { Markdown, Modal, ScrollView as ScrollView3, TextInput as TextInput3 } from "@getpaseo/plugin/client/ui";
+import { useCallback as useCallback4, useEffect as useEffect8, useMemo as useMemo4, useRef as useRef8, useState as useState10 } from "react";
+import { Image as Image2, Text as Text9, View as View11 } from "react-native";
+import { openExternalUrl as openExternalUrl2, useRpc as useRpc5 } from "@getpaseo/plugin/client";
+import { Markdown, Modal as Modal2, ScrollView as ScrollView5, TextInput as TextInput4 } from "@getpaseo/plugin/client/ui";
 
 // shared/frame-contract.ts
 var FRAME_CHANNEL = "paseo-board-frame-v1";
@@ -879,13 +881,18 @@ function validAnchor(value) {
   return true;
 }
 function sameSelectionAnchor(a, b) {
-  return JSON.stringify({
+  var ordered = value => {
+    if (Array.isArray(value)) return value.map(ordered);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a2], [b2]) => a2.localeCompare(b2)).map(([key, item]) => [key, ordered(item)]));
+    return value;
+  };
+  return JSON.stringify(ordered({
     ...a,
     image: void 0
-  }) === JSON.stringify({
+  })) === JSON.stringify(ordered({
     ...b,
     image: void 0
-  });
+  }));
 }
 function validComponentEditRequest(value) {
   if (!record(value) || !record(value.canvasBase) || !record(value.patch) || jsonSize(value) > 55e4) return false;
@@ -2609,7 +2616,7 @@ function usePopoverDismiss(active, onDismiss, preserveInput = false) {
         if (preserveInput) event.preventDefault();
         return;
       }
-      if (!event.target?.closest?.('[data-testid="board-local-popover"]')) latest.current();
+      if (!event.target?.closest?.('[data-testid="board-local-popover"], [data-testid="board-offline-draft"]')) latest.current();
     };
     browser.window.addEventListener("pointerdown", dismiss, true);
     return () => browser.window?.removeEventListener("pointerdown", dismiss, true);
@@ -3496,11 +3503,16 @@ function ComponentEditPanel({
   });
 }
 
+// client/board-toolbar.tsx
+import { useState as useState7 } from "react";
+import { Image, Pressable as Pressable5, Text as Text6, View as View6 } from "react-native";
+import { Icon as Icon4 } from "@getpaseo/plugin/client/ui";
+
 // client/board-title.tsx
-import { useEffect as useEffect5, useRef as useRef4, useState as useState4 } from "react";
-import { Pressable as Pressable2, Text as Text3, View as View3 } from "react-native";
+import { useEffect as useEffect5, useRef as useRef5, useState as useState5 } from "react";
+import { Pressable as Pressable3, Text as Text4, View as View4 } from "react-native";
 import { useRpc as useRpc3 } from "@getpaseo/plugin/client";
-import { Icon as Icon2 } from "@getpaseo/plugin/client/ui";
+import { Icon as Icon3 } from "@getpaseo/plugin/client/ui";
 
 // client/title-input.tsx
 import { createElement as createElement2, useEffect as useEffect4, useRef as useRef3 } from "react";
@@ -3579,19 +3591,189 @@ function TitleInput(props) {
   });
 }
 
+// client/toolbar-popover.tsx
+import { Pressable as Pressable2, Text as Text3, View as View3 } from "react-native";
+import { Icon as Icon2, Modal, ScrollView } from "@getpaseo/plugin/client/ui";
+
+// client/toolbar-popover-web.ts
+import { useLayoutEffect as useLayoutEffect2, useRef as useRef4, useState as useState4 } from "react";
+var runtime = globalThis;
+function useToolbarPopover(open, onClose, containerId) {
+  var close = useRef4(onClose);
+  close.current = onClose;
+  var [height, setHeight] = useState4(360);
+  useLayoutEffect2(() => {
+    var browser3 = runtime.window,
+      page = runtime.document;
+    if (!open || !browser3 || !page) return;
+    var active = true;
+    var composing = false,
+      compositionEnded = 0;
+    var selector = `[data-testid="${containerId}"]`;
+    var measure = () => {
+      var bottom = page.querySelector(selector)?.getBoundingClientRect().bottom ?? 48;
+      setHeight(Math.max(96, Math.min(460, browser3.innerHeight - bottom - 12)));
+    };
+    var pointer2 = event => {
+      if (event.isTrusted && !event.target?.closest?.(selector)) close.current();
+    };
+    var compositionStart = () => {
+      composing = true;
+    };
+    var compositionEnd = () => {
+      composing = false;
+      compositionEnded = Date.now();
+    };
+    var key = event => {
+      if (composing || event.isComposing || event.keyCode === 229 || Date.now() - compositionEnded < 50) return;
+      if (event.isTrusted && !event.defaultPrevented && event.key === "Escape") {
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        close.current();
+      }
+    };
+    var blur = () => {
+      setTimeout(() => {
+        if (active && page.activeElement?.tagName === "IFRAME") close.current();
+      }, 0);
+    };
+    measure();
+    browser3.addEventListener("resize", measure);
+    browser3.addEventListener("pointerdown", pointer2, true);
+    browser3.addEventListener("keydown", key);
+    browser3.addEventListener("blur", blur);
+    browser3.addEventListener("compositionstart", compositionStart);
+    browser3.addEventListener("compositionend", compositionEnd);
+    return () => {
+      active = false;
+      browser3.removeEventListener("resize", measure);
+      browser3.removeEventListener("pointerdown", pointer2, true);
+      browser3.removeEventListener("keydown", key);
+      browser3.removeEventListener("blur", blur);
+      browser3.removeEventListener("compositionstart", compositionStart);
+      browser3.removeEventListener("compositionend", compositionEnd);
+    };
+  }, [open, containerId]);
+  return height;
+}
+
+// client/toolbar-popover.tsx
+import { jsx as jsx4, jsxs as jsxs3 } from "react/jsx-runtime";
+function ToolbarPopover({
+  open,
+  title,
+  children,
+  onClose,
+  containerId,
+  testID,
+  width = 320,
+  left,
+  right
+}) {
+  var c = useColors(),
+    maxHeight = useToolbarPopover(open, onClose, containerId);
+  if (!open) return null;
+  if (!canRenderFrames) return /* @__PURE__ */jsx4(Modal, {
+    open: true,
+    title,
+    onOpenChange: value => {
+      if (!value) onClose();
+    },
+    children: /* @__PURE__ */jsx4(Modal.Content, {
+      children
+    })
+  });
+  return /* @__PURE__ */jsxs3(View3, {
+    testID,
+    role: "dialog",
+    accessibilityLabel: title,
+    style: {
+      position: "absolute",
+      top: "100%",
+      marginTop: 4,
+      left,
+      right: left === void 0 ? right ?? 0 : void 0,
+      width,
+      maxHeight,
+      zIndex: 100,
+      backgroundColor: c.surface0,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 9,
+      shadowColor: "#000",
+      shadowOpacity: 0.18,
+      shadowRadius: 14,
+      shadowOffset: {
+        width: 0,
+        height: 5
+      },
+      overflow: "hidden"
+    },
+    children: [/* @__PURE__ */jsxs3(View3, {
+      style: {
+        minHeight: 38,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingLeft: 12,
+        paddingRight: 4,
+        borderBottomWidth: 1,
+        borderColor: c.border
+      },
+      children: [/* @__PURE__ */jsx4(Text3, {
+        numberOfLines: 1,
+        style: {
+          flex: 1,
+          color: c.foreground,
+          fontSize: 12,
+          fontWeight: "600"
+        },
+        children: title
+      }), /* @__PURE__ */jsx4(Pressable2, {
+        accessibilityRole: "button",
+        accessibilityLabel: `\u5173\u95ED${title}`,
+        onPress: onClose,
+        style: {
+          padding: 8
+        },
+        children: /* @__PURE__ */jsx4(Icon2, {
+          name: "X",
+          size: 15,
+          color: c.foregroundMuted
+        })
+      })]
+    }), /* @__PURE__ */jsx4(ScrollView, {
+      style: {
+        flexShrink: 1,
+        minHeight: 0
+      },
+      contentContainerStyle: {
+        padding: 10,
+        gap: 8
+      },
+      keyboardShouldPersistTaps: "handled",
+      children
+    })]
+  });
+}
+
 // client/board-title.tsx
-import { Fragment as Fragment2, jsx as jsx4, jsxs as jsxs3 } from "react/jsx-runtime";
+import { Fragment as Fragment2, jsx as jsx5, jsxs as jsxs4 } from "react/jsx-runtime";
 function BoardTitle({
   board,
   onAccepted,
-  onRefresh
+  onRefresh,
+  compact,
+  menuWidth,
+  menuOffset,
+  onEditStart
 }) {
   var c = useColors();
   var rename = useRpc3(renameBoardRpc);
-  var [draft, setDraft] = useState4(null);
-  var [saving, setSaving] = useState4(false);
-  var pending = useRef4(false);
-  var mounted = useRef4(true);
+  var [draft, setDraft] = useState5(null);
+  var [saving, setSaving] = useState5(false);
+  var pending = useRef5(false);
+  var mounted = useRef5(true);
   useEffect5(() => {
     mounted.current = true;
     return () => {
@@ -3639,21 +3821,148 @@ function BoardTitle({
       if (mounted.current) setSaving(false);
     }
   });
-  return /* @__PURE__ */jsxs3(View3, {
+  var start = () => {
+    if (pending.current) return;
+    onEditStart?.();
+    setDraft(current => current ?? {
+      value: board.title,
+      baseTitle: board.title
+    });
+  };
+  if (compact) return /* @__PURE__ */jsxs4(View4, {
+    testID: "board-title",
+    style: {
+      flex: 1,
+      minWidth: 0,
+      flexShrink: 1,
+      position: "relative",
+      overflow: "visible",
+      zIndex: draft ? 120 : 0
+    },
+    children: [/* @__PURE__ */jsxs4(View4, {
+      style: {
+        flexDirection: "row",
+        alignItems: "center",
+        minWidth: 0,
+        gap: 2
+      },
+      children: [/* @__PURE__ */jsx5(Text4, {
+        numberOfLines: 1,
+        style: {
+          color: c.foreground,
+          fontSize: 14,
+          fontWeight: "600",
+          minWidth: 0,
+          flexShrink: 1
+        },
+        children: board.title
+      }), /* @__PURE__ */jsx5(Pressable3, {
+        accessibilityRole: "button",
+        accessibilityLabel: "\u4FEE\u6539 Board \u540D\u79F0",
+        onPress: start,
+        style: ({
+          pressed
+        }) => ({
+          padding: 6,
+          flexShrink: 0,
+          borderRadius: 5,
+          backgroundColor: pressed || draft ? c.surface2 : "transparent"
+        }),
+        children: /* @__PURE__ */jsx5(Icon3, {
+          name: "Pencil",
+          size: 14,
+          color: c.foregroundMuted
+        })
+      })]
+    }), /* @__PURE__ */jsx5(ToolbarPopover, {
+      open: !!draft,
+      title: "\u4FEE\u6539 Board \u540D\u79F0",
+      onClose: cancel,
+      containerId: "board-title",
+      testID: "board-title-popup",
+      width: menuWidth ?? 320,
+      left: menuOffset ?? 0,
+      children: draft ? /* @__PURE__ */jsxs4(Fragment2, {
+        children: [/* @__PURE__ */jsx5(View4, {
+          style: {
+            flexDirection: "row"
+          },
+          children: /* @__PURE__ */jsx5(TitleInput, {
+            value: draft.value,
+            disabled: saving,
+            color: c.foreground,
+            backgroundColor: c.surface0,
+            borderColor: c.border,
+            onChange: value => {
+              if (!pending.current) setDraft({
+                ...draft,
+                value,
+                request: void 0,
+                error: void 0
+              });
+            },
+            onSubmit: () => {
+              void submit();
+            },
+            onCancel: cancel
+          })
+        }), /* @__PURE__ */jsxs4(View4, {
+          style: {
+            flexDirection: "row",
+            gap: 6,
+            flexWrap: "wrap"
+          },
+          children: [/* @__PURE__ */jsx5(Action, {
+            label: saving ? "\u4FDD\u5B58\u4E2D\u2026" : draft.request ? "\u91CD\u8BD5\u4FDD\u5B58" : "\u4FDD\u5B58\u540D\u79F0",
+            disabled: saving || !draft.value.trim() || changedElsewhere && !draft.request,
+            onPress: () => {
+              void submit();
+            }
+          }), /* @__PURE__ */jsx5(Action, {
+            label: "\u53D6\u6D88\u6539\u540D",
+            disabled: saving,
+            onPress: cancel
+          })]
+        }), draft.error ? /* @__PURE__ */jsx5(Text4, {
+          accessibilityRole: "alert",
+          style: {
+            color: c.statusDanger,
+            fontSize: 12
+          },
+          children: draft.error
+        }) : null, changedElsewhere && !saving ? /* @__PURE__ */jsxs4(Fragment2, {
+          children: [/* @__PURE__ */jsxs4(Copy, {
+            muted: true,
+            small: true,
+            children: ["\u5F53\u524D\u540D\u79F0\u5DF2\u53D8\u4E3A\u300C", board.title, "\u300D\u3002\u4F60\u7684\u8F93\u5165\u5DF2\u4FDD\u7559\u3002"]
+          }), /* @__PURE__ */jsx5(Action, {
+            label: "\u786E\u8BA4\u5F53\u524D\u540D\u79F0\u540E\u7EE7\u7EED\u7F16\u8F91",
+            onPress: () => setDraft({
+              ...draft,
+              baseTitle: board.title,
+              request: void 0,
+              error: void 0
+            })
+          })]
+        }) : null]
+      }) : null
+    })]
+  });
+  return /* @__PURE__ */jsxs4(View4, {
     style: {
       flex: 1,
       minWidth: 160,
       gap: 6
     },
     testID: "board-title",
-    children: [/* @__PURE__ */jsx4(View3, {
+    children: [/* @__PURE__ */jsx5(View4, {
       style: {
         flexDirection: "row",
         alignItems: "center",
         gap: 5
       },
-      children: draft ? /* @__PURE__ */jsxs3(Fragment2, {
-        children: [/* @__PURE__ */jsx4(TitleInput, {
+      children: draft ? /* @__PURE__ */jsxs4(Fragment2, {
+        children: [/* @__PURE__ */jsx5(TitleInput, {
           value: draft.value,
           disabled: saving,
           color: c.foreground,
@@ -3671,19 +3980,19 @@ function BoardTitle({
             void submit();
           },
           onCancel: cancel
-        }), /* @__PURE__ */jsx4(Action, {
+        }), /* @__PURE__ */jsx5(Action, {
           label: saving ? "\u4FDD\u5B58\u4E2D\u2026" : draft.request ? "\u91CD\u8BD5\u4FDD\u5B58" : "\u4FDD\u5B58\u540D\u79F0",
           disabled: saving || !draft.value.trim() || changedElsewhere && !draft.request,
           onPress: () => {
             void submit();
           }
-        }), /* @__PURE__ */jsx4(Action, {
+        }), /* @__PURE__ */jsx5(Action, {
           label: "\u53D6\u6D88\u6539\u540D",
           disabled: saving,
           onPress: cancel
         })]
-      }) : /* @__PURE__ */jsxs3(Fragment2, {
-        children: [/* @__PURE__ */jsx4(Text3, {
+      }) : /* @__PURE__ */jsxs4(Fragment2, {
+        children: [/* @__PURE__ */jsx5(Text4, {
           numberOfLines: 1,
           style: {
             color: c.foreground,
@@ -3692,13 +4001,10 @@ function BoardTitle({
             flexShrink: 1
           },
           children: board.title
-        }), /* @__PURE__ */jsx4(Pressable2, {
+        }), /* @__PURE__ */jsx5(Pressable3, {
           accessibilityRole: "button",
           accessibilityLabel: "\u4FEE\u6539 Board \u540D\u79F0",
-          onPress: () => setDraft({
-            value: board.title,
-            baseTitle: board.title
-          }),
+          onPress: start,
           style: ({
             pressed
           }) => ({
@@ -3706,29 +4012,29 @@ function BoardTitle({
             borderRadius: 5,
             backgroundColor: pressed ? c.surface2 : "transparent"
           }),
-          children: /* @__PURE__ */jsx4(Icon2, {
+          children: /* @__PURE__ */jsx5(Icon3, {
             name: "Pencil",
             size: 15,
             color: c.foregroundMuted
           })
         })]
       })
-    }), draft?.error ? /* @__PURE__ */jsx4(Text3, {
+    }), draft?.error ? /* @__PURE__ */jsx5(Text4, {
       accessibilityRole: "alert",
       style: {
         color: c.statusDanger,
         fontSize: 12
       },
       children: draft.error
-    }) : null, draft && changedElsewhere && !saving ? /* @__PURE__ */jsxs3(View3, {
+    }) : null, draft && changedElsewhere && !saving ? /* @__PURE__ */jsxs4(View4, {
       style: {
         gap: 5
       },
-      children: [/* @__PURE__ */jsxs3(Copy, {
+      children: [/* @__PURE__ */jsxs4(Copy, {
         muted: true,
         small: true,
         children: ["\u5F53\u524D\u540D\u79F0\u5DF2\u53D8\u4E3A\u300C", board.title, "\u300D\u3002\u4F60\u7684\u8F93\u5165\u5DF2\u4FDD\u7559\u3002"]
-      }), /* @__PURE__ */jsx4(Action, {
+      }), /* @__PURE__ */jsx5(Action, {
         label: "\u786E\u8BA4\u5F53\u524D\u540D\u79F0\u540E\u7EE7\u7EED\u7F16\u8F91",
         onPress: () => setDraft({
           ...draft,
@@ -3741,373 +4047,10 @@ function BoardTitle({
   });
 }
 
-// client/connection-status.tsx
-import { View as View4 } from "react-native";
-import { jsx as jsx5, jsxs as jsxs4 } from "react/jsx-runtime";
-var labels = {
-  connecting: "\u72B6\u6001\u68C0\u67E5\u4E2D",
-  checking: "\u5DF2\u540C\u6B65",
-  connected: "\u5DF2\u540C\u6B65",
-  recovering: "\u6062\u590D\u4E2D",
-  disconnected: "\u65AD\u5F00",
-  unsupported: "\u5BBF\u4E3B\u4E0D\u652F\u6301"
-};
-function BoardConnectionStatus({
-  status
-}) {
-  var c = useColors();
-  var color = status === "connected" || status === "checking" ? c.statusSuccess : status === "disconnected" || status === "unsupported" ? c.statusDanger : c.foregroundMuted;
-  return /* @__PURE__ */jsxs4(View4, {
-    testID: "board-connection-status",
-    accessibilityLabel: `\u5B9E\u65F6\u540C\u6B65\uFF1A${labels[status]}`,
-    style: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 6
-    },
-    children: [/* @__PURE__ */jsx5(View4, {
-      style: {
-        width: 7,
-        height: 7,
-        borderRadius: 4,
-        backgroundColor: color
-      }
-    }), /* @__PURE__ */jsxs4(Copy, {
-      muted: true,
-      small: true,
-      children: ["\u5B9E\u65F6\u540C\u6B65 \xB7 ", labels[status]]
-    })]
-  });
-}
-
-// client/state-writer.ts
-function createStateWriter(save, onError) {
-  var pending = null;
-  var timer = null;
-  var running = null;
-  var disposed = false;
-  function clearTimer() {
-    if (timer !== null) clearTimeout(timer);
-    timer = null;
-  }
-  function drain() {
-    return __async(this, null, function* () {
-      while (pending !== null && timer === null) {
-        var state = pending;
-        pending = null;
-        try {
-          yield save(state);
-        } catch (error) {
-          pending = {
-            ...state,
-            ...pending
-          };
-          onError(error);
-          return false;
-        }
-      }
-      return true;
-    });
-  }
-  function flush() {
-    clearTimer();
-    if (running) return running;
-    if (pending === null) return Promise.resolve();
-    running = drain().then(success => {
-      running = null;
-      if (success && pending !== null && timer === null) return flush();
-    }, error => {
-      running = null;
-      throw error;
-    });
-    return running;
-  }
-  function schedule(state) {
-    if (disposed) return;
-    try {
-      var snapshot = JSON.parse(JSON.stringify(state));
-      pending = {
-        ...pending,
-        ...snapshot
-      };
-    } catch (error) {
-      onError(error);
-      return;
-    }
-    clearTimer();
-    timer = setTimeout(() => {
-      timer = null;
-      void flush();
-    }, 300);
-  }
-  return {
-    schedule,
-    flush,
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      void flush();
-    }
-  };
-}
-
-// client/discussion-rail.tsx
-import { Pressable as Pressable3, Text as Text4, View as View5 } from "react-native";
-import { ScrollView } from "@getpaseo/plugin/client/ui";
-import { jsx as jsx6, jsxs as jsxs5 } from "react/jsx-runtime";
-function DiscussionRail({
-  markers,
-  compact,
-  selectedId,
-  disabled,
-  statusNames: statusNames2,
-  onOpen
-}) {
-  var c = useColors();
-  return /* @__PURE__ */jsxs5(View5, {
-    testID: "board-discussion-rail",
-    accessibilityLabel: "\u753B\u5E03\u8BA8\u8BBA\u7D22\u5F15",
-    style: {
-      width: compact ? 52 : 168,
-      flexShrink: 0,
-      minHeight: 0,
-      borderLeftWidth: 1,
-      borderColor: c.border,
-      backgroundColor: c.surface0
-    },
-    children: [/* @__PURE__ */jsx6(View5, {
-      style: {
-        paddingHorizontal: compact ? 4 : 12,
-        paddingVertical: 12,
-        borderBottomWidth: 1,
-        borderColor: c.border
-      },
-      children: /* @__PURE__ */jsx6(Text4, {
-        numberOfLines: 1,
-        style: {
-          color: c.foregroundMuted,
-          fontSize: 12,
-          textAlign: compact ? "center" : "left"
-        },
-        children: compact ? `${markers.length}` : `\u8BA8\u8BBA \xB7 ${markers.length}`
-      })
-    }), /* @__PURE__ */jsxs5(ScrollView, {
-      testID: "board-discussion-list",
-      style: {
-        flex: 1,
-        minHeight: 0
-      },
-      contentContainerStyle: {
-        padding: compact ? 4 : 6,
-        gap: 4
-      },
-      keyboardShouldPersistTaps: "handled",
-      children: [!markers.length ? /* @__PURE__ */jsx6(Text4, {
-        style: {
-          paddingVertical: 12,
-          color: c.foregroundMuted,
-          fontSize: 12,
-          textAlign: "center"
-        },
-        children: compact ? "\u2014" : "\u8BA8\u8BBA\u4F1A\u7559\u5728\u8FD9\u91CC"
-      }) : null, markers.map(marker => {
-        var selected = marker.id === selectedId;
-        var active = ["saved", "sending", "delivered", "processing"].includes(marker.status);
-        var color = marker.status === "failed" ? c.statusDanger : active ? c.accent : c.foregroundMuted;
-        var label = `${marker.number} \xB7 ${statusNames2[marker.status]} \xB7 ${marker.text}`;
-        return /* @__PURE__ */jsxs5(Pressable3, {
-          testID: `board-discussion-${marker.id}`,
-          accessibilityRole: "button",
-          accessibilityLabel: label,
-          accessibilityState: {
-            selected,
-            disabled
-          },
-          disabled,
-          onPress: () => onOpen(marker.id),
-          style: ({
-            pressed
-          }) => ({
-            flexDirection: "row",
-            gap: 7,
-            alignItems: "flex-start",
-            paddingHorizontal: compact ? 3 : 6,
-            paddingVertical: 9,
-            borderRadius: 7,
-            borderWidth: 1,
-            borderColor: selected ? c.accent : "transparent",
-            backgroundColor: selected || pressed ? c.surface2 : "transparent",
-            opacity: disabled ? 0.5 : 1
-          }),
-          children: [/* @__PURE__ */jsx6(View5, {
-            style: {
-              width: 24,
-              height: 24,
-              flexShrink: 0,
-              alignItems: "center",
-              justifyContent: "center",
-              borderWidth: 1,
-              borderColor: color,
-              borderRadius: 12,
-              backgroundColor: c.surface1
-            },
-            children: /* @__PURE__ */jsx6(Text4, {
-              style: {
-                fontSize: marker.number > 99 ? 9 : 11,
-                fontWeight: "600",
-                color
-              },
-              children: marker.number
-            })
-          }), !compact ? /* @__PURE__ */jsxs5(View5, {
-            style: {
-              flex: 1,
-              minWidth: 0,
-              gap: 4
-            },
-            children: [/* @__PURE__ */jsx6(Text4, {
-              numberOfLines: 2,
-              style: {
-                color: c.foreground,
-                fontSize: 12,
-                lineHeight: 17,
-                maxHeight: 34,
-                overflow: "hidden"
-              },
-              children: marker.text.replace(/\s+/g, " ")
-            }), /* @__PURE__ */jsx6(Text4, {
-              numberOfLines: 1,
-              style: {
-                color,
-                fontSize: 10
-              },
-              children: statusNames2[marker.status]
-            })]
-          }) : null]
-        }, marker.id);
-      })]
-    })]
-  });
-}
-
-// client/side-agent-picker.tsx
-import { useMemo, useState as useState5 } from "react";
-import { Pressable as Pressable4, Text as Text5, View as View6 } from "react-native";
-import { ScrollView as ScrollView2 } from "@getpaseo/plugin/client/ui";
-import { jsx as jsx7, jsxs as jsxs6 } from "react/jsx-runtime";
-function SideAgentPicker({
-  interactions,
-  selectedId,
-  pending,
-  disabled,
-  onSelect
-}) {
-  var c = useColors();
-  var [open, setOpen] = useState5(false);
-  var choices = useMemo(() => {
-    var agents = /* @__PURE__ */new Map();
-    for (var item of interactions) if (item.kind === "fork" && item.agentId && !agents.has(item.agentId)) agents.set(item.agentId, {
-      id: item.agentId,
-      label: `\u65C1\u652F ${agents.size + 1}`,
-      text: item.text.replace(/\s+/g, " ").slice(0, 90)
-    });
-    return [...agents.values()];
-  }, [interactions]);
-  var current = choices.find(item => item.id === selectedId);
-  return /* @__PURE__ */jsxs6(View6, {
-    testID: "board-side-agent-picker",
-    style: {
-      gap: 6
-    },
-    children: [/* @__PURE__ */jsxs6(View6, {
-      style: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
-        flexWrap: "wrap"
-      },
-      children: [/* @__PURE__ */jsx7(Copy, {
-        small: true,
-        muted: true,
-        children: "Side \u76EE\u6807"
-      }), /* @__PURE__ */jsx7(Action, {
-        label: `${pending ? "\u65C1\u652F\u5EFA\u7ACB\u4E2D" : selectedId ? current?.label ?? "\u5F53\u524D\u65C1\u652F" : "\u9996\u6B21\u53D1\u9001\u65F6\u65B0\u5EFA"} \u25BE`,
-        disabled,
-        onPress: () => setOpen(value => !value)
-      })]
-    }), pending ? /* @__PURE__ */jsx7(Copy, {
-      small: true,
-      muted: true,
-      children: "Side \u53D1\u9001\u5C06\u7EE7\u7EED\u6B63\u5728\u5EFA\u7ACB\u7684\u65C1\u652F\uFF1B\u4E5F\u53EF\u6539\u9009\u4EE5\u524D\u7684\u65C1\u652F\u3002"
-    }) : null, open ? /* @__PURE__ */jsx7(View6, {
-      testID: "board-side-agent-options",
-      style: {
-        borderWidth: 1,
-        borderColor: c.border,
-        borderRadius: 8,
-        overflow: "hidden"
-      },
-      children: /* @__PURE__ */jsxs6(ScrollView2, {
-        style: {
-          maxHeight: 156
-        },
-        contentContainerStyle: {
-          padding: 4,
-          gap: 3
-        },
-        keyboardShouldPersistTaps: "handled",
-        children: [!choices.length ? /* @__PURE__ */jsx7(Copy, {
-          small: true,
-          muted: true,
-          children: "\u8FD8\u6CA1\u6709\u65C1\u652F\u3002Side \u53D1\u9001\u4F1A\u5EFA\u7ACB\u4E00\u4E2A\uFF0C\u5E76\u5728\u4E4B\u540E\u7EE7\u7EED\u4F7F\u7528\u3002"
-        }) : null, choices.map(item => /* @__PURE__ */jsxs6(Pressable4, {
-          testID: `board-side-agent-${item.id}`,
-          accessibilityRole: "button",
-          accessibilityLabel: `\u4F7F\u7528${item.label}\uFF1A${item.text}`,
-          accessibilityState: {
-            selected: !pending && selectedId === item.id,
-            disabled
-          },
-          disabled,
-          onPress: () => {
-            void onSelect(item.id).then(changed => {
-              if (changed) setOpen(false);
-            });
-          },
-          style: ({
-            pressed
-          }) => ({
-            padding: 8,
-            gap: 3,
-            borderRadius: 5,
-            backgroundColor: pressed || !pending && selectedId === item.id ? c.surface2 : c.surface0
-          }),
-          children: [/* @__PURE__ */jsxs6(Text5, {
-            style: {
-              color: c.foreground,
-              fontSize: 12,
-              fontWeight: "600"
-            },
-            children: [item.label, !pending && selectedId === item.id ? " \xB7 \u5F53\u524D" : ""]
-          }), /* @__PURE__ */jsx7(Text5, {
-            numberOfLines: 2,
-            style: {
-              color: c.foregroundMuted,
-              fontSize: 12,
-              lineHeight: 17
-            },
-            children: item.text
-          })]
-        }, item.id))]
-      })
-    }) : null]
-  });
-}
-
 // client/update-navigation.tsx
-import { useCallback as useCallback3, useEffect as useEffect6, useMemo as useMemo2, useRef as useRef5, useState as useState6 } from "react";
-import { Pressable as Pressable5, Text as Text6, View as View7 } from "react-native";
-import { jsx as jsx8, jsxs as jsxs7 } from "react/jsx-runtime";
+import { useCallback as useCallback3, useEffect as useEffect6, useMemo, useRef as useRef6, useState as useState6 } from "react";
+import { Pressable as Pressable4, Text as Text5, View as View5 } from "react-native";
+import { jsx as jsx6, jsxs as jsxs5 } from "react/jsx-runtime";
 var placesFor = updates => updates.flatMap(update => Array.from({
   length: Math.max(1, update.targets.length)
 }, (_, targetIndex) => ({
@@ -4117,14 +4060,14 @@ var placesFor = updates => updates.flatMap(update => Array.from({
 })));
 function useUpdateNavigation(board, blocked, markSeen) {
   var updates = board?.updates ?? [];
-  var places = useMemo2(() => placesFor(updates), [updates]);
+  var places = useMemo(() => placesFor(updates), [updates]);
   var [follow, setFollow] = useState6(true);
   var [busy, setBusy] = useState6(false);
   var [currentKey, setCurrentKey] = useState6();
   var [request, setRequest] = useState6();
   var [status, setStatus] = useState6("idle");
   var [automaticCandidate, setAutomaticCandidate] = useState6();
-  var latest = useRef5({
+  var latest = useRef6({
     board,
     blocked,
     busy,
@@ -4138,18 +4081,18 @@ function useUpdateNavigation(board, blocked, markSeen) {
     places,
     markSeen
   };
-  var pending = useRef5(void 0);
-  var token = useRef5(0);
-  var known = useRef5({
+  var pending = useRef6(void 0);
+  var token2 = useRef6(0);
+  var known = useRef6({
     initialized: false
   });
-  var focused = useRef5(/* @__PURE__ */new Map());
-  var acknowledging = useRef5(/* @__PURE__ */new Set());
+  var focused = useRef6(/* @__PURE__ */new Map());
+  var acknowledging = useRef6(/* @__PURE__ */new Set());
   var show = useCallback3((place, automatic) => {
     var next = {
       update: place.update,
       targetIndex: place.targetIndex,
-      token: ++token.current,
+      token: ++token2.current,
       automatic
     };
     pending.current = next;
@@ -4253,7 +4196,8 @@ function useUpdateNavigation(board, blocked, markSeen) {
   };
 }
 function UpdateNavigation({
-  navigation
+  navigation,
+  compact = false
 }) {
   var c = useColors();
   var {
@@ -4267,7 +4211,7 @@ function UpdateNavigation({
     blocked,
     toggleFollow
   } = navigation;
-  var button = (label, text, onPress, disabled) => /* @__PURE__ */jsx8(Pressable5, {
+  var button = (label, text, onPress, disabled) => /* @__PURE__ */jsx6(Pressable4, {
     accessibilityRole: "button",
     accessibilityLabel: label,
     disabled,
@@ -4283,7 +4227,7 @@ function UpdateNavigation({
       borderRadius: 5,
       opacity: disabled ? 0.4 : 1
     },
-    children: /* @__PURE__ */jsx8(Text6, {
+    children: /* @__PURE__ */jsx6(Text5, {
       style: {
         color: c.foreground,
         fontSize: 12
@@ -4292,7 +4236,7 @@ function UpdateNavigation({
     })
   });
   var note = status === "unavailable" ? "\u4F4D\u7F6E\u4E0D\u53EF\u7528" : status === "seen-error" ? "\u5DF2\u770B\u672A\u4FDD\u5B58" : status === "deferred" || busy || blocked ? "\u6682\u7F13" : "";
-  return /* @__PURE__ */jsxs7(View7, {
+  return /* @__PURE__ */jsxs5(View5, {
     testID: "board-update-navigation",
     accessibilityLabel: "\u753B\u5E03\u66F4\u65B0\u5B9A\u4F4D",
     style: {
@@ -4301,15 +4245,2010 @@ function UpdateNavigation({
       gap: 2,
       flexShrink: 0
     },
-    children: [button("\u4E0A\u4E00\u5904\u66F4\u65B0", "\u2039", () => move(-1), blocked || !total), /* @__PURE__ */jsxs7(Text6, {
+    children: [button("\u4E0A\u4E00\u5904\u66F4\u65B0", "\u2039", () => move(-1), blocked || !total), /* @__PURE__ */jsx6(Text5, {
       testID: "board-update-position",
+      accessibilityLabel: `\u66F4\u65B0 ${index < 0 ? 0 : index + 1}/${total}${unread ? ` \xB7 ${unread} \u672A\u770B` : ""}${note ? ` \xB7 ${note}` : ""}`,
       numberOfLines: 1,
       style: {
         color: c.foregroundMuted,
-        fontSize: 11
+        fontSize: 11,
+        maxWidth: compact ? 110 : void 0
       },
-      children: [`\u66F4\u65B0 ${index < 0 ? 0 : index + 1}/${total}`, unread ? ` \xB7 ${unread} \u672A\u770B` : "", note ? ` \xB7 ${note}` : ""]
-    }), button("\u4E0B\u4E00\u5904\u66F4\u65B0", "\u203A", () => move(1), blocked || !total), button(follow ? "\u6682\u505C\u8DDF\u968F\u66F4\u65B0" : "\u7EE7\u7EED\u8DDF\u968F\u66F4\u65B0", follow ? "\u8DDF\u968F \u25CF" : "\u8DDF\u968F \u25CB", toggleFollow, blocked)]
+      children: compact ? `${index < 0 ? 0 : index + 1}/${total}${unread ? ` \xB7 ${unread} \u65B0` : ""}${note ? ` \xB7 ${note}` : ""}` : `\u66F4\u65B0 ${index < 0 ? 0 : index + 1}/${total}${unread ? ` \xB7 ${unread} \u672A\u770B` : ""}${note ? ` \xB7 ${note}` : ""}`
+    }), button("\u4E0B\u4E00\u5904\u66F4\u65B0", "\u203A", () => move(1), blocked || !total), button(follow ? "\u6682\u505C\u8DDF\u968F\u66F4\u65B0" : "\u7EE7\u7EED\u8DDF\u968F\u66F4\u65B0", compact ? follow ? "\u25CF" : "\u25CB" : follow ? "\u8DDF\u968F \u25CF" : "\u8DDF\u968F \u25CB", toggleFollow, blocked)]
+  });
+}
+
+// client/board-toolbar.tsx
+import { Fragment as Fragment3, jsx as jsx7, jsxs as jsxs6 } from "react/jsx-runtime";
+var modes = [["off", "\u4EA4\u4E92", "MousePointer2"], ["component", "\u9009\u7EC4\u4EF6", "Component"], ["text", "\u9009\u6587\u5B57", "TextSelect"], ["region", "\u6846\u9009", "Scan"], ["point", "\u6307\u5B9A\u4F4D\u7F6E", "MapPin"]];
+var modeDescriptions = {
+  off: "\u64CD\u4F5C\u753B\u5E03\uFF1B\u53F3\u952E\u6253\u5F00\u6D88\u606F\u8F93\u5165\u3002",
+  component: "\u9009\u62E9\u7EC4\u4EF6\u540E\uFF0C\u76F4\u63A5\u62D6\u52A8\u3001\u53F3\u952E\u5F15\u7528\u6216\u53CC\u51FB\u6587\u5B57\u6539\u5B57\u3002",
+  text: "\u62D6\u9009\u6587\u5B57\uFF0C\u5728\u65C1\u8FB9\u53D1\u6D88\u606F\u3002",
+  region: "\u62D6\u51FA\u4E00\u4E2A\u533A\u57DF\uFF0C\u5F15\u7528\u56FE\u7247\u3001\u56FE\u8868\u6216\u7A7A\u767D\u3002",
+  point: "\u70B9\u51FB\u9700\u8981\u4EA4\u6D41\u7684\u4F4D\u7F6E\u3002"
+};
+function ToolbarButton({
+  label,
+  icon,
+  text,
+  active,
+  onPress,
+  testID,
+  primary
+}) {
+  var c = useColors();
+  return /* @__PURE__ */jsxs6(Pressable5, {
+    testID,
+    accessibilityRole: "button",
+    accessibilityLabel: label,
+    accessibilityState: {
+      selected: active
+    },
+    onPress,
+    style: ({
+      pressed
+    }) => ({
+      height: 32,
+      minWidth: 32,
+      flexShrink: 0,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 5,
+      paddingHorizontal: text ? 8 : 6,
+      borderRadius: 6,
+      borderWidth: 0,
+      backgroundColor: primary ? c.accent : pressed || active ? c.surface2 : "transparent"
+    }),
+    children: [/* @__PURE__ */jsx7(Icon4, {
+      name: icon,
+      size: 16,
+      color: primary ? c.accentForeground : c.foregroundMuted
+    }), text ? /* @__PURE__ */jsx7(Text6, {
+      numberOfLines: 1,
+      style: {
+        color: primary ? c.accentForeground : c.foreground,
+        fontSize: 12
+      },
+      children: text
+    }) : null]
+  });
+}
+function MenuAction({
+  label,
+  icon,
+  onPress,
+  selected,
+  detail,
+  testID
+}) {
+  var c = useColors();
+  return /* @__PURE__ */jsxs6(Pressable5, {
+    testID,
+    accessibilityRole: "button",
+    accessibilityLabel: label,
+    accessibilityState: {
+      selected
+    },
+    onPress,
+    style: ({
+      pressed
+    }) => ({
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 9,
+      padding: 9,
+      borderRadius: 6,
+      backgroundColor: pressed || selected ? c.surface2 : "transparent"
+    }),
+    children: [/* @__PURE__ */jsx7(Icon4, {
+      name: icon,
+      size: 16,
+      color: selected ? c.accent : c.foregroundMuted
+    }), /* @__PURE__ */jsxs6(View6, {
+      style: {
+        flex: 1,
+        minWidth: 0,
+        gap: 3
+      },
+      children: [/* @__PURE__ */jsx7(Text6, {
+        style: {
+          color: c.foreground,
+          fontSize: 12
+        },
+        children: label
+      }), detail ? /* @__PURE__ */jsx7(Text6, {
+        style: {
+          color: c.foregroundMuted,
+          fontSize: 11,
+          lineHeight: 16
+        },
+        children: detail
+      }) : null]
+    })]
+  });
+}
+function Shortcut({
+  keys,
+  children
+}) {
+  var c = useColors();
+  return /* @__PURE__ */jsxs6(View6, {
+    style: {
+      gap: 3,
+      paddingVertical: 3
+    },
+    children: [/* @__PURE__ */jsx7(Text6, {
+      style: {
+        color: c.foreground,
+        fontSize: 12,
+        fontWeight: "600"
+      },
+      children: keys
+    }), /* @__PURE__ */jsx7(Copy, {
+      small: true,
+      muted: true,
+      children
+    })]
+  });
+}
+function BoardToolbar(props) {
+  var c = useColors(),
+    [width, setWidth] = useState7(900),
+    [menu, setMenu] = useState7(null);
+  var compact = width < 820,
+    narrow = width < 480;
+  var current = modes.find(([mode]) => mode === props.selectionMode) ?? modes[0];
+  var open = next => setMenu(value => value === next ? null : next);
+  var run = action => {
+    setMenu(null);
+    action();
+  };
+  var drafts = !!props.draftCount || !!props.draftIssue;
+  var title = menu === "tools" ? "\u9009\u62E9\u5DE5\u5177" : menu === "reference" ? "\u5F53\u524D\u5F15\u7528" : menu === "shortcuts" ? "\u5FEB\u6377\u952E" : "\u66F4\u591A";
+  return /* @__PURE__ */jsxs6(View6, {
+    testID: "board-toolbar",
+    onLayout: event => setWidth(event.nativeEvent.layout.width),
+    style: {
+      height: 48,
+      flexShrink: 0,
+      flexDirection: "row",
+      flexWrap: "nowrap",
+      alignItems: "center",
+      gap: 4,
+      paddingHorizontal: 8,
+      borderBottomWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.surface0,
+      overflow: "visible",
+      zIndex: 40
+    },
+    children: [/* @__PURE__ */jsx7(ToolbarButton, {
+      label: "Boards",
+      icon: "PanelsTopLeft",
+      text: compact ? void 0 : "Boards",
+      onPress: props.onBack
+    }), /* @__PURE__ */jsx7(BoardTitle, {
+      compact: true,
+      menuWidth: Math.min(340, width - 16),
+      menuOffset: compact ? -36 : 0,
+      board: props.board,
+      onAccepted: props.onAccepted,
+      onRefresh: props.onRefresh,
+      onEditStart: () => setMenu(null)
+    }), props.canSelect ? /* @__PURE__ */jsx7(ToolbarButton, {
+      testID: "board-tools-open",
+      label: "\u9009\u62E9\u5DE5\u5177",
+      icon: current[2],
+      text: compact ? void 0 : `${current[1]} \u25BE`,
+      active: menu === "tools" || props.selectionMode !== "off",
+      onPress: () => open("tools")
+    }) : null, !compact ? /* @__PURE__ */jsx7(ToolbarButton, {
+      testID: "board-reference-bar",
+      label: "\u5F53\u524D\u5F15\u7528",
+      icon: props.anchor ? "Quote" : "Info",
+      text: props.anchor ? "\u5DF2\u5F15\u7528" : "\u5F15\u7528",
+      active: menu === "reference",
+      onPress: () => open("reference")
+    }) : null, !compact && props.canSelect ? /* @__PURE__ */jsx7(UpdateNavigation, {
+      navigation: props.updateNavigation,
+      compact: true
+    }) : null, drafts && !narrow ? /* @__PURE__ */jsx7(ToolbarButton, {
+      testID: "board-drafts-open",
+      label: `\u8349\u7A3F ${props.draftCount ?? 0}`,
+      icon: props.draftIssue ? "FileWarning" : "FilePenLine",
+      text: compact ? void 0 : `\u8349\u7A3F ${props.draftCount ?? 0}`,
+      onPress: () => run(() => props.onOpenDrafts?.())
+    }) : null, /* @__PURE__ */jsx7(ToolbarButton, {
+      testID: "board-shortcuts-open",
+      label: "\u5FEB\u6377\u952E",
+      icon: "Keyboard",
+      active: menu === "shortcuts",
+      onPress: () => open("shortcuts")
+    }), /* @__PURE__ */jsx7(ToolbarButton, {
+      testID: "board-more-open",
+      label: "\u66F4\u591A",
+      icon: "Ellipsis",
+      active: menu === "more",
+      onPress: () => open("more")
+    }), /* @__PURE__ */jsx7(ToolbarButton, {
+      label: "\u53D1\u6D88\u606F",
+      icon: "MessageCircle",
+      text: compact ? void 0 : "\u53D1\u6D88\u606F",
+      primary: true,
+      onPress: () => run(props.onCompose)
+    }), /* @__PURE__ */jsxs6(ToolbarPopover, {
+      open: menu !== null,
+      title,
+      onClose: () => setMenu(null),
+      containerId: "board-toolbar",
+      testID: "board-toolbar-popup",
+      width: Math.min(340, width - 16),
+      right: 8,
+      children: [menu === "tools" ? /* @__PURE__ */jsxs6(Fragment3, {
+        children: [modes.map(([mode, label, icon]) => /* @__PURE__ */jsx7(MenuAction, {
+          label,
+          icon,
+          selected: props.selectionMode === mode,
+          detail: modeDescriptions[mode],
+          onPress: () => run(() => props.onSelectionModeChange(mode))
+        }, mode)), /* @__PURE__ */jsx7(Copy, {
+          small: true,
+          muted: true,
+          children: "Esc \u8FD4\u56DE\u4EA4\u4E92\u3002\u4E5F\u53EF\u6309\u4F4F \u2318 / Ctrl + Shift\uFF0C\u76F4\u63A5\u70B9\u51FB\u7EC4\u4EF6\u3002"
+        })]
+      }) : null, menu === "reference" ? /* @__PURE__ */jsxs6(Fragment3, {
+        children: [/* @__PURE__ */jsx7(Copy, {
+          children: props.anchor ? `\u5DF2\u5F15\u7528 r${props.anchor.boardRevision} \xB7 ${props.selectedText}` : modeDescriptions[props.selectionMode]
+        }), props.anchor?.selector ? /* @__PURE__ */jsx7(Copy, {
+          small: true,
+          muted: true,
+          children: props.anchor.selector
+        }) : null, props.anchor?.image ? /* @__PURE__ */jsx7(Image, {
+          accessibilityLabel: "\u5F53\u524D\u5F15\u7528\u622A\u56FE",
+          source: {
+            uri: `data:${props.anchor.image.mimeType};base64,${props.anchor.image.data}`
+          },
+          resizeMode: "contain",
+          style: {
+            height: 140,
+            width: "100%",
+            backgroundColor: c.surface1,
+            borderRadius: 5
+          }
+        }) : null, props.anchor ? /* @__PURE__ */jsx7(MenuAction, {
+          label: "\u6E05\u9664\u5F15\u7528",
+          icon: "X",
+          onPress: () => run(props.onClearReference)
+        }) : /* @__PURE__ */jsx7(Copy, {
+          small: true,
+          muted: true,
+          children: "\u53F3\u952E\u6216\u6846\u9009\u540E\uFF0C\u5728\u5BF9\u5E94\u4F4D\u7F6E\u8F93\u5165\u6D88\u606F\u3002"
+        })]
+      }) : null, menu === "shortcuts" ? /* @__PURE__ */jsxs6(Fragment3, {
+        children: [/* @__PURE__ */jsx7(Shortcut, {
+          keys: "\u2318 / Ctrl + Shift \xB7 \u79FB\u52A8\u5E76\u70B9\u51FB",
+          children: "\u6309\u4F4F\u65F6\u9884\u89C8\u7EC4\u4EF6\u8FB9\u6846\uFF0C\u70B9\u51FB\u9009\u4E2D\u3002"
+        }), /* @__PURE__ */jsx7(Shortcut, {
+          keys: "\u9009\u4E2D\u540E\uFF1A\u53F3\u952E / \u76F4\u63A5\u62D6\u52A8 / \u53CC\u51FB\u6587\u5B57",
+          children: "\u53F3\u952E\u5F15\u7528\u6574\u4E2A\u7EC4\u4EF6\uFF1B\u62D6\u52A8\u672C\u4F53\u79FB\u52A8\uFF1B\u53CC\u51FB\u547D\u4E2D\u7684\u6587\u5B57\u539F\u4F4D\u6539\u5B57\u3002"
+        }), /* @__PURE__ */jsx7(Shortcut, {
+          keys: "\u62D6\u52A8\u4E2D\uFF1ATab / Shift + Tab",
+          children: "\u5207\u6362\u76EE\u6807\u5BB9\u5668\u5C42\u7EA7\u3002\u2191 \u653E\u524D\u9762\uFF0C\u2193 \u653E\u540E\u9762\uFF0C\u2190 \u653E\u5165\u5F00\u5934\uFF0C\u2192 \u653E\u5165\u672B\u5C3E\u3002"
+        }), /* @__PURE__ */jsx7(Shortcut, {
+          keys: "\u2318 / Ctrl + C\u3001X\u3001V",
+          children: "\u590D\u5236\u3001\u526A\u5207\u7EC4\u4EF6\uFF1B\u9009\u4E2D\u76EE\u6807\u540E\u7C98\u8D34\u3002\u8F93\u5165\u6846\u5185\u4ECD\u662F\u666E\u901A\u6587\u5B57\u5FEB\u6377\u952E\u3002"
+        }), /* @__PURE__ */jsx7(Shortcut, {
+          keys: "\u539F\u4F4D\u6539\u5B57\uFF1A\u2318 / Ctrl + Enter",
+          children: "\u5B8C\u6210\u7F16\u8F91\u5E76\u67E5\u770B\u4FDD\u5B58\u64CD\u4F5C\uFF1B\u666E\u901A Enter \u6362\u884C\uFF0CEsc \u53D6\u6D88\u3002"
+        }), /* @__PURE__ */jsx7(Shortcut, {
+          keys: "Option / Alt + \u62D6\u52A8",
+          children: "\u6846\u9009\u533A\u57DF\u5F15\u7528\u3002Esc \u9000\u51FA\u9009\u62E9\u6216\u53D6\u6D88\u5F53\u524D\u62D6\u52A8\u3002"
+        }), /* @__PURE__ */jsx7(Shortcut, {
+          keys: "\u6D88\u606F\uFF1AEnter / Shift + Enter",
+          children: "\u53D1\u9001\u7ED9\u4E3B\u4F1A\u8BDD / \u6362\u884C\u3002"
+        }), /* @__PURE__ */jsx7(Shortcut, {
+          keys: "\u6D88\u606F\uFF1A\u2318 / Ctrl + Enter",
+          children: "\u53D1\u9001\u5230\u6240\u9009 Side\uFF1B\u518D\u52A0 Option / Alt \u5219\u65B0\u5F00 Side\u3002"
+        }), /* @__PURE__ */jsx7(Shortcut, {
+          keys: "\u6D88\u606F\uFF1AEsc",
+          children: "\u6536\u8D77\u8F93\u5165\u5E76\u4FDD\u7559\u8349\u7A3F\uFF0C\u53EF\u4ECE\u5DE5\u5177\u6761\u7684\u8349\u7A3F\u5165\u53E3\u7EE7\u7EED\u3002"
+        }), /* @__PURE__ */jsx7(Copy, {
+          small: true,
+          muted: true,
+          children: "\u62D6\u52A8\u3001\u526A\u5207\u3001\u7C98\u8D34\u548C\u6539\u5B57\u5747\u5148\u9884\u89C8\uFF0C\u518D\u4FDD\u5B58\u3002\u4E2D\u6587\u8F93\u5165\u6CD5\u786E\u8BA4\u5019\u9009\u65F6\u4E0D\u4F1A\u89E6\u53D1\u53D1\u9001\u3002"
+        })]
+      }) : null, menu === "more" ? /* @__PURE__ */jsxs6(Fragment3, {
+        children: [compact ? /* @__PURE__ */jsx7(MenuAction, {
+          label: "\u5F53\u524D\u5F15\u7528",
+          icon: "Quote",
+          detail: props.anchor ? props.selectedText : "\u67E5\u770B\u5F15\u7528\u4E0E\u64CD\u4F5C\u63D0\u793A",
+          onPress: () => setMenu("reference")
+        }) : null, drafts && narrow ? /* @__PURE__ */jsx7(MenuAction, {
+          testID: "board-drafts-open",
+          label: `\u8349\u7A3F ${props.draftCount ?? 0}`,
+          icon: "FilePenLine",
+          onPress: () => run(() => props.onOpenDrafts?.())
+        }) : null, compact && props.canSelect ? /* @__PURE__ */jsx7(View6, {
+          style: {
+            paddingVertical: 5
+          },
+          children: /* @__PURE__ */jsx7(UpdateNavigation, {
+            navigation: props.updateNavigation,
+            compact: true
+          })
+        }) : null, /* @__PURE__ */jsx7(MenuAction, {
+          label: `\u51B3\u7B56 ${props.board.decisions.filter(item => !["dismissed", "superseded"].includes(item.status)).length}`,
+          icon: "ListChecks",
+          onPress: () => run(() => props.onOpenDrawer("decisions"))
+        }), /* @__PURE__ */jsx7(MenuAction, {
+          label: "\u8BA8\u8BBA",
+          icon: "MessagesSquare",
+          onPress: () => run(() => props.onOpenDrawer("threads"))
+        }), /* @__PURE__ */jsx7(MenuAction, {
+          label: "\u53D8\u5316",
+          icon: "History",
+          onPress: () => run(() => props.onOpenDrawer("history"))
+        }), props.onPublish ? /* @__PURE__ */jsx7(MenuAction, {
+          label: "\u5BFC\u51FA\u4E0E\u53D1\u5E03",
+          icon: "Upload",
+          onPress: () => run(() => props.onPublish?.())
+        }) : null]
+      }) : null]
+    })]
+  });
+}
+
+// client/release-panel.tsx
+import { useEffect as useEffect7, useMemo as useMemo2, useRef as useRef7, useState as useState8 } from "react";
+import { View as View7 } from "react-native";
+import { openExternalUrl, useRpc as useRpc4 } from "@getpaseo/plugin/client";
+import { ScrollView as ScrollView2, TextInput as TextInput3 } from "@getpaseo/plugin/client/ui";
+
+// shared/board-copy.ts
+import { defineRpc as defineRpc2 } from "@getpaseo/plugin";
+import { z as z2 } from "zod";
+var CopyBoardInputSchema = z2.object({
+  boardId: IdSchema,
+  canvasBase: CanvasBaseSchema,
+  eventId: IdSchema,
+  title: z2.string().trim().min(1).max(200)
+});
+var copyBoardRpc = defineRpc2({
+  name: "board.copy",
+  input: CopyBoardInputSchema,
+  output: BoardSchema
+});
+
+// shared/release-contracts.ts
+import { z as z3 } from "zod";
+import { defineRpc as defineRpc3 } from "@getpaseo/plugin";
+var ReleaseIdSchema = z3.string().regex(/^release-[a-f0-9]{64}$/);
+var ReleaseManifestSchema = z3.object({
+  formatVersion: z3.literal(1),
+  releaseId: ReleaseIdSchema,
+  artifactHash: z3.string().regex(/^[a-f0-9]{64}$/),
+  title: z3.string(),
+  viewerVersion: z3.number().int(),
+  network: z3.enum(["offline", "cdn"]),
+  dependencies: z3.array(z3.string()),
+  warnings: z3.array(z3.string()),
+  files: z3.array(z3.object({
+    path: z3.string(),
+    sha256: z3.string(),
+    bytes: z3.number().int().nonnegative()
+  }))
+});
+var ReleaseCreateSchema = z3.object({
+  boardId: IdSchema,
+  expectedCanvasBase: CanvasBaseSchema,
+  publicData: JsonDataSchema,
+  title: z3.string().min(1).max(200).optional(),
+  network: z3.enum(["offline", "cdn"]).default("offline"),
+  theme: z3.enum(["light", "dark"]).default("light")
+});
+var GitHubAccountSchema = z3.object({
+  login: z3.string(),
+  host: z3.literal("github.com"),
+  active: z3.boolean()
+});
+var GitHubRepositorySchema = z3.object({
+  name: z3.string(),
+  private: z3.boolean(),
+  url: z3.string()
+});
+var PagesPrepareSchema = z3.object({
+  eventId: IdSchema,
+  releaseId: ReleaseIdSchema,
+  artifactHash: z3.string().regex(/^[a-f0-9]{64}$/),
+  account: z3.string().regex(/^[a-zA-Z0-9-]+$/),
+  repository: z3.string().regex(/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/),
+  createRepository: z3.enum(["public", "private"]).optional()
+});
+var PagesJobSchema = PagesPrepareSchema.extend({
+  jobId: IdSchema,
+  status: z3.enum(["prepared", "pr-open", "merged", "deploying", "live", "failed", "unknown"]),
+  branch: z3.string(),
+  baseBranch: z3.string().optional(),
+  baseSha: z3.string().optional(),
+  headSha: z3.string().optional(),
+  prNumber: z3.number().int().optional(),
+  prUrl: z3.string().optional(),
+  mergedSha: z3.string().optional(),
+  deploymentId: z3.string().optional(),
+  url: z3.string().optional(),
+  verifiedAt: z3.string().optional(),
+  error: z3.string().optional(),
+  treeSha: z3.string().optional(),
+  createdAt: z3.string().optional(),
+  pagesConfigured: z3.boolean().optional(),
+  pagesConfigurationRequested: z3.boolean().optional(),
+  pagesConfigurationHash: z3.string().optional()
+});
+var releaseInput = z3.object({
+  releaseId: ReleaseIdSchema
+});
+var createReleaseRpc = defineRpc3({
+  name: "board.release.create",
+  input: ReleaseCreateSchema,
+  output: ReleaseManifestSchema
+});
+var listReleasesRpc = defineRpc3({
+  name: "board.release.list",
+  input: z3.object({
+    boardId: IdSchema
+  }),
+  output: z3.array(ReleaseManifestSchema)
+});
+var previewReleaseRpc = defineRpc3({
+  name: "board.release.preview",
+  input: releaseInput,
+  output: z3.object({
+    manifest: ReleaseManifestSchema,
+    html: z3.string()
+  })
+});
+var downloadReleaseRpc = defineRpc3({
+  name: "board.release.download",
+  input: releaseInput,
+  output: z3.object({
+    manifest: ReleaseManifestSchema,
+    fileName: z3.string(),
+    zipBase64: z3.string()
+  })
+});
+var githubAccountsRpc = defineRpc3({
+  name: "board.pages.accounts",
+  input: z3.object({}),
+  output: z3.array(GitHubAccountSchema)
+});
+var githubRepositoriesRpc = defineRpc3({
+  name: "board.pages.repositories",
+  input: z3.object({
+    account: z3.string()
+  }),
+  output: z3.array(GitHubRepositorySchema)
+});
+var preparePagesRpc = defineRpc3({
+  name: "board.pages.prepare",
+  input: PagesPrepareSchema,
+  output: PagesJobSchema
+});
+var mergePagesRpc = defineRpc3({
+  name: "board.pages.merge",
+  input: z3.object({
+    jobId: IdSchema,
+    expectedHead: z3.string().regex(/^[a-f0-9]{40}$/)
+  }),
+  output: PagesJobSchema
+});
+var refreshPagesRpc = defineRpc3({
+  name: "board.pages.refresh",
+  input: z3.object({
+    jobId: IdSchema
+  }),
+  output: PagesJobSchema
+});
+var listPagesJobsRpc = defineRpc3({
+  name: "board.pages.list",
+  input: z3.object({
+    releaseId: ReleaseIdSchema.optional()
+  }),
+  output: z3.array(PagesJobSchema)
+});
+
+// client/release-web.ts
+import { createElement as createElement3 } from "react";
+var browser2 = globalThis;
+function downloadReleaseZip(base64, fileName) {
+  if (!browser2.document || !browser2.URL || !browser2.Blob || !browser2.atob) throw new Error("\u6B64\u5BA2\u6237\u7AEF\u65E0\u6CD5\u4E0B\u8F7D\u6587\u4EF6\uFF0C\u8BF7\u4F7F\u7528\u5BFC\u51FA\u76EE\u5F55\u6216\u684C\u9762\u7248\u3002");
+  var bytes = Uint8Array.from(browser2.atob(base64), character => character.charCodeAt(0));
+  var url = browser2.URL.createObjectURL(new browser2.Blob([bytes], {
+    type: "application/zip"
+  }));
+  var link = browser2.document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  browser2.document.body.appendChild(link);
+  try {
+    link.click();
+  } finally {
+    link.remove();
+    setTimeout(() => browser2.URL?.revokeObjectURL(url), 6e4);
+  }
+}
+function ReleasePreview({
+  html
+}) {
+  if (!browser2.document) return null;
+  return createElement3("iframe", {
+    title: "\u53D1\u5E03\u7248\u672C\u9884\u89C8",
+    "data-testid": "board-release-preview",
+    srcDoc: html,
+    sandbox: "allow-scripts allow-forms",
+    referrerPolicy: "no-referrer",
+    style: {
+      width: "100%",
+      height: 440,
+      border: "1px solid #80808055",
+      borderRadius: 8,
+      background: "#fff"
+    }
+  });
+}
+
+// client/draft-storage-web.ts
+function browserDraftStorage() {
+  var runtime2 = globalThis;
+  try {
+    var browser3 = runtime2.window,
+      storage = browser3?.localStorage;
+    if (!storage) return null;
+    void storage.length;
+    return {
+      get length() {
+        return storage.length;
+      },
+      key: index => storage.key(index),
+      getItem: key => storage.getItem(key),
+      setItem: (key, value) => storage.setItem(key, value),
+      removeItem: key => storage.removeItem(key),
+      subscribe(listener) {
+        var changed = event => {
+          if (!event.storageArea || event.storageArea === storage) listener(event.key);
+        };
+        browser3.addEventListener?.("storage", changed);
+        return () => browser3.removeEventListener?.("storage", changed);
+      }
+    };
+  } catch {
+    return null;
+  }
+}
+
+// client/pages-outbox.ts
+function createPagesOutbox(hostId, boardId, storage = browserDraftStorage()) {
+  var prefix = `@paseo:board-pages:v1:${encodeURIComponent(JSON.stringify([hostId, boardId]))}:`;
+  var requireStorage = () => {
+    if (!storage) throw new Error("\u6B64\u5BA2\u6237\u7AEF\u65E0\u6CD5\u4FDD\u7559\u53D1\u5E03\u91CD\u8BD5\u8BB0\u5F55\uFF0C\u8BF7\u4ECE\u684C\u9762\u6D4F\u89C8\u5668\u53D1\u5E03\u3002");
+    return storage;
+  };
+  return {
+    list() {
+      var db = requireStorage(),
+        result = [];
+      for (var index = 0; index < db.length; index++) {
+        var key = db.key(index);
+        if (!key?.startsWith(prefix)) continue;
+        var text = db.getItem(key);
+        if (text === null) continue;
+        var request = PagesPrepareSchema.parse(JSON.parse(text));
+        if (key !== prefix + request.eventId) throw new Error("\u672C\u673A\u53D1\u5E03\u8BB0\u5F55\u6807\u8BC6\u4E0D\u5339\u914D\uFF1B\u539F\u8BB0\u5F55\u5DF2\u4FDD\u7559\u3002");
+        result.push(request);
+      }
+      return result;
+    },
+    save(raw) {
+      var db = requireStorage(),
+        request = PagesPrepareSchema.parse(raw),
+        key = prefix + request.eventId;
+      var existing = db.getItem(key);
+      if (existing && JSON.stringify(PagesPrepareSchema.parse(JSON.parse(existing))) !== JSON.stringify(request)) throw new Error("\u540C\u4E00\u6B21\u53D1\u5E03\u8BF7\u6C42\u7684\u7248\u672C\u6216\u76EE\u6807\u5DF2\u6539\u53D8\u3002");
+      db.setItem(key, JSON.stringify(request));
+      return request;
+    },
+    remove(eventId) {
+      requireStorage().removeItem(prefix + eventId);
+    }
+  };
+}
+
+// client/release-panel.tsx
+import { jsx as jsx8, jsxs as jsxs7 } from "react/jsx-runtime";
+var statusNames = {
+  prepared: "\u51C6\u5907\u53D1\u5E03",
+  "pr-open": "PR \u5DF2\u521B\u5EFA",
+  merged: "\u5DF2\u5408\u5E76",
+  deploying: "\u90E8\u7F72\u4E2D",
+  live: "\u5DF2\u6838\u5B9E\u4E0A\u7EBF",
+  failed: "\u53D1\u5E03\u5931\u8D25",
+  unknown: "\u7ED3\u679C\u5F85\u6838\u5BF9"
+};
+function ReleasePanel({
+  board,
+  hostId,
+  onOpenBoard
+}) {
+  var c = useColors();
+  var copyBoard = useRpc4(copyBoardRpc),
+    create = useRpc4(createReleaseRpc),
+    list = useRpc4(listReleasesRpc);
+  var preview = useRpc4(previewReleaseRpc),
+    download = useRpc4(downloadReleaseRpc);
+  var accounts = useRpc4(githubAccountsRpc),
+    repositories = useRpc4(githubRepositoriesRpc);
+  var prepare = useRpc4(preparePagesRpc),
+    merge = useRpc4(mergePagesRpc),
+    refresh = useRpc4(refreshPagesRpc),
+    listJobs = useRpc4(listPagesJobsRpc);
+  var [title, setTitle] = useState8(`${board.title} \xB7 \u53D1\u5E03\u7248`);
+  var [publicData, setPublicData] = useState8("{}");
+  var [network, setNetwork] = useState8("offline");
+  var [theme, setTheme] = useState8("light");
+  var [releases, setReleases] = useState8([]);
+  var [selected, setSelected] = useState8();
+  var [html, setHtml] = useState8();
+  var [reviewed, setReviewed] = useState8();
+  var [accountList, setAccountList] = useState8([]),
+    [account, setAccount] = useState8("");
+  var [repoList, setRepoList] = useState8([]),
+    [repository, setRepository] = useState8("");
+  var [createRepository, setCreateRepository] = useState8();
+  var [jobs, setJobs] = useState8([]),
+    [job, setJob] = useState8();
+  var outbox = useMemo2(() => createPagesOutbox(hostId, board.id), [hostId, board.id]);
+  var [pendingPages, setPendingPages] = useState8([]);
+  var [busy, setBusy] = useState8(false),
+    [failure, setFailure] = useState8();
+  var mounted = useRef7(true),
+    flight = useRef7(false);
+  var currentJob = useRef7(job);
+  currentJob.current = job;
+  var copyRequest = useRef7(void 0);
+  var pageRequest = useRef7(void 0);
+  var field = {
+    color: c.foreground,
+    backgroundColor: c.surface1,
+    borderWidth: 1,
+    borderColor: c.border,
+    borderRadius: 6,
+    padding: 8,
+    fontSize: 13
+  };
+  useEffect7(() => {
+    mounted.current = true;
+    void list({
+      boardId: board.id
+    }).then(value => {
+      if (mounted.current) setReleases(value);
+    }).catch(error => {
+      if (mounted.current) setFailure(errorMessage(error));
+    });
+    return () => {
+      mounted.current = false;
+    };
+  }, [board.id, list]);
+  useEffect7(() => {
+    try {
+      setPendingPages(outbox.list());
+    } catch (error) {
+      setFailure(errorMessage(error));
+    }
+  }, [outbox]);
+  useEffect7(() => {
+    if (!job || !["merged", "deploying"].includes(job.status)) return;
+    var active = true,
+      attempts = 0;
+    var timer;
+    var check = () => __async(null, null, function* () {
+      if (!active || currentJob.current?.jobId !== job.jobId) return;
+      if (flight.current) {
+        timer = setTimeout(() => {
+          void check();
+        }, 5e3);
+        return;
+      }
+      try {
+        var updated = yield refresh({
+          jobId: job.jobId
+        });
+        if (!active || currentJob.current?.jobId !== job.jobId) return;
+        setJob(updated);
+        setJobs(values => [updated, ...values.filter(item => item.jobId !== updated.jobId)]);
+        if (["merged", "deploying"].includes(updated.status) && ++attempts < 60) timer = setTimeout(() => {
+          void check();
+        }, 5e3);
+      } catch (error) {
+        if (active) setFailure(`\u6682\u65F6\u65E0\u6CD5\u6838\u5BF9\u90E8\u7F72\uFF1A${errorMessage(error)}\uFF0C\u53EF\u4EE5\u7A0D\u540E\u7EE7\u7EED\u6838\u5BF9\u3002`);
+      }
+    });
+    timer = setTimeout(() => {
+      void check();
+    }, 5e3);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [job?.jobId, job?.status, refresh]);
+  var run = operation => __async(null, null, function* () {
+    if (flight.current) return;
+    flight.current = true;
+    setBusy(true);
+    setFailure(void 0);
+    try {
+      yield operation();
+    } catch (error) {
+      if (mounted.current) setFailure(errorMessage(error));
+    } finally {
+      flight.current = false;
+      if (mounted.current) setBusy(false);
+    }
+  });
+  var showRelease = release => __async(null, null, function* () {
+    var result = yield preview({
+      releaseId: release.releaseId
+    });
+    if (!mounted.current) return;
+    setSelected(result.manifest);
+    setHtml(result.html);
+    setReviewed(void 0);
+    setJob(void 0);
+    var history = yield listJobs({
+      releaseId: release.releaseId
+    });
+    if (mounted.current) setJobs(history);
+  });
+  var rememberJob = value => {
+    if (!mounted.current) return;
+    setJob(value);
+    setJobs(values => [value, ...values.filter(item => item.jobId !== value.jobId)]);
+  };
+  var openUrl = url => {
+    void openExternalUrl(url).catch(error => setFailure(errorMessage(error)));
+  };
+  var sendPagesRequest = request => __async(null, null, function* () {
+    var frozen = outbox.save(request);
+    setPendingPages(outbox.list());
+    rememberJob(yield prepare(frozen));
+    outbox.remove(frozen.eventId);
+    if (mounted.current) setPendingPages(outbox.list());
+  });
+  var requestPages = () => run(() => __async(null, null, function* () {
+    if (!selected || reviewed !== selected.artifactHash) return;
+    var target = {
+      releaseId: selected.releaseId,
+      artifactHash: selected.artifactHash,
+      account,
+      repository: repository.trim(),
+      createRepository
+    };
+    var previous = pageRequest.current;
+    var known = [...outbox.list(), ...jobs].find(item => item.releaseId === target.releaseId && item.account === target.account && item.repository === target.repository && item.createRepository === target.createRepository);
+    if (!previous || JSON.stringify({
+      ...previous,
+      eventId: void 0
+    }) !== JSON.stringify(target)) pageRequest.current = {
+      ...target,
+      eventId: known?.eventId ?? localId("pages")
+    };
+    yield sendPagesRequest(pageRequest.current);
+  }));
+  return /* @__PURE__ */jsxs7(View7, {
+    testID: "board-release-panel",
+    style: {
+      gap: 18
+    },
+    children: [/* @__PURE__ */jsx8(Copy, {
+      children: "\u628A\u5F53\u524D\u5185\u5BB9\u56FA\u5B9A\u6210\u4E00\u4E2A\u53EF\u72EC\u7ACB\u6253\u5F00\u7684\u7F51\u7AD9\u3002\u4E4B\u540E\u7EE7\u7EED\u4FEE\u6539 Board\uFF0C\u4E0D\u4F1A\u6539\u53D8\u5DF2\u5BFC\u51FA\u6216\u5DF2\u4E0A\u7EBF\u7684\u7248\u672C\u3002"
+    }), /* @__PURE__ */jsxs7(View7, {
+      style: {
+        gap: 8
+      },
+      children: [/* @__PURE__ */jsx8(Copy, {
+        children: "\u53D1\u5E03\u540D\u79F0"
+      }), /* @__PURE__ */jsx8(TextInput3, {
+        accessibilityLabel: "\u53D1\u5E03\u540D\u79F0",
+        value: title,
+        onChangeText: value => {
+          setTitle(value);
+          copyRequest.current = void 0;
+        },
+        editable: !busy,
+        style: field
+      }), /* @__PURE__ */jsx8(Action, {
+        label: "\u590D\u5236\u4E3A\u53D1\u5E03 Board",
+        disabled: busy || !title.trim(),
+        onPress: () => {
+          void run(() => __async(null, null, function* () {
+            copyRequest.current ?? (copyRequest.current = {
+              boardId: board.id,
+              canvasBase: {
+                revision: board.canvas.revision,
+                documentVersion: board.canvas.documentVersion
+              },
+              eventId: localId("copy"),
+              title: title.trim()
+            });
+            var copied = yield copyBoard(copyRequest.current);
+            if (mounted.current) onOpenBoard?.(copied.id);
+          }));
+        }
+      }), /* @__PURE__ */jsx8(Copy, {
+        small: true,
+        muted: true,
+        children: "\u9700\u8981\u53E6\u505A\u4E00\u7248\u65F6\u5148\u590D\u5236\uFF0C\u518D\u5728\u526F\u672C\u91CC\u6539\u5B57\u3001\u62D6\u52A8\u6216\u8BF7 agent \u4FEE\u6539\u3002\u526F\u672C\u4E0D\u5E26\u8BA8\u8BBA\u548C\u8349\u7A3F\u3002"
+      })]
+    }), /* @__PURE__ */jsxs7(View7, {
+      style: {
+        gap: 8
+      },
+      children: [/* @__PURE__ */jsx8(Copy, {
+        children: "\u516C\u5F00\u6570\u636E JSON"
+      }), /* @__PURE__ */jsx8(Copy, {
+        small: true,
+        muted: true,
+        children: "\u9ED8\u8BA4\u4E0D\u5E26 Board \u6570\u636E\u3002\u9875\u9762\u9700\u8981\u56FE\u8868\u6216\u7B5B\u9009\u6570\u636E\u65F6\uFF0C\u53EF\u8F7D\u5165\u5F53\u524D\u6570\u636E\u540E\u5220\u53BB\u4E0D\u516C\u5F00\u7684\u5B57\u6BB5\u3002"
+      }), /* @__PURE__ */jsx8(Action, {
+        label: "\u8F7D\u5165\u5F53\u524D\u753B\u5E03\u6570\u636E",
+        disabled: busy,
+        onPress: () => setPublicData(JSON.stringify(board.canvas.data, null, 2))
+      }), /* @__PURE__ */jsx8(TextInput3, {
+        testID: "board-release-data",
+        accessibilityLabel: "\u516C\u5F00\u6570\u636E JSON",
+        multiline: true,
+        value: publicData,
+        onChangeText: setPublicData,
+        editable: !busy,
+        style: {
+          ...field,
+          minHeight: 100,
+          maxHeight: 220
+        }
+      }), /* @__PURE__ */jsxs7(View7, {
+        style: {
+          flexDirection: "row",
+          flexWrap: "wrap",
+          gap: 8
+        },
+        children: [/* @__PURE__ */jsx8(Action, {
+          label: "\u79BB\u7EBF\u7F51\u9875",
+          active: network === "offline",
+          disabled: busy,
+          onPress: () => setNetwork("offline")
+        }), /* @__PURE__ */jsx8(Action, {
+          label: "\u5141\u8BB8 CDN \u5E93",
+          active: network === "cdn",
+          disabled: busy,
+          onPress: () => setNetwork("cdn")
+        }), /* @__PURE__ */jsx8(Action, {
+          label: "\u6D45\u8272",
+          active: theme === "light",
+          disabled: busy,
+          onPress: () => setTheme("light")
+        }), /* @__PURE__ */jsx8(Action, {
+          label: "\u6DF1\u8272",
+          active: theme === "dark",
+          disabled: busy,
+          onPress: () => setTheme("dark")
+        })]
+      }), /* @__PURE__ */jsx8(Action, {
+        label: busy ? "\u5904\u7406\u4E2D\u2026" : "\u751F\u6210\u56FA\u5B9A\u7248\u672C\u5E76\u9884\u89C8",
+        primary: true,
+        disabled: busy || !title.trim(),
+        onPress: () => {
+          void run(() => __async(null, null, function* () {
+            var parsed = JSON.parse(publicData);
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("\u516C\u5F00\u6570\u636E\u987B\u4E3A JSON \u5BF9\u8C61\u3002");
+            var result = yield create({
+              boardId: board.id,
+              expectedCanvasBase: {
+                revision: board.canvas.revision,
+                documentVersion: board.canvas.documentVersion
+              },
+              title: title.trim(),
+              publicData: parsed,
+              network,
+              theme
+            });
+            if (!mounted.current) return;
+            setReleases(values => [result, ...values.filter(item => item.releaseId !== result.releaseId)]);
+            yield showRelease(result);
+          }));
+        }
+      })]
+    }), failure ? /* @__PURE__ */jsx8(Notice, {
+      error: true,
+      text: failure
+    }) : null, pendingPages.length ? /* @__PURE__ */jsxs7(View7, {
+      style: {
+        gap: 6
+      },
+      children: [/* @__PURE__ */jsx8(Copy, {
+        children: "\u5F85\u6838\u5BF9\u7684\u53D1\u5E03\u8BF7\u6C42"
+      }), /* @__PURE__ */jsx8(Copy, {
+        small: true,
+        muted: true,
+        children: "\u4E0A\u6B21\u5173\u95ED\u6216\u65AD\u7EBF\u524D\u7684\u7248\u672C\u548C\u76EE\u6807\u5DF2\u4FDD\u7559\u3002\u6062\u590D\u540E\u5148\u6838\u5BF9\u9884\u89C8\uFF0C\u518D\u7EE7\u7EED\u540C\u4E00\u6B21\u53D1\u5E03\u3002"
+      }), pendingPages.map(request => /* @__PURE__ */jsx8(Action, {
+        label: `\u6062\u590D\u53D1\u5E03 \xB7 ${request.repository}`,
+        disabled: busy,
+        onPress: () => {
+          void run(() => __async(null, null, function* () {
+            var saved = yield preview({
+              releaseId: request.releaseId
+            });
+            if (saved.manifest.artifactHash !== request.artifactHash) throw new Error("\u53D1\u5E03\u7248\u672C\u4E0E\u539F\u8BF7\u6C42\u4E0D\u4E00\u81F4\u3002");
+            yield showRelease(saved.manifest);
+            pageRequest.current = request;
+            setAccount(request.account);
+            setRepository(request.repository);
+            setCreateRepository(request.createRepository);
+          }));
+        }
+      }, request.eventId))]
+    }) : null, releases.length ? /* @__PURE__ */jsxs7(View7, {
+      style: {
+        gap: 6
+      },
+      children: [/* @__PURE__ */jsx8(Copy, {
+        children: "\u672C\u673A\u53D1\u5E03\u7248\u672C"
+      }), /* @__PURE__ */jsx8(ScrollView2, {
+        style: {
+          maxHeight: 160
+        },
+        contentContainerStyle: {
+          gap: 4
+        },
+        children: releases.map(release => /* @__PURE__ */jsx8(Action, {
+          label: `${release.title} \xB7 ${release.artifactHash.slice(0, 10)}`,
+          active: release.releaseId === selected?.releaseId,
+          disabled: busy,
+          onPress: () => {
+            void run(() => showRelease(release));
+          }
+        }, release.releaseId))
+      })]
+    }) : null, selected ? /* @__PURE__ */jsxs7(View7, {
+      style: {
+        gap: 12
+      },
+      children: [/* @__PURE__ */jsxs7(Copy, {
+        children: [selected.title, " \xB7 \u56FA\u5B9A\u7248\u672C ", selected.artifactHash.slice(0, 12)]
+      }), html ? /* @__PURE__ */jsx8(ReleasePreview, {
+        html
+      }) : null, selected.warnings.map((warning, index) => /* @__PURE__ */jsx8(Notice, {
+        text: warning
+      }, index)), /* @__PURE__ */jsxs7(Copy, {
+        small: true,
+        muted: true,
+        children: ["\u6587\u4EF6\uFF1A", selected.files.map(file => file.path).join("\u3001"), selected.dependencies.length ? `
+\u5916\u90E8\u4F9D\u8D56\uFF1A${selected.dependencies.join("\u3001")}` : "\n\u65E0\u9700\u5916\u90E8\u4F9D\u8D56\u3002"]
+      }), /* @__PURE__ */jsx8(Action, {
+        label: "\u4E0B\u8F7D ZIP",
+        disabled: busy,
+        onPress: () => {
+          void run(() => __async(null, null, function* () {
+            var bundle = yield download({
+              releaseId: selected.releaseId
+            });
+            downloadReleaseZip(bundle.zipBase64, bundle.fileName);
+          }));
+        }
+      }), /* @__PURE__ */jsx8(Copy, {
+        small: true,
+        muted: true,
+        children: "\u81EA\u6709\u670D\u52A1\u5668\uFF1A\u89E3\u538B\u540E\u628A\u76EE\u5F55\u4EA4\u7ED9 Nginx\u3001Caddy \u6216\u73B0\u6709\u9759\u6001\u7AD9\u70B9\u670D\u52A1\u3002\u7F51\u7AD9\u65E0\u9700\u8FD0\u884C Paseo\u3002"
+      }), /* @__PURE__ */jsx8(Action, {
+        label: reviewed === selected.artifactHash ? "\u5DF2\u786E\u8BA4\u6B64\u7248\u672C\u53EF\u516C\u5F00" : "\u786E\u8BA4\u9884\u89C8\u548C\u6570\u636E\uFF0C\u53EF\u53D1\u5E03\u6B64\u7248\u672C",
+        active: reviewed === selected.artifactHash,
+        disabled: busy,
+        onPress: () => setReviewed(selected.artifactHash)
+      }), /* @__PURE__ */jsxs7(View7, {
+        style: {
+          gap: 8,
+          borderTopWidth: 1,
+          borderColor: c.border,
+          paddingTop: 14
+        },
+        children: [/* @__PURE__ */jsx8(Copy, {
+          children: "GitHub Pages"
+        }), /* @__PURE__ */jsx8(Copy, {
+          small: true,
+          muted: true,
+          children: "Pages \u7F51\u7AD9\u901A\u5E38\u516C\u5F00\uFF0C\u5373\u4F7F\u6E90\u7801\u4ED3\u5E93\u4E3A\u79C1\u6709\u3002\u9009\u62E9\u5177\u4F53\u8D26\u53F7\u548C\u4ED3\u5E93\u540E\u624D\u4F1A\u4E0A\u4F20\u3002"
+        }), /* @__PURE__ */jsx8(Action, {
+          label: "\u8BFB\u53D6 GitHub \u8D26\u53F7",
+          disabled: busy,
+          onPress: () => {
+            void run(() => __async(null, null, function* () {
+              setAccountList(yield accounts({}));
+            }));
+          }
+        }), accountList.map(item => /* @__PURE__ */jsx8(Action, {
+          label: item.login,
+          active: account === item.login,
+          disabled: busy,
+          onPress: () => {
+            setAccount(item.login);
+            setRepoList([]);
+            pageRequest.current = void 0;
+            void run(() => __async(null, null, function* () {
+              return setRepoList(yield repositories({
+                account: item.login
+              }));
+            }));
+          }
+        }, item.login)), /* @__PURE__ */jsx8(TextInput3, {
+          accessibilityLabel: "GitHub \u4ED3\u5E93 owner/repo",
+          placeholder: "owner/repository",
+          placeholderTextColor: c.foregroundMuted,
+          value: repository,
+          onChangeText: value => {
+            setRepository(value);
+            pageRequest.current = void 0;
+          },
+          editable: !busy,
+          style: field
+        }), repoList.length ? /* @__PURE__ */jsx8(ScrollView2, {
+          style: {
+            maxHeight: 180
+          },
+          contentContainerStyle: {
+            gap: 4
+          },
+          children: repoList.map(item => /* @__PURE__ */jsx8(Action, {
+            label: `${item.name}${item.private ? " \xB7 \u79C1\u6709\u4ED3\u5E93" : ""}`,
+            active: repository === item.name,
+            disabled: busy,
+            onPress: () => {
+              setRepository(item.name);
+              setCreateRepository(void 0);
+              pageRequest.current = void 0;
+            }
+          }, item.name))
+        }) : null, /* @__PURE__ */jsxs7(View7, {
+          style: {
+            flexDirection: "row",
+            flexWrap: "wrap",
+            gap: 6
+          },
+          children: [/* @__PURE__ */jsx8(Action, {
+            label: "\u73B0\u6709\u4ED3\u5E93",
+            active: !createRepository,
+            disabled: busy,
+            onPress: () => {
+              setCreateRepository(void 0);
+              pageRequest.current = void 0;
+            }
+          }), /* @__PURE__ */jsx8(Action, {
+            label: "\u65B0\u5EFA\u516C\u5F00\u4ED3\u5E93",
+            active: createRepository === "public",
+            disabled: busy,
+            onPress: () => {
+              setCreateRepository("public");
+              pageRequest.current = void 0;
+            }
+          }), /* @__PURE__ */jsx8(Action, {
+            label: "\u65B0\u5EFA\u79C1\u6709\u4ED3\u5E93",
+            active: createRepository === "private",
+            disabled: busy,
+            onPress: () => {
+              setCreateRepository("private");
+              pageRequest.current = void 0;
+            }
+          })]
+        }), /* @__PURE__ */jsx8(Action, {
+          label: createRepository ? "\u521B\u5EFA\u4ED3\u5E93\u548C\u53D1\u5E03 PR" : "\u521B\u5EFA\u53D1\u5E03 PR",
+          disabled: busy || !account || !repository.trim() || reviewed !== selected.artifactHash,
+          primary: true,
+          onPress: () => {
+            void requestPages();
+          }
+        }), jobs.map(item => /* @__PURE__ */jsx8(Action, {
+          label: `${item.repository} \xB7 ${statusNames[item.status]}`,
+          active: item.jobId === job?.jobId,
+          disabled: busy,
+          onPress: () => setJob(item)
+        }, item.jobId)), job ? /* @__PURE__ */jsxs7(View7, {
+          testID: "board-pages-job",
+          style: {
+            gap: 8
+          },
+          children: [/* @__PURE__ */jsxs7(Copy, {
+            children: [job.repository, " \xB7 ", statusNames[job.status]]
+          }), job.error ? /* @__PURE__ */jsx8(Notice, {
+            error: true,
+            text: job.error
+          }) : null, job.prUrl ? /* @__PURE__ */jsx8(Action, {
+            label: "\u67E5\u770B PR",
+            onPress: () => openUrl(job.prUrl)
+          }) : null, ["prepared", "failed", "unknown"].includes(job.status) ? /* @__PURE__ */jsx8(Action, {
+            label: "\u7EE7\u7EED\u540C\u4E00\u6B21\u53D1\u5E03\u51C6\u5907",
+            disabled: busy || reviewed !== job.artifactHash,
+            onPress: () => {
+              void run(() => sendPagesRequest({
+                eventId: job.eventId,
+                releaseId: job.releaseId,
+                artifactHash: job.artifactHash,
+                account: job.account,
+                repository: job.repository,
+                createRepository: job.createRepository
+              }));
+            }
+          }) : null, job.status === "pr-open" && job.headSha ? /* @__PURE__ */jsx8(Action, {
+            label: "\u5408\u5E76\u6B64 PR \u5E76\u53D1\u5E03",
+            disabled: busy || reviewed !== job.artifactHash,
+            onPress: () => {
+              void run(() => __async(null, null, function* () {
+                return rememberJob(yield merge({
+                  jobId: job.jobId,
+                  expectedHead: job.headSha
+                }));
+              }));
+            }
+          }) : null, /* @__PURE__ */jsx8(Action, {
+            label: "\u6838\u5BF9\u90E8\u7F72\u72B6\u6001",
+            disabled: busy,
+            onPress: () => {
+              void run(() => __async(null, null, function* () {
+                return rememberJob(yield refresh({
+                  jobId: job.jobId
+                }));
+              }));
+            }
+          }), job.status === "live" && job.url ? /* @__PURE__ */jsx8(Action, {
+            label: "\u6253\u5F00\u5DF2\u53D1\u5E03\u7F51\u9875",
+            onPress: () => openUrl(job.url)
+          }) : null]
+        }) : null]
+      })]
+    }) : null]
+  });
+}
+
+// client/connection-status.tsx
+import { View as View8 } from "react-native";
+import { jsx as jsx9, jsxs as jsxs8 } from "react/jsx-runtime";
+var labels = {
+  connecting: "\u72B6\u6001\u68C0\u67E5\u4E2D",
+  checking: "\u5DF2\u540C\u6B65",
+  connected: "\u5DF2\u540C\u6B65",
+  recovering: "\u6062\u590D\u4E2D",
+  disconnected: "\u65AD\u5F00",
+  unsupported: "\u5BBF\u4E3B\u4E0D\u652F\u6301"
+};
+function BoardConnectionStatus({
+  status
+}) {
+  var c = useColors();
+  var color = status === "connected" || status === "checking" ? c.statusSuccess : status === "disconnected" || status === "unsupported" ? c.statusDanger : c.foregroundMuted;
+  return /* @__PURE__ */jsxs8(View8, {
+    testID: "board-connection-status",
+    accessibilityLabel: `\u5B9E\u65F6\u540C\u6B65\uFF1A${labels[status]}`,
+    style: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6
+    },
+    children: [/* @__PURE__ */jsx9(View8, {
+      style: {
+        width: 7,
+        height: 7,
+        borderRadius: 4,
+        backgroundColor: color
+      }
+    }), /* @__PURE__ */jsxs8(Copy, {
+      muted: true,
+      small: true,
+      children: ["\u5B9E\u65F6\u540C\u6B65 \xB7 ", labels[status]]
+    })]
+  });
+}
+
+// client/state-writer.ts
+function createStateWriter(save, onError) {
+  var pending = null;
+  var timer = null;
+  var running = null;
+  var disposed = false;
+  function clearTimer() {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+  }
+  function drain() {
+    return __async(this, null, function* () {
+      while (pending !== null && timer === null) {
+        var state = pending;
+        pending = null;
+        try {
+          yield save(state);
+        } catch (error) {
+          pending = {
+            ...state,
+            ...pending
+          };
+          onError(error);
+          return false;
+        }
+      }
+      return true;
+    });
+  }
+  function flush() {
+    clearTimer();
+    if (running) return running;
+    if (pending === null) return Promise.resolve();
+    running = drain().then(success => {
+      running = null;
+      if (success && pending !== null && timer === null) return flush();
+    }, error => {
+      running = null;
+      throw error;
+    });
+    return running;
+  }
+  function schedule(state) {
+    if (disposed) return;
+    try {
+      var snapshot = JSON.parse(JSON.stringify(state));
+      pending = {
+        ...pending,
+        ...snapshot
+      };
+    } catch (error) {
+      onError(error);
+      return;
+    }
+    clearTimer();
+    timer = setTimeout(() => {
+      timer = null;
+      void flush();
+    }, 300);
+  }
+  return {
+    schedule,
+    flush,
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      void flush();
+    }
+  };
+}
+
+// client/draft-store.ts
+import { z as z4 } from "zod";
+var DRAFT_STORAGE_PREFIX = "@paseo:board-drafts:v1:";
+var ComposeSchema = z4.object({
+  kind: z4.enum(["question", "change", "fork", "return", "reply"]),
+  // Keep an overlong unsent draft recoverable even if sending needs it shortened.
+  text: z4.string().max(24e4),
+  sourceInteractionId: IdSchema.optional(),
+  intentId: IdSchema.optional(),
+  destination: z4.enum(["main", "side", "new-side"]).optional(),
+  captureStatus: z4.enum(["ready", "failed", "omitted"]).optional(),
+  captureFailureReason: z4.enum(["content-changed", "too-complex", "unsupported-layout", "too-large", "timeout", "generation-failed"]).optional()
+}).refine(value => !value.intentId || Boolean(value.destination), "An uncertain send needs its immutable destination");
+var InputSchema = z4.object({
+  id: IdSchema,
+  compose: ComposeSchema,
+  open: z4.boolean(),
+  position: z4.object({
+    x: z4.number().finite(),
+    y: z4.number().finite()
+  })
+});
+var RecordSchema = InputSchema.extend({
+  version: z4.literal(1),
+  revision: IdSchema,
+  parent: IdSchema.optional(),
+  supersedes: z4.array(IdSchema).max(2e3).default([]),
+  deleted: z4.boolean().default(false),
+  updatedAt: z4.number().finite().nonnegative(),
+  context: IdSchema.optional()
+});
+var ContextSchema = z4.object({
+  version: z4.literal(1),
+  anchor: AnchorSchema
+});
+var samePageListeners = /* @__PURE__ */new Set();
+var issue = code => ({
+  code,
+  message: {
+    unavailable: "\u5F53\u524D\u5BA2\u6237\u7AEF\u65E0\u6CD5\u5728\u672C\u673A\u6301\u4E45\u4FDD\u5B58\u8349\u7A3F\u3002",
+    quota: "\u672C\u673A\u8349\u7A3F\u7A7A\u95F4\u5DF2\u6EE1\uFF0C\u5F53\u524D\u8F93\u5165\u5C1A\u672A\u4FDD\u5B58\u5230\u672C\u673A\uFF1B\u8BF7\u4FDD\u7559\u5F53\u524D\u9875\u9762\u5E76\u91CD\u8BD5\u3002",
+    corrupt: "\u6709\u8349\u7A3F\u8BB0\u5F55\u65E0\u6CD5\u8BFB\u53D6\uFF0C\u5DF2\u4FDD\u7559\u539F\u8BB0\u5F55\uFF0C\u6CA1\u6709\u81EA\u52A8\u8986\u76D6\u6216\u5220\u9664\u3002",
+    conflict: "\u8FD9\u4EFD\u8349\u7A3F\u5DF2\u5728\u53E6\u4E00\u4E2A\u7A97\u53E3\u66F4\u65B0\uFF0C\u5F53\u524D\u8F93\u5165\u5C1A\u672A\u8986\u76D6\u5B83\u3002",
+    invalid: "\u8FD9\u4EFD\u8349\u7A3F\u65E0\u6CD5\u4FDD\u5B58\uFF0C\u5F53\u524D\u8F93\u5165\u4ECD\u4FDD\u7559\u5728\u9875\u9762\u4E2D\u3002",
+    failed: "\u8349\u7A3F\u5C1A\u672A\u5199\u5165\u672C\u673A\uFF0C\u8BF7\u4FDD\u7559\u5F53\u524D\u9875\u9762\u5E76\u91CD\u8BD5\u3002"
+  }[code]
+});
+function storageIssue(error) {
+  var name = error && typeof error === "object" && "name" in error ? String(error.name) : "";
+  return issue(name === "QuotaExceededError" || name === "NS_ERROR_DOM_QUOTA_REACHED" ? "quota" : name === "SecurityError" ? "unavailable" : "failed");
+}
+function token() {
+  var source = globalThis;
+  var bytes = new Uint8Array(16);
+  if (source.crypto?.getRandomValues) source.crypto.getRandomValues(bytes);else for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  return Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+}
+function freezeAnchor(anchor) {
+  if (anchor.rect) Object.freeze(anchor.rect);
+  if (anchor.viewport) Object.freeze(anchor.viewport);
+  if (anchor.image) Object.freeze(anchor.image);
+  if (anchor.binding) {
+    Object.freeze(anchor.binding.target);
+    anchor.binding.ancestors.forEach(Object.freeze);
+    Object.freeze(anchor.binding.ancestors);
+    Object.freeze(anchor.binding.relative);
+    Object.freeze(anchor.binding);
+  }
+  return Object.freeze(anchor);
+}
+function createDraftStore(scope, storage = browserDraftStorage()) {
+  var prefix = DRAFT_STORAGE_PREFIX + encodeURIComponent(JSON.stringify([scope.hostId, scope.boardId])) + ":";
+  var recordPrefix = prefix + "draft:",
+    contextPrefix = prefix + "anchor:";
+  var contexts = /* @__PURE__ */new Map();
+  var inputContexts = /* @__PURE__ */new WeakMap();
+  var records = /* @__PURE__ */new Map();
+  var keyFor = revision => recordPrefix + revision;
+  var changed = () => {
+    for (var listener of samePageListeners) if (listener.scope === prefix) {
+      try {
+        listener.notify();
+      } catch {}
+    }
+  };
+  var keys = start => {
+    var result = [];
+    for (var i = 0; i < storage.length; i++) {
+      var key = storage.key(i);
+      if (key?.startsWith(start)) result.push(key);
+    }
+    return result;
+  };
+  function readRecord(key) {
+    var raw = storage.getItem(key);
+    if (raw === null) return null;
+    var cached = records.get(key);
+    if (cached?.raw === raw) return cached.value;
+    if (raw.length > 15e5) throw new Error("Invalid draft record");
+    var value = RecordSchema.parse(JSON.parse(raw));
+    if (key !== keyFor(value.revision)) throw new Error("Mismatched draft revision");
+    records.set(key, {
+      raw,
+      value
+    });
+    return value;
+  }
+  var hasContext = id => keys(contextPrefix).includes(contextPrefix + id);
+  function readContext(id, present) {
+    var cached = contexts.get(id);
+    if (cached) {
+      if (present ? !present.has(contextPrefix + id) : !hasContext(id)) throw new Error("Missing draft reference");
+      return cached;
+    }
+    var raw = storage.getItem(contextPrefix + id);
+    if (!raw || raw.length > 33e5) throw new Error("Missing draft reference");
+    var anchor = freezeAnchor(ContextSchema.parse(JSON.parse(raw)).anchor);
+    contexts.set(id, anchor);
+    return anchor;
+  }
+  function materialize(record2, present) {
+    var anchor = record2.context ? readContext(record2.context, present) : void 0;
+    if (anchor && record2.context) inputContexts.set(anchor, {
+      id: record2.context,
+      draftId: record2.id,
+      anchor
+    });
+    return {
+      id: record2.id,
+      revision: record2.revision,
+      updatedAt: record2.updatedAt,
+      open: record2.open,
+      position: {
+        ...record2.position
+      },
+      compose: {
+        ...record2.compose,
+        ...(anchor ? {
+          anchor
+        } : {})
+      }
+    };
+  }
+  function readHeads() {
+    var entries = [],
+      issues = [];
+    var present = new Set(keys(recordPrefix));
+    for (var key of records.keys()) if (!present.has(key)) records.delete(key);
+    for (var _key4 of present) {
+      try {
+        var record2 = readRecord(_key4);
+        if (record2) entries.push(record2);
+      } catch {
+        issues.push(issue("corrupt"));
+      }
+    }
+    var superseded = new Set(entries.flatMap(entry => [entry.parent, ...entry.supersedes]).filter(Boolean));
+    return {
+      heads: entries.filter(entry => !entry.deleted && !superseded.has(entry.revision)),
+      issues
+    };
+  }
+  function releaseUnused(id) {
+    if (!id) return;
+    var heads = readHeads();
+    if (heads.issues.length || heads.heads.some(head => head.context === id)) return;
+    var key = contextPrefix + id,
+      raw = storage.getItem(key);
+    storage.removeItem(key);
+    contexts.delete(id);
+    if (raw && readHeads().heads.some(head => head.context === id)) storage.setItem(key, raw);
+  }
+  function collectUnused(pendingContext) {
+    if (readHeads().issues.length) return;
+    for (var key of keys(contextPrefix)) {
+      var id = key.slice(contextPrefix.length);
+      if (id !== pendingContext) releaseUnused(id);
+    }
+  }
+  return {
+    list() {
+      if (!storage) return {
+        drafts: [],
+        issues: [issue("unavailable")]
+      };
+      try {
+        var {
+            heads,
+            issues
+          } = readHeads(),
+          drafts = [],
+          present = new Set(keys(contextPrefix));
+        for (var id of contexts.keys()) if (!present.has(contextPrefix + id)) contexts.delete(id);
+        var counts = /* @__PURE__ */new Map();
+        for (var head of heads) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
+        for (var _head of heads) {
+          try {
+            drafts.push({
+              ...materialize(_head, present),
+              ...(counts.get(_head.id) > 1 ? {
+                conflicted: true
+              } : {})
+            });
+          } catch {
+            issues.push(issue("corrupt"));
+          }
+        }
+        drafts.sort((a, b) => b.updatedAt - a.updatedAt || b.revision.localeCompare(a.revision));
+        return {
+          drafts,
+          issues
+        };
+      } catch (error) {
+        return {
+          drafts: [],
+          issues: [storageIssue(error)]
+        };
+      }
+    },
+    put(input, expectedRevision = null) {
+      if (!storage) return {
+        ok: false,
+        issue: issue("unavailable")
+      };
+      var draft;
+      try {
+        var captureStatus = input.compose.captureStatus === "pending" ? "omitted" : input.compose.captureStatus;
+        draft = InputSchema.parse({
+          ...input,
+          compose: {
+            ...input.compose,
+            captureStatus
+          }
+        });
+      } catch {
+        return {
+          ok: false,
+          issue: issue("invalid")
+        };
+      }
+      var createdContext;
+      var committed = false;
+      try {
+        var parent = expectedRevision ? readRecord(keyFor(expectedRevision)) : null;
+        if (expectedRevision ? !parent || parent.id !== draft.id || readHeads().heads.every(head => head.revision !== expectedRevision) : readHeads().heads.some(head => head.id === draft.id)) return {
+          ok: false,
+          issue: issue("conflict")
+        };
+        var revision = token();
+        var context, contextAnchor;
+        if (input.compose.anchor) {
+          var cached = inputContexts.get(input.compose.anchor);
+          if (cached?.draftId === draft.id && hasContext(cached.id)) {
+            context = cached.id;
+            contextAnchor = cached.anchor;
+          } else {
+            var anchor = freezeAnchor(AnchorSchema.parse(input.compose.anchor));
+            contextAnchor = anchor;
+            context = token();
+            createdContext = context;
+            var raw2 = JSON.stringify({
+              version: 1,
+              anchor
+            });
+            if (raw2.length > 33e5) return {
+              ok: false,
+              issue: issue("invalid")
+            };
+            try {
+              storage.setItem(contextPrefix + context, raw2);
+            } catch (error) {
+              collectUnused(context);
+              storage.setItem(contextPrefix + context, raw2);
+            }
+            contexts.set(context, anchor);
+            inputContexts.set(input.compose.anchor, {
+              id: context,
+              draftId: draft.id,
+              anchor
+            });
+          }
+        }
+        var supersedes = parent ? [parent.revision, ...parent.supersedes.filter(id => storage.getItem(keyFor(id)) !== null)] : [];
+        if (supersedes.length > 2e3) return {
+          ok: false,
+          issue: issue("failed")
+        };
+        var record2 = {
+          ...draft,
+          version: 1,
+          revision,
+          supersedes,
+          deleted: false,
+          updatedAt: Date.now(),
+          ...(context ? {
+            context
+          } : {}),
+          ...(parent ? {
+            parent: parent.revision
+          } : {})
+        };
+        var raw = JSON.stringify(record2);
+        if (raw.length > 15e5) throw new Error("Draft record exceeds its read bound");
+        try {
+          storage.setItem(keyFor(revision), raw);
+        } catch (error) {
+          collectUnused(context);
+          storage.setItem(keyFor(revision), raw);
+        }
+        committed = true;
+        records.set(keyFor(revision), {
+          raw,
+          value: record2
+        });
+        if (context && contextAnchor && !hasContext(context)) {
+          try {
+            storage.setItem(contextPrefix + context, JSON.stringify({
+              version: 1,
+              anchor: contextAnchor
+            }));
+            contexts.set(context, contextAnchor);
+          } catch (error) {
+            storage.removeItem(keyFor(revision));
+            records.delete(keyFor(revision));
+            committed = false;
+            throw error;
+          }
+        }
+        try {
+          for (var id of supersedes) {
+            storage.removeItem(keyFor(id));
+            records.delete(keyFor(id));
+          }
+          if (parent) releaseUnused(parent.context === context ? void 0 : parent.context);
+        } catch {}
+        if (context && contextAnchor) inputContexts.set(contextAnchor, {
+          id: context,
+          draftId: draft.id,
+          anchor: contextAnchor
+        });
+        var result = {
+          ...draft,
+          revision,
+          updatedAt: record2.updatedAt,
+          compose: {
+            ...draft.compose,
+            ...(contextAnchor ? {
+              anchor: contextAnchor
+            } : {})
+          }
+        };
+        changed();
+        return {
+          ok: true,
+          draft: result
+        };
+      } catch (error) {
+        if (createdContext && !committed) {
+          try {
+            storage.removeItem(contextPrefix + createdContext);
+            contexts.delete(createdContext);
+          } catch {}
+        }
+        return {
+          ok: false,
+          issue: error instanceof z4.ZodError ? issue("invalid") : storageIssue(error)
+        };
+      }
+    },
+    remove(id, expectedRevision) {
+      if (!storage) return {
+        ok: false,
+        issue: issue("unavailable")
+      };
+      try {
+        var record2 = readRecord(keyFor(expectedRevision));
+        if (!record2 || record2.id !== id || readHeads().heads.every(head => head.revision !== expectedRevision)) return {
+          ok: false,
+          issue: issue("conflict")
+        };
+        var revision = token(),
+          supersedes = [record2.revision, ...record2.supersedes.filter(id2 => storage.getItem(keyFor(id2)) !== null)];
+        var tombstone = {
+          version: 1,
+          id,
+          revision,
+          supersedes,
+          deleted: true,
+          updatedAt: Date.now(),
+          compose: {
+            kind: "question",
+            text: ""
+          },
+          open: false,
+          position: {
+            x: 0,
+            y: 0
+          }
+        };
+        var raw = JSON.stringify(tombstone);
+        try {
+          storage.setItem(keyFor(revision), raw);
+        } catch (error) {
+          if (storageIssue(error).code !== "quota") throw error;
+          for (var old of [...supersedes].reverse()) {
+            storage.removeItem(keyFor(old));
+            records.delete(keyFor(old));
+          }
+          try {
+            releaseUnused(record2.context);
+          } catch {}
+          changed();
+          return {
+            ok: true
+          };
+        }
+        records.set(keyFor(revision), {
+          raw,
+          value: tombstone
+        });
+        try {
+          for (var _old of supersedes) {
+            storage.removeItem(keyFor(_old));
+            records.delete(keyFor(_old));
+          }
+          storage.removeItem(keyFor(revision));
+          records.delete(keyFor(revision));
+          releaseUnused(record2.context);
+        } catch {}
+        changed();
+        return {
+          ok: true
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          issue: storageIssue(error)
+        };
+      }
+    },
+    subscribe(listener) {
+      var entry = {
+        scope: prefix,
+        notify: listener
+      };
+      samePageListeners.add(entry);
+      var unsubscribe = storage?.subscribe?.(key => {
+        if (key === null) contexts.clear();else if (key.startsWith(contextPrefix)) contexts.delete(key.slice(contextPrefix.length));
+        if (key === null || key.startsWith(prefix)) listener();
+      });
+      return () => {
+        samePageListeners.delete(entry);
+        unsubscribe?.();
+      };
+    }
+  };
+}
+
+// client/message-draft.ts
+function acceptedDraftInteraction(draft, interactions) {
+  if (!draft.intentId) return void 0;
+  var item = interactions.find(candidate => candidate.id === draft.intentId);
+  if (!item || item.text !== draft.text.trim() || item.destination !== draft.destination || item.sourceInteractionId !== draft.sourceInteractionId) return void 0;
+  var kinds = draft.destination === "main" ? [draft.kind === "change" ? "change" : "question"] : draft.destination === "new-side" ? ["fork"] : draft.destination === "side" ? ["fork", "reply"] : [draft.kind];
+  if (!kinds.includes(item.kind)) return void 0;
+  if (!item.anchor || !draft.anchor) return item.anchor === draft.anchor ? item : void 0;
+  var received = AnchorSchema.safeParse(item.anchor),
+    frozen = AnchorSchema.safeParse(draft.anchor);
+  return received.success && frozen.success && JSON.stringify(received.data) === JSON.stringify(frozen.data) ? item : void 0;
+}
+
+// client/discussion-rail.tsx
+import { Pressable as Pressable6, Text as Text7, View as View9 } from "react-native";
+import { ScrollView as ScrollView3 } from "@getpaseo/plugin/client/ui";
+import { jsx as jsx10, jsxs as jsxs9 } from "react/jsx-runtime";
+function DiscussionRail({
+  markers,
+  compact,
+  selectedId,
+  disabled,
+  statusNames: statusNames3,
+  onOpen
+}) {
+  var c = useColors();
+  return /* @__PURE__ */jsxs9(View9, {
+    testID: "board-discussion-rail",
+    accessibilityLabel: "\u753B\u5E03\u8BA8\u8BBA\u7D22\u5F15",
+    style: {
+      width: compact ? 52 : 168,
+      flexShrink: 0,
+      minHeight: 0,
+      borderLeftWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.surface0
+    },
+    children: [/* @__PURE__ */jsx10(View9, {
+      style: {
+        paddingHorizontal: compact ? 4 : 12,
+        paddingVertical: 12,
+        borderBottomWidth: 1,
+        borderColor: c.border
+      },
+      children: /* @__PURE__ */jsx10(Text7, {
+        numberOfLines: 1,
+        style: {
+          color: c.foregroundMuted,
+          fontSize: 12,
+          textAlign: compact ? "center" : "left"
+        },
+        children: compact ? `${markers.length}` : `\u8BA8\u8BBA \xB7 ${markers.length}`
+      })
+    }), /* @__PURE__ */jsxs9(ScrollView3, {
+      testID: "board-discussion-list",
+      style: {
+        flex: 1,
+        minHeight: 0
+      },
+      contentContainerStyle: {
+        padding: compact ? 4 : 6,
+        gap: 4
+      },
+      keyboardShouldPersistTaps: "handled",
+      children: [!markers.length ? /* @__PURE__ */jsx10(Text7, {
+        style: {
+          paddingVertical: 12,
+          color: c.foregroundMuted,
+          fontSize: 12,
+          textAlign: "center"
+        },
+        children: compact ? "\u2014" : "\u8BA8\u8BBA\u4F1A\u7559\u5728\u8FD9\u91CC"
+      }) : null, markers.map(marker => {
+        var selected = marker.id === selectedId;
+        var active = ["saved", "sending", "delivered", "processing"].includes(marker.status);
+        var color = marker.status === "failed" ? c.statusDanger : active ? c.accent : c.foregroundMuted;
+        var label = `${marker.number} \xB7 ${statusNames3[marker.status]} \xB7 ${marker.text}`;
+        return /* @__PURE__ */jsxs9(Pressable6, {
+          testID: `board-discussion-${marker.id}`,
+          accessibilityRole: "button",
+          accessibilityLabel: label,
+          accessibilityState: {
+            selected,
+            disabled
+          },
+          disabled,
+          onPress: () => onOpen(marker.id),
+          style: ({
+            pressed
+          }) => ({
+            flexDirection: "row",
+            gap: 7,
+            alignItems: "flex-start",
+            paddingHorizontal: compact ? 3 : 6,
+            paddingVertical: 9,
+            borderRadius: 7,
+            borderWidth: 1,
+            borderColor: selected ? c.accent : "transparent",
+            backgroundColor: selected || pressed ? c.surface2 : "transparent",
+            opacity: disabled ? 0.5 : 1
+          }),
+          children: [/* @__PURE__ */jsx10(View9, {
+            style: {
+              width: 24,
+              height: 24,
+              flexShrink: 0,
+              alignItems: "center",
+              justifyContent: "center",
+              borderWidth: 1,
+              borderColor: color,
+              borderRadius: 12,
+              backgroundColor: c.surface1
+            },
+            children: /* @__PURE__ */jsx10(Text7, {
+              style: {
+                fontSize: marker.number > 99 ? 9 : 11,
+                fontWeight: "600",
+                color
+              },
+              children: marker.number
+            })
+          }), !compact ? /* @__PURE__ */jsxs9(View9, {
+            style: {
+              flex: 1,
+              minWidth: 0,
+              gap: 4
+            },
+            children: [/* @__PURE__ */jsx10(Text7, {
+              numberOfLines: 2,
+              style: {
+                color: c.foreground,
+                fontSize: 12,
+                lineHeight: 17,
+                maxHeight: 34,
+                overflow: "hidden"
+              },
+              children: marker.text.replace(/\s+/g, " ")
+            }), /* @__PURE__ */jsx10(Text7, {
+              numberOfLines: 1,
+              style: {
+                color,
+                fontSize: 10
+              },
+              children: statusNames3[marker.status]
+            })]
+          }) : null]
+        }, marker.id);
+      })]
+    })]
+  });
+}
+
+// client/side-agent-picker.tsx
+import { useMemo as useMemo3, useState as useState9 } from "react";
+import { Pressable as Pressable7, Text as Text8, View as View10 } from "react-native";
+import { ScrollView as ScrollView4 } from "@getpaseo/plugin/client/ui";
+import { jsx as jsx11, jsxs as jsxs10 } from "react/jsx-runtime";
+function SideAgentPicker({
+  interactions,
+  selectedId,
+  pending,
+  disabled,
+  onSelect
+}) {
+  var c = useColors();
+  var [open, setOpen] = useState9(false);
+  var choices = useMemo3(() => {
+    var agents = /* @__PURE__ */new Map();
+    for (var item of interactions) if (item.kind === "fork" && item.agentId && !agents.has(item.agentId)) agents.set(item.agentId, {
+      id: item.agentId,
+      label: `\u65C1\u652F ${agents.size + 1}`,
+      text: item.text.replace(/\s+/g, " ").slice(0, 90)
+    });
+    return [...agents.values()];
+  }, [interactions]);
+  var current = choices.find(item => item.id === selectedId);
+  return /* @__PURE__ */jsxs10(View10, {
+    testID: "board-side-agent-picker",
+    style: {
+      gap: 6
+    },
+    children: [/* @__PURE__ */jsxs10(View10, {
+      style: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        flexWrap: "wrap"
+      },
+      children: [/* @__PURE__ */jsx11(Copy, {
+        small: true,
+        muted: true,
+        children: "Side \u76EE\u6807"
+      }), /* @__PURE__ */jsx11(Action, {
+        label: `${pending ? "\u65C1\u652F\u5EFA\u7ACB\u4E2D" : selectedId ? current?.label ?? "\u5F53\u524D\u65C1\u652F" : "\u9996\u6B21\u53D1\u9001\u65F6\u65B0\u5EFA"} \u25BE`,
+        disabled,
+        onPress: () => setOpen(value => !value)
+      })]
+    }), pending ? /* @__PURE__ */jsx11(Copy, {
+      small: true,
+      muted: true,
+      children: "Side \u53D1\u9001\u5C06\u7EE7\u7EED\u6B63\u5728\u5EFA\u7ACB\u7684\u65C1\u652F\uFF1B\u4E5F\u53EF\u6539\u9009\u4EE5\u524D\u7684\u65C1\u652F\u3002"
+    }) : null, open ? /* @__PURE__ */jsx11(View10, {
+      testID: "board-side-agent-options",
+      style: {
+        borderWidth: 1,
+        borderColor: c.border,
+        borderRadius: 8,
+        overflow: "hidden"
+      },
+      children: /* @__PURE__ */jsxs10(ScrollView4, {
+        style: {
+          maxHeight: 156
+        },
+        contentContainerStyle: {
+          padding: 4,
+          gap: 3
+        },
+        keyboardShouldPersistTaps: "handled",
+        children: [!choices.length ? /* @__PURE__ */jsx11(Copy, {
+          small: true,
+          muted: true,
+          children: "\u8FD8\u6CA1\u6709\u65C1\u652F\u3002Side \u53D1\u9001\u4F1A\u5EFA\u7ACB\u4E00\u4E2A\uFF0C\u5E76\u5728\u4E4B\u540E\u7EE7\u7EED\u4F7F\u7528\u3002"
+        }) : null, choices.map(item => /* @__PURE__ */jsxs10(Pressable7, {
+          testID: `board-side-agent-${item.id}`,
+          accessibilityRole: "button",
+          accessibilityLabel: `\u4F7F\u7528${item.label}\uFF1A${item.text}`,
+          accessibilityState: {
+            selected: !pending && selectedId === item.id,
+            disabled
+          },
+          disabled,
+          onPress: () => {
+            void onSelect(item.id).then(changed => {
+              if (changed) setOpen(false);
+            });
+          },
+          style: ({
+            pressed
+          }) => ({
+            padding: 8,
+            gap: 3,
+            borderRadius: 5,
+            backgroundColor: pressed || !pending && selectedId === item.id ? c.surface2 : c.surface0
+          }),
+          children: [/* @__PURE__ */jsxs10(Text8, {
+            style: {
+              color: c.foreground,
+              fontSize: 12,
+              fontWeight: "600"
+            },
+            children: [item.label, !pending && selectedId === item.id ? " \xB7 \u5F53\u524D" : ""]
+          }), /* @__PURE__ */jsx11(Text8, {
+            numberOfLines: 2,
+            style: {
+              color: c.foregroundMuted,
+              fontSize: 12,
+              lineHeight: 17
+            },
+            children: item.text
+          })]
+        }, item.id))]
+      })
+    }) : null]
   });
 }
 
@@ -4382,7 +6321,7 @@ ${request.prompt ?? ""}`.slice(0, 24e3);
 }
 
 // client/board.tsx
-import { Fragment as Fragment3, jsx as jsx9, jsxs as jsxs8 } from "react/jsx-runtime";
+import { Fragment as Fragment4, jsx as jsx12, jsxs as jsxs11 } from "react/jsx-runtime";
 var captureFailureNames = {
   "content-changed": "\u622A\u56FE\u8FC7\u7A0B\u4E2D\u753B\u5E03\u5185\u5BB9\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u6846\u9009\u3002",
   "too-complex": "\u9009\u533A\u5185\u5BB9\u8FC7\u4E8E\u590D\u6742\uFF0C\u8BF7\u7F29\u5C0F\u9009\u533A\u3002",
@@ -4391,7 +6330,7 @@ var captureFailureNames = {
   timeout: "\u622A\u56FE\u8D85\u65F6\uFF0C\u8BF7\u91CD\u65B0\u6846\u9009\u3002",
   "generation-failed": "\u65E0\u6CD5\u751F\u6210\u56FE\u7247\uFF0C\u8BF7\u91CD\u65B0\u6846\u9009\u3002"
 };
-var statusNames = {
+var statusNames2 = {
   saved: "\u5DF2\u4FDD\u5B58",
   sending: "\u53D1\u9001\u4E2D",
   delivered: "\u5DF2\u9001\u8FBE",
@@ -4409,11 +6348,11 @@ var kindNames = {
   reply: "Fork \u56DE\u590D"
 };
 function BoardView(props) {
-  return /* @__PURE__ */jsx9(ColorContext.Provider, {
+  return /* @__PURE__ */jsx12(ColorContext.Provider, {
     value: props.theme.colors,
-    children: /* @__PURE__ */jsx9(BoardContent, {
+    children: /* @__PURE__ */jsx12(BoardContent, {
       ...props
-    })
+    }, JSON.stringify([props.host.id, props.boardId]))
   });
 }
 function BoardContent({
@@ -4421,62 +6360,194 @@ function BoardContent({
   host,
   theme,
   onBack,
-  navigation
+  navigation,
+  onOpenBoard
 }) {
   var c = useColors();
   var query = useBoard(host.id, boardId);
   var board = query.data;
   var componentEditor = useComponentEditor(host.id, boardId, board, query.accept, query.refetch);
-  var send = useRpc4(interactBoardRpc);
-  var save = useRpc4(saveStateRpc);
-  var record2 = useRpc4(recordDecisionRpc);
-  var selectSide = useRpc4(selectSideAgentRpc);
-  var markUpdatesSeen = useRpc4(markUpdatesSeenRpc);
-  var [selectionMode, setSelectionMode] = useState7("off");
-  var [anchor, setAnchor] = useState7();
-  var [selectionClearToken, setSelectionClearToken] = useState7(0);
-  var [selectionCaptureCancelId, setSelectionCaptureCancelId] = useState7();
-  var [drawer, setDrawer] = useState7(null);
-  var [compose, setCompose] = useState7(null);
-  var composeRef = useRef6(compose);
+  var send = useRpc5(interactBoardRpc);
+  var save = useRpc5(saveStateRpc);
+  var record2 = useRpc5(recordDecisionRpc);
+  var selectSide = useRpc5(selectSideAgentRpc);
+  var markUpdatesSeen = useRpc5(markUpdatesSeenRpc);
+  var [selectionMode, setSelectionMode] = useState10("off");
+  var [anchor, setAnchor] = useState10();
+  var [selectionClearToken, setSelectionClearToken] = useState10(0);
+  var [selectionCaptureCancelId, setSelectionCaptureCancelId] = useState10();
+  var [drawer, setDrawer] = useState10(null);
+  var [releaseOpen, setReleaseOpen] = useState10(false);
+  var draftStore = useMemo4(() => createDraftStore({
+    hostId: host.id,
+    boardId
+  }), [host.id, boardId]);
+  var [draftSnapshot, setDraftSnapshot] = useState10(() => draftStore.list());
+  var [draftError, setDraftError] = useState10(null);
+  var restorationHandled = useRef8(false);
+  var [compose, setCompose] = useState10(null);
+  var composeRef = useRef8(compose);
   composeRef.current = compose;
-  var [sending, setSending] = useState7(false);
-  var pending = useRef6(false);
-  var sideChoicePending = useRef6(false);
-  var [choosingSide, setChoosingSide] = useState7(false);
-  var [sideChoiceUncertain, setSideChoiceUncertain] = useState7(false);
+  var [sending, setSending] = useState10(false);
+  var pending = useRef8(false);
+  var sideChoicePending = useRef8(false);
+  var [choosingSide, setChoosingSide] = useState10(false);
+  var [sideChoiceUncertain, setSideChoiceUncertain] = useState10(false);
   var sideTargetBlocked = choosingSide || sideChoiceUncertain;
-  var [inputFocusToken, setInputFocusToken] = useState7(0);
-  var [message, setMessage] = useState7(null);
-  var [frameError, setFrameError] = useState7(null);
-  var [height, setHeight] = useState7(500);
-  var [width, setWidth] = useState7(900);
-  var [stageWidth, setStageWidth] = useState7(900);
-  var [popoverHeight, setPopoverHeight] = useState7(300);
-  var [popoverPoint, setPopoverPoint] = useState7({
+  var [inputFocusToken, setInputFocusToken] = useState10(0);
+  var [message, setMessage] = useState10(null);
+  var [frameError, setFrameError] = useState10(null);
+  var [height, setHeight] = useState10(500);
+  var [width, setWidth] = useState10(900);
+  var [stageWidth, setStageWidth] = useState10(900);
+  var [popoverHeight, setPopoverHeight] = useState10(300);
+  var [popoverPoint, setPopoverPoint] = useState10({
     x: 24,
     y: 24
   });
-  var [selectedInteractionId, setSelectedInteractionId] = useState7();
-  var [focusInteraction, setFocusInteraction] = useState7();
-  var [interactionLocation, setInteractionLocation] = useState7();
-  var [optimistic, setOptimistic] = useState7([]);
-  var updatesBlocked = Boolean(componentEditor.draft || compose || selectedInteractionId || drawer || sending || selectionMode !== "off");
+  var popoverPointRef = useRef8(popoverPoint);
+  popoverPointRef.current = popoverPoint;
+  var [selectedInteractionId, setSelectedInteractionId] = useState10();
+  var [focusInteraction, setFocusInteraction] = useState10();
+  var [interactionLocation, setInteractionLocation] = useState10();
+  var [optimistic, setOptimistic] = useState10([]);
+  var updatesBlocked = Boolean(componentEditor.draft || compose || selectedInteractionId || drawer || releaseOpen || sending || selectionMode !== "off");
   var updateNavigation = useUpdateNavigation(board, updatesBlocked, id => __async(null, null, function* () {
     query.accept(yield markUpdatesSeen({
       boardId,
       updateIds: [id]
     }));
   }));
-  var interactions = useMemo3(() => mergeInteractions(board?.interactions ?? [], optimistic), [board?.interactions, optimistic]);
-  var markers = useMemo3(() => interactionMarkers(interactions), [interactions]);
-  var thread = useMemo3(() => interactionThread(selectedInteractionId, interactions), [selectedInteractionId, interactions]);
+  var interactions = useMemo4(() => mergeInteractions(board?.interactions ?? [], optimistic), [board?.interactions, optimistic]);
+  var markers = useMemo4(() => interactionMarkers(interactions), [interactions]);
+  var thread = useMemo4(() => interactionThread(selectedInteractionId, interactions), [selectedInteractionId, interactions]);
   var popover = popoverPlacement(popoverPoint, {
     width,
     height
   }, popoverHeight);
-  var stateWriter = useRef6(null);
-  var frameTheme = useMemo3(() => frameThemeFromColors(theme.colors), [theme.colors]);
+  var stateWriter = useRef8(null);
+  var frameTheme = useMemo4(() => frameThemeFromColors(theme.colors), [theme.colors]);
+  useEffect8(() => {
+    var refresh = () => setDraftSnapshot(draftStore.list());
+    var unsubscribe = draftStore.subscribe(refresh);
+    refresh();
+    return unsubscribe;
+  }, [draftStore]);
+  var persistCompose = useCallback4((draft, open = true, position2 = popoverPointRef.current) => {
+    draft.draftId ?? (draft.draftId = localId("draft"));
+    var input = {
+      id: draft.draftId,
+      open,
+      position: position2,
+      compose: {
+        kind: draft.kind,
+        text: draft.text,
+        anchor: draft.anchor,
+        sourceInteractionId: draft.sourceInteractionId,
+        intentId: draft.intentId,
+        destination: draft.destination,
+        captureStatus: draft.captureStatus === "pending" ? "omitted" : draft.captureStatus,
+        captureFailureReason: draft.captureFailureReason
+      }
+    };
+    var result = draftStore.put(input, draft.draftRevision ?? null);
+    if (!result.ok && result.issue.code === "conflict") {
+      draft.draftId = localId("draft");
+      draft.draftRevision = void 0;
+      result = draftStore.put({
+        ...input,
+        id: draft.draftId
+      }, null);
+    }
+    if (result.ok) {
+      draft.draftRevision = result.draft.revision;
+      draft.anchor = result.draft.compose.anchor;
+      setDraftError(null);
+    } else setDraftError(result.issue.message);
+    return result.ok;
+  }, [draftStore]);
+  var changeCompose = useCallback4((draft, position2 = popoverPointRef.current) => {
+    restorationHandled.current = true;
+    persistCompose(draft, true, position2);
+    composeRef.current = draft;
+    setCompose(draft);
+  }, [persistCompose]);
+  var removeDraft = useCallback4(draft => {
+    if (!draft.draftId || !draft.draftRevision) return true;
+    var result = draftStore.remove(draft.draftId, draft.draftRevision);
+    if (!result.ok) setDraftError(result.issue.message);
+    return result.ok;
+  }, [draftStore]);
+  var restoreDraft = saved => {
+    if (pending.current || composeRef.current) return;
+    var draft = {
+      ...saved.compose,
+      draftId: saved.id,
+      draftRevision: saved.revision
+    };
+    setPopoverPoint(saved.position);
+    setAnchor(draft.anchor);
+    setDrawer(null);
+    setMessage(null);
+    setSelectedInteractionId(draft.sourceInteractionId ? interactionRoot(draft.sourceInteractionId, interactions) : void 0);
+    changeCompose(draft, saved.position);
+    setInputFocusToken(value => value + 1);
+  };
+  var changeDraftText = text => {
+    var previous = composeRef.current;
+    if (!previous || previous.text === text) return;
+    if (previous.intentId) {
+      persistCompose(previous, false);
+      changeCompose({
+        ...previous,
+        text,
+        draftId: void 0,
+        draftRevision: void 0,
+        intentId: void 0,
+        destination: void 0
+      });
+    } else changeCompose({
+      ...previous,
+      text
+    });
+  };
+  useEffect8(() => {
+    if (!board) {
+      if (!query.isPending && !restorationHandled.current) {
+        restorationHandled.current = true;
+        var saved = draftStore.list().drafts.find(item => item.open);
+        if (saved) restoreDraft(saved);
+      }
+      return;
+    }
+    var firstRead = !restorationHandled.current;
+    restorationHandled.current = true;
+    var latest;
+    for (var _saved of draftStore.list().drafts) {
+      var receipt = acceptedDraftInteraction(_saved.compose, board.interactions);
+      if (receipt) {
+        var current = composeRef.current;
+        var isCurrent = current?.draftId === _saved.id && current.draftRevision === _saved.revision;
+        if (isCurrent && pending.current) continue;
+        var removed = draftStore.remove(_saved.id, _saved.revision);
+        if (!removed.ok) setDraftError(removed.issue.message);
+        if (isCurrent) {
+          current.resolve?.({
+            status: "submitted",
+            outcome: statusNames2[receipt.status]
+          });
+          composeRef.current = null;
+          setCompose(null);
+          setMessage(null);
+        }
+        if (isCurrent || firstRead && _saved.open) {
+          setSelectedInteractionId(interactionRoot(receipt.id, board.interactions));
+          setPopoverPoint(_saved.position);
+        }
+      } else if (firstRead && _saved.open && (!latest || _saved.updatedAt > latest.updatedAt)) latest = _saved;
+    }
+    if (latest) restoreDraft(latest);
+  }, [board, draftStore, query.isPending, sending]);
   var onAnchor = useCallback4(next => {
     setAnchor(next);
     setSelectionMode("off");
@@ -4498,9 +6569,8 @@ function BoardContent({
     setPopoverPoint(request.position ?? anchorPoint(request.anchor));
     setSelectedInteractionId(void 0);
     setMessage(null);
-    composeRef.current = next;
-    setCompose(next);
-  }), []);
+    changeCompose(next, request.position ?? anchorPoint(request.anchor));
+  }), [changeCompose]);
   var onCompose = useCallback4(request => {
     if (composeRef.current || pending.current) return;
     var next = {
@@ -4516,9 +6586,8 @@ function BoardContent({
     setAnchor(request.anchor);
     setSelectionMode("off");
     setDrawer(null);
-    composeRef.current = next;
-    setCompose(next);
-  }, []);
+    changeCompose(next, request.position ?? anchorPoint(request.anchor));
+  }, [changeCompose]);
   var onSelectionCapture = useCallback4(capture => {
     var draft = composeRef.current;
     if (!draft || pending.current || draft.intentId || draft.captureStatus !== "pending" || draft.selectionId !== capture.selectionId || !draft.anchor || !sameSelectionAnchor(draft.anchor, capture.anchor)) return;
@@ -4528,12 +6597,11 @@ function BoardContent({
       captureStatus: capture.status,
       captureFailureReason: capture.reason
     };
-    composeRef.current = next;
-    setCompose(next);
+    changeCompose(next);
     setAnchor(capture.anchor);
-  }, []);
+  }, [changeCompose]);
   var onState = useCallback4(state => stateWriter.current?.schedule(state), []);
-  useEffect7(() => {
+  useEffect8(() => {
     var writer = createStateWriter(state => save({
       boardId,
       state
@@ -4544,27 +6612,44 @@ function BoardContent({
       if (stateWriter.current === writer) stateWriter.current = null;
     };
   }, [save, boardId]);
-  useEffect7(() => {
+  useEffect8(() => {
     setFrameError(null);
   }, [board?.canvas.documentVersion]);
-  useEffect7(() => {
+  useEffect8(() => {
     var persisted = new Set(board?.interactions.map(item => item.id));
     setOptimistic(items => items.some(item => persisted.has(item.id)) ? items.filter(item => !persisted.has(item.id)) : items);
   }, [board?.interactions]);
-  useEffect7(() => () => {
+  useEffect8(() => () => {
     if (!pending.current) composeRef.current?.resolve?.({
       status: "cancelled"
     });
   }, []);
   var cancelCompose = () => {
     if (pending.current) return;
-    if (composeRef.current?.selectionId) setSelectionCaptureCancelId(composeRef.current.selectionId);
-    composeRef.current?.resolve?.({
+    var draft = composeRef.current;
+    if (draft && !persistCompose(draft, false) && canRenderFrames) return;
+    if (draft?.selectionId) setSelectionCaptureCancelId(draft.selectionId);
+    draft?.resolve?.({
       status: "cancelled"
     });
     setCompose(null);
     composeRef.current = null;
     setMessage(null);
+  };
+  var discardCompose = () => {
+    if (pending.current || !composeRef.current) return;
+    var draft = composeRef.current;
+    if (!removeDraft(draft)) return;
+    if (draft.selectionId) setSelectionCaptureCancelId(draft.selectionId);
+    draft.resolve?.({
+      status: "cancelled"
+    });
+    composeRef.current = null;
+    setCompose(null);
+    setMessage(null);
+    setDraftError(null);
+    setAnchor(void 0);
+    setSelectionClearToken(value => value + 1);
   };
   var openCompose = (kind, source, text, resolve) => {
     if (pending.current || composeRef.current) {
@@ -4589,8 +6674,7 @@ function BoardContent({
     if (!source || !selectedInteractionId) setPopoverPoint(anchorPoint(draft.anchor));
     setSelectedInteractionId(source ? interactionRoot(source.id, interactions) : void 0);
     setMessage(null);
-    composeRef.current = draft;
-    setCompose(draft);
+    changeCompose(draft, !source || !selectedInteractionId ? anchorPoint(draft.anchor) : popoverPointRef.current);
   };
   var retryUnconfirmed = item => {
     if (pending.current || composeRef.current) return;
@@ -4602,8 +6686,7 @@ function BoardContent({
       anchor: item.anchor,
       sourceInteractionId: item.sourceInteractionId
     };
-    composeRef.current = draft;
-    setCompose(draft);
+    changeCompose(draft);
     setMessage(null);
   };
   var submit = (destination = "main") => __async(null, null, function* () {
@@ -4617,6 +6700,15 @@ function BoardContent({
     draft.intentId ?? (draft.intentId = localId("intent"));
     if (draft.selectionId) setSelectionCaptureCancelId(draft.selectionId);
     if (draft.captureStatus === "pending") draft.captureStatus = "omitted";
+    if (!persistCompose(draft) && canRenderFrames) {
+      pending.current = false;
+      setSending(false);
+      setMessage("\u5C1A\u672A\u53D1\u9001\uFF1A\u8BF7\u5148\u6062\u590D\u672C\u673A\u8349\u7A3F\u5B58\u50A8\uFF0C\u518D\u91CD\u8BD5\u540C\u4E00\u6B21\u53D1\u9001\u3002");
+      setCompose({
+        ...draft
+      });
+      return;
+    }
     var now = (/* @__PURE__ */new Date()).toISOString();
     var local = {
       id: draft.intentId,
@@ -4645,8 +6737,9 @@ function BoardContent({
       setOptimistic(items => items.map(item => item.id === result.id ? result : item));
       draft.resolve?.({
         status: "submitted",
-        outcome: statusNames[result.status]
+        outcome: statusNames2[result.status]
       });
+      removeDraft(draft);
       setCompose(null);
       composeRef.current = null;
       setAnchor(void 0);
@@ -4741,6 +6834,10 @@ function BoardContent({
       setSelectedInteractionId(void 0);
     }
   };
+  var leaveBoard = navigate => {
+    if (composeRef.current) cancelCompose();
+    if (!composeRef.current && !pending.current) navigate();
+  };
   usePopoverDismiss(Boolean(compose || selectedInteractionId), closePopover, Boolean(compose));
   var updateDecision = (decision, status) => __async(null, null, function* () {
     if (!board) return;
@@ -4766,112 +6863,134 @@ function BoardContent({
     board: "\u6574\u4E2A\u753B\u5E03",
     text: "\u9009\u4E2D\u6587\u5B57"
   }[anchor.kind] : "\u6574\u4E2A\u753B\u5E03";
-  if (!board) return /* @__PURE__ */jsxs8(View8, {
-    style: {
-      flex: 1,
+  if (!board) return /* @__PURE__ */jsxs11(ScrollView5, {
+    contentContainerStyle: {
       padding: 24,
       gap: 16,
       backgroundColor: c.surface0
     },
-    children: [/* @__PURE__ */jsx9(Action, {
+    children: [/* @__PURE__ */jsx12(Action, {
       label: "\u6240\u6709 Boards",
-      onPress: onBack
-    }), /* @__PURE__ */jsx9(Notice, {
-      text: query.isPending ? "\u6B63\u5728\u6253\u5F00\u2026" : query.error ? errorMessage(query.error) : "\u8FD9\u5757 Board \u4E0D\u5B58\u5728\u3002",
+      onPress: () => leaveBoard(onBack)
+    }), /* @__PURE__ */jsx12(Notice, {
+      text: query.isPending ? "\u6B63\u5728\u6253\u5F00\u2026" : query.error ? "\u6682\u65F6\u65E0\u6CD5\u8FDE\u63A5 Board\uFF1B\u672C\u673A\u8349\u7A3F\u4ECD\u53EF\u67E5\u770B\u548C\u7F16\u8F91\uFF0C\u6062\u590D\u8FDE\u63A5\u540E\u518D\u53D1\u9001\u3002" : "\u8FD9\u5757 Board \u4E0D\u5B58\u5728\uFF1B\u672C\u673A\u8349\u7A3F\u4ECD\u4FDD\u7559\u3002",
       error: !!query.error
+    }), query.error ? /* @__PURE__ */jsx12(Action, {
+      label: "\u91CD\u8BD5\u8FDE\u63A5",
+      onPress: () => {
+        void query.refetch();
+      }
+    }) : null, compose ? /* @__PURE__ */jsxs11(View11, {
+      testID: "board-offline-draft",
+      style: {
+        gap: 12
+      },
+      children: [/* @__PURE__ */jsx12(AnchorPreview, {
+        anchor: compose.anchor,
+        compact: true,
+        captureStatus: compose.captureStatus
+      }), canRenderFrames ? /* @__PURE__ */jsx12(WebMessageInput, {
+        value: compose.text,
+        disabled: false,
+        onChange: changeDraftText,
+        onSubmit: () => {
+          setMessage("\u8FDE\u63A5\u6062\u590D\u540E\u624D\u80FD\u53D1\u9001\uFF1B\u8349\u7A3F\u5DF2\u4FDD\u7559\u3002");
+        },
+        onClose: closePopover,
+        placeholder: "\u7EE7\u7EED\u7F16\u8F91\u8349\u7A3F\u2026",
+        style: {
+          color: c.foreground,
+          background: c.surface1,
+          border: `1px solid ${c.border}`,
+          padding: 10,
+          minHeight: 120
+        }
+      }) : /* @__PURE__ */jsx12(TextInput4, {
+        accessibilityLabel: "\u53D1\u7ED9 agent \u7684\u6D88\u606F",
+        multiline: true,
+        value: compose.text,
+        onChangeText: changeDraftText
+      }), draftError || message ? /* @__PURE__ */jsx12(Notice, {
+        error: true,
+        text: draftError ?? message ?? ""
+      }) : null, /* @__PURE__ */jsxs11(View11, {
+        style: {
+          flexDirection: "row",
+          gap: 8
+        },
+        children: [/* @__PURE__ */jsx12(Action, {
+          label: "\u6536\u8D77",
+          testID: "board-draft-dismiss",
+          onPress: closePopover
+        }), /* @__PURE__ */jsx12(Action, {
+          label: "\u4E22\u5F03\u8349\u7A3F",
+          testID: "board-draft-discard",
+          onPress: discardCompose
+        })]
+      })]
+    }) : /* @__PURE__ */jsxs11(View11, {
+      testID: "board-offline-drafts",
+      style: {
+        gap: 16
+      },
+      children: [draftSnapshot.drafts.map(saved => /* @__PURE__ */jsxs11(View11, {
+        testID: `board-draft-row-${saved.id}`,
+        style: {
+          gap: 6
+        },
+        children: [/* @__PURE__ */jsx12(Copy, {
+          children: saved.compose.text || "\u5C1A\u672A\u8F93\u5165\u6587\u5B57"
+        }), /* @__PURE__ */jsx12(Copy, {
+          small: true,
+          muted: true,
+          children: saved.compose.anchor?.selector ?? "\u6574\u4E2A\u753B\u5E03"
+        }), /* @__PURE__ */jsx12(Action, {
+          label: "\u7EE7\u7EED\u7F16\u8F91",
+          onPress: () => restoreDraft(saved)
+        })]
+      }, saved.revision)), draftSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx12(Notice, {
+        error: true,
+        text: issue2.message
+      }, index))]
     })]
   });
-  return /* @__PURE__ */jsxs8(View8, {
+  return /* @__PURE__ */jsxs11(View11, {
     style: {
       flex: 1,
       minHeight: 0,
       backgroundColor: c.surface0
     },
-    children: [/* @__PURE__ */jsxs8(View8, {
-      style: {
-        padding: 10,
-        gap: 8,
-        borderBottomWidth: 1,
-        borderColor: c.border
+    children: [/* @__PURE__ */jsx12(BoardToolbar, {
+      board,
+      onAccepted: query.accept,
+      onRefresh: query.refetch,
+      onBack: () => leaveBoard(onBack),
+      selectionMode,
+      onSelectionModeChange: setSelectionMode,
+      canSelect: canRenderFrames,
+      anchor,
+      selectedText,
+      onClearReference: () => {
+        setAnchor(void 0);
+        setSelectionClearToken(value => value + 1);
       },
-      children: [/* @__PURE__ */jsxs8(View8, {
-        style: {
-          flexDirection: "row",
-          alignItems: "center",
-          flexWrap: "wrap",
-          gap: 8
-        },
-        children: [/* @__PURE__ */jsx9(Action, {
-          label: "Boards",
-          icon: "PanelsTopLeft",
-          onPress: onBack
-        }), /* @__PURE__ */jsx9(BoardTitle, {
-          board,
-          onAccepted: query.accept,
-          onRefresh: query.refetch
-        }), /* @__PURE__ */jsx9(Action, {
-          label: `\u51B3\u7B56 ${board.decisions.filter(d => !["dismissed", "superseded"].includes(d.status)).length}`,
-          onPress: () => setDrawer("decisions")
-        }), /* @__PURE__ */jsx9(Action, {
-          label: "\u8BA8\u8BBA",
-          icon: "MessagesSquare",
-          onPress: () => setDrawer("threads")
-        }), /* @__PURE__ */jsx9(Action, {
-          label: "\u53D8\u5316",
-          icon: "History",
-          onPress: () => setDrawer("history")
-        })]
-      }), /* @__PURE__ */jsxs8(View8, {
-        style: {
-          flexDirection: "row",
-          alignItems: "center",
-          flexWrap: "wrap",
-          gap: 6
-        },
-        children: [canRenderFrames && [["off", "\u4EA4\u4E92", "MousePointer2"], ["component", "\u9009\u7EC4\u4EF6", "Component"], ["text", "\u9009\u6587\u5B57", "TextSelect"], ["region", "\u6846\u9009", "Scan"], ["point", "\u6307\u5B9A\u4F4D\u7F6E", "MapPin"]].map(([mode, label, icon]) => /* @__PURE__ */jsx9(Action, {
-          label,
-          icon,
-          active: selectionMode === mode,
-          onPress: () => setSelectionMode(mode)
-        }, mode)), /* @__PURE__ */jsx9(View8, {
-          style: {
-            flex: 1
-          }
-        }), /* @__PURE__ */jsx9(Action, {
-          label: "\u53D1\u6D88\u606F",
-          icon: "MessageCircle",
-          onPress: () => openCompose("question")
-        })]
-      })]
-    }), /* @__PURE__ */jsxs8(View8, {
-      testID: "board-reference-bar",
-      style: {
-        height: 38,
-        flexShrink: 0,
-        paddingHorizontal: 12,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
-        backgroundColor: c.surface1
-      },
-      children: [/* @__PURE__ */jsx9(Text7, {
-        numberOfLines: 1,
-        style: {
-          color: c.foregroundMuted,
-          flex: 1,
-          fontSize: 12
-        },
-        children: anchor ? `\u5DF2\u5F15\u7528 r${anchor.boardRevision} \xB7 ${selectedText}` : selectionMode === "component" ? "\u70B9\u51FB\u9009\u62E9\u7EC4\u4EF6 \xB7 \u62D6\u52A8\u624B\u67C4\u65F6\u6309 Tab / Shift+Tab \u9009\u62E9\u5BB9\u5668\u5C42\u7EA7 \xB7 Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : selectionMode === "text" ? "\u62D6\u9009\u6587\u5B57\uFF0C\u76F4\u63A5\u5728\u65C1\u8FB9\u63D0\u95EE\u3002Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : selectionMode === "region" ? "\u62D6\u51FA\u4E00\u4E2A\u533A\u57DF\uFF0C\u53EF\u5305\u542B\u56FE\u7247\u3001\u56FE\u8868\u6216\u7A7A\u767D\u3002Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : selectionMode === "point" ? "\u70B9\u51FB\u9700\u8981\u6DFB\u52A0\u6216\u4FEE\u6539\u5185\u5BB9\u7684\u4F4D\u7F6E\u3002Esc \u8FD4\u56DE\u4EA4\u4E92\u3002" : "\u2318 / Ctrl + Shift \u6309\u4F4F\u9009\u7EC4\u4EF6 \xB7 \u53F3\u952E\u4EA4\u6D41 \xB7 Option / Alt + \u62D6\u52A8\u6846\u9009"
-      }), canRenderFrames ? /* @__PURE__ */jsx9(UpdateNavigation, {
-        navigation: updateNavigation
-      }) : null, anchor ? /* @__PURE__ */jsx9(Action, {
-        label: "\u6E05\u9664\u5F15\u7528",
-        onPress: () => {
-          setAnchor(void 0);
-          setSelectionClearToken(value => value + 1);
+      updateNavigation,
+      onOpenDrawer: setDrawer,
+      onCompose: () => openCompose("question"),
+      draftCount: draftSnapshot.drafts.length,
+      draftIssue: draftSnapshot.issues.length > 0 || Boolean(draftError),
+      onPublish: () => {
+        if (composeRef.current) cancelCompose();
+        if (!composeRef.current && !pending.current) {
+          setDrawer(null);
+          setReleaseOpen(true);
         }
-      }) : null]
-    }), /* @__PURE__ */jsxs8(View8, {
+      },
+      onOpenDrafts: () => {
+        if (composeRef.current) cancelCompose();
+        if (!composeRef.current) setDrawer("drafts");
+      }
+    }), /* @__PURE__ */jsxs11(View11, {
       testID: "board-stage",
       style: {
         flex: 1,
@@ -4879,7 +6998,7 @@ function BoardContent({
         flexDirection: "row"
       },
       onLayout: event => setStageWidth(event.nativeEvent.layout.width),
-      children: [/* @__PURE__ */jsxs8(View8, {
+      children: [/* @__PURE__ */jsxs11(View11, {
         testID: "board-canvas-container",
         style: {
           flex: 1,
@@ -4892,7 +7011,7 @@ function BoardContent({
           setHeight(Math.max(180, event.nativeEvent.layout.height));
           setWidth(event.nativeEvent.layout.width);
         },
-        children: [canRenderFrames ? /* @__PURE__ */jsx9(CanvasFrame, {
+        children: [canRenderFrames ? /* @__PURE__ */jsx12(CanvasFrame, {
           boardId: board.id,
           title: board.title,
           canvas: board.canvas,
@@ -4944,32 +7063,32 @@ function BoardContent({
             setSelectionMode("off");
           },
           onOpenLink: url => {
-            void openExternalUrl(url).catch(e => setMessage(errorMessage(e)));
+            void openExternalUrl2(url).catch(e => setMessage(errorMessage(e)));
           }
-        }) : /* @__PURE__ */jsxs8(ScrollView3, {
+        }) : /* @__PURE__ */jsxs11(ScrollView5, {
           contentContainerStyle: {
             padding: 24,
             gap: 16
           },
-          children: [/* @__PURE__ */jsx9(Notice, {
+          children: [/* @__PURE__ */jsx12(Notice, {
             text: "\u624B\u673A\u517C\u5BB9\u89C6\u56FE\u3002\u5B8C\u6574\u7684\u81EA\u7531\u753B\u5E03\u3001\u52A8\u753B\u548C\u9875\u9762\u4EA4\u4E92\u5728\u684C\u9762\u7248\u4F7F\u7528\uFF1B\u8FD9\u91CC\u53EF\u4EE5\u67E5\u770B\u6458\u8981\u3001\u51B3\u7B56\u5E76\u4E0E agent \u4EA4\u6D41\u3002"
-          }), /* @__PURE__ */jsx9(Markdown, {
+          }), /* @__PURE__ */jsx12(Markdown, {
             children: typeof board.canvas.data.summary === "string" ? board.canvas.data.summary : "Agent \u5C1A\u672A\u63D0\u4F9B\u6587\u5B57\u6458\u8981\u3002\u4F60\u53EF\u4EE5\u76F4\u63A5\u63D0\u95EE\uFF0C\u56DE\u590D\u4F1A\u51FA\u73B0\u5728\u8BA8\u8BBA\u91CC\u3002"
           })]
-        }), /* @__PURE__ */jsx9(ComponentEditPanel, {
+        }), /* @__PURE__ */jsx12(ComponentEditPanel, {
           editor: componentEditor
-        }), query.error || query.liveError || frameError || message && !compose && !selectedInteractionId ? /* @__PURE__ */jsx9(View8, {
+        }), query.error || query.liveError || frameError || message && !compose && !selectedInteractionId ? /* @__PURE__ */jsx12(View11, {
           style: {
             position: "absolute",
             left: 8,
             right: 8,
             top: 8
           },
-          children: /* @__PURE__ */jsx9(Notice, {
+          children: /* @__PURE__ */jsx12(Notice, {
             error: true,
             text: query.error ? "\u8FDE\u63A5\u6682\u65F6\u4E2D\u65AD\u3002\u5F53\u524D\u662F\u4E0A\u6B21\u6536\u5230\u7684\u5185\u5BB9\uFF0C\u5C1A\u672A\u786E\u8BA4\u6700\u65B0\u72B6\u6001\u3002" : query.liveError ? errorMessage(query.liveError) : frameError || message || ""
           })
-        }) : null, compose || selectedInteractionId ? /* @__PURE__ */jsxs8(View8, {
+        }) : null, compose || selectedInteractionId ? /* @__PURE__ */jsxs11(View11, {
           testID: "board-local-popover",
           accessibilityLabel: "\u539F\u4F4D\u4EA4\u6D41",
           onLayout: event => setPopoverHeight(event.nativeEvent.layout.height),
@@ -4990,7 +7109,7 @@ function BoardContent({
             },
             elevation: 10
           },
-          children: [/* @__PURE__ */jsxs8(View8, {
+          children: [/* @__PURE__ */jsxs11(View11, {
             style: {
               flexDirection: "row",
               alignItems: "center",
@@ -4999,19 +7118,24 @@ function BoardContent({
               borderBottomWidth: 1,
               borderColor: c.border
             },
-            children: [/* @__PURE__ */jsx9(Text7, {
+            children: [/* @__PURE__ */jsx12(Text9, {
               style: {
                 color: c.foreground,
                 fontWeight: "600",
                 flex: 1
               },
               children: compose ? "\u53D1\u7ED9 agent" : "\u8FD9\u91CC\u7684\u8BA8\u8BBA"
-            }), !canRenderFrames ? /* @__PURE__ */jsx9(Action, {
+            }), compose ? /* @__PURE__ */jsx12(Action, {
+              testID: "board-draft-dismiss",
+              label: "\u6536\u8D77",
+              disabled: sending,
+              onPress: closePopover
+            }) : !canRenderFrames ? /* @__PURE__ */jsx12(Action, {
               label: "\u5173\u95ED",
               disabled: sending,
               onPress: closePopover
             }) : null]
-          }), /* @__PURE__ */jsxs8(ScrollView3, {
+          }), /* @__PURE__ */jsxs11(ScrollView5, {
             style: {
               flexShrink: 1
             },
@@ -5020,7 +7144,7 @@ function BoardContent({
               gap: 16
             },
             keyboardShouldPersistTaps: "handled",
-            children: [interactionLocation && interactionLocation.id === selectedInteractionId && interactionLocation.location !== "component" ? /* @__PURE__ */jsx9(Copy, {
+            children: [interactionLocation && interactionLocation.id === selectedInteractionId && interactionLocation.location !== "component" ? /* @__PURE__ */jsx12(Copy, {
               small: true,
               muted: true,
               children: {
@@ -5029,7 +7153,7 @@ function BoardContent({
                 hidden: "\u7EC4\u4EF6\u5F53\u524D\u9690\u85CF \xB7 \u53EF\u4ECE\u4FA7\u680F\u8BF7\u6C42\u5B9A\u4F4D",
                 snapshot: "\u672A\u5B9A\u4F4D\u5230\u5F53\u524D\u7EC4\u4EF6 \xB7 \u53EF\u67E5\u770B\u539F\u59CB\u5F15\u7528"
               }[interactionLocation.location]
-            }) : null, thread.map(item => /* @__PURE__ */jsx9(InteractionContent, {
+            }) : null, thread.map(item => /* @__PURE__ */jsx12(InteractionContent, {
               item,
               board,
               frameTheme,
@@ -5041,50 +7165,38 @@ function BoardContent({
                   agentId: item.agentId
                 });
               }
-            }, item.id)), compose ? /* @__PURE__ */jsxs8(View8, {
+            }, item.id)), compose ? /* @__PURE__ */jsxs11(View11, {
               style: {
                 gap: 10
               },
-              children: [!thread.length ? /* @__PURE__ */jsx9(AnchorPreview, {
+              children: [!thread.length ? /* @__PURE__ */jsx12(AnchorPreview, {
                 anchor: compose.anchor,
                 compact: true,
                 captureStatus: compose.captureStatus
-              }) : null, compose.captureStatus ? /* @__PURE__ */jsx9(View8, {
+              }) : null, compose.captureStatus ? /* @__PURE__ */jsx12(View11, {
                 style: {
                   minHeight: 36
                 },
-                children: /* @__PURE__ */jsx9(Copy, {
+                children: /* @__PURE__ */jsx12(Copy, {
                   small: true,
                   muted: true,
                   children: compose.captureStatus === "pending" ? "\u622A\u56FE\u51C6\u5907\u4E2D\uFF1B\u73B0\u5728\u53D1\u9001\u4F1A\u4FDD\u7559\u6587\u5B57\u548C\u4F4D\u7F6E\uFF0C\u4E0D\u9644\u56FE\u7247\u3002" : compose.captureStatus === "failed" ? `\u622A\u56FE\u5931\u8D25\uFF1A${captureFailureNames[compose.captureFailureReason ?? "generation-failed"]}\u6587\u5B57\u548C\u4F4D\u7F6E\u5DF2\u4FDD\u7559\u3002` : compose.captureStatus === "omitted" ? "\u6B64\u6B21\u53D1\u9001\u4E0D\u9644\u56FE\u7247\uFF0C\u4FDD\u7559\u539F\u6765\u7684\u6587\u5B57\u548C\u4F4D\u7F6E\u3002" : "\u5DF2\u9644\u9009\u533A\u622A\u56FE\u3002"
                 })
-              }) : null, compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsx9(Copy, {
+              }) : null, compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsx12(Copy, {
                 small: true,
                 muted: true,
                 children: "\u5F15\u7528\u6765\u81EA\u65E7\u753B\u5E03\u7248\u672C\uFF1Bagent \u4F1A\u5BF9\u7167\u539F\u6765\u7684\u4F4D\u7F6E\u548C\u5FEB\u7167\u3002"
-              }) : null, /* @__PURE__ */jsx9(SideAgentPicker, {
+              }) : null, /* @__PURE__ */jsx12(SideAgentPicker, {
                 interactions: board.interactions,
                 selectedId: board.sideAgentId,
                 pending: Boolean(board.pendingSideInteractionId),
                 disabled: sending || sideTargetBlocked || Boolean(compose.intentId),
                 onSelect: chooseSideAgent
-              }), canRenderFrames ? /* @__PURE__ */jsx9(WebMessageInput, {
+              }), canRenderFrames ? /* @__PURE__ */jsx12(WebMessageInput, {
                 value: compose.text,
                 focusToken: inputFocusToken,
                 disabled: sending || sideTargetBlocked,
-                onChange: text => {
-                  var previous = composeRef.current;
-                  if (previous) {
-                    var next = {
-                      ...previous,
-                      text,
-                      intentId: void 0,
-                      destination: void 0
-                    };
-                    composeRef.current = next;
-                    setCompose(next);
-                  }
-                },
+                onChange: changeDraftText,
                 onSubmit: destination => {
                   void submit(destination);
                 },
@@ -5099,26 +7211,14 @@ function BoardContent({
                   minHeight: 80,
                   fontSize: 14
                 }
-              }) : /* @__PURE__ */jsx9(TextInput3, {
+              }) : /* @__PURE__ */jsx12(TextInput4, {
                 autoFocus: true,
                 accessibilityLabel: "\u53D1\u7ED9 agent \u7684\u6D88\u606F",
                 value: compose.text,
                 editable: !sending && !sideTargetBlocked,
                 multiline: true,
                 maxLength: 24e3,
-                onChangeText: text => {
-                  var previous = composeRef.current;
-                  if (previous) {
-                    var next = {
-                      ...previous,
-                      text,
-                      intentId: void 0,
-                      destination: void 0
-                    };
-                    composeRef.current = next;
-                    setCompose(next);
-                  }
-                },
+                onChangeText: changeDraftText,
                 placeholder: "\u60F3\u4E86\u89E3\u4EC0\u4E48\uFF1F\u6216\u5E0C\u671B\u8FD9\u91CC\u53D1\u751F\u4EC0\u4E48\u53D8\u5316\uFF1F",
                 placeholderTextColor: c.foregroundMuted,
                 style: {
@@ -5131,13 +7231,20 @@ function BoardContent({
                   minHeight: 80,
                   textAlignVertical: "top"
                 }
-              }), !board.ownerAgentId ? /* @__PURE__ */jsx9(Notice, {
+              }), draftError ? /* @__PURE__ */jsx12(Notice, {
+                error: true,
+                text: `\u8349\u7A3F\u672A\u80FD\u4FDD\u5B58\u5728\u672C\u673A\uFF1A${draftError} \u5F53\u524D\u8F93\u5165\u4ECD\u4FDD\u7559\uFF0C\u8BF7\u5148\u590D\u5236\u6587\u5B57\u3002`
+              }) : /* @__PURE__ */jsx12(Copy, {
+                small: true,
+                muted: true,
+                children: "\u8349\u7A3F\u4FDD\u5B58\u5728\u672C\u673A\uFF1B\u6536\u8D77\u6216\u65AD\u7EBF\u540E\u53EF\u7EE7\u7EED\u7F16\u8F91\u3002"
+              }), !board.ownerAgentId ? /* @__PURE__ */jsx12(Notice, {
                 error: true,
                 text: "\u8FD9\u5757 Board \u5C1A\u672A\u5173\u8054\u8D1F\u8D23\u7684 agent\u3002\u8BF7\u8BA9 agent \u63A5\u7BA1\u540E\u518D\u53D1\u9001\u3002"
-              }) : null, message ? /* @__PURE__ */jsx9(Notice, {
+              }) : null, message ? /* @__PURE__ */jsx12(Notice, {
                 error: true,
                 text: message
-              }) : null, sideChoiceUncertain ? /* @__PURE__ */jsx9(Action, {
+              }) : null, sideChoiceUncertain ? /* @__PURE__ */jsx12(Action, {
                 label: choosingSide ? "\u6B63\u5728\u6838\u5BF9 Side \u76EE\u6807\u2026" : "\u6838\u5BF9 Side \u76EE\u6807",
                 disabled: choosingSide,
                 onPress: () => {
@@ -5145,7 +7252,7 @@ function BoardContent({
                     if (confirmed) setMessage(null);
                   });
                 }
-              }) : null, /* @__PURE__ */jsx9(View8, {
+              }) : null, /* @__PURE__ */jsxs11(View11, {
                 style: {
                   flexDirection: "row",
                   alignItems: "center",
@@ -5153,22 +7260,27 @@ function BoardContent({
                   flexWrap: "wrap",
                   justifyContent: "flex-end"
                 },
-                children: compose.intentId ? /* @__PURE__ */jsx9(Action, {
+                children: [/* @__PURE__ */jsx12(Action, {
+                  testID: "board-draft-discard",
+                  label: "\u4E22\u5F03\u8349\u7A3F",
+                  disabled: sending,
+                  onPress: discardCompose
+                }), compose.intentId ? /* @__PURE__ */jsx12(Action, {
                   label: sending ? "\u53D1\u9001\u4E2D\u2026" : "\u91CD\u8BD5\u539F\u53D1\u9001",
                   disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                   primary: true,
                   onPress: () => {
                     void submit(compose.destination ?? "main");
                   }
-                }) : /* @__PURE__ */jsxs8(Fragment3, {
-                  children: [/* @__PURE__ */jsx9(Action, {
+                }) : /* @__PURE__ */jsxs11(Fragment4, {
+                  children: [/* @__PURE__ */jsx12(Action, {
                     label: board.sideAgentId || board.pendingSideInteractionId ? "Side \u53D1\u9001" : "\u65B0\u5EFA Side \u5E76\u53D1\u9001",
                     icon: "GitBranch",
                     disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                     onPress: () => {
                       void submit("side");
                     }
-                  }), /* @__PURE__ */jsx9(Action, {
+                  }), /* @__PURE__ */jsx12(Action, {
                     label: "\u4E3B\u4F1A\u8BDD\u53D1\u9001",
                     disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                     primary: true,
@@ -5176,12 +7288,12 @@ function BoardContent({
                       void submit("main");
                     }
                   })]
-                })
-              }), compose.intentId ? /* @__PURE__ */jsx9(Copy, {
+                })]
+              }), compose.intentId ? /* @__PURE__ */jsx12(Copy, {
                 small: true,
                 muted: true,
-                children: "\u91CD\u8BD5\u6CBF\u539F\u76EE\u6807\u7EE7\u7EED\uFF1B\u4FEE\u6539\u6587\u5B57\u540E\u53EF\u4F5C\u4E3A\u65B0\u6D88\u606F\u53D1\u9001\u3002"
-              }) : null, /* @__PURE__ */jsx9(Copy, {
+                children: "\u91CD\u8BD5\u6CBF\u539F\u76EE\u6807\u7EE7\u7EED\uFF1B\u4FEE\u6539\u6587\u5B57\u4F1A\u53E6\u5B58\u65B0\u8349\u7A3F\uFF0C\u539F\u53D1\u9001\u4ECD\u4FDD\u7559\u5F85\u6838\u5BF9\u3002"
+              }) : null, /* @__PURE__ */jsx12(Copy, {
                 small: true,
                 muted: true,
                 children: "Enter \u4E3B\u4F1A\u8BDD \xB7 \u2318 / Ctrl + Enter \u5F53\u524D Side \u2318 / Ctrl + Option / Alt + Enter \u65B0 Side \xB7 Shift+Enter \u6362\u884C"
@@ -5189,15 +7301,15 @@ function BoardContent({
             }) : null]
           })]
         }) : null]
-      }), canRenderFrames ? /* @__PURE__ */jsx9(DiscussionRail, {
+      }), canRenderFrames ? /* @__PURE__ */jsx12(DiscussionRail, {
         markers,
         compact: stageWidth < 720,
         selectedId: selectedInteractionId,
         disabled: sending || Boolean(compose),
-        statusNames,
+        statusNames: statusNames2,
         onOpen: locateInteraction
       }) : null]
-    }), /* @__PURE__ */jsxs8(View8, {
+    }), /* @__PURE__ */jsx12(View11, {
       style: {
         paddingHorizontal: 12,
         paddingVertical: 5,
@@ -5208,35 +7320,47 @@ function BoardContent({
         justifyContent: "space-between",
         gap: 8
       },
-      children: [canRenderFrames ? /* @__PURE__ */jsx9(Copy, {
-        small: true,
-        muted: true,
-        children: "\u9009\u4E2D\u6587\u5B57 / Option + \u62D6\u52A8 / \u53F3\u952E\uFF0C\u5373\u53EF\u8F93\u5165 \xB7 Esc \u53D6\u6D88"
-      }) : null, /* @__PURE__ */jsxs8(View8, {
+      children: /* @__PURE__ */jsxs11(View11, {
         style: {
           flexDirection: "row",
           alignItems: "center",
           gap: 12
         },
-        children: [/* @__PURE__ */jsx9(BoardConnectionStatus, {
+        children: [/* @__PURE__ */jsx12(BoardConnectionStatus, {
           status: query.error ? "disconnected" : query.liveStatus
-        }), /* @__PURE__ */jsxs8(Copy, {
+        }), /* @__PURE__ */jsxs11(Copy, {
           small: true,
           muted: true,
           children: ["r", board.revision, " \xB7 ", timeLabel(board.updatedAt)]
         })]
-      })]
-    }), /* @__PURE__ */jsx9(Modal, {
-      title: drawer === "decisions" ? "Agent \u505A\u8FC7\u7684\u9ED8\u8BA4\u51B3\u7B56" : drawer === "threads" ? "\u56F4\u7ED5\u753B\u5E03\u7684\u8BA8\u8BBA" : "\u53D1\u751F\u4E86\u4EC0\u4E48\u53D8\u5316",
+      })
+    }), /* @__PURE__ */jsx12(Modal2, {
+      title: "\u5BFC\u51FA\u4E0E\u53D1\u5E03",
+      open: releaseOpen,
+      onOpenChange: setReleaseOpen,
+      children: /* @__PURE__ */jsx12(Modal2.Content, {
+        children: releaseOpen ? /* @__PURE__ */jsx12(ReleasePanel, {
+          board,
+          hostId: host.id,
+          onOpenBoard: id => leaveBoard(() => {
+            setReleaseOpen(false);
+            if (onOpenBoard) onOpenBoard(id);else onBack();
+          })
+        }) : null
+      })
+    }), /* @__PURE__ */jsx12(Modal2, {
+      title: drawer === "decisions" ? "Agent \u505A\u8FC7\u7684\u9ED8\u8BA4\u51B3\u7B56" : drawer === "threads" ? "\u56F4\u7ED5\u753B\u5E03\u7684\u8BA8\u8BBA" : drawer === "drafts" ? "\u672C\u673A\u8349\u7A3F" : "\u53D1\u751F\u4E86\u4EC0\u4E48\u53D8\u5316",
       open: drawer !== null,
       onOpenChange: open => {
         if (!open) setDrawer(null);
       },
-      children: /* @__PURE__ */jsxs8(Modal.Content, {
-        children: [drawer === "decisions" ? /* @__PURE__ */jsx9(DecisionList, {
+      children: /* @__PURE__ */jsxs11(Modal2.Content, {
+        children: [drawer === "decisions" ? /* @__PURE__ */jsx12(DecisionList, {
           board,
           onUpdate: updateDecision,
           onQuestion: decision => {
+            if (composeRef.current) cancelCompose();
+            if (composeRef.current) return;
             setDrawer(null);
             var draft = {
               kind: "question",
@@ -5253,50 +7377,108 @@ function BoardContent({
             };
             setSelectedInteractionId(void 0);
             setPopoverPoint(anchorPoint(draft.anchor));
-            composeRef.current = draft;
-            setCompose(draft);
+            changeCompose(draft, anchorPoint(draft.anchor));
           }
-        }) : null, drawer === "threads" ? /* @__PURE__ */jsxs8(View8, {
+        }) : null, drawer === "drafts" ? /* @__PURE__ */jsxs11(View11, {
+          testID: "board-drafts",
+          style: {
+            gap: 16
+          },
+          children: [/* @__PURE__ */jsx12(Copy, {
+            small: true,
+            muted: true,
+            children: "\u53EA\u4FDD\u5B58\u5728\u5F53\u524D\u5BA2\u6237\u7AEF\uFF0C\u6309\u4E3B\u673A\u548C Board \u5206\u5F00\u3002\u7EE7\u7EED\u7F16\u8F91\u4F1A\u4FDD\u7559\u539F\u5F15\u7528\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u53D1\u9001\u3002"
+          }), draftSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx12(Notice, {
+            error: true,
+            text: issue2.message
+          }, `${issue2.code}-${index}`)), draftError ? /* @__PURE__ */jsx12(Notice, {
+            error: true,
+            text: draftError
+          }) : null, !draftSnapshot.drafts.length ? /* @__PURE__ */jsx12(Copy, {
+            muted: true,
+            children: "\u6CA1\u6709\u5F85\u53D1\u9001\u7684\u8349\u7A3F\u3002"
+          }) : null, draftSnapshot.drafts.map(saved => /* @__PURE__ */jsxs11(View11, {
+            testID: `board-draft-row-${saved.id}`,
+            style: {
+              borderBottomWidth: 1,
+              borderColor: c.border,
+              paddingBottom: 14,
+              gap: 8
+            },
+            children: [/* @__PURE__ */jsx12(Text9, {
+              numberOfLines: 2,
+              style: {
+                color: c.foreground
+              },
+              children: saved.compose.text || "\u5C1A\u672A\u8F93\u5165\u6587\u5B57"
+            }), /* @__PURE__ */jsxs11(Copy, {
+              small: true,
+              muted: true,
+              children: [saved.compose.anchor?.selector ?? saved.compose.anchor?.text ?? "\u6574\u4E2A\u753B\u5E03", " \xB7 ", timeLabel(new Date(saved.updatedAt).toISOString())]
+            }), saved.conflicted ? /* @__PURE__ */jsx12(Notice, {
+              text: "\u53E6\u4E00\u7A97\u53E3\u4E5F\u4FEE\u6539\u4E86\u8FD9\u4EFD\u8349\u7A3F\uFF1B\u4E24\u4E2A\u7248\u672C\u90FD\u5DF2\u4FDD\u7559\u3002"
+            }) : null, saved.compose.intentId ? /* @__PURE__ */jsx12(Copy, {
+              small: true,
+              muted: true,
+              children: "\u4E0A\u6B21\u53D1\u9001\u7ED3\u679C\u5F85\u6838\u5BF9\uFF1B\u7EE7\u7EED\u65F6\u4FDD\u7559\u539F\u53D1\u9001\u7F16\u53F7\u548C\u76EE\u6807\u3002"
+            }) : null, /* @__PURE__ */jsxs11(View11, {
+              style: {
+                flexDirection: "row",
+                gap: 8
+              },
+              children: [/* @__PURE__ */jsx12(Action, {
+                label: "\u7EE7\u7EED\u7F16\u8F91",
+                onPress: () => restoreDraft(saved)
+              }), /* @__PURE__ */jsx12(Action, {
+                label: "\u4E22\u5F03",
+                onPress: () => {
+                  var result = draftStore.remove(saved.id, saved.revision);
+                  if (!result.ok) setDraftError(result.issue.message);
+                }
+              })]
+            })]
+          }, saved.revision))]
+        }) : null, drawer === "threads" ? /* @__PURE__ */jsxs11(View11, {
           style: {
             gap: 20
           },
-          children: [!board.interactions.length ? /* @__PURE__ */jsx9(Copy, {
+          children: [!board.interactions.length ? /* @__PURE__ */jsx12(Copy, {
             muted: true,
             children: "\u6307\u7740\u753B\u5E03\u63D0\u95EE\u3001\u63D0\u51FA\u4FEE\u6539\uFF0C\u6216\u5F00\u4E00\u4E2A\u72EC\u7ACB\u8BA8\u8BBA\u3002\u4EA4\u6D41\u4F1A\u4FDD\u7559\u5F53\u65F6\u7684\u5F15\u7528\u548C\u7248\u672C\u3002"
-          }) : null, [...interactions].filter(item => interactionRoot(item.id, interactions) === item.id).reverse().map(interaction => /* @__PURE__ */jsxs8(View8, {
+          }) : null, [...interactions].filter(item => interactionRoot(item.id, interactions) === item.id).reverse().map(interaction => /* @__PURE__ */jsxs11(View11, {
             style: {
               borderBottomWidth: 1,
               borderColor: c.border,
               paddingBottom: 18,
               gap: 10
             },
-            children: [/* @__PURE__ */jsxs8(Copy, {
+            children: [/* @__PURE__ */jsxs11(Copy, {
               small: true,
               muted: true,
-              children: [kindNames[interaction.kind], " \xB7 ", statusNames[interactionThread(interaction.id, interactions).at(-1)?.status ?? interaction.status], " \xB7 ", timeLabel(interaction.createdAt)]
-            }), /* @__PURE__ */jsx9(Copy, {
+              children: [kindNames[interaction.kind], " \xB7 ", statusNames2[interactionThread(interaction.id, interactions).at(-1)?.status ?? interaction.status], " \xB7 ", timeLabel(interaction.createdAt)]
+            }), /* @__PURE__ */jsx12(Copy, {
               children: interaction.text
-            }), /* @__PURE__ */jsx9(Action, {
+            }), /* @__PURE__ */jsx12(Action, {
               label: "\u539F\u4F4D\u67E5\u770B\u548C\u7EE7\u7EED\u4EA4\u6D41",
               onPress: () => locateInteraction(interaction.id)
             })]
           }, interaction.id))]
-        }) : null, drawer === "history" ? /* @__PURE__ */jsxs8(View8, {
+        }) : null, drawer === "history" ? /* @__PURE__ */jsxs11(View11, {
           style: {
             gap: 14
           },
-          children: [[...board.events].reverse().slice(0, 100).map(event => /* @__PURE__ */jsxs8(View8, {
+          children: [[...board.events].reverse().slice(0, 100).map(event => /* @__PURE__ */jsxs11(View11, {
             style: {
               gap: 3
             },
-            children: [/* @__PURE__ */jsx9(Copy, {
+            children: [/* @__PURE__ */jsx12(Copy, {
               children: event.summary
-            }), /* @__PURE__ */jsxs8(Copy, {
+            }), /* @__PURE__ */jsxs11(Copy, {
               muted: true,
               small: true,
               children: ["r", event.revision, " \xB7 ", event.source, " \xB7 ", timeLabel(event.at)]
             })]
-          }, event.id)), !board.events.length ? /* @__PURE__ */jsx9(Copy, {
+          }, event.id)), !board.events.length ? /* @__PURE__ */jsx12(Copy, {
             muted: true,
             children: "\u8FD8\u6CA1\u6709\u53D8\u5316\u3002"
           }) : null]
@@ -5316,33 +7498,33 @@ function InteractionContent({
 }) {
   var c = useColors();
   var discussion = item.kind === "fork" || item.kind === "reply";
-  var [showSnapshot, setShowSnapshot] = useState7(false);
-  var [visualState, setVisualState] = useState7({});
-  var [visualError, setVisualError] = useState7();
+  var [showSnapshot, setShowSnapshot] = useState10(false);
+  var [visualState, setVisualState] = useState10({});
+  var [visualError, setVisualError] = useState10();
   var stale = item.anchor && item.anchor.canvasRevision !== board.canvas.revision;
   var follow = text => onFollow(discussion ? "reply" : "question", text);
-  return /* @__PURE__ */jsxs8(View8, {
+  return /* @__PURE__ */jsxs11(View11, {
     style: {
       gap: 10,
       paddingBottom: 14,
       borderBottomWidth: 1,
       borderColor: c.border
     },
-    children: [/* @__PURE__ */jsxs8(Copy, {
+    children: [/* @__PURE__ */jsxs11(Copy, {
       small: true,
       muted: true,
-      children: [kindNames[item.kind], " \xB7 ", statusNames[item.status], " \xB7 ", timeLabel(item.createdAt)]
-    }), /* @__PURE__ */jsx9(Copy, {
+      children: [kindNames[item.kind], " \xB7 ", statusNames2[item.status], " \xB7 ", timeLabel(item.createdAt)]
+    }), /* @__PURE__ */jsx12(Copy, {
       children: item.text
-    }), stale ? /* @__PURE__ */jsxs8(Copy, {
+    }), stale ? /* @__PURE__ */jsxs11(Copy, {
       small: true,
       muted: true,
       children: ["\u65E7\u5F15\u7528 \xB7 \u753B\u5E03 v", item.anchor.canvasRevision, "\uFF0C\u5F53\u524D v", board.canvas.revision, "\u3002\u5F15\u7528\u4FDD\u7559\u63D0\u95EE\u65F6\u5185\u5BB9\uFF1B\u6807\u8BB0\u53EF\u8DDF\u968F\u4ECD\u80FD\u786E\u8BA4\u7684\u7EC4\u4EF6\uFF0C\u8BF7\u6838\u5BF9\u5F53\u524D\u5185\u5BB9\u3002"]
-    }) : null, showSnapshot ? /* @__PURE__ */jsx9(AnchorPreview, {
+    }) : null, showSnapshot ? /* @__PURE__ */jsx12(AnchorPreview, {
       anchor: item.anchor
-    }) : null, item.response ? /* @__PURE__ */jsx9(Markdown, {
+    }) : null, item.response ? /* @__PURE__ */jsx12(Markdown, {
       children: item.response
-    }) : null, item.responseCanvas && canRenderFrames ? /* @__PURE__ */jsx9(View8, {
+    }) : null, item.responseCanvas && canRenderFrames ? /* @__PURE__ */jsx12(View11, {
       style: {
         height: 260,
         borderWidth: 1,
@@ -5350,7 +7532,7 @@ function InteractionContent({
         borderRadius: 8,
         overflow: "hidden"
       },
-      children: /* @__PURE__ */jsx9(CanvasFrame, {
+      children: /* @__PURE__ */jsx12(CanvasFrame, {
         boardId: `${board.id}.response.${item.id}`,
         title: "Agent \u7684\u53EF\u4EA4\u4E92\u56DE\u7B54",
         canvas: item.responseCanvas,
@@ -5365,36 +7547,36 @@ function InteractionContent({
         onState: setVisualState,
         onError: error => setVisualError(error.message),
         onOpenLink: url => {
-          void openExternalUrl(url).catch(error => setVisualError(errorMessage(error)));
+          void openExternalUrl2(url).catch(error => setVisualError(errorMessage(error)));
         }
       })
-    }) : null, item.responseCanvas && !canRenderFrames ? /* @__PURE__ */jsx9(Copy, {
+    }) : null, item.responseCanvas && !canRenderFrames ? /* @__PURE__ */jsx12(Copy, {
       small: true,
       muted: true,
       children: "\u8FD9\u6761\u56DE\u590D\u5305\u542B\u53EF\u4EA4\u4E92\u56FE\u89E3\uFF0C\u8BF7\u5728\u684C\u9762\u67E5\u770B\u3002"
-    }) : null, item.error || visualError ? /* @__PURE__ */jsx9(Notice, {
+    }) : null, item.error || visualError ? /* @__PURE__ */jsx12(Notice, {
       error: true,
       text: item.error || visualError || ""
-    }) : null, item.resultReferences.length ? /* @__PURE__ */jsxs8(Copy, {
+    }) : null, item.resultReferences.length ? /* @__PURE__ */jsxs11(Copy, {
       small: true,
       muted: true,
       children: ["\u4F9D\u636E\uFF1A", item.resultReferences.join(" \xB7 ")]
-    }) : null, /* @__PURE__ */jsxs8(View8, {
+    }) : null, /* @__PURE__ */jsxs11(View11, {
       style: {
         flexDirection: "row",
         flexWrap: "wrap",
         gap: 6
       },
-      children: [item.anchor ? /* @__PURE__ */jsx9(Action, {
+      children: [item.anchor ? /* @__PURE__ */jsx12(Action, {
         label: showSnapshot ? "\u6536\u8D77\u539F\u59CB\u5F15\u7528" : "\u539F\u59CB\u5F15\u7528",
         onPress: () => setShowSnapshot(value => !value)
-      }) : null, unconfirmed && item.status === "failed" ? /* @__PURE__ */jsx9(Action, {
+      }) : null, unconfirmed && item.status === "failed" ? /* @__PURE__ */jsx12(Action, {
         label: "\u91CD\u8BD5\u53D1\u9001",
         onPress: onRetry
-      }) : null, !unconfirmed && (!discussion || item.agentId) ? /* @__PURE__ */jsx9(Action, {
+      }) : null, !unconfirmed && (!discussion || item.agentId) ? /* @__PURE__ */jsx12(Action, {
         label: "\u7EE7\u7EED\u4EA4\u6D41",
         onPress: () => follow()
-      }) : null, item.agentId ? /* @__PURE__ */jsx9(Action, {
+      }) : null, item.agentId ? /* @__PURE__ */jsx12(Action, {
         label: "\u4F1A\u8BDD",
         onPress: onOpenAgent
       }) : null]
@@ -5407,15 +7589,15 @@ function AnchorPreview({
   captureStatus
 }) {
   if (!anchor) return null;
-  return /* @__PURE__ */jsxs8(View8, {
+  return /* @__PURE__ */jsxs11(View11, {
     style: {
       gap: 6
     },
-    children: [/* @__PURE__ */jsxs8(Copy, {
+    children: [/* @__PURE__ */jsxs11(Copy, {
       muted: true,
       small: true,
       children: ["\u5F15\u7528 r", anchor.boardRevision, " \xB7 ", anchor.text || (anchor.kind === "point" ? "\u6307\u5B9A\u4F4D\u7F6E" : anchor.kind === "region" ? "\u6846\u9009\u533A\u57DF" : "\u753B\u5E03"), anchor.rect ? ` \xB7 (${Math.round(anchor.rect.x)}, ${Math.round(anchor.rect.y)})` : ""]
-    }), anchor.image ? /* @__PURE__ */jsx9(Image, {
+    }), anchor.image ? /* @__PURE__ */jsx12(Image2, {
       source: {
         uri: `data:${anchor.image.mimeType};base64,${anchor.image.data}`
       },
@@ -5425,12 +7607,12 @@ function AnchorPreview({
         height: compact ? 72 : 150
       },
       accessibilityLabel: "\u63D0\u95EE\u65F6\u7684\u753B\u9762\u5FEB\u7167"
-    }) : captureStatus ? /* @__PURE__ */jsx9(View8, {
+    }) : captureStatus ? /* @__PURE__ */jsx12(View11, {
       style: {
         height: compact ? 72 : 150,
         justifyContent: "center"
       },
-      children: /* @__PURE__ */jsx9(Copy, {
+      children: /* @__PURE__ */jsx12(Copy, {
         small: true,
         muted: true,
         children: captureStatus === "pending" ? "\u622A\u56FE\u51C6\u5907\u4E2D\u2026" : "\u672A\u9644\u56FE\u7247"
@@ -5444,38 +7626,38 @@ function DecisionList({
   onQuestion
 }) {
   var c = useColors();
-  var [showDismissed, setShowDismissed] = useState7(false);
+  var [showDismissed, setShowDismissed] = useState10(false);
   var basisNames = {
     explicit: "Agent \u660E\u786E\u8BB0\u5F55",
     observed: "\u89C2\u5BDF\u5230\u7684\u884C\u4E3A\u53D8\u5316",
     inferred: "\u5F85\u6838\u5B9E\u7684\u53EF\u80FD\u51B3\u7B56"
   };
   var decisions = board.decisions.filter(d => showDismissed || !["dismissed", "superseded"].includes(d.status)).sort((a, b) => Number(b.status === "questioned") - Number(a.status === "questioned") || b.updatedAt.localeCompare(a.updatedAt));
-  return /* @__PURE__ */jsxs8(View8, {
+  return /* @__PURE__ */jsxs11(View11, {
     style: {
       gap: 18
     },
-    children: [/* @__PURE__ */jsx9(Copy, {
+    children: [/* @__PURE__ */jsx12(Copy, {
       muted: true,
       children: "\u8BB0\u5F55 agent \u5728\u5DE5\u4F5C\u9014\u4E2D\u81EA\u884C\u4F5C\u51FA\u7684\u9009\u62E9\u3002\u63A8\u65AD\u4E0E\u4E8B\u5B9E\u5206\u5F00\uFF1B\u6CA1\u6709\u8BF4\u51FA\u7684\u7406\u7531\u4F1A\u6807\u4E3A\u201C\u672A\u8BF4\u660E\u201D\u3002"
-    }), /* @__PURE__ */jsxs8(Copy, {
+    }), /* @__PURE__ */jsxs11(Copy, {
       small: true,
       muted: true,
       children: [board.extraction.lastCheckedAt ? `\u6700\u8FD1\u68C0\u67E5\uFF1A${timeLabel(board.extraction.lastCheckedAt)}` : "\u5C1A\u672A\u5B8C\u6210\u4F1A\u8BDD\u68C0\u67E5", board.extraction.note ? ` \xB7 ${board.extraction.note}` : ""]
-    }), !decisions.length ? /* @__PURE__ */jsx9(Copy, {
+    }), !decisions.length ? /* @__PURE__ */jsx12(Copy, {
       children: "\u5C1A\u65E0\u5DF2\u8BB0\u5F55\u7684\u51B3\u7B56\u3002\u8FD9\u4E0D\u4EE3\u8868 agent \u6CA1\u6709\u4F5C\u8FC7\u9ED8\u8BA4\u9009\u62E9\u3002"
-    }) : null, decisions.map(decision => /* @__PURE__ */jsxs8(View8, {
+    }) : null, decisions.map(decision => /* @__PURE__ */jsxs11(View11, {
       style: {
         gap: 8,
         paddingBottom: 16,
         borderBottomWidth: 1,
         borderColor: c.border
       },
-      children: [/* @__PURE__ */jsxs8(Copy, {
+      children: [/* @__PURE__ */jsxs11(Copy, {
         small: true,
         muted: true,
         children: [basisNames[decision.basis], decision.status === "questioned" ? " \xB7 \u5DF2\u8D28\u7591" : decision.status === "dismissed" ? " \xB7 \u5DF2\u6392\u9664" : decision.status === "superseded" ? " \xB7 \u5DF2\u53D6\u4EE3" : ""]
-      }), /* @__PURE__ */jsx9(Text7, {
+      }), /* @__PURE__ */jsx12(Text9, {
         selectable: true,
         style: {
           color: c.foreground,
@@ -5484,45 +7666,45 @@ function DecisionList({
           lineHeight: 23
         },
         children: decision.choice
-      }), /* @__PURE__ */jsx9(Copy, {
+      }), /* @__PURE__ */jsx12(Copy, {
         children: decision.rationale || "\u7406\u7531\u672A\u8BF4\u660E"
-      }), decision.impact ? /* @__PURE__ */jsxs8(Copy, {
+      }), decision.impact ? /* @__PURE__ */jsxs11(Copy, {
         muted: true,
         children: ["\u5F71\u54CD\uFF1A", decision.impact]
-      }) : null, decision.evidence.map((evidence, i) => /* @__PURE__ */jsxs8(View8, {
+      }) : null, decision.evidence.map((evidence, i) => /* @__PURE__ */jsxs11(View11, {
         style: {
           gap: 2
         },
-        children: [/* @__PURE__ */jsxs8(Copy, {
+        children: [/* @__PURE__ */jsxs11(Copy, {
           small: true,
           muted: true,
           children: [evidence.kind, " \xB7 ", evidence.reference]
-        }), evidence.excerpt ? /* @__PURE__ */jsx9(Copy, {
+        }), evidence.excerpt ? /* @__PURE__ */jsx12(Copy, {
           small: true,
           children: evidence.excerpt
         }) : null]
-      }, i)), /* @__PURE__ */jsxs8(View8, {
+      }, i)), /* @__PURE__ */jsxs11(View11, {
         style: {
           flexDirection: "row",
           gap: 8,
           flexWrap: "wrap"
         },
-        children: [/* @__PURE__ */jsx9(Action, {
+        children: [/* @__PURE__ */jsx12(Action, {
           label: "\u56F4\u7ED5\u8FD9\u6761\u51B3\u7B56\u63D0\u95EE",
           onPress: () => onQuestion(decision)
-        }), decision.status === "active" ? /* @__PURE__ */jsx9(Action, {
+        }), decision.status === "active" ? /* @__PURE__ */jsx12(Action, {
           label: "\u6807\u4E3A\u6709\u5F02\u8BAE",
           onPress: () => {
             void onUpdate(decision, "questioned");
           }
-        }) : null, decision.basis === "inferred" ? /* @__PURE__ */jsx9(Action, {
+        }) : null, decision.basis === "inferred" ? /* @__PURE__ */jsx12(Action, {
           label: "\u8FD9\u4E0D\u662F\u4E00\u4E2A\u51B3\u7B56",
           onPress: () => {
             void onUpdate(decision, "dismissed");
           }
         }) : null]
       })]
-    }, decision.id)), /* @__PURE__ */jsx9(Action, {
+    }, decision.id)), /* @__PURE__ */jsx12(Action, {
       label: showDismissed ? "\u9690\u85CF\u5DF2\u6392\u9664\u4E0E\u88AB\u53D6\u4EE3\u7684\u51B3\u7B56" : "\u67E5\u770B\u5DF2\u6392\u9664\u4E0E\u88AB\u53D6\u4EE3\u7684\u51B3\u7B56",
       onPress: () => setShowDismissed(value => !value)
     })]
@@ -5530,17 +7712,18 @@ function DecisionList({
 }
 
 // client/home.tsx
-import { jsx as jsx10, jsxs as jsxs9 } from "react/jsx-runtime";
+import { jsx as jsx13, jsxs as jsxs12 } from "react/jsx-runtime";
 var EMPTY_CANVAS = `<style>main{padding:clamp(24px,8vw,100px);max-width:760px;margin:auto}h1{font-size:clamp(30px,5vw,54px);letter-spacing:-.04em}p{line-height:1.8;opacity:.65}#content{min-height:30vh}</style><main><p>YOUR SHARED SURFACE</p><h1>\u4ECE\u4E00\u4E2A\u95EE\u9898\u5F00\u59CB\u3002</h1><p>\u8BA9 agent \u6839\u636E\u773C\u524D\u7684\u4EFB\u52A1\u7EC4\u7EC7\u8FD9\u91CC\u3002\u89E3\u91CA\u3001\u56FE\u8868\u3001\u52A8\u753B\u548C\u4E92\u52A8\u5DE5\u5177\uFF0C\u90FD\u53EF\u4EE5\u5728\u540C\u4E00\u5757\u753B\u5E03\u4E0A\u4E0D\u65AD\u751F\u957F\u3002</p><div id="content"></div></main>`;
 function BoardHome(props) {
-  var [selected, setSelected] = useState8(props.initialBoardId);
-  return selected ? /* @__PURE__ */jsx10(BoardView, {
+  var [selected, setSelected] = useState11(props.initialBoardId);
+  return selected ? /* @__PURE__ */jsx13(BoardView, {
     ...props,
     boardId: selected,
-    onBack: () => setSelected(void 0)
-  }, `${props.host.id}:${selected}`) : /* @__PURE__ */jsx10(ColorContext.Provider, {
+    onBack: () => setSelected(void 0),
+    onOpenBoard: setSelected
+  }, `${props.host.id}:${selected}`) : /* @__PURE__ */jsx13(ColorContext.Provider, {
     value: props.theme.colors,
-    children: /* @__PURE__ */jsx10(BoardIndex, {
+    children: /* @__PURE__ */jsx13(BoardIndex, {
       ...props,
       onSelect: setSelected
     })
@@ -5553,15 +7736,15 @@ function BoardIndex({
   onSelect
 }) {
   var c = useColors();
-  var create = useRpc5(createBoardRpc);
+  var create = useRpc6(createBoardRpc);
   var paseo = usePaseo();
   var boards = useBoardList(host.id, workspaceId);
-  var [creating, setCreating] = useState8(false);
-  var [title, setTitle] = useState8("");
-  var [owner, setOwner] = useState8(agentId);
-  var [pending, setPending] = useState8(false);
-  var [failure, setFailure] = useState8(null);
-  var [draftId, setDraftId] = useState8(() => localId("board"));
+  var [creating, setCreating] = useState11(false);
+  var [title, setTitle] = useState11("");
+  var [owner, setOwner] = useState11(agentId);
+  var [pending, setPending] = useState11(false);
+  var [failure, setFailure] = useState11(null);
+  var [draftId, setDraftId] = useState11(() => localId("board"));
   var agents = useQuery2({
     queryKey: ["paseo-board-owners", host.id],
     queryFn: () => paseo.agents.list(),
@@ -5591,12 +7774,12 @@ function BoardIndex({
       setPending(false);
     }
   });
-  return /* @__PURE__ */jsxs9(View9, {
+  return /* @__PURE__ */jsxs12(View12, {
     style: {
       flex: 1,
       backgroundColor: c.surface0
     },
-    children: [/* @__PURE__ */jsxs9(ScrollView4, {
+    children: [/* @__PURE__ */jsxs12(ScrollView6, {
       contentContainerStyle: {
         padding: 28,
         gap: 24,
@@ -5604,18 +7787,18 @@ function BoardIndex({
         width: "100%",
         alignSelf: "center"
       },
-      children: [/* @__PURE__ */jsxs9(View9, {
+      children: [/* @__PURE__ */jsxs12(View12, {
         style: {
           flexDirection: "row",
           alignItems: "center",
           gap: 16
         },
-        children: [/* @__PURE__ */jsxs9(View9, {
+        children: [/* @__PURE__ */jsxs12(View12, {
           style: {
             flex: 1,
             gap: 7
           },
-          children: [/* @__PURE__ */jsx10(Text8, {
+          children: [/* @__PURE__ */jsx13(Text10, {
             style: {
               color: c.foreground,
               fontSize: 28,
@@ -5623,11 +7806,11 @@ function BoardIndex({
               letterSpacing: -0.7
             },
             children: "Boards"
-          }), /* @__PURE__ */jsx10(Copy, {
+          }), /* @__PURE__ */jsx13(Copy, {
             muted: true,
             children: "\u56DE\u5230\u9879\u76EE\u7684\u73B0\u72B6\uFF0C\u6307\u7740\u5185\u5BB9\u4E0E agent \u4EA4\u6D41\u3002"
           })]
-        }), /* @__PURE__ */jsx10(Action, {
+        }), /* @__PURE__ */jsx13(Action, {
           label: "\u65B0\u5EFA Board",
           icon: "Plus",
           primary: true,
@@ -5636,29 +7819,29 @@ function BoardIndex({
             setCreating(true);
           }
         })]
-      }), /* @__PURE__ */jsx10(BoardConnectionStatus, {
+      }), /* @__PURE__ */jsx13(BoardConnectionStatus, {
         status: boards.liveStatus
-      }), boards.error ? /* @__PURE__ */jsx10(Notice, {
+      }), boards.error ? /* @__PURE__ */jsx13(Notice, {
         error: true,
         text: errorMessage(boards.error)
-      }) : null, boards.liveError ? /* @__PURE__ */jsx10(Notice, {
+      }) : null, boards.liveError ? /* @__PURE__ */jsx13(Notice, {
         error: true,
         text: errorMessage(boards.liveError)
-      }) : null, boards.isPending ? /* @__PURE__ */jsx10(Copy, {
+      }) : null, boards.isPending ? /* @__PURE__ */jsx13(Copy, {
         muted: true,
         children: "\u6B63\u5728\u8BFB\u53D6\u2026"
-      }) : null, boards.data?.boards.length === 0 ? /* @__PURE__ */jsxs9(View9, {
+      }) : null, boards.data?.boards.length === 0 ? /* @__PURE__ */jsxs12(View12, {
         style: {
           paddingVertical: 60,
           gap: 14
         },
-        children: [/* @__PURE__ */jsx10(Copy, {
+        children: [/* @__PURE__ */jsx13(Copy, {
           children: "\u8FD8\u6CA1\u6709 Board\u3002"
-        }), /* @__PURE__ */jsx10(Copy, {
+        }), /* @__PURE__ */jsx13(Copy, {
           muted: true,
           children: "\u4F60\u53EF\u4EE5\u8BA9 agent \u4E3A\u5F53\u524D\u4EFB\u52A1\u5EFA\u7ACB\u4E00\u5757\u6301\u7EED\u66F4\u65B0\u7684\u81EA\u7531\u753B\u5E03\uFF0C\u6216\u5148\u5173\u8054\u4E00\u4E2A agent \u5F00\u59CB\u3002"
         })]
-      }) : null, boards.data?.boards.map(board => /* @__PURE__ */jsxs9(Pressable6, {
+      }) : null, boards.data?.boards.map(board => /* @__PURE__ */jsxs12(Pressable8, {
         accessibilityRole: "button",
         accessibilityLabel: `\u6253\u5F00 ${board.title}`,
         onPress: () => onSelect(board.id),
@@ -5673,13 +7856,13 @@ function BoardIndex({
           backgroundColor: pressed ? c.surface2 : c.surface1,
           gap: 10
         }),
-        children: [/* @__PURE__ */jsxs9(View9, {
+        children: [/* @__PURE__ */jsxs12(View12, {
           style: {
             flexDirection: "row",
             alignItems: "center",
             gap: 12
           },
-          children: [/* @__PURE__ */jsx10(Text8, {
+          children: [/* @__PURE__ */jsx13(Text10, {
             style: {
               color: c.foreground,
               fontSize: 19,
@@ -5687,7 +7870,7 @@ function BoardIndex({
               flex: 1
             },
             children: board.title
-          }), /* @__PURE__ */jsxs9(View9, {
+          }), /* @__PURE__ */jsxs12(View12, {
             testID: `board-status-${board.id}`,
             accessibilityLabel: board.status === "processing" ? "\u5DE5\u4F5C\uFF1A\u5904\u7406\u4E2D" : board.status === "error" ? "\u5DE5\u4F5C\uFF1A\u9700\u8981\u5173\u6CE8" : "\u5DE5\u4F5C\uFF1A\u7A7A\u95F2",
             style: {
@@ -5695,19 +7878,19 @@ function BoardIndex({
               alignItems: "center",
               gap: 6
             },
-            children: [/* @__PURE__ */jsx10(View9, {
+            children: [/* @__PURE__ */jsx13(View12, {
               style: {
                 width: 7,
                 height: 7,
                 borderRadius: 4,
                 backgroundColor: board.status === "processing" ? c.accent : board.status === "error" ? c.statusDanger : c.foregroundMuted
               }
-            }), /* @__PURE__ */jsxs9(Copy, {
+            }), /* @__PURE__ */jsxs12(Copy, {
               muted: true,
               small: true,
               children: ["\u5DE5\u4F5C \xB7 ", board.status === "processing" ? "\u5904\u7406\u4E2D" : board.status === "error" ? "\u9700\u8981\u5173\u6CE8" : "\u7A7A\u95F2"]
             })]
-          }), board.unreadUpdateCount > 0 ? /* @__PURE__ */jsx10(View9, {
+          }), board.unreadUpdateCount > 0 ? /* @__PURE__ */jsx13(View12, {
             testID: `board-unread-${board.id}`,
             accessibilityLabel: `${board.unreadUpdateCount} \u5904\u672A\u770B\u66F4\u65B0`,
             style: {
@@ -5716,7 +7899,7 @@ function BoardIndex({
               paddingVertical: 3,
               borderRadius: 12
             },
-            children: /* @__PURE__ */jsxs9(Text8, {
+            children: /* @__PURE__ */jsxs12(Text10, {
               style: {
                 color: c.accentForeground,
                 fontSize: 12,
@@ -5725,30 +7908,30 @@ function BoardIndex({
               children: [board.unreadUpdateCount, " \u66F4\u65B0"]
             })
           }) : null]
-        }), /* @__PURE__ */jsxs9(Copy, {
+        }), /* @__PURE__ */jsxs12(Copy, {
           muted: true,
           small: true,
           children: [board.decisionCount, " \u4E2A agent \u51B3\u7B56 \xB7 ", board.pendingCount, " \u4E2A\u5F85\u843D\u5B9E\u4EA4\u6D41"]
-        }), /* @__PURE__ */jsxs9(Copy, {
+        }), /* @__PURE__ */jsxs12(Copy, {
           muted: true,
           small: true,
           children: ["\u66F4\u65B0\u4E8E ", timeLabel(board.updatedAt)]
         })]
       }, board.id))]
-    }), /* @__PURE__ */jsx10(Modal2, {
+    }), /* @__PURE__ */jsx13(Modal3, {
       title: "\u65B0\u5EFA Board",
       open: creating,
       onOpenChange: open => {
         if (!pending) setCreating(open);
       },
-      children: /* @__PURE__ */jsx10(Modal2.Content, {
-        children: /* @__PURE__ */jsxs9(View9, {
+      children: /* @__PURE__ */jsx13(Modal3.Content, {
+        children: /* @__PURE__ */jsxs12(View12, {
           style: {
             gap: 16
           },
-          children: [/* @__PURE__ */jsx10(Copy, {
+          children: [/* @__PURE__ */jsx13(Copy, {
             children: "\u5173\u8054\u8D1F\u8D23\u7684 agent\u3002\u753B\u5E03\u5185\u5BB9\u548C\u5E03\u5C40\u7531\u5B83\u968F\u4EFB\u52A1\u81EA\u7531\u6784\u5EFA\u3002"
-          }), /* @__PURE__ */jsx10(TextInput4, {
+          }), /* @__PURE__ */jsx13(TextInput5, {
             value: title,
             onChangeText: setTitle,
             editable: !pending,
@@ -5763,17 +7946,17 @@ function BoardIndex({
               borderRadius: 8,
               padding: 12
             }
-          }), /* @__PURE__ */jsx10(Copy, {
+          }), /* @__PURE__ */jsx13(Copy, {
             muted: true,
             small: true,
             children: "\u8D1F\u8D23\u7684 agent"
-          }), agents.error ? /* @__PURE__ */jsx10(Notice, {
+          }), agents.error ? /* @__PURE__ */jsx13(Notice, {
             error: true,
             text: errorMessage(agents.error)
-          }) : null, agents.isPending ? /* @__PURE__ */jsx10(Copy, {
+          }) : null, agents.isPending ? /* @__PURE__ */jsx13(Copy, {
             muted: true,
             children: "\u8BFB\u53D6\u4F1A\u8BDD\u2026"
-          }) : null, /* @__PURE__ */jsx10(ScrollView4, {
+          }) : null, /* @__PURE__ */jsx13(ScrollView6, {
             style: {
               maxHeight: 250
             },
@@ -5782,26 +7965,26 @@ function BoardIndex({
             },
             children: agents.data?.entries.filter(entry => entry.agent.status !== "closed" && (!workspaceId || entry.agent.workspaceId === workspaceId)).map(({
               agent
-            }) => /* @__PURE__ */jsx10(Action, {
+            }) => /* @__PURE__ */jsx13(Action, {
               label: agent.title || `Agent ${agent.id.slice(0, 8)}`,
               active: owner === agent.id,
               disabled: pending,
               onPress: () => setOwner(agent.id)
             }, agent.id))
-          }), failure ? /* @__PURE__ */jsx10(Notice, {
+          }), failure ? /* @__PURE__ */jsx13(Notice, {
             error: true,
             text: failure
-          }) : null, /* @__PURE__ */jsxs9(View9, {
+          }) : null, /* @__PURE__ */jsxs12(View12, {
             style: {
               flexDirection: "row",
               justifyContent: "flex-end",
               gap: 8
             },
-            children: [/* @__PURE__ */jsx10(Action, {
+            children: [/* @__PURE__ */jsx13(Action, {
               label: "\u53D6\u6D88",
               disabled: pending,
               onPress: () => setCreating(false)
-            }), /* @__PURE__ */jsx10(Action, {
+            }), /* @__PURE__ */jsx13(Action, {
               label: pending ? "\u521B\u5EFA\u4E2D\u2026" : "\u521B\u5EFA",
               primary: true,
               disabled: pending || !owner || !title.trim(),
@@ -5817,26 +8000,26 @@ function BoardIndex({
 }
 
 // index.client.tsx
-import { jsx as jsx11 } from "react/jsx-runtime";
+import { jsx as jsx14 } from "react/jsx-runtime";
 function Screen(props) {
-  return /* @__PURE__ */jsx11(BoardHome, {
+  return /* @__PURE__ */jsx14(BoardHome, {
     ...props,
     initialBoardId: props.params.boardId
   }, `${props.host.id}:${props.params.boardId ?? "all"}`);
 }
 function AgentPanel(props) {
-  return /* @__PURE__ */jsx11(BoardHome, {
+  return /* @__PURE__ */jsx14(BoardHome, {
     ...props,
     agentId: props.params.agentId
   }, `${props.host.id}:${props.workspaceId}:${props.params.agentId}`);
 }
 function WorkspacePanel(props) {
-  return /* @__PURE__ */jsx11(BoardHome, {
+  return /* @__PURE__ */jsx14(BoardHome, {
     ...props
   }, `${props.host.id}:${props.workspaceId}`);
 }
 function Sidebar(props) {
-  return /* @__PURE__ */jsx11(SidebarRow, {
+  return /* @__PURE__ */jsx14(SidebarRow, {
     label: "Boards",
     icon: "PanelsTopLeft",
     active: props.currentScreen?.screenId === "boards",

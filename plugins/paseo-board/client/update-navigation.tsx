@@ -98,15 +98,15 @@ export function useUpdateNavigation(board: Board | null | undefined, blocked: bo
   return { request, onPosition, onActivity, move, toggleFollow, follow, busy, index, total: places.length, status, unread: updates.filter(item => !board?.seenUpdateIds.includes(item.id)).length, blocked };
 }
 
-export function UpdateNavigation({ navigation }: { navigation: ReturnType<typeof useUpdateNavigation> }) {
+export function UpdateNavigation({ navigation, compact = false }: { navigation: ReturnType<typeof useUpdateNavigation>; compact?: boolean }) {
   const c = useColors();
   const { move, follow, busy, index, total, status, unread, blocked, toggleFollow } = navigation;
   const button = (label: string, text: string, onPress: () => void, disabled: boolean) => <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={disabled} accessibilityState={{ disabled }} onPress={onPress} style={{ paddingHorizontal: 7, height: 28, alignItems: "center", justifyContent: "center", borderRadius: 5, opacity: disabled ? 0.4 : 1 }}><Text style={{ color: c.foreground, fontSize: 12 }}>{text}</Text></Pressable>;
   const note = status === "unavailable" ? "位置不可用" : status === "seen-error" ? "已看未保存" : status === "deferred" || busy || blocked ? "暂缓" : "";
   return <View testID="board-update-navigation" accessibilityLabel="画布更新定位" style={{ flexDirection: "row", alignItems: "center", gap: 2, flexShrink: 0 }}>
     {button("上一处更新", "‹", () => move(-1), blocked || !total)}
-    <Text testID="board-update-position" numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11 }}>{`更新 ${index < 0 ? 0 : index + 1}/${total}`}{unread ? ` · ${unread} 未看` : ""}{note ? ` · ${note}` : ""}</Text>
+    <Text testID="board-update-position" accessibilityLabel={`更新 ${index < 0 ? 0 : index + 1}/${total}${unread ? ` · ${unread} 未看` : ""}${note ? ` · ${note}` : ""}`} numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11, maxWidth: compact ? 110 : undefined }}>{compact ? `${index < 0 ? 0 : index + 1}/${total}${unread ? ` · ${unread} 新` : ""}${note ? ` · ${note}` : ""}` : `更新 ${index < 0 ? 0 : index + 1}/${total}${unread ? ` · ${unread} 未看` : ""}${note ? ` · ${note}` : ""}`}</Text>
     {button("下一处更新", "›", () => move(1), blocked || !total)}
-    {button(follow ? "暂停跟随更新" : "继续跟随更新", follow ? "跟随 ●" : "跟随 ○", toggleFollow, blocked)}
+    {button(follow ? "暂停跟随更新" : "继续跟随更新", compact ? follow ? "●" : "○" : follow ? "跟随 ●" : "跟随 ○", toggleFollow, blocked)}
   </View>;
 }

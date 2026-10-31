@@ -11,6 +11,16 @@ import { fileURLToPath } from "node:url";
 import { DOMParser } from "linkedom";
 import { componentIdentityFor } from "../shared/component-identity";
 import { describeAuthoring } from "./authored-source";
+import { buildRelease, releaseZip } from "./static-release";
+
+let currentWorkerSource: Promise<string> | undefined;
+function compileCurrentWorker() {
+  return currentWorkerSource ??= (async () => {
+    const pluginRoot = fileURLToPath(new URL("../", import.meta.url));
+    const compiled = await build({ absWorkingDir: pluginRoot, preserveSymlinks: true, entryPoints: [join(pluginRoot, "server/store-worker.ts")], bundle: true, platform: "node", format: "cjs", target: "node22", loader: { ".txt": "text" }, write: false, logLevel: "silent" });
+    return compiled.outputFiles[0].text;
+  })();
+}
 
 describe("bounded Board worker processes", () => {
   let directory: string;
@@ -25,8 +35,8 @@ describe("bounded Board worker processes", () => {
       const remove = store.subscribe(event => { if (match(event)) { clearTimeout(timeout); remove(); resolve(event); } });
     });
   }
-  function interceptCalls(body: string) {
-    return `const register = process.on.bind(process); process.on = function(name, handler) { return register(name, name === 'message' ? function(message) { ${body}; return handler(message); } : handler); };\n` + workerSource;
+  function interceptCalls(body: string, source = workerSource) {
+    return `const register = process.on.bind(process); process.on = function(name, handler) { return register(name, name === 'message' ? function(message) { ${body}; return handler(message); } : handler); };\n` + source;
   }
 
   it("uses fixed independent processes and commits one Board in FIFO order", async () => {
@@ -49,9 +59,7 @@ describe("bounded Board worker processes", () => {
   it("dispatches component edits through real workers with durable exact retries and fresh source replay", async () => {
     // Build only in memory: package verification separately proves the committed asset.
     // This exercises the source protocol even while a concurrent integration build is pending.
-    const pluginRoot = fileURLToPath(new URL("../", import.meta.url));
-    const compiled = await build({ absWorkingDir: pluginRoot, preserveSymlinks: true, entryPoints: [join(pluginRoot, "server/store-worker.ts")], bundle: true, platform: "node", format: "cjs", target: "node22", write: false, logLevel: "silent" });
-    const store = pool({ workers: 2, workerSource: compiled.outputFiles[0].text });
+    const store = pool({ workers: 2, workerSource: await compileCurrentWorker() });
     const created = await store.create({ id: "edited", title: "Edited", html: '<main><section id="left"><p id="text">Old</p></section><section id="right"></section></main>' });
     const document = new DOMParser().parseFromString(created.canvas.html, "text/html");
     const text = { boardId: created.id, canvasBase: { revision: 1, documentVersion: 1 }, eventId: "text", patch: { id: "text", operation: "text" as const, selector: "#text", sourceIdentity: componentIdentityFor(document.querySelector("#text")!), expectedText: "Old", text: "Written in worker" } };
@@ -68,6 +76,65 @@ describe("bounded Board worker processes", () => {
     expect(source.materializedAuthoredHtml).toContain('<section id="right"><p id="text">Written in worker</p></section>');
     expect(read.canvas.patches).toHaveLength(2);
     expect(store.diagnostics().map(slot => slot.pid)).toEqual(pids);
+  });
+
+  it("builds publication snapshots, materializes copies and generates identical ZIP bytes through the existing real workers", async () => {
+    const store = pool({ workers: 2, workerSource: await compileCurrentWorker() });
+    let board = await store.create({ id: "publication", title: "Public page", html: '<main><h1 id="title">Old text</h1></main>', data: { secret: "Private data" } });
+    board = await store.publish({ boardId: board.id, expectedRevision: board.revision, canvasBase: { revision: board.canvas.revision, documentVersion: 1 }, eventId: "final-title", patch: { id: "title-patch", operation: "replace", selector: "#title", html: '<h1 id="title">Final public text</h1>' } });
+    const input = { board, boardId: board.id, expectedCanvasBase: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion }, publicData: { visible: "Public data" } };
+    const original = structuredClone(board), expected = buildRelease(input), pids = store.diagnostics().map(slot => slot.pid);
+    const events: BoardChange[] = []; const unsubscribe = store.subscribe(event => events.push(event));
+    const building = store.buildRelease(input);
+    input.publicData.visible = "Caller changed after enqueue"; input.board.canvas.html = "Caller changed base";
+    const release = await building;
+    expect(release).toEqual(expected);
+    expect(await store.materializeAuthoredHtml(board.id, original.canvas)).toBe('<main><h1 id="title">Final public text</h1></main>');
+    const files = { ...release.files }, zipped = store.releaseZip(release.manifest.releaseId, files); files["index.html"] = "Caller changed files";
+    expect(await zipped).toBe(releaseZip(release.files).toString("base64"));
+    expect(await store.read(board.id)).toEqual(original);
+    expect(events).toEqual([]); unsubscribe();
+    expect(store.diagnostics().map(slot => slot.pid)).toEqual(pids); expect(new Set(pids).size).toBe(2);
+    const failedCanvas = { ...original.canvas, patches: [...original.canvas.patches, { id: "missing", selector: "#missing", operation: "replace" as const, html: "<p>Missing</p>", at: new Date().toISOString(), source: "agent" as const }] };
+    await expect(store.materializeAuthoredHtml(board.id, failedCanvas)).rejects.toMatchObject({ code: "edit_conflict" });
+    await expect(store.buildRelease({ ...input, board: original, expectedCanvasBase: { revision: 0, documentVersion: 1 } })).rejects.toThrow("Canvas changed");
+    await store.close(); expect(store.diagnostics().every(slot => !slot.pid)).toBe(true);
+    await expect(readFile(join(directory, ".store-pool-owner.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps the coordinator timer and another partition responsive during real publication DOM work", async () => {
+    const store = pool({ workers: 2, workerSource: await compileCurrentWorker() });
+    const id = "publication-heavy", other = ["a", "b", "c"].find(value => boardPartition(value, 2) !== boardPartition(id, 2))!;
+    const html = '<main>' + Array.from({ length: 18000 }, (_, index) => `<section class="row"><h2>Row ${index}</h2><p>Published static paragraph ${index}</p></section>`).join("") + '</main>';
+    const board = await store.create({ id, title: "Large public page", html }); await create(store, other);
+    const pids = store.diagnostics().map(slot => slot.pid); let finished = false;
+    const started = performance.now();
+    const computing = store.buildRelease({ board, boardId: id, expectedCanvasBase: { revision: 1, documentVersion: 1 }, publicData: {} }).then(value => { finished = true; return value; });
+    const queuedCopy = store.materializeAuthoredHtml(id, board.canvas);
+    expect(store.diagnostics()[boardPartition(id, 2)].pending).toBe(2);
+    await new Promise<void>(resolve => setTimeout(resolve, 15));
+    const timerMs = performance.now() - started;
+    expect(finished).toBe(false); expect(timerMs).toBeLessThan(180);
+    expect(await store.read(other)).toMatchObject({ id: other }); expect(finished).toBe(false);
+    const release = await computing; expect(release.files["index.html"]).toContain("Published static paragraph 17999");
+    expect(await queuedCopy).toBe(html);
+    expect(store.diagnostics().map(slot => slot.pid)).toEqual(pids);
+    expect(store.diagnostics().every(slot => slot.pending === 0 && slot.bytes === 0)).toBe(true);
+    console.log(`publication worker: ${html.length} source bytes; coordinator timer ${timerMs.toFixed(1)}ms; existing two children reused`);
+  });
+
+  it("applies shared queue/byte limits and safe pure-computation failure semantics", async () => {
+    const source = await compileCurrentWorker();
+    const store = pool({ workers: 2, timeoutMs: 700, maxPendingPerBoard: 2, maxBytesPerWorker: 10000, workerSource: interceptCalls("if (message.type === 'call' && message.method === 'releaseZip') return", source) });
+    const id = "release-" + "a".repeat(64), other = ["a", "b", "c"].find(value => boardPartition(value, 2) !== boardPartition(id, 2))!;
+    await create(store, other);
+    const blocked = store.releaseZip(id, { "index.html": "<main>zip</main>" }).catch(error => error);
+    const queued = store.materializeAuthoredHtml(id, { html: "<p>queued</p>", revision: 1, documentVersion: 1, patches: [], data: {} }).catch(error => error);
+    await expect(store.releaseZip(id, {})).rejects.toMatchObject({ code: "backpressure" });
+    await expect(store.releaseZip("release-" + "b".repeat(64), { "index.html": "x".repeat(11000) })).rejects.toMatchObject({ code: "backpressure" });
+    expect(await store.read(other)).toMatchObject({ id: other });
+    expect((await blocked).code).toBe("worker_unavailable"); expect((await queued).code).toBe("worker_unavailable");
+    expect(store.diagnostics()[boardPartition(id, 2)].bytes).toBe(0);
   });
 
   it("enforces queue and byte budgets before startup and snapshots caller-owned input", async () => {

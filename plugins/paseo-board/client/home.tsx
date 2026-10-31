@@ -14,7 +14,7 @@ const EMPTY_CANVAS = `<style>main{padding:clamp(24px,8vw,100px);max-width:760px;
 
 export function BoardHome(props: Props) {
   const [selected, setSelected] = useState(props.initialBoardId);
-  return selected ? <BoardView key={`${props.host.id}:${selected}`} {...props} boardId={selected} onBack={() => setSelected(undefined)} /> : <ColorContext.Provider value={props.theme.colors}><BoardIndex {...props} onSelect={setSelected} /></ColorContext.Provider>;
+  return selected ? <BoardView key={`${props.host.id}:${selected}`} {...props} boardId={selected} onBack={() => setSelected(undefined)} onOpenBoard={setSelected} /> : <ColorContext.Provider value={props.theme.colors}><BoardIndex {...props} onSelect={setSelected} /></ColorContext.Provider>;
 }
 
 function BoardIndex({ host, workspaceId, agentId, onSelect }: Props & { onSelect(id: string): void }) {

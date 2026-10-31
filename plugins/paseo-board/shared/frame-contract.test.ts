@@ -60,6 +60,9 @@ describe("frame bridge validation", () => {
       expect(readFrameMessage(message({ type: "selection-capture", selectionId: "one", anchor, status: "failed", reason }), scope)).toBeNull();
     }
     expect(sameSelectionAnchor(anchor, { ...anchor, image })).toBe(true);
+    const reordered = Object.fromEntries(Object.entries(anchor).reverse()) as typeof anchor;
+    expect(sameSelectionAnchor(anchor, reordered)).toBe(true);
+    expect(sameSelectionAnchor(anchor, { ...reordered, rect: { height: anchor.rect.height, width: anchor.rect.width, y: anchor.rect.y, x: anchor.rect.x }, image })).toBe(true);
     expect(sameSelectionAnchor(anchor, { ...anchor, canvasRevision: 2, image })).toBe(false);
     expect(sameSelectionAnchor(anchor, { ...anchor, rect: { ...anchor.rect, x: 21 }, image })).toBe(false);
   });

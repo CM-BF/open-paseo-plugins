@@ -1,5 +1,10 @@
 import { BoardStore } from "./store";
-import { STORE_METHODS, boardPartition, type StoreMethod } from "./store-worker-protocol";
+import { STORE_METHODS, boardPartition, isComputeMethod, type StoreMethod } from "./store-worker-protocol";
+
+import { buildRelease, releaseZip } from "./static-release";
+import { describeAuthoring } from "./authored-source";
+import { ReleaseIdSchema } from "../shared/release-contracts";
+import { BoardStoreError } from "./store-format";
 
 let store: BoardStore | undefined;
 let initialized = false;
@@ -27,14 +32,27 @@ process.on("message", async (message: any) => {
   }
   if (message?.type !== "call" || !store) return;
   const { id, method, args } = message;
-  if (busy || !STORE_METHODS.includes(method) || !Array.isArray(args)) {
+  if (busy || (!STORE_METHODS.includes(method) && !isComputeMethod(method)) || !Array.isArray(args)) {
     send({ type: "result", id, error: { code: "worker_protocol", message: "Invalid or concurrent store request", details: {} } });
     return;
   }
   busy = true;
   try {
-    const operation = store[method as StoreMethod] as (...input: any[]) => Promise<unknown>;
-    const value = await operation.apply(store, args);
+    let value: unknown;
+    if (method === "buildRelease") value = buildRelease(args[0]);
+    else if (method === "releaseZip") {
+      ReleaseIdSchema.parse(args[0]);
+      const files = args[1];
+      if (!files || typeof files !== "object" || Array.isArray(files) || Object.values(files).some(item => typeof item !== "string")) throw new BoardStoreError("invalid_input", "Release ZIP files must be a string map");
+      value = releaseZip(files).toString("base64");
+    } else if (method === "materializeAuthoredHtml") {
+      const authored = describeAuthoring(args[1]);
+      if (!authored.replay.complete || authored.materializedAuthoredHtml === null) throw new BoardStoreError("edit_conflict", `Cannot materialize current authored source: ${authored.replay.failedPatch?.reason ?? authored.note}`);
+      value = authored.materializedAuthoredHtml;
+    } else {
+      const operation = store[method as StoreMethod] as (...input: any[]) => Promise<unknown>;
+      value = await operation.apply(store, args);
+    }
     send({ type: "result", id, value });
   } catch (error) { send({ type: "result", id, error: serializeError(error) }); }
   finally { busy = false; }

@@ -37209,10 +37209,1542 @@ var BoardStore = class {
 
 // server/store-worker-protocol.ts
 var STORE_METHODS = ["read", "create", "publish", "respond", "emit", "feed", "rename", "edit", "recordDecision", "saveState", "markUpdatesSeen", "addInteraction", "updateInteraction", "projectSideAgent", "updateExtraction"];
+var COMPUTE_METHODS = ["buildRelease", "releaseZip", "materializeAuthoredHtml"];
+function isComputeMethod(method) {
+  return typeof method === "string" && COMPUTE_METHODS.includes(method);
+}
 function boardPartition(id, count) {
   let hash2 = 2166136261;
   for (let index = 0; index < id.length; index++) hash2 = Math.imul(hash2 ^ id.charCodeAt(index), 16777619);
   return (hash2 >>> 0) % count;
+}
+
+// server/static-release.ts
+var import_node_crypto3 = require("node:crypto");
+
+// shared/release-contracts.ts
+var ReleaseIdSchema = external_exports.string().regex(/^release-[a-f0-9]{64}$/);
+var ReleaseManifestSchema = external_exports.object({
+  formatVersion: external_exports.literal(1),
+  releaseId: ReleaseIdSchema,
+  artifactHash: external_exports.string().regex(/^[a-f0-9]{64}$/),
+  title: external_exports.string(),
+  viewerVersion: external_exports.number().int(),
+  network: external_exports.enum(["offline", "cdn"]),
+  dependencies: external_exports.array(external_exports.string()),
+  warnings: external_exports.array(external_exports.string()),
+  files: external_exports.array(external_exports.object({ path: external_exports.string(), sha256: external_exports.string(), bytes: external_exports.number().int().nonnegative() }))
+});
+var ReleaseCreateSchema = external_exports.object({
+  boardId: IdSchema,
+  expectedCanvasBase: CanvasBaseSchema,
+  publicData: JsonDataSchema,
+  title: external_exports.string().min(1).max(200).optional(),
+  network: external_exports.enum(["offline", "cdn"]).default("offline"),
+  theme: external_exports.enum(["light", "dark"]).default("light")
+});
+var GitHubAccountSchema = external_exports.object({ login: external_exports.string(), host: external_exports.literal("github.com"), active: external_exports.boolean() });
+var GitHubRepositorySchema = external_exports.object({ name: external_exports.string(), private: external_exports.boolean(), url: external_exports.string() });
+var PagesPrepareSchema = external_exports.object({
+  eventId: IdSchema,
+  releaseId: ReleaseIdSchema,
+  artifactHash: external_exports.string().regex(/^[a-f0-9]{64}$/),
+  account: external_exports.string().regex(/^[a-zA-Z0-9-]+$/),
+  repository: external_exports.string().regex(/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/),
+  createRepository: external_exports.enum(["public", "private"]).optional()
+});
+var PagesJobSchema = PagesPrepareSchema.extend({
+  jobId: IdSchema,
+  status: external_exports.enum(["prepared", "pr-open", "merged", "deploying", "live", "failed", "unknown"]),
+  branch: external_exports.string(),
+  baseBranch: external_exports.string().optional(),
+  baseSha: external_exports.string().optional(),
+  headSha: external_exports.string().optional(),
+  prNumber: external_exports.number().int().optional(),
+  prUrl: external_exports.string().optional(),
+  mergedSha: external_exports.string().optional(),
+  deploymentId: external_exports.string().optional(),
+  url: external_exports.string().optional(),
+  verifiedAt: external_exports.string().optional(),
+  error: external_exports.string().optional(),
+  treeSha: external_exports.string().optional(),
+  createdAt: external_exports.string().optional(),
+  pagesConfigured: external_exports.boolean().optional(),
+  pagesConfigurationRequested: external_exports.boolean().optional(),
+  pagesConfigurationHash: external_exports.string().optional()
+});
+var releaseInput = external_exports.object({ releaseId: ReleaseIdSchema });
+var createReleaseRpc = defineRpc({ name: "board.release.create", input: ReleaseCreateSchema, output: ReleaseManifestSchema });
+var listReleasesRpc = defineRpc({ name: "board.release.list", input: external_exports.object({ boardId: IdSchema }), output: external_exports.array(ReleaseManifestSchema) });
+var previewReleaseRpc = defineRpc({ name: "board.release.preview", input: releaseInput, output: external_exports.object({ manifest: ReleaseManifestSchema, html: external_exports.string() }) });
+var downloadReleaseRpc = defineRpc({ name: "board.release.download", input: releaseInput, output: external_exports.object({ manifest: ReleaseManifestSchema, fileName: external_exports.string(), zipBase64: external_exports.string() }) });
+var githubAccountsRpc = defineRpc({ name: "board.pages.accounts", input: external_exports.object({}), output: external_exports.array(GitHubAccountSchema) });
+var githubRepositoriesRpc = defineRpc({ name: "board.pages.repositories", input: external_exports.object({ account: external_exports.string() }), output: external_exports.array(GitHubRepositorySchema) });
+var preparePagesRpc = defineRpc({ name: "board.pages.prepare", input: PagesPrepareSchema, output: PagesJobSchema });
+var mergePagesRpc = defineRpc({ name: "board.pages.merge", input: external_exports.object({ jobId: IdSchema, expectedHead: external_exports.string().regex(/^[a-f0-9]{40}$/) }), output: PagesJobSchema });
+var refreshPagesRpc = defineRpc({ name: "board.pages.refresh", input: external_exports.object({ jobId: IdSchema }), output: PagesJobSchema });
+var listPagesJobsRpc = defineRpc({ name: "board.pages.list", input: external_exports.object({ releaseId: ReleaseIdSchema.optional() }), output: external_exports.array(PagesJobSchema) });
+
+// shared/static-viewer.ts
+var STATIC_VIEWER_VERSION = 1;
+var STATIC_VIEWER_RUNTIME = String.raw`function(initial) {
+  'use strict';
+  const clone=value=>structuredClone(value), listeners=new Set();
+  let state=clone(initial.state||{});
+  const send=message=>parent.postMessage({...message,channel:'paseo-board-release-v1',releaseId:initial.releaseId,sessionId:initial.sessionId},'*');
+  const subscribe=(set,fn)=>{if(typeof fn!=='function')throw new TypeError('Listener must be a function');set.add(fn);return()=>set.delete(fn)};
+  const emptySubscription=fn=>{if(typeof fn!=='function')throw new TypeError('Listener must be a function');return()=>{}};
+  const context=Object.freeze({boardId:initial.releaseId,releaseId:initial.releaseId,documentVersion:1,boardRevision:1,canvasRevision:1,published:true});
+  const watch=(path,fn,options)=>{
+    if(typeof path!=='string'||path.length>2000||(path!==''&&!path.startsWith('/'))||/~(?![01])/.test(path))throw new TypeError('Expected a JSON Pointer');
+    const parts=path===''?[]:path.slice(1).split('/').map(p=>p.replace(/~1/g,'/').replace(/~0/g,'~'));
+    if(parts.length>64||parts.some(p=>['__proto__','prototype','constructor'].includes(p)))throw new TypeError('Invalid data path');
+    if(typeof fn!=='function'||options!==undefined&&(!options||!['sync','frame',undefined].includes(options.schedule)))throw new TypeError('Invalid watch');
+    let value=initial.data,exists=true;
+    for(const p of parts){if(!value||typeof value!=='object'||!Object.prototype.hasOwnProperty.call(value,p)||Array.isArray(value)&&!/^(0|[1-9][0-9]*)$/.test(p)){exists=false;value=undefined;break}value=value[p]}
+    try{fn(clone(value),Object.freeze({path,exists,boardRevision:1,canvasRevision:1}))}catch(error){console.error(error)}
+    return()=>{};
+  };
+  const ask=()=>{send({type:'unavailable'});return Promise.resolve({status:'cancelled',outcome:'This published version does not connect to an agent.'})};
+  const saveState=value=>{
+    if(!value||typeof value!=='object'||Array.isArray(value))throw new TypeError('State must be a JSON object');
+    const raw=JSON.stringify(value);if(raw.length>524288)throw new RangeError('State exceeds 512 KiB');
+    state=JSON.parse(raw);send({type:'state',state});
+    for(const fn of listeners){try{fn(clone(state))}catch(error){console.error(error)}}return clone(state);
+  };
+  Object.defineProperty(window,'board',{configurable:false,writable:false,value:Object.freeze({
+    getData:()=>clone(initial.data),onData:emptySubscription,watch,getState:()=>clone(state),restoreState:()=>clone(state),
+    saveState,onState:fn=>subscribe(listeners,fn),ask,onReveal:emptySubscription,getContext:()=>({...context})
+  })});
+  window.openai=Object.freeze({sendFollowUpMessage:ask});
+  document.addEventListener('submit',event=>event.preventDefault(),true);
+  document.addEventListener('click',event=>{const link=event.target?.closest?.('a[href]');if(!link)return;const href=link.getAttribute('href');if(href?.startsWith('#'))return;event.preventDefault();if(!event.isTrusted)return;try{const url=new URL(href,initial.siteUrl);if(['https:','http:'].includes(url.protocol))send({type:'link',url:url.href})}catch{}},true);
+}`;
+var STATIC_VIEWER_SHELL = String.raw`function(config) {
+  'use strict';
+  const frame=document.querySelector('iframe'),notice=document.querySelector('[role=status]');
+  const announce=text=>{notice.textContent=text;notice.hidden=!text};
+  const key='paseo-board-release:'+config.releaseId+':'+location.pathname;
+  let state={};
+  try{const raw=localStorage.getItem(key);if(raw&&raw.length<=524288){const parsed=JSON.parse(raw);if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))state=parsed}}catch{announce('浏览器无法保存本地浏览状态；页面仍可使用。')}
+  const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);const sessionId=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
+  const initial={releaseId:config.releaseId,sessionId,data:config.data,state,siteUrl:location.href};
+  const json=value=>JSON.stringify(value).replace(/</g,'\\u003c').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');
+  window.addEventListener('message',event=>{
+    const m=event.data;if(event.source!==frame.contentWindow||!m||m.channel!=='paseo-board-release-v1'||m.releaseId!==config.releaseId||m.sessionId!==sessionId)return;
+    if(m.type==='state'){try{if(!m.state||typeof m.state!=='object'||Array.isArray(m.state))return;const raw=JSON.stringify(m.state);if(raw.length>524288)return;localStorage.setItem(key,raw)}catch{announce('浏览器未能保存本地浏览状态；当前页面仍保留输入。')}}
+    else if(m.type==='unavailable')announce('此发布版本保留页面交互，不连接 agent。');
+    else if(m.type==='link'&&navigator.userActivation?.isActive&&typeof m.url==='string'&&m.url.length<8000){try{const url=new URL(m.url);if(['https:','http:'].includes(url.protocol))window.open(url.href,'_blank','noopener,noreferrer')}catch{}}
+  });
+  frame.srcdoc=config.prefix+'<script>('+config.runtime+')('+json(initial)+');<\/script>'+config.html+config.suffix;
+}`;
+
+// shared/frame-theme.ts
+var DEFAULT_LIGHT_COLORS = {
+  surface0: "#ffffff",
+  surface1: "#fafafa",
+  surface2: "#f4f4f5",
+  border: "#e4e4e7",
+  foreground: "#1a1a1e",
+  foregroundMuted: "#71717a",
+  accent: "#20744A",
+  accentForeground: "#ffffff",
+  statusSuccess: "#3e704a",
+  statusWarning: "#7b5d39",
+  statusDanger: "#9d433b"
+};
+var DEFAULT_DARK_COLORS = {
+  surface0: "#181B1A",
+  surface1: "#1E2120",
+  surface2: "#272A29",
+  border: "#252B2A",
+  foreground: "#fafafa",
+  foregroundMuted: "#A1A5A4",
+  accent: "#20744A",
+  accentForeground: "#ffffff",
+  statusSuccess: "#6cb17b",
+  statusWarning: "#c09664",
+  statusDanger: "#d8847b"
+};
+var SAFE_TOKEN_VALUE = /^[#a-zA-Z0-9(),.%+*/ -]{1,200}$/;
+function isSafeTokenValue(value) {
+  return SAFE_TOKEN_VALUE.test(value);
+}
+function frameThemeFromColors(colors) {
+  const scheme = schemeOf(colors);
+  const fallback = scheme === "dark" ? DEFAULT_DARK_COLORS : DEFAULT_LIGHT_COLORS;
+  const pick2 = (key2) => {
+    const value = typeof colors[key2] === "string" ? colors[key2].trim() : "";
+    return isSafeTokenValue(value) ? value : fallback[key2];
+  };
+  const sheet = pick2("surface0");
+  const ink = pick2("foreground");
+  const accent = pick2("accent");
+  const dark = scheme === "dark";
+  return {
+    scheme,
+    tokens: {
+      "host-sheet": sheet,
+      "host-ink": ink,
+      "host-ink-3": pick2("foregroundMuted"),
+      "host-canvas": dark ? sheet : pick2("surface1"),
+      "host-raised": dark ? pick2("surface1") : sheet,
+      "host-on-ink": pick2("accentForeground"),
+      "host-line": pick2("border"),
+      "host-line-strong": `color-mix(in oklab, ${ink} 20%, ${sheet})`,
+      "host-iris": accent,
+      // Raw accent is too dim for link text on a dark sheet (#20744A on #181B1A is 3:1).
+      "host-iris-ink": dark ? `oklch(from ${accent} calc(l + 0.11) calc(c * 0.66) h)` : `color-mix(in oklab, ${accent} 80%, ${ink})`,
+      "host-iris-soft": `color-mix(in oklab, ${accent} ${dark ? 18 : 12}%, ${sheet})`,
+      "host-ok-ink": pick2("statusSuccess"),
+      "host-warn-ink": pick2("statusWarning"),
+      "host-bad-ink": pick2("statusDanger")
+    }
+  };
+}
+function schemeOf(colors) {
+  const sheet = relativeLuminance(colors.surface0);
+  const ink = relativeLuminance(colors.foreground);
+  return sheet !== null && ink !== null && sheet < ink ? "dark" : "light";
+}
+function relativeLuminance(color) {
+  if (typeof color !== "string") return null;
+  const match = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(color.trim());
+  if (!match) return null;
+  let digits = match[1];
+  if (digits.length <= 4) {
+    let expanded = "";
+    for (const digit of digits) expanded += digit + digit;
+    digits = expanded;
+  }
+  const channel = (offset) => {
+    const value = parseInt(digits.slice(offset, offset + 2), 16) / 255;
+    return value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4);
+}
+
+// shared/assets/visualize.css.txt
+var visualize_css_default = `/*
+ * paseo-visualize frame stylesheet. A fragment renders inside this document in
+ * the user's Paseo theme. Element defaults use :where() and components are single
+ * classes, so any rule the fragment writes wins without a specificity contest.
+ *
+ * Adapted from OpenAI Codex for paseo-visualize and Paseo Board
+ * (codex-rs/tui/src/inline_visualization/assets/visualize.css at rust-v0.146.0,
+ * Apache-2.0). Uses local()-only fonts and --host-* palette tokens. See NOTICE.
+ */
+
+@font-face {
+  font-family: "Geist";
+  src: local("Geist");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist";
+  src: local("Geist Italic");
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: local("Geist Mono");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: light dark;
+  color: var(--foreground);
+
+  /* Surfaces and text. Each base token is a surface; -foreground is content on it. */
+  --background: light-dark(oklch(99.4% 0.0015 265), #1d1e22);
+  --foreground: light-dark(oklch(21% 0.012 265), oklch(95.5% 0.004 265));
+  --muted-foreground: light-dark(oklch(50% 0.011 265), oklch(66% 0.01 265));
+  --card: light-dark(oklch(96.6% 0.004 265), #25262b);
+  --card-foreground: var(--foreground);
+  --popover: light-dark(oklch(100% 0 0), #25262b);
+  --popover-foreground: var(--foreground);
+  --primary: light-dark(oklch(55% 0.2 278), oklch(70% 0.16 280));
+  --primary-foreground: light-dark(oklch(99.4% 0.0015 265), oklch(16% 0.006 265));
+  --secondary: light-dark(oklch(21% 0.012 265 / 0.055), oklch(96% 0.004 265 / 0.07));
+  --secondary-foreground: var(--foreground);
+  --muted: light-dark(oklch(21% 0.012 265 / 0.045), oklch(96% 0.004 265 / 0.05));
+  --accent: light-dark(oklch(95.6% 0.026 278), oklch(27% 0.06 280));
+  --accent-foreground: light-dark(oklch(47% 0.19 278), oklch(81% 0.105 280));
+  --destructive: light-dark(oklch(50% 0.185 27), oklch(80% 0.115 25));
+  --success: light-dark(oklch(45% 0.105 155), oklch(82% 0.11 155));
+  --warning: light-dark(oklch(51% 0.115 62), oklch(86% 0.115 80));
+  --border: light-dark(oklch(90.8% 0.005 265), #303238);
+  --input: light-dark(oklch(84% 0.007 265), #44464e);
+  --ring: var(--primary);
+
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-size-base: 14px;
+  --radius: 10px;
+  --shadow-sm: 0 0 0 1px light-dark(oklch(21% 0.012 265 / 0.06), oklch(100% 0 0 / 0.06)), 0 1px 2px light-dark(oklch(21% 0.012 265 / 0.06), oklch(0% 0 0 / 0.4));
+  --shadow-lg: 0 0 0 1px light-dark(oklch(21% 0.012 265 / 0.06), oklch(100% 0 0 / 0.07)), 0 12px 32px -8px light-dark(oklch(21% 0.012 265 / 0.18), oklch(0% 0 0 / 0.6));
+
+  /* Data. Series order: blue, orange, green, pink, violet, teal, red, yellow. */
+  --viz-series-1: light-dark(oklch(56% 0.19 266), oklch(71% 0.15 266));
+  --viz-series-2: light-dark(oklch(70% 0.165 55), oklch(77% 0.14 58));
+  --viz-series-3: light-dark(oklch(62% 0.15 152), oklch(74% 0.14 152));
+  --viz-series-4: light-dark(oklch(65% 0.2 352), oklch(75% 0.16 352));
+  --viz-series-5: light-dark(oklch(57% 0.2 305), oklch(72% 0.16 305));
+  --viz-series-6: light-dark(oklch(64% 0.12 196), oklch(75% 0.11 196));
+  --viz-series-7: light-dark(oklch(58% 0.21 27), oklch(71% 0.17 27));
+  --viz-series-8: light-dark(oklch(80% 0.16 88), oklch(85% 0.14 90));
+  --viz-neutral-1: light-dark(oklch(91% 0.005 265), oklch(31% 0.008 265));
+  --viz-neutral-2: light-dark(oklch(82% 0.007 265), oklch(43% 0.009 265));
+  --viz-neutral-3: light-dark(oklch(70% 0.009 265), oklch(57% 0.01 265));
+  --viz-neutral-4: light-dark(oklch(55% 0.011 265), oklch(71% 0.009 265));
+  --viz-neutral-5: light-dark(oklch(38% 0.012 265), oklch(87% 0.006 265));
+  --viz-focus: var(--viz-series-1);
+  --viz-focus-2: var(--viz-series-2);
+  --viz-recede: light-dark(oklch(88% 0.006 265), oklch(34% 0.008 265));
+  --viz-recede-foreground: light-dark(oklch(60% 0.009 265), oklch(56% 0.01 265));
+  --viz-sequential-1: light-dark(oklch(95.5% 0.022 275), oklch(28% 0.045 275));
+  --viz-sequential-2: light-dark(oklch(88% 0.055 275), oklch(37% 0.085 275));
+  --viz-sequential-3: light-dark(oklch(78% 0.1 275), oklch(47% 0.12 275));
+  --viz-sequential-4: light-dark(oklch(66% 0.15 275), oklch(59% 0.15 275));
+  --viz-sequential-5: light-dark(oklch(54% 0.18 276), oklch(71% 0.14 276));
+  --viz-sequential-6: light-dark(oklch(41% 0.16 280), oklch(85% 0.08 278));
+  --viz-diverging-1: light-dark(oklch(46% 0.14 255), oklch(73% 0.13 255));
+  --viz-diverging-2: light-dark(oklch(61% 0.12 252), oklch(59% 0.12 253));
+  --viz-diverging-3: light-dark(oklch(81% 0.06 250), oklch(43% 0.07 250));
+  --viz-diverging-4: light-dark(oklch(95% 0.004 265), oklch(28% 0.006 265));
+  --viz-diverging-5: light-dark(oklch(83% 0.07 62), oklch(45% 0.07 56));
+  --viz-diverging-6: light-dark(oklch(69% 0.14 54), oklch(63% 0.13 53));
+  --viz-diverging-7: light-dark(oklch(55% 0.16 44), oklch(77% 0.14 50));
+
+  scrollbar-color: color-mix(in oklab, var(--foreground) 22%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+/* A custom theme: the host sets its resolved palette colors on the root as --host-*. */
+:root[data-palette="custom"] {
+  --background: var(--host-sheet);
+  --foreground: var(--host-ink);
+  --muted-foreground: var(--host-ink-3);
+  --card: light-dark(var(--host-canvas), var(--host-raised));
+  --popover: var(--host-raised);
+  --primary: var(--host-iris);
+  --primary-foreground: var(--host-on-ink);
+  --secondary: color-mix(in oklab, var(--host-ink) 6%, transparent);
+  --muted: color-mix(in oklab, var(--host-ink) 5%, transparent);
+  --accent: var(--host-iris-soft);
+  --accent-foreground: var(--host-iris-ink);
+  --destructive: var(--host-bad-ink);
+  --success: var(--host-ok-ink);
+  --warning: var(--host-warn-ink);
+  --border: var(--host-line);
+  --input: var(--host-line-strong);
+  --shadow-sm: 0 0 0 1px color-mix(in oklab, var(--host-ink) 7%, transparent), 0 1px 2px light-dark(color-mix(in oklab, var(--host-ink) 6%, transparent), oklch(0% 0 0 / 0.4));
+  --shadow-lg: 0 0 0 1px color-mix(in oklab, var(--host-ink) 7%, transparent), 0 12px 32px -8px light-dark(color-mix(in oklab, var(--host-ink) 18%, transparent), oklch(0% 0 0 / 0.6));
+  --viz-neutral-1: light-dark(color-mix(in oklab, var(--host-ink) 11%, var(--host-sheet)), color-mix(in oklab, var(--host-ink) 16%, var(--host-sheet)));
+  --viz-neutral-2: light-dark(color-mix(in oklab, var(--host-ink) 22%, var(--host-sheet)), color-mix(in oklab, var(--host-ink) 31%, var(--host-sheet)));
+  --viz-neutral-3: light-dark(color-mix(in oklab, var(--host-ink) 38%, var(--host-sheet)), color-mix(in oklab, var(--host-ink) 50%, var(--host-sheet)));
+  --viz-neutral-4: light-dark(color-mix(in oklab, var(--host-ink) 57%, var(--host-sheet)), color-mix(in oklab, var(--host-ink) 68%, var(--host-sheet)));
+  --viz-neutral-5: light-dark(color-mix(in oklab, var(--host-ink) 78%, var(--host-sheet)), color-mix(in oklab, var(--host-ink) 89%, var(--host-sheet)));
+  --viz-recede: light-dark(color-mix(in oklab, var(--host-ink) 15%, var(--host-sheet)), color-mix(in oklab, var(--host-ink) 20%, var(--host-sheet)));
+  --viz-recede-foreground: color-mix(in oklab, var(--host-ink) 49%, var(--host-sheet));
+  --viz-diverging-4: light-dark(color-mix(in oklab, var(--host-ink) 6%, var(--host-sheet)), color-mix(in oklab, var(--host-ink) 12%, var(--host-sheet)));
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--primary) 24%, transparent);
+}
+
+/* Inline in a chat the page is transparent and grows with its content. */
+:where(html) {
+  background-color: transparent;
+}
+
+:where(html[data-surface="inline"]) {
+  overflow-y: hidden;
+}
+
+:where(html[data-surface="page"]) {
+  background-color: var(--background);
+}
+
+:where(html > body) {
+  margin: 0;
+  padding: 6px 4px;
+  color: inherit;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  font-weight: 400;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+:where(html[data-surface="page"] > body) {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 40px 28px 28px;
+}
+
+/* A page in a narrow side panel keeps its width for content. */
+@media (max-width: 560px) {
+  :where(html[data-surface="page"] > body) {
+    padding: 16px 14px 20px;
+  }
+}
+
+:where(h1, h2, h3, h4) {
+  margin: 0 0 0.5em;
+  color: inherit;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  text-wrap: balance;
+}
+
+:where(h1) {
+  font-size: 1.6em;
+  line-height: 1.2;
+}
+
+:where(h2) {
+  font-size: 1.25em;
+  line-height: 1.3;
+}
+
+:where(h3) {
+  font-size: 1.07em;
+  line-height: 1.35;
+}
+
+:where(h4) {
+  font-size: 1em;
+  line-height: 1.4;
+}
+
+:where(p) {
+  margin: 0 0 0.75em;
+  text-wrap: pretty;
+}
+
+:where(a) {
+  color: var(--accent-foreground);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, currentColor 35%, transparent);
+  text-underline-offset: 2px;
+}
+
+:where(a:hover) {
+  text-decoration-color: currentColor;
+}
+
+:where(small) {
+  font-size: 0.86em;
+}
+
+:where(strong, b) {
+  font-weight: 600;
+}
+
+:where(hr) {
+  height: 1px;
+  margin: 16px 0;
+  border: 0;
+  background: var(--border);
+}
+
+:where(code, kbd, samp, pre) {
+  font-family: var(--font-mono);
+}
+
+:where(code:not(pre code)) {
+  padding: 0.12em 0.4em;
+  border-radius: 5px;
+  background: var(--muted);
+  font-size: 0.88em;
+}
+
+:where(kbd) {
+  padding: 0.1em 0.4em;
+  border-radius: 5px;
+  background: var(--popover);
+  box-shadow: inset 0 -1px 0 var(--input), var(--shadow-sm);
+  font-size: 0.82em;
+}
+
+:where(pre) {
+  margin: 0 0 0.75em;
+  padding: 10px 12px;
+  overflow: auto;
+  border-radius: var(--radius);
+  background: var(--card);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+:where(svg:not(.lucide)) {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+:where(img, video, canvas) {
+  max-width: 100%;
+}
+
+/* Tables read as hairline rows; \`.table\` keeps older fragments working. */
+:where(table) {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+:where(th, td) {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+:where(th) {
+  color: var(--muted-foreground);
+  font-size: 0.9em;
+  font-weight: 500;
+}
+
+:where(caption) {
+  padding-bottom: 6px;
+  color: var(--muted-foreground);
+  font-size: 0.9em;
+  text-align: left;
+}
+
+:where(tbody tr:last-child) :where(th, td) {
+  border-bottom: 0;
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.table-sm :is(th, td) {
+  padding: 4px 8px;
+}
+
+:where(.table .text-end, .table [align="right"]) {
+  text-align: right;
+}
+
+:where(.table .text-center, .table [align="center"]) {
+  text-align: center;
+}
+
+.text-nowrap {
+  white-space: nowrap;
+}
+
+/* Surfaces */
+
+.card {
+  min-width: 0;
+  padding: 14px 16px;
+  border-radius: 12px;
+  color: var(--card-foreground);
+  background: var(--card);
+  overflow-wrap: break-word;
+}
+
+.viz-stat {
+  display: grid;
+  gap: 2px;
+}
+
+.viz-stat > :first-child {
+  color: var(--muted-foreground);
+  font-size: 0.9em;
+}
+
+.viz-stat-value {
+  color: var(--foreground);
+  font-size: 1.85em;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.viz-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* Layout helpers */
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 168px), 1fr));
+  gap: 10px;
+}
+
+.viz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+:where(.viz-controls) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px 16px;
+}
+
+:where(.viz-controls:has(> .form-label)) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+}
+
+.viz-stack {
+  display: grid;
+  gap: 14px;
+}
+
+/* Controls */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  min-width: 0;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  font: 500 13px/1 var(--font-sans);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 150ms, color 150ms, box-shadow 150ms;
+}
+
+.btn:not(:disabled):hover {
+  background: color-mix(in oklab, var(--foreground) 10%, transparent);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.btn-primary {
+  color: var(--background);
+  background: var(--foreground);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: color-mix(in oklab, var(--foreground) 86%, var(--background));
+}
+
+.btn-ghost {
+  background: transparent;
+}
+
+.btn-ghost:not(:disabled):hover {
+  background: var(--muted);
+}
+
+.btn-sm {
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.btn-icon {
+  width: 32px;
+  padding: 0;
+}
+
+.btn-icon.btn-sm {
+  width: 26px;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.btn:is([aria-pressed="true"], [aria-selected="true"], .is-selected) {
+  color: var(--accent-foreground);
+  background: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 40%, transparent);
+}
+
+/* A segmented group: the pressed option lifts onto a raised chip. */
+.viz-segmented {
+  display: inline-flex;
+  justify-self: start;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--muted);
+}
+
+.viz-segmented > .btn {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: var(--muted-foreground);
+  background: transparent;
+  box-shadow: none;
+}
+
+.viz-segmented > .btn:not(:disabled):hover {
+  color: var(--foreground);
+  background: transparent;
+}
+
+.viz-segmented > .btn:is([aria-pressed="true"], [aria-selected="true"], .is-selected) {
+  color: var(--foreground);
+  background: var(--popover);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn.viz-tile {
+  width: 100%;
+  height: auto;
+  min-height: 32px;
+  padding: 6px 8px;
+  white-space: normal;
+}
+
+.btn.viz-tile:is([aria-pressed="true"], [aria-selected="true"], .is-selected) {
+  color: inherit;
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+a.btn {
+  color: var(--secondary-foreground);
+}
+
+a.btn-primary {
+  color: var(--background);
+}
+
+.lucide {
+  flex-shrink: 0;
+}
+
+.form-label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.form-control,
+.form-select {
+  display: block;
+  width: 100%;
+  height: 32px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--foreground);
+  background-color: var(--popover);
+  box-shadow: inset 0 0 0 1px var(--input);
+  font: 400 13.5px/1.4 var(--font-sans);
+  transition: box-shadow 150ms;
+}
+
+.form-control::placeholder {
+  color: color-mix(in oklab, var(--muted-foreground) 80%, transparent);
+}
+
+.form-control:focus-visible,
+.form-select:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--ring), 0 0 0 3px color-mix(in oklab, var(--ring) 22%, transparent);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 84px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.form-control[type="file"] {
+  height: auto;
+  padding: 4px;
+}
+
+.form-control[type="file"]::file-selector-button {
+  height: 24px;
+  margin-right: 8px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--foreground);
+  background: var(--secondary);
+  font: 500 12.5px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.form-control-color[type="color"] {
+  width: 44px;
+  padding: 3px;
+}
+
+.form-control-color[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-control-color[type="color"]::-webkit-color-swatch {
+  border: 0;
+  border-radius: 6px;
+}
+
+.form-select {
+  appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 6l4 4 4-4' fill='none' stroke='%23888d96' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: right 9px center;
+  background-repeat: no-repeat;
+  background-size: 14px;
+  cursor: pointer;
+}
+
+.form-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.form-check-label {
+  color: var(--foreground);
+  cursor: pointer;
+}
+
+.form-check-input {
+  appearance: none;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 0;
+  border-radius: 5px;
+  background: var(--popover);
+  box-shadow: inset 0 0 0 1.5px var(--input);
+  cursor: pointer;
+  transition: background-color 150ms, box-shadow 150ms;
+}
+
+.form-check-input[type="radio"] {
+  border-radius: 50%;
+}
+
+.form-check-input[type="checkbox"]:checked {
+  background: var(--primary) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.2l2.6 2.6L12 5.4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px no-repeat;
+  box-shadow: none;
+}
+
+.form-check-input[type="radio"]:checked {
+  box-shadow: inset 0 0 0 5px var(--primary);
+}
+
+.form-check-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-check-input:disabled,
+.form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.form-switch .form-check-input {
+  position: relative;
+  width: 30px;
+  height: 18px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--foreground) 16%, transparent);
+  box-shadow: none;
+}
+
+.form-switch .form-check-input::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 2px oklch(0% 0 0 / 0.25);
+  transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.form-switch .form-check-input:checked {
+  background: var(--primary);
+}
+
+.form-switch .form-check-input:checked::before {
+  transform: translateX(12px);
+}
+
+.form-range {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 24px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.form-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--foreground) 12%, transparent);
+}
+
+.form-range::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--foreground) 12%, transparent);
+}
+
+.form-range::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--primary);
+}
+
+.form-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border: 0;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 0 0 1px oklch(0% 0 0 / 0.1), 0 1px 3px oklch(0% 0 0 / 0.25), inset 0 0 0 4.5px var(--primary);
+}
+
+.form-range::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 0 0 1px oklch(0% 0 0 / 0.1), 0 1px 3px oklch(0% 0 0 / 0.25), inset 0 0 0 4.5px var(--primary);
+}
+
+.form-range:focus-visible {
+  outline: none;
+}
+
+.form-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px color-mix(in oklab, var(--ring) 24%, transparent), inset 0 0 0 4.5px var(--primary);
+}
+
+.form-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* Text */
+
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.text-small {
+  font-size: max(11px, calc(var(--font-size-base) - 2px));
+  line-height: 1.4;
+}
+
+.text-destructive {
+  color: var(--destructive);
+}
+
+.text-success {
+  color: var(--success);
+}
+
+.text-warning {
+  color: var(--warning);
+}
+
+.text-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The shared tooltip; the runtime positions it, fragments may reuse the class. */
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(18rem, var(--tooltip-available-width, calc(100vw - 12px)), calc(100vw - 12px));
+  max-height: min(var(--tooltip-available-height, calc(100vh - 12px)), calc(100vh - 12px));
+  padding: 5px 9px;
+  border-radius: 8px;
+  color: var(--background);
+  background: var(--foreground);
+  box-shadow: var(--shadow-lg);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  overflow-wrap: break-word;
+  pointer-events: none;
+  user-select: none;
+}
+
+/*
+ * Opt-in plot preset. Selectors stay at zero specificity so fragment CSS and
+ * inline styles replace any value.
+ */
+:where(.viz-plot) {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+}
+
+:where(.viz-plot text) {
+  fill: color-mix(in oklab, var(--foreground) 58%, transparent);
+  font-size: max(11px, calc(var(--font-size-base) - 2.5px));
+}
+
+:where(.viz-plot) :where(.viz-plot-grid, .viz-plot-axis) {
+  fill: none;
+  stroke-width: 1px;
+}
+
+:where(.viz-plot .viz-plot-grid) {
+  stroke: color-mix(in oklab, var(--foreground) 8%, transparent);
+}
+
+:where(.viz-plot .viz-plot-axis) {
+  stroke: color-mix(in oklab, var(--foreground) 22%, transparent);
+}
+
+:where(.viz-plot .viz-plot-label) {
+  fill: var(--foreground);
+  paint-order: stroke fill;
+  stroke: var(--background);
+  stroke-linejoin: round;
+  stroke-width: 3px;
+  font-weight: 500;
+}
+
+:where(.viz-plot [data-viz-series="1"], .viz-legend [data-viz-series="1"]) {
+  --viz-series: var(--viz-series-1);
+}
+
+:where(.viz-plot [data-viz-series="2"], .viz-legend [data-viz-series="2"]) {
+  --viz-series: var(--viz-series-2);
+}
+
+:where(.viz-plot [data-viz-series="3"], .viz-legend [data-viz-series="3"]) {
+  --viz-series: var(--viz-series-3);
+}
+
+:where(.viz-plot [data-viz-series="4"], .viz-legend [data-viz-series="4"]) {
+  --viz-series: var(--viz-series-4);
+}
+
+:where(.viz-plot [data-viz-series="5"], .viz-legend [data-viz-series="5"]) {
+  --viz-series: var(--viz-series-5);
+}
+
+:where(.viz-plot [data-viz-series="6"], .viz-legend [data-viz-series="6"]) {
+  --viz-series: var(--viz-series-6);
+}
+
+:where(.viz-plot [data-viz-series="7"], .viz-legend [data-viz-series="7"]) {
+  --viz-series: var(--viz-series-7);
+}
+
+:where(.viz-plot [data-viz-series="8"], .viz-legend [data-viz-series="8"]) {
+  --viz-series: var(--viz-series-8);
+}
+
+:where(.viz-plot .viz-plot-basemap) {
+  fill: color-mix(in oklab, var(--foreground) 5%, transparent);
+  stroke: color-mix(in oklab, var(--foreground) 15%, transparent);
+  stroke-width: 1px;
+}
+
+:where(.viz-plot .viz-plot-line) {
+  fill: none;
+  stroke: var(--viz-series, var(--viz-neutral-5));
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2px;
+}
+
+:where(.viz-plot .viz-plot-mark) {
+  fill: var(--viz-series, var(--viz-neutral-5));
+  stroke: none;
+}
+
+/* \`--viz-fill\` tunes a large area's strength without breaking its series link. */
+:where(.viz-plot .viz-plot-area) {
+  fill: color-mix(in oklab, var(--viz-series, var(--viz-neutral-5)) var(--viz-fill, 14%), var(--background));
+}
+
+/* \`vector-effect\` does not inherit from a wrapping \`g\`; reach its shapes too. */
+:where(
+  .viz-plot .viz-plot-grid,
+  .viz-plot .viz-plot-grid *,
+  .viz-plot .viz-plot-axis,
+  .viz-plot .viz-plot-axis *,
+  .viz-plot .viz-plot-basemap,
+  .viz-plot .viz-plot-basemap *,
+  .viz-plot .viz-plot-line,
+  .viz-plot .viz-plot-line *
+) {
+  vector-effect: non-scaling-stroke;
+}
+
+:where(.viz-plot-scroll) {
+  width: 100%;
+  overflow-x: auto;
+}
+
+:where(.viz-plot-scroll > .viz-plot) {
+  width: 100%;
+  min-width: var(--viz-plot-min-width, 660px);
+  max-width: none;
+}
+
+:where(.viz-legend) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  line-height: 1.4;
+  list-style: none;
+}
+
+:where(.viz-legend > *) {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+:where(.viz-legend .viz-swatch) {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--viz-series, var(--viz-neutral-5));
+}
+`;
+
+// shared/assets/runtime-icons.txt
+var runtime_icons_default = '<script id="codex-visualization-lucide" async src="https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js"></script>\n<script>\n(() => {\n  const initialize = () => {\n    globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });\n  };\n  if (globalThis.lucide != null) {\n    initialize();\n    return;\n  }\n  document\n    .getElementById("codex-visualization-lucide")\n    ?.addEventListener("load", initialize, { once: true });\n})();\n</script>\n';
+
+// shared/assets/runtime-tooltips.txt
+var runtime_tooltips_default = '<script>\n// Tooltips for [data-tooltip], positioned with floating-ui. The two scripts are inserted from\n// here instead of as parser-blocking tags, so they never hold DOMContentLoaded (or the\n// fragment code waiting for it); with async off they still run in order.\n(() => {\n  const sources = [\n    "https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js",\n    "https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js",\n  ];\n  const start = () => {\n    if (window.FloatingUIDOM == null) {\n      return;\n    }\n    const { autoUpdate, computePosition, flip, offset, shift, size } =\n      window.FloatingUIDOM;\n    const tooltipPlacements = new Set(["top", "right", "bottom", "left"]);\n    const tooltipId = `codex-visualization-tooltip-${\n      window.crypto?.randomUUID?.() ?? Date.now().toString(36)\n    }`;\n    const tooltipGap = 5;\n    const hoverDelay = 700;\n    const skipDelay = 300;\n    let activeTrigger = null;\n    let pendingTrigger = null;\n    let tooltip = null;\n    let openTimeout = null;\n    let autoUpdateCleanup = null;\n    let positionRequest = 0;\n    let skipDelayUntil = 0;\n\n    const getTrigger = (target) =>\n      target?.nodeType === Node.ELEMENT_NODE\n        ? target.closest("[data-tooltip]")\n        : null;\n    const containsTarget = (trigger, target) =>\n      target?.nodeType != null && trigger.contains(target);\n    const getContent = (trigger) =>\n      trigger.getAttribute("data-tooltip")?.trim() ?? "";\n    const getPlacement = (trigger) => {\n      const placement = trigger.getAttribute("data-tooltip-placement");\n      return tooltipPlacements.has(placement) ? placement : "top";\n    };\n    const getTooltip = () => {\n      if (tooltip == null) {\n        tooltip = document.createElement("div");\n        tooltip.id = tooltipId;\n        tooltip.className = "tooltip";\n        tooltip.setAttribute("role", "tooltip");\n      }\n      return tooltip;\n    };\n    const setDescribedBy = (trigger, described) => {\n      const ids = new Set(\n        (trigger.getAttribute("aria-describedby") ?? "")\n          .split(/\\s+/)\n          .filter(Boolean),\n      );\n      if (described) {\n        ids.add(tooltipId);\n      } else {\n        ids.delete(tooltipId);\n      }\n      if (ids.size === 0) {\n        trigger.removeAttribute("aria-describedby");\n      } else {\n        trigger.setAttribute("aria-describedby", [...ids].join(" "));\n      }\n    };\n    const clearOpenTimeout = () => {\n      if (openTimeout != null) {\n        window.clearTimeout(openTimeout);\n        openTimeout = null;\n      }\n      pendingTrigger = null;\n    };\n    const closeTooltip = (activateSkipDelay = true) => {\n      clearOpenTimeout();\n      positionRequest += 1;\n      autoUpdateCleanup?.();\n      autoUpdateCleanup = null;\n      if (activeTrigger == null) {\n        return;\n      }\n      setDescribedBy(activeTrigger, false);\n      activeTrigger = null;\n      tooltip?.remove();\n      if (activateSkipDelay) {\n        skipDelayUntil = Date.now() + skipDelay;\n      }\n    };\n    const updatePosition = (trigger, floating) => {\n      const request = ++positionRequest;\n      void computePosition(trigger, floating, {\n        middleware: [\n          offset(tooltipGap),\n          flip({ padding: tooltipGap }),\n          shift({ padding: tooltipGap }),\n          size({\n            padding: tooltipGap,\n            apply({ availableHeight, availableWidth, elements }) {\n              elements.floating.style.setProperty(\n                "--tooltip-available-width",\n                `${Math.max(0, availableWidth)}px`,\n              );\n              elements.floating.style.setProperty(\n                "--tooltip-available-height",\n                `${Math.max(0, availableHeight)}px`,\n              );\n            },\n          }),\n        ],\n        placement: getPlacement(trigger),\n        strategy: "fixed",\n      })\n        .then(({ x, y }) => {\n          if (activeTrigger !== trigger || request !== positionRequest) {\n            return;\n          }\n          const scale = window.devicePixelRatio || 1;\n          floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;\n          floating.style.visibility = "visible";\n        })\n        .catch(() => {\n          if (activeTrigger === trigger && request === positionRequest) {\n            closeTooltip(false);\n          }\n        });\n    };\n    const openTooltip = (trigger) => {\n      const content = getContent(trigger);\n      if (!trigger.isConnected || content.length === 0) {\n        return;\n      }\n      clearOpenTimeout();\n      if (activeTrigger === trigger) {\n        return;\n      }\n      closeTooltip();\n      const floating = getTooltip();\n      floating.textContent = content;\n      floating.style.visibility = "hidden";\n      floating.style.transform = "translate(0, 0)";\n      document.body.appendChild(floating);\n      activeTrigger = trigger;\n      setDescribedBy(trigger, true);\n      autoUpdateCleanup = autoUpdate(trigger, floating, () => {\n        updatePosition(trigger, floating);\n      });\n    };\n    const requestOpen = (trigger, immediate = false) => {\n      if (\n        getContent(trigger).length === 0 ||\n        activeTrigger === trigger ||\n        pendingTrigger === trigger\n      ) {\n        return;\n      }\n      clearOpenTimeout();\n      pendingTrigger = trigger;\n      const delay =\n        immediate || activeTrigger != null || Date.now() < skipDelayUntil\n          ? 0\n          : hoverDelay;\n      if (delay === 0) {\n        openTooltip(trigger);\n        return;\n      }\n      openTimeout = window.setTimeout(() => {\n        openTimeout = null;\n        pendingTrigger = null;\n        openTooltip(trigger);\n      }, delay);\n    };\n    const handlePointerOpen = (event) => {\n      if (event.pointerType === "touch") {\n        return;\n      }\n      const trigger = getTrigger(event.target);\n      if (trigger == null || containsTarget(trigger, event.relatedTarget)) {\n        return;\n      }\n      requestOpen(trigger);\n    };\n    const handleLeave = (event) => {\n      const trigger = getTrigger(event.target);\n      if (trigger == null || containsTarget(trigger, event.relatedTarget)) {\n        return;\n      }\n      if (activeTrigger === trigger || pendingTrigger === trigger) {\n        closeTooltip();\n      }\n    };\n    const handleFocusIn = (event) => {\n      const trigger = getTrigger(event.target);\n      if (trigger?.matches(":focus-visible")) {\n        requestOpen(trigger, true);\n      }\n    };\n    const handleKeyDown = (event) => {\n      if (event.key === "Escape") {\n        closeTooltip();\n      }\n    };\n    const handleContextMenu = (event) => {\n      const trigger = getTrigger(event.target);\n      if (activeTrigger === trigger || pendingTrigger === trigger) {\n        closeTooltip();\n      }\n    };\n    const destroy = () => {\n      closeTooltip(false);\n      document.removeEventListener("pointerover", handlePointerOpen);\n      document.removeEventListener("pointerout", handleLeave);\n      document.removeEventListener("focusin", handleFocusIn);\n      document.removeEventListener("focusout", handleLeave);\n      document.removeEventListener("keydown", handleKeyDown);\n      document.removeEventListener("contextmenu", handleContextMenu);\n      tooltip = null;\n    };\n\n    document.addEventListener("pointerover", handlePointerOpen);\n    document.addEventListener("pointerout", handleLeave);\n    document.addEventListener("focusin", handleFocusIn);\n    document.addEventListener("focusout", handleLeave);\n    document.addEventListener("keydown", handleKeyDown);\n    document.addEventListener("contextmenu", handleContextMenu);\n    window.addEventListener("pagehide", destroy, { once: true });\n  };\n  let last = null;\n  for (const src of sources) {\n    last = document.createElement("script");\n    last.src = src;\n    last.async = false;\n    document.head.append(last);\n  }\n  last.addEventListener("load", start, { once: true });\n})();\n</script>\n';
+
+// server/assets/publication-license.txt
+var publication_license_default = `
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright [yyyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+`;
+
+// server/static-release.ts
+var MAX_RELEASE_BYTES = 8 * 1024 * 1024;
+var CDNS = ["https://unpkg.com", "https://cdn.jsdelivr.net", "https://esm.sh", "https://cdnjs.cloudflare.com"];
+var NOTICE = "Paseo Board public viewer\nCopyright 2026 Shurui Gui\n\nThe default stylesheet and optional icon/tooltip helpers are derived from OpenAI Codex rust-v0.146.0, Copyright 2025 OpenAI, under Apache-2.0; see LICENSE-APACHE-2.0.\nOptional helpers load lucide (ISC) and Floating UI (MIT) from unpkg.com. Those third-party packages are not included in this archive.\nAuthored page content retains its original authors' rights.\n";
+var sha256 = (value) => (0, import_node_crypto3.createHash)("sha256").update(value).digest("hex");
+var scriptJson = (value) => canonicalJson(value).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+var escapeHtml = (value) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+var fileInventory = (files) => Object.keys(files).sort().map((path) => ({ path, sha256: sha256(files[path]), bytes: Buffer.byteLength(files[path]) }));
+function dependenciesFor(html) {
+  const document = new DOMParser().parseFromString(`<html><head></head><body>${html}</body></html>`, "text/html");
+  const resources = /* @__PURE__ */ new Set();
+  for (const node2 of document.querySelectorAll("[src],[href],[poster],[srcset]")) {
+    if (node2.localName === "a" || node2.localName === "base") continue;
+    for (const attribute2 of ["src", "href", "poster"]) {
+      const value = node2.getAttribute(attribute2)?.trim();
+      if (value) resources.add(value);
+    }
+    const srcset = node2.getAttribute("srcset");
+    if (srcset) {
+      if (srcset.startsWith("data:")) resources.add(srcset);
+      else for (const entry of srcset.split(",")) resources.add(entry.trim().split(/\s+/)[0]);
+    }
+  }
+  for (const match of html.matchAll(/(?:url\(\s*["']?|@import\s+["'])([^\s"')<>]+)/gi)) resources.add(match[1]);
+  const dependencies = new Set([...resources].filter((url2) => /^(?:https?:)?\/\//i.test(url2)));
+  for (const match of html.matchAll(/https?:\/\/[^\s"'`<>\\)]+/g)) dependencies.add(match[0]);
+  return { resources: [...resources].sort(), dependencies: [...dependencies].sort() };
+}
+function buildRelease(input2) {
+  const options = ReleaseCreateSchema.parse(input2), { board } = input2;
+  if (options.boardId !== board.id) throw new Error("Release source Board does not match the requested Board");
+  if (options.expectedCanvasBase.revision !== board.canvas.revision || options.expectedCanvasBase.documentVersion !== board.canvas.documentVersion) throw new Error("Canvas changed; review the current Board before preparing a new release");
+  assertJson(options.publicData, "Public release data");
+  const authored = describeAuthoring(board.canvas);
+  if (!authored.replay.complete || authored.materializedAuthoredHtml === null) throw new Error(`Cannot export current authored source: ${authored.replay.failedPatch?.reason ?? authored.note}`);
+  let html = authored.materializedAuthoredHtml;
+  const helpers = `${/data-tooltip|dataset\.tooltip|floatingui/i.test(html) ? runtime_tooltips_default : ""}${/lucide/i.test(html) ? runtime_icons_default : ""}`;
+  const resources = dependenciesFor(html + helpers);
+  const missing = resources.resources.filter((url2) => !url2.startsWith("#") && !url2.startsWith("data:") && !/^https:\/\//.test(url2));
+  if (missing.length) throw new Error(`Release contains unpackaged local/unsupported resources: ${missing.slice(0, 5).join(", ")}. Embed them as data URLs or use an approved CDN.`);
+  const unapproved = resources.resources.filter((url2) => /^https:\/\//.test(url2) && !CDNS.includes(new URL(url2).origin));
+  if (unapproved.length) throw new Error(`Release resources are outside the supported CDN policy: ${unapproved.slice(0, 5).join(", ")}`);
+  if (options.network === "offline" && resources.dependencies.some((url2) => CDNS.some((origin) => url2.startsWith(origin + "/")))) throw new Error("This page uses external CDN dependencies. Choose CDN mode or embed those resources before offline export.");
+  if (options.network === "offline" && resources.resources.some((url2) => /^https:/.test(url2))) throw new Error("Offline export cannot include remote resources");
+  const theme = frameThemeFromColors(options.theme === "dark" ? DEFAULT_DARK_COLORS : DEFAULT_LIGHT_COLORS);
+  const tokens = Object.entries(theme.tokens).map(([key2, value]) => `--${key2}:${value}`).join(";");
+  const network = options.network === "cdn" ? CDNS.join(" ") : "";
+  const csp = ["default-src 'none'", `script-src 'unsafe-inline' 'unsafe-eval' blob: ${network}`, `style-src 'unsafe-inline' ${network}`, `font-src data: ${network}`, `img-src data: blob: ${network}`, "media-src data: blob:", `connect-src ${network || "'none'"}`, "worker-src blob:", "form-action 'none'", "base-uri 'none'", "frame-src 'none'", "object-src 'none'"].join("; ");
+  const outerCsp = csp.replace("frame-src 'none'", "frame-src blob:");
+  const title = options.title ?? board.title;
+  const metadata = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(csp)}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>@layer paseo-board-defaults {${visualize_css_default}
+}</style>`;
+  let prefix = `<!doctype html><html lang="en" data-surface="page" data-palette="custom" data-theme="${theme.scheme}" style="${escapeHtml(tokens)}"><head>${metadata}</head><body>`;
+  const parsed = new DOMParser().parseFromString(html, "text/html"), authoredRoot = parsed.querySelector("html");
+  if (authoredRoot) {
+    const attributes = (element) => element ? Array.from(element.attributes).map(({ name, value }) => [name, value]) : [];
+    const serialize = (entries2) => [...entries2].map(([name, value]) => ` ${escapeHtml(name)}="${escapeHtml(value)}"`).join("");
+    const rootAttributes = /* @__PURE__ */ new Map([["lang", "en"], ["data-surface", "page"], ["data-palette", "custom"], ["data-theme", theme.scheme], ["style", tokens]]);
+    for (const [name, value] of attributes(authoredRoot)) rootAttributes.set(name, name === "style" ? `${tokens};${value}` : value);
+    const head = parsed.querySelector("head"), body = parsed.querySelector("body");
+    prefix = `<!doctype html><html${serialize(rootAttributes)}><head${serialize(attributes(head))}>${metadata}`;
+    html = `${head?.innerHTML ?? ""}</head><body${serialize(attributes(body))}>${body?.innerHTML ?? authoredRoot.innerHTML.replace(head?.outerHTML ?? "\0", "")}`;
+  }
+  const suffix = `${helpers}</body></html>`;
+  const warnings = ["\u53D1\u5E03\u9875\u4ECE\u6700\u7EC8\u6E90\u7801\u91CD\u65B0\u6253\u5F00\uFF1B\u4E0D\u4F1A\u5E26\u51FA\u5F53\u524D\u6D4F\u89C8\u5668\u4E34\u65F6\u751F\u6210\u7684\u5185\u5BB9\u3001\u8FD0\u884C\u8FDB\u5EA6\u6216\u5386\u53F2\u811A\u672C\u6267\u884C\u72B6\u6001\u3002", "\u53EA\u5E26\u51FA\u8FD9\u91CC\u9009\u5B9A\u7684\u7F51\u9875\u548C\u516C\u5171\u6570\u636E\uFF1B\u4E0A\u4F20\u524D\u8BF7\u68C0\u67E5\u5176\u4E2D\u662F\u5426\u8FD8\u6709\u4E0D\u60F3\u516C\u5F00\u7684\u5185\u5BB9\u3002", "\u52A8\u6001\u751F\u6210\u7684\u8D44\u6E90\u5730\u5740\u4E0D\u4E00\u5B9A\u80FD\u5B8C\u6574\u5217\u51FA\uFF1B\u8D85\u51FA\u6240\u9009\u8054\u7F51\u8303\u56F4\u7684\u8BF7\u6C42\u4F1A\u88AB\u6D4F\u89C8\u5668\u963B\u6B62\u3002"];
+  if (/\b(?:board\s*\.\s*ask|sendFollowUpMessage)\s*\(/.test(html)) warnings.push("\u7F51\u9875\u91CC\u6709\u8BF7\u6C42 agent \u7684\u6309\u94AE\u6216\u4EE3\u7801\uFF1B\u53D1\u5E03\u7248\u4E0D\u4F1A\u8054\u7CFB agent\uFF0C\u8BE5\u8BF7\u6C42\u4F1A\u7ACB\u5373\u53D6\u6D88\u3002");
+  if (resources.dependencies.length) warnings.push("\u6E90\u7801\u542B\u5916\u90E8\u5730\u5740\uFF1BCDN \u8D44\u6E90\u9700\u8981\u8054\u7F51\uFF0C\u5176\u4ED6\u5730\u5740\u53EF\u80FD\u662F\u666E\u901A\u94FE\u63A5\u6216\u4F1A\u88AB\u963B\u6B62\u7684\u8BF7\u6C42\u3002");
+  const content = { viewerVersion: STATIC_VIEWER_VERSION, title, network: options.network, data: options.publicData, html, prefix, suffix, runtime: STATIC_VIEWER_RUNTIME, shell: STATIC_VIEWER_SHELL, notice: NOTICE, license: publication_license_default };
+  const releaseId = `release-${sha256(canonicalJson({ content, source: { boardId: board.id, canvasBase: authored.canvasBase } }))}`;
+  const config2 = { releaseId, data: options.publicData, html, prefix, suffix, runtime: STATIC_VIEWER_RUNTIME };
+  const index = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(outerCsp)}"><title>${escapeHtml(title)}</title><style>html,body{margin:0;height:100%;background:${theme.tokens["host-sheet"]}}iframe{width:100%;height:100%;border:0;display:block}aside{position:fixed;left:8px;bottom:8px;max-width:calc(100% - 32px);font:13px/1.4 system-ui;padding:8px 12px;color:#fff;background:#252525;border-radius:6px}aside[hidden]{display:none}</style></head><body><iframe title="${escapeHtml(title)}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe><aside role="status" hidden></aside><script>(${STATIC_VIEWER_SHELL})(${scriptJson(config2)});</script></body></html>`;
+  const files = { "index.html": index, "NOTICE": NOTICE, "LICENSE-APACHE-2.0": publication_license_default };
+  const inventory = fileInventory(files), artifactHash = sha256(canonicalJson(inventory));
+  const manifest = ReleaseManifestSchema.parse({ formatVersion: 1, releaseId, artifactHash, title, viewerVersion: STATIC_VIEWER_VERSION, network: options.network, dependencies: resources.dependencies, warnings, files: inventory });
+  files["release.json"] = canonicalJson(manifest) + "\n";
+  if (Object.values(files).reduce((sum, value) => sum + Buffer.byteLength(value), 0) > MAX_RELEASE_BYTES) throw new Error("Public release exceeds the 8 MiB export limit");
+  return { manifest, files, provenance: { boardId: board.id, boardRevision: board.revision, canvasBase: authored.canvasBase } };
+}
+function releaseZip(files) {
+  const local = [], central = [];
+  let offset = 0;
+  for (const path of Object.keys(files).sort()) {
+    if (!/^[a-zA-Z0-9_.-]+$/.test(path)) throw new Error("Invalid ZIP file name");
+    const name = Buffer.from(path), data = Buffer.from(files[path]);
+    let crc = 4294967295;
+    for (const byte of data) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) crc = crc >>> 1 ^ 3988292384 & -(crc & 1);
+    }
+    crc = (crc ^ 4294967295) >>> 0;
+    const header = Buffer.alloc(30);
+    header.writeUInt32LE(67324752);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE(2048, 6);
+    header.writeUInt16LE(33, 12);
+    header.writeUInt32LE(crc, 14);
+    header.writeUInt32LE(data.length, 18);
+    header.writeUInt32LE(data.length, 22);
+    header.writeUInt16LE(name.length, 26);
+    const directory2 = Buffer.alloc(46);
+    directory2.writeUInt32LE(33639248);
+    directory2.writeUInt16LE(20, 4);
+    directory2.writeUInt16LE(20, 6);
+    directory2.writeUInt16LE(2048, 8);
+    directory2.writeUInt16LE(33, 14);
+    directory2.writeUInt32LE(crc, 16);
+    directory2.writeUInt32LE(data.length, 20);
+    directory2.writeUInt32LE(data.length, 24);
+    directory2.writeUInt16LE(name.length, 28);
+    directory2.writeUInt32LE(offset, 42);
+    local.push(header, name, data);
+    central.push(directory2, name);
+    offset += header.length + name.length + data.length;
+  }
+  const directory = Buffer.concat(central), end = Buffer.alloc(22);
+  end.writeUInt32LE(101010256);
+  end.writeUInt16LE(Object.keys(files).length, 8);
+  end.writeUInt16LE(Object.keys(files).length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...local, directory, end]);
 }
 
 // server/store-worker.ts
@@ -37246,14 +38778,27 @@ process.on("message", async (message) => {
   }
   if (message?.type !== "call" || !store) return;
   const { id, method, args } = message;
-  if (busy || !STORE_METHODS.includes(method) || !Array.isArray(args)) {
+  if (busy || !STORE_METHODS.includes(method) && !isComputeMethod(method) || !Array.isArray(args)) {
     send({ type: "result", id, error: { code: "worker_protocol", message: "Invalid or concurrent store request", details: {} } });
     return;
   }
   busy = true;
   try {
-    const operation = store[method];
-    const value = await operation.apply(store, args);
+    let value;
+    if (method === "buildRelease") value = buildRelease(args[0]);
+    else if (method === "releaseZip") {
+      ReleaseIdSchema.parse(args[0]);
+      const files = args[1];
+      if (!files || typeof files !== "object" || Array.isArray(files) || Object.values(files).some((item) => typeof item !== "string")) throw new BoardStoreError("invalid_input", "Release ZIP files must be a string map");
+      value = releaseZip(files).toString("base64");
+    } else if (method === "materializeAuthoredHtml") {
+      const authored = describeAuthoring(args[1]);
+      if (!authored.replay.complete || authored.materializedAuthoredHtml === null) throw new BoardStoreError("edit_conflict", `Cannot materialize current authored source: ${authored.replay.failedPatch?.reason ?? authored.note}`);
+      value = authored.materializedAuthoredHtml;
+    } else {
+      const operation = store[method];
+      value = await operation.apply(store, args);
+    }
     send({ type: "result", id, value });
   } catch (error62) {
     send({ type: "result", id, error: serializeError(error62) });

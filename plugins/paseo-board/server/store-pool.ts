@@ -5,13 +5,15 @@ import { availableParallelism } from "node:os";
 import { join, resolve } from "node:path";
 import { serialize } from "node:v8";
 import workerSource from "./assets/store-worker.txt";
-import type { BoardChange, BoardChanges, BoardEventCursor, BoardSummary, CreateInput } from "../shared/contracts";
+import type { Board, BoardChange, BoardChanges, BoardEventCursor, BoardSummary, CreateInput } from "../shared/contracts";
+import type { ReleaseCreateInput } from "../shared/release-contracts";
+import type { StaticRelease } from "./static-release";
 import type { BoardStore, BoardStoreApi } from "./store";
 import { BoardStoreError, assertId, ensureDirectory } from "./store-format";
 import { BoardEventHub } from "./board-events";
-import { boardPartition, type StoreMethod } from "./store-worker-protocol";
+import { boardPartition, isComputeMethod, type WorkerMethod } from "./store-worker-protocol";
 
-interface Job { id: string; method: StoreMethod; args: unknown[]; boardId: string; bytes: number; resolve(value: any): void; reject(error: Error): void }
+interface Job { id: string; method: WorkerMethod; args: unknown[]; boardId: string; bytes: number; resolve(value: any): void; reject(error: Error): void }
 interface Slot { index: number; child?: ChildProcess; ready: boolean; queue: Job[]; bytes: number; active?: Job; timer?: ReturnType<typeof setTimeout>; starting?: Promise<void>; started: boolean; restarts: number[]; retryAt: number; recoveryTimer?: ReturnType<typeof setTimeout> }
 export interface StorePoolOptions {
   workerDir?: string;
@@ -162,7 +164,7 @@ export class BoardStorePool implements BoardStoreApi {
         slot.child = undefined; slot.ready = false; slot.active = undefined;
         const failure = new BoardStoreError("worker_unavailable", "Board worker exited; queued operations were not executed", { diagnostic: stderr });
         rejectReady(failure);
-        if (active) active.reject(new BoardStoreError(active.method === "read" ? "worker_unavailable" : "outcome_unknown", "Board worker stopped before its response; inspect state or retry the identical durable request", { method: active.method, boardId: active.boardId }));
+        if (active) active.reject(new BoardStoreError(active.method === "read" || isComputeMethod(active.method) ? "worker_unavailable" : "outcome_unknown", "Board worker stopped before its response; inspect state or retry the identical durable request", { method: active.method, boardId: active.boardId }));
         for (const job of slot.queue.splice(0)) job.reject(failure);
         slot.bytes = 0;
         void this.saveLease().then(() => this.recoverWorker(slot)).catch(() => { void this.close(); });
@@ -198,7 +200,7 @@ export class BoardStorePool implements BoardStoreApi {
     const child = slot.child;
     child.send({ type: "call", id: job.id, method: job.method, args: job.args }, error => { if (error && slot.child === child) { slot.ready = false; child.kill("SIGKILL"); } });
   }
-  private async call<T>(method: StoreMethod, boardId: string, args: unknown[]): Promise<T> {
+  private async call<T>(method: WorkerMethod, boardId: string, args: unknown[]): Promise<T> {
     assertId(boardId);
     if (this.stopping) throw new BoardStoreError("worker_unavailable", "Board store is stopped");
     const slot = this.slots[boardPartition(boardId, this.slots.length)];
@@ -239,6 +241,9 @@ export class BoardStorePool implements BoardStoreApi {
   updateInteraction: BoardStore["updateInteraction"] = (...args) => this.call("updateInteraction", args[0], args);
   projectSideAgent: BoardStore["projectSideAgent"] = (...args) => this.call("projectSideAgent", args[0], args);
   updateExtraction: BoardStore["updateExtraction"] = (...args) => this.call("updateExtraction", args[0], args);
+  buildRelease = (input: ReleaseCreateInput & { board: Board }): Promise<StaticRelease> => this.call("buildRelease", input.boardId, [input]);
+  releaseZip = (releaseId: string, files: Record<string, string>): Promise<string> => this.call("releaseZip", releaseId, [releaseId, files]);
+  materializeAuthoredHtml = (boardId: string, canvas: Board["canvas"]): Promise<string> => this.call("materializeAuthoredHtml", boardId, [boardId, canvas]);
   diagnostics() { return this.slots.map(slot => ({ partition: slot.index, pid: slot.child?.pid, pending: slot.queue.length + Number(!!slot.active), bytes: slot.bytes, ready: slot.ready })); }
 
   close(): Promise<void> { return this.closing ??= this.closeNow(); }

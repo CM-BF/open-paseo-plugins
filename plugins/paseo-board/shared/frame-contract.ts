@@ -176,7 +176,14 @@ export function validAnchor(value: unknown): value is Anchor {
 
 /** Late pixels may add only an image to the exact reference opened by the user. */
 export function sameSelectionAnchor(a: Anchor, b: Anchor): boolean {
-  return JSON.stringify({ ...a, image: undefined }) === JSON.stringify({ ...b, image: undefined });
+  // A restored/frozen anchor may have passed through schema validation, which
+  // changes key insertion order. Pixels arrive separately from this identity.
+  const ordered = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(ordered);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, ordered(item)]));
+    return value;
+  };
+  return JSON.stringify(ordered({ ...a, image: undefined })) === JSON.stringify(ordered({ ...b, image: undefined }));
 }
 
 /** Editing proposals are inert until the user saves through the host-owned control. */

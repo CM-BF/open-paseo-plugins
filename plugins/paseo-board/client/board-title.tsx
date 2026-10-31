@@ -5,11 +5,12 @@ import { Icon } from "@getpaseo/plugin/client/ui";
 import { renameBoardRpc, type Board, type RenameInput } from "../shared/contracts";
 import { Action, Copy, errorMessage, localId, useColors } from "./ui";
 import { TitleInput } from "./title-input";
+import { ToolbarPopover } from "./toolbar-popover";
 
 interface Draft { value: string; baseTitle: string; request?: RenameInput; error?: string }
-interface Props { board: Board; onAccepted(board: Board): void; onRefresh(): Promise<unknown> }
+interface Props { board: Board; onAccepted(board: Board): void; onRefresh(): Promise<unknown>; compact?: boolean; menuWidth?: number; menuOffset?: number; onEditStart?(): void }
 
-export function BoardTitle({ board, onAccepted, onRefresh }: Props) {
+export function BoardTitle({ board, onAccepted, onRefresh, compact, menuWidth, menuOffset, onEditStart }: Props) {
   const c = useColors();
   const rename = useRpc(renameBoardRpc);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -42,6 +43,21 @@ export function BoardTitle({ board, onAccepted, onRefresh }: Props) {
       if (mounted.current) setSaving(false);
     }
   };
+  const start = () => { if (pending.current) return; onEditStart?.(); setDraft(current => current ?? { value: board.title, baseTitle: board.title }); };
+  if (compact) return <View testID="board-title" style={{ flex: 1, minWidth: 0, flexShrink: 1, position: "relative", overflow: "visible", zIndex: draft ? 120 : 0 }}>
+    <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: 2 }}>
+      <Text numberOfLines={1} style={{ color: c.foreground, fontSize: 14, fontWeight: "600", minWidth: 0, flexShrink: 1 }}>{board.title}</Text>
+      <Pressable accessibilityRole="button" accessibilityLabel="修改 Board 名称" onPress={start} style={({ pressed }) => ({ padding: 6, flexShrink: 0, borderRadius: 5, backgroundColor: pressed || draft ? c.surface2 : "transparent" })}><Icon name="Pencil" size={14} color={c.foregroundMuted} /></Pressable>
+    </View>
+    <ToolbarPopover open={!!draft} title="修改 Board 名称" onClose={cancel} containerId="board-title" testID="board-title-popup" width={menuWidth ?? 320} left={menuOffset ?? 0}>
+      {draft ? <>
+        <View style={{ flexDirection: "row" }}><TitleInput value={draft.value} disabled={saving} color={c.foreground} backgroundColor={c.surface0} borderColor={c.border} onChange={value => { if (!pending.current) setDraft({ ...draft, value, request: undefined, error: undefined }); }} onSubmit={() => { void submit(); }} onCancel={cancel} /></View>
+        <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}><Action label={saving ? "保存中…" : draft.request ? "重试保存" : "保存名称"} disabled={saving || !draft.value.trim() || changedElsewhere && !draft.request} onPress={() => { void submit(); }} /><Action label="取消改名" disabled={saving} onPress={cancel} /></View>
+        {draft.error ? <Text accessibilityRole="alert" style={{ color: c.statusDanger, fontSize: 12 }}>{draft.error}</Text> : null}
+        {changedElsewhere && !saving ? <><Copy muted small>当前名称已变为「{board.title}」。你的输入已保留。</Copy><Action label="确认当前名称后继续编辑" onPress={() => setDraft({ ...draft, baseTitle: board.title, request: undefined, error: undefined })} /></> : null}
+      </> : null}
+    </ToolbarPopover>
+  </View>;
   return <View style={{ flex: 1, minWidth: 160, gap: 6 }} testID="board-title">
     <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
       {draft ? <>
@@ -50,7 +66,7 @@ export function BoardTitle({ board, onAccepted, onRefresh }: Props) {
         <Action label="取消改名" disabled={saving} onPress={cancel} />
       </> : <>
         <Text numberOfLines={1} style={{ color: c.foreground, fontSize: 16, fontWeight: "600", flexShrink: 1 }}>{board.title}</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel="修改 Board 名称" onPress={() => setDraft({ value: board.title, baseTitle: board.title })} style={({ pressed }) => ({ padding: 7, borderRadius: 5, backgroundColor: pressed ? c.surface2 : "transparent" })}><Icon name="Pencil" size={15} color={c.foregroundMuted} /></Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel="修改 Board 名称" onPress={start} style={({ pressed }) => ({ padding: 7, borderRadius: 5, backgroundColor: pressed ? c.surface2 : "transparent" })}><Icon name="Pencil" size={15} color={c.foregroundMuted} /></Pressable>
       </>}
     </View>
     {draft?.error ? <Text accessibilityRole="alert" style={{ color: c.statusDanger, fontSize: 12 }}>{draft.error}</Text> : null}

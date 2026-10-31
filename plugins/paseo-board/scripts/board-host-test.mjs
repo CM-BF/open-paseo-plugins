@@ -11,6 +11,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 const directory = dirname(fileURLToPath(import.meta.url));
+const draftScope = process.env.BOARD_HOST_TEST_SCOPE === 'drafts';
+const toolbarScope = process.env.BOARD_HOST_TEST_SCOPE === 'toolbar';
 const bundle = await build({ entryPoints: [join(directory, 'board-host-fixture.tsx')], bundle: true, format: 'iife', platform: 'browser', write: false, loader: { '.txt': 'text' }, define: { 'process.env.NODE_ENV': '"test"' }, plugins: [{ name: 'host-adapters', setup(build) { build.onResolve({ filter: /^(react-native|@getpaseo\/plugin(?:\/client(?:\/ui)?)?)$/ }, () => ({ path: join(directory, 'board-host-adapter.tsx') })); } }] });
 const profile = await mkdtemp(join(tmpdir(), 'paseo-board-host-'));
 const server = createServer((req, res) => {
@@ -98,6 +100,17 @@ try {
   };
   const hostLocation = (selector) => evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height}})()`);
   const hostClick = async (selector) => {
+    // The fixed toolbar exposes infrequent operations through real menus.
+    // Click those menus first; never invoke a hidden action programmatically.
+    if (!await evaluate(`!!document.querySelector(${JSON.stringify(selector)})`)) {
+      const label = selector.match(/aria-label="([^"]+)"/)?.[1];
+      if (['交互','选组件','选文字','框选','指定位置'].includes(label)) await hostClick('[data-testid="board-tools-open"]');
+      else if (label === '清除引用') {
+        if (!await evaluate(`!!document.querySelector('button[aria-label="当前引用"]')`)) await hostClick('[data-testid="board-more-open"]');
+        await hostClick('button[aria-label="当前引用"]');
+      } else if (['讨论','变化'].includes(label) || label?.startsWith('决策 ') || selector.includes('board-drafts-open') || selector.includes('board-update-navigation')) await hostClick('[data-testid="board-more-open"]');
+      await until(`document.querySelector(${JSON.stringify(selector)})`);
+    }
     // Input focus can scroll a tall thread's popover. Like a user, reveal the actual
     // control first; DOM existence alone does not establish a clickable hit target.
     await evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'nearest',inline:'nearest'})`);
@@ -130,7 +143,7 @@ try {
   const submitCount = () => evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').length");
   const noPopover = () => until(`!document.querySelector(${JSON.stringify(popover)})`);
   const closePopover = async () => {
-    const bar = await hostLocation('[data-testid="board-reference-bar"]'); await clickPoint(bar.x+20,bar.y+bar.height/2);
+    const canvas = await canvasRect(); await clickPoint(canvas.x+canvas.width-24,canvas.y+24);
     await noPopover();
   };
   const openAt = async (x = 155, y = 170) => {
@@ -140,7 +153,64 @@ try {
     assert.equal(await frame("!!document.querySelector('[data-board-menu]')"), false);
     return { x: r.x + x, y: r.y + y };
   };
-  await command('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/` });
+  const runToolbarChecks = async () => {
+    const toolbar='[data-testid="board-toolbar"]', popup='[data-testid="board-toolbar-popup"]';
+    await evaluate(`window.toolbarOriginalFrame=document.querySelector('iframe[data-board-id="host-fixture"]');true`);
+    const originalCalls=await submitCount(), renameCalls=await evaluate("hostFixture.calls.filter(c=>c.name==='board.rename').length");
+    for (const width of [1024,420,320]) {
+      await command('Emulation.setDeviceMetricsOverride',{width,height:800,deviceScaleFactor:1,mobile:false});
+      await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      const before=await canvasRect(), bar=await hostLocation(toolbar);
+      assert.equal(bar.height,48); assert.equal(bar.width,width);
+      const bounds=await evaluate(`(()=>{const bar=document.querySelector(${JSON.stringify(toolbar)}),r=bar.getBoundingClientRect();return [...bar.querySelectorAll(':scope > button, :scope > [data-testid="board-title"]')].map(e=>({label:e.getAttribute('aria-label')||e.getAttribute('data-testid'),rect:e.getBoundingClientRect().toJSON(),inside:e.getBoundingClientRect().top>=r.top&&e.getBoundingClientRect().bottom<=r.bottom&&e.getBoundingClientRect().left>=r.left&&e.getBoundingClientRect().right<=r.right}))})()`);
+      assert.ok(bounds.every(b=>b.inside),JSON.stringify({width,bounds}));
+      for (const label of ['选择工具','快捷键','更多']) {
+        await hostClick(`button[aria-label="${label}"]`); await until(`document.querySelector(${JSON.stringify(popup)})`);
+        assert.deepEqual(await canvasRect(),before,`${label} must overlay without moving the canvas at ${width}px`);
+        assert.equal(await evaluate(`window.toolbarOriginalFrame===document.querySelector('iframe[data-board-id="host-fixture"]')`),true);
+        const menu=await hostLocation(popup);assert.ok(menu.x>=0&&menu.x+menu.width<=width&&menu.y+menu.height<=800,JSON.stringify({width,label,menu}));
+        if(label==='选择工具') for(const mode of ['交互','选组件','选文字','框选','指定位置']) assert.ok(await evaluate(`!!document.querySelector('button[aria-label="${mode}"]')`));
+        if(label==='快捷键') {
+          const content=await evaluate(`document.querySelector(${JSON.stringify(popup)}).textContent`);
+          for(const text of ['Ctrl + Shift','双击','Shift + Tab','Ctrl + C','Option / Alt','草稿','中文输入法']) assert.ok(content.includes(text),text);
+          await evaluate(`(()=>{const p=document.querySelector(${JSON.stringify(popup)});const scroll=[...p.querySelectorAll('div')].find(e=>getComputedStyle(e).overflow==='auto');if(scroll)scroll.scrollTop=scroll.scrollHeight})()`);
+          const tail=await evaluate(`(()=>{const p=document.querySelector(${JSON.stringify(popup)}),n=[...p.querySelectorAll('span')].find(e=>e.textContent.includes('中文输入法'));return {bottom:n.getBoundingClientRect().bottom,menuBottom:p.getBoundingClientRect().bottom}})()`);
+          assert.ok(tail.bottom<=tail.menuBottom,JSON.stringify(tail));
+          const screenshot=await command('Page.captureScreenshot',{format:'png'});
+          if(process.env.BOARD_TOOLBAR_SCREENSHOT_DIR) await writeFile(join(process.env.BOARD_TOOLBAR_SCREENSHOT_DIR,`toolbar-${width}-shortcuts.png`),Buffer.from(screenshot.data,'base64'));
+        }
+        if(label==='更多') {
+          for(const item of ['决策 0','讨论','变化']) assert.ok(await evaluate(`!!document.querySelector('button[aria-label="${item}"]')`));
+          if(width<820) assert.ok(await evaluate(`!!document.querySelector('button[aria-label="当前引用"]')`));
+        }
+        await key('Escape'); await until(`!document.querySelector(${JSON.stringify(popup)})`);assert.deepEqual(await canvasRect(),before);
+      }
+      await hostClick('button[aria-label="选组件"]');
+      assert.deepEqual(await canvasRect(),before);
+      await hostClick('button[aria-label="交互"]');
+      await hostClick('button[aria-label="修改 Board 名称"]'); await until("document.querySelector('[data-testid=board-title-popup]')");
+      assert.deepEqual(await canvasRect(),before);
+      const titleMenu=await hostLocation('[data-testid="board-title-popup"]');assert.ok(titleMenu.x>=0&&titleMenu.x+titleMenu.width<=width,JSON.stringify({width,titleMenu}));
+      await sendText('保留的改名草稿');
+      if(width===1024) {
+        await evaluate("document.querySelector('[data-testid=board-title-input]').dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}))");
+        await key('Escape');assert.ok(await evaluate("!!document.querySelector('[data-testid=board-title-input]')"),'IME Escape cannot close the title menu');
+        await evaluate("document.querySelector('[data-testid=board-title-input]').dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}))");
+        await key('Escape');assert.equal(await evaluate("document.querySelector('[data-testid=board-title-input]')?.value"),'保留的改名草稿','The immediate IME completion Escape must preserve the title draft');
+        await evaluate('new Promise(resolve=>setTimeout(resolve,65))');
+      }
+      await key('Escape');await until("!document.querySelector('[data-testid=board-title-popup]')");
+      assert.equal(await evaluate('hostFixture.board().title'),'Host integration fixture');
+      assert.deepEqual(await canvasRect(),before);
+      assert.equal(await frame('window.boots'),1);assert.equal(await submitCount(),originalCalls);
+      assert.equal(await evaluate("hostFixture.calls.filter(c=>c.name==='board.rename').length"),renameCalls);
+      const screenshot=await command('Page.captureScreenshot',{format:'png'});
+      if(process.env.BOARD_TOOLBAR_SCREENSHOT_DIR) await writeFile(join(process.env.BOARD_TOOLBAR_SCREENSHOT_DIR,`toolbar-${width}-closed.png`),Buffer.from(screenshot.data,'base64'));
+      console.log('MEASURE toolbar '+JSON.stringify({width,bar,canvas:before,buttons:bounds.map(b=>({label:b.label,x:b.rect.x,y:b.rect.y,width:b.rect.width,height:b.rect.height}))}));
+      check(`the ${width}px toolbar stays on one 48px row; tools, shortcuts, more and rename remain reachable without moving or rebuilding the canvas`);
+    }
+  };
+  await command('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/${draftScope ? '?drafts=1' : ''}` });
   await command('Page.bringToFront');
   await until('window.hostFixture?.ready >= 1');
   await until("document.querySelector('[data-testid=board-canvas-container]')");
@@ -153,6 +223,12 @@ try {
   assert.equal((await hostLocation(rail)).width, 168);
   assert.equal(await railCount(), 0);
   await command('Page.captureScreenshot', { format: 'png' });
+  if (toolbarScope) {
+    await runToolbarChecks();
+  } else if (draftScope) {
+    const { runDurableDraftChecks } = await import('./board-draft-checks.mjs');
+    await runDurableDraftChecks({ assert, command, evaluate, until, frame, untilFrame, key, clickPoint, rightClickPoint, location, hostClick, hostLocation, openAt, sendText, submitCount, noPopover, canvasRect, input, popover, railClick, check, origin: `http://127.0.0.1:${server.address().port}` });
+  } else {
   await click('#control');
   await untilFrame('window.count===1');
   await frame("document.querySelector('#field').value='preserved draft'");
@@ -1176,7 +1252,7 @@ try {
   assert.equal(await evaluate(seenUpdate('update-old')), false);
   assert.equal(await evaluate('hostFixture.updateRequests.length'), 1);
   await untilFrame("scrollX>0&&scrollY>0&&(()=>{const r=document.querySelector('#update-far').getBoundingClientRect();return r.left>=0&&r.top>=0&&r.left<innerWidth&&r.top<innerHeight})()");
-  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('更新 2/2')`), true);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(navPosition)})?.getAttribute('aria-label')?.includes('更新 2/2')`), true);
   assert.deepEqual(await canvasRect(), beforeUpdatesRect);
   assert.equal(await evaluate('hostFixture.ready'), beforeUpdatesReady);
   assert.equal(await frame("document.querySelector('#field').value"), 'updates preserve this input');
@@ -1190,20 +1266,20 @@ try {
   assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.updates-seen'&&item.input.updateIds.includes('update-multiple')).length"), 1);
   const readingRequests = await evaluate('hostFixture.updateRequests.length');
   await evaluate(`hostFixture.addUpdate({id:'update-arrival-a',targets:[{selector:'#point'}],actorAgentId:'owner-fixture'});hostFixture.addUpdate({id:'update-arrival-b',targets:[{selector:'#far'}],actorAgentId:'side-agent'});hostFixture.refetch()`);
-  await until(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('更新 4/6')`);
+  await until(`document.querySelector(${JSON.stringify(navPosition)})?.getAttribute('aria-label')?.includes('更新 4/6')`);
   assert.equal(await evaluate('hostFixture.updateRequests.length'), readingRequests);
   assert.equal(await evaluate(seenUpdate('update-arrival-a')), false);
   assert.equal(await evaluate(seenUpdate('update-arrival-b')), false);
   await hostClick(nextUpdate); await until(seenUpdate('update-arrival-a'));
   await hostClick(nextUpdate); await until(seenUpdate('update-arrival-b'));
-  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('更新 6/6')`), true);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(navPosition)})?.getAttribute('aria-label')?.includes('更新 6/6')`), true);
   check('multi-target updates wait for every place before one seen receipt; manual browsing keeps its stable position while concurrent agent updates accumulate and remain individually reachable');
 
   await frame('scrollTo(0,0)');
   await openAt(); await sendText('Do not move or lose this draft for an update');
   const draftUpdateRequests = await evaluate('hostFixture.updateRequests.length');
   await evaluate(`hostFixture.addUpdate({id:'update-draft',targets:[{selector:'#update-far'}]});hostFixture.refetch()`);
-  await until(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('/7')`);
+  await until(`document.querySelector(${JSON.stringify(navPosition)})?.getAttribute('aria-label')?.includes('/7')`);
   await hostClick(nextUpdate);
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)}).value`), 'Do not move or lose this draft for an update');
   assert.equal(await evaluate(`document.activeElement===document.querySelector(${JSON.stringify(input)})`), true);
@@ -1216,10 +1292,10 @@ try {
   const controlBox = await location('#control');
   await command('Input.dispatchMouseEvent',{type:'mouseMoved',x:controlBox.x+5,y:controlBox.y+5});
   await command('Input.dispatchMouseEvent',{type:'mousePressed',x:controlBox.x+5,y:controlBox.y+5,button:'left',buttons:1,clickCount:1});
-  await until(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('暂缓')`);
+  await until(`document.querySelector(${JSON.stringify(navPosition)})?.getAttribute('aria-label')?.includes('暂缓')`);
   const draggingRequests = await evaluate('hostFixture.updateRequests.length');
   await evaluate(`hostFixture.addUpdate({id:'update-drag-a',targets:[{selector:'#far'}]});hostFixture.addUpdate({id:'update-drag-b',targets:[{selector:'#update-far'}]});hostFixture.refetch()`);
-  await until(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('/9')`);
+  await until(`document.querySelector(${JSON.stringify(navPosition)})?.getAttribute('aria-label')?.includes('/9')`);
   assert.equal(await evaluate('hostFixture.updateRequests.length'), draggingRequests);
   assert.equal(await frame('scrollX===0&&scrollY===0'), true);
   await command('Input.dispatchMouseEvent',{type:'mouseReleased',x:controlBox.x+5,y:controlBox.y+5,button:'left',clickCount:1});
@@ -1229,7 +1305,7 @@ try {
   check('a composer retains its draft and focus when updates arrive, and a held canvas gesture pauses following until release, then coalesces the arrivals into one latest jump');
 
   await evaluate(`hostFixture.addUpdate({id:'update-gone',targets:[{selector:'#missing-component'}]});hostFixture.refetch()`);
-  await until(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('位置不可用')`);
+  await until(`document.querySelector(${JSON.stringify(navPosition)})?.getAttribute('aria-label')?.includes('位置不可用')`);
   assert.equal(await evaluate(seenUpdate('update-gone')), false);
   const goneRequest = await evaluate('hostFixture.updateRequests.at(-1)');
   await frame(`parent.postMessage({...${JSON.stringify(goneRequest)},type:'update-position',id:'update-old',documentVersion:1,targetIndex:0,status:'focused',position:{x:1,y:1},location:'target'},'*')`);
@@ -1241,7 +1317,7 @@ try {
   await until("hostFixture.updatePositions.some(item=>item.id==='update-old-document'&&item.status==='unavailable')");
   assert.equal(await evaluate(seenUpdate('update-old-document')), false);
   await hostClick(prevUpdate);
-  await until(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('更新 10/11')`);
+  await until(`document.querySelector(${JSON.stringify(navPosition)})?.getAttribute('aria-label')?.includes('更新 10/11')`);
   assert.equal(await evaluate(seenUpdate('update-gone')), false);
   assert.equal(await submitCount(), beforeUpdatesSends);
   assert.equal(await evaluate('hostFixture.ready'), beforeUpdatesReady);
@@ -1259,11 +1335,12 @@ try {
   assert.equal(await evaluate("document.querySelector('[data-testid=board-unread-another-board]').textContent"), '3 更新');
   await hostClick('button[aria-label="打开 Host integration fixture"]');
   await until('hostFixture.ready>'+beforeUpdatesReady);
-  await until(`document.querySelector(${JSON.stringify(navPosition)})?.textContent.includes('更新 11/11')`);
+  await until(`document.querySelector(${JSON.stringify(navPosition)})?.getAttribute('aria-label')?.includes('更新 11/11')`);
   assert.equal(await evaluate(seenUpdate('update-old-document')), false);
   check('the Board index shows per-project unread badges, and entering a Board focuses its newest unread location once without claiming an unavailable target was seen');
   }
 
+  }
   const screenshot = await command('Page.captureScreenshot', { format: 'png' });
   if (process.env.BOARD_HOST_TEST_SCREENSHOT) await writeFile(process.env.BOARD_HOST_TEST_SCREENSHOT, Buffer.from(screenshot.data, 'base64'));
   console.log(`BoardView browser integration: ${passed} checks passed (Paseo transport/native primitives adapted; not a daemon UI verification).`);
