@@ -47,6 +47,20 @@ describe("host-owned component saves", () => {
     expect(writer.snapshot()?.status).toBe("rejected"); expect((await result).status).toBe("rejected");
     writer.cancel(); expect(writer.snapshot()).toBeNull();
   });
+  it("allows cancelling when the Board disappeared before the server could execute the save", async () => {
+    const writer = new ComponentEditWriter(), result = writer.propose("removed-board", proposal(), "missing-board-save");
+    const commit = vi.fn(async (_input: EditInput) => { throw Object.assign(new Error("Board removed-board does not exist"), { code: "not_found" }); });
+    const accept = vi.fn();
+    await writer.save(commit, accept, refresh);
+    expect(writer.snapshot()?.status).toBe("rejected");
+    expect(await result).toMatchObject({ status: "rejected", message: expect.stringContaining("修改未保存") });
+    expect(accept).not.toHaveBeenCalled();
+    // A confirmed missing Board is not an ambiguous write: it must not lock cancellation
+    // or let the rejected save issue another request while the user closes the notice.
+    await writer.save(commit, accept, refresh);
+    expect(commit).toHaveBeenCalledOnce();
+    writer.cancel(); expect(writer.snapshot()).toBeNull();
+  });
   it("generates copy prefixes from the host receipt and never accepts caller-owned IDs", async () => {
     const writer = new ComponentEditWriter();
     const request: ComponentEditRequest = { canvasBase: { revision: 4, documentVersion: 2 }, patch: { operation: "copy", selector: "#label", sourceIdentity: { tag: "p", id: "label", fingerprint: "abcd1234" }, destination: "#container", destinationIdentity: { tag: "div", id: "container", fingerprint: "abcd5678" }, position: "append" } };

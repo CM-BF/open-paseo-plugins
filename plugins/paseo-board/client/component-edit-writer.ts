@@ -6,7 +6,7 @@ export interface EditDraft {
   status: "review" | "saving" | "unknown" | "rejected"; error?: string;
 }
 const sameBase = (a: CanvasBase, b: CanvasBase) => a.revision === b.revision && a.documentVersion === b.documentVersion;
-const confirmedRefusals = new Set(["invalid_input", "revision_conflict", "edit_conflict", "idempotency_conflict", "unauthorized", "forbidden", "board_not_found"]);
+const confirmedRefusals = new Set(["invalid_input", "revision_conflict", "edit_conflict", "idempotency_conflict", "unauthorized", "forbidden", "board_not_found", "not_found"]);
 function immutable<T>(value: T): T {
   if (value && typeof value === "object") { for (const child of Object.values(value)) immutable(child); Object.freeze(value); }
   return value;
