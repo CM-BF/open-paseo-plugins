@@ -4,7 +4,9 @@
 
 - User requested a held selection shortcut with hover preview, structural drag with container-level switching, cut/copy/paste and direct text editing. Work continues on the existing PR branch; local testing is authorized, main merge is not.
 - Three parallel slices cover the sandbox inspector/runtime, host-owned staged editing and durable source-aware operations in the worker pool. The [design and verification plan](docs/component-editing.md) records conflict handling and the distinction between moving an existing node and copying JavaScript behavior.
-- No implementation or new acceptance result is claimed by this planning entry. The existing installed version remains the previously accepted interaction-refinement build until the new checks pass.
+- Implemented held-modifier hover selection, drag destination ancestry/placement, delayed cut and structural copy/paste, direct text-node editing, host-owned Save/Cancel, immutable retries and source-aware move/copy/text commits. Targeted checks passed: 63 canvas-browser scenarios, 10 host scenarios, 105 server/worker/delta cases, and the confirmed-refusal writer tests. These are slice results; final clean integration and native acceptance remain pending.
+- Independent review found a namespace error in SVG fragment copying; the corrected contextual parser is undergoing live and cold-replay browser checks. Anonymous moved-marker recovery and CSS selectors tied to copied IDs remain explicit conservative boundaries. The worker now embeds original notices for all emitted parser dependencies, including nested versions, and preserves their source formatting.
+- The existing installed version remains the previously accepted interaction-refinement build until the final checks pass. No new installation, native acceptance or PR update is claimed yet.
 
 ### 2026-10-31 — interaction refinements installed for testing, PR only
 
