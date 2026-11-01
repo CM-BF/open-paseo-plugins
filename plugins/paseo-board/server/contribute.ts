@@ -47,7 +47,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     await bridge.start(paths.socket);
     if (stopped) return;
     if (options.linkSkills !== false) await linkSkills(paths, options.home);
-
+    if (!stopped) pages.start();
   })();
   void ready.catch((error) => log(`startup failed: ${String(error)}`));
   let captured = false;
@@ -115,7 +115,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     stopped = true;
     for (const remove of removers) remove();
     // Mark components stopped before awaiting startup; startup may be paused at any await.
-    await Promise.all([bridge.close(), service.dispose()]);
+    await Promise.all([bridge.close(), service.dispose(), pages.close()]);
     await ready.catch(() => undefined);
     await bridge.close();
     await store.close();

@@ -1,6 +1,7 @@
 import { readFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { BoardSchema } from "../shared/contracts";
 import { GitHubPagesManager } from "./github-pages";
 import { ReleaseRepository, serveRelease } from "./static-release";
@@ -16,12 +17,16 @@ repositories --account <login>
 prepare --store <private-release-directory> --jobs <private-job-directory>
         --release <id> --hash <artifact-sha256> --account <login> --repo <owner/repo>
         --event <immutable-id> [--create-repository public|private]
+publish --store <private-release-directory> --jobs <private-job-directory>
+        --release <id> --hash <artifact-sha256> --account <login> --repo <owner/repo>
+        --event <immutable-id> [--create-repository public|private]
 merge   --store <directory> --jobs <directory> --job <id> --head <exact-pr-sha>
 refresh --store <directory> --jobs <directory> --job <id>
 jobs    --store <directory> --jobs <directory> [--release <id>]
 
 export/serve operate locally. prepare uploads the reviewed public artifact and creates a PR.
 merge requires successful exact-head validation before merging and enabling Pages.
+publish authorizes and automatically completes PR, merge and deployment verification.
 No command switches the active gh account. Do not publish private content without review.
 `;
 
@@ -58,7 +63,21 @@ export async function releaseMain(argv: string[]): Promise<void> {
   if (command === "accounts") { output(await manager.accounts()); return; }
   if (command === "repositories") { output(await manager.repositories(required("--account"))); return; }
   required("--jobs"); required("--store");
-  if (command === "prepare") output(await manager.prepare({ eventId: required("--event"), releaseId: required("--release"), artifactHash: required("--hash"), account: required("--account"), repository: required("--repo"), createRepository: flags["--create-repository"] as "public" | "private" | undefined }));
+  if (command === "prepare" || command === "publish") {
+    const request = { eventId: required("--event"), releaseId: required("--release"), artifactHash: required("--hash"), account: required("--account"), repository: required("--repo"), createRepository: flags["--create-repository"] as "public" | "private" | undefined };
+    if (command === "prepare") output(await manager.prepare(request));
+    else {
+      try {
+        let job = await manager.publish(request), previous = "";
+        for (;;) {
+          const serialized = JSON.stringify(job); if (serialized !== previous) { output(job); previous = serialized; }
+          if (job.status === "live") break;
+          if (job.status === "failed" || !job.autoPublish) throw new Error(job.error ?? "Publication stopped");
+          await delay(5_000); job = await manager.read(job.jobId);
+        }
+      } finally { await manager.close(); }
+    }
+  }
   else if (command === "merge") output(await manager.merge({ jobId: required("--job"), expectedHead: required("--head") }));
   else if (command === "refresh") output(await manager.refresh(required("--job")));
   else if (command === "jobs") output(await manager.list(flags["--release"]));

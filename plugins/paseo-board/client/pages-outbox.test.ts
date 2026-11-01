@@ -23,3 +23,13 @@ it("reports storage refusal before the caller can send", () => {
   expect(() => createPagesOutbox("host", "board", db).save(request)).toThrow("Quota exceeded");
   expect(() => createPagesOutbox("host", "board", null).save(request)).toThrow("发布重试记录");
 });
+it("reads legacy preparation records unchanged and persists automatic publication only on an explicit save", () => {
+  const db = storage(), key = `@paseo:board-pages:v1:${encodeURIComponent(JSON.stringify(["host", "board"]))}:${request.eventId}`;
+  db.setItem(key, JSON.stringify(request));
+  const outbox = createPagesOutbox("host", "board", db);
+  expect(outbox.list()).toEqual([request]);
+  expect(JSON.parse(db.getItem(key)!)).toEqual(request);
+  outbox.save(request);
+  expect(JSON.parse(db.getItem(key)!)).toEqual({ action: "publish", request });
+  expect(createPagesOutbox("host", "board", db).list()).toEqual([request]);
+});

@@ -28,6 +28,9 @@ export const PagesJobSchema = PagesPrepareSchema.extend({
   deploymentId: z.string().optional(), url: z.string().optional(), verifiedAt: z.string().optional(), error: z.string().optional(),
   treeSha: z.string().optional(), createdAt: z.string().optional(), pagesConfigured: z.boolean().optional(), pagesConfigurationRequested: z.boolean().optional(),
   pagesConfigurationHash: z.string().optional(),
+  publicationMode: z.enum(["workflow", "legacy-subdirectory"]).optional(),
+  sitePath: z.string().regex(/^boards\/[a-f0-9]{64}$/).optional(), sourcePath: z.enum(["/", "/docs"]).optional(),
+  autoPublish: z.boolean().optional(), autoPublishUntil: z.string().datetime().optional(),
 });
 export type ReleaseManifest = z.infer<typeof ReleaseManifestSchema>;
 export type ReleaseCreateInput = z.input<typeof ReleaseCreateSchema>;
@@ -43,6 +46,7 @@ export const downloadReleaseRpc = defineRpc({ name: "board.release.download", in
 export const githubAccountsRpc = defineRpc({ name: "board.pages.accounts", input: z.object({}), output: z.array(GitHubAccountSchema) });
 export const githubRepositoriesRpc = defineRpc({ name: "board.pages.repositories", input: z.object({ account: z.string() }), output: z.array(GitHubRepositorySchema) });
 export const preparePagesRpc = defineRpc({ name: "board.pages.prepare", input: PagesPrepareSchema, output: PagesJobSchema });
+export const publishPagesRpc = defineRpc({ name: "board.pages.publish", input: PagesPrepareSchema, output: PagesJobSchema });
 export const mergePagesRpc = defineRpc({ name: "board.pages.merge", input: z.object({ jobId: IdSchema, expectedHead: z.string().regex(/^[a-f0-9]{40}$/) }), output: PagesJobSchema });
 export const refreshPagesRpc = defineRpc({ name: "board.pages.refresh", input: z.object({ jobId: IdSchema }), output: PagesJobSchema });
 export const listPagesJobsRpc = defineRpc({ name: "board.pages.list", input: z.object({ releaseId: ReleaseIdSchema.optional() }), output: z.array(PagesJobSchema) });

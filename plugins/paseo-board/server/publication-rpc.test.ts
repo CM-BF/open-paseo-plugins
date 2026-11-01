@@ -19,6 +19,7 @@ async function fixture() {
   const pages: PagesGateway = {
     accounts: vi.fn(async () => []), repositories: vi.fn(async () => []),
     prepare: vi.fn(async input => ({ ...input, jobId: "job", branch: "publication", status: "pr-open" })),
+    publish: vi.fn(async input => ({ ...input, jobId: "job", branch: "publication", status: "prepared", autoPublish: true })),
     merge: vi.fn(async () => { throw new Error("Unexpected merge"); }),
     refresh: vi.fn(async () => { throw new Error("Unexpected refresh"); }),
     list: vi.fn(async () => []), read: vi.fn(async () => { throw new Error("Missing job"); }),
@@ -54,6 +55,8 @@ it("keeps a frozen export usable after its working source becomes unavailable", 
   const request = { eventId: "publish", releaseId: manifest.releaseId, artifactHash: manifest.artifactHash, account: "fixture", repository: "fixture/site" };
   const job = await f.invoke("board.pages.prepare", request) as PagesJob;
   expect(job.eventId).toBe(request.eventId); expect(f.pages.prepare).toHaveBeenCalledExactlyOnceWith(request);
+  const automatic = await f.invoke("board.pages.publish", request) as PagesJob;
+  expect(automatic.autoPublish).toBe(true); expect(f.pages.publish).toHaveBeenCalledExactlyOnceWith(request);
   expect(f.requireBoard).toHaveBeenCalledTimes(1);
 });
 
@@ -62,8 +65,9 @@ it("rejects missing release evidence before any GitHub operation, including reco
   const missing = "release-" + "0".repeat(64);
   const request = { eventId: "publish", releaseId: missing, artifactHash: manifest.artifactHash, account: "fixture", repository: "fixture/site" };
   await expect(f.invoke("board.pages.prepare", request)).rejects.toThrow();
+  await expect(f.invoke("board.pages.publish", request)).rejects.toThrow();
   vi.mocked(f.pages.read).mockResolvedValue({ ...request, jobId: "job", branch: "publication", status: "pr-open" });
   await expect(f.invoke("board.pages.merge", { jobId: "job", expectedHead: "a".repeat(40) })).rejects.toThrow();
   await expect(f.invoke("board.pages.refresh", { jobId: "job" })).rejects.toThrow();
-  expect(f.pages.prepare).not.toHaveBeenCalled(); expect(f.pages.merge).not.toHaveBeenCalled(); expect(f.pages.refresh).not.toHaveBeenCalled();
+  expect(f.pages.prepare).not.toHaveBeenCalled(); expect(f.pages.publish).not.toHaveBeenCalled(); expect(f.pages.merge).not.toHaveBeenCalled(); expect(f.pages.refresh).not.toHaveBeenCalled();
 });

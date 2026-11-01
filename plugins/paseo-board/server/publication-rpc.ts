@@ -2,7 +2,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { Board } from "../shared/contracts";
 import {
   createReleaseRpc, listReleasesRpc, previewReleaseRpc, downloadReleaseRpc,
-  githubAccountsRpc, githubRepositoriesRpc, preparePagesRpc, mergePagesRpc,
+  githubAccountsRpc, githubRepositoriesRpc, preparePagesRpc, publishPagesRpc, mergePagesRpc,
   refreshPagesRpc, listPagesJobsRpc, type PagesJob, type PagesPrepareInput,
   type GitHubAccount, type GitHubRepository,
 } from "../shared/release-contracts";
@@ -12,6 +12,7 @@ export interface PagesGateway {
   accounts(): Promise<GitHubAccount[]>;
   repositories(account: string): Promise<GitHubRepository[]>;
   prepare(input: PagesPrepareInput): Promise<PagesJob>;
+  publish(input: PagesPrepareInput): Promise<PagesJob>;
   merge(input: { jobId: string; expectedHead: string }): Promise<PagesJob>;
   refresh(jobId: string): Promise<PagesJob>;
   list(releaseId?: string): Promise<PagesJob[]>;
@@ -42,6 +43,7 @@ export function registerPublicationRpc(server: PluginServerContext, options: {
   server.handle(githubAccountsRpc, async () => { await options.ready(); return pages.accounts(); });
   server.handle(githubRepositoriesRpc, async input => { await options.ready(); return pages.repositories(input.account); });
   server.handle(preparePagesRpc, async input => { await release(input.releaseId); return pages.prepare(input); });
+  server.handle(publishPagesRpc, async input => { await release(input.releaseId); return pages.publish(input); });
   server.handle(mergePagesRpc, async input => {
     await options.ready(); const job = await pages.read(input.jobId); await release(job.releaseId);
     return pages.merge(input);

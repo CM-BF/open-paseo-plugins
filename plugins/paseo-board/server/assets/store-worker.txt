@@ -37271,7 +37271,12 @@ var PagesJobSchema = PagesPrepareSchema.extend({
   createdAt: external_exports.string().optional(),
   pagesConfigured: external_exports.boolean().optional(),
   pagesConfigurationRequested: external_exports.boolean().optional(),
-  pagesConfigurationHash: external_exports.string().optional()
+  pagesConfigurationHash: external_exports.string().optional(),
+  publicationMode: external_exports.enum(["workflow", "legacy-subdirectory"]).optional(),
+  sitePath: external_exports.string().regex(/^boards\/[a-f0-9]{64}$/).optional(),
+  sourcePath: external_exports.enum(["/", "/docs"]).optional(),
+  autoPublish: external_exports.boolean().optional(),
+  autoPublishUntil: external_exports.string().datetime().optional()
 });
 var releaseInput = external_exports.object({ releaseId: ReleaseIdSchema });
 var createReleaseRpc = defineRpc({ name: "board.release.create", input: ReleaseCreateSchema, output: ReleaseManifestSchema });
@@ -37281,6 +37286,7 @@ var downloadReleaseRpc = defineRpc({ name: "board.release.download", input: rele
 var githubAccountsRpc = defineRpc({ name: "board.pages.accounts", input: external_exports.object({}), output: external_exports.array(GitHubAccountSchema) });
 var githubRepositoriesRpc = defineRpc({ name: "board.pages.repositories", input: external_exports.object({ account: external_exports.string() }), output: external_exports.array(GitHubRepositorySchema) });
 var preparePagesRpc = defineRpc({ name: "board.pages.prepare", input: PagesPrepareSchema, output: PagesJobSchema });
+var publishPagesRpc = defineRpc({ name: "board.pages.publish", input: PagesPrepareSchema, output: PagesJobSchema });
 var mergePagesRpc = defineRpc({ name: "board.pages.merge", input: external_exports.object({ jobId: IdSchema, expectedHead: external_exports.string().regex(/^[a-f0-9]{40}$/) }), output: PagesJobSchema });
 var refreshPagesRpc = defineRpc({ name: "board.pages.refresh", input: external_exports.object({ jobId: IdSchema }), output: PagesJobSchema });
 var listPagesJobsRpc = defineRpc({ name: "board.pages.list", input: external_exports.object({ releaseId: ReleaseIdSchema.optional() }), output: external_exports.array(PagesJobSchema) });

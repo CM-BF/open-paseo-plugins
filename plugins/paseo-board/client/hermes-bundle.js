@@ -4688,7 +4688,12 @@ var PagesJobSchema = PagesPrepareSchema.extend({
   createdAt: z3.string().optional(),
   pagesConfigured: z3.boolean().optional(),
   pagesConfigurationRequested: z3.boolean().optional(),
-  pagesConfigurationHash: z3.string().optional()
+  pagesConfigurationHash: z3.string().optional(),
+  publicationMode: z3.enum(["workflow", "legacy-subdirectory"]).optional(),
+  sitePath: z3.string().regex(/^boards\/[a-f0-9]{64}$/).optional(),
+  sourcePath: z3.enum(["/", "/docs"]).optional(),
+  autoPublish: z3.boolean().optional(),
+  autoPublishUntil: z3.string().datetime().optional()
 });
 var releaseInput = z3.object({
   releaseId: ReleaseIdSchema
@@ -4736,6 +4741,11 @@ var githubRepositoriesRpc = defineRpc3({
 });
 var preparePagesRpc = defineRpc3({
   name: "board.pages.prepare",
+  input: PagesPrepareSchema,
+  output: PagesJobSchema
+});
+var publishPagesRpc = defineRpc3({
+  name: "board.pages.publish",
   input: PagesPrepareSchema,
   output: PagesJobSchema
 });
@@ -4838,6 +4848,11 @@ function createPagesOutbox(hostId, boardId, storage = browserDraftStorage()) {
     if (!storage) throw new Error("\u6B64\u5BA2\u6237\u7AEF\u65E0\u6CD5\u4FDD\u7559\u53D1\u5E03\u91CD\u8BD5\u8BB0\u5F55\uFF0C\u8BF7\u4ECE\u684C\u9762\u6D4F\u89C8\u5668\u53D1\u5E03\u3002");
     return storage;
   };
+  var read = text => {
+    var value = JSON.parse(text);
+    if (value?.action !== void 0 && value.action !== "publish") throw new Error("\u672C\u673A\u53D1\u5E03\u8BB0\u5F55\u7684\u64CD\u4F5C\u65E0\u6CD5\u8BC6\u522B\uFF1B\u539F\u8BB0\u5F55\u5DF2\u4FDD\u7559\u3002");
+    return PagesPrepareSchema.parse(value?.action === "publish" ? value.request : value);
+  };
   return {
     list() {
       var db = requireStorage(),
@@ -4847,7 +4862,7 @@ function createPagesOutbox(hostId, boardId, storage = browserDraftStorage()) {
         if (!key?.startsWith(prefix)) continue;
         var text = db.getItem(key);
         if (text === null) continue;
-        var request = PagesPrepareSchema.parse(JSON.parse(text));
+        var request = read(text);
         if (key !== prefix + request.eventId) throw new Error("\u672C\u673A\u53D1\u5E03\u8BB0\u5F55\u6807\u8BC6\u4E0D\u5339\u914D\uFF1B\u539F\u8BB0\u5F55\u5DF2\u4FDD\u7559\u3002");
         result.push(request);
       }
@@ -4858,8 +4873,11 @@ function createPagesOutbox(hostId, boardId, storage = browserDraftStorage()) {
         request = PagesPrepareSchema.parse(raw),
         key = prefix + request.eventId;
       var existing = db.getItem(key);
-      if (existing && JSON.stringify(PagesPrepareSchema.parse(JSON.parse(existing))) !== JSON.stringify(request)) throw new Error("\u540C\u4E00\u6B21\u53D1\u5E03\u8BF7\u6C42\u7684\u7248\u672C\u6216\u76EE\u6807\u5DF2\u6539\u53D8\u3002");
-      db.setItem(key, JSON.stringify(request));
+      if (existing && JSON.stringify(read(existing)) !== JSON.stringify(request)) throw new Error("\u540C\u4E00\u6B21\u53D1\u5E03\u8BF7\u6C42\u7684\u7248\u672C\u6216\u76EE\u6807\u5DF2\u6539\u53D8\u3002");
+      db.setItem(key, JSON.stringify({
+        action: "publish",
+        request
+      }));
       return request;
     },
     remove(eventId) {
@@ -4871,14 +4889,17 @@ function createPagesOutbox(hostId, boardId, storage = browserDraftStorage()) {
 // client/release-panel.tsx
 import { jsx as jsx8, jsxs as jsxs7 } from "react/jsx-runtime";
 var statusNames = {
-  prepared: "\u51C6\u5907\u53D1\u5E03",
-  "pr-open": "PR \u5DF2\u521B\u5EFA",
-  merged: "\u5DF2\u5408\u5E76",
-  deploying: "\u90E8\u7F72\u4E2D",
+  prepared: "\u51C6\u5907\u53D1\u5E03\u6587\u4EF6",
+  "pr-open": "PR \u5DF2\u521B\u5EFA\uFF0C\u7B49\u5F85\u81EA\u52A8\u5408\u5E76",
+  merged: "\u5DF2\u5408\u5E76\uFF0C\u7B49\u5F85\u90E8\u7F72",
+  deploying: "\u90E8\u7F72\u5E76\u6838\u5BF9\u7F51\u9875\u4E2D",
   live: "\u5DF2\u6838\u5B9E\u4E0A\u7EBF",
   failed: "\u53D1\u5E03\u5931\u8D25",
   unknown: "\u7ED3\u679C\u5F85\u6838\u5BF9"
 };
+var requestMatches = (left, right) => left.eventId === right.eventId && left.releaseId === right.releaseId && left.artifactHash === right.artifactHash && left.account === right.account && left.repository === right.repository && left.createRepository === right.createRepository;
+var automaticallyPublishing = value => value.autoPublish === true && !["live", "failed"].includes(value.status) && Boolean(value.autoPublishUntil && Date.parse(value.autoPublishUntil) > Date.now());
+var jobStatusName = value => value.status === "pr-open" && !automaticallyPublishing(value) ? "PR \u5DF2\u521B\u5EFA\uFF0C\u7B49\u5F85\u7EE7\u7EED\u53D1\u5E03" : statusNames[value.status];
 function ReleasePanel({
   board,
   hostId,
@@ -4892,8 +4913,7 @@ function ReleasePanel({
     download = useRpc4(downloadReleaseRpc);
   var accounts = useRpc4(githubAccountsRpc),
     repositories = useRpc4(githubRepositoriesRpc);
-  var prepare = useRpc4(preparePagesRpc),
-    merge = useRpc4(mergePagesRpc),
+  var publish = useRpc4(publishPagesRpc),
     refresh = useRpc4(refreshPagesRpc),
     listJobs = useRpc4(listPagesJobsRpc);
   var [title, setTitle] = useState8(`${board.title} \xB7 \u53D1\u5E03\u7248`);
@@ -4919,6 +4939,8 @@ function ReleasePanel({
     flight = useRef7(false);
   var currentJob = useRef7(job);
   currentJob.current = job;
+  var selectedReleaseId = useRef7(void 0),
+    selectionGeneration = useRef7(0);
   var copyRequest = useRef7(void 0);
   var pageRequest = useRef7(void 0);
   var field = {
@@ -4951,7 +4973,7 @@ function ReleasePanel({
     }
   }, [outbox]);
   useEffect7(() => {
-    if (!job || !["merged", "deploying"].includes(job.status)) return;
+    if (!job || !automaticallyPublishing(job)) return;
     var active = true,
       attempts = 0;
     var timer;
@@ -4970,11 +4992,15 @@ function ReleasePanel({
         if (!active || currentJob.current?.jobId !== job.jobId) return;
         setJob(updated);
         setJobs(values => [updated, ...values.filter(item => item.jobId !== updated.jobId)]);
-        if (["merged", "deploying"].includes(updated.status) && ++attempts < 60) timer = setTimeout(() => {
+        if (automaticallyPublishing(updated) && ++attempts < 360) timer = setTimeout(() => {
           void check();
         }, 5e3);
       } catch (error) {
-        if (active) setFailure(`\u6682\u65F6\u65E0\u6CD5\u6838\u5BF9\u90E8\u7F72\uFF1A${errorMessage(error)}\uFF0C\u53EF\u4EE5\u7A0D\u540E\u7EE7\u7EED\u6838\u5BF9\u3002`);
+        if (!active || currentJob.current?.jobId !== job.jobId) return;
+        setFailure(`\u6682\u65F6\u65E0\u6CD5\u8BFB\u53D6\u53D1\u5E03\u8FDB\u5EA6\uFF1A${errorMessage(error)}\u3002\u540E\u53F0\u4F1A\u7EE7\u7EED\uFF0C\u8FDE\u63A5\u6062\u590D\u540E\u81EA\u52A8\u6838\u5BF9\u3002`);
+        if (automaticallyPublishing(job) && ++attempts < 360) timer = setTimeout(() => {
+          void check();
+        }, 5e3);
       }
     });
     timer = setTimeout(() => {
@@ -4984,7 +5010,7 @@ function ReleasePanel({
       active = false;
       clearTimeout(timer);
     };
-  }, [job?.jobId, job?.status, refresh]);
+  }, [job?.jobId, job?.status, job?.autoPublishUntil, refresh]);
   var run = operation => __async(null, null, function* () {
     if (flight.current) return;
     flight.current = true;
@@ -5000,10 +5026,18 @@ function ReleasePanel({
     }
   });
   var showRelease = release => __async(null, null, function* () {
+    var generation = ++selectionGeneration.current;
+    selectedReleaseId.current = release.releaseId;
+    currentJob.current = void 0;
+    setSelected(void 0);
+    setHtml(void 0);
+    setJob(void 0);
+    setJobs([]);
+    setReviewed(void 0);
     var result = yield preview({
       releaseId: release.releaseId
     });
-    if (!mounted.current) return;
+    if (!mounted.current || generation !== selectionGeneration.current) return;
     setSelected(result.manifest);
     setHtml(result.html);
     setReviewed(void 0);
@@ -5011,10 +5045,27 @@ function ReleasePanel({
     var history = yield listJobs({
       releaseId: release.releaseId
     });
-    if (mounted.current) setJobs(history);
+    if (!mounted.current || generation !== selectionGeneration.current) return;
+    setJobs(history);
+    var latest = history.find(item => automaticallyPublishing(item)) ?? history.find(item => item.status === "live") ?? history[0];
+    currentJob.current = latest;
+    setJob(latest);
+    if (latest) {
+      setAccount(latest.account);
+      setRepository(latest.repository);
+      setCreateRepository(latest.createRepository);
+    }
+    var _loop = function* (request) {
+      if (history.some(item => item.autoPublish && requestMatches(item, request))) outbox.remove(request.eventId);
+    };
+    for (var request of outbox.list()) {
+      yield* _loop(request);
+    }
+    setPendingPages(outbox.list());
   });
   var rememberJob = value => {
-    if (!mounted.current) return;
+    if (!mounted.current || value.releaseId !== selectedReleaseId.current) return;
+    currentJob.current = value;
     setJob(value);
     setJobs(values => [value, ...values.filter(item => item.jobId !== value.jobId)]);
   };
@@ -5024,7 +5075,7 @@ function ReleasePanel({
   var sendPagesRequest = request => __async(null, null, function* () {
     var frozen = outbox.save(request);
     setPendingPages(outbox.list());
-    rememberJob(yield prepare(frozen));
+    rememberJob(yield publish(frozen));
     outbox.remove(frozen.eventId);
     if (mounted.current) setPendingPages(outbox.list());
   });
@@ -5038,7 +5089,8 @@ function ReleasePanel({
       createRepository
     };
     var previous = pageRequest.current;
-    var known = [...outbox.list(), ...jobs].find(item => item.releaseId === target.releaseId && item.account === target.account && item.repository === target.repository && item.createRepository === target.createRepository);
+    var matchesTarget = item => item.releaseId === target.releaseId && item.artifactHash === target.artifactHash && item.account === target.account && item.repository === target.repository && item.createRepository === target.createRepository;
+    var known = jobs.find(item => item.status === "live" && matchesTarget(item)) ?? outbox.list().find(matchesTarget) ?? jobs.find(matchesTarget);
     if (!previous || JSON.stringify({
       ...previous,
       eventId: void 0
@@ -5183,7 +5235,7 @@ function ReleasePanel({
       }), /* @__PURE__ */jsx8(Copy, {
         small: true,
         muted: true,
-        children: "\u4E0A\u6B21\u5173\u95ED\u6216\u65AD\u7EBF\u524D\u7684\u7248\u672C\u548C\u76EE\u6807\u5DF2\u4FDD\u7559\u3002\u6062\u590D\u540E\u5148\u6838\u5BF9\u9884\u89C8\uFF0C\u518D\u7EE7\u7EED\u540C\u4E00\u6B21\u53D1\u5E03\u3002"
+        children: "\u4E0A\u6B21\u5173\u95ED\u6216\u65AD\u7EBF\u524D\u7684\u7248\u672C\u548C\u76EE\u6807\u5DF2\u4FDD\u7559\u3002\u5DF2\u53D7\u7406\u7684\u53D1\u5E03\u4F1A\u5728\u540E\u53F0\u7EE7\u7EED\uFF1B\u6CA1\u6709\u53D7\u7406\u56DE\u6267\u65F6\u53EF\u91CD\u8BD5\u540C\u4E00\u6B21\u8BF7\u6C42\u3002"
       }), pendingPages.map(request => /* @__PURE__ */jsx8(Action, {
         label: `\u6062\u590D\u53D1\u5E03 \xB7 ${request.repository}`,
         disabled: busy,
@@ -5270,6 +5322,10 @@ function ReleasePanel({
         }), /* @__PURE__ */jsx8(Copy, {
           small: true,
           muted: true,
+          children: "\u70B9\u51FB\u53D1\u5E03\u540E\u81EA\u52A8\u521B\u5EFA PR\u3001\u5408\u5E76\u3001\u90E8\u7F72\u5E76\u6838\u5BF9\u7F51\u9875\u3002\u5173\u95ED\u9762\u677F\u540E\u4ECD\u4F1A\u7EE7\u7EED\u3002\u5DF2\u6709\u7AD9\u70B9\u4F1A\u4F7F\u7528\u72EC\u7ACB\u76EE\u5F55\uFF0C\u4FDD\u7559\u539F\u6765\u7684\u9875\u9762\u3002"
+        }), /* @__PURE__ */jsx8(Copy, {
+          small: true,
+          muted: true,
           children: "Pages \u7F51\u7AD9\u901A\u5E38\u516C\u5F00\uFF0C\u5373\u4F7F\u6E90\u7801\u4ED3\u5E93\u4E3A\u79C1\u6709\u3002\u9009\u62E9\u5177\u4F53\u8D26\u53F7\u548C\u4ED3\u5E93\u540E\u624D\u4F1A\u4E0A\u4F20\u3002"
         }), /* @__PURE__ */jsx8(Action, {
           label: "\u8BFB\u53D6 GitHub \u8D26\u53F7",
@@ -5353,32 +5409,46 @@ function ReleasePanel({
             }
           })]
         }), /* @__PURE__ */jsx8(Action, {
-          label: createRepository ? "\u521B\u5EFA\u4ED3\u5E93\u548C\u53D1\u5E03 PR" : "\u521B\u5EFA\u53D1\u5E03 PR",
-          disabled: busy || !account || !repository.trim() || reviewed !== selected.artifactHash,
+          label: createRepository ? "\u521B\u5EFA\u4ED3\u5E93\u5E76\u4E00\u952E\u53D1\u5E03" : "\u4E00\u952E\u53D1\u5E03",
+          disabled: busy || !account || !repository.trim() || reviewed !== selected.artifactHash || jobs.some(item => item.releaseId === selected.releaseId && item.account === account && item.repository === repository.trim() && automaticallyPublishing(item)),
           primary: true,
           onPress: () => {
             void requestPages();
           }
         }), jobs.map(item => /* @__PURE__ */jsx8(Action, {
-          label: `${item.repository} \xB7 ${statusNames[item.status]}`,
+          label: `${item.repository} \xB7 ${jobStatusName(item)}`,
           active: item.jobId === job?.jobId,
           disabled: busy,
-          onPress: () => setJob(item)
+          onPress: () => {
+            currentJob.current = item;
+            setJob(item);
+            setAccount(item.account);
+            setRepository(item.repository);
+            setCreateRepository(item.createRepository);
+          }
         }, item.jobId)), job ? /* @__PURE__ */jsxs7(View7, {
           testID: "board-pages-job",
           style: {
             gap: 8
           },
           children: [/* @__PURE__ */jsxs7(Copy, {
-            children: [job.repository, " \xB7 ", statusNames[job.status]]
-          }), job.error ? /* @__PURE__ */jsx8(Notice, {
+            children: [job.repository, " \xB7 ", jobStatusName(job)]
+          }), job.sitePath ? /* @__PURE__ */jsxs7(Copy, {
+            small: true,
+            muted: true,
+            children: ["\u53D1\u5E03\u76EE\u5F55\uFF1A", job.sitePath]
+          }) : null, automaticallyPublishing(job) ? /* @__PURE__ */jsx8(Copy, {
+            small: true,
+            muted: true,
+            children: "\u53D1\u5E03\u5DF2\u4EA4\u7ED9\u540E\u53F0\uFF0C\u6B63\u5728\u81EA\u52A8\u5B8C\u6210\u540E\u7EED\u6B65\u9AA4\u3002"
+          }) : null, job.error ? /* @__PURE__ */jsx8(Notice, {
             error: true,
             text: job.error
           }) : null, job.prUrl ? /* @__PURE__ */jsx8(Action, {
             label: "\u67E5\u770B PR",
             onPress: () => openUrl(job.prUrl)
-          }) : null, ["prepared", "failed", "unknown"].includes(job.status) ? /* @__PURE__ */jsx8(Action, {
-            label: "\u7EE7\u7EED\u540C\u4E00\u6B21\u53D1\u5E03\u51C6\u5907",
+          }) : null, job.status !== "live" && !automaticallyPublishing(job) ? /* @__PURE__ */jsx8(Action, {
+            label: "\u4E00\u952E\u7EE7\u7EED\u53D1\u5E03",
             disabled: busy || reviewed !== job.artifactHash,
             onPress: () => {
               void run(() => sendPagesRequest({
@@ -5388,17 +5458,6 @@ function ReleasePanel({
                 account: job.account,
                 repository: job.repository,
                 createRepository: job.createRepository
-              }));
-            }
-          }) : null, job.status === "pr-open" && job.headSha ? /* @__PURE__ */jsx8(Action, {
-            label: "\u5408\u5E76\u6B64 PR \u5E76\u53D1\u5E03",
-            disabled: busy || reviewed !== job.artifactHash,
-            onPress: () => {
-              void run(() => __async(null, null, function* () {
-                return rememberJob(yield merge({
-                  jobId: job.jobId,
-                  expectedHead: job.headSha
-                }));
               }));
             }
           }) : null, /* @__PURE__ */jsx8(Action, {
