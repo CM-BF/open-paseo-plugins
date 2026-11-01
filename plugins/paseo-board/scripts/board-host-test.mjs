@@ -148,10 +148,22 @@ try {
   };
   const openAt = async (x = 155, y = 170) => {
     const r = await canvasRect();
+    const before = await frame(`(()=>{const x=${x},y=${y};let hit=document.elementFromPoint(x,y);const path=[];while(hit){path.push({tag:hit.tagName,id:hit.id,overlay:hit.hasAttribute('data-board-overlay'),marker:hit.getAttribute('data-board-interaction'),html:hit.outerHTML.slice(0,300)});const next=hit.shadowRoot?.elementFromPoint(x,y);if(!next||next===hit)break;hit=next}return{path,focused:document.hasFocus(),scrollX,scrollY,selection:document.querySelector('[data-board-components]')?.shadowRoot?.textContent?.slice(0,200)}})()`);
     await rightClickPoint(r.x + x, r.y + y);
-    await until(`document.querySelector(${JSON.stringify(input)})`, 18000);
+    try { await until(`document.querySelector(${JSON.stringify(input)})`, 18000); }
+    catch (error) {
+      console.log('DIAG openAt',JSON.stringify({point:{x,y},before,host:await evaluate(`({active:document.activeElement?.tagName,popover:document.querySelector(${JSON.stringify(popover)})?.textContent,buttons:[...document.querySelectorAll('button')].map(n=>n.getAttribute('aria-label')),events:hostFixture.uiEvents,ready:hostFixture.mainReady()})`),after:await frame(`(()=>{const hit=document.elementFromPoint(${x},${y});return{tag:hit?.tagName,id:hit?.id,html:hit?.outerHTML?.slice(0,500),markers:document.querySelector('[data-board-markers]')?.shadowRoot?.innerHTML.slice(-2000)}})()`)}));
+      throw error;
+    }
     assert.equal(await frame("!!document.querySelector('[data-board-menu]')"), false);
     return { x: r.x + x, y: r.y + y };
+  };
+  const openAuthoredReference = async selector => {
+    const box = await location(selector), origin = await canvasRect();
+    const x = box.x + box.width / 2, y = box.y + box.height / 2;
+    assert.equal(await evaluate(`document.elementFromPoint(${x},${y})===document.querySelector('iframe[data-board-id="host-fixture"]')`), true, 'The host must hit the actual main iframe');
+    assert.equal(await frame(`document.elementFromPoint(${x-origin.x},${y-origin.y})===document.querySelector(${JSON.stringify(selector)})`), true, 'The reference point must hit its authored target, not a restored marker or overlay');
+    return openAt(x-origin.x,y-origin.y);
   };
   const runToolbarChecks = async () => {
     const toolbar='[data-testid="board-toolbar"]', popup='[data-testid="board-toolbar-popup"]';
@@ -1050,12 +1062,26 @@ try {
   assert.equal(await evaluate('hostFixture.ready'), beforePickerReady);
   assert.equal(await frame("document.querySelector('#field').value"), 'side selection preserves canvas');
   await remountMainFrame();
-  await openAt();
+  // A ready receipt precedes snapshot application. Wait for an actual restored
+  // marker, then separate the marker context-menu path from an authored hit.
+  await untilMarker(pickedMainIntent, 'delivered');
+  const restoredGeometry = await frame(`(()=>{const root=document.querySelector('[data-board-markers]')?.shadowRoot;const oldHit=document.elementFromPoint(155,170);const deep=oldHit?.shadowRoot?.elementFromPoint(155,170);const target=document.querySelector('#side-remount-reference').getBoundingClientRect();return {oldPoint:{tag:oldHit?.tagName,id:oldHit?.id,marker:deep?.closest('[data-board-interaction]')?.getAttribute('data-board-interaction')},target:{x:target.x,y:target.y,width:target.width,height:target.height},markers:[...root.querySelectorAll('[data-board-interaction]')].map(n=>{const r=n.getBoundingClientRect();return{id:n.getAttribute('data-board-interaction'),x:r.x,y:r.y,width:r.width,height:r.height,hidden:n.hidden}})}})()`);
+  console.log('MEASURE side-remount-reference',JSON.stringify(restoredGeometry));
+  const beforeMarkerRightClick = await submitCount(), restoredMarker = await location(marker(pickedMainIntent));
+  const markerPoint = { x: restoredMarker.x+restoredMarker.width/2, y: restoredMarker.y+restoredMarker.height/2 }, markerFrame = await canvasRect();
+  assert.ok(restoredMarker.width>0 && restoredMarker.height>0, 'The restored marker must have nonzero geometry');
+  assert.equal(await evaluate(`document.elementFromPoint(${markerPoint.x},${markerPoint.y})===document.querySelector('iframe[data-board-id="host-fixture"]')`), true, 'The marker pointer must enter the actual main iframe');
+  assert.deepEqual(await frame(`(()=>{const root=document.querySelector('[data-board-markers]')?.shadowRoot;const target=root?.querySelector(${JSON.stringify(marker(pickedMainIntent))});const hit=root?.elementFromPoint(${markerPoint.x-markerFrame.x},${markerPoint.y-markerFrame.y})?.closest('[data-board-interaction]');return{hidden:target?.hidden,hit:hit?.getAttribute('data-board-interaction')}})()`), { hidden: false, hit: pickedMainIntent }, 'The genuine right-click must hit the requested restored marker, not a hidden or overlapping sibling');
+  await rightClickPoint(markerPoint.x,markerPoint.y);
+  await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+  assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(input)})`), false, 'Right-clicking a restored discussion marker does not start another draft');
+  assert.equal(await submitCount(),beforeMarkerRightClick);
+  await openAuthoredReference('#side-remount-reference');
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(picker)})?.textContent.includes('旁支 2')`), true);
   await key('Escape'); await noPopover();
   check('a failed Side selection preserves the original target and draft; retry selects it, Enter still sends to main, and the selected Side survives a Board remount');
 
-  await openAt(); await sendText('Keep this draft while choosing away from a pending Side');
+  await openAuthoredReference('#side-remount-reference'); await sendText('Keep this draft while choosing away from a pending Side');
   await evaluate("hostFixture.setPendingSide('pending-side-fixture');hostFixture.refetch()");
   await until(`document.querySelector(${JSON.stringify(picker)})?.textContent.includes('旁支建立中')`);
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(picker)})?.textContent.includes('Side 发送将继续正在建立的旁支')`), true);
@@ -1071,7 +1097,7 @@ try {
   await key('Escape'); await noPopover();
   check('a pending Side is shown as the real next target, and explicitly choosing the previous agent persists that choice instead of silently retaining the pending target');
 
-  await openAt(); await sendText('Keep the draft until the side target is authoritative');
+  await openAuthoredReference('#side-remount-reference'); await sendText('Keep the draft until the side target is authoritative');
   await hostClick(`${picker} button`); await until(`document.querySelector(${JSON.stringify(options)})`);
   await evaluate("hostFixture.choiceMode('lost-response');hostFixture.readFails(true)");
   const beforeUnknownChoiceSends = await submitCount();
