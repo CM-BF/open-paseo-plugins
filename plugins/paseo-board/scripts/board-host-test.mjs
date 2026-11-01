@@ -13,6 +13,7 @@ import { build } from 'esbuild';
 const directory = dirname(fileURLToPath(import.meta.url));
 const draftScope = process.env.BOARD_HOST_TEST_SCOPE === 'drafts';
 const toolbarScope = process.env.BOARD_HOST_TEST_SCOPE === 'toolbar';
+const modalScope = process.env.BOARD_HOST_TEST_SCOPE === 'modal';
 const bundle = await build({ entryPoints: [join(directory, 'board-host-fixture.tsx')], bundle: true, format: 'iife', platform: 'browser', write: false, loader: { '.txt': 'text' }, define: { 'process.env.NODE_ENV': '"test"' }, plugins: [{ name: 'host-adapters', setup(build) { build.onResolve({ filter: /^(react-native|@getpaseo\/plugin(?:\/client(?:\/ui)?)?)$/ }, () => ({ path: join(directory, 'board-host-adapter.tsx') })); } }] });
 const profile = await mkdtemp(join(tmpdir(), 'paseo-board-host-'));
 const server = createServer((req, res) => {
@@ -235,7 +236,34 @@ try {
   assert.equal((await hostLocation(rail)).width, 168);
   assert.equal(await railCount(), 0);
   await command('Page.captureScreenshot', { format: 'png' });
-  if (toolbarScope) {
+  if (modalScope) {
+    const modal='[data-fixture-modal]', error='[data-fixture-modal-error]';
+    for (const [label,title] of [['决策 0','Agent 做过的默认决策'],['讨论','围绕画布的讨论'],['变化','发生了什么变化']]) {
+      await hostClick('button[aria-label="'+label+'"]');
+      await until(`document.querySelector(${JSON.stringify(modal)})||document.querySelector(${JSON.stringify(error)})`);
+      assert.equal(await evaluate(`document.querySelector(${JSON.stringify(error)})?.textContent`),undefined);
+      assert.equal(await evaluate(`document.querySelector(${JSON.stringify(modal)}).getAttribute('aria-label')`),title);
+      assert.equal(await evaluate("document.querySelector('[data-fixture-modal-root]')?.dataset.fixtureModalRoot"),'isolated');
+      await hostClick('button[aria-label="关闭窗口"]');await until(`!document.querySelector(${JSON.stringify(modal)})`);
+    }
+    check('Decision, discussion and change drawers render their own theme inside the SDK-style isolated modal root');
+    await openAuthoredReference('#side-remount-reference');await sendText('Retained draft through isolated drawer');await key('Escape');await noPopover();
+    await hostClick('[data-testid="board-drafts-open"]');await until("document.querySelector('[data-testid=board-drafts]')");
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(error)})?.textContent`),undefined);
+    assert.ok(await evaluate("document.querySelector('[data-testid=board-drafts]').textContent.includes('Retained draft through isolated drawer')"));
+    await hostClick('button[aria-label="继续编辑"]');await until(`document.querySelector(${JSON.stringify(input)})?.value==='Retained draft through isolated drawer'`);
+    assert.equal(await submitCount(),0);await hostClick('[data-testid="board-draft-discard"]');await noPopover();
+    check('The isolated draft drawer restores the original text through a genuine click without submitting it');
+    await hostClick('button[aria-label="Boards"]');await hostClick('button[aria-label="新建 Board"]');
+    await until(`document.querySelector('input[aria-label="Board 名称"]')||document.querySelector(${JSON.stringify(error)})`);
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(error)})?.textContent`),undefined);
+    await hostClick('input[aria-label="Board 名称"]');await sendText('An independent modal title');
+    assert.equal(await evaluate(`document.querySelector('input[aria-label="Board 名称"]').value`),'An independent modal title');
+    await hostClick('button[aria-label="取消"]');await until(`!document.querySelector(${JSON.stringify(modal)})`);
+    assert.equal(await evaluate("hostFixture.calls.filter(c=>c.name==='board.create').length"),0);
+    assert.deepEqual(await evaluate('window.fixtureModalErrors||[]'),[]);
+    check('New Board modal receives the explicit theme, accepts native text input and cancels without a create RPC');
+  } else if (toolbarScope) {
     await runToolbarChecks();
   } else if (draftScope) {
     const { runDurableDraftChecks } = await import('./board-draft-checks.mjs');

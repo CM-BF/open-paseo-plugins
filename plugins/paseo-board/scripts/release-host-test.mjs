@@ -46,7 +46,7 @@ const rpc=async(name,input,board)=>{
   if(name==='board.pages.refresh'){if(holdRefresh)await new Promise(resolve=>heldRefresh.push(resolve));const job=jobs.get(input.jobId);assert.ok(job);if(job.status==='deploying'){job.status='live';job.url='https://fixture-alice.github.io/site/';job.verifiedAt=new Date().toISOString()}return structuredClone(job)}
   throw new Error('Unhandled release RPC '+name);
 };
-const bundle=await build({entryPoints:[join(directory,'release-host-fixture.tsx')],bundle:true,format:'iife',platform:'browser',write:false,loader:{'.txt':'text'},define:{'process.env.NODE_ENV':'"test"'},plugins:[{name:'host-adapters',setup(b){b.onResolve({filter:/^(react-native|@getpaseo\/plugin(?:\/client(?:\/ui)?)?)$/},()=>({path:join(directory,'board-host-adapter.tsx')}))}}]});
+const bundle=await build({entryPoints:[join(directory,'release-host-fixture.tsx')],bundle:true,format:'iife',platform:'browser',write:false,loader:{'.txt':'text'},define:{'process.env.NODE_ENV':'"test"'},plugins:[{name:'modal-baseline',setup(b){if(process.env.BOARD_MODAL_BASELINE)b.onLoad({filter:/client\/(board|home|toolbar-popover)\.tsx$/},async args=>({contents:await readFile(join(process.env.BOARD_MODAL_BASELINE,args.path.split('/').at(-1)),'utf8'),loader:'tsx',resolveDir:dirname(args.path)}))}},{name:'host-adapters',setup(b){b.onResolve({filter:/^(react-native|@getpaseo\/plugin(?:\/client(?:\/ui)?)?)$/},()=>({path:join(directory,'board-host-adapter.tsx')}))}}]});
 const server=createServer(async(req,res)=>{
   if(req.url==='/rpc'){
     try{let body='';for await(const chunk of req)body+=chunk;const {name,input,board}=JSON.parse(body);const value=await rpc(name,input,board);res.setHeader('content-type','application/json');res.end(JSON.stringify({value}))}
@@ -117,7 +117,8 @@ try {
   const open=async()=>{
     await until("hostFixture.mainReady()?.ready");
     await click('[data-testid="board-more-open"]');await click(button('导出与发布'));
-    await until("document.querySelector('[data-testid=board-release-panel]')");
+    await until("document.querySelector('[data-testid=board-release-panel]')||document.querySelector('[data-fixture-modal-error]')");
+    assert.equal(await evaluate("document.querySelector('[data-fixture-modal-error]')?.textContent"),undefined,'SDK-isolated modal must receive its explicit Board theme');
   };
   const reload=async()=>{
     const id=await evaluate('hostFixture.pageInstance');await command('Page.reload',{ignoreCache:true});await until(`window.hostFixture&&hostFixture.pageInstance!==${JSON.stringify(id)}`);await open();

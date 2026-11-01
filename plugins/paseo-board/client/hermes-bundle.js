@@ -3680,7 +3680,10 @@ function ToolbarPopover({
       if (!value) onClose();
     },
     children: /* @__PURE__ */jsx4(Modal.Content, {
-      children
+      children: /* @__PURE__ */jsx4(ColorContext.Provider, {
+        value: c,
+        children
+      })
     })
   });
   return /* @__PURE__ */jsxs3(View3, {
@@ -7339,14 +7342,17 @@ function BoardContent({
       open: releaseOpen,
       onOpenChange: setReleaseOpen,
       children: /* @__PURE__ */jsx12(Modal2.Content, {
-        children: releaseOpen ? /* @__PURE__ */jsx12(ReleasePanel, {
-          board,
-          hostId: host.id,
-          onOpenBoard: id => leaveBoard(() => {
-            setReleaseOpen(false);
-            if (onOpenBoard) onOpenBoard(id);else onBack();
-          })
-        }) : null
+        children: /* @__PURE__ */jsx12(ColorContext.Provider, {
+          value: c,
+          children: releaseOpen ? /* @__PURE__ */jsx12(ReleasePanel, {
+            board,
+            hostId: host.id,
+            onOpenBoard: id => leaveBoard(() => {
+              setReleaseOpen(false);
+              if (onOpenBoard) onOpenBoard(id);else onBack();
+            })
+          }) : null
+        })
       })
     }), /* @__PURE__ */jsx12(Modal2, {
       title: drawer === "decisions" ? "Agent \u505A\u8FC7\u7684\u9ED8\u8BA4\u51B3\u7B56" : drawer === "threads" ? "\u56F4\u7ED5\u753B\u5E03\u7684\u8BA8\u8BBA" : drawer === "drafts" ? "\u672C\u673A\u8349\u7A3F" : "\u53D1\u751F\u4E86\u4EC0\u4E48\u53D8\u5316",
@@ -7354,135 +7360,138 @@ function BoardContent({
       onOpenChange: open => {
         if (!open) setDrawer(null);
       },
-      children: /* @__PURE__ */jsxs11(Modal2.Content, {
-        children: [drawer === "decisions" ? /* @__PURE__ */jsx12(DecisionList, {
-          board,
-          onUpdate: updateDecision,
-          onQuestion: decision => {
-            if (composeRef.current) cancelCompose();
-            if (composeRef.current) return;
-            setDrawer(null);
-            var draft = {
-              kind: "question",
-              text: `\u5173\u4E8E\u8FD9\u4E2A agent \u51B3\u7B56\uFF1A${decision.choice}
+      children: /* @__PURE__ */jsx12(Modal2.Content, {
+        children: /* @__PURE__ */jsxs11(ColorContext.Provider, {
+          value: c,
+          children: [drawer === "decisions" ? /* @__PURE__ */jsx12(DecisionList, {
+            board,
+            onUpdate: updateDecision,
+            onQuestion: decision => {
+              if (composeRef.current) cancelCompose();
+              if (composeRef.current) return;
+              setDrawer(null);
+              var draft = {
+                kind: "question",
+                text: `\u5173\u4E8E\u8FD9\u4E2A agent \u51B3\u7B56\uFF1A${decision.choice}
 
 `,
-              anchor: {
-                kind: "element",
-                boardRevision: board.revision,
-                canvasRevision: board.canvas.revision,
-                text: decision.choice,
-                selector: decision.related[0]
-              }
-            };
-            setSelectedInteractionId(void 0);
-            setPopoverPoint(anchorPoint(draft.anchor));
-            changeCompose(draft, anchorPoint(draft.anchor));
-          }
-        }) : null, drawer === "drafts" ? /* @__PURE__ */jsxs11(View11, {
-          testID: "board-drafts",
-          style: {
-            gap: 16
-          },
-          children: [/* @__PURE__ */jsx12(Copy, {
-            small: true,
-            muted: true,
-            children: "\u53EA\u4FDD\u5B58\u5728\u5F53\u524D\u5BA2\u6237\u7AEF\uFF0C\u6309\u4E3B\u673A\u548C Board \u5206\u5F00\u3002\u7EE7\u7EED\u7F16\u8F91\u4F1A\u4FDD\u7559\u539F\u5F15\u7528\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u53D1\u9001\u3002"
-          }), draftSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx12(Notice, {
-            error: true,
-            text: issue2.message
-          }, `${issue2.code}-${index}`)), draftError ? /* @__PURE__ */jsx12(Notice, {
-            error: true,
-            text: draftError
-          }) : null, !draftSnapshot.drafts.length ? /* @__PURE__ */jsx12(Copy, {
-            muted: true,
-            children: "\u6CA1\u6709\u5F85\u53D1\u9001\u7684\u8349\u7A3F\u3002"
-          }) : null, draftSnapshot.drafts.map(saved => /* @__PURE__ */jsxs11(View11, {
-            testID: `board-draft-row-${saved.id}`,
-            style: {
-              borderBottomWidth: 1,
-              borderColor: c.border,
-              paddingBottom: 14,
-              gap: 8
-            },
-            children: [/* @__PURE__ */jsx12(Text9, {
-              numberOfLines: 2,
-              style: {
-                color: c.foreground
-              },
-              children: saved.compose.text || "\u5C1A\u672A\u8F93\u5165\u6587\u5B57"
-            }), /* @__PURE__ */jsxs11(Copy, {
-              small: true,
-              muted: true,
-              children: [saved.compose.anchor?.selector ?? saved.compose.anchor?.text ?? "\u6574\u4E2A\u753B\u5E03", " \xB7 ", timeLabel(new Date(saved.updatedAt).toISOString())]
-            }), saved.conflicted ? /* @__PURE__ */jsx12(Notice, {
-              text: "\u53E6\u4E00\u7A97\u53E3\u4E5F\u4FEE\u6539\u4E86\u8FD9\u4EFD\u8349\u7A3F\uFF1B\u4E24\u4E2A\u7248\u672C\u90FD\u5DF2\u4FDD\u7559\u3002"
-            }) : null, saved.compose.intentId ? /* @__PURE__ */jsx12(Copy, {
-              small: true,
-              muted: true,
-              children: "\u4E0A\u6B21\u53D1\u9001\u7ED3\u679C\u5F85\u6838\u5BF9\uFF1B\u7EE7\u7EED\u65F6\u4FDD\u7559\u539F\u53D1\u9001\u7F16\u53F7\u548C\u76EE\u6807\u3002"
-            }) : null, /* @__PURE__ */jsxs11(View11, {
-              style: {
-                flexDirection: "row",
-                gap: 8
-              },
-              children: [/* @__PURE__ */jsx12(Action, {
-                label: "\u7EE7\u7EED\u7F16\u8F91",
-                onPress: () => restoreDraft(saved)
-              }), /* @__PURE__ */jsx12(Action, {
-                label: "\u4E22\u5F03",
-                onPress: () => {
-                  var result = draftStore.remove(saved.id, saved.revision);
-                  if (!result.ok) setDraftError(result.issue.message);
+                anchor: {
+                  kind: "element",
+                  boardRevision: board.revision,
+                  canvasRevision: board.canvas.revision,
+                  text: decision.choice,
+                  selector: decision.related[0]
                 }
-              })]
-            })]
-          }, saved.revision))]
-        }) : null, drawer === "threads" ? /* @__PURE__ */jsxs11(View11, {
-          style: {
-            gap: 20
-          },
-          children: [!board.interactions.length ? /* @__PURE__ */jsx12(Copy, {
-            muted: true,
-            children: "\u6307\u7740\u753B\u5E03\u63D0\u95EE\u3001\u63D0\u51FA\u4FEE\u6539\uFF0C\u6216\u5F00\u4E00\u4E2A\u72EC\u7ACB\u8BA8\u8BBA\u3002\u4EA4\u6D41\u4F1A\u4FDD\u7559\u5F53\u65F6\u7684\u5F15\u7528\u548C\u7248\u672C\u3002"
-          }) : null, [...interactions].filter(item => interactionRoot(item.id, interactions) === item.id).reverse().map(interaction => /* @__PURE__ */jsxs11(View11, {
+              };
+              setSelectedInteractionId(void 0);
+              setPopoverPoint(anchorPoint(draft.anchor));
+              changeCompose(draft, anchorPoint(draft.anchor));
+            }
+          }) : null, drawer === "drafts" ? /* @__PURE__ */jsxs11(View11, {
+            testID: "board-drafts",
             style: {
-              borderBottomWidth: 1,
-              borderColor: c.border,
-              paddingBottom: 18,
-              gap: 10
-            },
-            children: [/* @__PURE__ */jsxs11(Copy, {
-              small: true,
-              muted: true,
-              children: [kindNames[interaction.kind], " \xB7 ", statusNames2[interactionThread(interaction.id, interactions).at(-1)?.status ?? interaction.status], " \xB7 ", timeLabel(interaction.createdAt)]
-            }), /* @__PURE__ */jsx12(Copy, {
-              children: interaction.text
-            }), /* @__PURE__ */jsx12(Action, {
-              label: "\u539F\u4F4D\u67E5\u770B\u548C\u7EE7\u7EED\u4EA4\u6D41",
-              onPress: () => locateInteraction(interaction.id)
-            })]
-          }, interaction.id))]
-        }) : null, drawer === "history" ? /* @__PURE__ */jsxs11(View11, {
-          style: {
-            gap: 14
-          },
-          children: [[...board.events].reverse().slice(0, 100).map(event => /* @__PURE__ */jsxs11(View11, {
-            style: {
-              gap: 3
+              gap: 16
             },
             children: [/* @__PURE__ */jsx12(Copy, {
-              children: event.summary
-            }), /* @__PURE__ */jsxs11(Copy, {
-              muted: true,
               small: true,
-              children: ["r", event.revision, " \xB7 ", event.source, " \xB7 ", timeLabel(event.at)]
-            })]
-          }, event.id)), !board.events.length ? /* @__PURE__ */jsx12(Copy, {
-            muted: true,
-            children: "\u8FD8\u6CA1\u6709\u53D8\u5316\u3002"
+              muted: true,
+              children: "\u53EA\u4FDD\u5B58\u5728\u5F53\u524D\u5BA2\u6237\u7AEF\uFF0C\u6309\u4E3B\u673A\u548C Board \u5206\u5F00\u3002\u7EE7\u7EED\u7F16\u8F91\u4F1A\u4FDD\u7559\u539F\u5F15\u7528\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u53D1\u9001\u3002"
+            }), draftSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx12(Notice, {
+              error: true,
+              text: issue2.message
+            }, `${issue2.code}-${index}`)), draftError ? /* @__PURE__ */jsx12(Notice, {
+              error: true,
+              text: draftError
+            }) : null, !draftSnapshot.drafts.length ? /* @__PURE__ */jsx12(Copy, {
+              muted: true,
+              children: "\u6CA1\u6709\u5F85\u53D1\u9001\u7684\u8349\u7A3F\u3002"
+            }) : null, draftSnapshot.drafts.map(saved => /* @__PURE__ */jsxs11(View11, {
+              testID: `board-draft-row-${saved.id}`,
+              style: {
+                borderBottomWidth: 1,
+                borderColor: c.border,
+                paddingBottom: 14,
+                gap: 8
+              },
+              children: [/* @__PURE__ */jsx12(Text9, {
+                numberOfLines: 2,
+                style: {
+                  color: c.foreground
+                },
+                children: saved.compose.text || "\u5C1A\u672A\u8F93\u5165\u6587\u5B57"
+              }), /* @__PURE__ */jsxs11(Copy, {
+                small: true,
+                muted: true,
+                children: [saved.compose.anchor?.selector ?? saved.compose.anchor?.text ?? "\u6574\u4E2A\u753B\u5E03", " \xB7 ", timeLabel(new Date(saved.updatedAt).toISOString())]
+              }), saved.conflicted ? /* @__PURE__ */jsx12(Notice, {
+                text: "\u53E6\u4E00\u7A97\u53E3\u4E5F\u4FEE\u6539\u4E86\u8FD9\u4EFD\u8349\u7A3F\uFF1B\u4E24\u4E2A\u7248\u672C\u90FD\u5DF2\u4FDD\u7559\u3002"
+              }) : null, saved.compose.intentId ? /* @__PURE__ */jsx12(Copy, {
+                small: true,
+                muted: true,
+                children: "\u4E0A\u6B21\u53D1\u9001\u7ED3\u679C\u5F85\u6838\u5BF9\uFF1B\u7EE7\u7EED\u65F6\u4FDD\u7559\u539F\u53D1\u9001\u7F16\u53F7\u548C\u76EE\u6807\u3002"
+              }) : null, /* @__PURE__ */jsxs11(View11, {
+                style: {
+                  flexDirection: "row",
+                  gap: 8
+                },
+                children: [/* @__PURE__ */jsx12(Action, {
+                  label: "\u7EE7\u7EED\u7F16\u8F91",
+                  onPress: () => restoreDraft(saved)
+                }), /* @__PURE__ */jsx12(Action, {
+                  label: "\u4E22\u5F03",
+                  onPress: () => {
+                    var result = draftStore.remove(saved.id, saved.revision);
+                    if (!result.ok) setDraftError(result.issue.message);
+                  }
+                })]
+              })]
+            }, saved.revision))]
+          }) : null, drawer === "threads" ? /* @__PURE__ */jsxs11(View11, {
+            style: {
+              gap: 20
+            },
+            children: [!board.interactions.length ? /* @__PURE__ */jsx12(Copy, {
+              muted: true,
+              children: "\u6307\u7740\u753B\u5E03\u63D0\u95EE\u3001\u63D0\u51FA\u4FEE\u6539\uFF0C\u6216\u5F00\u4E00\u4E2A\u72EC\u7ACB\u8BA8\u8BBA\u3002\u4EA4\u6D41\u4F1A\u4FDD\u7559\u5F53\u65F6\u7684\u5F15\u7528\u548C\u7248\u672C\u3002"
+            }) : null, [...interactions].filter(item => interactionRoot(item.id, interactions) === item.id).reverse().map(interaction => /* @__PURE__ */jsxs11(View11, {
+              style: {
+                borderBottomWidth: 1,
+                borderColor: c.border,
+                paddingBottom: 18,
+                gap: 10
+              },
+              children: [/* @__PURE__ */jsxs11(Copy, {
+                small: true,
+                muted: true,
+                children: [kindNames[interaction.kind], " \xB7 ", statusNames2[interactionThread(interaction.id, interactions).at(-1)?.status ?? interaction.status], " \xB7 ", timeLabel(interaction.createdAt)]
+              }), /* @__PURE__ */jsx12(Copy, {
+                children: interaction.text
+              }), /* @__PURE__ */jsx12(Action, {
+                label: "\u539F\u4F4D\u67E5\u770B\u548C\u7EE7\u7EED\u4EA4\u6D41",
+                onPress: () => locateInteraction(interaction.id)
+              })]
+            }, interaction.id))]
+          }) : null, drawer === "history" ? /* @__PURE__ */jsxs11(View11, {
+            style: {
+              gap: 14
+            },
+            children: [[...board.events].reverse().slice(0, 100).map(event => /* @__PURE__ */jsxs11(View11, {
+              style: {
+                gap: 3
+              },
+              children: [/* @__PURE__ */jsx12(Copy, {
+                children: event.summary
+              }), /* @__PURE__ */jsxs11(Copy, {
+                muted: true,
+                small: true,
+                children: ["r", event.revision, " \xB7 ", event.source, " \xB7 ", timeLabel(event.at)]
+              })]
+            }, event.id)), !board.events.length ? /* @__PURE__ */jsx12(Copy, {
+              muted: true,
+              children: "\u8FD8\u6CA1\u6709\u53D8\u5316\u3002"
+            }) : null]
           }) : null]
-        }) : null]
+        })
       })
     })]
   });
@@ -7925,74 +7934,77 @@ function BoardIndex({
         if (!pending) setCreating(open);
       },
       children: /* @__PURE__ */jsx13(Modal3.Content, {
-        children: /* @__PURE__ */jsxs12(View12, {
-          style: {
-            gap: 16
-          },
-          children: [/* @__PURE__ */jsx13(Copy, {
-            children: "\u5173\u8054\u8D1F\u8D23\u7684 agent\u3002\u753B\u5E03\u5185\u5BB9\u548C\u5E03\u5C40\u7531\u5B83\u968F\u4EFB\u52A1\u81EA\u7531\u6784\u5EFA\u3002"
-          }), /* @__PURE__ */jsx13(TextInput5, {
-            value: title,
-            onChangeText: setTitle,
-            editable: !pending,
-            maxLength: 200,
-            placeholder: "\u9879\u76EE / Board \u540D\u79F0",
-            accessibilityLabel: "Board \u540D\u79F0",
-            placeholderTextColor: c.foregroundMuted,
+        children: /* @__PURE__ */jsx13(ColorContext.Provider, {
+          value: c,
+          children: /* @__PURE__ */jsxs12(View12, {
             style: {
-              color: c.foreground,
-              borderColor: c.border,
-              borderWidth: 1,
-              borderRadius: 8,
-              padding: 12
-            }
-          }), /* @__PURE__ */jsx13(Copy, {
-            muted: true,
-            small: true,
-            children: "\u8D1F\u8D23\u7684 agent"
-          }), agents.error ? /* @__PURE__ */jsx13(Notice, {
-            error: true,
-            text: errorMessage(agents.error)
-          }) : null, agents.isPending ? /* @__PURE__ */jsx13(Copy, {
-            muted: true,
-            children: "\u8BFB\u53D6\u4F1A\u8BDD\u2026"
-          }) : null, /* @__PURE__ */jsx13(ScrollView6, {
-            style: {
-              maxHeight: 250
+              gap: 16
             },
-            contentContainerStyle: {
-              gap: 7
-            },
-            children: agents.data?.entries.filter(entry => entry.agent.status !== "closed" && (!workspaceId || entry.agent.workspaceId === workspaceId)).map(({
-              agent
-            }) => /* @__PURE__ */jsx13(Action, {
-              label: agent.title || `Agent ${agent.id.slice(0, 8)}`,
-              active: owner === agent.id,
-              disabled: pending,
-              onPress: () => setOwner(agent.id)
-            }, agent.id))
-          }), failure ? /* @__PURE__ */jsx13(Notice, {
-            error: true,
-            text: failure
-          }) : null, /* @__PURE__ */jsxs12(View12, {
-            style: {
-              flexDirection: "row",
-              justifyContent: "flex-end",
-              gap: 8
-            },
-            children: [/* @__PURE__ */jsx13(Action, {
-              label: "\u53D6\u6D88",
-              disabled: pending,
-              onPress: () => setCreating(false)
-            }), /* @__PURE__ */jsx13(Action, {
-              label: pending ? "\u521B\u5EFA\u4E2D\u2026" : "\u521B\u5EFA",
-              primary: true,
-              disabled: pending || !owner || !title.trim(),
-              onPress: () => {
-                void newBoard();
+            children: [/* @__PURE__ */jsx13(Copy, {
+              children: "\u5173\u8054\u8D1F\u8D23\u7684 agent\u3002\u753B\u5E03\u5185\u5BB9\u548C\u5E03\u5C40\u7531\u5B83\u968F\u4EFB\u52A1\u81EA\u7531\u6784\u5EFA\u3002"
+            }), /* @__PURE__ */jsx13(TextInput5, {
+              value: title,
+              onChangeText: setTitle,
+              editable: !pending,
+              maxLength: 200,
+              placeholder: "\u9879\u76EE / Board \u540D\u79F0",
+              accessibilityLabel: "Board \u540D\u79F0",
+              placeholderTextColor: c.foregroundMuted,
+              style: {
+                color: c.foreground,
+                borderColor: c.border,
+                borderWidth: 1,
+                borderRadius: 8,
+                padding: 12
               }
+            }), /* @__PURE__ */jsx13(Copy, {
+              muted: true,
+              small: true,
+              children: "\u8D1F\u8D23\u7684 agent"
+            }), agents.error ? /* @__PURE__ */jsx13(Notice, {
+              error: true,
+              text: errorMessage(agents.error)
+            }) : null, agents.isPending ? /* @__PURE__ */jsx13(Copy, {
+              muted: true,
+              children: "\u8BFB\u53D6\u4F1A\u8BDD\u2026"
+            }) : null, /* @__PURE__ */jsx13(ScrollView6, {
+              style: {
+                maxHeight: 250
+              },
+              contentContainerStyle: {
+                gap: 7
+              },
+              children: agents.data?.entries.filter(entry => entry.agent.status !== "closed" && (!workspaceId || entry.agent.workspaceId === workspaceId)).map(({
+                agent
+              }) => /* @__PURE__ */jsx13(Action, {
+                label: agent.title || `Agent ${agent.id.slice(0, 8)}`,
+                active: owner === agent.id,
+                disabled: pending,
+                onPress: () => setOwner(agent.id)
+              }, agent.id))
+            }), failure ? /* @__PURE__ */jsx13(Notice, {
+              error: true,
+              text: failure
+            }) : null, /* @__PURE__ */jsxs12(View12, {
+              style: {
+                flexDirection: "row",
+                justifyContent: "flex-end",
+                gap: 8
+              },
+              children: [/* @__PURE__ */jsx13(Action, {
+                label: "\u53D6\u6D88",
+                disabled: pending,
+                onPress: () => setCreating(false)
+              }), /* @__PURE__ */jsx13(Action, {
+                label: pending ? "\u521B\u5EFA\u4E2D\u2026" : "\u521B\u5EFA",
+                primary: true,
+                disabled: pending || !owner || !title.trim(),
+                onPress: () => {
+                  void newBoard();
+                }
+              })]
             })]
-          })]
+          })
         })
       })
     })]

@@ -53,7 +53,7 @@ function BoardIndex({ host, workspaceId, agentId, onSelect }: Props & { onSelect
         <Copy muted small>更新于 {timeLabel(board.updatedAt)}</Copy>
       </Pressable>)}
     </ScrollView>
-    <Modal title="新建 Board" open={creating} onOpenChange={open => { if (!pending) setCreating(open); }}><Modal.Content><View style={{ gap: 16 }}>
+    <Modal title="新建 Board" open={creating} onOpenChange={open => { if (!pending) setCreating(open); }}><Modal.Content><ColorContext.Provider value={c}><View style={{ gap: 16 }}>
       <Copy>关联负责的 agent。画布内容和布局由它随任务自由构建。</Copy>
       <TextInput value={title} onChangeText={setTitle} editable={!pending} maxLength={200} placeholder="项目 / Board 名称" accessibilityLabel="Board 名称" placeholderTextColor={c.foregroundMuted} style={{ color: c.foreground, borderColor: c.border, borderWidth: 1, borderRadius: 8, padding: 12 }} />
       <Copy muted small>负责的 agent</Copy>
@@ -62,6 +62,6 @@ function BoardIndex({ host, workspaceId, agentId, onSelect }: Props & { onSelect
       <ScrollView style={{ maxHeight: 250 }} contentContainerStyle={{ gap: 7 }}>{agents.data?.entries.filter(entry => entry.agent.status !== "closed" && (!workspaceId || entry.agent.workspaceId === workspaceId)).map(({ agent }) => <Action key={agent.id} label={agent.title || `Agent ${agent.id.slice(0, 8)}`} active={owner === agent.id} disabled={pending} onPress={() => setOwner(agent.id)} />)}</ScrollView>
       {failure ? <Notice error text={failure} /> : null}
       <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}><Action label="取消" disabled={pending} onPress={() => setCreating(false)} /><Action label={pending ? "创建中…" : "创建"} primary disabled={pending || !owner || !title.trim()} onPress={() => { void newBoard(); }} /></View>
-    </View></Modal.Content></Modal>
+    </View></ColorContext.Provider></Modal.Content></Modal>
   </View>;
 }

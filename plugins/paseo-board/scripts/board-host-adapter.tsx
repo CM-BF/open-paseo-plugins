@@ -1,8 +1,11 @@
 // Test-only RN/Paseo view adapter. This keeps actual BoardView/query/frame code under test;
 // it is intentionally not evidence of behavior in the native Paseo host.
-import { createElement, useCallback, useLayoutEffect, useRef } from "react";
+import { Component, createContext, createElement, useCallback, useContext, useLayoutEffect, useRef } from "react";
+// @ts-expect-error ReactDOM is used only by the browser fixture.
+import { createRoot } from "react-dom/client";
+import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 const global = globalThis as any;
-export const Platform = { OS: "web" };
+export const Platform = { OS: new URLSearchParams(global.location?.search).has("native-toolbar") ? "ios" : "web" };
 // Web fixtures use document.visibilityState; the native import still needs a shape.
 export const AppState = { currentState: "active", addEventListener: () => ({ remove() {} }) };
 function styles(value: any): any {
@@ -41,11 +44,37 @@ export function ScrollView(props: any) { return element("div", props, { overflow
 export function TextInput(props: any) { return element(props.multiline ? "textarea" : "input", props); }
 export function Markdown({ children }: any) { return createElement("div", { "data-fixture-markdown": true, style: { whiteSpace: "pre-wrap" } }, children); }
 export function Icon() { return null; }
-export function Modal({ open, title, children, onOpenChange }: any) {
-  if (!open) return null;
-  return createElement("div", { role: "dialog", "data-fixture-modal": true, "aria-label": title, style: { position: "fixed", inset: 50, zIndex: 100, background: "white", border: "1px solid black", padding: 20, overflow: "auto" } }, createElement("button", { onClick: () => onOpenChange(false), "aria-label": "关闭窗口" }, "关闭"), children);
+// The SDK compact/native Modal.Content escapes the caller's React tree through
+// IsolatedBottomSheetModal. It bridges QueryClient/SDK runtime, not plugin-owned
+// contexts. A DOM createPortal would incorrectly retain ColorContext and conceal
+// the production failure. This isolated root intentionally models that boundary.
+const FixtureModalContext = createContext<any>(null);
+class FixtureModalBoundary extends Component<any, { error: string | null }> {
+  state = { error: null as string | null };
+  static getDerivedStateFromError(error: Error) { return { error: error.message }; }
+  componentDidCatch(error: Error) { (global.fixtureModalErrors ??= []).push(error.message); }
+  render() { return this.state.error ? createElement("div", { "data-fixture-modal-error": true }, this.state.error) : this.props.children; }
 }
-Modal.Content = ({ children }: any) => createElement("div", null, children);
+export function Modal({ open, title, children, onOpenChange }: any) {
+  return createElement(FixtureModalContext.Provider, { value: { open, title, onOpenChange } }, children);
+}
+Modal.Content = function FixtureModalContent({ children }: any) {
+  const modal = useContext(FixtureModalContext), query = useQueryClient();
+  const root = useRef<any>(null);
+  useLayoutEffect(() => {
+    if (!modal.open) return;
+    const node = global.document.createElement("div"); node.dataset.fixtureModalRoot = "isolated";
+    global.document.body.appendChild(node); root.current = createRoot(node);
+    return () => { const previous = root.current; root.current = null; global.queueMicrotask(() => { previous.unmount(); node.remove(); }); };
+  }, [modal.open]);
+  useLayoutEffect(() => {
+    if (!root.current || !modal.open) return;
+    root.current.render(createElement(QueryClientProvider, { client: query }, createElement(FixtureModalBoundary, null,
+      createElement("div", { role: "dialog", "data-fixture-modal": true, "aria-label": modal.title, style: { position: "fixed", inset: 50, zIndex: 100, background: "white", border: "1px solid black", padding: 20, overflow: "auto", font: "14px system-ui" } },
+        createElement("button", { onClick: () => modal.onOpenChange(false), "aria-label": "关闭窗口" }, "关闭"), children))));
+  }, [modal.open, modal.title, modal.onOpenChange, children, query]);
+  return null;
+};
 export function defineRpc(config: any) { return config; }
 export function usePaseo() { return { agents: { list: async () => ({ entries: [] }) } }; }
 export function useRpc(definition: any) { return useCallback((input: any) => global.hostFixture.rpc(definition.name, input), [definition.name]); }

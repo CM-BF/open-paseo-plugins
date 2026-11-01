@@ -394,9 +394,12 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}><BoardConnectionStatus status={query.error ? "disconnected" : query.liveStatus} /><Copy small muted>r{board.revision} · {timeLabel(board.updatedAt)}</Copy></View>
     </View>
     <Modal title="导出与发布" open={releaseOpen} onOpenChange={setReleaseOpen}><Modal.Content>
+      <ColorContext.Provider value={c}>
       {releaseOpen ? <ReleasePanel board={board} hostId={host.id} onOpenBoard={id => leaveBoard(() => { setReleaseOpen(false); if (onOpenBoard) onOpenBoard(id); else onBack(); })} /> : null}
+      </ColorContext.Provider>
     </Modal.Content></Modal>
     <Modal title={drawer === "decisions" ? "Agent 做过的默认决策" : drawer === "threads" ? "围绕画布的讨论" : drawer === "drafts" ? "本机草稿" : "发生了什么变化"} open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }}><Modal.Content>
+      <ColorContext.Provider value={c}>
       {drawer === "decisions" ? <DecisionList board={board} onUpdate={updateDecision} onQuestion={decision => { if (composeRef.current) cancelCompose(); if (composeRef.current) return; setDrawer(null); const draft: Compose = { kind: "question", text: `关于这个 agent 决策：${decision.choice}\n\n`, anchor: { kind: "element", boardRevision: board.revision, canvasRevision: board.canvas.revision, text: decision.choice, selector: decision.related[0] } }; setSelectedInteractionId(undefined); setPopoverPoint(anchorPoint(draft.anchor)); changeCompose(draft, anchorPoint(draft.anchor)); }} /> : null}
       {drawer === "drafts" ? <View testID="board-drafts" style={{ gap: 16 }}>
         <Copy small muted>只保存在当前客户端，按主机和 Board 分开。继续编辑会保留原引用；不会自动发送。</Copy>
@@ -423,6 +426,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
         </View>)}
       </View> : null}
       {drawer === "history" ? <View style={{ gap: 14 }}>{[...board.events].reverse().slice(0, 100).map(event => <View key={event.id} style={{ gap: 3 }}><Copy>{event.summary}</Copy><Copy muted small>r{event.revision} · {event.source} · {timeLabel(event.at)}</Copy></View>)}{!board.events.length ? <Copy muted>还没有变化。</Copy> : null}</View> : null}
+      </ColorContext.Provider>
     </Modal.Content></Modal>
   </View>;
 }
