@@ -1,3 +1,5 @@
+import layoutState from "./assets/component-layout-state.txt";
+
 /** Standalone publication runtime. It has no Paseo RPC, editing or discussion code. */
 export const STATIC_VIEWER_VERSION = 1;
 export const STATIC_VIEWER_RUNTIME = String.raw`function(initial) {
@@ -19,17 +21,26 @@ export const STATIC_VIEWER_RUNTIME = String.raw`function(initial) {
     return()=>{};
   };
   const ask=()=>{send({type:'unavailable'});return Promise.resolve({status:'cancelled',outcome:'This published version does not connect to an agent.'})};
-  const saveState=value=>{
+  const managedViewNamespace="__paseoContainerViews";
+  const writeState=value=>{
     if(!value||typeof value!=='object'||Array.isArray(value))throw new TypeError('State must be a JSON object');
     const raw=JSON.stringify(value);if(raw.length>524288)throw new RangeError('State exceeds 512 KiB');
     state=JSON.parse(raw);send({type:'state',state});
     for(const fn of listeners){try{fn(clone(state))}catch(error){console.error(error)}}return clone(state);
+  };
+  const saveState=value=>{
+    if(!value||typeof value!=='object'||Array.isArray(value))throw new TypeError('State must be a JSON object');
+    const next={...value};
+    if(Object.prototype.hasOwnProperty.call(state,managedViewNamespace))next[managedViewNamespace]=state[managedViewNamespace];
+    else delete next[managedViewNamespace];
+    return writeState(next);
   };
   Object.defineProperty(window,'board',{configurable:false,writable:false,value:Object.freeze({
     getData:()=>clone(initial.data),onData:emptySubscription,watch,getState:()=>clone(state),restoreState:()=>clone(state),
     saveState,onState:fn=>subscribe(listeners,fn),ask,onReveal:emptySubscription,getContext:()=>({...context})
   })});
   window.openai=Object.freeze({sendFollowUpMessage:ask});
+  (${layoutState})({getState:()=>clone(state),saveState:writeState,onState:fn=>subscribe(listeners,fn)},1);
   document.addEventListener('submit',event=>event.preventDefault(),true);
   document.addEventListener('click',event=>{const link=event.target?.closest?.('a[href]');if(!link)return;const href=link.getAttribute('href');if(href?.startsWith('#'))return;event.preventDefault();if(!event.isTrusted)return;try{const url=new URL(href,initial.siteUrl);if(['https:','http:'].includes(url.protocol))send({type:'link',url:url.href})}catch{}},true);
 }`;

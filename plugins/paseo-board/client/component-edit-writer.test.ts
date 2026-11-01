@@ -102,4 +102,25 @@ describe("host-owned component saves", () => {
     expect(await pending).toMatchObject({ status: "rejected", message: expect.stringContaining("目标容器") });
     expect(writer.snapshot()?.error).toContain("重新选择目标"); writer.cancel();
   });
+  it("keeps a layout configuration and its original canvas base immutable across a lost save response", async () => {
+    const writer = new ComponentEditWriter();
+    const input: ComponentEditRequest = {
+      canvasBase: { revision: 4, documentVersion: 2 },
+      patch: { operation: "layout", selector: "#card", sourceIdentity: { tag: "article", id: "card", fingerprint: "abcd1234" },
+        layout: { collapse: "group", title: "实验记录", maxHeight: 320 } },
+    };
+    const pending = writer.propose("a", input, "host-layout-event");
+    input.patch.layout!.maxHeight = 800;
+    input.patch.layout!.title = "后来输入的标题";
+    const frozen = writer.snapshot()!.request;
+    await writer.save(async () => { throw new Error("response lost after commit"); }, vi.fn(), refresh);
+    writer.cancel(); writer.invalidate({ revision: 5, documentVersion: 2 });
+    expect(writer.snapshot()).toMatchObject({ status: "unknown", request: {
+      canvasBase: { revision: 4, documentVersion: 2 }, patch: { id: "host-layout-event", layout: { collapse: "group", title: "实验记录", maxHeight: 320 } },
+    } });
+    const retry = vi.fn(async (_input: EditInput) => applied(5, "host-layout-event"));
+    await writer.save(retry, vi.fn(), refresh);
+    expect(retry.mock.calls[0][0]).toBe(frozen);
+    expect(await pending).toEqual({ status: "applied", canvasRevision: 5 });
+  });
 });

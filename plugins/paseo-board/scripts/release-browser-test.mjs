@@ -10,12 +10,13 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { build } from 'esbuild';
+import { componentLayoutHtml } from './component-layout-fixture.mjs';
 
 const directory = dirname(fileURLToPath(import.meta.url)), root = dirname(directory);
 const temporary = await mkdtemp(join(tmpdir(), 'paseo-release-browser-'));
-const core = await build({ stdin: { contents: `export {BoardStore} from './server/store';export {BoardCopies} from './server/board-copy';export {buildRelease,ReleaseRepository} from './server/static-release';`, resolveDir: root, loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', write: false, loader: { '.txt': 'text' } });
+const core = await build({ stdin: { contents: `export {BoardStore} from './server/store';export {BoardCopies} from './server/board-copy';export {buildRelease,ReleaseRepository} from './server/static-release';export {describeAuthoring} from './server/authored-source';export {componentIdentityFor} from './shared/component-identity';export {DOMParser} from 'linkedom';`, resolveDir: root, loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', write: false, loader: { '.txt': 'text' } });
 const coreFile = join(temporary, 'core.cjs'); await writeFile(coreFile, core.outputFiles[0].text);
-const { BoardStore, BoardCopies, buildRelease, ReleaseRepository } = createRequire(import.meta.url)(coreFile);
+const { BoardStore, BoardCopies, buildRelease, ReleaseRepository, describeAuthoring, componentIdentityFor, DOMParser } = createRequire(import.meta.url)(coreFile);
 const store = new BoardStore(join(temporary, 'boards'));
 const publicData = { label: 'Visible public data', nested: { value: 42 }, unusual: '</script><script>window.escapedFromData=true</script>\u2028\u2029' };
 const content = `<style>body{margin:0;background:#172e27;color:#eef5f1;font:17px/1.5 Georgia}main{padding:24px}button,input{font:inherit}#shape{width:120px;height:70px}</style>
@@ -45,8 +46,21 @@ const copies = new BoardCopies(join(temporary, 'copies'), store), request = { bo
 const copy = await copies.copy(request);
 const editedCopy = await store.publish({ boardId: copy.id, expectedRevision: copy.revision, canvasBase: { revision: copy.canvas.revision, documentVersion: copy.canvas.documentVersion }, eventId: 'copy-manual-edit', patch: { id: 'copy-manual-patch', selector: '#final', operation: 'replace', html: '<h1 id="final">Manually edited copy</h1>' } });
 const copyRelease = buildRelease({ ...options, board: editedCopy, boardId: editedCopy.id, expectedCanvasBase: { revision: editedCopy.canvas.revision, documentVersion: editedCopy.canvas.documentVersion } });
+// Publish semantic edits through the real store before cold materialization.
+// The browser below must use native disclosure/scrolling with no editor bridge.
+let layoutBoard = await store.create({ id:'layout-publication',title:'Container publication',ownerAgentId:'owner',html:componentLayoutHtml,data:{} });
+for (const [selector,layout] of [['#layout-target',{collapse:'contents',maxHeight:240}],['#layout-inner',{collapse:'contents',maxHeight:120}]]) {
+  const authoring=describeAuthoring(layoutBoard.canvas);
+  const document=new DOMParser().parseFromString(`<html><head></head><body>${authoring.materializedAuthoredHtml}</body></html>`,'text/html');
+  const id=`public-layout-${layoutBoard.canvas.revision}`;
+  layoutBoard=await store.edit({boardId:layoutBoard.id,canvasBase:authoring.canvasBase,eventId:id,patch:{id,operation:'layout',selector,sourceIdentity:componentIdentityFor(document.querySelector(selector)),layout}});
+}
+layoutBoard.userState={zoom:9,privateNote:'PRIVATE_LAYOUT_USER_STATE',__paseoContainerViews:{'1:public-layout-1':false,'1:PRIVATE_LAYOUT_VIEW':false}};
+const layoutRelease=buildRelease({board:layoutBoard,boardId:layoutBoard.id,expectedCanvasBase:{revision:layoutBoard.canvas.revision,documentVersion:layoutBoard.canvas.documentVersion},publicData:{}});
+assert.equal(JSON.stringify(layoutRelease.files).includes('PRIVATE_LAYOUT_USER_STATE'),false);
+assert.equal(JSON.stringify(layoutRelease.files).includes('PRIVATE_LAYOUT_VIEW'),false);
 const previewBundle = await build({ stdin: { contents: `import React from 'react';import {createRoot} from 'react-dom/client';import {ReleasePreview} from './client/release-web';createRoot(document.getElementById('app')).render(React.createElement(ReleasePreview,{html:window.releaseHtml}));`, resolveDir: root, loader: 'tsx' }, bundle: true, platform: 'browser', format: 'iife', write: false, define: { 'process.env.NODE_ENV': '"test"' } });
-const files = new Map([['/', release.files['index.html']], ['/publication/nested/', release.files['index.html']], ['/second/', second.files['index.html']], ['/full/', fullDocument.files['index.html']], ['/copy/', copyRelease.files['index.html']]]);
+const files = new Map([['/', release.files['index.html']], ['/publication/nested/', release.files['index.html']], ['/second/', second.files['index.html']], ['/full/', fullDocument.files['index.html']], ['/copy/', copyRelease.files['index.html']], ['/layout/', layoutRelease.files['index.html']]]);
 const requests = [];
 const server = createServer((request, response) => {
   requests.push({ method: request.method, url: request.url });
@@ -173,6 +187,27 @@ try {
   assert.equal(await frame("getComputedStyle(document.body).backgroundColor"), 'rgb(19, 31, 43)'); assert.equal(await frame("document.querySelector('#full-title').textContent"), 'Full document');
   await open('/copy/'); assert.equal(await frame("document.querySelector('#final').textContent"), 'Manually edited copy');
   check('complete authored documents and manually edited publication copies cold-render through the same standalone viewer');
+  await open('/layout/','window.layoutReady');
+  assert.deepEqual(await frame('board.getState()'),{},'A new public visitor never inherits the working Board user state or fold namespace');
+  assert.deepEqual(await frame("({boot:layoutBoots,disclosures:document.querySelectorAll('details[data-paseo-layout-key]').length,outer:getComputedStyle(document.querySelector('#layout-target > details > [data-paseo-layout-part=body]')).maxHeight,inner:getComputedStyle(document.querySelector('#layout-inner > details > [data-paseo-layout-part=body]')).maxHeight,heading:Boolean(document.querySelector('#layout-target > details > summary #layout-heading')),editor:Boolean(document.querySelector('[data-board-components]'))})"),{boot:1,disclosures:2,outer:'240px',inner:'120px',heading:true,editor:false});
+  await click('#layout-button'); assert.equal(await frame('layoutClicks'),1);
+  await click('#layout-inner > details > summary');
+  assert.deepEqual(await frame("({outer:document.querySelector('#layout-target > details').open,inner:document.querySelector('#layout-inner > details').open})"),{outer:true,inner:false});
+  await frame("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+  await click('#layout-target > details > summary');
+  assert.equal(await frame("document.querySelector('#layout-target > details').open"),false);
+  await click('#layout-author-save');assert.equal(await frame('board.getState().zoom'),1.75);
+  assert.deepEqual(await frame("Object.values(board.getState().__paseoContainerViews)"),[false,false]);
+  await click('#layout-author-save-stale');assert.equal(await frame('board.getState().zoom'),2.5);
+  assert.deepEqual(await frame("Object.values(board.getState().__paseoContainerViews)"),[false,false]);
+  await evaluate('new Promise(resolve=>setTimeout(resolve,50))');
+  await open('/layout/','window.layoutReady');
+  assert.deepEqual(await frame("({outer:document.querySelector('#layout-target > details').open,inner:document.querySelector('#layout-inner > details').open,boot:layoutBoots,zoom:board.getState().zoom})"),{outer:false,inner:false,boot:1,zoom:2.5});
+  await click('#layout-target > details > summary'); await click('#layout-inner > details > summary');
+  const layoutScroll=await frame("(()=>{const n=document.querySelector('#layout-target > details > [data-paseo-layout-part=body]');n.scrollIntoView({block:'nearest'});const r=n.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+Math.min(70,r.height/2)}})()");
+  await command('Input.dispatchMouseEvent',{type:'mouseWheel',x:layoutScroll.x,y:layoutScroll.y,deltaX:0,deltaY:160});
+  await frame("new Promise((resolve,reject)=>{const end=performance.now()+2000;const loop=()=>{if(document.querySelector('#layout-target > details > [data-paseo-layout-part=body]').scrollTop>0)return resolve(true);if(performance.now()>end)return reject(new Error('Published layout did not scroll'));setTimeout(loop,20)};loop()})");
+  check('semantic layouts export without private view state; native nested disclosures and author-only/stale state saves preserve visitor folds and zoom across a full reload while scrolling and authored handlers remain usable');
   await open('/preview');
   assert.equal(await frame("document.querySelector('#final').textContent"), 'Final publication'); assert.deepEqual(await frame('board.getState()'), {});
   await frame("document.querySelector('#increment').click()"); assert.equal(await frame('window.count'), 1);

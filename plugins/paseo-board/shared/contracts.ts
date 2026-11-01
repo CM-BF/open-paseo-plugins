@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { createComponentLayoutTools } from "./component-layout";
 
 export const PLUGIN_ID = "paseo-board";
 export const IdSchema = z.string().min(1).max(160).regex(/^[a-zA-Z0-9_.:-]+$/);
@@ -66,21 +67,35 @@ export const ComponentIdentitySchema = z.object({
   fingerprint: z.string().regex(/^[a-f0-9]{8}$/),
   authoredHtml: z.string().max(240000).optional(),
 });
+export const ComponentLayoutSchema = z.object({
+  collapse: z.enum(["none", "contents", "group"]),
+  maxHeight: z.number().int().min(80).max(2000).nullable(),
+  title: z.string().min(1).max(120).optional(),
+  placement: z.partialRecord(z.enum(["grid-column", "grid-row", "order", "flex-grow", "flex-shrink", "flex-basis", "align-self", "justify-self", "width", "min-width", "max-width", "margin-top", "margin-right", "margin-bottom", "margin-left"]), z.string().max(240)).optional(),
+  flow: z.partialRecord(z.enum(["display", "flex-direction", "flex-wrap", "align-items", "justify-content", "align-content", "grid-template-columns", "grid-template-rows", "grid-auto-columns", "grid-auto-rows", "grid-auto-flow", "column-gap", "row-gap"]), z.string().max(240)).optional(),
+}).strict().refine(value => createComponentLayoutTools().validate(value), "Expected bounded component layout options");
 export const CanvasPatchSchema = z.object({
   id: IdSchema,
   selector: z.string().min(1).max(1000),
-  operation: z.enum(["append", "prepend", "replace", "remove", "move", "copy", "text"]),
+  operation: z.enum(["append", "prepend", "replace", "remove", "move", "copy", "text", "layout"]),
   html: z.string().max(2000000).default(""),
   sourceIdentity: ComponentIdentitySchema.optional(), destinationIdentity: ComponentIdentitySchema.optional(),
   destination: z.string().min(1).max(1000).optional(), position: z.enum(["before", "after", "append", "prepend"]).optional(),
   copyIdPrefix: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,100}$/).optional(),
   text: z.string().max(24000).optional(), expectedText: z.string().max(24000).optional(),
   textNodeIndex: z.number().int().min(0).max(10000).optional(),
+  layout: ComponentLayoutSchema.optional(),
 }).superRefine((patch, context) => {
-  if (!["move", "copy", "text"].includes(patch.operation)) return;
+  if (!["move", "copy", "text", "layout"].includes(patch.operation)) {
+    if (patch.layout !== undefined) context.addIssue({ code: "custom", path: ["layout"], message: "Layout options require a layout operation" });
+    return;
+  }
   const missing = (field: string) => context.addIssue({ code: "custom", path: [field], message: `Component edit requires ${field}` });
   if (!patch.sourceIdentity) missing("sourceIdentity");
-  if (patch.operation === "text") {
+  if (patch.operation === "layout") {
+    if (!patch.layout) missing("layout");
+    if (patch.html !== "" || patch.destination !== undefined || patch.destinationIdentity !== undefined || patch.position !== undefined || patch.text !== undefined || patch.expectedText !== undefined || patch.textNodeIndex !== undefined || patch.copyIdPrefix !== undefined) context.addIssue({ code: "custom", message: "Layout edits accept only identity and bounded layout options" });
+  } else if (patch.operation === "text") {
     if (patch.text === undefined) missing("text");
     if (patch.expectedText === undefined) missing("expectedText");
   } else {
@@ -89,6 +104,7 @@ export const CanvasPatchSchema = z.object({
     if (!patch.position) missing("position");
     if (patch.operation === "copy" && !patch.copyIdPrefix) missing("copyIdPrefix");
   }
+  if (patch.operation !== "layout" && patch.layout !== undefined) context.addIssue({ code: "custom", path: ["layout"], message: "Layout options require a layout operation" });
 });
 export const CanvasSchema = z.object({
   revision: z.number().int().nonnegative(),
@@ -242,7 +258,7 @@ export const SelectSideAgentInputSchema = z.object({ boardId: IdSchema, agentId:
 export const RenameInputSchema = z.object({ boardId: IdSchema, expectedTitle: z.string(), title: z.string().trim().min(1).max(200), eventId: IdSchema });
 export const EditInputSchema = z.object({
   boardId: IdSchema, canvasBase: CanvasBaseSchema, eventId: IdSchema,
-  patch: CanvasPatchSchema.refine(patch => ["move", "copy", "text"].includes(patch.operation) && patch.html === "", "User edits support move, copy and text operations without caller-supplied HTML"),
+  patch: CanvasPatchSchema.refine(patch => ["move", "copy", "text", "layout"].includes(patch.operation) && patch.html === "", "User edits support move, copy, text and layout operations without caller-supplied HTML"),
 });
 export const DecisionUpdateInputSchema = z.object({ boardId: IdSchema, expectedRevision: z.number().int().nonnegative(), eventId: IdSchema, decision: DecisionInputSchema });
 export const StateInputSchema = z.object({ boardId: IdSchema, state: JsonDataSchema });

@@ -17,6 +17,9 @@ describe("frame bridge validation", () => {
     expect(readFrameMessage({ ...edit, request: { ...request, patch: { ...request.patch, sourceIdentity: { ...anonymous, authoredHtml: "x".repeat(240001) } } } }, scope)).toBeNull();
     const move = { ...request, patch: { operation: "move", selector: "#title", sourceIdentity: request.patch.sourceIdentity, destination: "#other", destinationIdentity: { tag: "section", id: "other", fingerprint: "abcd5678" }, position: "append" } };
     expect(readFrameMessage({ ...edit, request: move }, scope)).not.toBeNull();
+    const layout = { ...request, patch: { operation: "layout", selector: "#title", sourceIdentity: request.patch.sourceIdentity, layout: { collapse: "group", maxHeight: 320, title: "Logs" } } };
+    expect(readFrameMessage({ ...edit, request: layout }, scope)).not.toBeNull();
+    for (const bad of [{ html: "<b>no</b>" }, { destination: "#other" }, { copyIdPrefix: "caller-key" }, { layout: { collapse: "group", maxHeight: 4000 } }, { layout: { collapse: "group", maxHeight: null, originalStyle: "forged" } }]) expect(readFrameMessage({ ...edit, request: { ...layout, patch: { ...layout.patch, ...bad } } }, scope)).toBeNull();
     for (const bad of [{ destination: "" }, { destinationIdentity: undefined }, { position: "replace" }, { text: "no" }]) expect(readFrameMessage({ ...edit, request: { ...move, patch: { ...move.patch, ...bad } } }, scope)).toBeNull();
     for (const other of [{ boardId: "other" }, { sessionId: "expired" }]) expect(readFrameMessage({ ...edit, ...other }, scope)).toBeNull();
     expect(readFrameMessage({ ...edit, request: { ...request, eventId: "forged" } }, scope)).toBeNull();

@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { build } from 'esbuild';
+import { runComponentLayoutChecks } from './component-layout-checks.mjs';
 const directory = dirname(fileURLToPath(import.meta.url));
 const profile = await mkdtemp(join(tmpdir(), 'paseo-board-browser-'));
 const bundle = await build({ entryPoints: [join(directory, 'browser-fixture.tsx')], bundle: true, format: 'iife', platform: 'browser', write: false, loader: { '.txt': 'text' }, define: { 'process.env.NODE_ENV': '"test"' }, plugins: [{ name: 'native-fixture', setup(build) { build.onResolve({ filter: /^react-native$/ }, () => ({ path: 'native', namespace: 'fixture' })); build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: 'export const Platform = { OS: "web" }', loader: 'js' })); } }] });
@@ -70,12 +71,12 @@ try {
     await command('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
   };
   const location = async (selector) => {
-    const box = await frame(`(()=>{const selector=${JSON.stringify(selector)};const element=document.querySelector('[data-board-menu]')?.shadowRoot?.querySelector(selector)||document.querySelector('[data-board-components]')?.shadowRoot?.querySelector(selector)||document.querySelector('[data-board-component-inline]')?.shadowRoot?.querySelector(selector)||document.querySelector('[data-board-markers]')?.shadowRoot?.querySelector(selector)||document.querySelector(selector);const r=element.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()`);
+    const box = await frame(`(()=>{const selector=${JSON.stringify(selector)};const element=document.querySelector('[data-board-menu]')?.shadowRoot?.querySelector(selector)||document.querySelector('[data-board-components]')?.shadowRoot?.querySelector(selector)||document.querySelector('[data-board-component-inline]')?.shadowRoot?.querySelector(selector)||(selector==='[data-component-layout-resize]'?document.querySelector('[data-board-component-layout]')?.shadowRoot?.querySelector(selector):null)||document.querySelector('[data-board-markers]')?.shadowRoot?.querySelector(selector)||document.querySelector(selector);const r=element.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()`);
     const origin = await evaluate(`(()=>{const r=document.querySelector('iframe').getBoundingClientRect();return {x:r.x,y:r.y}})()`);
     return { x: origin.x + box.x, y: origin.y + box.y, width: box.width, height: box.height };
   };
   const click = async (selector) => {
-    const menu = await frame(`(()=>{const element=document.querySelector('[data-board-components]')?.shadowRoot.querySelector(${JSON.stringify(selector)});const menu=element?.closest('.popover');return menu?.hidden?(menu.classList.contains('relations')?'hierarchy':'more'):null})()`);
+    const menu = await frame(`(()=>{const element=document.querySelector('[data-board-components]')?.shadowRoot.querySelector(${JSON.stringify(selector)});const menu=element?.closest('.popover');return menu?.hidden?(menu.classList.contains('relations')?'hierarchy':menu.classList.contains('layout-tools')?'layout':'more'):null})()`);
     if (menu) { const toggle = await location(`[data-component-action="${menu}"]`); await clickPoint(toggle.x+toggle.width/2,toggle.y+toggle.height/2); }
     const b = await location(selector); await clickPoint(b.x + b.width / 2, b.y + b.height / 2);
   };
@@ -110,6 +111,8 @@ try {
   const update = (expression) => evaluate(`update(${expression})`);
   await command('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/` });
   await until('window.results?.ready === 1');
+  const layoutBaseHtml = await evaluate('hostProps.canvas.html');
+  if (process.env.BOARD_BROWSER_SCOPE !== 'layout') {
   assert.equal(await frame('window.boots'), 1);
   assert.deepEqual(await frame('board.getData()'), { n: 0 });
   assert.deepEqual(await frame('board.restoreState()'), { saved: 'original' });
@@ -1698,6 +1701,8 @@ try {
   assert.deepEqual(mergedSnapshot.updates.map(change => ({ id: change.id, actor: change.actorAgentId })), [{ id: 'writer-a-first', actor: 'writer-a' }, { id: 'writer-b-merged', actor: 'writer-b' }]);
   check('real BoardStore rejects competing stale edits and parent replacement even with a fresh board revision; authored-source retry preserves both regions, typed input, counters, iframe identity and JS heap');
 
+  }
+  await runComponentLayoutChecks({ evaluate, frame, update, command, click, clickPoint, location, drag, key, until, untilFrame, settleFrame, profile, directory, baseHtml: layoutBaseHtml, check });
   const screenshot = await command('Page.captureScreenshot', { format: 'png' });
   const artifact = process.env.BOARD_TEST_SCREENSHOT;
   if (artifact) await writeFile(artifact, Buffer.from(screenshot.data, 'base64'));

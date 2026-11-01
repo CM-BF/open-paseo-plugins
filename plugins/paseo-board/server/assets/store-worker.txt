@@ -25262,6 +25262,293 @@ var PluginAttachmentSearchPayloadSchema = external_exports.object({
 // node_modules/@getpaseo/plugin/dist/icons.js
 var PLUGIN_SVG_ICON_MAX_BYTES = 64 * 1024;
 
+// shared/component-layout.ts
+function createComponentLayoutTools() {
+  const attr = "data-paseo-layout", partAttr = "data-paseo-layout-part", keyAttr = "data-paseo-layout-key";
+  const placement = ["grid-column", "grid-row", "order", "flex-grow", "flex-shrink", "flex-basis", "align-self", "justify-self", "width", "min-width", "max-width", "margin-top", "margin-right", "margin-bottom", "margin-left"];
+  const flow = ["display", "flex-direction", "flex-wrap", "align-items", "justify-content", "align-content", "grid-template-columns", "grid-template-rows", "grid-auto-columns", "grid-auto-rows", "grid-auto-flow", "column-gap", "row-gap"];
+  const changed = [...placement, "height", "min-height", "max-height", "overflow-x", "overflow-y", "box-sizing"];
+  const declarations = (raw) => {
+    const entries2 = [];
+    let start = 0, quote = "", depth = 0, comment = false;
+    for (let index = 0; index < raw.length; index++) {
+      const char = raw[index], next = raw[index + 1];
+      if (comment) {
+        if (char === "*" && next === "/") {
+          comment = false;
+          index++;
+        }
+        continue;
+      }
+      if (quote) {
+        if (char === "\\") index++;
+        else if (char === quote) quote = "";
+        continue;
+      }
+      if (char === "/" && next === "*") {
+        comment = true;
+        index++;
+      } else if (char === '"' || char === "'") quote = char;
+      else if (char === "(") depth++;
+      else if (char === ")") depth = Math.max(0, depth - 1);
+      else if (char === ";" && depth === 0) {
+        entries2.push(raw.slice(start, index));
+        start = index + 1;
+      }
+    }
+    entries2.push(raw.slice(start));
+    return entries2.map((raw2) => {
+      const match = /^(?:\s|\/\*[\s\S]*?\*\/)*([-a-z]+)\s*:/i.exec(raw2);
+      const text = match ? raw2.slice(match[0].length).trim() : "", important = /\s*!important\s*$/i.test(text);
+      return { raw: raw2, name: match?.[1].toLowerCase() ?? "", value: important ? text.replace(/\s*!important\s*$/i, "").trim() : text, priority: important ? "important" : "" };
+    });
+  };
+  const readStyle = (target, name) => {
+    const entries2 = declarations(target.getAttribute("style") ?? "").filter((entry) => entry.name === name);
+    if (entries2.length > 1) throw new Error("\u5BB9\u5668\u542B\u6709\u91CD\u590D\u5185\u8054\u5E03\u5C40\u58F0\u660E\uFF0C\u8BF7\u7531\u4F5C\u8005\u6574\u7406\u540E\u518D\u4FEE\u6539\u3002");
+    return entries2[0] ?? { value: "", priority: "" };
+  };
+  const writeStyle = (target, name, value, priority = "") => {
+    const entries2 = declarations(target.getAttribute("style") ?? ""), index = entries2.findIndex((entry) => entry.name === name);
+    const declaration = `${name}:${value}${priority ? " !important" : ""}`;
+    if (index >= 0) entries2[index].raw = declaration;
+    else entries2.push({ raw: declaration, name, value, priority });
+    target.setAttribute("style", entries2.map((entry) => entry.raw).filter(Boolean).join(";"));
+  };
+  const removeStyle = (target, name) => target.setAttribute("style", declarations(target.getAttribute("style") ?? "").filter((entry) => entry.name !== name).map((entry) => entry.raw).filter(Boolean).join(";"));
+  const containers = ["div", "section", "article", "main", "aside", "header", "footer", "nav", "pre"];
+  const object2 = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const safeValue = (value, max = 240) => typeof value === "string" && value.length <= max && !/[;{}<>\u0000-\u001f]/.test(value) && !/url\s*\(|expression\s*\(/i.test(value);
+  const styles = (value, keys2) => value === void 0 || object2(value) && Object.keys(value).length <= keys2.length && Object.entries(value).every(([key2, entry]) => keys2.includes(key2) && safeValue(entry));
+  const validate2 = (value) => object2(value) && Object.keys(value).every((key2) => ["collapse", "maxHeight", "title", "placement", "flow"].includes(key2)) && ["none", "contents", "group"].includes(value.collapse) && (value.maxHeight === null || Number.isInteger(value.maxHeight) && Number(value.maxHeight) >= 80 && Number(value.maxHeight) <= 2e3) && (value.title === void 0 || typeof value.title === "string" && value.title.trim().length > 0 && value.title.length <= 120) && styles(value.placement, placement) && styles(value.flow, flow) && (value.placement === void 0 || value.collapse === "group") && (value.flow === void 0 || value.collapse === "contents") && (value.flow === void 0 || ["block", "flex", "grid", "inline-flex", "inline-grid", "flow-root"].includes(String(value.flow.display)));
+  const read = (target) => {
+    const raw = target.getAttribute(attr);
+    if (raw === null) return null;
+    let value;
+    try {
+      if (raw.length > 24e3) throw new Error();
+      value = JSON.parse(raw);
+    } catch {
+      throw new Error("\u5E03\u5C40\u8BB0\u5F55\u65E0\u6548\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u539F\u59CB\u5BB9\u5668\u3002");
+    }
+    if (!object2(value) || Object.keys(value).some((key2) => !["version", "key", "config", "properties", "hadStyle", "heading"].includes(key2)) || value.version !== 1 || typeof value.key !== "string" || !/^[a-zA-Z0-9_.:-]{1,160}$/.test(value.key) || !validate2(value.config) || !object2(value.properties) || Object.keys(value.properties).length > changed.length || typeof value.hadStyle !== "boolean" || typeof value.heading !== "boolean" || !Object.entries(value.properties).every(([key2, property]) => changed.includes(key2) && object2(property) && Object.keys(property).every((name) => ["value", "priority", "applied"].includes(name)) && safeValue(property.value, 2e3) && safeValue(property.applied, 2e3) && ["", "important"].includes(String(property.priority)))) throw new Error("\u5E03\u5C40\u8BB0\u5F55\u65E0\u6548\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u539F\u59CB\u5BB9\u5668\u3002");
+    const metadata = value;
+    const expectedProperties = metadata.config.collapse === "group" ? { "margin-top": "0px", "margin-right": "0px", "margin-bottom": "0px", "margin-left": "0px", width: "100%", "min-width": "0px", "max-width": "none", "box-sizing": "border-box" } : metadata.config.collapse === "contents" ? { height: "auto", "min-height": "0px" } : metadata.config.collapse === "none" && metadata.config.maxHeight !== null ? { "min-height": "0px", "max-height": `${metadata.config.maxHeight}px`, "overflow-x": "auto", "overflow-y": "auto" } : {};
+    if (metadata.config.collapse === "none" && metadata.config.maxHeight === null || metadata.heading && metadata.config.collapse !== "contents" || Object.keys(metadata.properties).length !== Object.keys(expectedProperties).length || Object.entries(metadata.properties).some(([name, saved]) => saved.applied !== expectedProperties[name])) throw new Error("\u5E03\u5C40\u6062\u590D\u8BB0\u5F55\u4E0E\u5B9E\u9645\u64CD\u4F5C\u4E0D\u4E00\u81F4\u3002");
+    return metadata;
+  };
+  const part = (node2, name, key2) => node2.getAttribute(partAttr) === name && node2.getAttribute(keyAttr) === key2;
+  const structure = (target, meta3) => {
+    if (meta3.config.collapse === "none") return { details: null, summary: null, body: target };
+    const details = meta3.config.collapse === "group" ? target.parentElement?.parentElement : Array.from(target.children)[0];
+    if (!details || details.localName !== "details" || details.getAttribute("id") !== `paseo-layout-${meta3.key}` || !part(details, meta3.config.collapse === "group" ? "group" : "details", meta3.key)) throw new Error("\u6298\u53E0\u5BB9\u5668\u7ED3\u6784\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u3002");
+    const children = Array.from(details.children), summary = children[0], body = children[1];
+    if (children.length !== 2 || details.childNodes.length !== 2 || details.childNodes[0] !== summary || details.childNodes[1] !== body || !summary || summary.localName !== "summary" || !part(summary, "summary", meta3.key) || !body || body.localName !== "div" || !part(body, "body", meta3.key)) throw new Error("\u6298\u53E0\u5BB9\u5668\u7ED3\u6784\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u3002");
+    if (meta3.config.collapse === "group" ? body.childNodes.length !== 1 || body.childNodes[0] !== target : target.childNodes.length !== 1 || target.childNodes[0] !== details) throw new Error("\u6298\u53E0\u5BB9\u5668\u542B\u6709\u989D\u5916\u5185\u5BB9\uFF0C\u4E0D\u80FD\u81EA\u52A8\u6062\u590D\u3002");
+    if (meta3.heading) {
+      if (summary.childNodes.length !== 1 || !/^h[1-6]$/.test(summary.children[0]?.localName ?? "") || Array.from(body.childNodes).filter((node2) => node2.nodeType === 8 && node2.textContent === `paseo-layout-heading:${meta3.key}`).length !== 1) throw new Error("\u539F\u59CB\u6807\u9898\u4F4D\u7F6E\u5DF2\u53D8\u5316\uFF0C\u4E0D\u80FD\u81EA\u52A8\u6062\u590D\u3002");
+    } else if (summary.children.length) throw new Error("\u6298\u53E0\u6807\u9898\u5DF2\u5305\u542B\u989D\u5916\u5185\u5BB9\uFF0C\u4E0D\u80FD\u81EA\u52A8\u6062\u590D\u3002");
+    return { details, summary, body };
+  };
+  const inspect = (target) => {
+    const meta3 = read(target);
+    if (meta3) structure(target, meta3);
+    return meta3 ? JSON.parse(JSON.stringify(meta3.config)) : { collapse: "none", maxHeight: null };
+  };
+  const transferFailure = (operation, source, destination = null, position = "append") => {
+    try {
+      if (!["move", "copy"].includes(operation) || !["before", "after", "append", "prepend"].includes(position)) return "\u7EC4\u4EF6\u79FB\u52A8\u9009\u9879\u65E0\u6548\u3002";
+      const owners = /* @__PURE__ */ new Set();
+      const consider = (node2) => {
+        if (node2.getAttribute(attr) !== null) owners.add(node2);
+        if (node2.getAttribute(partAttr) === null) return;
+        let details = node2;
+        while (details && !(details.localName === "details" && ["group", "details"].includes(details.getAttribute(partAttr) ?? ""))) details = details.parentElement;
+        if (!details) throw new Error("\u5E03\u5C40\u90E8\u4EF6\u7F3A\u5C11\u5B8C\u6574\u5916\u5C42\u7ED3\u6784\uFF0C\u4E0D\u80FD\u79FB\u52A8\u6216\u590D\u5236\u3002");
+        const owner = details.getAttribute(partAttr) === "group" ? details.children[1]?.children[0] : details.parentElement;
+        if (!owner || owner.getAttribute(attr) === null) throw new Error("\u5E03\u5C40\u90E8\u4EF6\u7F3A\u5C11\u6709\u6548\u6062\u590D\u8BB0\u5F55\uFF0C\u4E0D\u80FD\u79FB\u52A8\u6216\u590D\u5236\u3002");
+        const metadata = read(owner);
+        const managed = structure(owner, metadata);
+        if (managed.details !== details || ![managed.details, managed.summary, managed.body].includes(node2)) throw new Error("\u5E03\u5C40\u90E8\u4EF6\u4E0E\u6062\u590D\u8BB0\u5F55\u4E0D\u4E00\u81F4\uFF0C\u4E0D\u80FD\u79FB\u52A8\u6216\u590D\u5236\u3002");
+        owners.add(owner);
+      };
+      for (const start of [source, destination]) for (let node2 = start; node2; node2 = node2.parentElement) consider(node2);
+      for (const node2 of Array.from(source.querySelectorAll(`[${attr}],[${partAttr}]`))) consider(node2);
+      const layouts = Array.from(owners, (owner) => {
+        const metadata = read(owner);
+        return { owner, metadata, ...structure(owner, metadata) };
+      });
+      if (operation === "copy" && (source.getAttribute(attr) !== null || source.getAttribute(partAttr) !== null || source.querySelector(`[${attr}],[${partAttr}]`))) return "\u8BF7\u5148\u6062\u590D\u7EC4\u4EF6\u5E03\u5C40\uFF0C\u518D\u590D\u5236\u7ED3\u6784\uFF1B\u6298\u53E0\u548C\u6EDA\u52A8\u5BB9\u5668\u6682\u4E0D\u652F\u6301\u76F4\u63A5\u590D\u5236\u3002";
+      if (operation === "move") for (const layout of layouts) {
+        if (source === layout.summary || source === layout.body && layout.details !== null || source === layout.details && layout.metadata.config.collapse === "contents" || source === layout.owner && layout.metadata.config.collapse === "group" || layout.metadata.heading && source === layout.summary?.children[0]) return "\u4E0D\u80FD\u5355\u72EC\u79FB\u52A8\u5E03\u5C40\u90E8\u4EF6\u6216\u539F\u59CB\u6807\u9898\uFF1B\u8BF7\u9009\u62E9\u5B8C\u6574\u5BB9\u5668\u6216\u5148\u6062\u590D\u539F\u5E03\u5C40\u3002";
+      }
+      if (destination) {
+        const parent2 = position === "before" || position === "after" ? destination.parentElement : destination;
+        for (const layout of layouts) if (parent2 === layout.details || parent2 === layout.summary || parent2 === layout.body && layout.metadata.config.collapse === "group" || parent2 === layout.owner && layout.metadata.config.collapse === "contents") return "\u6B64\u4F4D\u7F6E\u5C5E\u4E8E\u6298\u53E0\u5BB9\u5668\u7684\u56FA\u5B9A\u7ED3\u6784\uFF1B\u8BF7\u9009\u62E9\u5185\u5BB9\u533A\u57DF\u6216\u666E\u901A\u5BB9\u5668\u3002";
+      }
+      return null;
+    } catch (error62) {
+      return error62 instanceof Error ? error62.message : "\u5E03\u5C40\u7ED3\u6784\u5DF2\u53D8\u5316\uFF0C\u4E0D\u80FD\u79FB\u52A8\u6216\u590D\u5236\u3002";
+    }
+  };
+  const supported = (target) => {
+    if (target.namespaceURI !== "http://www.w3.org/1999/xhtml" || !containers.includes(target.localName) || target.getAttribute(partAttr) !== null || target.getAttribute("contenteditable") !== null) throw new Error("\u8BF7\u9009\u62E9\u666E\u901A HTML \u5185\u5BB9\u5BB9\u5668\uFF1B\u8868\u683C\u3001SVG\u3001\u8F93\u5165\u63A7\u4EF6\u548C\u73B0\u6709\u6298\u53E0\u7ED3\u6784\u4E0D\u652F\u6301\u6B64\u64CD\u4F5C\u3002");
+  };
+  const capture = (target, config2) => {
+    if (!validate2(config2)) throw new Error("\u5E03\u5C40\u9009\u9879\u65E0\u6548\u3002");
+    supported(target);
+    const current = read(target);
+    if (current) structure(target, current);
+    const result = { collapse: config2.collapse, maxHeight: config2.maxHeight, ...config2.title ? { title: config2.title } : {} };
+    const computed = target.ownerDocument.defaultView?.getComputedStyle?.(target);
+    if (computed) {
+      const position = computed.getPropertyValue("position"), display = computed.getPropertyValue("display");
+      if (!["static", "relative", ""].includes(position) || !["block", "flex", "grid", "inline-flex", "inline-grid", "flow-root"].includes(display)) throw new Error("\u6B64\u5BB9\u5668\u7684\u5B9A\u4F4D\u6216\u5E03\u5C40\u9700\u8981\u4F5C\u8005\u8C03\u6574\uFF0C\u4E0D\u80FD\u76F4\u63A5\u5305\u88C5\u3002");
+      if (config2.collapse === "group") {
+        result.placement = current?.config.placement ?? Object.fromEntries(placement.map((key2) => [key2, computed.getPropertyValue(key2)]));
+        if (!current?.config.placement) {
+          const contentBox = computed.getPropertyValue("box-sizing") === "content-box";
+          const extra = ["padding-left", "padding-right", "border-left-width", "border-right-width"].reduce((sum, name) => sum + (parseFloat(computed.getPropertyValue(name)) || 0), 0);
+          for (const name of contentBox ? ["width", "min-width", "max-width"] : []) {
+            const value = result.placement[name];
+            if (/^\d+(?:\.\d+)?px$/.test(value) && (parseFloat(value) > 0 || name === "width")) result.placement[name] = `${parseFloat(value) + extra}px`;
+          }
+          const basis = result.placement["flex-basis"];
+          if (/^\d+(?:\.\d+)?px$/.test(basis)) result.placement["flex-basis"] = `${contentBox ? parseFloat(basis) + extra : Math.max(parseFloat(basis), extra)}px`;
+          else if (extra && (/^\d+(?:\.\d+)?%$/.test(basis) || /^(?:calc|min|max|clamp)\(/.test(basis))) result.placement["flex-basis"] = contentBox ? `calc(${basis} + ${extra}px)` : `max(${basis}, ${extra}px)`;
+        }
+        const inlineWidth = readStyle(target, "width").value;
+        if (!current?.config.placement && (inlineWidth === "auto" || inlineWidth.includes("%")) && safeValue(inlineWidth)) result.placement.width = inlineWidth;
+      }
+      if (config2.collapse === "contents") result.flow = current?.config.flow ?? Object.fromEntries(flow.map((key2) => [key2, computed.getPropertyValue(key2)]));
+    } else {
+      if (config2.placement) result.placement = config2.placement;
+      if (config2.flow) result.flow = config2.flow;
+    }
+    if (!validate2(result)) throw new Error("\u5BB9\u5668\u6837\u5F0F\u8D85\u51FA\u76F4\u63A5\u5E03\u5C40\u64CD\u4F5C\u8303\u56F4\u3002");
+    return result;
+  };
+  const apply = (target, config2, patchId, options = {}) => {
+    if (!validate2(config2) || !/^[a-zA-Z0-9_.:-]{1,160}$/.test(patchId)) throw new Error("\u5E03\u5C40\u9009\u9879\u65E0\u6548\u3002");
+    supported(target);
+    const previous = read(target), previousStructure = previous ? structure(target, previous) : null;
+    for (const name of Object.keys(previous?.properties ?? {})) readStyle(target, name);
+    if (config2.collapse === "contents" && target.querySelectorAll("*").length - (previous?.config.collapse === "contents" ? 3 : 0) > 1996) throw new Error("\u5BB9\u5668\u5185\u5BB9\u8FC7\u591A\uFF0C\u4E0D\u80FD\u4FDD\u8BC1\u540E\u7EED\u6062\u590D\uFF0C\u8BF7\u9009\u62E9\u8F83\u5C0F\u5BB9\u5668\u3002");
+    const willChange = config2.collapse === "group" ? ["margin-top", "margin-right", "margin-bottom", "margin-left", "width", "min-width", "max-width", "box-sizing"] : config2.collapse === "contents" ? ["height", "min-height"] : config2.collapse === "none" && config2.maxHeight !== null ? ["min-height", "max-height", "overflow-x", "overflow-y"] : [];
+    for (const name of willChange) if (!safeValue(previous?.properties[name]?.value ?? readStyle(target, name).value, 2e3)) throw new Error("\u539F\u6709\u5185\u8054\u6837\u5F0F\u65E0\u6CD5\u5B89\u5168\u6062\u590D\u3002");
+    const originalNodes = previous?.config.collapse === "contents" ? Array.from(previousStructure.body.childNodes) : Array.from(target.childNodes);
+    const originalHeading = previous?.heading ? previousStructure.summary.children[0] : originalNodes.find((node2) => node2.nodeType === 1 && /^h[1-6]$/.test(node2.localName));
+    if (config2.collapse === "contents" && originalHeading?.querySelector("a,button,input,textarea,select,[contenteditable],details,summary")) throw new Error("\u6807\u9898\u5305\u542B\u4EA4\u4E92\u63A7\u4EF6\uFF0C\u8BF7\u6539\u7528\u5916\u5957\u6298\u53E0\u5206\u7EC4\u3002");
+    const move = options.move ?? ((parent2, node2, before2) => {
+      parent2.insertBefore(node2, before2);
+    });
+    const key2 = previous?.key ?? patchId;
+    if (config2.collapse !== "none") {
+      const collisions = Array.from(target.ownerDocument.querySelectorAll(`[id="paseo-layout-${key2}"]`));
+      if (collisions.some((node2) => node2 !== previousStructure?.details)) throw new Error("\u6298\u53E0\u5206\u7EC4\u6807\u8BC6\u5DF2\u5B58\u5728\uFF0C\u8BF7\u91CD\u65B0\u5F00\u59CB\u4FEE\u6539\u3002");
+    }
+    if (previous && previousStructure) {
+      const { details: details2, summary, body: body2 } = previousStructure;
+      if (details2 && previous.config.collapse === "group") {
+        move(details2.parentNode, target, details2);
+        details2.parentNode.removeChild(details2);
+      } else if (details2) {
+        for (const node2 of Array.from(body2.childNodes)) {
+          if (previous.heading && node2.nodeType === 8 && node2.textContent === `paseo-layout-heading:${key2}`) move(target, summary.children[0], details2);
+          else move(target, node2, details2);
+        }
+        target.removeChild(details2);
+      }
+      for (const [name, saved] of Object.entries(previous.properties)) {
+        const current = readStyle(target, name);
+        if (current.value !== saved.applied || current.priority !== "important") continue;
+        if (saved.value) writeStyle(target, name, saved.value, saved.priority);
+        else removeStyle(target, name);
+      }
+      target.removeAttribute(attr);
+      if (!previous.hadStyle && !target.getAttribute("style")) target.removeAttribute("style");
+    }
+    if (config2.collapse === "none" && config2.maxHeight === null) return { target, details: null, body: target, key: key2 };
+    const meta3 = { version: 1, key: key2, config: JSON.parse(JSON.stringify(config2)), properties: {}, hadStyle: target.getAttribute("style") !== null, heading: false };
+    const setTarget = (name, value) => {
+      const { value: old, priority } = readStyle(target, name);
+      if (!safeValue(old, 2e3)) throw new Error("\u539F\u6709\u5185\u8054\u6837\u5F0F\u65E0\u6CD5\u5B89\u5168\u6062\u590D\u3002");
+      meta3.properties[name] = { value: old, priority, applied: value };
+      writeStyle(target, name, value, "important");
+    };
+    const create3 = (tag, name) => {
+      const node2 = target.ownerDocument.createElement(tag);
+      node2.setAttribute(partAttr, name);
+      node2.setAttribute(keyAttr, key2);
+      return node2;
+    };
+    let details = null, body = target;
+    if (config2.collapse !== "none") {
+      details = create3("details", config2.collapse === "group" ? "group" : "details");
+      details.setAttribute("open", "");
+      details.setAttribute("id", `paseo-layout-${key2}`);
+      const summary = create3("summary", "summary");
+      summary.style.setProperty("cursor", "pointer");
+      body = create3("div", "body");
+      details.appendChild(summary);
+      details.appendChild(body);
+      if (config2.collapse === "group") {
+        details.style.setProperty("box-sizing", "border-box");
+        for (const [name, value] of Object.entries(config2.placement ?? {})) details.style.setProperty(name, value);
+        const margin = (name) => /^-?\d+(?:\.\d+)?(?:px|%)$/.test(config2.placement?.[name] ?? "") ? config2.placement[name] : "0px";
+        const availableWidth = `max(0px, calc(100% - ${margin("margin-left")} - ${margin("margin-right")}))`;
+        const originalMax = config2.placement?.["max-width"];
+        details.style.setProperty("max-width", originalMax && /^(?:\d+(?:\.\d+)?(?:px|%)|calc\(.+\))$/.test(originalMax) ? `min(${originalMax}, ${availableWidth})` : availableWidth);
+        details.style.setProperty("min-width", "0px");
+        body.style.setProperty("min-width", "0px");
+        body.style.setProperty("overflow-x", "auto");
+        if (!target.parentNode) throw new Error("\u5BB9\u5668\u5DF2\u79FB\u9664\u3002");
+        target.parentNode.insertBefore(details, target);
+        move(body, target, null);
+        for (const name of ["margin-top", "margin-right", "margin-bottom", "margin-left"]) setTarget(name, "0px");
+        setTarget("width", "100%");
+        setTarget("min-width", "0px");
+        setTarget("max-width", "none");
+        setTarget("box-sizing", "border-box");
+        summary.textContent = config2.title ?? "\u5206\u7EC4";
+      } else {
+        setTarget("height", "auto");
+        setTarget("min-height", "0px");
+        const nodes = Array.from(target.childNodes), heading = nodes.find((node2) => node2.nodeType === 1 && /^h[1-6]$/.test(node2.localName));
+        details.style.setProperty("grid-column", "1 / -1");
+        details.style.setProperty("min-width", "0");
+        details.style.setProperty("width", "100%");
+        for (const [name, value] of Object.entries(config2.flow ?? {})) body.style.setProperty(name, value);
+        target.appendChild(details);
+        for (const node2 of nodes) {
+          if (node2 === heading) {
+            body.appendChild(target.ownerDocument.createComment(`paseo-layout-heading:${key2}`));
+            move(summary, node2, null);
+            meta3.heading = true;
+          } else move(body, node2, null);
+        }
+        if (!heading) summary.textContent = config2.title ?? "\u5185\u5BB9";
+      }
+    }
+    if (config2.maxHeight !== null) {
+      if (body === target) {
+        setTarget("min-height", "0px");
+        setTarget("max-height", `${config2.maxHeight}px`);
+        setTarget("overflow-x", "auto");
+        setTarget("overflow-y", "auto");
+      } else {
+        body.style.setProperty("max-height", `${config2.maxHeight}px`);
+        body.style.setProperty("overflow", "auto");
+        body.style.setProperty("min-height", "0");
+        body.style.setProperty("min-width", "0");
+      }
+    }
+    target.setAttribute(attr, JSON.stringify(meta3));
+    return { target, details, body, key: key2 };
+  };
+  return { validate: validate2, inspect, capture, apply, transferFailure };
+}
+
 // shared/contracts.ts
 var IdSchema = external_exports.string().min(1).max(160).regex(/^[a-zA-Z0-9_.:-]+$/);
 var JsonDataSchema = external_exports.record(external_exports.string(), external_exports.unknown());
@@ -25327,10 +25614,17 @@ var ComponentIdentitySchema = external_exports.object({
   fingerprint: external_exports.string().regex(/^[a-f0-9]{8}$/),
   authoredHtml: external_exports.string().max(24e4).optional()
 });
+var ComponentLayoutSchema = external_exports.object({
+  collapse: external_exports.enum(["none", "contents", "group"]),
+  maxHeight: external_exports.number().int().min(80).max(2e3).nullable(),
+  title: external_exports.string().min(1).max(120).optional(),
+  placement: external_exports.partialRecord(external_exports.enum(["grid-column", "grid-row", "order", "flex-grow", "flex-shrink", "flex-basis", "align-self", "justify-self", "width", "min-width", "max-width", "margin-top", "margin-right", "margin-bottom", "margin-left"]), external_exports.string().max(240)).optional(),
+  flow: external_exports.partialRecord(external_exports.enum(["display", "flex-direction", "flex-wrap", "align-items", "justify-content", "align-content", "grid-template-columns", "grid-template-rows", "grid-auto-columns", "grid-auto-rows", "grid-auto-flow", "column-gap", "row-gap"]), external_exports.string().max(240)).optional()
+}).strict().refine((value) => createComponentLayoutTools().validate(value), "Expected bounded component layout options");
 var CanvasPatchSchema = external_exports.object({
   id: IdSchema,
   selector: external_exports.string().min(1).max(1e3),
-  operation: external_exports.enum(["append", "prepend", "replace", "remove", "move", "copy", "text"]),
+  operation: external_exports.enum(["append", "prepend", "replace", "remove", "move", "copy", "text", "layout"]),
   html: external_exports.string().max(2e6).default(""),
   sourceIdentity: ComponentIdentitySchema.optional(),
   destinationIdentity: ComponentIdentitySchema.optional(),
@@ -25339,12 +25633,19 @@ var CanvasPatchSchema = external_exports.object({
   copyIdPrefix: external_exports.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,100}$/).optional(),
   text: external_exports.string().max(24e3).optional(),
   expectedText: external_exports.string().max(24e3).optional(),
-  textNodeIndex: external_exports.number().int().min(0).max(1e4).optional()
+  textNodeIndex: external_exports.number().int().min(0).max(1e4).optional(),
+  layout: ComponentLayoutSchema.optional()
 }).superRefine((patch, context2) => {
-  if (!["move", "copy", "text"].includes(patch.operation)) return;
+  if (!["move", "copy", "text", "layout"].includes(patch.operation)) {
+    if (patch.layout !== void 0) context2.addIssue({ code: "custom", path: ["layout"], message: "Layout options require a layout operation" });
+    return;
+  }
   const missing = (field) => context2.addIssue({ code: "custom", path: [field], message: `Component edit requires ${field}` });
   if (!patch.sourceIdentity) missing("sourceIdentity");
-  if (patch.operation === "text") {
+  if (patch.operation === "layout") {
+    if (!patch.layout) missing("layout");
+    if (patch.html !== "" || patch.destination !== void 0 || patch.destinationIdentity !== void 0 || patch.position !== void 0 || patch.text !== void 0 || patch.expectedText !== void 0 || patch.textNodeIndex !== void 0 || patch.copyIdPrefix !== void 0) context2.addIssue({ code: "custom", message: "Layout edits accept only identity and bounded layout options" });
+  } else if (patch.operation === "text") {
     if (patch.text === void 0) missing("text");
     if (patch.expectedText === void 0) missing("expectedText");
   } else {
@@ -25353,6 +25654,7 @@ var CanvasPatchSchema = external_exports.object({
     if (!patch.position) missing("position");
     if (patch.operation === "copy" && !patch.copyIdPrefix) missing("copyIdPrefix");
   }
+  if (patch.operation !== "layout" && patch.layout !== void 0) context2.addIssue({ code: "custom", path: ["layout"], message: "Layout options require a layout operation" });
 });
 var CanvasSchema = external_exports.object({
   revision: external_exports.number().int().nonnegative(),
@@ -25560,7 +25862,7 @@ var EditInputSchema = external_exports.object({
   boardId: IdSchema,
   canvasBase: CanvasBaseSchema,
   eventId: IdSchema,
-  patch: CanvasPatchSchema.refine((patch) => ["move", "copy", "text"].includes(patch.operation) && patch.html === "", "User edits support move, copy and text operations without caller-supplied HTML")
+  patch: CanvasPatchSchema.refine((patch) => ["move", "copy", "text", "layout"].includes(patch.operation) && patch.html === "", "User edits support move, copy, text and layout operations without caller-supplied HTML")
 });
 var DecisionUpdateInputSchema = external_exports.object({ boardId: IdSchema, expectedRevision: external_exports.number().int().nonnegative(), eventId: IdSchema, decision: DecisionInputSchema });
 var StateInputSchema = external_exports.object({ boardId: IdSchema, state: JsonDataSchema });
@@ -36514,7 +36816,12 @@ function componentIdentityFor(element) {
   const nodes = [element, ...Array.from(element.querySelectorAll("*"))];
   if (nodes.length > 2e3) throw new Error("Component is too large to identify safely (maximum 2000 elements)");
   const indexes2 = new Map(nodes.map((node2, index) => [node2, index]));
-  const input2 = JSON.stringify(nodes.map((node2) => [indexes2.get(node2.parentElement) ?? -1, node2.localName.toLowerCase(), node2.id || "", node2.getAttribute("role") || "", node2.getAttribute("name") || "", node2.getAttribute("type") || ""]));
+  const input2 = JSON.stringify(nodes.map((node2) => {
+    const identity = [indexes2.get(node2.parentElement) ?? -1, node2.localName.toLowerCase(), node2.id || "", node2.getAttribute("role") || "", node2.getAttribute("name") || "", node2.getAttribute("type") || ""];
+    const layout = ["data-paseo-layout", "data-paseo-layout-part", "data-paseo-layout-key"].map((name) => node2.getAttribute(name));
+    if (layout.some((value) => value !== null)) identity.push(layout.map((value) => value ?? ""));
+    return identity;
+  }));
   let hash2 = 2166136261;
   for (let index = 0; index < input2.length; index++) hash2 = Math.imul(hash2 ^ input2.charCodeAt(index), 16777619);
   if (!element.id && element.outerHTML.length > 24e4) throw new Error("Anonymous component is too large to identify safely");
@@ -36582,6 +36889,11 @@ function expectIdentity(document, target, expected, side, selector) {
 function applyComponentPatch(document, target, patch, targetFor) {
   if (rootTags.has(target.localName) || nonComponents.has(target.localName)) throw new Error("Document roots and executable metadata cannot be edited as components");
   expectIdentity(document, target, patch.sourceIdentity, "source", patch.selector);
+  if (patch.operation === "layout") {
+    if (!patch.layout) throw new Error("Layout edits require bounded options");
+    createComponentLayoutTools().apply(target, patch.layout, patch.id);
+    return;
+  }
   if (patch.operation === "text") {
     if (["input", "textarea", "select"].includes(target.localName)) throw new Error("Use the control's native editing behavior");
     if (patch.text === void 0 || patch.expectedText === void 0) throw new Error("Text edits require current and replacement text");
@@ -36599,6 +36911,8 @@ function applyComponentPatch(document, target, patch, targetFor) {
   if (!patch.destination || !patch.position) throw new Error("Component placement requires a destination and position");
   const destination = targetFor(patch.destination);
   expectIdentity(document, destination, patch.destinationIdentity, "destination", patch.destination);
+  const transferFailure = createComponentLayoutTools().transferFailure(patch.operation, target, destination, patch.position);
+  if (transferFailure) throw new Error(transferFailure);
   if (rootTags.has(destination.localName) || nonComponents.has(destination.localName)) throw new Error("Select an authored content container instead of a document root");
   if (target === destination || target.contains(destination)) throw new Error("A component cannot be placed inside or relative to itself or its descendants");
   if (["append", "prepend"].includes(patch.position) && voidTags.has(destination.localName)) throw new Error("This element cannot contain components");
@@ -36688,7 +37002,7 @@ function describeAuthoring(canvas, selector) {
         if (["html", "head", "body"].includes(target.localName) && ["replace", "remove"].includes(patch.operation)) {
           throw new Error("Replacing document roots requires publishing a new document version");
         }
-        if (["move", "copy", "text"].includes(patch.operation)) applyComponentPatch(document, target, patch, targetFor);
+        if (["move", "copy", "text", "layout"].includes(patch.operation)) applyComponentPatch(document, target, patch, targetFor);
         else if (patch.operation === "remove") target.remove();
         else {
           const template = document.createElement("template", void 0);
@@ -36874,7 +37188,7 @@ var BoardStore = class {
       }
       if (input2.patch) {
         if (board.canvas.patches.some((patch) => patch.id === input2.patch.id)) throw new BoardStoreError("idempotency_conflict", `Patch ${input2.patch.id} already exists in this document`);
-        board.canvas.patches.push(["move", "copy", "text"].includes(input2.patch.operation) ? this.prepareEdit(board.canvas, input2.patch) : input2.patch);
+        board.canvas.patches.push(["move", "copy", "text", "layout"].includes(input2.patch.operation) ? this.prepareEdit(board.canvas, input2.patch) : input2.patch);
       }
       const dataChanged = canonicalJson(nextData) !== canonicalJson(board.canvas.data);
       board.canvas.data = nextData;
@@ -36915,7 +37229,7 @@ var BoardStore = class {
         }
         if (input2.patch) {
           if (canvas.patches.some((patch) => patch.id === input2.patch.id)) throw new BoardStoreError("idempotency_conflict", `Response patch ${input2.patch.id} already exists`);
-          canvas.patches.push(["move", "copy", "text"].includes(input2.patch.operation) ? this.prepareEdit(canvas, input2.patch) : input2.patch);
+          canvas.patches.push(["move", "copy", "text", "layout"].includes(input2.patch.operation) ? this.prepareEdit(canvas, input2.patch) : input2.patch);
         }
         if (input2.data !== void 0) canvas.data = { ...canvas.data, ...input2.data };
         canvas.revision++;
@@ -37291,6 +37605,63 @@ var mergePagesRpc = defineRpc({ name: "board.pages.merge", input: external_expor
 var refreshPagesRpc = defineRpc({ name: "board.pages.refresh", input: external_exports.object({ jobId: IdSchema }), output: PagesJobSchema });
 var listPagesJobsRpc = defineRpc({ name: "board.pages.list", input: external_exports.object({ releaseId: ReleaseIdSchema.optional() }), output: external_exports.array(PagesJobSchema) });
 
+// shared/assets/component-layout-state.txt
+var component_layout_state_default = `function (api, documentVersion) {
+  "use strict";
+  // api is a private state adapter. Public authored saveState cannot write this namespace.
+  const namespace = "__paseoContainerViews";
+  const prefix = String(documentVersion) + ":";
+  const selector = "details[data-paseo-layout-key]";
+  const observed = new WeakMap();
+  let saving = false;
+  const record = () => {
+    const value = api.getState()?.[namespace];
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  };
+  const restore = (node) => {
+    const key = node.getAttribute("data-paseo-layout-key");
+    if (!key || key.length > 200) return;
+    const saved = record()[prefix + key];
+    const open = typeof saved === "boolean" ? saved : node.open;
+    observed.set(node, open);
+    if (node.open !== open) node.open = open;
+  };
+  const visit = (root, force = false) => {
+    if (root.nodeType === 1 && root.matches(selector) && (force || !observed.has(root))) restore(root);
+    for (const node of root.querySelectorAll?.(selector) || []) if (force || !observed.has(node)) restore(node);
+  };
+  // Moving a nested fold must not overwrite its just-toggled local state while
+  // the browser still has its toggle event queued. Only new nodes hydrate here.
+  const refresh = () => visit(document);
+  const onToggle = (event) => {
+    const node = event.target;
+    if (!(node instanceof Element) || !node.matches(selector) || !node.isConnected) return;
+    if (!observed.has(node)) { restore(node); return; }
+    if (observed.get(node) === node.open) return;
+    observed.set(node, node.open);
+    const key = prefix + node.getAttribute("data-paseo-layout-key"), entries = record();
+    if (!Object.prototype.hasOwnProperty.call(entries, key) && Object.keys(entries).length >= 512) return;
+    // The standalone API notifies onState synchronously. Do not let our own
+    // acknowledgement overwrite another nested detail whose toggle is queued.
+    try { saving = true; api.saveState({ ...api.getState(), [namespace]: { ...entries, [key]: node.open } }); }
+    catch (failure) { console.error("Unable to save this container's view state", failure); }
+    finally { saving = false; }
+  };
+  document.addEventListener("toggle", onToggle, true);
+  const observer = new MutationObserver(records => {
+    for (const mutation of records) for (const node of mutation.addedNodes) {
+      if (!(node instanceof Element) || node.closest("[data-board-overlay]")) continue;
+      visit(node);
+    }
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  const unsubscribe = api.onState(() => { if (!saving) visit(document, true); });
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", refresh, { once: true });
+  else refresh();
+  return { refresh, dispose() { observer.disconnect(); document.removeEventListener("toggle", onToggle, true); unsubscribe(); } };
+}
+`;
+
 // shared/static-viewer.ts
 var STATIC_VIEWER_VERSION = 1;
 var STATIC_VIEWER_RUNTIME = String.raw`function(initial) {
@@ -37312,17 +37683,26 @@ var STATIC_VIEWER_RUNTIME = String.raw`function(initial) {
     return()=>{};
   };
   const ask=()=>{send({type:'unavailable'});return Promise.resolve({status:'cancelled',outcome:'This published version does not connect to an agent.'})};
-  const saveState=value=>{
+  const managedViewNamespace="__paseoContainerViews";
+  const writeState=value=>{
     if(!value||typeof value!=='object'||Array.isArray(value))throw new TypeError('State must be a JSON object');
     const raw=JSON.stringify(value);if(raw.length>524288)throw new RangeError('State exceeds 512 KiB');
     state=JSON.parse(raw);send({type:'state',state});
     for(const fn of listeners){try{fn(clone(state))}catch(error){console.error(error)}}return clone(state);
+  };
+  const saveState=value=>{
+    if(!value||typeof value!=='object'||Array.isArray(value))throw new TypeError('State must be a JSON object');
+    const next={...value};
+    if(Object.prototype.hasOwnProperty.call(state,managedViewNamespace))next[managedViewNamespace]=state[managedViewNamespace];
+    else delete next[managedViewNamespace];
+    return writeState(next);
   };
   Object.defineProperty(window,'board',{configurable:false,writable:false,value:Object.freeze({
     getData:()=>clone(initial.data),onData:emptySubscription,watch,getState:()=>clone(state),restoreState:()=>clone(state),
     saveState,onState:fn=>subscribe(listeners,fn),ask,onReveal:emptySubscription,getContext:()=>({...context})
   })});
   window.openai=Object.freeze({sendFollowUpMessage:ask});
+  (${component_layout_state_default})({getState:()=>clone(state),saveState:writeState,onState:fn=>subscribe(listeners,fn)},1);
   document.addEventListener('submit',event=>event.preventDefault(),true);
   document.addEventListener('click',event=>{const link=event.target?.closest?.('a[href]');if(!link)return;const href=link.getAttribute('href');if(href?.startsWith('#'))return;event.preventDefault();if(!event.isTrusted)return;try{const url=new URL(href,initial.siteUrl);if(['https:','http:'].includes(url.protocol))send({type:'link',url:url.href})}catch{}},true);
 }`;

@@ -493,6 +493,26 @@ try {
     await command('Emulation.setDeviceMetricsOverride',{width:1200,height:900,deviceScaleFactor:1,mobile:false});
     assert.equal(await submitCount(),0);
     check('trusted shortcut copy/paste renders an actual bottom-edge layout preview above the host Save/Cancel card at wide and compact desktop sizes, without changing source DOM, controls, scroll or sending a message');
+
+    const layoutRequest = { canvasBase: await base(), sourceLabel: '日志容器', patch: { operation: 'layout', selector: '#point', sourceIdentity: await identity('#point'), layout: { collapse: 'none', maxHeight: 240 } } };
+    const beforeLayout = await frame("window.layoutOriginal=document.querySelector('#point');({html:layoutOriginal.outerHTML,boots:window.boots,field:document.querySelector('#field').value})");
+    const beforeLayoutCalls = await editCount();
+    await showProposal(layoutRequest);
+    const layoutCard = await evaluate(`document.querySelector(${JSON.stringify(panel)}).textContent`);
+    assert.match(layoutCard,/修改布局/);assert.match(layoutCard,/日志容器/);assert.match(layoutCard,/240px/);assert.doesNotMatch(layoutCard,/undefined|内部末尾/);
+    await clearProposal();assert.equal(await editCount(),beforeLayoutCalls);
+    assert.equal(await frame("document.querySelector('#point').outerHTML"),beforeLayout.html);
+    await showProposal(layoutRequest);await hostClick('button[aria-label="保存修改"]');
+    await until(`!document.querySelector(${JSON.stringify(panel)})`);
+    await untilFrame("getComputedStyle(document.querySelector('#point')).maxHeight==='240px'");
+    assert.equal(await frame("document.querySelector('#point')===window.layoutOriginal"),true);
+    assert.equal(await frame('window.boots'),beforeLayout.boots);
+    assert.equal(await frame("document.querySelector('#field').value"),beforeLayout.field);
+    const layoutWrite = await evaluate("hostFixture.calls.filter(item=>item.name==='board.edit').at(-1).input");
+    assert.deepEqual(layoutWrite.patch.layout,layoutRequest.patch.layout);assert.equal(layoutWrite.patch.id,layoutWrite.eventId);
+    await remountMainFrame();await untilFrame("getComputedStyle(document.querySelector('#point')).maxHeight==='240px'");
+    assert.equal(await editCount(),beforeLayoutCalls+1);assert.equal(await submitCount(),0);
+    check('layout review names the selected container and exact height; Cancel is inert, Save retains live nodes and controls, and remount replays the same semantic edit without sending');
   }
 
   if (process.env.BOARD_HOST_TEST_SCOPE === 'dashboard') {

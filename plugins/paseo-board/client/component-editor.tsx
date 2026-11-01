@@ -43,11 +43,18 @@ export function ComponentEditPanel({ editor }: { editor: ReturnType<typeof useCo
   const patch = draft.request.patch;
   const destination = { before: "之前", after: "之后", prepend: "内部开头", append: "内部末尾" }[patch.position ?? "append"];
   const source = draft.sourceLabel || patch.selector;
+  const layout = patch.operation === "layout" ? patch.layout : undefined;
+  const layoutSummary = layout ? [
+    layout.collapse === "contents" ? "正文可收起" : layout.collapse === "group" ? "外套折叠分组" : "不折叠",
+    layout.maxHeight === null ? "不限高" : `滚动高度 ${layout.maxHeight}px`,
+  ].join(" · ") : "";
+  const title = patch.operation === "text" ? "修改文字" : patch.operation === "copy" ? "复制组件" : patch.operation === "layout" ? "修改布局" : "移动组件";
   return <View testID="board-component-edit" style={{ position: "absolute", bottom: 10, right: 10, width: 340, maxWidth: "95%", padding: 9, gap: 6, borderWidth: 1, borderColor: c.border, borderRadius: 9, backgroundColor: c.surface0, shadowColor: "#000", shadowOpacity: 0.18, shadowRadius: 12 }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-      <Text style={{ color: c.foreground, fontWeight: "600", fontSize: 12 }}>{patch.operation === "text" ? "修改文字" : patch.operation === "copy" ? "复制组件" : "移动组件"}</Text>
-      <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11, flex: 1 }}>{patch.operation === "text" ? source : `${source} → ${draft.destinationLabel || patch.destination} · ${destination}`}</Text>
+      <Text style={{ color: c.foreground, fontWeight: "600", fontSize: 12 }}>{title}</Text>
+      <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11, flex: 1 }}>{patch.operation === "text" || patch.operation === "layout" ? source : `${source} → ${draft.destinationLabel || patch.destination} · ${destination}`}</Text>
     </View>
+    {layout ? <Text numberOfLines={2} style={{ color: c.foregroundMuted, fontSize: 11 }}>{layoutSummary}{layout.title ? ` · ${layout.title}` : ""}</Text> : null}
     {patch.operation === "text" && (draft.status === "rejected" || draft.status === "unknown") ? <>
       <TextInput testID="board-component-edit-text" accessibilityLabel="保留的文字草稿" value={patch.text ?? ""} multiline maxLength={24000} readOnly style={{ color: c.foreground, backgroundColor: c.surface1, padding: 7, minHeight: 40, maxHeight: 96, borderWidth: 1, borderColor: c.border, borderRadius: 5 }} />
       {draft.status === "rejected" ? <Text style={{ color: c.foregroundMuted, fontSize: 11 }}>文字草稿已保留，可复制后重新选择。</Text> : null}

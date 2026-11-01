@@ -1,4 +1,4 @@
-function (initial, createFrameReceiver) {
+function (initial, createFrameReceiver, createComponentLayoutTools, installComponentLayoutState) {
   "use strict";
   const root = document.documentElement;
   const scope = { channel: initial.channel, boardId: initial.boardId, sessionId: initial.sessionId };
@@ -48,7 +48,8 @@ function (initial, createFrameReceiver) {
       post({ type: "ask", id, request: { prompt: request.prompt, anchor: bindAuthoredAnchor(request.anchor || lastAnchor || currentAnchor()), kind: request.kind || "question", position: lastGesturePosition } });
     });
   };
-  const saveState = (value) => {
+  const managedViewNamespace = "__paseoContainerViews";
+  const writeState = (value) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("board.saveState requires a JSON object");
     const serialized = JSON.stringify(value);
     if (serialized.length > 524288) throw new RangeError("board state exceeds 512 KiB");
@@ -56,6 +57,15 @@ function (initial, createFrameReceiver) {
     localStateDirty = true;
     post({ type: "state", state });
     return copy(state);
+  };
+  const saveState = (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("board.saveState requires a JSON object");
+    const next = { ...value };
+    // Authored state still uses replacement semantics. Its old/full snapshots
+    // cannot overwrite the independently maintained container view records.
+    if (Object.prototype.hasOwnProperty.call(state, managedViewNamespace)) next[managedViewNamespace] = state[managedViewNamespace];
+    else delete next[managedViewNamespace];
+    return writeState(next);
   };
   const subscribe = (listeners, fn) => {
     if (typeof fn !== "function") throw new TypeError("listener must be a function");
@@ -134,6 +144,10 @@ function (initial, createFrameReceiver) {
     getContext: () => ({ boardId: scope.boardId, documentVersion: initial.canvas.documentVersion, boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision }),
   }) });
   window.openai = Object.freeze({ sendFollowUpMessage: ask });
+  const componentLayoutTools = createComponentLayoutTools();
+  const componentLayoutState = installComponentLayoutState({
+    getState: () => copy(state), saveState: writeState, onState: fn => subscribe(stateListeners, fn),
+  }, initial.canvas.documentVersion);
 
   let appliedTheme = initial.theme;
   const applyTheme = (theme) => {
@@ -168,6 +182,8 @@ function (initial, createFrameReceiver) {
     }
     try { old.replaceWith(script); if (!external) finish(scriptError); } catch (e) { finish(e); }
   });
+  const componentTransferFailure = (operation, node, destination = null, position = "append") => ["move", "copy"].includes(operation)
+    ? componentLayoutTools.transferFailure(operation, node, destination, position) : null;
   const applyPatch = async (patch) => {
     if (applied.has(patch.id)) return;
     // Claim before mutation. A partial script failure must never run the same patch a second time.
@@ -176,10 +192,26 @@ function (initial, createFrameReceiver) {
     if (targets.length !== 1) throw new Error(`Patch selector must match exactly one element; matched ${targets.length}`);
     const target = targets[0];
     if (target === root || target === document.head || target === document.body) {
-      if (["replace", "remove", "move", "copy", "text"].includes(patch.operation)) throw new Error("Replacing document roots requires publishing a new document version");
+      if (["replace", "remove", "move", "copy", "text", "layout"].includes(patch.operation)) throw new Error("Replacing document roots requires publishing a new document version");
     }
-    if (["move", "copy", "text"].includes(patch.operation)) {
+    if (["move", "copy", "text", "layout"].includes(patch.operation)) {
       if (!matchesComponentIdentity(target, patch.sourceIdentity)) throw new Error("The edited component structure changed; reload its current authored version");
+      const transferFailure = componentTransferFailure(patch.operation, target);
+      if (transferFailure) throw new Error(transferFailure);
+      if (patch.operation === "layout") {
+        const focused = document.activeElement;
+        const restoreFocus = focused instanceof HTMLElement && target.contains(focused);
+        const caret = restoreFocus && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
+        capturePatchTargets(patch, target);
+        componentLayoutTools.apply(target, patch.layout, patch.id, { move(parent, node, before) {
+          if (typeof parent.moveBefore === "function" && node.isConnected && parent.isConnected) parent.moveBefore(node, before);
+          else parent.insertBefore(node, before);
+        } });
+        componentLayoutState.refresh();
+        if (restoreFocus && focused.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });
+        if (caret) try { focused.setSelectionRange(...caret); } catch {}
+        return;
+      }
       if (patch.operation === "text") {
         const textNode = patch.textNodeIndex === undefined ? null : target.childNodes[patch.textNodeIndex];
         if (textNode ? textNode.nodeType !== Node.TEXT_NODE || textNode.textContent !== patch.expectedText : target.children.length || target.textContent !== patch.expectedText) throw new Error("The edited text changed before this patch arrived");
@@ -191,6 +223,8 @@ function (initial, createFrameReceiver) {
       if (destinations.length !== 1) throw new Error("Edit destination must match exactly one element");
       const destination = destinations[0];
       if (!matchesComponentIdentity(destination, patch.destinationIdentity) || target === destination || target.contains(destination)) throw new Error("The edit destination changed or contains a cycle");
+      const placementFailure = componentTransferFailure(patch.operation, target, destination, patch.position);
+      if (placementFailure) throw new Error(placementFailure);
       const parent = ["before", "after"].includes(patch.position) ? destination.parentNode : destination;
       const before = patch.position === "before" ? destination : patch.position === "after" ? destination.nextSibling : patch.position === "prepend" ? destination.firstChild : null;
       if (patch.operation === "copy") {
@@ -229,7 +263,7 @@ function (initial, createFrameReceiver) {
     else throw new Error("Unknown patch operation");
     for (const script of scripts) if (script.isConnected) await runScript(script);
   };
-  const receiver = createFrameReceiver(initial, request => post({ type: "snapshot-request", ...request }));
+  const receiver = createFrameReceiver(initial, request => post({ type: "snapshot-request", ...request }), componentLayoutTools.validate);
   let versionedTransport = false;
   const enqueue = (update) => {
     if (!update) return;
@@ -875,6 +909,8 @@ function (initial, createFrameReceiver) {
   let componentGhost = null;
   let componentDropLine = null;
   let componentLayoutPreview = null;
+  let componentLayoutDraft = null;
+  let componentLayoutResize = null;
   const importantBox = (node, box) => { for (const [name, value] of Object.entries(box)) node.style.setProperty(name, value + "px", "important"); };
   const inComponentPreview = event => componentLayoutPreview && event.composedPath().includes(componentLayoutPreview.host);
   const inComponentText = event => componentText?.host && event.composedPath().includes(componentText.host);
@@ -916,7 +952,8 @@ function (initial, createFrameReceiver) {
   const componentMutation = new MutationObserver(records => {
     const changed = records.filter(record => !(record.target instanceof Element ? record.target : record.target.parentElement)?.closest("[data-board-overlay]")
       && !(record.type === "childList" && [...record.addedNodes, ...record.removedNodes].every(node => node instanceof Element && node.hasAttribute("data-board-overlay"))));
-    if (componentLayoutPreview && changed.some(record => [componentLayoutPreview.source,componentLayoutPreview.destination].some(node => !node.isConnected || node.contains(record.target)))) {
+    if (componentLayoutDraft && changed.some(record => componentLayoutDraft.source.contains(record.target))) validateComponentLayout();
+    if (componentLayoutPreview && changed.some(record => [componentLayoutPreview.source,componentLayoutPreview.destination].filter(Boolean).some(node => !node.isConnected || node.contains(record.target)))) {
       clearComponentLayoutPreview(); if (componentPending) componentPending.message = "组件内容已变化，预览已撤下；请取消后重新选择";
     }
     if (changed.length) {
@@ -933,7 +970,7 @@ function (initial, createFrameReceiver) {
   });
   const clearComponent = () => {
     componentText?.host.remove(); componentHost?.remove(); componentHost = null; selectedComponent = null; componentChoices = []; componentParents = []; componentChildren = []; componentText = null;
-    clearComponentHover(); clearComponentGhost(); clearComponentLayoutPreview(); componentDrag = null; componentPress = null; componentClick = null;
+    clearComponentHover(); clearComponentGhost(); clearComponentLayoutPreview(); componentLayoutDraft = null; componentLayoutResize = null; componentDrag = null; componentPress = null; componentClick = null;
     componentResize.disconnect(); componentMutation.disconnect();
     if (componentFrame !== null) cancelAnimationFrame(componentFrame);
     componentFrame = null;
@@ -941,7 +978,7 @@ function (initial, createFrameReceiver) {
   const positionComponent = () => {
     componentFrame = null;
     if (!componentHost || !selectedComponent) return;
-    if (selectedComponent.isConnected && !componentText && !componentDrag && !componentPending) {
+    if (selectedComponent.isConnected && !componentText && !componentDrag && !componentPending && !componentLayoutDraft) {
       const parents = componentAncestors(selectedComponent), children = selectableChildren(selectedComponent);
       if (parents.length !== componentParents.length || parents.some((node, index) => node !== componentParents[index]) || children.length !== componentChildren.length || children.some((node, index) => node !== componentChildren[index])) { selectComponent(selectedComponent); return; }
       for (const button of componentHost.shadowRoot.querySelectorAll('[data-component-action="choose"]')) button.textContent = componentLabel(componentChoices[Number(button.dataset.componentIndex)]);
@@ -959,8 +996,17 @@ function (initial, createFrameReceiver) {
     shadow.querySelector(".selected-name").title = componentLabel(selectedComponent);
     shadow.querySelector('[data-component-action="paste"]').disabled ||= !componentClipboard?.node?.isConnected;
     shadow.querySelector('[data-component-action="text"]').disabled ||= !componentTextRuns(selectedComponent).length;
-    shadow.querySelector('[role="status"]').textContent = componentPending ? componentPending.message || (componentLayoutPreview ? "布局预览 · 尚未保存" : "等待保存 · 在画布上方确认这次修改") : !box ? "组件已隐藏或移除，请重新选择" : componentNotice || "选择组件 · ⌘ / Ctrl + Shift 悬停预览并点击";
-    for (const field of shadow.querySelectorAll("select")) field.disabled = Boolean(componentPending || componentText?.invalid);
+    const layoutButton = shadow.querySelector('[data-component-action="layout"]');
+    layoutButton.disabled ||= Boolean(componentHost.dataset.layoutUnsupported);
+    layoutButton.title = componentHost.dataset.layoutUnsupported || "设置折叠、分组或滚动高度";
+    shadow.querySelector('[role="status"]').textContent = componentPending ? componentPending.message || (componentLayoutPreview ? "布局预览 · 尚未保存" : "等待保存 · 在画布上方确认这次修改") : !box ? "组件已隐藏或移除，请重新选择" : componentNotice || componentHost.dataset.layoutUnsupported || "选择组件 · ⌘ / Ctrl + Shift 悬停预览并点击";
+    for (const field of shadow.querySelectorAll("select,input")) field.disabled = Boolean(componentPending || componentText?.invalid);
+    if (componentLayoutDraft) {
+      const valid = validateComponentLayout();
+      shadow.querySelector('[data-component-action="layout-save"]').disabled = Boolean(componentPending || !valid || !componentLayoutPreview);
+      shadow.querySelector('[data-component-action="layout-preview"]').disabled = Boolean(componentPending || !valid);
+      if (!valid) shadow.querySelector('[role="status"]').textContent = componentLayoutDraft.invalid;
+    }
     if (componentText) {
       positionComponentText();
       shadow.querySelector('[data-component-action="text-save"]').disabled = Boolean(componentPending || componentText.invalid);
@@ -978,8 +1024,8 @@ function (initial, createFrameReceiver) {
     shadow.innerHTML = `<style>
       :host{color-scheme:normal}.outline{position:fixed;box-sizing:border-box;border:3px solid #6f96ff;box-shadow:0 0 0 1px #fff9,inset 0 0 0 1px #fff5;background:#658aeb0c;pointer-events:none}.outline[hidden],[hidden]{display:none!important}
       .panel,.popover{box-sizing:border-box;border:1px solid var(--host-line-strong,#aaa);border-radius:10px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);font:12px/1.5 system-ui;box-shadow:0 3px 15px #0002;pointer-events:auto}
-      .panel{position:absolute;bottom:10px;left:10px;max-width:calc(100% - 20px);padding:5px 7px}.toolbar{display:flex;align-items:center;gap:5px;max-width:100%;overflow-x:auto}.selected-name{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.status{max-width:540px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.75;font-size:11px}.status:empty{display:none}.row{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.popover{position:absolute;bottom:calc(100% + 6px);left:0;padding:9px;width:min(310px,calc(100vw - 24px));max-height:min(300px,38vh);overflow:auto}.tools{left:auto;right:0}.ancestors,.children{flex-direction:column}.ancestors button,.children button{text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.label{opacity:.65;font-size:11px;margin-top:6px}button,select{font:inherit;color:inherit;background:transparent}button,select{padding:4px 7px;border:1px solid var(--host-line-strong,#ccc);border-radius:5px;white-space:nowrap;flex:none}button{cursor:pointer}button[aria-current=true]{border-color:var(--host-iris,#658aeb);font-weight:600}button:focus-visible{outline:2px solid var(--host-iris,#658aeb)}button:disabled{opacity:.5;cursor:default}.hint{opacity:.75;margin-top:8px;font-size:11px}.text-tools{display:none;align-items:center;gap:5px}.text-runs{max-width:150px}.panel[data-editing=true] .toolbar>[data-component-action],.panel[data-editing=true] .popover{display:none}.panel[data-editing=true] .text-tools{display:flex}.panel[data-editing=true] .selected-name{max-width:100px}button[data-component-action=drag]{touch-action:none;cursor:grab}.panel[data-dragging=true] .toolbar> :not([data-component-action=drag]):not(.selected-name){display:none}.panel[data-dragging=true] .popover{display:none}@media(max-width:540px){.selected-name{max-width:90px}.toolbar{gap:3px}.toolbar button{padding:4px 5px}}
-    </style><div class="outline"></div><div class="panel" role="region" aria-label="组件选择"><div class="toolbar"><span class="selected-name"></span><span class="text-tools"><select class="text-runs" aria-label="文字段落"></select><button type="button" data-component-action="text-save">完成文字</button><button type="button" data-component-action="text-cancel">取消</button></span><button type="button" data-component-action="preview-toggle" hidden>看原版</button><button type="button" data-component-action="drag" title="拖动组件；Tab切换目标层级">拖动</button><button type="button" data-component-action="text">改字</button><button type="button" data-component-action="paste">粘贴</button><button type="button" data-component-action="hierarchy" aria-expanded="false">层级</button><button type="button" data-component-action="more" aria-expanded="false" aria-label="更多组件操作">•••</button><button type="button" data-component-action="close" aria-label="完成选择" title="完成选择 · Esc">×</button></div><div role="status" class="status"></div><div class="popover relations" hidden><div class="label">包含层级</div><div class="row ancestors"></div><div class="label">直接子组件</div><div class="row children"></div></div><div class="popover tools" hidden><div class="row"><button type="button" data-component-action="cut">剪切 ⌘/Ctrl X</button><button type="button" data-component-action="copy">复制 ⌘/Ctrl C</button><button type="button" data-component-action="reference">引用组件</button></div><div class="row"><label>粘贴位置 <select aria-label="粘贴位置" class="placement"><option value="append">放入末尾</option><option value="prepend">放入开头</option><option value="before">放在前面</option><option value="after">放在后面</option></select></label></div><div class="hint">拖动时 Tab / Shift+Tab 切换目标层级，↑ 前面 · ↓ 后面 · ← 开头 · → 末尾。复制结构；运行中的 JS 状态不复制。</div></div></div>`;
+      .panel{position:absolute;bottom:10px;left:10px;max-width:calc(100% - 20px);padding:5px 7px}.toolbar{display:flex;align-items:center;gap:5px;max-width:100%;overflow-x:auto}.selected-name{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.status{max-width:540px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.75;font-size:11px}.status:empty{display:none}.row{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.popover{position:absolute;bottom:calc(100% + 6px);left:0;padding:9px;width:min(310px,calc(100vw - 24px));max-height:min(300px,38vh);overflow:auto}.tools{left:auto;right:0}.layout-tools label{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%}.layout-tools input{min-width:0;max-width:155px;width:155px;box-sizing:border-box}.layout-tools .layout-hint{white-space:normal;max-width:280px}.ancestors,.children{flex-direction:column}.ancestors button,.children button{text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.label{opacity:.65;font-size:11px;margin-top:6px}button,select,input{font:inherit;color:inherit;background:transparent}button,select,input{padding:4px 7px;border:1px solid var(--host-line-strong,#ccc);border-radius:5px;white-space:nowrap;flex:none}button{cursor:pointer}button[aria-current=true]{border-color:var(--host-iris,#658aeb);font-weight:600}button:focus-visible{outline:2px solid var(--host-iris,#658aeb)}button:disabled{opacity:.5;cursor:default}.hint{opacity:.75;margin-top:8px;font-size:11px}.text-tools{display:none;align-items:center;gap:5px}.text-runs{max-width:150px}.panel[data-editing=true] .toolbar>[data-component-action],.panel[data-editing=true] .popover{display:none}.panel[data-editing=true] .text-tools{display:flex}.panel[data-editing=true] .selected-name{max-width:100px}button[data-component-action=drag]{touch-action:none;cursor:grab}.panel[data-dragging=true] .toolbar> :not([data-component-action=drag]):not(.selected-name){display:none}.panel[data-dragging=true] .popover{display:none}@media(max-width:540px){.selected-name{max-width:90px}.toolbar{gap:3px}.toolbar button{padding:4px 5px}}
+    </style><div class="outline"></div><div class="panel" role="region" aria-label="组件选择"><div class="toolbar"><span class="selected-name"></span><span class="text-tools"><select class="text-runs" aria-label="文字段落"></select><button type="button" data-component-action="text-save">完成文字</button><button type="button" data-component-action="text-cancel">取消</button></span><button type="button" data-component-action="preview-toggle" hidden>看原版</button><button type="button" data-component-action="drag" title="拖动组件；Tab切换目标层级">拖动</button><button type="button" data-component-action="text">改字</button><button type="button" data-component-action="paste">粘贴</button><button type="button" data-component-action="layout" aria-expanded="false">布局</button><button type="button" data-component-action="hierarchy" aria-expanded="false">层级</button><button type="button" data-component-action="more" aria-expanded="false" aria-label="更多组件操作">•••</button><button type="button" data-component-action="close" aria-label="完成选择" title="完成选择 · Esc">×</button></div><div role="status" class="status"></div><div class="popover relations" hidden><div class="label">包含层级</div><div class="row ancestors"></div><div class="label">直接子组件</div><div class="row children"></div></div><div class="popover layout-tools" hidden><div class="row"><label>收起方式 <select class="layout-collapse" aria-label="收起方式"><option value="none">不收起</option><option value="contents">保留标题，收起内容</option><option value="group">外套折叠分组</option></select></label></div><div class="row layout-title-row" hidden><label><span class="layout-title-label">分组标题</span><input class="layout-title" aria-label="分组标题" maxlength="120" value="" /></label></div><div class="row"><label>最大高度（px）<input class="layout-height" aria-label="最大高度" type="number" min="80" max="2000" step="10" placeholder="不限高" /></label></div><div class="row"><button type="button" data-component-action="layout-preview">预览</button><button type="button" data-component-action="layout-save">完成布局</button><button type="button" data-component-action="layout-reset">恢复原样</button><button type="button" data-component-action="layout-cancel">取消</button></div><div class="hint layout-hint">先预览，再保存。预览下边缘可拖动调高；原组件保持不变。</div></div><div class="popover tools" hidden><div class="row"><button type="button" data-component-action="cut">剪切 ⌘/Ctrl X</button><button type="button" data-component-action="copy">复制 ⌘/Ctrl C</button><button type="button" data-component-action="reference">引用组件</button></div><div class="row"><label>粘贴位置 <select aria-label="粘贴位置" class="placement"><option value="append">放入末尾</option><option value="prepend">放入开头</option><option value="before">放在前面</option><option value="after">放在后面</option></select></label></div><div class="hint">拖动时 Tab / Shift+Tab 切换目标层级，↑ 前面 · ↓ 后面 · ← 开头 · → 末尾。复制结构；运行中的 JS 状态不复制。</div></div></div>`;
     const addChoice = (element, container) => {
       const button = document.createElement("button"); button.type = "button"; button.dataset.componentAction = "choose"; button.dataset.componentIndex = String(componentChoices.length);
       button.textContent = componentLabel(element); button.setAttribute("aria-current", String(element === node)); componentChoices.push(element); container.append(button);
@@ -987,11 +1033,17 @@ function (initial, createFrameReceiver) {
     componentParents = componentAncestors(node); for (const parent of componentParents) addChoice(parent, shadow.querySelector(".ancestors"));
     componentChildren = selectableChildren(node); for (const child of componentChildren.slice(0, 40)) addChoice(child, shadow.querySelector(".children"));
     if (!componentChildren.length) shadow.querySelector(".children").textContent = "没有可见子组件";
+    try { componentLayoutTools.capture(node, componentLayoutTools.inspect(node)); }
+    catch (failure) { host.dataset.layoutUnsupported = failure.message || "这个组件不支持直接布局"; }
     componentHost = host; root.append(host); componentMutation.observe(root, { subtree: true, childList: true, attributes: true, characterData: true });
     for (const parent of componentParents) componentResize.observe(parent);
     shadow.querySelector(".text-runs").addEventListener("change", () => {
       if (!componentText) return;
       chooseComponentTextRun(Number(shadow.querySelector(".text-runs").value), true);
+    });
+    for (const field of shadow.querySelectorAll(".layout-tools input,.layout-tools select")) field.addEventListener("input", event => {
+      if (!event.isTrusted || !componentLayoutDraft || componentPending) return;
+      readComponentLayoutFields(); clearComponentLayoutPreview(); positionComponent();
     });
     positionComponent();
   };
@@ -1010,6 +1062,17 @@ function (initial, createFrameReceiver) {
     const visit = (node, closed = false) => {
       if (++count > maxNodes || performance.now() > deadline) throw new Error("组件内容较复杂，未生成完整布局预览；原组件尚未修改");
       if (node.nodeType === Node.TEXT_NODE) return inert.createTextNode(consumeBytes(node.textContent));
+      // Preserve only a validated managed heading position, not arbitrary author
+      // comments/history. The shared restorer needs this exact marker in its copy.
+      if (node.nodeType === Node.COMMENT_NODE) {
+        const body = node.parentElement, details = body?.parentElement, owner = details?.parentElement;
+        const key = details?.getAttribute("data-paseo-layout-key");
+        if (body?.getAttribute("data-paseo-layout-part") === "body" && details?.getAttribute("data-paseo-layout-part") === "details"
+          && key && node.textContent === `paseo-layout-heading:${key}` && owner?.hasAttribute("data-paseo-layout")) {
+          try { if (componentLayoutTools.inspect(owner).collapse === "contents") return inert.createComment(consumeBytes(node.textContent)); } catch {}
+        }
+        return null;
+      }
       if (!(node instanceof Element) || node.hasAttribute("data-board-overlay")) return null;
       const tag = node.localName.toLowerCase();
       if (skip.has(tag) || closed && tag !== "summary") { if (["iframe","object","embed"].includes(tag) && node.getBoundingClientRect().width) approximated=true; return null; }
@@ -1045,7 +1108,7 @@ function (initial, createFrameReceiver) {
       if (node instanceof HTMLOptionElement) { if (node.selected) clone.setAttribute("selected", ""); else clone.removeAttribute("selected"); }
       if (visual) { const box = node.getBoundingClientRect(); clone.style.setProperty("width", box.width + "px"); clone.style.setProperty("height", box.height + "px"); }
       const hidden = node !== source && tag !== "head" && (node.hasAttribute("hidden") || getComputedStyle(node).display === "none" || getComputedStyle(node).contentVisibility === "hidden");
-      if (!visual && !hidden) for (const child of node.childNodes) { const copy = visit(child, tag === "details" && !node.open); if (copy) clone.append(copy); }
+      if (!visual && !hidden) for (const child of node.childNodes) { const copy = visit(child, tag === "details" && !node.open && !node.hasAttribute("data-paseo-layout-key")); if (copy) clone.append(copy); }
       if (node.scrollLeft || node.scrollTop) scrolls.push([clone, node.scrollLeft, node.scrollTop]);
       return clone;
     };
@@ -1089,16 +1152,121 @@ function (initial, createFrameReceiver) {
       : {left:Math.max(0,inside?bounds.left+5:edgeBox.left),top:Math.max(1,Math.min(innerHeight-5,y-2)),width:Math.max(20,inside?bounds.width-10:edgeBox.width),height:4});
     componentDropLine.dataset.position = position;componentDropLine.dataset.orientation=horizontal?"vertical":"horizontal";
   };
+  const validateComponentLayout = () => {
+    const draft = componentLayoutDraft;
+    if (!draft || draft.invalid) return Boolean(draft && !draft.invalid);
+    try {
+      if (!draft.source.isConnected || document.querySelectorAll(draft.selector).length !== 1 || document.querySelector(draft.selector) !== draft.source
+        || snapshot.canvas.revision !== draft.canvasBase.revision || snapshot.canvas.documentVersion !== draft.canvasBase.documentVersion
+        || queued && (queued.snapshot.canvas.revision !== draft.canvasBase.revision || queued.snapshot.canvas.documentVersion !== draft.canvasBase.documentVersion)
+        || !matchesComponentIdentity(draft.source, draft.identity)) draft.invalid = "原组件或画布已变化；请取消后重新选择";
+    } catch { draft.invalid = "无法确认原组件；请取消后重新选择"; }
+    return !draft.invalid;
+  };
+  const componentLayoutNeedsTitle = collapse => collapse === "group" || collapse === "contents" && !Array.from(componentLayoutDraft.source.children).some(node => /^h[1-6]$/.test(node.localName))
+    && !componentLayoutDraft.source.querySelector(':scope > details[data-paseo-layout-part="details"] > summary[data-paseo-layout-part="summary"] > :is(h1,h2,h3,h4,h5,h6)');
+  const showComponentLayoutTitle = collapse => {
+    const shadow = componentHost.shadowRoot;
+    shadow.querySelector(".layout-title-row").hidden = !componentLayoutNeedsTitle(collapse);
+    shadow.querySelector(".layout-title-label").textContent = collapse === "group" ? "分组标题" : "收起后显示";
+  };
+  const writeComponentLayoutFields = () => {
+    if (!componentLayoutDraft || !componentHost) return;
+    const shadow = componentHost.shadowRoot, config = componentLayoutDraft.config;
+    shadow.querySelector(".layout-collapse").value = config.collapse;
+    shadow.querySelector(".layout-title").value = config.title || "";
+    showComponentLayoutTitle(config.collapse);
+    shadow.querySelector(".layout-height").value = config.maxHeight === null ? "" : String(config.maxHeight);
+  };
+  const readComponentLayoutFields = () => {
+    const shadow = componentHost.shadowRoot, collapse = shadow.querySelector(".layout-collapse").value, height = shadow.querySelector(".layout-height").value;
+    const title = shadow.querySelector(".layout-title").value;
+    componentLayoutDraft.config = { collapse, maxHeight: height.trim() ? Number(height) : null, ...(componentLayoutNeedsTitle(collapse) ? { title: title.trim() || (collapse === "group" ? "分组" : "内容") } : {}) };
+    showComponentLayoutTitle(collapse);
+  };
+  const openComponentLayout = () => {
+    if (componentText || componentPending || !selectedComponent?.isConnected) return;
+    if (!componentLayoutDraft) {
+      const config = componentLayoutTools.inspect(selectedComponent);
+      componentLayoutDraft = { source: selectedComponent, selector: selectorFor(selectedComponent), identity: componentIdentity(selectedComponent),
+        canvasBase: { revision: snapshot.canvas.revision, documentVersion: snapshot.canvas.documentVersion }, config };
+    }
+    for (const menu of componentHost.shadowRoot.querySelectorAll(".popover")) menu.hidden = true;
+    componentHost.shadowRoot.querySelector(".layout-tools").hidden = false;
+    componentHost.shadowRoot.querySelector('[data-component-action="layout"]').setAttribute("aria-expanded", "true");
+    writeComponentLayoutFields(); setComponentNotice("调整布局 · 先预览，再保存");
+  };
+  const componentLayoutPatch = () => {
+    if (!validateComponentLayout()) throw new Error(componentLayoutDraft?.invalid || "请重新选择组件");
+    const draft = componentLayoutDraft, config = componentLayoutTools.capture(draft.source, draft.config);
+    if (!componentLayoutTools.validate(config)) throw new Error("布局选项无效，请检查高度和标题");
+    const reparent = config.collapse !== "none" || componentLayoutTools.inspect(draft.source).collapse !== "none";
+    if (reparent && typeof Element.prototype.moveBefore !== "function" && draft.source.querySelector("iframe,video,audio")) throw new Error("当前浏览器无法无损移动这个组件里的媒体或网页；请选择仅限制高度");
+    return { operation: "layout", selector: draft.selector, sourceIdentity: draft.identity, layout: config };
+  };
+  const previewComponentLayout = () => {
+    readComponentLayoutFields();
+    const patch = componentLayoutPatch();
+    showComponentLayoutPreview(patch);
+    if (componentLayoutPreview) componentLayoutDraft.patch = patch;
+    positionComponent();
+  };
+  const cancelComponentLayout = () => {
+    if (componentPending) return;
+    componentLayoutDraft = null; componentLayoutResize = null; clearComponentLayoutPreview();
+    componentHost.shadowRoot.querySelector(".layout-tools").hidden = true;
+    componentHost.shadowRoot.querySelector('[data-component-action="layout"]').setAttribute("aria-expanded", "false");
+    setComponentNotice("未保存；原组件保持不变");
+  };
+  const saveComponentLayout = () => {
+    if (!componentLayoutPreview || !componentLayoutDraft?.patch || !validateComponentLayout()) return;
+    proposeComponentEdit(componentLayoutDraft.patch, componentLayoutDraft.canvasBase);
+  };
+  const positionComponentLayoutResize = () => {
+    const preview = componentLayoutPreview;
+    if (!preview?.resizeHandle || !preview.inserted?.isConnected) return;
+    const box = preview.inserted.getBoundingClientRect();
+    importantBox(preview.resizeHandle, { left: Math.max(4, Math.min(innerWidth - 84, box.left + box.width / 2 - 40)), top: Math.max(30, Math.min(innerHeight - 190, box.bottom - 7)), width: 80, height: 14 });
+  };
+  const beginComponentLayoutResize = event => {
+    const preview = componentLayoutPreview;
+    if (!componentLayoutDraft || componentPending || !preview?.layoutBody || !validateComponentLayout()) return;
+    const height = componentLayoutDraft.config.maxHeight ?? Math.max(80, Math.min(2000, Math.round(preview.layoutBody.getBoundingClientRect().height)));
+    componentLayoutResize = { pointerId: event.pointerId, startY: event.clientY, height, original: componentLayoutDraft.config.maxHeight };
+    try { preview.resizeHandle.setPointerCapture(event.pointerId); } catch {}
+  };
+  const moveComponentLayoutResize = event => {
+    const active = componentLayoutResize, preview = componentLayoutPreview;
+    if (!active || active.pointerId !== event.pointerId || !preview?.layoutBody) return;
+    const height = Math.max(80, Math.min(2000, Math.round(active.height + event.clientY - active.startY)));
+    componentLayoutDraft.config.maxHeight = height;
+    preview.layoutBody.style.setProperty("max-height", height + "px"); preview.layoutBody.style.setProperty("overflow-y", "auto");
+    writeComponentLayoutFields(); positionComponentLayoutResize();
+  };
+  const finishComponentLayoutResize = (cancel = false) => {
+    if (!componentLayoutResize || !componentLayoutDraft) return;
+    if (cancel) componentLayoutDraft.config.maxHeight = componentLayoutResize.original;
+    componentLayoutResize = null; writeComponentLayoutFields();
+    try { previewComponentLayout(); } catch (failure) { setComponentNotice(failure.message || String(failure)); }
+  };
   const showComponentLayoutPreview = (patch) => {
     clearComponentLayoutPreview(); componentMutation.takeRecords();
-    const source = document.querySelector(patch.selector), destination = document.querySelector(patch.destination);
+    const source = document.querySelector(patch.selector), destination = patch.operation === "layout" ? source : document.querySelector(patch.destination);
     try {
+      const failure = componentTransferFailure(patch.operation, source, destination, patch.position);
+      if (failure) throw new Error(failure);
       const visual = componentVisualCopy(root); const sourceCopy = visual.nodes.get(source), destinationCopy = visual.nodes.get(destination);
       if (!sourceCopy || !destinationCopy) throw new Error("这个位置暂不支持布局预览；原组件尚未修改");
-      const inserted = patch.operation === "copy" ? sourceCopy.cloneNode(true) : sourceCopy;
-      const parent = ["before", "after"].includes(patch.position) ? destinationCopy.parentNode : destinationCopy;
-      const before = patch.position === "before" ? destinationCopy : patch.position === "after" ? destinationCopy.nextSibling : patch.position === "prepend" ? destinationCopy.firstChild : null;
-      parent.insertBefore(inserted, before);
+      let inserted, layoutResult;
+      if (patch.operation === "layout") {
+        layoutResult = componentLayoutTools.apply(sourceCopy, patch.layout, "component-layout-preview");
+        inserted = patch.layout.collapse === "group" ? layoutResult.details : sourceCopy;
+      } else {
+        inserted = patch.operation === "copy" ? sourceCopy.cloneNode(true) : sourceCopy;
+        const parent = ["before", "after"].includes(patch.position) ? destinationCopy.parentNode : destinationCopy;
+        const before = patch.position === "before" ? destinationCopy : patch.position === "after" ? destinationCopy.nextSibling : patch.position === "prepend" ? destinationCopy.firstChild : null;
+        parent.insertBefore(inserted, before);
+      }
       inserted.setAttribute("data-board-preview-inserted", "true");
       inserted.style.setProperty("outline", "3px solid #39b985", "important"); inserted.style.setProperty("outline-offset", "2px", "important");
       const host = document.createElement("div"); host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-component-layout", "");
@@ -1114,7 +1282,7 @@ function (initial, createFrameReceiver) {
       const safeBottom=Math.min(180,innerHeight*.3), tail=document.createElement("div");tail.style.cssText=`height:${safeBottom}px;pointer-events:none`;viewport.append(tail);
       const badge = document.createElement("div"); badge.setAttribute("data-board-preview-status", ""); badge.textContent = visual.approximated ? "静态布局预览 · 部分动态组件为占位 · 尚未保存" : "布局预览 · 绿色框是放置后的组件 · 尚未保存"; badge.style.cssText = "position:absolute;top:8px;left:8px;max-width:calc(100% - 32px);padding:6px 10px;border-radius:7px;background:#153c31;color:#e9fff5;font:12px/1.5 system-ui;box-shadow:0 2px 10px #0003"; shadow.append(badge);
       root.append(host); for (const [node,x,y] of visual.scrolls) { node.scrollLeft=x;node.scrollTop=y; } viewport.scrollLeft=scrollX;viewport.scrollTop=scrollY;
-      componentLayoutPreview = {host,viewport,source,destination,revision:snapshot.canvas.revision,documentVersion:snapshot.canvas.documentVersion};
+      componentLayoutPreview = {host,viewport,source,destination,inserted,layoutBody:layoutResult?.body || sourceCopy,revision:snapshot.canvas.revision,documentVersion:snapshot.canvas.documentVersion};
       // Reveal only inside the static copy. scrollIntoView could also scroll the live
       // outer document; walk cloned ancestors explicitly, in both axes, instead.
       for (let container = inserted.parentElement; container && container !== host; container = container.parentElement) {
@@ -1128,6 +1296,13 @@ function (initial, createFrameReceiver) {
           if (item.left<left || item.right>right) container.scrollLeft += item.left-left-Math.max(0,(container.clientWidth-Math.min(item.width,container.clientWidth))/2);
         }
       }
+      if (patch.operation === "layout" && componentLayoutDraft && !componentPending) {
+        const handle = document.createElement("div"); handle.setAttribute("data-component-layout-resize", ""); handle.setAttribute("role", "separator"); handle.setAttribute("aria-label", "拖动调整最大高度"); handle.tabIndex = 0;
+        handle.style.cssText = "position:fixed;box-sizing:border-box;border:2px solid #fff;border-radius:8px;background:#238b65;box-shadow:0 1px 5px #0005;cursor:ns-resize;touch-action:none;pointer-events:auto";
+        shadow.append(handle); componentLayoutPreview.resizeHandle = handle;
+        viewport.addEventListener("scroll", positionComponentLayoutResize, { passive: true });
+        positionComponentLayoutResize();
+      }
       const button = componentHost.shadowRoot.querySelector('[data-component-action="preview-toggle"]'); button.hidden=false;button.textContent="看原版";
     } catch (failure) { componentNotice = failure.message || "未生成完整布局预览；原组件尚未修改"; if (componentPending) componentPending.message = componentNotice; }
   };
@@ -1136,7 +1311,14 @@ function (initial, createFrameReceiver) {
     const elements = [node, ...node.querySelectorAll("*")];
     if (elements.length > 2000) throw new Error("组件包含超过 2000 个元素，请选择更小的组件");
     const indices = new Map(elements.map((element, index) => [element, index]));
-    const input = JSON.stringify(elements.map(element => [indices.get(element.parentElement) ?? -1, element.localName.toLowerCase(), element.id || "", element.getAttribute("role") || "", element.getAttribute("name") || "", element.getAttribute("type") || ""]));
+    const input = JSON.stringify(elements.map(element => {
+      const identity = [indices.get(element.parentElement) ?? -1, element.localName.toLowerCase(), element.id || "", element.getAttribute("role") || "", element.getAttribute("name") || "", element.getAttribute("type") || ""];
+      const layout = ["data-paseo-layout", "data-paseo-layout-part", "data-paseo-layout-key"].map(name => element.getAttribute(name));
+      // Unmanaged nodes retain legacy fingerprints. Managed restoration metadata
+      // is identity evidence; a changed backup must never be silently reapplied.
+      if (layout.some(value => value !== null)) identity.push(layout.map(value => value ?? ""));
+      return identity;
+    }));
     if (!node.id && node.outerHTML.length > 240000) throw new Error("没有固定 ID 的组件过大，请选择更小的组件");
     let hash = 2166136261; for (let i = 0; i < input.length; i++) hash = Math.imul(hash ^ input.charCodeAt(i), 16777619);
     return { tag: node.localName.toLowerCase(), ...(node.id ? { id: node.id } : { authoredHtml: node.outerHTML }), fingerprint: (hash >>> 0).toString(16).padStart(8, "0") };
@@ -1171,13 +1353,19 @@ function (initial, createFrameReceiver) {
     };
     return matches(target,captured);
   };
-  const componentPatch = (operation, node, extra = {}) => ({ operation, selector: selectorFor(node), sourceIdentity: componentIdentity(node), ...extra });
+  const componentPatch = (operation, node, extra = {}) => {
+    const failure = componentTransferFailure(operation, node, extra.destination ? document.querySelector(extra.destination) : null, extra.position); if (failure) throw new Error(failure);
+    return { operation, selector: selectorFor(node), sourceIdentity: componentIdentity(node), ...extra };
+  };
   const proposeComponentEdit = (patch, canvasBase = { revision: snapshot.canvas.revision, documentVersion: snapshot.canvas.documentVersion }) => {
     if (componentPending || applying || !selectedComponent?.isConnected) return;
+    const source = document.querySelector(patch.selector);
+    const failure = source && componentTransferFailure(patch.operation, source, patch.destination ? document.querySelector(patch.destination) : null, patch.position);
+    if (failure) { setComponentNotice(failure); return; }
     const id = `${scope.sessionId}:component-${++sequence}`;
     componentPending = { id, node: selectedComponent, patch };
     clearComponentHover(); setComponentNotice("");
-    if (["move", "copy"].includes(patch.operation)) showComponentLayoutPreview(patch);
+    if (["move", "copy", "layout"].includes(patch.operation)) showComponentLayoutPreview(patch);
     for (const menu of componentHost.shadowRoot.querySelectorAll(".popover")) menu.hidden = true;
     post({ type: "component-edit", id, request: { canvasBase, patch, sourceLabel: componentLabel(document.querySelector(patch.selector)), ...(patch.destination ? { destinationLabel: componentLabel(document.querySelector(patch.destination)) } : {}) } });
     positionComponent();
@@ -1366,6 +1554,8 @@ function (initial, createFrameReceiver) {
     proposeComponentEdit({operation:"text",selector,sourceIdentity:identity,text:value,expectedText:run.text,textNodeIndex:run.index},canvasBase);
   };
   const copyComponent = (mode) => {
+    const failure = componentTransferFailure(mode, selectedComponent);
+    if (failure) { setComponentNotice(failure); return; }
     componentClipboard = { mode, node: selectedComponent, identity: componentIdentity(selectedComponent) };
     setComponentNotice(`${mode === "move" ? "已标记剪切" : "已复制"} ${componentLabel(selectedComponent)} · 选择目标组件后粘贴；原位置保持到保存`);
   };
@@ -1412,6 +1602,8 @@ function (initial, createFrameReceiver) {
   const startComponentDrag = (event, gesture = componentGesture()) => {
     if (componentPending || componentText || !selectedComponent?.isConnected) return;
     if (!componentGestureLive(gesture)) {setComponentNotice("组件已变化，请重新选择后拖动");return;}
+    const failure = componentTransferFailure("move", selectedComponent);
+    if (failure) { componentPress=null; componentClick=null; setComponentNotice(failure); return; }
     componentPress=null;componentClick=null;componentDrag = { pointerId: event.pointerId, candidates: [], depth: 0, position: "append", gesture };
     clearComponentHover(); showComponentGhost(eventPoint(event)); suppressPointerClick = true; try { root.setPointerCapture(event.pointerId); } catch {} paintComponentDrag();
   };
@@ -1438,6 +1630,11 @@ function (initial, createFrameReceiver) {
       for (const toggle of componentHost.shadowRoot.querySelectorAll("[aria-expanded]")) toggle.setAttribute("aria-expanded", "false");
       menu.hidden = !open; button.setAttribute("aria-expanded", String(open)); return;
     }
+    if (action === "layout") { openComponentLayout(); return; }
+    if (action === "layout-preview") { previewComponentLayout(); return; }
+    if (action === "layout-save") { saveComponentLayout(); return; }
+    if (action === "layout-cancel") { cancelComponentLayout(); return; }
+    if (action === "layout-reset" && componentLayoutDraft) { componentLayoutDraft.config = { collapse: "none", maxHeight: null }; writeComponentLayoutFields(); clearComponentLayoutPreview(); setComponentNotice("恢复原样 · 请预览后保存"); return; }
     if (action === "choose") { componentNotice = ""; selectComponent(componentChoices[Number(button.dataset.componentIndex)]); return; }
     if (action === "close") { setSelectionMode("off"); post({ type: "selection-end" }); return; }
     if (action === "copy" || action === "cut") { copyComponent(action === "cut" ? "move" : "copy"); return; }
@@ -1464,6 +1661,9 @@ function (initial, createFrameReceiver) {
       selectionMode = "off"; clearComponent(); paintSelectionMode(); post({ type: "selection-end" }); void drain().then(resumeComponentEdit);
     } else { setComponentNotice(result.status === "cancelled" ? "未保存；原组件保持不变" : result.message || "保存未成功，请重新选择最新组件后重试"); positionComponent(); }
   };
+  window.addEventListener("pointercancel", event => { if (event.isTrusted && componentLayoutResize?.pointerId === event.pointerId) finishComponentLayoutResize(true); }, true);
+  window.addEventListener("blur", () => { if (componentLayoutResize) finishComponentLayoutResize(true); });
+  window.addEventListener("resize", positionComponentLayoutResize);
   window.addEventListener("scroll", queueComponentOutline, true);
   window.addEventListener("resize", queueComponentOutline);
   let captureLibrary;
@@ -1940,7 +2140,10 @@ function (initial, createFrameReceiver) {
       }
       event.stopImmediatePropagation();return;
     }
-    if (inComponentPreview(event)) { if (event.button===0) { event.preventDefault();window.focus();componentLayoutPreview.viewport.focus({preventScroll:true}); } event.stopImmediatePropagation(); return; }
+    if (inComponentPreview(event)) {
+      const resize = event.composedPath().some(node => node instanceof Element && node.hasAttribute("data-component-layout-resize"));
+      if (resize && event.button === 0) { event.preventDefault(); beginComponentLayoutResize(event); event.stopImmediatePropagation(); return; }
+      if (event.button===0) { event.preventDefault();window.focus();componentLayoutPreview.viewport.focus({preventScroll:true}); } event.stopImmediatePropagation(); return; }
     if (inComponents(event)) {
       const handle = event.composedPath().find(node => node instanceof Element && node.dataset.componentAction === "drag");
       if (handle && !handle.disabled && event.button === 0) { event.preventDefault();try {startComponentDrag(event);} catch(failure) {setComponentNotice(failure.message || String(failure));} }
@@ -1993,6 +2196,7 @@ function (initial, createFrameReceiver) {
   window.addEventListener("pointermove", (event) => {
     if (!event.isTrusted) return;
     componentPointer = eventPoint(event);
+    if (componentLayoutResize?.pointerId === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); moveComponentLayoutResize(event); return; }
     if (inComponentPreview(event)) { clearComponentHover(); event.stopImmediatePropagation(); return; }
     if (componentPress?.pointerId===event.pointerId) {
       event.preventDefault();event.stopImmediatePropagation();
@@ -2021,6 +2225,7 @@ function (initial, createFrameReceiver) {
   }, true);
   window.addEventListener("pointerup", (event) => {
     if (!event.isTrusted || event.button !== 0) return;
+    if (componentLayoutResize?.pointerId === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); finishComponentLayoutResize(); return; }
     if (inComponentPreview(event)) { event.stopImmediatePropagation(); return; }
     if (componentPress?.pointerId===event.pointerId) {
       const press=componentPress;componentPress=null;componentClick=componentGestureLive(press)?{...press,finished:performance.now()}:null;
@@ -2123,7 +2328,7 @@ function (initial, createFrameReceiver) {
     if (inComponentPreview(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; }
     if (inComponents(event)) {
       event.stopImmediatePropagation();
-      if (event.composedPath().some(node => node instanceof Element && node.matches("textarea,select,option"))) return;
+      if (event.composedPath().some(node => node instanceof Element && node.matches("textarea,input,select,option"))) return;
       event.preventDefault(); try { componentAction(event); } catch (failure) { setComponentNotice(failure.message || String(failure)); } return;
     }
     if (inMarkers(event)) {
@@ -2179,7 +2384,11 @@ function (initial, createFrameReceiver) {
     if (inComponentPreview(event)) event.stopImmediatePropagation();
   }, {capture:true,passive:false});
   window.addEventListener("keydown", (event) => {
+    if (componentLayoutResize && event.isTrusted && event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); finishComponentLayoutResize(true); return; }
     if (inComponentPreview(event)) {
+      if (event.isTrusted && event.composedPath().some(node => node instanceof Element && node.hasAttribute("data-component-layout-resize")) && ["ArrowUp", "ArrowDown"].includes(event.key) && componentLayoutDraft && !componentPending) {
+        event.preventDefault(); event.stopImmediatePropagation(); componentLayoutDraft.config.maxHeight = Math.max(80, Math.min(2000, (componentLayoutDraft.config.maxHeight || 400) + (event.key === "ArrowUp" ? -20 : 20))); writeComponentLayoutFields(); previewComponentLayout(); componentLayoutPreview?.resizeHandle?.focus(); return;
+      }
       // The viewport is mouse-focusable for scrolling, but not a sequential tab
       // stop. Leave it through the one enabled toolbar action, then normal Tab can
       // reach the host Save/Cancel controls without cycling through this copy.
@@ -2197,6 +2406,7 @@ function (initial, createFrameReceiver) {
       else return;
       event.preventDefault(); event.stopImmediatePropagation(); return;
     }
+    if (componentLayoutDraft && !componentPending && event.key === "Escape" && !event.isComposing) { event.preventDefault(); event.stopImmediatePropagation(); cancelComponentLayout(); return; }
     if (componentText) {
       const composing=event.isComposing || event.keyCode===229 || componentText.composing;
       if ((componentPending || componentText.invalid) && inComponentText(event) && (event.metaKey || event.ctrlKey) && event.key.toLowerCase()==="a") {event.preventDefault();focusComponentText(true);}

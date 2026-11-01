@@ -1,4 +1,5 @@
 import type { Anchor, Canvas, CanvasBase, CanvasUpdate, Interaction, JsonData } from "./contracts";
+import { createComponentLayoutTools, type ComponentLayout } from "./component-layout";
 
 export const FRAME_CHANNEL = "paseo-board-frame-v1";
 export type SelectionMode = "off" | "text" | "region" | "point" | "component";
@@ -24,9 +25,10 @@ export interface ComponentEditIdentity { tag: string; id?: string; fingerprint: 
 export interface ComponentEditRequest {
   canvasBase: CanvasBase;
   patch: {
-    operation: "move" | "copy" | "text"; selector: string; sourceIdentity: ComponentEditIdentity;
+    operation: "move" | "copy" | "text" | "layout"; selector: string; sourceIdentity: ComponentEditIdentity;
     destination?: string; destinationIdentity?: ComponentEditIdentity; position?: "before" | "after" | "append" | "prepend";
     text?: string; expectedText?: string; textNodeIndex?: number;
+    layout?: ComponentLayout;
   };
   sourceLabel?: string; destinationLabel?: string;
 }
@@ -195,11 +197,13 @@ export function validComponentEditRequest(value: unknown): value is ComponentEdi
     && (v.authoredHtml === undefined || typeof v.authoredHtml === "string" && v.authoredHtml.length <= 240000)
     && (v.id !== undefined || typeof v.authoredHtml === "string")
     && Object.keys(v).every(key => ["tag", "id", "fingerprint", "authoredHtml"].includes(key));
-  if (!["move", "copy", "text"].includes(patch.operation as string) || !short(patch.selector, 1000) || !identity(patch.sourceIdentity)) return false;
+  if (!["move", "copy", "text", "layout"].includes(patch.operation as string) || !short(patch.selector, 1000) || !identity(patch.sourceIdentity)) return false;
   if (value.sourceLabel !== undefined && !short(value.sourceLabel, 160) || value.destinationLabel !== undefined && !short(value.destinationLabel, 160)) return false;
   // No HTML, script, event ID or caller-controlled copy prefix crosses this bridge.
   if (Object.keys(value).some(key => !["canvasBase", "patch", "sourceLabel", "destinationLabel"].includes(key)) || Object.keys(base).some(key => !["revision", "documentVersion"].includes(key))) return false;
-  if (Object.keys(patch).some(key => !["operation", "selector", "sourceIdentity", "destination", "destinationIdentity", "position", "text", "expectedText", "textNodeIndex"].includes(key))) return false;
+  if (Object.keys(patch).some(key => !["operation", "selector", "sourceIdentity", "destination", "destinationIdentity", "position", "text", "expectedText", "textNodeIndex", "layout"].includes(key))) return false;
+  if (patch.operation === "layout") return createComponentLayoutTools().validate(patch.layout) && patch.destination === undefined && patch.destinationIdentity === undefined && patch.position === undefined && patch.text === undefined && patch.expectedText === undefined && patch.textNodeIndex === undefined;
+  if (patch.layout !== undefined) return false;
   if (patch.operation === "text") return typeof patch.text === "string" && patch.text.length <= 24000 && typeof patch.expectedText === "string" && patch.expectedText.length <= 24000
     && (patch.textNodeIndex === undefined || Number.isSafeInteger(patch.textNodeIndex) && Number(patch.textNodeIndex) >= 0 && Number(patch.textNodeIndex) <= 10000)
     && patch.destination === undefined && patch.destinationIdentity === undefined && patch.position === undefined;

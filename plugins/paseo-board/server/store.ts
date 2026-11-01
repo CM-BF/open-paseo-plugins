@@ -174,7 +174,7 @@ export class BoardStore {
       }
       if (input.patch) {
         if (board.canvas.patches.some(patch => patch.id === input.patch!.id)) throw new BoardStoreError("idempotency_conflict", `Patch ${input.patch.id} already exists in this document`);
-        board.canvas.patches.push(["move", "copy", "text"].includes(input.patch.operation) ? this.prepareEdit(board.canvas, input.patch) : input.patch);
+        board.canvas.patches.push(["move", "copy", "text", "layout"].includes(input.patch.operation) ? this.prepareEdit(board.canvas, input.patch) : input.patch);
       }
       const dataChanged = canonicalJson(nextData) !== canonicalJson(board.canvas.data);
       board.canvas.data = nextData;
@@ -213,7 +213,7 @@ export class BoardStore {
         if (input.html !== undefined) { canvas.html = input.html; canvas.documentVersion++; canvas.patches = []; }
         if (input.patch) {
           if (canvas.patches.some(patch => patch.id === input.patch!.id)) throw new BoardStoreError("idempotency_conflict", `Response patch ${input.patch.id} already exists`);
-          canvas.patches.push(["move", "copy", "text"].includes(input.patch.operation) ? this.prepareEdit(canvas, input.patch) : input.patch);
+          canvas.patches.push(["move", "copy", "text", "layout"].includes(input.patch.operation) ? this.prepareEdit(canvas, input.patch) : input.patch);
         }
         if (input.data !== undefined) canvas.data = { ...canvas.data, ...input.data };
         canvas.revision++;

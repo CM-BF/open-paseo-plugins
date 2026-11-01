@@ -1,6 +1,7 @@
 import { DOMParser } from "linkedom";
 import type { Canvas, CanvasPatch, ComponentIdentity } from "../shared/contracts";
 import { componentIdentityFor } from "../shared/component-identity";
+import { createComponentLayoutTools, type LayoutElement } from "../shared/component-layout";
 
 export type AuthoringCanvas = Pick<Canvas, "revision" | "documentVersion" | "html" | "patches">;
 export type AuthoringDescription = {
@@ -84,6 +85,11 @@ function expectIdentity(document: AuthoredDocument, target: AuthoredElement, exp
 function applyComponentPatch(document: AuthoredDocument, target: AuthoredElement, patch: CanvasPatch, targetFor: (selector: string) => AuthoredElement) {
   if (rootTags.has(target.localName) || nonComponents.has(target.localName)) throw new Error("Document roots and executable metadata cannot be edited as components");
   expectIdentity(document, target, patch.sourceIdentity, "source", patch.selector);
+  if (patch.operation === "layout") {
+    if (!patch.layout) throw new Error("Layout edits require bounded options");
+    createComponentLayoutTools().apply(target as unknown as LayoutElement, patch.layout, patch.id);
+    return;
+  }
   if (patch.operation === "text") {
     if (["input", "textarea", "select"].includes(target.localName)) throw new Error("Use the control's native editing behavior");
     if (patch.text === undefined || patch.expectedText === undefined) throw new Error("Text edits require current and replacement text");
@@ -101,6 +107,8 @@ function applyComponentPatch(document: AuthoredDocument, target: AuthoredElement
   if (!patch.destination || !patch.position) throw new Error("Component placement requires a destination and position");
   const destination = targetFor(patch.destination);
   expectIdentity(document, destination, patch.destinationIdentity, "destination", patch.destination);
+  const transferFailure = createComponentLayoutTools().transferFailure(patch.operation as "move" | "copy", target as unknown as LayoutElement, destination as unknown as LayoutElement, patch.position);
+  if (transferFailure) throw new Error(transferFailure);
   if (rootTags.has(destination.localName) || nonComponents.has(destination.localName)) throw new Error("Select an authored content container instead of a document root");
   if (target === destination || target.contains(destination)) throw new Error("A component cannot be placed inside or relative to itself or its descendants");
   if (["append", "prepend"].includes(patch.position) && voidTags.has(destination.localName)) throw new Error("This element cannot contain components");
@@ -194,7 +202,7 @@ export function describeAuthoring(canvas: AuthoringCanvas, selector?: string): A
         if (["html", "head", "body"].includes(target.localName) && ["replace", "remove"].includes(patch.operation)) {
           throw new Error("Replacing document roots requires publishing a new document version");
         }
-        if (["move", "copy", "text"].includes(patch.operation)) applyComponentPatch(document, target, patch, targetFor);
+        if (["move", "copy", "text", "layout"].includes(patch.operation)) applyComponentPatch(document, target, patch, targetFor);
         else if (patch.operation === "remove") target.remove();
         else {
           const template = document.createElement("template", undefined);

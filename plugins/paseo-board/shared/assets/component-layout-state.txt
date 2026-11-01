@@ -1,0 +1,54 @@
+function (api, documentVersion) {
+  "use strict";
+  // api is a private state adapter. Public authored saveState cannot write this namespace.
+  const namespace = "__paseoContainerViews";
+  const prefix = String(documentVersion) + ":";
+  const selector = "details[data-paseo-layout-key]";
+  const observed = new WeakMap();
+  let saving = false;
+  const record = () => {
+    const value = api.getState()?.[namespace];
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  };
+  const restore = (node) => {
+    const key = node.getAttribute("data-paseo-layout-key");
+    if (!key || key.length > 200) return;
+    const saved = record()[prefix + key];
+    const open = typeof saved === "boolean" ? saved : node.open;
+    observed.set(node, open);
+    if (node.open !== open) node.open = open;
+  };
+  const visit = (root, force = false) => {
+    if (root.nodeType === 1 && root.matches(selector) && (force || !observed.has(root))) restore(root);
+    for (const node of root.querySelectorAll?.(selector) || []) if (force || !observed.has(node)) restore(node);
+  };
+  // Moving a nested fold must not overwrite its just-toggled local state while
+  // the browser still has its toggle event queued. Only new nodes hydrate here.
+  const refresh = () => visit(document);
+  const onToggle = (event) => {
+    const node = event.target;
+    if (!(node instanceof Element) || !node.matches(selector) || !node.isConnected) return;
+    if (!observed.has(node)) { restore(node); return; }
+    if (observed.get(node) === node.open) return;
+    observed.set(node, node.open);
+    const key = prefix + node.getAttribute("data-paseo-layout-key"), entries = record();
+    if (!Object.prototype.hasOwnProperty.call(entries, key) && Object.keys(entries).length >= 512) return;
+    // The standalone API notifies onState synchronously. Do not let our own
+    // acknowledgement overwrite another nested detail whose toggle is queued.
+    try { saving = true; api.saveState({ ...api.getState(), [namespace]: { ...entries, [key]: node.open } }); }
+    catch (failure) { console.error("Unable to save this container's view state", failure); }
+    finally { saving = false; }
+  };
+  document.addEventListener("toggle", onToggle, true);
+  const observer = new MutationObserver(records => {
+    for (const mutation of records) for (const node of mutation.addedNodes) {
+      if (!(node instanceof Element) || node.closest("[data-board-overlay]")) continue;
+      visit(node);
+    }
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  const unsubscribe = api.onState(() => { if (!saving) visit(document, true); });
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", refresh, { once: true });
+  else refresh();
+  return { refresh, dispose() { observer.disconnect(); document.removeEventListener("toggle", onToggle, true); unsubscribe(); } };
+}
