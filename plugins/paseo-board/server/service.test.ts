@@ -59,6 +59,30 @@ describe("BoardService SDK adapter", () => {
   });
   afterEach(async () => { await service.dispose(); await rm(dir, { recursive: true, force: true }); });
 
+  it("authorizes realtime samples in storage without reading a full Board in the coordinator", async () => {
+    const read = vi.spyOn(store, "read");
+    const input = { boardId: "board", sourceId: "source", action: "open", path: "/live/value", expectedGeneration: 0, requestId: "open" };
+    await expect(service.execute("feed", input, { agentId: "intruder", cwd: dir })).rejects.toMatchObject({ code: "forbidden" });
+    await service.execute("feed", input, { agentId: "owner", cwd: dir });
+    await service.execute("feed", { boardId: "board", sourceId: "source", action: "set", generation: 1, seq: 1, value: 42 }, { agentId: "owner", cwd: dir });
+    expect(read).not.toHaveBeenCalled();
+    read.mockRestore();
+    expect((await store.read("board"))?.canvas.data).toMatchObject({ live: { value: 42 } });
+  });
+
+  it("reestablishes a failed timeline subscription from its error event and releases recovery on shutdown", async () => {
+    await service.reconcile();
+    const timeline = sdk.api.agents.ref("owner").timeline;
+    const initial = sdk.subscribers.get("owner")!;
+    initial({ event: { type: "error", error: "subscription lost" } });
+    expect(sdk.subscribers.has("owner")).toBe(false);
+    await vi.waitFor(() => expect(timeline.subscribe).toHaveBeenCalledTimes(2), { timeout: 1500 });
+    expect(sdk.subscribers.get("owner")).not.toBe(initial);
+    sdk.subscribers.get("owner")!({ event: { type: "error", error: "second failure" } });
+    await service.dispose();
+    expect(sdk.subscribers.has("owner")).toBe(false);
+  });
+
   it("provides compact inspection under the same reader authorization without changing full reads", async () => {
     const compact = await service.execute("read", { boardId: "board", view: "inspect", dataPaths: ["/temperature"], selector: "#target" }, { agentId: "owner", cwd: dir });
     expect(compact).toMatchObject({ view: "inspect", data: [{ path: "/temperature", exists: true, value: 10 }], source: { target: { text: '<main id="target">Existing visualization</main>' } } });
@@ -277,6 +301,40 @@ describe("BoardService SDK adapter", () => {
     await service.interact({ boardId: "board", intentId: "compact-main", kind: "question", destination: "main", text: "Explain the selected claim", anchor }); await service.drain();
     expect(sdk.sends).toHaveLength(1); expect(journal.get("board/compact-main")!.prompt).toBe(prompt);
     await expect(service.interact({ boardId: "board", intentId: "compact-main", kind: "question", destination: "side", text: "Explain the selected claim", anchor })).rejects.toHaveProperty("code", "idempotency_conflict");
+  });
+
+  it.each([false, true])("sends and persists the selected component identity unchanged across retries (PNG: %s)", async (withImage) => {
+    let board = (await store.read("board"))!;
+    const anchor = {
+      kind: "element" as const, selector: "#target", boardRevision: board.revision, canvasRevision: board.canvas.revision,
+      rect: { x: 20, y: 40, width: 320, height: 120 },
+      binding: { documentVersion: board.canvas.documentVersion, key: "binding-component-reference",
+        target: { selector: "#target", tag: "main", id: "target", fingerprint: "57beb693" },
+        ancestors: [{ selector: "body", tag: "body", fingerprint: "cf30f19a" }], relative: { x: 0.5, y: 0.5 } },
+      ...(withImage ? { image: { mimeType: "image/png" as const, data: "cG5n" } } : {}),
+    };
+    const input = { boardId: "board", intentId: "component-reference", kind: "question" as const, destination: "main" as const, text: "Change this component", anchor };
+    await service.interact(input); await service.drain();
+    const sent = sdk.sends[0];
+    const context = JSON.parse(sent.text.match(/<board-context-untrusted-json>\n([^]*?)\n<\/board-context-untrusted-json>/)![1]);
+    expect(sent.id).toBe("owner");
+    expect(context.anchor).toEqual({ ...anchor, image: withImage ? { mimeType: "image/png", attached: true } : undefined });
+    expect(sent.text).toContain("The user selected an entire component");
+    expect(sent.text).toContain("captured selector");
+    expect(sent.text).toContain("binding fingerprint is not an edit identity or canvasBase");
+    expect(sent.text).not.toContain("cG5n");
+    expect(sent.options.images).toEqual(withImage ? [anchor.image] : undefined);
+    expect((await store.read("board"))!.interactions[0].anchor).toEqual(anchor);
+
+    board = (await store.read("board"))!;
+    await store.publish({ boardId: "board", expectedRevision: board.revision, canvasBase: canvasBase(board), eventId: "replace-selected-component", replaceDocument: true, html: '<main id="replacement">A different component</main>' });
+    await service.interact(input); await service.drain();
+    expect(sdk.sends).toHaveLength(1);
+    await expect(service.interact({ ...input, anchor: { ...anchor, selector: "#replacement" } })).rejects.toHaveProperty("code", "idempotency_conflict");
+    const restoredJournal = new ServiceJournal(join(dir, "service.json")); await restoredJournal.init();
+    expect(restoredJournal.get("board/component-reference")).toMatchObject({ input: { anchor }, request: { anchor }, prompt: sent.text });
+    const restoredStore = new BoardStore(dir); await restoredStore.init();
+    expect((await restoredStore.read("board"))!.interactions[0].anchor).toEqual(anchor);
   });
 
   it("keeps full selected source text frozen on the interaction while only sending a bounded excerpt", async () => {

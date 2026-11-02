@@ -2,19 +2,20 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createFrameDelta, dataChanges, emptyFrameDelta, equalJson, transportSnapshot, type FrameDelta, type TransportSnapshot } from "./frame-delta";
 import type { CanvasPatch } from "./contracts";
+import { createComponentLayoutTools } from "./component-layout";
 
 // Execute the exact standalone factory injected into the real iframe, without a DOM mock.
 type Received = { snapshot: TransportSnapshot; changedPaths: string[] | null; patches: CanvasPatch[] } | null;
 type Receiver = { snapshot(next: unknown, version: number): Received; delta(value: unknown): Received };
 const createReceiver = new Function(`return (${readFileSync(new URL("./assets/frame-delta.txt", import.meta.url), "utf8")})`)() as
-  (initial: TransportSnapshot, request: (value: unknown) => void) => Receiver;
+  (initial: TransportSnapshot, request: (value: unknown) => void, validateLayout?: (value: unknown) => boolean) => Receiver;
 const initial = (): TransportSnapshot => ({ boardRevision: 1, canvas: { revision: 1, documentVersion: 2, data: { left: { n: 1 }, right: { n: 2 } }, patches: [] }, userState: { draft: "saved" }, theme: { scheme: "light", tokens: { "host-background": "#fff" } } });
 const patch = (id: string): CanvasPatch => ({ id, selector: "#target", operation: "append", html: `<b>${id}</b>` });
 const changed = (base: TransportSnapshot, data: Record<string, unknown>, patches = base.canvas.patches): TransportSnapshot => ({ ...base, boardRevision: base.boardRevision + 1, canvas: { ...base.canvas, revision: base.canvas.revision + 1, data, patches } });
 const delta = (a: TransportSnapshot, b: TransportSnapshot, version: number) => createFrameDelta(a, b, version)!;
 const setup = () => {
   const first = initial(), requests: unknown[] = [];
-  const receiver = createReceiver(first, value => requests.push(value));
+  const receiver = createReceiver(first, value => requests.push(value), createComponentLayoutTools().validate);
   receiver.snapshot(first, 1);
   return { first, requests, receiver };
 };
@@ -60,6 +61,28 @@ describe("host frame deltas", () => {
 });
 
 describe("iframe received baseline", () => {
+  it("transfers guarded semantic edits and rejects malformed identity/text/placement atomically", () => {
+    const identity = { tag: "article", id: "a", fingerprint: "01234567" };
+    const semantic: CanvasPatch[] = [
+      { id: "move", selector: "#a", html: "", operation: "move", sourceIdentity: identity, destinationIdentity: identity, destination: "#b", position: "append" },
+      { id: "copy", selector: "#a", html: '<article id="copy-0"></article>', operation: "copy", sourceIdentity: identity, destinationIdentity: identity, destination: "#b", position: "before", copyIdPrefix: "copy" },
+      { id: "text", selector: "#a", html: "", operation: "text", sourceIdentity: identity, text: "New", expectedText: "Old", textNodeIndex: 2 },
+      { id: "layout", selector: "#a", html: "", operation: "layout", sourceIdentity: identity, layout: { collapse: "group", maxHeight: 320, title: "Logs" } },
+    ];
+    const { first, receiver, requests } = setup();
+    expect(receiver.delta(delta(first, changed(first, first.canvas.data, semantic), 1))?.patches).toEqual(semantic);
+    expect(requests).toEqual([]);
+    for (const invalid of [
+      { ...semantic[0], sourceIdentity: undefined }, { ...semantic[0], destinationIdentity: { ...identity, fingerprint: "bad" } },
+      { ...semantic[0], position: "unknown" }, { ...semantic[1], copyIdPrefix: "unsafe.id" },
+      { ...semantic[2], textNodeIndex: -1 }, { ...semantic[2], expectedText: undefined }, { ...semantic[2], text: "x".repeat(24001) },
+      { ...semantic[3], layout: { collapse: "group", maxHeight: 1 } }, { ...semantic[3], layout: { collapse: "group", maxHeight: 200, placement: { position: "fixed" } } },
+    ]) {
+      const current = setup();
+      expect(current.receiver.delta(delta(current.first, changed(current.first, current.first.canvas.data, [invalid as CanvasPatch]), 1))).toBeNull();
+      expect(current.requests).toHaveLength(1);
+    }
+  });
   it("applies atomically with structural sharing while the displayed snapshot stays frozen", () => {
     const { first, receiver, requests } = setup();
     const second = changed(first, { ...first.canvas.data, left: { n: 3 } }, [patch("one")]);

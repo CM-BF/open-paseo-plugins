@@ -3,6 +3,7 @@ import { createElement, Fragment, useState } from "react";
 // @ts-expect-error react-dom is only needed by this browser fixture.
 import { createRoot } from "react-dom/client";
 import { CanvasFrame, WebMessageInput } from "../client/web";
+import type { ComponentEditResult } from "../shared/frame-contract";
 import { frameThemeFromColors, DEFAULT_LIGHT_COLORS, DEFAULT_DARK_COLORS } from "../shared/frame-theme";
 const host = globalThis as any;
 const fragment = `<style>body{padding:24px;margin:0}#target{min-height:120px}button{margin:5px}#words{display:block;font:20px sans-serif;width:600px}#paint{display:block}#dragbox{position:absolute;left:740px;top:90px;width:220px;height:68px;touch-action:none}#editing{position:absolute;left:740px;top:185px;width:220px}#editing textarea,#editable{display:block;width:200px;margin-bottom:12px}#editable{min-height:32px;border:1px solid #888}</style>
@@ -33,9 +34,11 @@ document.querySelector('#save').onclick=()=>board.saveState({field:document.quer
 document.querySelector('#paint').getContext('2d').fillRect(0,0,180,100);document.querySelector('#form').onsubmit=e=>{e.preventDefault();window.submits=(window.submits||0)+1};
 window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channel==='fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'fixture-result',id:e.data.id,error:error.message},'*')}}});
 </script>`;
-host.results = { asks: [], composes: [], hostAsks: [], anchors: [], errors: [], states: [], links: [], ready: 0, raw: [], openedInteractions: [], interactionPositions: [], inputSubmits: [], inputCloses: 0, canvasPointers: 0 };
+host.results = { componentEdits: [], asks: [], composes: [], hostAsks: [], anchors: [], errors: [], states: [], links: [], ready: 0, raw: [], openedInteractions: [], interactionPositions: [], inputSubmits: [], inputCloses: 0, canvasPointers: 0 };
 let requestId = 0;
 const pending = new Map();
+const pendingComponentEdits = new Map();
+host.finishComponentEdit = (index: number, result: unknown) => { const resolve = pendingComponentEdits.get(index); if (!resolve) throw new Error("No pending edit"); pendingComponentEdits.delete(index); resolve(result); };
 let saveTimer: ReturnType<typeof setTimeout>;
 host.addEventListener("message", (event: any) => {
   if (event.data?.channel === "paseo-board-frame-v1") host.results.raw.push(event.data);
@@ -62,6 +65,7 @@ function App() {
   host.setTheme = (scheme: "light" | "dark") => setProps(p => ({ ...p, theme: frameThemeFromColors(scheme === "dark" ? DEFAULT_DARK_COLORS : DEFAULT_LIGHT_COLORS) }));
   host.replaceDocument = () => setProps((p) => ({ ...p, selectionMode: "off", boardRevision: p.boardRevision + 1, canvas: { ...p.canvas, patches: [], revision: p.canvas.revision + 1, documentVersion: p.canvas.documentVersion + 1 } }));
   return createElement(Fragment, null, createElement(CanvasFrame, { ...props, key: mount,
+    onComponentEdit: (request: any) => new Promise<ComponentEditResult>(resolve => { const index = host.results.componentEdits.length; host.results.componentEdits.push(structuredClone(request)); pendingComponentEdits.set(index, resolve); }),
     onAsk: async (request: any) => { host.results.asks.push(request); return { status: "submitted" as const, outcome: "saved" }; },
     onCompose: (request: any) => { host.results.composes.push(request); setProps((p) => ({ ...p, selectionMode: "off" })); },
     onSelectionCapture: (capture: any) => {

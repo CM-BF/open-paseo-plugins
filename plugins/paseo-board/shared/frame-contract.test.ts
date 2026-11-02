@@ -4,6 +4,26 @@ import { AnchorSchema, type Interaction } from "./contracts";
 const scope = { boardId: "board", sessionId: "session" };
 const message = (fields: object) => ({ channel: FRAME_CHANNEL, ...scope, ...fields });
 describe("frame bridge validation", () => {
+  it("accepts bounded semantic edit proposals and rejects arbitrary code, IDs and cross-scope payloads", () => {
+    const request = { canvasBase: { revision: 3, documentVersion: 2 }, patch: { operation: "text", selector: "#title", sourceIdentity: { tag: "h1", id: "title", fingerprint: "abcd1234" }, text: "", expectedText: "Old" } };
+    const edit = message({ type: "component-edit", id: "proposal-1", request });
+    expect(readFrameMessage(edit, scope)).not.toBeNull();
+    for (const bad of [{ html: "<script>bad()</script>" }, { id: "forged" }, { copyIdPrefix: "forged" }, { expectedText: undefined }, { text: "x".repeat(24001) }, { textNodeIndex: -1 }, { sourceIdentity: { tag: "h1", fingerprint: "old-binding" } }]) {
+      expect(readFrameMessage({ ...edit, request: { ...request, patch: { ...request.patch, ...bad } } }, scope)).toBeNull();
+    }
+    expect(readFrameMessage({ ...edit, request: { ...request, patch: { ...request.patch, sourceIdentity: { tag: "h1", fingerprint: "abcd1234" } } } }, scope)).toBeNull();
+    const anonymous = { tag: "h1", fingerprint: "abcd1234", authoredHtml: "<h1>Old</h1>" };
+    expect(readFrameMessage({ ...edit, request: { ...request, patch: { ...request.patch, sourceIdentity: anonymous } } }, scope)).not.toBeNull();
+    expect(readFrameMessage({ ...edit, request: { ...request, patch: { ...request.patch, sourceIdentity: { ...anonymous, authoredHtml: "x".repeat(240001) } } } }, scope)).toBeNull();
+    const move = { ...request, patch: { operation: "move", selector: "#title", sourceIdentity: request.patch.sourceIdentity, destination: "#other", destinationIdentity: { tag: "section", id: "other", fingerprint: "abcd5678" }, position: "append" } };
+    expect(readFrameMessage({ ...edit, request: move }, scope)).not.toBeNull();
+    const layout = { ...request, patch: { operation: "layout", selector: "#title", sourceIdentity: request.patch.sourceIdentity, layout: { collapse: "group", maxHeight: 320, title: "Logs" } } };
+    expect(readFrameMessage({ ...edit, request: layout }, scope)).not.toBeNull();
+    for (const bad of [{ html: "<b>no</b>" }, { destination: "#other" }, { copyIdPrefix: "caller-key" }, { layout: { collapse: "group", maxHeight: 4000 } }, { layout: { collapse: "group", maxHeight: null, originalStyle: "forged" } }]) expect(readFrameMessage({ ...edit, request: { ...layout, patch: { ...layout.patch, ...bad } } }, scope)).toBeNull();
+    for (const bad of [{ destination: "" }, { destinationIdentity: undefined }, { position: "replace" }, { text: "no" }]) expect(readFrameMessage({ ...edit, request: { ...move, patch: { ...move.patch, ...bad } } }, scope)).toBeNull();
+    for (const other of [{ boardId: "other" }, { sessionId: "expired" }]) expect(readFrameMessage({ ...edit, ...other }, scope)).toBeNull();
+    expect(readFrameMessage({ ...edit, request: { ...request, eventId: "forged" } }, scope)).toBeNull();
+  });
   it("negotiates deltas without requiring them from older runtimes and scopes recovery requests", () => {
     expect(readFrameMessage(message({ type: "ready", capabilities: { frameDelta: 1 } }), scope)).not.toBeNull();
     expect(readFrameMessage(message({ type: "ready" }), scope)).not.toBeNull();
@@ -43,6 +63,9 @@ describe("frame bridge validation", () => {
       expect(readFrameMessage(message({ type: "selection-capture", selectionId: "one", anchor, status: "failed", reason }), scope)).toBeNull();
     }
     expect(sameSelectionAnchor(anchor, { ...anchor, image })).toBe(true);
+    const reordered = Object.fromEntries(Object.entries(anchor).reverse()) as typeof anchor;
+    expect(sameSelectionAnchor(anchor, reordered)).toBe(true);
+    expect(sameSelectionAnchor(anchor, { ...reordered, rect: { height: anchor.rect.height, width: anchor.rect.width, y: anchor.rect.y, x: anchor.rect.x }, image })).toBe(true);
     expect(sameSelectionAnchor(anchor, { ...anchor, canvasRevision: 2, image })).toBe(false);
     expect(sameSelectionAnchor(anchor, { ...anchor, rect: { ...anchor.rect, x: 21 }, image })).toBe(false);
   });
@@ -88,7 +111,9 @@ describe("frame bridge validation", () => {
       expect(readFrameMessage(message({ type, id: "q1", position: { x: 1, y: "34" } }), scope)).toBeNull();
       expect(readFrameMessage(message({ type, id: "q1", sessionId: "previous", position: { x: 12, y: 34 } }), scope)).toBeNull();
     }
-    expect(readFrameMessage(message({ type: "interaction-position", id: "q1", position: { x: 12, y: 34 }, location: "collapsed" }), scope)).not.toBeNull();
+    for (const location of ["collapsed", "component", "hidden"]) {
+      expect(readFrameMessage(message({ type: "interaction-position", id: "q1", position: { x: 12, y: 34 }, location }), scope)).not.toBeNull();
+    }
     expect(readFrameMessage(message({ type: "interaction-position", id: "q1", position: { x: 12, y: 34 }, location: "guessed" }), scope)).toBeNull();
     expect(readFrameMessage(message({ type: "ask", id: "ask", request: { prompt: "Hello", position: { x: Infinity, y: 1 } } }), scope)).toBeNull();
   });

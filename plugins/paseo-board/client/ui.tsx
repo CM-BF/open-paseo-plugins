@@ -11,12 +11,12 @@ export function useColors(): Colors {
   if (!value) throw new Error("Board theme is missing");
   return value;
 }
-export function Action({ label, icon, onPress, active, disabled, primary }: {
-  label: string; icon?: string; onPress: () => void; active?: boolean; disabled?: boolean; primary?: boolean;
+export function Action({ label, icon, onPress, active, disabled, primary, testID }: {
+  label: string; icon?: string; onPress: () => void; active?: boolean; disabled?: boolean; primary?: boolean; testID?: string;
 }) {
   const c = useColors();
   const color = primary ? c.accentForeground : c.foreground;
-  return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled, selected: active }}
+  return <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled, selected: active }}
     disabled={disabled} onPress={onPress} style={({ pressed }) => ({
       flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 8,
       borderRadius: 7, borderWidth: 1, borderColor: active ? c.accent : primary ? c.accent : c.border,

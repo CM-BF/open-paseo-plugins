@@ -1,10 +1,11 @@
 // Browser DOM access lives only in this module. Native callers use their compatibility view.
 import { createElement, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
 import { Platform } from "react-native";
+import type { BoardSyncVisibility } from "./compact-sync";
 import type { Anchor, Canvas, Interaction, JsonData } from "../shared/contracts";
 import { buildBoardDocument } from "../shared/document";
 import { createFrameDelta, emptyFrameDelta, transportSnapshot, type TransportSnapshot } from "../shared/frame-delta";
-import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, sameSelectionAnchor, type SelectionCapture, type AskRequest, type AskResult, type ComposeRequest, type FrameError, type FramePosition, type FrameSnapshot, type FrameTheme, type InteractionLocation, type FocusUpdateRequest, type UpdatePosition, type SelectionMode } from "../shared/frame-contract";
+import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, sameSelectionAnchor, type SelectionCapture, type AskRequest, type AskResult, type ComposeRequest, type FrameError, type FramePosition, type FrameSnapshot, type FrameTheme, type InteractionLocation, type FocusUpdateRequest, type UpdatePosition, type SelectionMode, type ComponentEditRequest, type ComponentEditResult } from "../shared/frame-contract";
 
 type FrameWindow = { postMessage(message: unknown, origin: string): void };
 type Frame = { contentWindow: FrameWindow | null };
@@ -18,11 +19,22 @@ type BrowserWindow = {
 };
 const browser = globalThis as unknown as {
   window?: BrowserWindow;
-  document?: { activeElement: unknown };
+  document?: { activeElement: unknown; hidden: boolean; addEventListener(type: string, listener: () => void): void; removeEventListener(type: string, listener: () => void): void };
   navigator?: { userActivation?: { isActive: boolean } };
   crypto?: { getRandomValues(bytes: Uint8Array): Uint8Array };
 };
 export const canRenderFrames = Platform.OS === "web" && Boolean(browser.window && browser.document);
+export function getBoardSyncVisibility(): BoardSyncVisibility | undefined {
+  const page = Platform.OS === "web" ? browser.document : undefined;
+  if (!page) return undefined;
+  return {
+    visible: () => !page.hidden,
+    subscribe(listener) {
+      page.addEventListener("visibilitychange", listener);
+      return () => page.removeEventListener("visibilitychange", listener);
+    },
+  };
+}
 export interface CanvasFrameProps extends FrameSnapshot {
   boardId: string;
   title: string;
@@ -44,6 +56,8 @@ export interface CanvasFrameProps extends FrameSnapshot {
   onAnchor(anchor: Anchor): void;
   onAsk(request: AskRequest): Promise<AskResult>;
   onCompose?(request: ComposeRequest): void;
+  onComponentEdit?(request: ComponentEditRequest): Promise<ComponentEditResult>;
+  onEditScopeChange?(): void;
   onSelectionCapture?(capture: SelectionCapture): void;
   onCanvasPointer?(): void;
   onOpenInteraction?(id: string, position: FramePosition, location?: InteractionLocation): void;
@@ -131,6 +145,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   useLayoutEffect(() => {
     if (!canRenderFrames || !browser.window) return;
     const waiting = new Set<string>();
+    const pendingEdits = new Set<string>();
     const cancelledSelections = new Set<string>();
     const composedSelections = new Set<string>();
     let disposed = false;
@@ -186,6 +201,24 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
             interactionLock.current = null;
           }
           redraw(n => n + 1);
+          break;
+        }
+        case "component-edit": {
+          const origin = document.current;
+          const key = origin.sessionId + ":" + message.id;
+          if (pendingEdits.has(key)) break;
+          const answer = (result: ComponentEditResult) => {
+            if (disposed || document.current?.sessionId !== origin.sessionId) return;
+            send({ type: "component-edit-result", id: message.id, result });
+          };
+          // Arbitrary authored code shares the sandbox. A frame message may only stage
+          // a proposal: the host's own Save control is the sole commit authority.
+          if (!current.onComponentEdit || pendingEdits.size || message.request.canvasBase.documentVersion !== origin.version || message.request.canvasBase.revision !== current.canvas.revision) {
+            answer({ status: "rejected", message: "当前编辑不可用或画布已更新，请重新选择组件。" }); break;
+          }
+          pendingEdits.add(key);
+          Promise.resolve().then(() => current.onComponentEdit!(message.request)).catch(() => ({ status: "rejected", message: "无法准备这次修改，请重新选择组件。" } as ComponentEditResult))
+            .then(result => { pendingEdits.delete(key); answer(result); });
           break;
         }
         case "anchor":
@@ -272,11 +305,17 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
     browser.window.addEventListener("pointercancel", onOuterRelease, true);
     return () => {
       disposed = true;
+      latest.current.onEditScopeChange?.();
       browser.window?.removeEventListener("message", onMessage);
       browser.window?.removeEventListener("pointerup", onOuterRelease, true);
       browser.window?.removeEventListener("pointercancel", onOuterRelease, true);
     };
   }, []);
+
+  const editScope = useRef(rendered.sessionId);
+  useEffect(() => {
+    if (editScope.current !== rendered.sessionId) { editScope.current = rendered.sessionId; latest.current.onEditScopeChange?.(); }
+  }, [rendered.sessionId]);
 
   useEffect(() => {
     if (!ready.current) return;
@@ -343,7 +382,7 @@ export function usePopoverDismiss(active: boolean, onDismiss: () => void, preser
         if (preserveInput) event.preventDefault();
         return;
       }
-      if (!event.target?.closest?.('[data-testid="board-local-popover"]')) latest.current();
+      if (!event.target?.closest?.('[data-testid="board-local-popover"], [data-testid="board-offline-draft"]')) latest.current();
     };
     browser.window.addEventListener("pointerdown", dismiss, true);
     return () => browser.window?.removeEventListener("pointerdown", dismiss, true);

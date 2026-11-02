@@ -1,12 +1,13 @@
-import type { Anchor, Canvas, CanvasUpdate, Interaction, JsonData } from "./contracts";
+import type { Anchor, Canvas, CanvasBase, CanvasUpdate, Interaction, JsonData } from "./contracts";
+import { createComponentLayoutTools, type ComponentLayout } from "./component-layout";
 
 export const FRAME_CHANNEL = "paseo-board-frame-v1";
-export type SelectionMode = "off" | "text" | "region" | "point";
+export type SelectionMode = "off" | "text" | "region" | "point" | "component";
 export interface FrameTheme { scheme: "light" | "dark"; tokens: Record<string, string> }
 export interface FrameError { code: string; message: string; patchId?: string }
 /** CSS pixels relative to the iframe viewport (not document coordinates). */
 export interface FramePosition { x: number; y: number }
-export type InteractionLocation = "component" | "collapsed" | "ancestor" | "snapshot";
+export type InteractionLocation = "component" | "collapsed" | "ancestor" | "snapshot" | "hidden";
 export interface FocusUpdateRequest { update: CanvasUpdate; token: number; targetIndex?: number; automatic?: boolean }
 export interface UpdatePosition {
   requestId: string; id: string; token: number; targetIndex: number; documentVersion: number;
@@ -20,6 +21,18 @@ export type CaptureFailureReason = typeof CAPTURE_FAILURE_REASONS[number];
 export interface SelectionCapture { selectionId: string; anchor: Anchor; status: "ready" | "failed"; reason?: CaptureFailureReason }
 export interface ComposeRequest { selectionId?: string; captureStatus?: CaptureStatus; kind: "question" | "change" | "fork"; anchor: Anchor; position?: FramePosition }
 export interface InteractionMarker { id: string; text: string; status: Interaction["status"]; anchor?: Anchor; number: number }
+export interface ComponentEditIdentity { tag: string; id?: string; fingerprint: string; authoredHtml?: string }
+export interface ComponentEditRequest {
+  canvasBase: CanvasBase;
+  patch: {
+    operation: "move" | "copy" | "text" | "layout"; selector: string; sourceIdentity: ComponentEditIdentity;
+    destination?: string; destinationIdentity?: ComponentEditIdentity; position?: "before" | "after" | "append" | "prepend";
+    text?: string; expectedText?: string; textNodeIndex?: number;
+    layout?: ComponentLayout;
+  };
+  sourceLabel?: string; destinationLabel?: string;
+}
+export interface ComponentEditResult { status: "applied" | "rejected" | "cancelled" | "unknown"; message?: string; canvasRevision?: number }
 export interface AskResult { status: "submitted" | "cancelled"; outcome?: string | null }
 export interface FrameScope { channel: typeof FRAME_CHANNEL; boardId: string; sessionId: string }
 export interface FrameSnapshot { canvas: Canvas; boardRevision: number; userState: JsonData; theme: FrameTheme }
@@ -29,6 +42,7 @@ export type FrameMessage = FrameScope & (
   | { type: "canvas-pointer" }
   | { type: "canvas-activity"; busy: boolean }
   | ({ type: "update-position" } & UpdatePosition)
+  | { type: "component-edit"; id: string; request: ComponentEditRequest }
   | { type: "anchor"; anchor: Anchor; selectionId?: string }
   | ({ type: "selection-capture" } & SelectionCapture)
   | { type: "selection-lock"; id: string; active: boolean; dragging?: boolean }
@@ -92,6 +106,7 @@ export function readFrameMessage(value: unknown, scope: Pick<FrameScope, "boardI
       if (value.reason !== undefined && !short(value.reason, 500)) return null;
       if (value.status === "focused" && (!position(value.position) || !value.location)) return null;
       break;
+    case "component-edit": if (!short(value.id, 160) || !validComponentEditRequest(value.request)) return null; break;
     case "anchor": if (!validAnchor(value.anchor) || (value.selectionId !== undefined && !short(value.selectionId, 160))) return null; break;
     case "selection-capture":
       if (!short(value.selectionId, 160) || !validAnchor(value.anchor) || !["ready", "failed"].includes(value.status as string)) return null;
@@ -110,7 +125,7 @@ export function readFrameMessage(value: unknown, scope: Pick<FrameScope, "boardI
     }
     case "open-interaction": case "interaction-position":
       if (!short(value.id, 160) || !position(value.position)) return null;
-      if (value.location !== undefined && !["component", "collapsed", "ancestor", "snapshot"].includes(value.location as string)) return null;
+      if (value.location !== undefined && !["component", "collapsed", "ancestor", "snapshot", "hidden"].includes(value.location as string)) return null;
       break;
     case "ask": {
       const request = value.request;
@@ -163,5 +178,35 @@ export function validAnchor(value: unknown): value is Anchor {
 
 /** Late pixels may add only an image to the exact reference opened by the user. */
 export function sameSelectionAnchor(a: Anchor, b: Anchor): boolean {
-  return JSON.stringify({ ...a, image: undefined }) === JSON.stringify({ ...b, image: undefined });
+  // A restored/frozen anchor may have passed through schema validation, which
+  // changes key insertion order. Pixels arrive separately from this identity.
+  const ordered = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(ordered);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, ordered(item)]));
+    return value;
+  };
+  return JSON.stringify(ordered({ ...a, image: undefined })) === JSON.stringify(ordered({ ...b, image: undefined }));
+}
+
+/** Editing proposals are inert until the user saves through the host-owned control. */
+export function validComponentEditRequest(value: unknown): value is ComponentEditRequest {
+  if (!record(value) || !record(value.canvasBase) || !record(value.patch) || jsonSize(value) > 550000) return false;
+  const base = value.canvasBase, patch = value.patch;
+  if (!Number.isSafeInteger(base.revision) || Number(base.revision) < 0 || !Number.isSafeInteger(base.documentVersion) || Number(base.documentVersion) < 0) return false;
+  const identity = (v: unknown) => record(v) && short(v.tag, 100) && (v.id === undefined || short(v.id, 1000)) && typeof v.fingerprint === "string" && /^[a-f0-9]{8}$/.test(v.fingerprint)
+    && (v.authoredHtml === undefined || typeof v.authoredHtml === "string" && v.authoredHtml.length <= 240000)
+    && (v.id !== undefined || typeof v.authoredHtml === "string")
+    && Object.keys(v).every(key => ["tag", "id", "fingerprint", "authoredHtml"].includes(key));
+  if (!["move", "copy", "text", "layout"].includes(patch.operation as string) || !short(patch.selector, 1000) || !identity(patch.sourceIdentity)) return false;
+  if (value.sourceLabel !== undefined && !short(value.sourceLabel, 160) || value.destinationLabel !== undefined && !short(value.destinationLabel, 160)) return false;
+  // No HTML, script, event ID or caller-controlled copy prefix crosses this bridge.
+  if (Object.keys(value).some(key => !["canvasBase", "patch", "sourceLabel", "destinationLabel"].includes(key)) || Object.keys(base).some(key => !["revision", "documentVersion"].includes(key))) return false;
+  if (Object.keys(patch).some(key => !["operation", "selector", "sourceIdentity", "destination", "destinationIdentity", "position", "text", "expectedText", "textNodeIndex", "layout"].includes(key))) return false;
+  if (patch.operation === "layout") return createComponentLayoutTools().validate(patch.layout) && patch.destination === undefined && patch.destinationIdentity === undefined && patch.position === undefined && patch.text === undefined && patch.expectedText === undefined && patch.textNodeIndex === undefined;
+  if (patch.layout !== undefined) return false;
+  if (patch.operation === "text") return typeof patch.text === "string" && patch.text.length <= 24000 && typeof patch.expectedText === "string" && patch.expectedText.length <= 24000
+    && (patch.textNodeIndex === undefined || Number.isSafeInteger(patch.textNodeIndex) && Number(patch.textNodeIndex) >= 0 && Number(patch.textNodeIndex) <= 10000)
+    && patch.destination === undefined && patch.destinationIdentity === undefined && patch.position === undefined;
+  return short(patch.destination, 1000) && identity(patch.destinationIdentity) && ["before", "after", "append", "prepend"].includes(patch.position as string)
+    && patch.text === undefined && patch.expectedText === undefined && patch.textNodeIndex === undefined;
 }

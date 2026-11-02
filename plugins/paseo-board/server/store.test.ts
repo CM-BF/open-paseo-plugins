@@ -22,6 +22,41 @@ describe("BoardStore", () => {
     return store.create({ id: "test", ownerAgentId, title: "A free canvas", html: "<main id='a'>Hello</main>", data: { count: 1 } });
   }
 
+  it("renames the title after unrelated live changes without rewriting the canvas or saved state", async () => {
+    const initial = await board();
+    await store.saveState({ boardId: initial.id, state: { tab: "second", draft: "keep" } });
+    const changed = await store.emit({ boardId: initial.id, eventId: "live-content", source: "test", summary: "live data", dataPatch: [{ path: "/count", operation: "set", expected: { exists: true, value: 1 }, value: 2 }] });
+    const renamed = await store.rename({ boardId: initial.id, expectedTitle: initial.title, title: "  新名字  ", eventId: "rename-title" });
+    expect(renamed.title).toBe("新名字");
+    expect(renamed.revision).toBe(changed.revision + 1);
+    expect(renamed.canvas).toEqual(changed.canvas);
+    expect(renamed.userState).toEqual({ tab: "second", draft: "keep" });
+    expect(renamed.updates).toEqual(changed.updates);
+    expect(renamed.events.at(-1)).toMatchObject({ kind: "rename", source: "user" });
+    expect((await new BoardStore(root).read(initial.id))?.title).toBe("新名字");
+  });
+
+  it("serializes competing title changes and replays a lost rename response without overwriting a newer name", async () => {
+    const initial = await board();
+    const requests = ["first", "second"].map(title => ({ boardId: initial.id, expectedTitle: initial.title, title, eventId: `rename-${title}` }));
+    const results = await Promise.allSettled(requests.map(request => store.rename(request)));
+    const winner = results.findIndex(result => result.status === "fulfilled");
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.find(result => result.status === "rejected")).toMatchObject({ reason: { code: "revision_conflict", details: { scope: "title", currentTitle: requests[winner].title } } });
+    const later = await store.rename({ boardId: initial.id, expectedTitle: requests[winner].title, title: "Later title", eventId: "later-rename" });
+    expect(await new BoardStore(root).rename(requests[winner])).toEqual(later);
+    await expect(store.rename({ ...requests[winner], title: "different payload" })).rejects.toHaveProperty("code", "idempotency_conflict");
+    expect(await store.read(initial.id)).toEqual(later);
+  });
+
+  it("rejects empty and overlong names without recording a rename", async () => {
+    const initial = await board();
+    for (const title of ["", "   ", "x".repeat(201)]) {
+      await expect(store.rename({ boardId: initial.id, expectedTitle: initial.title, title, eventId: "invalid-title" })).rejects.toHaveProperty("code", "invalid_input");
+    }
+    expect(await store.read(initial.id)).toEqual(initial);
+  });
+
   it("rejects stale HTML and patches even if a writer refreshes only the Board revision", async () => {
     const initial = await board("agent-a");
     await store.addInteraction({ boardId: initial.id, intentId: "fork-b", kind: "fork", text: "Collaborate" }, "agent-b");

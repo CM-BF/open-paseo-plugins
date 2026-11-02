@@ -1,32 +1,44 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { setInterval, clearInterval } from "node:timers";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { createBoardRpc, emitBoardRpc, feedBoardRpc, interactBoardRpc, listBoardsRpc, publishBoardRpc, readBoardRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc, markUpdatesSeenRpc } from "../shared/contracts";
-import { BoardStore } from "./store";
+import { createBoardRpc, editBoardRpc, emitBoardRpc, feedBoardRpc, interactBoardRpc, listBoardsRpc, publishBoardRpc, readBoardRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc, markUpdatesSeenRpc, renameBoardRpc, boardChangesRpc, boardCheckRpc, boardChangedEvent, type BoardChange } from "../shared/contracts";
+import { BoardStorePool } from "./store-pool";
+import { editBoardResult } from "./component-edit-rpc";
 import { BoardService } from "./service";
 import { ServiceJournal } from "./journal";
 import { BoardBridge } from "./bridge";
 import { runtimePaths, writeRuntime, linkSkills } from "./runtime";
 import { boardInstructions, replaceInstructions } from "./prompts";
 import type { Paseo } from "./sdk";
+import { copyBoardRpc } from "../shared/board-copy";
+import { BoardCopies } from "./board-copy";
+import { ReleaseRepository } from "./static-release";
+import { GitHubPagesManager } from "./github-pages";
+import { registerPublicationRpc } from "./publication-rpc";
 
-export interface ContributeOptions { rootDir?: string; runtimeDir?: string; home?: string; linkSkills?: boolean; tickMs?: number; onService?: (service: BoardService) => void }
+export interface ContributeOptions { rootDir?: string; runtimeDir?: string; home?: string; linkSkills?: boolean; eventTransport?: { publish(change: BoardChange): void }; onService?: (service: BoardService) => void }
 
 export function contributeServer(server: PluginServerContext, options: ContributeOptions = {}) {
   const paths = runtimePaths(options.runtimeDir);
   const paseoHome = process.env.PASEO_HOME?.replace(/^~(?=\/|$)/, homedir()) || join(homedir(), ".paseo");
   const root = options.rootDir ?? join(paseoHome, "plugin-data", "paseo-board");
-  const store = new BoardStore(root);
+  const store = new BoardStorePool(root, { workerDir: paths.root });
   const journal = new ServiceJournal(join(root, "service.json"));
   const log = (message: string) => console.warn(`[paseo-board] ${message}`);
   const service = new BoardService(store, journal, log);
+  const copies = new BoardCopies(join(root, "copies"), store, board => store.materializeAuthoredHtml(board.id, board.canvas));
+  const releases = new ReleaseRepository(join(root, "releases"), store);
+  const pages = new GitHubPagesManager(join(root, "pages"), releases);
   const bridge = new BoardBridge(service);
   const removers: Array<() => void> = [];
   let stopped = false;
-  let timer: ReturnType<typeof setInterval> | undefined;
   options.onService?.(service);
+  // New hosts can push; existing hosts use constant-size in-memory cursor checks.
+  const events = server as PluginServerContext & { registerEvent?: (contract: typeof boardChangedEvent) => { emit(change: BoardChange): void } };
+  const publisher = typeof events.registerEvent === "function" ? events.registerEvent(boardChangedEvent) : undefined;
+  const transport = options.eventTransport ?? (publisher ? { publish: (change: BoardChange) => publisher.emit(change) } : undefined);
+  if (transport) removers.push(store.subscribe(change => transport.publish(change)));
   const ready = (async () => {
     await Promise.all([store.init(), journal.init()]);
     if (stopped) return;
@@ -35,9 +47,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     await bridge.start(paths.socket);
     if (stopped) return;
     if (options.linkSkills !== false) await linkSkills(paths, options.home);
-    if (stopped) return;
-    timer = setInterval(() => { void service.reconcile().catch((error) => log(String(error))); }, options.tickMs ?? 15000);
-    (timer as unknown as { unref?: () => void }).unref?.();
+    if (!stopped) pages.start();
   })();
   void ready.catch((error) => log(`startup failed: ${String(error)}`));
   let captured = false;
@@ -48,14 +58,20 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     void ready.then(() => service.reconcile()).catch((error) => log(String(error)));
   };
   const checkReady = async () => { await ready; if (stopped) throw new Error("Board service stopped"); };
+  registerPublicationRpc(server, { ready: checkReady, requireBoard: id => service.requireBoard(id), releases, pages });
 
-  server.handle(listBoardsRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return { boards: await store.list(input) }; });
+  server.handle(listBoardsRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.summarySnapshot(input); });
+  server.handle(boardChangesRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.changesSince(input.cursor, input.compact); });
+  server.handle(boardCheckRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return { changed: store.hasChanges(input.cursor) }; });
+  server.handle(renameBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.rename(input); });
+  server.handle(editBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return editBoardResult(store, input); });
   server.handle(readBoardRpc, async (input, { paseo }) => {
     capture(paseo); await checkReady(); const board = await store.read(input.boardId);
     const unchanged = !!board && board.revision === input.sinceRevision;
     return { board: unchanged ? null : board, unchanged };
   });
   server.handle(createBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); const board = await store.create(input); void service.reconcile(); return board; });
+  server.handle(copyBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return copies.copy(input); });
   server.handle(publishBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.publish(input); });
   server.handle(emitBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.emit(input); });
   server.handle(feedBoardRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.feed(input); });
@@ -98,11 +114,10 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   return async () => {
     stopped = true;
     for (const remove of removers) remove();
-    if (timer) clearInterval(timer);
     // Mark components stopped before awaiting startup; startup may be paused at any await.
-    await Promise.all([bridge.close(), service.dispose()]);
+    await Promise.all([bridge.close(), service.dispose(), pages.close()]);
     await ready.catch(() => undefined);
-    if (timer) clearInterval(timer);
     await bridge.close();
+    await store.close();
   };
 }

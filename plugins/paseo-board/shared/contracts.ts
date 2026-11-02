@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { createComponentLayoutTools } from "./component-layout";
 
 export const PLUGIN_ID = "paseo-board";
 export const IdSchema = z.string().min(1).max(160).regex(/^[a-zA-Z0-9_.:-]+$/);
@@ -60,11 +61,50 @@ export const AnchorSchema = z.object({
   viewport: z.object({ width: z.number().positive(), height: z.number().positive(), scrollX: z.number(), scrollY: z.number() }).optional(),
   image: z.object({ mimeType: z.literal("image/png"), data: z.string().max(3000000) }).optional(),
 });
+export const ComponentIdentitySchema = z.object({
+  tag: z.string().min(1).max(100), id: z.string().min(1).max(1000).optional(),
+  // Structural identity excludes live text and control values.
+  fingerprint: z.string().regex(/^[a-f0-9]{8}$/),
+  authoredHtml: z.string().max(240000).optional(),
+});
+export const ComponentLayoutSchema = z.object({
+  collapse: z.enum(["none", "contents", "group"]),
+  maxHeight: z.number().int().min(80).max(2000).nullable(),
+  title: z.string().min(1).max(120).optional(),
+  placement: z.partialRecord(z.enum(["grid-column", "grid-row", "order", "flex-grow", "flex-shrink", "flex-basis", "align-self", "justify-self", "width", "min-width", "max-width", "margin-top", "margin-right", "margin-bottom", "margin-left"]), z.string().max(240)).optional(),
+  flow: z.partialRecord(z.enum(["display", "flex-direction", "flex-wrap", "align-items", "justify-content", "align-content", "grid-template-columns", "grid-template-rows", "grid-auto-columns", "grid-auto-rows", "grid-auto-flow", "column-gap", "row-gap"]), z.string().max(240)).optional(),
+}).strict().refine(value => createComponentLayoutTools().validate(value), "Expected bounded component layout options");
 export const CanvasPatchSchema = z.object({
   id: IdSchema,
   selector: z.string().min(1).max(1000),
-  operation: z.enum(["append", "prepend", "replace", "remove"]),
+  operation: z.enum(["append", "prepend", "replace", "remove", "move", "copy", "text", "layout"]),
   html: z.string().max(2000000).default(""),
+  sourceIdentity: ComponentIdentitySchema.optional(), destinationIdentity: ComponentIdentitySchema.optional(),
+  destination: z.string().min(1).max(1000).optional(), position: z.enum(["before", "after", "append", "prepend"]).optional(),
+  copyIdPrefix: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,100}$/).optional(),
+  text: z.string().max(24000).optional(), expectedText: z.string().max(24000).optional(),
+  textNodeIndex: z.number().int().min(0).max(10000).optional(),
+  layout: ComponentLayoutSchema.optional(),
+}).superRefine((patch, context) => {
+  if (!["move", "copy", "text", "layout"].includes(patch.operation)) {
+    if (patch.layout !== undefined) context.addIssue({ code: "custom", path: ["layout"], message: "Layout options require a layout operation" });
+    return;
+  }
+  const missing = (field: string) => context.addIssue({ code: "custom", path: [field], message: `Component edit requires ${field}` });
+  if (!patch.sourceIdentity) missing("sourceIdentity");
+  if (patch.operation === "layout") {
+    if (!patch.layout) missing("layout");
+    if (patch.html !== "" || patch.destination !== undefined || patch.destinationIdentity !== undefined || patch.position !== undefined || patch.text !== undefined || patch.expectedText !== undefined || patch.textNodeIndex !== undefined || patch.copyIdPrefix !== undefined) context.addIssue({ code: "custom", message: "Layout edits accept only identity and bounded layout options" });
+  } else if (patch.operation === "text") {
+    if (patch.text === undefined) missing("text");
+    if (patch.expectedText === undefined) missing("expectedText");
+  } else {
+    if (!patch.destination) missing("destination");
+    if (!patch.destinationIdentity) missing("destinationIdentity");
+    if (!patch.position) missing("position");
+    if (patch.operation === "copy" && !patch.copyIdPrefix) missing("copyIdPrefix");
+  }
+  if (patch.operation !== "layout" && patch.layout !== undefined) context.addIssue({ code: "custom", path: ["layout"], message: "Layout options require a layout operation" });
 });
 export const CanvasSchema = z.object({
   revision: z.number().int().nonnegative(),
@@ -178,7 +218,22 @@ export const BoardSchema = z.object({
   userState: JsonDataSchema,
   extraction: z.object({ lastCheckedAt: z.string().optional(), agentId: z.string().optional(), cursor: z.string().optional(), note: z.string().optional() }),
 });
-export const BoardSummarySchema = BoardSchema.pick({ id: true, title: true, projectId: true, workspaceId: true, ownerAgentId: true, revision: true, createdAt: true, updatedAt: true }).extend({ decisionCount: z.number(), pendingCount: z.number(), unreadUpdateCount: z.number().int().nonnegative().default(0), latestUpdateRevision: z.number().int().nonnegative().default(0) });
+export const BoardSummarySchema = BoardSchema.pick({ id: true, title: true, projectId: true, workspaceId: true, ownerAgentId: true, revision: true, createdAt: true, updatedAt: true }).extend({ decisionCount: z.number(), pendingCount: z.number(), unreadUpdateCount: z.number().int().nonnegative().default(0), latestUpdateRevision: z.number().int().nonnegative().default(0), status: z.enum(["processing", "error", "idle"]).default("idle") });
+// Independent transport sequence also covers attention changes that preserve content revision.
+export const BoardEventCursorSchema = z.object({ epoch: z.string().min(1).max(160), sequence: z.number().int().nonnegative() });
+export const BoardChangeReasonSchema = z.enum(["content", "attention", "metadata", "operational"]);
+export const BoardChangeSchema = z.object({ cursor: BoardEventCursorSchema, summary: BoardSummarySchema, canvasRevision: z.number().int().nonnegative(), reason: BoardChangeReasonSchema });
+export const BoardChangesSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("snapshot"), cursor: BoardEventCursorSchema, boards: z.array(BoardSummarySchema) }),
+  z.object({ mode: z.literal("delta"), cursor: BoardEventCursorSchema, changes: z.array(BoardChangeSchema) }),
+  z.object({ mode: z.literal("compact"), fromCursor: BoardEventCursorSchema, cursor: BoardEventCursorSchema, changes: z.array(BoardChangeSchema) }),
+]);
+export type BoardEventCursor = z.infer<typeof BoardEventCursorSchema>;
+export type BoardChange = z.infer<typeof BoardChangeSchema>;
+export type BoardChanges = z.infer<typeof BoardChangesSchema>;
+export const BOARD_CHANGE_EVENT = "board.changed";
+// Structural public event contract; registration is capability-gated until the host API ships.
+export const boardChangedEvent = { name: BOARD_CHANGE_EVENT, schema: BoardChangeSchema };
 export const CreateInputSchema = z.object({ id: IdSchema.optional(), title: z.string().min(1).max(200), projectId: z.string().optional(), workspaceId: z.string().optional(), ownerAgentId: z.string().optional(), html: z.string().max(4000000).default(""), data: JsonDataSchema.default({}) });
 export const PublishInputSchema = z.object({
   boardId: IdSchema, expectedRevision: z.number().int().nonnegative(), eventId: IdSchema,
@@ -200,6 +255,11 @@ export const RespondInputSchema = z.object({
 export const EmitInputSchema = z.object({ boardId: IdSchema, eventId: IdSchema, source: z.string().min(1).max(200), kind: z.string().max(200).default("update"), summary: z.string().max(4000), canvasBase: CanvasBaseSchema.optional(), data: JsonDataSchema.optional(), dataPatch: DataPatchesSchema.optional(), focusSelectors: FocusSelectorsSchema.optional(), observation: z.object({ id: IdSchema, name: z.string().max(200), value: z.unknown(), evidence: EvidenceSchema }).optional() });
 export const InteractInputSchema = z.object({ boardId: IdSchema, intentId: IdSchema, kind: z.enum(["question", "change", "fork", "return", "reply"]), destination: DestinationSchema.optional(), text: z.string().min(1).max(24000), anchor: AnchorSchema.optional(), sourceInteractionId: IdSchema.optional() });
 export const SelectSideAgentInputSchema = z.object({ boardId: IdSchema, agentId: z.string().min(1).max(160), expectedRevision: z.number().int().nonnegative(), eventId: IdSchema });
+export const RenameInputSchema = z.object({ boardId: IdSchema, expectedTitle: z.string(), title: z.string().trim().min(1).max(200), eventId: IdSchema });
+export const EditInputSchema = z.object({
+  boardId: IdSchema, canvasBase: CanvasBaseSchema, eventId: IdSchema,
+  patch: CanvasPatchSchema.refine(patch => ["move", "copy", "text", "layout"].includes(patch.operation) && patch.html === "", "User edits support move, copy, text and layout operations without caller-supplied HTML"),
+});
 export const DecisionUpdateInputSchema = z.object({ boardId: IdSchema, expectedRevision: z.number().int().nonnegative(), eventId: IdSchema, decision: DecisionInputSchema });
 export const StateInputSchema = z.object({ boardId: IdSchema, state: JsonDataSchema });
 export const MarkUpdatesSeenInputSchema = z.object({ boardId: IdSchema, updateIds: z.array(IdSchema).max(80) });
@@ -220,18 +280,32 @@ export type RespondInput = z.input<typeof RespondInputSchema>;
 export type EmitInput = z.input<typeof EmitInputSchema>;
 export type InteractInput = z.input<typeof InteractInputSchema>;
 export type SelectSideAgentInput = z.input<typeof SelectSideAgentInputSchema>;
+export type RenameInput = z.input<typeof RenameInputSchema>;
+export type EditInput = z.input<typeof EditInputSchema>;
+export const EditRefusalCodeSchema = z.enum(["invalid_input", "revision_conflict", "edit_conflict", "idempotency_conflict", "unauthorized", "forbidden", "board_not_found", "not_found", "size_limit"]);
+export const EditResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("applied"), eventId: IdSchema, board: BoardSchema }),
+  z.object({ status: z.literal("rejected"), eventId: IdSchema, code: EditRefusalCodeSchema, componentTarget: z.enum(["source", "destination"]).optional() }),
+]);
+export type EditResult = z.infer<typeof EditResultSchema>;
+export type ComponentIdentity = z.infer<typeof ComponentIdentitySchema>;
 export type JsonData = z.infer<typeof JsonDataSchema>;
 export type MarkUpdatesSeenInput = z.input<typeof MarkUpdatesSeenInputSchema>;
 
-export const listBoardsRpc = defineRpc({ name: "board.list", input: z.object({ workspaceId: z.string().optional() }), output: z.object({ boards: z.array(BoardSummarySchema) }) });
+export const listBoardsRpc = defineRpc({ name: "board.list", input: z.object({ workspaceId: z.string().optional() }), output: z.object({ boards: z.array(BoardSummarySchema), cursor: BoardEventCursorSchema.optional() }) });
 export const readBoardRpc = defineRpc({ name: "board.read", input: z.object({ boardId: IdSchema, sinceRevision: z.number().optional() }), output: z.object({ board: BoardSchema.nullable(), unchanged: z.boolean().default(false) }) });
 export const createBoardRpc = defineRpc({ name: "board.create", input: CreateInputSchema, output: BoardSchema });
 export const publishBoardRpc = defineRpc({ name: "board.publish", input: PublishInputSchema, output: BoardSchema });
 export const emitBoardRpc = defineRpc({ name: "board.emit", input: EmitInputSchema, output: BoardSchema });
 export const interactBoardRpc = defineRpc({ name: "board.interact", input: InteractInputSchema, output: InteractionSchema });
 export const selectSideAgentRpc = defineRpc({ name: "board.side-agent", input: SelectSideAgentInputSchema, output: BoardSchema });
+export const renameBoardRpc = defineRpc({ name: "board.rename", input: RenameInputSchema, output: BoardSchema });
+export const editBoardRpc = defineRpc({ name: "board.edit", input: EditInputSchema, output: EditResultSchema });
 export const recordDecisionRpc = defineRpc({ name: "board.decision", input: DecisionUpdateInputSchema, output: BoardSchema });
 export const saveStateRpc = defineRpc({ name: "board.state", input: StateInputSchema, output: z.object({ saved: z.boolean() }) });
 export const markUpdatesSeenRpc = defineRpc({ name: "board.updates-seen", input: MarkUpdatesSeenInputSchema, output: BoardSchema });
 
 export const feedBoardRpc = defineRpc({ name: "board.feed", input: FeedInputSchema, output: FeedResultSchema });
+
+export const boardChangesRpc = defineRpc({ name: "board.changes", input: z.object({ cursor: BoardEventCursorSchema.optional(), compact: z.boolean().optional() }), output: BoardChangesSchema });
+export const boardCheckRpc = defineRpc({ name: "board.check", input: z.object({ cursor: BoardEventCursorSchema }), output: z.object({ changed: z.boolean() }) });

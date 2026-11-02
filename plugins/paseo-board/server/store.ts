@@ -4,13 +4,15 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 import {
   BoardSchema, CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, InteractInputSchema,
-  InteractionSchema, PublishInputSchema, RespondInputSchema, StateInputSchema, MarkUpdatesSeenInputSchema,
+  InteractionSchema, PublishInputSchema, RespondInputSchema, StateInputSchema, MarkUpdatesSeenInputSchema, RenameInputSchema, EditInputSchema,
   type Board, type BoardSummary, type CreateInput, type DecisionInput, type EmitInput, type CanvasUpdate,
-  type FeedInput, type FeedResult, type InteractInput, type Interaction, type PublishInput, type RespondInput, type MarkUpdatesSeenInput, type CanvasBase, type DataPatch,
+  type FeedInput, type FeedResult, type InteractInput, type Interaction, type PublishInput, type RespondInput, type MarkUpdatesSeenInput, type CanvasBase, type DataPatch, type RenameInput, type EditInput, type CanvasPatch,
 } from "../shared/contracts";
 import { assertId, assertJson, BoardStoreError, canonicalJson, ensureDirectory, fingerprint, parseInput, readEnvelope, serialized, writeEnvelope, type Envelope } from "./store-format";
 import { changeFeed, parseFeed } from "./feeds";
 import { applyDataPatch } from "./data-patch";
+import { summarizeBoard, sortBoardSummaries, type BoardCommitNotice } from "./board-events";
+import { ComponentSourceMismatch, prepareComponentPatch } from "./authored-source";
 
 export { BoardStoreError } from "./store-format";
 export type InteractionUpdate = Partial<Pick<Interaction, "status" | "agentId" | "response" | "responseRevision" | "responseSource" | "responseMethod" | "responseCanvas" | "resultReferences" | "error">>;
@@ -28,15 +30,33 @@ const transitions: Record<Interaction["status"], readonly Interaction["status"][
   answered: ["applied"], applied: [], rejected: [],
 };
 
+export interface BoardStoreOptions {
+  ownsBoard?: (id: string) => boolean;
+  onCommit?: (notice: BoardCommitNotice) => void;
+}
+// Stores in the same process and directory share committed summaries, including same-
+// revision attention changes. Workers each own a disjoint partition of this index.
+const indexes = new Map<string, WeakRef<Map<string, BoardSummary>>>();
+function directoryIndex(root: string): Map<string, BoardSummary> {
+  for (const [key, value] of indexes) if (!value.deref()) indexes.delete(key);
+  let index = indexes.get(root)?.deref();
+  if (!index) { index = new Map(); indexes.set(root, new WeakRef(index)); }
+  return index;
+}
+
 export class BoardStore {
   readonly rootDir: string;
   private readonly directory: string;
   private initialization?: Promise<void>;
   private feedPending = 0;
+  private readonly options: BoardStoreOptions;
+  private readonly summaries: Map<string, BoardSummary>;
 
-  constructor(rootDir: string) {
+  constructor(rootDir: string, options: BoardStoreOptions = {}) {
     this.rootDir = resolve(rootDir);
     this.directory = join(this.rootDir, "boards");
+    this.options = options;
+    this.summaries = directoryIndex(this.rootDir);
   }
 
   init(): Promise<void> {
@@ -50,22 +70,19 @@ export class BoardStore {
     for (const filename of await readdir(this.directory)) {
       if (filename.endsWith(".json")) {
         const id = assertId(filename.slice(0, -5));
-        await serialized(this.path(id), () => readEnvelope(this.path(id), id));
+        if (this.options.ownsBoard && !this.options.ownsBoard(id)) continue;
+        await serialized(this.path(id), async () => {
+          const envelope = await readEnvelope(this.path(id), id);
+          if (envelope) this.summaries.set(id, summarizeBoard(envelope.board));
+        });
       }
     }
   }
 
   async list(filter: { workspaceId?: string } = {}): Promise<BoardSummary[]> {
     await this.init();
-    const boards = await Promise.all((await readdir(this.directory)).filter(name => name.endsWith(".json")).map(name => this.read(name.slice(0, -5))));
-    return boards.filter((board): board is Board => board !== null && (filter.workspaceId === undefined || board.workspaceId === filter.workspaceId))
-      .map(({ id, title, projectId, workspaceId, ownerAgentId, revision, createdAt, updatedAt, decisions, interactions, updates, seenUpdateIds }) => ({
-        id, title, projectId, workspaceId, ownerAgentId, revision, createdAt, updatedAt,
-        decisionCount: decisions.filter(item => item.status !== "dismissed" && item.status !== "superseded").length,
-        pendingCount: interactions.filter(item => !["answered", "applied", "rejected"].includes(item.status)).length,
-        unreadUpdateCount: updates.filter(item => !seenUpdateIds.includes(item.id)).length,
-        latestUpdateRevision: updates.at(-1)?.boardRevision ?? 0,
-      })).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+    const owned = [...this.summaries.values()].filter(board => !this.options.ownsBoard || this.options.ownsBoard(board.id));
+    return structuredClone(sortBoardSummaries(owned, filter));
   }
 
   async read(boardId: string): Promise<Board | null> {
@@ -97,8 +114,37 @@ export class BoardStore {
       });
       const envelope: Envelope = { storageVersion: 1, board, receipts: [{ key: `create:${id}`, fingerprint: digest, revision: 1 }], history: [{ revision: 1, at, operation: "create", payload }] };
       await writeEnvelope(path, envelope);
+      this.committed(board, "content");
       return board;
     });
+  }
+
+  async rename(raw: RenameInput): Promise<Board> {
+    const input = parseInput(RenameInputSchema, raw);
+    return this.mutate(input.boardId, "rename", input, (board, at) => {
+      if (board.title !== input.expectedTitle) throw new BoardStoreError("revision_conflict", "Board 名称已被修改，请核对当前名称后重试。", { scope: "title", expectedTitle: input.expectedTitle, currentTitle: board.title });
+      board.title = input.title;
+      this.event(board, input.eventId, "user", "rename", `Board renamed to ${input.title}`, at);
+    }, input.eventId);
+  }
+
+  async edit(raw: EditInput): Promise<Board> {
+    const input = parseInput(EditInputSchema, raw);
+    return this.mutate(input.boardId, "edit", input, (board, at) => {
+      this.expectCanvas(board, input.canvasBase);
+      if (board.canvas.patches.some(patch => patch.id === input.patch.id)) throw new BoardStoreError("idempotency_conflict", "Component patch ID already exists");
+      const patch = this.prepareEdit(board.canvas, input.patch);
+      board.canvas.patches.push(patch);
+      board.canvas.revision++;
+      const selector = patch.operation === "copy" ? `#${patch.copyIdPrefix}-0` : patch.operation === "move" ? patch.destination! : patch.selector;
+      this.canvasUpdate(board, input.eventId, at, "patch", [{ selector, operation: patch.operation, patchId: patch.id }]);
+      this.event(board, input.eventId, "user", "component-edit", `Component ${patch.operation}`, at);
+    }, input.eventId);
+  }
+
+  private prepareEdit(canvas: Board["canvas"], patch: CanvasPatch): CanvasPatch {
+    try { return prepareComponentPatch(canvas, patch); }
+    catch (error) { throw new BoardStoreError("edit_conflict", error instanceof Error ? error.message : String(error), { selector: patch.selector, canvasBase: { revision: canvas.revision, documentVersion: canvas.documentVersion }, ...(error instanceof ComponentSourceMismatch ? { componentTarget: error.componentTarget, componentSelector: error.componentSelector } : {}) }); }
   }
 
   async publish(raw: PublishInput, actorAgentId?: string): Promise<Board> {
@@ -128,7 +174,7 @@ export class BoardStore {
       }
       if (input.patch) {
         if (board.canvas.patches.some(patch => patch.id === input.patch!.id)) throw new BoardStoreError("idempotency_conflict", `Patch ${input.patch.id} already exists in this document`);
-        board.canvas.patches.push(input.patch);
+        board.canvas.patches.push(["move", "copy", "text", "layout"].includes(input.patch.operation) ? this.prepareEdit(board.canvas, input.patch) : input.patch);
       }
       const dataChanged = canonicalJson(nextData) !== canonicalJson(board.canvas.data);
       board.canvas.data = nextData;
@@ -167,7 +213,7 @@ export class BoardStore {
         if (input.html !== undefined) { canvas.html = input.html; canvas.documentVersion++; canvas.patches = []; }
         if (input.patch) {
           if (canvas.patches.some(patch => patch.id === input.patch!.id)) throw new BoardStoreError("idempotency_conflict", `Response patch ${input.patch.id} already exists`);
-          canvas.patches.push(input.patch);
+          canvas.patches.push(["move", "copy", "text", "layout"].includes(input.patch.operation) ? this.prepareEdit(canvas, input.patch) : input.patch);
         }
         if (input.data !== undefined) canvas.data = { ...canvas.data, ...input.data };
         canvas.revision++;
@@ -236,6 +282,7 @@ export class BoardStore {
           envelope.history.push({ revision: envelope.board.revision, at, operation: "feed", payload });
           assertJson(envelope.board.canvas.data, "Canvas data");
           await writeEnvelope(path, envelope);
+          this.committed(envelope.board, "content");
           return change.result;
         } catch (error) {
           // Errors are operational inspection metadata, not successful data/sequence updates.
@@ -246,6 +293,7 @@ export class BoardStore {
           if (source && source.actorAgentId === actorAgentId && (input.action === "set" || input.action === "append") && source.generation === input.generation && error instanceof BoardStoreError) {
             source.lastError = { code: error.code, message: error.message.slice(0, 1000), at };
             await writeEnvelope(path, envelope);
+            this.committed(envelope.board, "operational");
           }
           throw error;
         }
@@ -285,6 +333,7 @@ export class BoardStore {
       if (canonicalJson(next) === canonicalJson(envelope.board.seenUpdateIds)) return envelope.board;
       envelope.board.seenUpdateIds = next;
       await writeEnvelope(path, envelope);
+      this.committed(envelope.board, "attention");
       return envelope.board;
     });
   }
@@ -359,8 +408,16 @@ export class BoardStore {
       if (eventId) envelope.receipts.push({ key: eventId, fingerprint: digest, revision: envelope.board.revision });
       assertJson(envelope.board.canvas.data, "Canvas data");
       await writeEnvelope(path, envelope);
+      this.committed(envelope.board, operation === "rename" ? "metadata" : "content");
       return envelope.board;
     });
+  }
+
+  private committed(board: Board, reason: BoardCommitNotice["reason"]): void {
+    const summary = summarizeBoard(board);
+    this.summaries.set(board.id, summary);
+    try { this.options.onCommit?.({ summary: structuredClone(summary), canvasRevision: board.canvas.revision, reason }); }
+    catch { /* A notification listener cannot turn a committed write into a failed mutation. */ }
   }
 
   private checkReceipt(envelope: Envelope, key: string, digest: string): boolean {
@@ -461,3 +518,6 @@ export class BoardStore {
     if (canonicalJson(next) !== canonicalJson(interaction)) Object.assign(interaction, next, { updatedAt: at });
   }
 }
+
+/** Public structural contract implemented by the process-pool coordinator. */
+export type BoardStoreApi = Pick<BoardStore, keyof BoardStore>;
