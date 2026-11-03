@@ -1,5 +1,13 @@
 # Paseo Board publication and verification
 
+### 2026-11-02 — issues #5 and #6 under repair
+
+- Work starts from merged main `e0dd06b` in the isolated `sw/board-issues-5-6` worktree. Issue #5 requires replaying existing fragment `body` append/prepend journals through export and copy without rewriting the Board, while rejecting destructive root patches before persistence. Runtime-generated DOM targets remain supported by ordinary live patches.
+- Issue #6 requires permitting reproducible sticky geometry and calculating each shadow's directional paint bounds. Focused Chromium checks compare generated crops against native screenshots, retain the original failure, and check that capture leaves live input, focus, scroll and DOM untouched.
+- Candidate checks passed: TypeScript, 405 source tests across 32 files, 8 standalone release browser checks, focused native-pixel sticky/shadow comparisons and the existing capture regression. Existing root journals recover through CLI/MCP, worker materialization, copy and release without history mutation. One hundred incremental publications took 4.4 seconds including persistence under the concurrent test run; final source replay took 2ms for 57.5KB. This is a measurement, not a latency guarantee.
+- Baseline source and regression inputs are frozen under the private `issues-5-6-20261102` evidence directory. The original body replay and halo/point failures are reproduced. Retained candidate failures exposed missing version fields in new tests, clone-only overlay scrollbars, a non-sticky fixture outside the selected region, font antialias differences and a timing-dependent RAF assertion. The final tests verify real sticky geometry and a real in-capture animation frame; text-shadow checks independently bound paint position, coverage and rasterization error rather than relaxing all screenshots.
+- Independent source review found no remaining blocker. Clean pinned build/production Helper checks and primary-daemon Web acceptance remain pending; no installation or new main merge has occurred.
+
 ### 2026-10-31 — durable drafts, single-row toolbar and fixed-version publishing installed
 
 - Desktop/web message drafts persist text, frozen references and PNGs separately for each host/Board. Closing hides a draft; explicit discard or a matched acknowledgement removes it. Unknown sends retain their immutable route and event before RPC, while newer edits become a separate draft. Offline startup still exposes local drafts. Storage failures block sending and leaving the Board while keeping current text copyable. Native-mobile persistence remains unavailable in the current SDK.

@@ -36833,6 +36833,23 @@ var SOURCE_NOTE = "Static authored source after replaying committed patches, not
 var errorMessage = (error62) => error62 instanceof Error ? error62.message : String(error62);
 var rootTags = /* @__PURE__ */ new Set(["html", "head", "body"]);
 var nonComponents = /* @__PURE__ */ new Set(["script", "style", "link", "meta", "base", "title", "template", "noscript"]);
+var ROOT_REPLACEMENT_ERROR = "Cannot replace or remove a document root. Publish a complete document with replaceDocument:true and its original canvasBase instead.";
+function documentRoots(document) {
+  const root = document.documentElement;
+  return new Set(root ? [root, ...Array.from(root.children)].filter((element) => rootTags.has(element.localName)) : []);
+}
+function assertRootPatch(target, patch, roots, fragment) {
+  if (!roots.has(target)) return;
+  if (patch.operation === "replace" || patch.operation === "remove") throw new Error(ROOT_REPLACEMENT_ERROR);
+  if (fragment && !(target.localName === "body" && (patch.operation === "append" || patch.operation === "prepend"))) {
+    throw new Error("Selector identifies a host document wrapper, not an authored element. On fragment canvases, append/prepend to body or select an authored container.");
+  }
+}
+function authoredSourceFailure(action, authored) {
+  const failed = authored.replay.failedPatch;
+  const detail = failed ? `patch ${JSON.stringify(failed.id)} (selector ${JSON.stringify(failed.selector)}) failed: ${failed.reason}` : authored.note;
+  return `${action}: ${detail}. Read the current Board's canvas.html and ordered canvas.patches, including every patch after the failure. Reconcile missing/runtime-generated targets in a complete authored draft, then publish it with replaceDocument:true and the canvasBase from that read; on conflict reread and merge. A later patch cannot repair an earlier unresolved journal entry. Do not republish the base alone or delete stored history.`;
+}
 var voidTags = /* @__PURE__ */ new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
 var ComponentSourceMismatch = class extends Error {
   constructor(message, componentTarget, componentSelector) {
@@ -36972,12 +36989,28 @@ function prepareComponentPatch(canvas, patch) {
   return patch.operation === "copy" ? { ...patch, html: result.target.html } : patch;
 }
 function describeAuthoring(canvas, selector) {
+  return describeSource(canvas, selector);
+}
+function validateHtmlPatchRoots(canvas, patch) {
+  describeSource(canvas, void 0, (document, fragmentBody) => {
+    let matches2;
+    try {
+      matches2 = document.querySelectorAll(patch.selector);
+    } catch {
+      return;
+    }
+    const roots = documentRoots(document);
+    for (const target of matches2) assertRootPatch(target, patch, roots, !!fragmentBody);
+  });
+}
+function describeSource(canvas, selector, inspect) {
   const result = {
     canvasBase: { revision: canvas.revision, documentVersion: canvas.documentVersion },
     materializedAuthoredHtml: null,
     replay: { complete: false, appliedPatchIds: [] },
     note: SOURCE_NOTE
   };
+  let inspected;
   try {
     const parser = new DOMParser();
     const parsed = parser.parseFromString(canvas.html, "text/html");
@@ -36985,23 +37018,23 @@ function describeAuthoring(canvas, selector) {
     const document = isDocument2 ? parsed : parser.parseFromString("<html><head></head><body></body></html>", "text/html");
     const fragmentBody = isDocument2 ? void 0 : document.querySelector("body");
     if (fragmentBody) fragmentBody.innerHTML = canvas.html;
-    const virtualRoots = fragmentBody ? /* @__PURE__ */ new Set([document.documentElement, document.querySelector("head"), fragmentBody]) : /* @__PURE__ */ new Set();
+    inspected = { document, fragmentBody };
+    const roots = documentRoots(document);
+    const virtualRoots = fragmentBody ? roots : /* @__PURE__ */ new Set();
     const applied = /* @__PURE__ */ new Set();
-    const targetFor = (query2) => {
+    const targetFor = (query2, allowRoot = false) => {
       const matches2 = document.querySelectorAll(query2);
       if (matches2.length !== 1) throw new Error(`Selector must match exactly one authored element; matched ${matches2.length}`);
       const target = matches2[0];
-      if (virtualRoots.has(target)) throw new Error("Selector identifies a host document wrapper, not an authored element");
+      if (virtualRoots.has(target) && !allowRoot) throw new Error("Selector identifies a host document wrapper, not an authored element");
       if (target.parentElement?.closest("noscript")) throw new Error("Selector identifies inactive noscript content, not a running Board element");
       return target;
     };
     for (const patch of canvas.patches) {
       if (applied.has(patch.id)) continue;
       try {
-        const target = targetFor(patch.selector);
-        if (["html", "head", "body"].includes(target.localName) && ["replace", "remove"].includes(patch.operation)) {
-          throw new Error("Replacing document roots requires publishing a new document version");
-        }
+        const target = targetFor(patch.selector, true);
+        assertRootPatch(target, patch, roots, !!fragmentBody);
         if (["move", "copy", "text", "layout"].includes(patch.operation)) applyComponentPatch(document, target, patch, targetFor);
         else if (patch.operation === "remove") target.remove();
         else {
@@ -37013,13 +37046,14 @@ function describeAuthoring(canvas, selector) {
           else throw new Error("Unknown patch operation");
         }
         applied.add(patch.id);
-        result.replay.appliedPatchIds.push(patch.id);
+        if (!inspect) result.replay.appliedPatchIds.push(patch.id);
       } catch (error62) {
         result.replay.failedPatch = { id: patch.id, selector: patch.selector, reason: errorMessage(error62), ...error62 instanceof ComponentSourceMismatch ? { componentTarget: error62.componentTarget, componentSelector: error62.componentSelector } : {} };
         result.note += " Replay stopped at the failed patch; no current source is returned. Inspect canvas.html together with the original canvas.patches journal.";
         return result;
       }
     }
+    if (inspect) return result;
     if (selector !== void 0) {
       try {
         result.target = { selector, html: targetFor(selector).outerHTML };
@@ -37032,6 +37066,8 @@ function describeAuthoring(canvas, selector) {
     result.replay.complete = true;
   } catch (error62) {
     result.note += ` Authored source could not be parsed: ${errorMessage(error62)}. Inspect the original canvas and patch journal.`;
+  } finally {
+    if (inspected && inspect) inspect(inspected.document, inspected.fragmentBody);
   }
   return result;
 }
@@ -37163,6 +37199,15 @@ var BoardStore = class {
       throw new BoardStoreError("edit_conflict", error62 instanceof Error ? error62.message : String(error62), { selector: patch.selector, canvasBase: { revision: canvas.revision, documentVersion: canvas.documentVersion }, ...error62 instanceof ComponentSourceMismatch ? { componentTarget: error62.componentTarget, componentSelector: error62.componentSelector } : {} });
     }
   }
+  prepareHtmlPatch(canvas, patch) {
+    if (["move", "copy", "text", "layout"].includes(patch.operation)) return this.prepareEdit(canvas, patch);
+    try {
+      validateHtmlPatchRoots(canvas, patch);
+    } catch (error62) {
+      throw new BoardStoreError("invalid_input", error62 instanceof Error ? error62.message : String(error62), { patchId: patch.id, selector: patch.selector });
+    }
+    return patch;
+  }
   async publish(raw, actorAgentId) {
     const input2 = parseInput(PublishInputSchema, raw);
     if (input2.html !== void 0 && input2.patch !== void 0) throw new BoardStoreError("invalid_input", "Publish accepts either a full document or a patch, not both");
@@ -37188,7 +37233,7 @@ var BoardStore = class {
       }
       if (input2.patch) {
         if (board.canvas.patches.some((patch) => patch.id === input2.patch.id)) throw new BoardStoreError("idempotency_conflict", `Patch ${input2.patch.id} already exists in this document`);
-        board.canvas.patches.push(["move", "copy", "text", "layout"].includes(input2.patch.operation) ? this.prepareEdit(board.canvas, input2.patch) : input2.patch);
+        board.canvas.patches.push(this.prepareHtmlPatch(board.canvas, input2.patch));
       }
       const dataChanged = canonicalJson(nextData) !== canonicalJson(board.canvas.data);
       board.canvas.data = nextData;
@@ -37229,7 +37274,7 @@ var BoardStore = class {
         }
         if (input2.patch) {
           if (canvas.patches.some((patch) => patch.id === input2.patch.id)) throw new BoardStoreError("idempotency_conflict", `Response patch ${input2.patch.id} already exists`);
-          canvas.patches.push(["move", "copy", "text", "layout"].includes(input2.patch.operation) ? this.prepareEdit(canvas, input2.patch) : input2.patch);
+          canvas.patches.push(this.prepareHtmlPatch(canvas, input2.patch));
         }
         if (input2.data !== void 0) canvas.data = { ...canvas.data, ...input2.data };
         canvas.revision++;
@@ -39044,7 +39089,7 @@ function buildRelease(input2) {
   if (options.expectedCanvasBase.revision !== board.canvas.revision || options.expectedCanvasBase.documentVersion !== board.canvas.documentVersion) throw new Error("Canvas changed; review the current Board before preparing a new release");
   assertJson(options.publicData, "Public release data");
   const authored = describeAuthoring(board.canvas);
-  if (!authored.replay.complete || authored.materializedAuthoredHtml === null) throw new Error(`Cannot export current authored source: ${authored.replay.failedPatch?.reason ?? authored.note}`);
+  if (!authored.replay.complete || authored.materializedAuthoredHtml === null) throw new Error(authoredSourceFailure("Cannot export current authored source", authored));
   let html = authored.materializedAuthoredHtml;
   const helpers = `${/data-tooltip|dataset\.tooltip|floatingui/i.test(html) ? runtime_tooltips_default : ""}${/lucide/i.test(html) ? runtime_icons_default : ""}`;
   const resources = dependenciesFor(html + helpers);
@@ -39179,7 +39224,7 @@ process.on("message", async (message) => {
       value = releaseZip(files).toString("base64");
     } else if (method === "materializeAuthoredHtml") {
       const authored = describeAuthoring(args[1]);
-      if (!authored.replay.complete || authored.materializedAuthoredHtml === null) throw new BoardStoreError("edit_conflict", `Cannot materialize current authored source: ${authored.replay.failedPatch?.reason ?? authored.note}`);
+      if (!authored.replay.complete || authored.materializedAuthoredHtml === null) throw new BoardStoreError("edit_conflict", authoredSourceFailure("Cannot materialize current authored source", authored));
       value = authored.materializedAuthoredHtml;
     } else {
       const operation = store[method];

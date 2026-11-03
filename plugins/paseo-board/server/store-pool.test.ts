@@ -82,6 +82,11 @@ describe("bounded Board worker processes", () => {
     const store = pool({ workers: 2, workerSource: await compileCurrentWorker() });
     let board = await store.create({ id: "publication", title: "Public page", html: '<main><h1 id="title">Old text</h1></main>', data: { secret: "Private data" } });
     board = await store.publish({ boardId: board.id, expectedRevision: board.revision, canvasBase: { revision: board.canvas.revision, documentVersion: 1 }, eventId: "final-title", patch: { id: "title-patch", operation: "replace", selector: "#title", html: '<h1 id="title">Final public text</h1>' } });
+    for (const patch of [
+      { id: "root-add", selector: "body", operation: "append" as const, html: '<aside id="new-card">Old card</aside>' },
+      { id: "root-first", selector: "body", operation: "prepend" as const, html: '<header id="first">First</header>' },
+      { id: "later-card", selector: "#new-card", operation: "replace" as const, html: '<aside id="new-card">Final card after root insertion</aside>' },
+    ]) board = await store.publish({ boardId: board.id, expectedRevision: board.revision, canvasBase: { revision: board.canvas.revision, documentVersion: 1 }, eventId: patch.id, patch });
     const input = { board, boardId: board.id, expectedCanvasBase: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion }, publicData: { visible: "Public data" } };
     const original = structuredClone(board), expected = buildRelease(input), pids = store.diagnostics().map(slot => slot.pid);
     const events: BoardChange[] = []; const unsubscribe = store.subscribe(event => events.push(event));
@@ -89,14 +94,15 @@ describe("bounded Board worker processes", () => {
     input.publicData.visible = "Caller changed after enqueue"; input.board.canvas.html = "Caller changed base";
     const release = await building;
     expect(release).toEqual(expected);
-    expect(await store.materializeAuthoredHtml(board.id, original.canvas)).toBe('<main><h1 id="title">Final public text</h1></main>');
+    expect(await store.materializeAuthoredHtml(board.id, original.canvas)).toBe('<header id="first">First</header><main><h1 id="title">Final public text</h1></main><aside id="new-card">Final card after root insertion</aside>');
     const files = { ...release.files }, zipped = store.releaseZip(release.manifest.releaseId, files); files["index.html"] = "Caller changed files";
     expect(await zipped).toBe(releaseZip(release.files).toString("base64"));
     expect(await store.read(board.id)).toEqual(original);
     expect(events).toEqual([]); unsubscribe();
     expect(store.diagnostics().map(slot => slot.pid)).toEqual(pids); expect(new Set(pids).size).toBe(2);
     const failedCanvas = { ...original.canvas, patches: [...original.canvas.patches, { id: "missing", selector: "#missing", operation: "replace" as const, html: "<p>Missing</p>", at: new Date().toISOString(), source: "agent" as const }] };
-    await expect(store.materializeAuthoredHtml(board.id, failedCanvas)).rejects.toMatchObject({ code: "edit_conflict" });
+    await expect(store.materializeAuthoredHtml(board.id, failedCanvas)).rejects.toMatchObject({ code: "edit_conflict", message: expect.stringMatching(/patch "missing".*selector "#missing".*replaceDocument:true/s) });
+    await expect(store.buildRelease({ ...input, board: { ...original, canvas: failedCanvas } })).rejects.toThrow(/patch "missing".*selector "#missing".*replaceDocument:true/s);
     await expect(store.buildRelease({ ...input, board: original, expectedCanvasBase: { revision: 0, documentVersion: 1 } })).rejects.toThrow("Canvas changed");
     await store.close(); expect(store.diagnostics().every(slot => !slot.pid)).toBe(true);
     await expect(readFile(join(directory, ".store-pool-owner.json"))).rejects.toMatchObject({ code: "ENOENT" });

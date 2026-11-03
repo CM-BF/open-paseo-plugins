@@ -11,7 +11,7 @@ import stylesheet from "../shared/assets/visualize.css.txt";
 import icons from "../shared/assets/runtime-icons.txt";
 import tooltips from "../shared/assets/runtime-tooltips.txt";
 import license from "./assets/publication-license.txt";
-import { describeAuthoring } from "./authored-source";
+import { authoredSourceFailure, describeAuthoring } from "./authored-source";
 import { assertJson, canonicalJson, ensureDirectory } from "./store-format";
 
 const MAX_RELEASE_BYTES = 8 * 1024 * 1024;
@@ -54,7 +54,7 @@ export function buildRelease(input: ReleaseCreateInput & { board: Board }): Stat
   if (options.expectedCanvasBase.revision !== board.canvas.revision || options.expectedCanvasBase.documentVersion !== board.canvas.documentVersion) throw new Error("Canvas changed; review the current Board before preparing a new release");
   assertJson(options.publicData, "Public release data");
   const authored = describeAuthoring(board.canvas);
-  if (!authored.replay.complete || authored.materializedAuthoredHtml === null) throw new Error(`Cannot export current authored source: ${authored.replay.failedPatch?.reason ?? authored.note}`);
+  if (!authored.replay.complete || authored.materializedAuthoredHtml === null) throw new Error(authoredSourceFailure("Cannot export current authored source", authored));
   let html = authored.materializedAuthoredHtml;
   const helpers = `${/data-tooltip|dataset\.tooltip|floatingui/i.test(html) ? tooltips : ""}${/lucide/i.test(html) ? icons : ""}`;
   const resources = dependenciesFor(html + helpers);

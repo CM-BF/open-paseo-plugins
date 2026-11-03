@@ -22,6 +22,28 @@ type AuthoredDocument = ReturnType<DOMParser["parseFromString"]>;
 type AuthoredElement = NonNullable<ReturnType<AuthoredDocument["querySelector"]>>;
 const rootTags = new Set(["html", "head", "body"]);
 const nonComponents = new Set(["script", "style", "link", "meta", "base", "title", "template", "noscript"]);
+const ROOT_REPLACEMENT_ERROR = "Cannot replace or remove a document root. Publish a complete document with replaceDocument:true and its original canvasBase instead.";
+
+function documentRoots(document: AuthoredDocument): Set<AuthoredElement> {
+  const root = document.documentElement;
+  return new Set(root ? [root, ...Array.from(root.children)].filter(element => rootTags.has(element.localName)) : []);
+}
+
+function assertRootPatch(target: AuthoredElement, patch: CanvasPatch, roots: Set<AuthoredElement>, fragment: boolean): void {
+  if (!roots.has(target)) return;
+  if (patch.operation === "replace" || patch.operation === "remove") throw new Error(ROOT_REPLACEMENT_ERROR);
+  if (fragment && !(target.localName === "body" && (patch.operation === "append" || patch.operation === "prepend"))) {
+    throw new Error("Selector identifies a host document wrapper, not an authored element. On fragment canvases, append/prepend to body or select an authored container.");
+  }
+}
+
+/** Reports the original journal entry and a source-preserving recovery procedure. */
+export function authoredSourceFailure(action: string, authored: AuthoringDescription): string {
+  const failed = authored.replay.failedPatch;
+  const detail = failed ? `patch ${JSON.stringify(failed.id)} (selector ${JSON.stringify(failed.selector)}) failed: ${failed.reason}` : authored.note;
+  return `${action}: ${detail}. Read the current Board's canvas.html and ordered canvas.patches, including every patch after the failure. Reconcile missing/runtime-generated targets in a complete authored draft, then publish it with replaceDocument:true and the canvasBase from that read; on conflict reread and merge. A later patch cannot repair an earlier unresolved journal entry. Do not republish the base alone or delete stored history.`;
+}
+
 const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
 
 export class ComponentSourceMismatch extends Error {
@@ -168,12 +190,32 @@ export function prepareComponentPatch(canvas: AuthoringCanvas, patch: CanvasPatc
 
 /** Replays source edits in isolation. Neither the canvas nor its patch journal is modified. */
 export function describeAuthoring(canvas: AuthoringCanvas, selector?: string): AuthoringDescription {
+  return describeSource(canvas, selector);
+}
+
+/**
+ * Guard known roots without requiring runtime-generated targets to exist in static
+ * source. A failed earlier replay still exposes its last known document to this
+ * guard. The live renderer separately checks the actual current target.
+ */
+export function validateHtmlPatchRoots(canvas: AuthoringCanvas, patch: CanvasPatch): void {
+  describeSource(canvas, undefined, (document, fragmentBody) => {
+    let matches: ReturnType<AuthoredDocument["querySelectorAll"]>;
+    try { matches = document.querySelectorAll(patch.selector); }
+    catch { return; } // Existing live-only/unsupported selectors keep their runtime path.
+    const roots = documentRoots(document);
+    for (const target of matches) assertRootPatch(target, patch, roots, !!fragmentBody);
+  });
+}
+
+function describeSource(canvas: AuthoringCanvas, selector?: string, inspect?: (document: AuthoredDocument, fragmentBody: AuthoredElement | undefined) => void): AuthoringDescription {
   const result: AuthoringDescription = {
     canvasBase: { revision: canvas.revision, documentVersion: canvas.documentVersion },
     materializedAuthoredHtml: null,
     replay: { complete: false, appliedPatchIds: [] },
     note: SOURCE_NOTE,
   };
+  let inspected: { document: AuthoredDocument; fragmentBody: AuthoredElement | undefined } | undefined;
   try {
     const parser = new DOMParser();
     const parsed = parser.parseFromString(canvas.html, "text/html");
@@ -184,13 +226,15 @@ export function describeAuthoring(canvas: AuthoringCanvas, selector?: string): A
     const document = isDocument ? parsed : parser.parseFromString("<html><head></head><body></body></html>", "text/html");
     const fragmentBody = isDocument ? undefined : document.querySelector("body")!;
     if (fragmentBody) fragmentBody.innerHTML = canvas.html;
-    const virtualRoots = fragmentBody ? new Set([document.documentElement, document.querySelector("head")!, fragmentBody]) : new Set();
+    inspected = { document, fragmentBody };
+    const roots = documentRoots(document);
+    const virtualRoots = fragmentBody ? roots : new Set<AuthoredElement>();
     const applied = new Set<string>();
-    const targetFor = (query: string) => {
+    const targetFor = (query: string, allowRoot = false) => {
       const matches = document.querySelectorAll(query);
       if (matches.length !== 1) throw new Error(`Selector must match exactly one authored element; matched ${matches.length}`);
       const target = matches[0];
-      if (virtualRoots.has(target)) throw new Error("Selector identifies a host document wrapper, not an authored element");
+      if (virtualRoots.has(target) && !allowRoot) throw new Error("Selector identifies a host document wrapper, not an authored element");
       if (target.parentElement?.closest("noscript")) throw new Error("Selector identifies inactive noscript content, not a running Board element");
       return target;
     };
@@ -198,10 +242,8 @@ export function describeAuthoring(canvas: AuthoringCanvas, selector?: string): A
       // The browser also applies a journal ID at most once, even across replay.
       if (applied.has(patch.id)) continue;
       try {
-        const target = targetFor(patch.selector);
-        if (["html", "head", "body"].includes(target.localName) && ["replace", "remove"].includes(patch.operation)) {
-          throw new Error("Replacing document roots requires publishing a new document version");
-        }
+        const target = targetFor(patch.selector, true);
+        assertRootPatch(target, patch, roots, !!fragmentBody);
         if (["move", "copy", "text", "layout"].includes(patch.operation)) applyComponentPatch(document, target, patch, targetFor);
         else if (patch.operation === "remove") target.remove();
         else {
@@ -213,13 +255,15 @@ export function describeAuthoring(canvas: AuthoringCanvas, selector?: string): A
           else throw new Error("Unknown patch operation");
         }
         applied.add(patch.id);
-        result.replay.appliedPatchIds.push(patch.id);
+        if (!inspect) result.replay.appliedPatchIds.push(patch.id);
       } catch (error) {
         result.replay.failedPatch = { id: patch.id, selector: patch.selector, reason: errorMessage(error), ...(error instanceof ComponentSourceMismatch ? { componentTarget: error.componentTarget, componentSelector: error.componentSelector } : {}) };
         result.note += " Replay stopped at the failed patch; no current source is returned. Inspect canvas.html together with the original canvas.patches journal.";
         return result;
       }
     }
+    // A root-only preflight needs the parsed nodes, not another full HTML string.
+    if (inspect) return result;
     if (selector !== undefined) {
       try { result.target = { selector, html: targetFor(selector).outerHTML }; }
       catch (error) {
@@ -231,6 +275,8 @@ export function describeAuthoring(canvas: AuthoringCanvas, selector?: string): A
     result.replay.complete = true;
   } catch (error) {
     result.note += ` Authored source could not be parsed: ${errorMessage(error)}. Inspect the original canvas and patch journal.`;
+  } finally {
+    if (inspected && inspect) inspect(inspected.document, inspected.fragmentBody);
   }
   return result;
 }

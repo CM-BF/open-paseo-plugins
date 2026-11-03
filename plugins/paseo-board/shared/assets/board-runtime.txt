@@ -1719,6 +1719,115 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     }
     return ids;
   };
+  const captureShadowOutsets = style => {
+    const outsets = { left: 2, top: 2, right: 2, bottom: 2 };
+    for (const [value, text] of [[style.boxShadow, false], [style.textShadow, true]]) {
+      if (!value || value === "none") continue;
+      if (value.length > 16384) return null;
+      // Split only outside color functions: rgba()/color() commas are not shadow layers.
+      const layers = []; let layer = "", depth = 0;
+      for (const character of value) {
+        if (character === "(") depth++;
+        if (character === ")") depth--;
+        if (depth < 0) return null;
+        if (character === "," && depth === 0) { layers.push(layer); layer = ""; }
+        else if (depth === 0 && character !== ")") layer += character;
+      }
+      layers.push(layer);
+      if (depth || layers.length > 64) return null;
+      for (const item of layers) {
+        const words = item.trim().split(/\s+/);
+        if (words.includes("inset")) continue;
+        const lengths = words.filter(word => /^[-+]?(?:\d*\.)?\d+(?:e[-+]?\d+)?px$/i.test(word)).map(parseFloat);
+        if (lengths.length < 2 || lengths.length > (text ? 3 : 4) || lengths.some(value => !Number.isFinite(value))) return null;
+        const [x, y, blur = 0, spread = 0] = lengths;
+        if (blur < 0) return null;
+        // CSS blur radius is twice the Gaussian standard deviation. Three sigmas
+        // plus the antialias guard retain its visible tail; spread keeps its sign.
+        const extent = 1.5 * blur + spread;
+        outsets.left = Math.max(outsets.left, extent - x + 2);
+        outsets.right = Math.max(outsets.right, extent + x + 2);
+        outsets.top = Math.max(outsets.top, extent - y + 2);
+        outsets.bottom = Math.max(outsets.bottom, extent + y + 2);
+      }
+    }
+    return outsets;
+  };
+  const captureTransformedPaint = (node, cache) => {
+    if (cache.has(node)) return cache.get(node);
+    const path = []; let transformed = false;
+    for (let parent = node; parent; parent = parent.parentElement) {
+      if (cache.has(parent)) { transformed = cache.get(parent); break; }
+      path.push(parent);
+      const style = getComputedStyle(parent);
+      if (style.transform !== "none" || style.perspective !== "none" ||
+        [style.translate, style.rotate, style.scale].some(value => value && value !== "none") ||
+        ![undefined, "normal", "1"].includes(style.zoom)) { transformed = true; break; }
+    }
+    for (const parent of path) cache.set(parent, transformed);
+    return transformed;
+  };
+  const capturePaintBounds = (node, style, transformed) => {
+    const outsets = captureShadowOutsets(style);
+    // Shadow lengths are local CSS pixels while getBoundingClientRect is in the
+    // viewport coordinate space. Unknown transformed paint keeps its subtree.
+    if (!outsets || ([style.boxShadow, style.textShadow].some(value => value && value !== "none") && captureTransformedPaint(node, transformed))) return null;
+    const bounds = node.getBoundingClientRect();
+    return { left: bounds.left + scrollX - outsets.left, top: bounds.top + scrollY - outsets.top,
+      right: bounds.right + scrollX + outsets.right, bottom: bounds.bottom + scrollY + outsets.bottom };
+  };
+  const captureStickyMode = (node, plan) => {
+    const style = plan.styles.get(node);
+    const unsupported = () => { throw new Error("Sticky content cannot be captured accurately; the geometric anchor is still saved"); };
+    let scroller = null;
+    for (let parent = node, depth = 0; parent; parent = parent.parentElement) {
+      if (++depth > 256) return unsupported();
+      const current = plan.styles.get(parent);
+      if (!current || current.get("transform") !== "none" || current.get("perspective") !== "none" ||
+        ["translate", "rotate", "scale"].some(property => ![undefined, "none"].includes(current.get(property))) ||
+        ![undefined, "normal", "1"].includes(current.get("zoom"))) return unsupported();
+      // Body overflow can either establish its own scrollport or propagate to the
+      // viewport. Do not infer an unscrolled viewport from an independently scrolled body.
+      if (!scroller && parent === document.body && (parent.scrollLeft || parent.scrollTop)) return unsupported();
+      if (!scroller && parent !== node && parent !== root && parent !== document.body &&
+        [current.get("overflow-x"), current.get("overflow-y")].some(value => !["visible", "clip"].includes(value))) scroller = parent;
+    }
+    if (node.getClientRects().length !== 1) return unsupported();
+    for (const edge of ["left", "top", "right", "bottom"]) {
+      const value = style.get(edge);
+      if (value !== "auto" && !/^[-+]?(?:\d*\.)?\d+px$/.test(value || "")) return unsupported();
+    }
+    if (scroller) {
+      const current = plan.styles.get(scroller);
+      const borderX = parseFloat(current.get("border-left-width")) + parseFloat(current.get("border-right-width"));
+      const borderY = parseFloat(current.get("border-top-width")) + parseFloat(current.get("border-bottom-width"));
+      // Classic scrollbar gutters cannot be removed without changing an end inset.
+      if (scroller.offsetWidth - scroller.clientWidth - borderX > 1 || scroller.offsetHeight - scroller.clientHeight - borderY > 1) return unsupported();
+      plan.stickyScrollers.add(scroller);
+    }
+    const x = scroller ? scroller.scrollLeft : scrollX;
+    const y = scroller ? scroller.scrollTop : scrollY;
+    // An unscrolled nested scrollport has the same used dimensions in the clone.
+    // A document clone is taller/wider than the viewport: only start-edge insets
+    // can be kept verbatim there, even at scroll zero.
+    if (x === 0 && y === 0 && (scroller || (style.get("right") === "auto" && style.get("bottom") === "auto"))) return "sticky";
+    const box = node.getBoundingClientRect();
+    const scrollBox = scroller?.getBoundingClientRect();
+    const port = scroller ? { left: scrollBox.left + scroller.clientLeft, top: scrollBox.top + scroller.clientTop,
+      right: scrollBox.left + scroller.clientLeft + scroller.clientWidth, bottom: scrollBox.top + scroller.clientTop + scroller.clientHeight }
+      : { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
+    // Strictly inside every inset edge proves no sticky constraint moved the box.
+    // At an edge (including a parent-end clamp) the original normal position is
+    // ambiguous; refuse instead of temporarily changing the live DOM to measure it.
+    for (const edge of ["left", "top", "right", "bottom"]) {
+      const value = style.get(edge);
+      if (value === "auto") continue;
+      if (!/^[-+]?(?:\d*\.)?\d+px$/.test(value || "")) return unsupported();
+      const inset = parseFloat(value);
+      if (["left", "top"].includes(edge) ? box[edge] <= port[edge] + inset + 0.5 : box[edge] >= port[edge] - inset - 0.5) return unsupported();
+    }
+    return "relative";
+  };
   const capturePlan = async (region, signal) => {
     const nodes = Array.from(document.querySelectorAll("*"));
     if (nodes.length > 20000) throw new Error("Selected document is too complex to capture; the geometric anchor is still saved");
@@ -1726,6 +1835,7 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     const candidates = new Map();
     const forced = new Set();
     const paintHidden = new Map();
+    const transformedPaint = new Map();
     let slice = performance.now();
     const keep = node => { for (; node && !needed.has(node); node = node.parentElement) needed.add(node); };
     const intersects = r => r.right >= region.x && r.bottom >= region.y && r.left <= region.x + region.width && r.top <= region.y + region.height;
@@ -1739,14 +1849,9 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
         continue;
       }
       if (forced.has(node.parentElement)) { forced.add(node); keep(node); continue; }
-      const bounds = node.getBoundingClientRect();
-      // Shadows can paint outside the border box. This deliberately generous bound includes
-      // spread, offsets and the blur tail; filters and pseudo content have no safe cheap bound.
-      const shadow = [style.boxShadow, style.textShadow].join(" ").replace(/rgba?\([^)]*\)/g, "");
-      const bleed = 2 + 3 * Array.from(shadow.matchAll(/(-?[\d.]+)px/g), match => Math.abs(Number(match[1]))).reduce((sum, value) => sum + value, 0);
-      const box = { left: bounds.left + scrollX - bleed, top: bounds.top + scrollY - bleed, right: bounds.right + scrollX + bleed, bottom: bounds.bottom + scrollY + bleed };
+      const box = capturePaintBounds(node, style, transformedPaint);
       const pseudo = ["::before", "::after"].some(part => !["none", "normal"].includes(getComputedStyle(node, part).content));
-      if (node.shadowRoot || style.filter !== "none" || (style.backdropFilter && style.backdropFilter !== "none") || pseudo) { forced.add(node); keep(node); }
+      if (!box || node.shadowRoot || style.filter !== "none" || (style.backdropFilter && style.backdropFilter !== "none") || pseudo) { forced.add(node); keep(node); }
       else if (intersects(box)) keep(node);
       const block = ["block", "flex", "grid", "flow-root"].includes(style.display);
       const closedMargins = style.display !== "block" || style.overflowY !== "visible" ||
@@ -1787,7 +1892,7 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     const prune = new Map();
     for (const [node, size] of candidates) if (!needed.has(node)) prune.set(node, size);
     const suppressedRoots = Array.from(paintHidden).filter(([node, hidden]) => hidden && !paintHidden.get(node.parentElement)).map(([node]) => node);
-    return { prune, needed, geometry, styles, pseudoStyles, references, suppressedRoots, outsideMutations: false };
+    return { prune, needed, geometry, styles, pseudoStyles, references, suppressedRoots, stickyScrollers: new Set(), outsideMutations: false };
 
   };
   const captureGeometry = node => {
@@ -1813,17 +1918,16 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     const affected = [target, ...target.querySelectorAll("*")];
     if (affected.length > 2000) return false;
     const paintHidden = new Map();
+    const transformedPaint = new Map();
     return affected.every(node => {
       if (plan.needed.has(node) || (node.id && plan.references.has(node.id))) return false;
       if (capturePaintSuppressed(node, paintHidden)) return true;
       const style = getComputedStyle(node);
       if (node.shadowRoot || style.filter !== "none" || (style.backdropFilter && style.backdropFilter !== "none") ||
         ["::before", "::after"].some(part => !["none", "normal"].includes(getComputedStyle(node, part).content))) return false;
-      const bounds = node.getBoundingClientRect();
-      const shadow = [style.boxShadow, style.textShadow].join(" ").replace(/rgba?\([^)]*\)/g, "");
-      const bleed = 4 + 3 * Array.from(shadow.matchAll(/(-?[\d.]+)px/g), match => Math.abs(Number(match[1]))).reduce((sum, value) => sum + value, 0);
-      return bounds.right + scrollX + bleed < region.x || bounds.bottom + scrollY + bleed < region.y ||
-        bounds.left + scrollX - bleed > region.x + region.width || bounds.top + scrollY - bleed > region.y + region.height;
+      const bounds = capturePaintBounds(node, style, transformedPaint);
+      return bounds && (bounds.right < region.x || bounds.bottom < region.y ||
+        bounds.left > region.x + region.width || bounds.top > region.y + region.height);
     });
   };
   const captureFrozenRegion = async (region, signal, planReady) => {
@@ -1887,7 +1991,16 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
           if (clone.style) { clone.style.animation = "none"; clone.style.transition = "none"; }
           const sourceStyle = getComputedStyle(source);
           if (["sticky", "fixed"].includes(sourceStyle.position) && !plan.needed.has(source)) { clone.style.opacity = "0"; return; }
-          if (sourceStyle.position === "sticky") throw new Error("Sticky content cannot be captured accurately; the geometric anchor is still saved");
+          if (sourceStyle.position === "sticky" && captureStickyMode(source, plan) === "relative") {
+            clone.style.position = "relative";
+            // Sticky establishes a stacking context even at auto; relative does not.
+            if (sourceStyle.zIndex === "auto") clone.style.zIndex = "0";
+            for (const edge of ["left", "top", "right", "bottom"]) clone.style[edge] = "auto";
+          }
+          // foreignObject can start a new overlay-scrollbar fade cycle even when
+          // the live unscrolled port paints none. Keep its overflow/scrollport,
+          // suppressing only those UA bars after the sticky child was validated.
+          if (plan.stickyScrollers.has(source)) clone.style.scrollbarWidth = "none";
           if (sourceStyle.position === "fixed") {
             for (let parent = source.parentElement; parent && parent !== root; parent = parent.parentElement) {
               const style = getComputedStyle(parent);

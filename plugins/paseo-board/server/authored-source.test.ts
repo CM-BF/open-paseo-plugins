@@ -91,7 +91,7 @@ describe("describeAuthoring", () => {
   it.each(["html", "head", "body"])("keeps the runtime's explicit document-root replacement boundary for %s", (selector) => {
     const result = describeAuthoring(canvas('<html><head></head><body></body></html>', [patch("root", selector, "replace", "new")]));
     expect(result.materializedAuthoredHtml).toBeNull();
-    expect(result.replay.failedPatch?.reason).toContain("new document version");
+    expect(result.replay.failedPatch?.reason).toContain("replaceDocument:true");
   });
 
   it("allows replacing a fragment's top-level element and skips duplicate patch IDs like the runtime", () => {
@@ -114,7 +114,7 @@ describe("describeAuthoring", () => {
     const input = canvas('<main id="parent"><p id="child">Old</p></main>', [patch("body-context", "body > #parent > #child", "replace", '<p id="child">New</p>')]);
     expect(describeAuthoring(input, "body > #parent").target?.html).toContain(">New<");
     expect(describeAuthoring(input, ":root").materializedAuthoredHtml).toBeNull();
-    expect(describeAuthoring(canvas('<main id="parent">Keep</main>', [patch("root", ":root", "replace", "Wrong")])).replay.failedPatch?.reason).toContain("host document wrapper");
+    expect(describeAuthoring(canvas('<main id="parent">Keep</main>', [patch("root", ":root", "replace", "Wrong")])).replay.failedPatch?.reason).toContain("replaceDocument:true");
   });
 
   it("does not select inert template or scripting-disabled noscript children as live targets", () => {

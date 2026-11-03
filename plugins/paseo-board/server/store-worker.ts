@@ -2,7 +2,7 @@ import { BoardStore } from "./store";
 import { STORE_METHODS, boardPartition, isComputeMethod, type StoreMethod } from "./store-worker-protocol";
 
 import { buildRelease, releaseZip } from "./static-release";
-import { describeAuthoring } from "./authored-source";
+import { authoredSourceFailure, describeAuthoring } from "./authored-source";
 import { ReleaseIdSchema } from "../shared/release-contracts";
 import { BoardStoreError } from "./store-format";
 
@@ -47,7 +47,7 @@ process.on("message", async (message: any) => {
       value = releaseZip(files).toString("base64");
     } else if (method === "materializeAuthoredHtml") {
       const authored = describeAuthoring(args[1]);
-      if (!authored.replay.complete || authored.materializedAuthoredHtml === null) throw new BoardStoreError("edit_conflict", `Cannot materialize current authored source: ${authored.replay.failedPatch?.reason ?? authored.note}`);
+      if (!authored.replay.complete || authored.materializedAuthoredHtml === null) throw new BoardStoreError("edit_conflict", authoredSourceFailure("Cannot materialize current authored source", authored));
       value = authored.materializedAuthoredHtml;
     } else {
       const operation = store[method as StoreMethod] as (...input: any[]) => Promise<unknown>;

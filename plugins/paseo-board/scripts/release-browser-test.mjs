@@ -35,6 +35,14 @@ window.ready=true;
 </script>`;
 let source = await store.create({ id: 'PRIVATE_SOURCE_BOARD', title: 'Published fixture', ownerAgentId: 'PRIVATE_AGENT_ID', html: content, data: { secret: 'PRIVATE_CANVAS_DATA' } });
 source = await store.publish({ boardId: source.id, expectedRevision: source.revision, canvasBase: { revision: 1, documentVersion: 1 }, eventId: 'PRIVATE_EDIT_RECEIPT', patch: { id: 'PRIVATE_PATCH_ID', selector: '#final', operation: 'replace', html: '<h1 id="final">Final publication</h1>' } });
+// Existing fragment journals use the body as their append/prepend destination.
+// Exercise the persisted journal through cold source replay, copy and publication.
+for (const patch of [
+  { id:'root-append',selector:'body',operation:'append',html:'<aside id="root-card"><span id="root-note">Before later patch</span><button id="root-button" type="button" onclick="this.textContent=\'Root listener works\'">Root control</button></aside><script>window.rootPatchBoots=(window.rootPatchBoots||0)+1</script>' },
+  { id:'root-prepend',selector:'body',operation:'prepend',html:'<header id="root-first">Prepended content</header>' },
+  { id:'root-later-edit',selector:'#root-note',operation:'replace',html:'<span id="root-note">Later journal patch retained</span>' },
+]) source = await store.publish({boardId:source.id,expectedRevision:source.revision,canvasBase:{revision:source.canvas.revision,documentVersion:source.canvas.documentVersion},eventId:patch.id,patch});
+assert.deepEqual((await new BoardStore(join(temporary,'boards')).read(source.id)).canvas,source.canvas);
 source.userState = { secret: 'PRIVATE_USER_STATE' };
 source.events.push({ id: 'PRIVATE_EVENT_ID', source: 'agent', kind: 'test', summary: 'PRIVATE_DISCUSSION', at: 'today', revision: 1 });
 const options = { board: source, boardId: source.id, expectedCanvasBase: { revision: source.canvas.revision, documentVersion: source.canvas.documentVersion }, publicData };
@@ -146,9 +154,15 @@ try {
   assert.equal(await frame("getComputedStyle(document.body).backgroundColor"), 'rgb(23, 46, 39)'); assert.equal(await frame("document.querySelector('#shape circle').getBBox().width"), 50);
   assert.equal(await frame('window.parentReadable'), false); assert.equal(await frame('window.privateStorage'), 'denied');
   check('standalone cold startup initializes data/watch before authored JS, preserves CSS and SVG, escapes bootstrap values and isolates private storage');
+  const rootState = `({first:document.querySelector('#root-first')?.textContent,note:document.querySelector('#root-note')?.textContent,boots:window.rootPatchBoots,order:Boolean(document.querySelector('#root-first').compareDocumentPosition(document.querySelector('#final'))&Node.DOCUMENT_POSITION_FOLLOWING)})`;
+  const expectedRoot = {first:'Prepended content',note:'Later journal patch retained',boots:1,order:true};
+  assert.deepEqual(await frame(rootState),expectedRoot);
+  await click('#root-button'); assert.equal(await frame("document.querySelector('#root-button').textContent"),'Root listener works');
+  check('persisted body append/prepend journals and later edits cold-render in the exported viewer with their original interactive controls');
   await frame("document.querySelector('#input').value='Visitor draft'"); await click('#increment');
   await evaluate('new Promise(resolve=>setTimeout(resolve,20))'); const oldLoader = (await command('Page.getFrameTree')).frameTree.frame.loaderId, afterEpoch = contextEpoch; await command('Page.reload'); await ready(undefined, { notLoader: oldLoader, afterEpoch });
   assert.deepEqual(await frame('board.getState()'), { count: 1, input: 'Visitor draft' }); assert.equal(await frame('window.boots'), 1);
+  assert.deepEqual(await frame(rootState),expectedRoot);
   await open('/publication/nested/'); assert.deepEqual(await frame('board.getState()'), {}); await click('#increment');
   await open('/second/'); assert.deepEqual(await frame('board.getState()'), {}); assert.equal(await frame("document.querySelector('#data').textContent"), 'Second version');
   await open('/'); assert.deepEqual(await frame('board.getState()'), { count: 1, input: 'Visitor draft' });
@@ -186,6 +200,8 @@ try {
   assert.deepEqual(await frame("({language:document.documentElement.lang,direction:document.documentElement.dir,rootClass:document.documentElement.className,bodyClass:document.body.className,fontSize:getComputedStyle(document.documentElement).fontSize,headData:window.headBootstrap})"), {language:'zh-CN',direction:'rtl',rootClass:'release-document',bodyClass:'full-body',fontSize:'19px',headData:42});
   assert.equal(await frame("getComputedStyle(document.body).backgroundColor"), 'rgb(19, 31, 43)'); assert.equal(await frame("document.querySelector('#full-title').textContent"), 'Full document');
   await open('/copy/'); assert.equal(await frame("document.querySelector('#final').textContent"), 'Manually edited copy');
+  assert.deepEqual(await frame(rootState),expectedRoot);
+  await click('#root-button'); assert.equal(await frame("document.querySelector('#root-button').textContent"),'Root listener works');
   check('complete authored documents and manually edited publication copies cold-render through the same standalone viewer');
   await open('/layout/','window.layoutReady');
   assert.deepEqual(await frame('board.getState()'),{},'A new public visitor never inherits the working Board user state or fold namespace');
