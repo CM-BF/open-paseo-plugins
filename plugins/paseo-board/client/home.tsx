@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { usePaseo, useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
@@ -8,13 +8,39 @@ import { Action, ColorContext, Copy, Notice, errorMessage, localId, timeLabel, u
 import { BoardView } from "./board";
 import { useBoardList } from "./data";
 import { BoardConnectionStatus } from "./connection-status";
+import { readLastBoard, writeLastBoard, retainBoardViewStore, type BoardEntryScope, type BoardViewTab, type LastBoardSelection } from "./view-store";
 
-interface Props extends PluginSurfaceProps { initialBoardId?: string; workspaceId?: string; agentId?: string }
+interface Props extends PluginSurfaceProps { initialBoardId?: string; workspaceId?: string; agentId?: string; entryScope?: BoardEntryScope; tab?: BoardViewTab }
 const EMPTY_CANVAS = `<style>main{padding:clamp(24px,8vw,100px);max-width:760px;margin:auto}h1{font-size:clamp(30px,5vw,54px);letter-spacing:-.04em}p{line-height:1.8;opacity:.65}#content{min-height:30vh}</style><main><p>YOUR SHARED SURFACE</p><h1>从一个问题开始。</h1><p>让 agent 根据眼前的任务组织这里。解释、图表、动画和互动工具，都可以在同一块画布上不断生长。</p><div id="content"></div></main>`;
 
 export function BoardHome(props: Props) {
-  const [selected, setSelected] = useState(props.initialBoardId);
-  return selected ? <BoardView key={`${props.host.id}:${selected}`} {...props} boardId={selected} onBack={() => setSelected(undefined)} onOpenBoard={setSelected} /> : <ColorContext.Provider value={props.theme.colors}><BoardIndex {...props} onSelect={setSelected} /></ColorContext.Provider>;
+  useEffect(retainBoardViewStore, []);
+  const scope: BoardEntryScope = props.entryScope ? { ...props.entryScope, hostId: props.host.id } : {
+    hostId: props.host.id, surface: props.agentId ? "agent" : props.workspaceId ? "workspace" : "screen", workspaceId: props.workspaceId, agentId: props.agentId,
+  };
+  const key = JSON.stringify([scope.hostId, scope.surface, scope.workspaceId ?? null, scope.agentId ?? null, props.initialBoardId ?? null]);
+  return <RememberedBoardHome key={key} {...props} entryScope={scope} />;
+}
+
+function RememberedBoardHome(props: Props & { entryScope: BoardEntryScope }) {
+  // Read the tab only when entering this scope. A delayed host state echo must
+  // not reopen the previous Board after this mounted view has navigated away.
+  const [selected, setSelected] = useState(() => {
+    if (props.initialBoardId) return props.initialBoardId;
+    const saved = readLastBoard(props.entryScope, props.tab);
+    return saved?.kind === "board" ? saved.boardId : undefined;
+  });
+  const navigated = useRef(false);
+  const choose = (selection: LastBoardSelection) => {
+    navigated.current = true;
+    writeLastBoard(props.entryScope, selection, props.tab);
+    setSelected(selection.kind === "board" ? selection.boardId : undefined);
+  };
+  useEffect(() => {
+    if (props.initialBoardId && !navigated.current) writeLastBoard(props.entryScope, { kind: "board", boardId: props.initialBoardId }, props.tab);
+  }, [props.initialBoardId]);
+  const open = (boardId: string) => choose({ kind: "board", boardId });
+  return selected ? <BoardView key={`${props.host.id}:${selected}`} {...props} boardId={selected} onBack={() => choose({ kind: "index" })} onOpenBoard={open} /> : <ColorContext.Provider value={props.theme.colors}><BoardIndex {...props} onSelect={open} /></ColorContext.Provider>;
 }
 
 function BoardIndex({ host, workspaceId, agentId, onSelect }: Props & { onSelect(id: string): void }) {

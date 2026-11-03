@@ -7,6 +7,16 @@ export interface FrameTheme { scheme: "light" | "dark"; tokens: Record<string, s
 export interface FrameError { code: string; message: string; patchId?: string }
 /** CSS pixels relative to the iframe viewport (not document coordinates). */
 export interface FramePosition { x: number; y: number }
+/** Local reading position only: never author state, an edit identity or a send authority. */
+export interface CanvasViewState {
+  documentVersion: number;
+  canvasRevision: number;
+  x: number;
+  y: number;
+  anchor?: { selector: string; offsetX: number; offsetY: number };
+  scrolls: Array<{ selector: string; x: number; y: number }>;
+}
+export type CanvasViewRestoreStatus = "restored" | "cancelled" | "unavailable";
 export type InteractionLocation = "component" | "collapsed" | "ancestor" | "snapshot" | "hidden";
 export interface FocusUpdateRequest { update: CanvasUpdate; token: number; targetIndex?: number; automatic?: boolean }
 export interface UpdatePosition {
@@ -37,10 +47,12 @@ export interface AskResult { status: "submitted" | "cancelled"; outcome?: string
 export interface FrameScope { channel: typeof FRAME_CHANNEL; boardId: string; sessionId: string }
 export interface FrameSnapshot { canvas: Canvas; boardRevision: number; userState: JsonData; theme: FrameTheme }
 export type FrameMessage = FrameScope & (
-  | { type: "ready"; capabilities?: { frameDelta: 1 } }
+  | { type: "ready"; capabilities?: { frameDelta: 1; viewState?: 1; viewPort?: 1 } }
+  | { type: "view-state"; view: CanvasViewState }
+  | { type: "view-restored"; requestId: string; documentVersion: number; status: CanvasViewRestoreStatus }
   | { type: "snapshot-request"; documentVersion: number; version: number; reason: string }
   | { type: "canvas-pointer" }
-  | { type: "canvas-activity"; busy: boolean }
+  | { type: "canvas-activity"; busy: boolean; interacting?: boolean }
   | ({ type: "update-position" } & UpdatePosition)
   | { type: "component-edit"; id: string; request: ComponentEditRequest }
   | { type: "anchor"; anchor: Anchor; selectionId?: string }
@@ -61,6 +73,25 @@ const record = (v: unknown): v is Record<string, unknown> => v !== null && typeo
 const short = (v: unknown, max: number): v is string => typeof v === "string" && v.length > 0 && v.length <= max;
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const position = (v: unknown): v is FramePosition => record(v) && finite(v.x) && finite(v.y) && Math.abs(v.x) < 1000000 && Math.abs(v.y) < 1000000;
+
+export function isCanvasViewState(value: unknown): value is CanvasViewState {
+  const coordinate = (n: unknown) => finite(n) && Math.abs(n) <= 10000000;
+  const selector = (s: unknown) => short(s, 1000);
+  if (!record(value) || Object.keys(value).some(key => !["documentVersion", "canvasRevision", "x", "y", "anchor", "scrolls"].includes(key))
+    || !Number.isSafeInteger(value.documentVersion) || Number(value.documentVersion) < 0
+    || !Number.isSafeInteger(value.canvasRevision) || Number(value.canvasRevision) < 0
+    || !coordinate(value.x) || !coordinate(value.y) || !Array.isArray(value.scrolls) || value.scrolls.length > 32) return false;
+  if (value.anchor !== undefined && (!record(value.anchor) || !selector(value.anchor.selector)
+    || !coordinate(value.anchor.offsetX) || !coordinate(value.anchor.offsetY)
+    || Object.keys(value.anchor).some(key => !["selector", "offsetX", "offsetY"].includes(key)))) return false;
+  const seen = new Set<string>();
+  for (const item of value.scrolls) {
+    if (!record(item) || !selector(item.selector) || !coordinate(item.x) || !coordinate(item.y)
+      || Object.keys(item).some(key => !["selector", "x", "y"].includes(key)) || seen.has(String(item.selector))) return false;
+    seen.add(String(item.selector));
+  }
+  return true;
+}
 
 /** Follow-ups retain the original question's location; transport excludes large image/reply data. */
 export function interactionMarkers(interactions: readonly Interaction[]): InteractionMarker[] {
@@ -88,13 +119,19 @@ export function readFrameMessage(value: unknown, scope: Pick<FrameScope, "boardI
   if (!record(value) || value.channel !== FRAME_CHANNEL || value.boardId !== scope.boardId || value.sessionId !== scope.sessionId) return null;
   switch (value.type) {
     case "ready":
-      if (value.capabilities !== undefined && (!record(value.capabilities) || value.capabilities.frameDelta !== 1)) return null;
+      if (value.capabilities !== undefined && (!record(value.capabilities) || value.capabilities.frameDelta !== 1 || value.capabilities.viewState !== undefined && value.capabilities.viewState !== 1 || value.capabilities.viewPort !== undefined && value.capabilities.viewPort !== 1)) return null;
+      break;
+    case "view-state": if (!isCanvasViewState(value.view)) return null; break;
+    case "view-restored":
+      if (!short(value.requestId, 160) || !Number.isSafeInteger(value.documentVersion) || Number(value.documentVersion) < 0 || !["restored", "cancelled", "unavailable"].includes(value.status as string)) return null;
       break;
     case "snapshot-request":
       if (!Number.isSafeInteger(value.documentVersion) || Number(value.documentVersion) < 0 || !Number.isSafeInteger(value.version) || Number(value.version) < 0 || !short(value.reason, 100)) return null;
       break;
     case "canvas-pointer": case "selection-end": case "selection-clear": break;
-    case "canvas-activity": if (typeof value.busy !== "boolean") return null; break;
+    case "canvas-activity":
+      if (typeof value.busy !== "boolean" || value.interacting !== undefined && typeof value.interacting !== "boolean" || value.interacting === true && !value.busy) return null;
+      break;
     case "update-position":
       if (!short(value.requestId, 160) || !short(value.id, 160)
         || !Number.isSafeInteger(value.token) || Number(value.token) < 0

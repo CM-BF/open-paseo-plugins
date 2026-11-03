@@ -6,70 +6,94 @@ import { useColors } from "./ui";
 
 type Place = { key: string; update: CanvasUpdate; targetIndex: number };
 type LocationStatus = "idle" | "locating" | "focused" | "unavailable" | "deferred" | "seen-error";
+type ResumeNavigation = { follow: boolean; skipInitialUnread: boolean; restoring?: boolean; reconciling?: boolean };
+type AutomaticCandidate = { id: string; documentVersion: number };
+type PendingLocation = FocusUpdateRequest & { canvasDocumentVersion: number };
 const placesFor = (updates: CanvasUpdate[]): Place[] => updates.flatMap(update => Array.from({ length: Math.max(1, update.targets.length) }, (_, targetIndex) => ({ key: `${update.id}:${targetIndex}`, update, targetIndex })));
 
 /** Navigation is keyed by durable update/target identity, never by a moving list index. */
-export function useUpdateNavigation(board: Board | null | undefined, blocked: boolean, markSeen: (id: string) => Promise<void>) {
+export function useUpdateNavigation(board: Board | null | undefined, blocked: boolean, markSeen: (id: string) => Promise<void>, resume?: ResumeNavigation) {
   const updates = board?.updates ?? [];
   const places = useMemo(() => placesFor(updates), [updates]);
-  const [follow, setFollow] = useState(true);
+  // The Board can arrive after mount. Resolve its saved preference at that
+  // point without overwriting a choice made during this visit.
+  const [chosenFollow, setFollow] = useState<boolean>();
+  const follow = chosenFollow ?? resume?.follow ?? true;
   const [busy, setBusy] = useState(false);
+  const interacting = useRef(false);
   const [currentKey, setCurrentKey] = useState<string>();
   const [request, setRequest] = useState<FocusUpdateRequest>();
   const [status, setStatus] = useState<LocationStatus>("idle");
-  const [automaticCandidate, setAutomaticCandidate] = useState<string>();
-  const latest = useRef({ board, blocked, busy, places, markSeen }); latest.current = { board, blocked, busy, places, markSeen };
-  const pending = useRef<FocusUpdateRequest | undefined>(undefined);
+  const [automaticCandidate, setAutomaticCandidate] = useState<AutomaticCandidate>();
+  const latest = useRef({ board, blocked, markSeen }); latest.current = { board, blocked, markSeen };
+  const pending = useRef<PendingLocation | undefined>(undefined);
   const token = useRef(0);
-  const known = useRef<{ initialized: boolean; newest?: string }>({ initialized: false });
+  const known = useRef<{ initialized: boolean; documentVersion?: number; newest?: string }>({ initialized: false });
   const focused = useRef(new Map<string, Set<number>>());
   const acknowledging = useRef(new Set<string>());
 
   const show = useCallback((place: Place, automatic: boolean) => {
+    const documentVersion = latest.current.board?.canvas.documentVersion;
+    if (documentVersion === undefined) return;
     const next = { update: place.update, targetIndex: place.targetIndex, token: ++token.current, automatic };
-    pending.current = next; setCurrentKey(place.key); setRequest(next); setStatus("locating");
+    pending.current = { ...next, canvasDocumentVersion: documentVersion }; setCurrentKey(place.key); setRequest(next); setStatus("locating");
   }, []);
   useEffect(() => {
     if (!board) return;
     const newest = updates.at(-1)?.id;
-    if (!known.current.initialized || known.current.newest !== newest) {
-      const first = !known.current.initialized;
-      known.current = { initialized: true, newest };
+    const first = !known.current.initialized || known.current.documentVersion !== board.canvas.documentVersion;
+    if (first || known.current.newest !== newest) {
+      known.current = { initialized: true, documentVersion: board.canvas.documentVersion, newest };
       const seen = new Set(board.seenUpdateIds);
-      const candidate = first ? [...updates].reverse().find(item => !seen.has(item.id)) : updates.at(-1);
-      if (candidate && !seen.has(candidate.id)) setAutomaticCandidate(candidate.id);
+      // A cached first paint can be followed by the authoritative catch-up read.
+      // Those unread updates belong to reentry too, not to a new live arrival.
+      const candidate = resume?.reconciling ? undefined : first ? resume?.skipInitialUnread ? undefined : [...updates].reverse().find(item => !seen.has(item.id)) : updates.at(-1);
+      if (first) {
+        pending.current = undefined; setRequest(undefined); setCurrentKey(undefined); setStatus("idle");
+        setAutomaticCandidate(undefined);
+      }
+      if (candidate && !seen.has(candidate.id)) setAutomaticCandidate({ id: candidate.id, documentVersion: board.canvas.documentVersion });
     }
     const live = new Set(updates.map(item => item.id));
     for (const id of focused.current.keys()) if (!live.has(id)) focused.current.delete(id);
-  }, [board, updates]);
+  }, [board, updates, resume?.skipInitialUnread, resume?.reconciling]);
   useEffect(() => {
-    if (!follow || blocked || busy || !automaticCandidate) return;
-    const place = places.find(item => item.update.id === automaticCandidate);
+    if (!follow || blocked || busy || resume?.restoring || !automaticCandidate) return;
+    // The preceding effect may be replacing an old document's candidate in this
+    // render. Do not dispatch it or clear the replacement queued by that effect.
+    if (automaticCandidate.documentVersion !== board?.canvas.documentVersion) return;
+    const place = places.find(item => item.update.id === automaticCandidate.id);
     setAutomaticCandidate(undefined);
     if (place) show(place, true);
-  }, [follow, blocked, busy, automaticCandidate, places, show]);
+  }, [follow, blocked, busy, resume?.restoring, automaticCandidate, places, show, board?.canvas.documentVersion]);
   // A composer or selection opened after dispatch also invalidates an in-flight automatic jump.
   useEffect(() => {
     if (!blocked || !pending.current?.automatic) return;
-    setAutomaticCandidate(pending.current.update.id); pending.current = undefined; setRequest(undefined); setStatus("deferred");
+    if (pending.current.canvasDocumentVersion === latest.current.board?.canvas.documentVersion) setAutomaticCandidate({ id: pending.current.update.id, documentVersion: pending.current.canvasDocumentVersion });
+    pending.current = undefined; setRequest(undefined); setStatus("deferred");
   }, [blocked]);
 
-  const onActivity = useCallback((active: boolean) => {
+  const onActivity = useCallback((active: boolean, userInteracting = active) => {
+    interacting.current = active && userInteracting;
     setBusy(active);
-    if (active && pending.current?.automatic) {
-      setAutomaticCandidate(pending.current.update.id); pending.current = undefined; setRequest(undefined); setStatus("deferred");
+    // Applying a snapshot delays new navigation, but its queued busy report can
+    // arrive after the frame has already focused this request. Only an actual
+    // interaction revokes that pending request and takes over the viewport.
+    if (interacting.current && pending.current?.automatic) {
+      if (pending.current.canvasDocumentVersion === latest.current.board?.canvas.documentVersion) setAutomaticCandidate({ id: pending.current.update.id, documentVersion: pending.current.canvasDocumentVersion });
+      pending.current = undefined; setRequest(undefined); setStatus("deferred");
     }
   }, []);
   const onPosition = useCallback((result: UpdatePosition) => {
     const expected = pending.current;
     const current = latest.current;
-    if (!expected || result.id !== expected.update.id || result.token !== expected.token || result.targetIndex !== (expected.targetIndex ?? 0) || result.documentVersion !== expected.update.documentVersion || result.status === "focused" && current.board?.canvas.documentVersion !== result.documentVersion) return;
-    if (expected.automatic && (current.blocked || current.busy)) return;
+    if (!expected || expected.canvasDocumentVersion !== current.board?.canvas.documentVersion || result.id !== expected.update.id || result.token !== expected.token || result.targetIndex !== (expected.targetIndex ?? 0) || result.documentVersion !== expected.update.documentVersion || result.status === "focused" && current.board?.canvas.documentVersion !== result.documentVersion) return;
+    if (expected.automatic && (current.blocked || interacting.current)) return;
     pending.current = undefined;
     setStatus(result.status);
     if (result.status === "deferred") {
       setBusy(true);
-      if (expected.automatic) setAutomaticCandidate(result.id);
+      if (expected.automatic) setAutomaticCandidate({ id: result.id, documentVersion: expected.canvasDocumentVersion });
       return;
     }
     if (result.status !== "focused") return;
@@ -93,7 +117,7 @@ export function useUpdateNavigation(board: Board | null | undefined, blocked: bo
     setFollow(true);
     const seen = new Set(board?.seenUpdateIds);
     const candidate = [...updates].reverse().find(item => !seen.has(item.id)) ?? updates.at(-1);
-    if (candidate) setAutomaticCandidate(candidate.id);
+    if (candidate && board) setAutomaticCandidate({ id: candidate.id, documentVersion: board.canvas.documentVersion });
   };
   return { request, onPosition, onActivity, move, toggleFollow, follow, busy, index, total: places.length, status, unread: updates.filter(item => !board?.seenUpdateIds.includes(item.id)).length, blocked };
 }

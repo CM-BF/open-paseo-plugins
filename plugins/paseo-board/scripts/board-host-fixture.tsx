@@ -3,9 +3,12 @@
 import { createElement, useState } from "react";
 // @ts-expect-error ReactDOM is only used by this fixture.
 import { createRoot } from "react-dom/client";
+// @ts-expect-error ReactDOM is only used by this fixture.
+import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BoardView } from "../client/board";
 import { BoardHome } from "../client/home";
+import { readBoardView } from "../client/view-store";
 import { DEFAULT_LIGHT_COLORS } from "../shared/frame-theme";
 import type { Board, BoardChange, BoardEventCursor, BoardSummary, CanvasUpdate, Interaction } from "../shared/contracts";
 import { componentIdentityFor } from "../shared/component-identity";
@@ -16,9 +19,10 @@ const now = () => new Date().toISOString();
 // Only the dedicated draft scope retains its mock server across a full page
 // reload. Production draft persistence is never copied into this fixture key.
 const fixtureParams = new URLSearchParams(global.location.search);
+const resumeScope = fixtureParams.get("resume") === "1";
 const fixtureBoardId = fixtureParams.get("board") ?? "host-fixture";
 const fixtureHostId = fixtureParams.get("host") ?? "fixture-host";
-const fixtureServerKey = fixtureParams.get("drafts") === "1" ? `host-fixture-server:${fixtureHostId}:${fixtureBoardId}` : undefined;
+const fixtureServerKey = (fixtureParams.get("drafts") === "1" || resumeScope) ? `host-fixture-server:${fixtureHostId}:${fixtureBoardId}` : undefined;
 const retainedFixture = fixtureServerKey ? JSON.parse(global.sessionStorage.getItem(fixtureServerKey) ?? "null") : null;
 const fragment = `<style>body{padding:24px;margin:0;font:16px sans-serif}#point{position:absolute;top:140px;left:120px;width:100px;height:70px;background:#ebf5ed}#field{display:block;margin-top:40px}#words{margin-top:100px;width:600px}#far{margin-top:850px}</style><h1>Actual BoardView fixture</h1><button id="control">Keep running</button><output id="count">0</output><input id="field" value="initial"><div id="point">Point here</div><div id="side-remount-reference" style="position:absolute;right:24px;top:84px;width:200px;height:32px">Side selection reference</div><p id="words">A stable sentence for selecting the original location.</p><div id="edit-preview-fixture" style="display:none;position:absolute;inset:0;pointer-events:none"><div id="edit-preview-home" style="position:absolute;left:28px;top:290px;pointer-events:auto"><article id="edit-preview-source" style="box-sizing:border-box;width:250px;height:96px;border:2px solid #247865;background:#cff3e4;padding:16px">Preview result stays visible</article></div><section id="edit-preview-target" style="position:absolute;right:24px;top:600px;box-sizing:border-box;width:300px;min-height:110px;border:2px solid #51678c;padding:8px;pointer-events:auto">Destination near the canvas edge</section></div><div id="far">Far below</div><script>
 const NativeImage=window.Image;const imageSrc=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'src');
@@ -29,10 +33,25 @@ window.failCapture=()=>{if(!window.captureGate?.fail)throw new Error('capture ha
 window.releaseCapture=()=>{if(!window.captureGate?.release)throw new Error('capture has not reached image decode');return window.captureGate.release()};
 
 window.boots=1;window.ticks=0;window.count=0;function tick(){ticks++;requestAnimationFrame(tick)}requestAnimationFrame(tick);document.querySelector('#control').onclick=()=>{count++;document.querySelector('#count').textContent=count};
-window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-interaction')parent.postMessage({channel:'host-fixture-focus',id:e.data.id},'*');if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-update')parent.postMessage({channel:'host-fixture-update',request:e.data},'*');if(e.source===parent&&e.data?.channel==='host-fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'host-fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'host-fixture-result',id:e.data.id,error:error.message},'*')}}});
+window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='view-port'&&e.ports[0]){const port=e.ports[0],send=port.postMessage;port.postMessage=function(message,...rest){const result=send.call(this,message,...rest);if(message?.type==='view-state')parent.postMessage({channel:'host-fixture-port-send',message},'*');return result;};}if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='restore-view')parent.postMessage({channel:'host-fixture-restore',request:e.data,at:performance.now(),context:board.getContext(),scroll:{x:scrollX,y:scrollY}},'*');if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-interaction')parent.postMessage({channel:'host-fixture-focus',id:e.data.id},'*');if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-update')parent.postMessage({channel:'host-fixture-update',request:e.data},'*');if(e.source===parent&&e.data?.channel==='host-fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'host-fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'host-fixture-result',id:e.data.id,error:error.message},'*')}}});
 </script>`;
 let persisted: Board = retainedFixture?.board ?? { schemaVersion: 1, id: fixtureBoardId, title: "Host integration fixture", ownerAgentId: "owner-fixture", revision: 1, createdAt: now(), updatedAt: now(), canvas: { html: fragment, revision: 1, documentVersion: 1, data: { summary: "Isolated test fixture" }, patches: [] }, decisions: [], interactions: [], updates: [], seenUpdateIds: [], events: [], observations: [], userState: {}, extraction: {} };
-const query = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+// Resume exercises normal inactive-cache retention; existing scopes deliberately
+// retain their zero-GC behavior to preserve their original cold-remount contract.
+const query = new QueryClient({ defaultOptions: { queries: { retry: false, ...(resumeScope ? {} : { gcTime: 0 }) } } });
+const resumeFragment = fragment.replace('</style>', '#resume-surface{position:absolute;left:0;top:0;width:2100px;height:2500px;background:linear-gradient(135deg,#f5f8ff,#e7f4ed)}#resume-surface>h1{position:absolute;left:30px;top:30px}#resume-log{position:absolute;left:680px;top:730px;width:460px;height:210px;overflow:auto;overscroll-behavior:contain;border:2px solid #327759;background:white}#resume-log-content{width:1100px;height:1200px;padding:16px;box-sizing:border-box;background:repeating-linear-gradient(#fff 0 31px,#eee 31px 32px)}#resume-input{position:absolute;left:690px;top:665px;width:320px}#resume-status{position:absolute;left:680px;top:635px}#resume-unread{position:absolute;left:1740px;top:2050px;width:180px;height:80px;background:#ffd8a8}</style>') + `<main id="resume-surface"><h1>Resume surface</h1><output id="resume-status">Initial authoritative content</output><input id="resume-input" value=""><div id="resume-log"><div id="resume-log-content">${Array.from({length:60}, (_,i)=>`<p>Saved experiment log ${i+1}</p>`).join('')}</div></div><div id="resume-unread">Unread distant place</div></main><script>window.resumeBootToken=crypto.randomUUID();window.resumeWheelEvents=[];window.resumeInputEvents=[];document.addEventListener('wheel',e=>{window.resumeWheelEvents.push({trusted:e.isTrusted,target:e.target.id,x:e.deltaX,y:e.deltaY});},{passive:true});document.addEventListener('input',e=>{window.resumeInputEvents.push({trusted:e.isTrusted,target:e.target.id,value:e.target.value});});parent.postMessage({channel:'resume-fixture-boot',token:window.resumeBootToken},'*');</script>`;
+const resumeBoards = new Map<string, Board>(retainedFixture?.resumeBoards ?? []);
+if (resumeScope && !resumeBoards.size) for (const host of [fixtureHostId, "other-host"]) for (const id of [fixtureBoardId, "another-board"]) {
+  const item = copy(persisted); item.id=id; item.title = id === fixtureBoardId ? "Host integration fixture" : "Another project"; item.workspaceId = "resume-workspace"; item.ownerAgentId = id === fixtureBoardId ? "agent-a" : "agent-b"; item.canvas.html=resumeFragment;
+  resumeBoards.set(`${host}:${id}`, item);
+}
+let activeHost = fixtureHostId;
+let holdReads = false;
+let snapshotHeldReads = false;
+const pendingReads: Array<() => void> = [];
+let holdFailureReads = false;
+const pendingFailureReads: Array<() => void> = [];
+let eventEpoch: string = retainedFixture?.eventEpoch ?? "fixture";
 let submitMode: "held" | "accept" | "reject" | "lost-response" = "held";
 let sideSequence = retainedFixture?.sideSequence ?? 0;
 let choiceMode: "held" | "accept" | "reject" | "lost-response" = "accept";
@@ -52,11 +71,11 @@ let checkFails = false;
 const eventJournal: BoardChange[] = [];
 const pendingChanges: Array<() => void> = [];
 const pendingChecks: Array<() => void> = [];
-const cursor = () => ({ epoch: "fixture", sequence: eventSequence });
-const summary = (): BoardSummary => ({ id: persisted.id, title: persisted.title, ownerAgentId: persisted.ownerAgentId, revision: persisted.revision, createdAt: persisted.createdAt, updatedAt: persisted.updatedAt, decisionCount: persisted.decisions.length, pendingCount: persisted.interactions.filter(item => !["answered", "applied", "rejected"].includes(item.status)).length, unreadUpdateCount: persisted.updates.filter(update => !persisted.seenUpdateIds.includes(update.id)).length, latestUpdateRevision: persisted.updates.at(-1)?.boardRevision ?? 0, status: persisted.interactions.some(item => item.status === "failed") ? "error" : persisted.interactions.some(item => ["saved", "sending", "delivered", "processing"].includes(item.status)) ? "processing" : "idle" });
-const summaries = () => [summary(), { ...summary(), id: "another-board", title: "Another project", unreadUpdateCount: 3, latestUpdateRevision: 4, status: "idle" as const }];
+const cursor = () => ({ epoch: eventEpoch, sequence: eventSequence });
+const summary = (persistedBoard: Board = persisted): BoardSummary => { const persisted = persistedBoard; return ({ id: persisted.id, title: persisted.title, ownerAgentId: persisted.ownerAgentId, workspaceId: persisted.workspaceId, revision: persisted.revision, createdAt: persisted.createdAt, updatedAt: persisted.updatedAt, decisionCount: persisted.decisions.length, pendingCount: persisted.interactions.filter(item => !["answered", "applied", "rejected"].includes(item.status)).length, unreadUpdateCount: persisted.updates.filter(update => !persisted.seenUpdateIds.includes(update.id)).length, latestUpdateRevision: persisted.updates.at(-1)?.boardRevision ?? 0, status: persisted.interactions.some(item => item.status === "failed") ? "error" : persisted.interactions.some(item => ["saved", "sending", "delivered", "processing"].includes(item.status)) ? "processing" : "idle" }); };
+const summaries = () => resumeScope ? [...resumeBoards.entries()].filter(([key]) => key.startsWith(`${activeHost}:`)).map(([,board])=>summary(board)) : [summary(), { ...summary(), id: "another-board", title: "Another project", unreadUpdateCount: 3, latestUpdateRevision: 4, status: "idle" as const }];
 const changes = (since?: BoardEventCursor, compact = false) => {
-  if (since?.epoch !== "fixture" || since.sequence > eventSequence) return { mode: "snapshot", boards: summaries(), cursor: cursor() };
+  if (!since || since.epoch !== eventEpoch || since.sequence > eventSequence) return { mode: "snapshot", boards: summaries(), cursor: cursor() };
   const events = eventJournal.filter(event => event.cursor.sequence > since.sequence);
   return compact ? { mode: "compact", fromCursor: since, changes: [...new Map(events.map(event => [event.summary.id, event])).values()].sort((a, b) => a.cursor.sequence - b.cursor.sequence), cursor: cursor() } : { mode: "delta", changes: events, cursor: cursor() };
 };
@@ -66,9 +85,44 @@ const notify = (reason: "metadata" | "attention" = "metadata") => {
   // after advance(). Publish the fully committed projection at the microtask edge.
   global.queueMicrotask(() => { eventSequence++; const event = { cursor: cursor(), summary: summary(), canvasRevision: persisted.canvas.revision, reason }; eventJournal.push(copy(event)); for (const listener of eventListeners) listener.change(copy(event)); });
 };
-const persistFixture = () => { if (fixtureServerKey) global.sessionStorage.setItem(fixtureServerKey, JSON.stringify({ board: persisted, calls: fixture.calls, sideSequence, readFails })); };
+const persistFixture = () => { if (fixtureServerKey) global.sessionStorage.setItem(fixtureServerKey, JSON.stringify({ board: persisted, calls: fixture.calls, sideSequence, readFails, ...(resumeScope ? { resumeBoards: [...resumeBoards], eventEpoch } : {}) })); };
 const advance = () => { persisted = { ...persisted, revision: persisted.revision + 1, updatedAt: now() }; persistFixture(); notify(); };
 const fixture: any = global.hostFixture = {
+  resumeScope,
+  resumeBoots: [] as any[],
+  readMetrics: [] as any[],
+  failureReadMetrics: [] as any[],
+  holdReads: (next: boolean, snapshot = false) => { holdReads=next; snapshotHeldReads=snapshot; if (!next) for (const finish of pendingReads.splice(0)) finish(); },
+  pendingReads: () => pendingReads.length,
+  holdFailureReads: (next: boolean) => { holdFailureReads=next; },
+  pendingFailureReads: () => pendingFailureReads.length,
+  rejectFailureReads: () => { for (const reject of pendingFailureReads.splice(0)) reject(); },
+  resumeBoard: (id=fixtureBoardId, host=fixtureHostId) => copy(resumeBoards.get(`${host}:${id}`)),
+  resumeMutation: (kind: "patch" | "attention" | "epoch", value: string) => {
+    const board = resumeBoards.get(`${fixtureHostId}:${fixtureBoardId}`)!;
+    if (kind === "attention") board.seenUpdateIds = [value];
+    else if (kind === "patch") { board.revision++; board.canvas.revision++; board.canvas.patches.push({ id: `resume-${board.revision}`, selector: "#resume-status", operation: "replace", html: `<output id="resume-status">${value}</output>` }); }
+    else { eventEpoch=`reset-${value}`; eventSequence=0; eventJournal.splice(0); board.revision=1; board.canvas={...board.canvas, revision:1, documentVersion:board.canvas.documentVersion+1, patches:[], data:{summary:value}, html:resumeFragment.replace("Initial authoritative content",value)}; }
+    eventSequence++; const event: BoardChange = {cursor:cursor(), summary:summary(board), canvasRevision:board.canvas.revision, reason:kind === "attention" ? "attention" : "metadata"}; eventJournal.push(copy(event)); persistFixture();
+    if (activeHost === fixtureHostId) for (const listener of eventListeners) listener.change(copy(event));
+    return copy(board);
+  },
+  resumeUnread: (id="resume-unread") => {
+    const board = resumeBoards.get(`${fixtureHostId}:${fixtureBoardId}`)!; board.revision++;
+    board.updates.push({id,eventId:id,at:now(),boardRevision:board.revision,canvasRevision:board.canvas.revision,documentVersion:board.canvas.documentVersion,kind:"patch",targets:[{selector:"#resume-unread"}]} as CanvasUpdate);
+    eventSequence++; const event:BoardChange={cursor:cursor(),summary:summary(board),canvasRevision:board.canvas.revision,reason:"metadata"}; eventJournal.push(copy(event)); persistFixture(); if(activeHost===fixtureHostId)for(const listener of eventListeners)listener.change(copy(event));
+  },
+  resumeReplaceWithUpdate: (value:string,id:string) => {
+    const board=resumeBoards.get(`${fixtureHostId}:${fixtureBoardId}`)!;board.revision++;
+    board.canvas={...board.canvas,revision:board.canvas.revision+1,documentVersion:board.canvas.documentVersion+1,patches:[],html:resumeFragment.replace("Initial authoritative content",value)};
+    // Keep the old update in history. A new-document initial candidate must not
+    // be overwritten by the old document's deferred automatic candidate.
+    board.updates.push({id,eventId:id,at:now(),boardRevision:board.revision,canvasRevision:board.canvas.revision,documentVersion:board.canvas.documentVersion,kind:"document",targets:[{selector:"#resume-unread"}]} as CanvasUpdate);
+    eventSequence++;const event:BoardChange={cursor:cursor(),summary:summary(board),canvasRevision:board.canvas.revision,reason:"metadata"};eventJournal.push(copy(event));persistFixture();if(activeHost===fixtureHostId)for(const listener of eventListeners)listener.change(copy(event));return copy(board);
+  },
+  cacheBoard: (id=fixtureBoardId, host=fixtureHostId) => { const cached = query.getQueryData<any>(["paseo-board",host,id]); return copy(cached && "epoch" in cached && "board" in cached ? cached.board ?? null : cached ?? null); },
+  boardQueryState: (id=fixtureBoardId, host=fixtureHostId) => { const state=query.getQueryState(["paseo-board",host,id]); return state ? {status:state.status,fetchStatus:state.fetchStatus} : null; },
+  eventCursor: () => copy(cursor()),
   componentIdentitySource: componentIdentityFor.toString(),
   uiEvents: [] as any[], raw: [] as any[], calls: (retainedFixture?.calls ?? []) as any[], links: [] as string[], openedAgents: [] as string[], anchors: [] as any[], focusRequests: [] as string[], updateRequests: [] as any[], updatePositions: [] as any[], ready: 0, responseClicks: 0, responseResults: [] as any[],
   board: () => copy(persisted),
@@ -129,12 +183,24 @@ const fixture: any = global.hostFixture = {
   refetch: () => query.invalidateQueries({ queryKey: ["paseo-board"] }),
   rpc: async (name: string, input: any) => {
     fixture.calls.push({ name, input: copy(input) }); persistFixture();
+    if (name === "board.read" && holdFailureReads) {
+      const host=activeHost,started=performance.now(),epochAtStart=eventEpoch;
+      return new Promise((_resolve,reject)=>pendingFailureReads.push(()=>{
+        fixture.failureReadMetrics.push({host,boardId:input.boardId,started,finished:performance.now(),epochAtStart});
+        reject(new Error("Fixture held read failed after connection recovery"));
+      }));
+    }
     if (name === "board.read" && readFails) throw new Error("Fixture read unavailable");
+    if (name === "board.read" && resumeScope) {
+      const host = activeHost, started = performance.now(), epochAtStart=eventEpoch;
+      const snapshotted=holdReads&&snapshotHeldReads, captured=snapshotted?copy(resumeBoards.get(`${host}:${input.boardId}`)):undefined;
+      return new Promise(resolve => { const finish=()=>{ const board=snapshotted?captured:resumeBoards.get(`${host}:${input.boardId}`); const result={board:board?copy(board):null,unchanged:false}; fixture.readMetrics.push({host,boardId:input.boardId,started,finished:performance.now(),epochAtStart,snapshotted,bytes:new TextEncoder().encode(JSON.stringify(result)).length,revision:board?.revision,documentVersion:board?.canvas.documentVersion}); resolve(result); }; if (holdReads) pendingReads.push(finish); else finish(); });
+    }
     if (name === "board.read") return input.sinceRevision === persisted.revision ? { board: null, unchanged: true } : { board: copy(persisted), unchanged: false };
     if (name === "board.list") return { boards: summaries(), cursor: cursor() };
     if (name === "board.changes") return holdChanges ? new Promise(resolve => pendingChanges.push(() => resolve(changes(input.cursor, input.compact)))) : changes(input.cursor, input.compact);
     if (name === "board.check") {
-      const result = () => { if (checkFails) throw new Error("Fixture compact check unavailable"); return { changed: input.cursor.epoch !== "fixture" || input.cursor.sequence !== eventSequence }; };
+      const result = () => { if (checkFails) throw new Error("Fixture compact check unavailable"); return { changed: input.cursor.epoch !== eventEpoch || input.cursor.sequence !== eventSequence }; };
       return holdCheck ? new Promise((resolve, reject) => pendingChecks.push(() => { try { resolve(result()); } catch (error) { reject(error); } })) : result();
     }
     if (name === "board.edit") {
@@ -166,6 +232,7 @@ const fixture: any = global.hostFixture = {
       return new Promise<Board>((resolve, reject) => { pendingRename = { input, resolve, reject }; if (renameMode === "accept") fixture.acceptRename(); });
     }
     if (name === "board.updates-seen") {
+      if(resumeScope){const board=resumeBoards.get(`${activeHost}:${input.boardId}`)!;const live=new Set(board.updates.map(item=>item.id));board.seenUpdateIds=[...new Set([...board.seenUpdateIds,...input.updateIds])].filter((id:any)=>live.has(id));eventSequence++;const event:BoardChange={cursor:cursor(),summary:summary(board),canvasRevision:board.canvas.revision,reason:"attention"};eventJournal.push(copy(event));persistFixture();for(const listener of eventListeners)listener.change(copy(event));return copy(board);}
       const live = new Set(persisted.updates.map(item => item.id));
       persisted.seenUpdateIds = [...new Set([...persisted.seenUpdateIds, ...input.updateIds])].filter((id: any) => live.has(id));
       notify("attention");
@@ -212,7 +279,7 @@ let mainFrameSequence = 0;
 let mainReadyCount = 0;
 const mainFrames = new WeakMap<object, { id: number; readySession?: string }>();
 const currentMainFrame = () => {
-  const frame = global.document.querySelector(`iframe[data-board-id="${fixtureBoardId}"]`);
+  const frame = global.document.querySelector(resumeScope ? "iframe[data-board-id]" : `iframe[data-board-id="${fixtureBoardId}"]`);
   if (!frame) return undefined;
   let entry = mainFrames.get(frame);
   if (!entry) { entry = { id: ++mainFrameSequence }; mainFrames.set(frame, entry); }
@@ -224,8 +291,126 @@ fixture.mainReady = () => {
   return current ? { frameId: current.entry.id, sessionId: current.sessionId, ready: Boolean(current.sessionId && current.entry.readySession === current.sessionId), count: mainReadyCount } : null;
 };
 fixture.readyRecords = [];
+fixture.viewDiagnostics = [];
+fixture.restoreRequests = [];
+fixture.retirementMessages = [];
+fixture.retirementOutbound = [];
+fixture.viewPortChannels = [];
+fixture.viewPortMessages = [];
+let retirementSource:object | null=null;
+let retirementFrame:{isConnected:boolean} | null=null;
+let retirementProbe:any;
+fixture.traceView = (phase:string, detail?:unknown) => {
+  const current=currentMainFrame(),frame=current?.frame,boardId=frame?.dataset.boardId??fixtureBoardId;
+  const cached=resumeScope?fixture.cacheBoard(boardId,activeHost):persisted;
+  const version=cached?.canvas.documentVersion;
+  let disk:unknown;try{disk=JSON.parse(global.localStorage.getItem("@paseo:board-view:v1")??"null")?.records?.filter((record:any)=>record.kind==="view"&&record.hostId===fixtureHostId&&[fixtureBoardId,"another-board"].includes(record.boardId));}catch(e){disk=String(e);}
+  const owned=resumeScope?resumeBoards.get(`${fixtureHostId}:${fixtureBoardId}`):persisted;
+  const entry={phase,at:performance.now(),detail,activeHost,route:fixture.route?.(),hidden:global.document.hidden,
+    frame:current?{id:current.entry.id,boardId,sessionId:current.sessionId,ready:current.entry.readySession===current.sessionId,rect:frame.getBoundingClientRect().toJSON(),embeddedDocumentVersion:Number(frame.srcdoc.match(/"documentVersion":(\d+)/)?.[1])}:null,
+    cached:cached?{revision:cached.revision,documentVersion:version,canvasRevision:cached.canvas.revision}:null,
+    currentMemory:version===undefined?null:readBoardView(activeHost,boardId,version),
+    ownedMemory:owned?readBoardView(fixtureHostId,fixtureBoardId,owned.canvas.documentVersion):null,disk,
+    follow:global.document.querySelector('button[aria-label="暂停跟随更新"]')?true:global.document.querySelector('button[aria-label="继续跟随更新"]')?false:null,
+    raw:fixture.raw.filter((m:any)=>["view-state","view-restored","ready"].includes(m.type)).slice(-6)};
+  fixture.viewDiagnostics.push(entry);fixture.viewDiagnostics=fixture.viewDiagnostics.slice(-160);return entry;
+};
+// Observe native channels without starting them or changing production message
+// delivery. The constructor runs after the real WindowProxy-authenticated ready.
+const NativeMessageChannel=global.MessageChannel;
+let observedChannelSequence=0;
+global.MessageChannel=function(...args:any[]){
+  const channel=new NativeMessageChannel(...args),current=currentMainFrame();
+  const binding:any={id:++observedChannelSequence,createdAt:performance.now(),hostId:activeHost,frameId:current?.entry.id,sessionId:current?.sessionId,boardId:current?.frame.dataset.boardId,ports:[]};
+  fixture.viewPortChannels.push(binding);fixture.viewPortChannels=fixture.viewPortChannels.slice(-80);
+  for(const side of ["port1","port2"]){
+    const port=channel[side],entry:any={id:`${binding.id}:${side}`,side};binding.ports.push(entry);
+    const close=port.close;port.close=function(...closeArgs:any[]){entry.closedAt=performance.now();return close.apply(this,closeArgs);};
+    const nativeAdd=port.addEventListener,observedEvents=new WeakMap<object,{row:any;retired?:any}>();
+    const afterHostListener=(event:any)=>{
+      const observed=observedEvents.get(event);if(!observed)return;
+      if(observed.retired){
+        const retired=observed.retired,target=resumeBoards.get(`${retired.targetHost}:${fixtureBoardId}`)!;
+        retired.targetMemoryAfter=readBoardView(retired.targetHost,fixtureBoardId,target.canvas.documentVersion);
+        retired.oldMemoryAfter=readBoardView(retired.oldHost,fixtureBoardId,resumeBoards.get(`${retired.oldHost}:${fixtureBoardId}`)!.canvas.documentVersion);
+        retired.afterAt=performance.now();retired.afterPhase="native-after-host-listener";
+      }
+      fixture.traceView("port-after-host-listener",observed.row);
+    };
+    port.addEventListener("message",(event:any)=>{
+      const message=event.data;if(message?.channel!=="paseo-board-frame-v1"||message.type!=="view-state")return;
+      const current=currentMainFrame(),row:any={portId:entry.id,boundSession:binding.sessionId,boundHost:binding.hostId,receivedAt:performance.now(),trusted:event.isTrusted,message:copy(message),currentSession:current?.sessionId,currentFrameId:current?.entry.id};
+      fixture.raw.push(message);fixture.viewPortMessages.push(row);fixture.viewPortMessages=fixture.viewPortMessages.slice(-100);
+      fixture.traceView("port-before-host",row);
+      const observed:{row:any;retired?:any}={row};observedEvents.set(event,observed);
+      if(retirementProbe&&entry.id===retirementProbe.oldPortId){
+        const retired:any={...copy(retirementProbe),...row,trustedMessage:event.isTrusted,oldPortMatched:true,oldFrameRemoved:retirementFrame?.isConnected===false};
+        fixture.retirementMessages.push(retired);fixture.retirementMessages=fixture.retirementMessages.slice(-16);
+        observed.retired=retired;
+      }
+      global.queueMicrotask(()=>fixture.traceView("port-between-listeners-microtask",row));
+    });
+    // A microtask from the earlier observer can run before a later native event
+    // listener. Append this read-only observer after the actual host listener;
+    // the browser still invokes every callback itself with the original event.
+    let afterHostRegistered=false;
+    port.addEventListener=function(type:string,listener:unknown,...options:any[]){
+      const result=nativeAdd.call(this,type,listener,...options);
+      if(type==="message"&&!afterHostRegistered){afterHostRegistered=true;nativeAdd.call(this,"message",afterHostListener);}
+      return result;
+    };
+  }
+  return channel;
+};
+global.MessageChannel.prototype=NativeMessageChannel.prototype;
+Object.setPrototypeOf(global.MessageChannel,NativeMessageChannel);
+for(const type of ["pointerdown","click"])global.addEventListener(type,(event:any)=>{
+  const target=event.target?.closest?.('[data-testid^="resume-"]');
+  if(target)fixture.traceView("native-"+type,{trusted:event.isTrusted,target:target.getAttribute("data-testid"),x:event.clientX,y:event.clientY});
+},true);
+// Controlled queue boundary, confined to two dedicated native test buttons.
+// The old runtime itself emits through its authenticated MessagePort; no
+// MessageEvent or production callback is synthesized. The OOPIF gets a bounded
+// window while the parent is busy, then flushSync creates the replacement before
+// this parent event task ends. Tests require proof that the expected message was
+// actually sent by the old runtime, plus either the old port's closure or its
+// actual native delivery. An absent proof is a test failure.
+global.addEventListener("pointerdown",(event:any)=>{
+  const target=event.target?.closest?.('[data-testid="resume-retire-same"],[data-testid="resume-retire-other-host"]');
+  if(!target||!event.isTrusted)return;
+  const current=currentMainFrame();if(!current?.sessionId)throw new Error("Retirement probe requires a current ready frame");
+  const other=target.getAttribute("data-testid")==="resume-retire-other-host";
+  retirementSource=current.frame.contentWindow;
+  retirementFrame=current.frame;
+  const targetHost=other?"other-host":fixtureHostId;
+  const oldReport=fixture.viewPortMessages.findLast((item:any)=>item.message.sessionId===current.sessionId&&item.boundSession===current.sessionId);
+  const oldPort=fixture.viewPortChannels.flatMap((item:any)=>item.ports).find((item:any)=>item.id===oldReport?.portId);
+  if(!oldPort)throw new Error("Retirement probe requires the current authenticated view port");
+  retirementProbe={at:performance.now(),trustedPointer:event.isTrusted,oldSession:current.sessionId,oldFrameId:current.entry.id,oldPortId:oldPort.id,targetHost,oldHost:activeHost,
+    memoryBefore:readBoardView(fixtureHostId,fixtureBoardId,resumeBoards.get(`${fixtureHostId}:${fixtureBoardId}`)!.canvas.documentVersion),
+    targetMemoryBefore:readBoardView(targetHost,fixtureBoardId,resumeBoards.get(`${targetHost}:${fixtureBoardId}`)!.canvas.documentVersion)};
+  current.frame.contentWindow.postMessage({channel:"paseo-board-frame-v1",boardId:fixtureBoardId,sessionId:current.sessionId,type:"flush-view"},"*");
+  const end=performance.now()+40;while(performance.now()<end){/* bounded parent task; genuine child message remains queued */}
+  fixture.retireMount(other);
+  const next=currentMainFrame();retirementProbe.newSession=next?.sessionId;retirementProbe.newFrameId=next?.entry.id;retirementProbe.replacedAt=performance.now();
+  fixture.retirementProbe=copy(retirementProbe);fixture.traceView("retirement-native-replaced",fixture.retirementProbe);
+},true);
 global.addEventListener("message", (event: any) => {
   if (event.data?.channel === "paseo-board-frame-v1") fixture.raw.push(event.data);
+  if(retirementProbe&&event.data?.channel==="host-fixture-port-send"&&event.data.message?.sessionId===retirementProbe.oldSession){
+    const current=currentMainFrame(),port=fixture.viewPortChannels.flatMap((item:any)=>item.ports).find((item:any)=>item.id===retirementProbe.oldPortId);
+    const row:any={...copy(retirementProbe),receivedAt:performance.now(),trustedMessage:event.isTrusted,sourceWasOld:event.source===retirementSource,sourceWasNull:event.source===null,message:copy(event.data.message),portClosedAt:port?.closedAt,currentSession:current?.sessionId,oldFrameRemoved:retirementFrame?.isConnected===false};
+    fixture.retirementOutbound.push(row);fixture.retirementOutbound=fixture.retirementOutbound.slice(-16);
+    global.queueMicrotask(()=>{const target=resumeBoards.get(`${row.targetHost}:${fixtureBoardId}`)!;row.targetMemoryAfter=readBoardView(row.targetHost,fixtureBoardId,target.canvas.documentVersion);row.afterAt=performance.now();});
+  }
+  if(event.data?.channel==="paseo-board-frame-v1"&&["view-state","view-restored","ready"].includes(event.data.type)){
+    const current=currentMainFrame();const detail={message:copy(event.data),trusted:event.isTrusted,sourceIsCurrent:!!current&&event.source===current.frame.contentWindow,sessionMatchesCurrent:!!current&&event.data.sessionId===current.sessionId};
+    fixture.traceView("message-before-host",detail);global.queueMicrotask(()=>fixture.traceView("message-after-host-microtask",detail));
+  }
+  if(event.data?.channel==="host-fixture-restore"){
+    const current=currentMainFrame();fixture.restoreRequests.push({...copy(event.data),receivedAt:performance.now(),sourceIsCurrent:!!current&&event.source===current.frame.contentWindow,currentSession:current?.sessionId});fixture.restoreRequests=fixture.restoreRequests.slice(-40);fixture.traceView("restore-request-observed",fixture.restoreRequests.at(-1));
+  }
+  if (event.data?.channel === "resume-fixture-boot") fixture.resumeBoots.push({token:event.data.token, at:performance.now(), accepted:event.source===currentMainFrame()?.frame.contentWindow});
   if (event.data?.channel === "host-fixture-update") fixture.updateRequests.push(event.data.request);
   if (event.data?.channel === "paseo-board-frame-v1" && event.data.type === "update-position") fixture.updatePositions.push(event.data);
   if (event.data?.channel === "host-fixture-focus") fixture.focusRequests.push(event.data.id);
@@ -237,7 +422,7 @@ global.addEventListener("message", (event: any) => {
     fixture.ready++;
     const current = currentMainFrame();
     const fromMain = current && event.source === current.frame.contentWindow;
-    const accepted = fromMain && event.data.boardId === fixtureBoardId && event.data.sessionId === current.sessionId;
+    const accepted = fromMain && event.data.boardId === (resumeScope ? current.frame.dataset.boardId : fixtureBoardId) && event.data.sessionId === current.sessionId;
     if (accepted) { current.entry.readySession = current.sessionId; mainReadyCount++; }
     fixture.readyRecords.push({ boardId: event.data.boardId, sessionId: event.data.sessionId, mainFrameId: current?.entry.id, accepted: Boolean(accepted) });
     fixture.readyRecords = fixture.readyRecords.slice(-24);
@@ -249,13 +434,36 @@ global.addEventListener("message", (event: any) => {
 });
 global.fixtureCall = (code: string) => new Promise((resolve, reject) => {
   const id = ++requestId; frameRequests.set(id, { resolve, reject });
-  global.document.querySelector(`iframe[data-board-id="${fixtureBoardId}"]`).contentWindow.postMessage({ channel: "host-fixture", id, code }, "*");
+  global.document.querySelector(resumeScope ? "iframe[data-board-id]" : `iframe[data-board-id="${fixtureBoardId}"]`).contentWindow.postMessage({ channel: "host-fixture", id, code }, "*");
 });
+function ResumeApp() {
+  const [route, setRoute] = useState({host:fixtureHostId, agent:"agent-a"});
+  const [mount, setMount] = useState(0);
+  const [, setRevision] = useState(0);
+  const tabKey = `resume-fixture-tab:${route.host}:${route.agent}`;
+  const [stale, setStale] = useState(false);
+  const tab = { state: stale ? fixture.staleTabValue : JSON.parse(global.sessionStorage.getItem(tabKey) ?? "null"), setState: (value:any) => { global.sessionStorage.setItem(tabKey,JSON.stringify(value)); fixture.tabWrites.push({scope:tabKey,value:copy(value)}); } };
+  fixture.tabWrites ??= [];
+  fixture.route=()=>copy(route);
+  fixture.captureTabEcho=()=>{fixture.staleTabValue=JSON.parse(global.sessionStorage.getItem(tabKey) ?? "null");return copy(fixture.staleTabValue);};
+  fixture.staleTabRerender=()=>{setStale(true);setRevision(n=>n+1);};
+  fixture.retireMount=(other:boolean)=>flushSync(()=>{activeHost=other?"other-host":fixtureHostId;setStale(false);setRoute({host:activeHost,agent:"agent-a"});setMount(n=>n+1);});
+  const switchRoute=(host:string,agent:string)=>{fixture.traceView("switchRoute-before",{host,agent});activeHost=host;setStale(false);setRoute({host,agent});global.queueMicrotask(()=>fixture.traceView("switchRoute-microtask",{host,agent}));};
+  return createElement(QueryClientProvider, {client:query},
+    createElement("nav", {"data-testid":"resume-agent-nav",style:{display:"flex",gap:8,padding:4,height:32,flexShrink:0}},
+      ...[[fixtureHostId,"agent-a","A"],[fixtureHostId,"agent-b","B"],["other-host","agent-a","Other host"]].map(([host,agent,label])=>createElement("button",{key:label,"data-testid":`resume-${label.replaceAll(" ","-")}`,onClick:()=>switchRoute(host,agent)},label)),
+      createElement("button",{"data-testid":"resume-reopen",onClick:()=>setMount(n=>n+1)},"Reopen"),
+      createElement("button",{"data-testid":"resume-retire-same"},"Queue old visit"),
+      createElement("button",{"data-testid":"resume-retire-other-host"},"Queue other host")),
+    createElement(BoardHome,{key:`${route.host}:${route.agent}:${mount}`,host:{id:route.host},agentId:route.agent,workspaceId:"resume-workspace",entryScope:{hostId:route.host,surface:"agent",workspaceId:"resume-workspace",agentId:route.agent},tab,theme:{colors:DEFAULT_LIGHT_COLORS},navigation:{openAgent:({agentId}:any)=>fixture.openedAgents.push(agentId)}} as any));
+}
 function App() {
   const [mount, setMount] = useState(0);
   const [index, setIndex] = useState(false);
-  fixture.index = () => { query.clear(); setIndex(true); };
+  const [entryHost,setEntryHost]=useState(fixtureHostId);
+  // A first visit is a distinct host scope, not erasure of a user's saved view.
+  fixture.index = (firstVisit=false) => { query.clear();if(firstVisit)setEntryHost("first-entry-host");setIndex(true); };
   fixture.remount = () => { query.clear(); setMount(value => value + 1); };
-  return createElement(QueryClientProvider, { client: query }, createElement(index ? BoardHome : BoardView, { key: mount, boardId: fixtureBoardId, onBack: () => { fixture.backCalls++; setIndex(true); }, host: { id: fixtureHostId }, theme: { colors: DEFAULT_LIGHT_COLORS }, navigation: { openAgent: ({ agentId }: any) => fixture.openedAgents.push(agentId) } } as any));
+  return createElement(QueryClientProvider, { client: query }, createElement(index ? BoardHome : BoardView, { key: mount, boardId: fixtureBoardId, onBack: () => { fixture.backCalls++; setIndex(true); }, host: { id: entryHost }, theme: { colors: DEFAULT_LIGHT_COLORS }, navigation: { openAgent: ({ agentId }: any) => fixture.openedAgents.push(agentId) } } as any));
 }
-createRoot(global.document.getElementById("app")).render(createElement(App));
+createRoot(global.document.getElementById("app")).render(createElement(resumeScope ? ResumeApp : App));

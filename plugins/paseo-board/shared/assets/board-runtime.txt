@@ -168,19 +168,41 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     script.textContent = old.textContent;
     const executable = !script.type || /^(module|(?:text|application)\/(?:java|ecma)script)$/i.test(script.type);
     if (!executable) { old.replaceWith(script); resolve(); return; }
+    const inlineModule = !script.hasAttribute("src") && script.type === "module";
+    const originalText = script.textContent;
+    const completionEvent = inlineModule ? `paseo:patch-module:${scope.sessionId}:${++sequence}` : null;
+    let completionUrl, instrumentedText, settled = false;
     let scriptError;
     let timer;
-    const finish = (failure) => { clearTimeout(timer); window.removeEventListener("error", onError); failure ? reject(failure) : resolve(); };
-    const onError = (event) => { scriptError = new Error(event.message || "Patch script failed"); };
+    const finish = (failure) => {
+      if (settled) return; settled = true;
+      clearTimeout(timer); window.removeEventListener("error", onError);
+      if (completionEvent) window.removeEventListener(completionEvent, onComplete);
+      if (completionUrl) URL.revokeObjectURL(completionUrl);
+      // Keep authored source identities unchanged after this transient execution marker.
+      if (instrumentedText && script.textContent === instrumentedText) script.textContent = originalText;
+      failure ? reject(failure) : resolve();
+    };
+    const onError = (event) => { scriptError = new Error(event.message || "Patch script failed"); if (inlineModule) finish(scriptError); };
+    const onComplete = () => finish(scriptError);
     window.addEventListener("error", onError);
-    const external = script.src || script.type === "module";
-    if (external) {
+    const external = script.hasAttribute("src");
+    if (inlineModule) {
+      // Inline modules never emit load. A tail import runs only after the authored body,
+      // including top-level await, without wrapping its scope or changing import.meta.url.
+      // The helper's globals are independent of names declared by the authored module.
+      completionUrl = URL.createObjectURL(new Blob([`window.dispatchEvent(new Event(${JSON.stringify(completionEvent)}));`], { type: "text/javascript" }));
+      instrumentedText = originalText + `\n;await import(${JSON.stringify(completionUrl)});`;
+      script.textContent = instrumentedText;
+      window.addEventListener(completionEvent, onComplete, { once: true });
+    }
+    if (external || inlineModule) {
       script.async = false;
-      script.addEventListener("load", () => finish(scriptError), { once: true });
+      if (external) script.addEventListener("load", () => finish(scriptError), { once: true });
       script.addEventListener("error", () => finish(new Error("Patch script could not load")), { once: true });
       timer = setTimeout(() => finish(new Error("Patch script timed out; it will not be retried")), 20000);
     }
-    try { old.replaceWith(script); if (!external) finish(scriptError); } catch (e) { finish(e); }
+    try { old.replaceWith(script); if (!external && !inlineModule) finish(scriptError); } catch (e) { finish(e); }
   });
   const componentTransferFailure = (operation, node, destination = null, position = "append") => ["move", "copy"].includes(operation)
     ? componentLayoutTools.transferFailure(operation, node, destination, position) : null;
@@ -323,6 +345,7 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
       if (deferredSelection !== null) { const mode = deferredSelection; deferredSelection = null; setSelectionMode(mode); }
       drainMarkerFocus();
       resumeComponentEdit();
+      readingView.afterDrain();
     }
   };
 
@@ -341,6 +364,146 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     }
     return parts.length ? parts.join(" > ").slice(0, 1000) : undefined;
   };
+  // Reading positions are a separate local bridge. No author-state write or Board mutation.
+  const readingView = (() => {
+    const scrollers = new Map();
+    let booted = false, pending = null, restoreTimer = null, captureTimer = null, lastCapture = 0, lastValue = "";
+    let viewPort = null;
+    let lastRestoreRequest = null, userInteracted = false, captureSuppressed = false;
+    const visible = () => !document.hidden && innerWidth > 0 && innerHeight > 0 && root.getBoundingClientRect().width > 0;
+    const idle = () => booted && !applying && !queued && !patchFailure;
+    const find = selector => { try { const nodes = document.querySelectorAll(selector); return nodes.length === 1 ? nodes[0] : null; } catch { return null; } };
+    const selector = node => {
+      if (!(node instanceof Element) || node === root || node === document.body || node.closest("[data-board-overlay]")) return null;
+      let result = node.id ? "#" + CSS.escape(node.id) : null;
+      const key = node.getAttribute("data-paseo-layout-key"), part = node.getAttribute("data-paseo-layout-part");
+      if (!result && key && part) result = `[data-paseo-layout-key=${JSON.stringify(key)}][data-paseo-layout-part=${JSON.stringify(part)}]`;
+      // A bounded authored path supports ordinary anonymous log containers too.
+      if (!result) result = selectorFor(node);
+      return result && result.length <= 1000 && find(result) === node ? result : null;
+    };
+    const documentAnchor = node => {
+      for (let current = node; current && current !== root; current = current.parentElement) {
+        if (["sticky", "fixed"].includes(getComputedStyle(current).position)) return false;
+      }
+      return true;
+    };
+    const rememberScroller = node => {
+      if (!(node instanceof Element) || node === root || node === document.body || node.closest("[data-board-overlay]")) return;
+      const key = selector(node); if (!key) return;
+      scrollers.delete(key); scrollers.set(key, { node, x: node.scrollLeft, y: node.scrollTop });
+      if (scrollers.size > 32) scrollers.delete(scrollers.keys().next().value);
+    };
+    const capture = () => {
+      clearTimeout(captureTimer); captureTimer = null;
+      if (!idle() || pending || captureSuppressed || !visible()) return;
+      const scrolls = [];
+      for (const [key, saved] of scrollers) {
+        const node = saved.node;
+        if (!node.isConnected || !node.matches(key)) { scrollers.delete(key); continue; }
+        // Hidden logs retain their previous local record until they become measurable again.
+        if (node.getClientRects().length) { saved.x = node.scrollLeft; saved.y = node.scrollTop; }
+        scrolls.push({ selector: key, x: saved.x, y: saved.y });
+      }
+      let anchor;
+      // Hit testing is constant-sized; never walk every element during scrolling.
+      for (const [x, y] of [[Math.min(80, innerWidth / 3), Math.min(80, innerHeight / 3)], [innerWidth / 2, innerHeight / 3]]) {
+        let node = document.elementFromPoint(x, y);
+        if (node?.closest("[data-board-overlay]")) continue;
+        node = node?.closest("[id]");
+        if (!node || node === root || node === document.body || !documentAnchor(node)) continue;
+        const key = selector(node), rect = node.getBoundingClientRect();
+        if (key && rect.width > 0 && rect.height > 0) { anchor = { selector: key, offsetX: rect.left, offsetY: rect.top }; break; }
+      }
+      const view = { documentVersion: snapshot.canvas.documentVersion, canvasRevision: snapshot.canvas.revision,
+        x: scrollX, y: scrollY, ...(anchor ? { anchor } : {}), scrolls };
+      const value = JSON.stringify(view); lastCapture = performance.now();
+      if (value !== lastValue) {
+        lastValue = value;
+        if (viewPort) viewPort.postMessage({ ...scope, type: "view-state", view });
+        else post({ type: "view-state", view });
+      }
+    };
+    const scheduleCapture = () => {
+      if (captureTimer !== null || pending) return;
+      const delay = Math.max(0, 120 - (performance.now() - lastCapture));
+      // Capture a new burst in this task; a zero-delay timer can otherwise run
+      // after the host has already switched agents and removed the document.
+      if (delay === 0) capture(); else captureTimer = setTimeout(capture, delay);
+    };
+    const finish = status => {
+      const request = pending; if (!request) return;
+      pending = null; clearTimeout(restoreTimer); restoreTimer = null;
+      if (status === "unavailable") captureSuppressed = true;
+      post({ type: "view-restored", requestId: request.id, documentVersion: initial.canvas.documentVersion, status });
+      // A cancelled user gesture may immediately scroll; capture the actual visible result.
+      if (status !== "unavailable") scheduleCapture();
+    };
+    const attempt = () => {
+      restoreTimer = null; if (!pending) return;
+      const now = performance.now(), expired = now >= pending.deadline;
+      if (!idle() || !visible() || pending.view.canvasRevision > snapshot.canvas.revision) {
+        if (expired) { finish("unavailable"); return; }
+        restoreTimer = setTimeout(attempt, 40); return;
+      }
+      const doc = document.scrollingElement || root;
+      const geometry = [innerWidth, innerHeight, doc.scrollWidth, doc.scrollHeight].join(":");
+      if (geometry !== pending.geometry) { pending.geometry = geometry; pending.stableSince = now; }
+      const view = pending.view;
+      const anchor = view.anchor ? find(view.anchor.selector) : null;
+      const anchorRect = anchor?.getBoundingClientRect();
+      const anchorVisible = anchorRect && anchorRect.width > 0 && anchorRect.height > 0 && !anchor.closest("[data-board-overlay]") && documentAnchor(anchor);
+      // Wait for the requested range, async patch replay and font layout, then restore once.
+      // The deadline bounds late charts/images; no observer can pull the user back afterwards.
+      const enoughRange = anchorVisible || (view.y <= Math.max(0, doc.scrollHeight - innerHeight) + 1 && Math.abs(view.x) <= Math.max(0, doc.scrollWidth - innerWidth) + 1);
+      if (!expired && (!enoughRange || now - pending.stableSince < 160 || document.fonts?.status === "loading")) {
+        restoreTimer = setTimeout(attempt, 40); return;
+      }
+      for (const saved of view.scrolls) {
+        const node = find(saved.selector);
+        if (!node || node === root || node === document.body || node.closest("[data-board-overlay]")) continue;
+        if (!node.getClientRects().length) { scrollers.set(saved.selector, { node, x: saved.x, y: saved.y }); continue; }
+        node.scrollLeft = saved.x; node.scrollTop = saved.y; rememberScroller(node);
+      }
+      let x = view.x, y = view.y;
+      if (anchorVisible) {
+        const rect = anchor.getBoundingClientRect();
+        x = scrollX + rect.left - view.anchor.offsetX; y = scrollY + rect.top - view.anchor.offsetY;
+      }
+      window.scrollTo({ left: x, top: y, behavior: "instant" });
+      finish("restored");
+    };
+    const request = message => {
+      if (typeof message.requestId !== "string" || !message.requestId || message.requestId.length > 160 || lastRestoreRequest === message.requestId) return;
+      lastRestoreRequest = message.requestId;
+      const view = message.view;
+      if (!view || view.documentVersion !== initial.canvas.documentVersion || !Number.isSafeInteger(view.canvasRevision)
+        || view.canvasRevision < 0 || !Number.isFinite(view.x) || !Number.isFinite(view.y) || Math.abs(view.x) > 10000000 || Math.abs(view.y) > 10000000
+        || !Array.isArray(view.scrolls) || view.scrolls.length > 32
+        || view.scrolls.some(item => !item || typeof item.selector !== "string" || item.selector.length > 1000 || !Number.isFinite(item.x) || !Number.isFinite(item.y))
+        || view.anchor && (typeof view.anchor.selector !== "string" || view.anchor.selector.length > 1000 || !Number.isFinite(view.anchor.offsetX) || !Number.isFinite(view.anchor.offsetY))) {
+        post({ type: "view-restored", requestId: message.requestId, documentVersion: initial.canvas.documentVersion, status: "unavailable" }); return;
+      }
+      if (pending) finish("cancelled");
+      pending = { id: message.requestId, view, deadline: performance.now() + 2400, stableSince: performance.now(), geometry: null };
+      if (userInteracted) finish("cancelled"); else attempt();
+    };
+    const cancel = () => { userInteracted = true; captureSuppressed = false; if (pending) finish("cancelled"); };
+    for (const type of ["pointerdown", "wheel", "keydown"]) window.addEventListener(type, event => { if (event.isTrusted) cancel(); }, true);
+    window.addEventListener("scroll", event => { rememberScroller(event.target); scheduleCapture(); }, true);
+    window.addEventListener("blur", capture);
+    window.addEventListener("pagehide", capture);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) { if (pending) attempt(); else scheduleCapture(); } });
+    return {
+      request, cancel, capture,
+      connect(port) {
+        if (viewPort || !port || typeof port.postMessage !== "function" || typeof port.close !== "function") { port?.close(); return; }
+        viewPort = port; lastValue = ""; capture();
+      },
+      afterDrain() { booted = true; if (pending && restoreTimer === null) attempt(); else scheduleCapture(); },
+      pending: () => Boolean(pending),
+    };
+  })();
   const viewport = () => ({ width: innerWidth, height: innerHeight, scrollX, scrollY });
   const rect = (r) => ({ x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height });
   // Identity metadata is optional and never changes the author's DOM or the original
@@ -619,14 +782,20 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
   let activityUntil = 0;
   let activityTimer;
   let reportedActivity = false;
+  let reportedInteracting = false;
   const editableActive = () => document.hasFocus() && document.activeElement instanceof Element
     && (document.activeElement.matches("input,textarea,select") || document.activeElement.isContentEditable);
-  const updateHardBusy = () => hostComposing || activePointers.size > 0 || editableActive() || selectionMode !== "off" || selectionSession || captureBusy || applying || queued;
+  const updateInteracting = () => hostComposing || activePointers.size > 0 || editableActive() || selectionMode !== "off" || selectionSession || captureBusy;
+  const updateHardBusy = () => updateInteracting() || applying || queued;
   const reportCanvasActivity = () => {
     clearTimeout(activityTimer); activityTimer = null;
     const delay = activityUntil - performance.now();
+    const interacting = Boolean(updateInteracting() || delay > 0);
     const busy = Boolean(updateHardBusy() || delay > 0);
-    if (busy !== reportedActivity) { reportedActivity = busy; post({ type: "canvas-activity", busy }); }
+    if (busy !== reportedActivity || interacting !== reportedInteracting) {
+      reportedActivity = busy; reportedInteracting = interacting;
+      post({ type: "canvas-activity", busy, interacting });
+    }
     if (delay > 0) activityTimer = setTimeout(reportCanvasActivity, delay + 1);
   };
   const noteCanvasActivity = (event) => {
@@ -652,6 +821,8 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
       || !Array.isArray(update.targets) || update.targets.length > 100 || !["patch", "data", "document"].includes(update.kind)) return;
     const reply = (status, fields = {}) => post({ type: "update-position", requestId: message.requestId, id: update.id, token: message.token,
       targetIndex: index, documentVersion: update.documentVersion, status, ...fields });
+    if (readingView.pending() && message.automatic) { reply("deferred", { reason: "正在恢复浏览位置" }); return; }
+    readingView.cancel();
     clearUpdateHighlight();
     if (update.documentVersion !== snapshot.canvas.documentVersion) { reply("unavailable", { reason: "属于另一版画布，保留原更新记录" }); return; }
     if (updateHardBusy() || (message.automatic && performance.now() < activityUntil)) {
@@ -793,6 +964,7 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     return current();
   };
   const focusInteraction = async (id) => {
+    readingView.cancel();
     cancelMarkerReveal();
     const item = markerItems.find(item => item.marker.id === id);
     if (!item) return;
@@ -2586,7 +2758,10 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
   window.addEventListener("message", (event) => {
     const message = event.data;
     if (!event.isTrusted || event.source !== window.parent || !message || message.channel !== scope.channel || message.boardId !== scope.boardId || message.sessionId !== scope.sessionId) return;
-    if (message.type === "snapshot") receiveSnapshot(message.snapshot, message.version);
+    if (message.type === "restore-view") readingView.request(message);
+    else if (message.type === "view-port" && event.ports?.length === 1) readingView.connect(event.ports[0]);
+    else if (message.type === "flush-view") readingView.capture();
+    else if (message.type === "snapshot") receiveSnapshot(message.snapshot, message.version);
     else if (message.type === "delta") { versionedTransport = true; enqueue(receiver.delta(message.delta)); }
     else if (message.type === "interactions" && Array.isArray(message.markers)) renderMarkers(message.markers, message.selectedId);
     else if (message.type === "focus-update") focusUpdate(message);
@@ -2615,7 +2790,7 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     error("runtime-error", message);
   });
   const ready = () => {
-    post({ type: "ready", capabilities: { frameDelta: 1 } });
+    post({ type: "ready", capabilities: { frameDelta: 1, viewState: 1, viewPort: 1 } });
     receiveSnapshot(initial);
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready, { once: true });

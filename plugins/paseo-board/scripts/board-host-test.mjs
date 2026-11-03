@@ -14,6 +14,8 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const draftScope = process.env.BOARD_HOST_TEST_SCOPE === 'drafts';
 const toolbarScope = process.env.BOARD_HOST_TEST_SCOPE === 'toolbar';
 const modalScope = process.env.BOARD_HOST_TEST_SCOPE === 'modal';
+const resumeScopeName = process.env.BOARD_HOST_TEST_SCOPE;
+const resumeScope = ['resume','resume-core','resume-reconnect','resume-retirement'].includes(resumeScopeName);
 const bundle = await build({ entryPoints: [join(directory, 'board-host-fixture.tsx')], bundle: true, format: 'iife', platform: 'browser', write: false, loader: { '.txt': 'text' }, define: { 'process.env.NODE_ENV': '"test"' }, plugins: [{ name: 'host-adapters', setup(build) { build.onResolve({ filter: /^(react-native|@getpaseo\/plugin(?:\/client(?:\/ui)?)?)$/ }, () => ({ path: join(directory, 'board-host-adapter.tsx') })); } }] });
 const profile = await mkdtemp(join(tmpdir(), 'paseo-board-host-'));
 const server = createServer((req, res) => {
@@ -81,8 +83,9 @@ try {
     await command('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
   };
   const location = async (selector) => {
-    const box = await frame(`(()=>{const selector=${JSON.stringify(selector)};const element=document.querySelector('[data-board-markers]')?.shadowRoot?.querySelector(selector)||document.querySelector(selector);const r=element.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()`);
+    const box = await frame(`(()=>{const selector=${JSON.stringify(selector)};const element=document.querySelector('[data-board-markers]')?.shadowRoot?.querySelector(selector)||document.querySelector(selector);const r=element.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,at:performance.now(),viewport:{x:scrollX,y:scrollY,width:innerWidth,height:innerHeight},hidden:element.hidden}})()`);
     const origin = await evaluate(`(()=>{const r=document.querySelector('iframe[data-board-id="host-fixture"]').getBoundingClientRect();return {x:r.x,y:r.y}})()`);
+    if(process.env.BOARD_HOST_TEST_DIAGNOSTICS==='remount'&&selector.startsWith('[data-board-interaction='))console.log('DIAG marker-click-plan',JSON.stringify({selector,box,origin,point:{x:origin.x+box.x+box.width/2,y:origin.y+box.y+box.height/2}}));
     return { x: origin.x + box.x, y: origin.y + box.y, width: box.width, height: box.height };
   };
   const click = async (selector) => { const b = await location(selector); await clickPoint(b.x + b.width / 2, b.y + b.height / 2); };
@@ -223,6 +226,10 @@ try {
       check(`the ${width}px toolbar stays on one 48px row; tools, shortcuts, more and rename remain reachable without moving or rebuilding the canvas`);
     }
   };
+  if (resumeScope) {
+    const { runResumeHostChecks } = await import('./resume-host-checks.mjs');
+    await runResumeHostChecks({assert,command,evaluate,until,frame,untilFrame,key,clickPoint,hostClick,sendText,check,origin:`http://127.0.0.1:${server.address().port}`,scope:resumeScopeName});
+  } else {
   await command('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/${draftScope ? '?drafts=1' : ''}` });
   await command('Page.bringToFront');
   await until('window.hostFixture?.ready >= 1');
@@ -897,9 +904,10 @@ try {
     const markerState = await frame(`(()=>{const root=document.querySelector('[data-board-markers]')?.shadowRoot;const target=root?.querySelector(${JSON.stringify(marker(id))});const r=target?.getBoundingClientRect();const hit=r?root?.elementFromPoint(r.x+r.width/2,r.y+r.height/2):null;return {marker:target?{hidden:target.hidden,location:target.dataset.location,status:target.dataset.status,style:target.getAttribute('style'),rect:{x:r.x,y:r.y,width:r.width,height:r.height}}:null,hit:hit?.closest('[data-board-interaction]')?.getAttribute('data-board-interaction'),viewport:{width:innerWidth,height:innerHeight,x:scrollX,y:scrollY},pointer:window.remountPointerTrace||[]}})()`);
     const hitPoint = markerState.marker && browserState.frame ? { x: browserState.frame.x + markerState.marker.rect.x + markerState.marker.rect.width / 2, y: browserState.frame.y + markerState.marker.rect.y + markerState.marker.rect.height / 2 } : null;
     const hostHit = hitPoint ? await evaluate(`(()=>{const hit=document.elementFromPoint(${hitPoint.x},${hitPoint.y});return {tag:hit?.tagName,testId:hit?.getAttribute('data-testid'),boardId:hit?.getAttribute('data-board-id'),label:hit?.getAttribute('aria-label'),text:hit?.textContent?.slice(0,100)}})()`) : null;
-    console.log('DIAG remount-marker', JSON.stringify({ browserState, markerState, hitPoint, hostHit }));
+    const viewTrace=await evaluate(`hostFixture.traceView(${JSON.stringify('marker-'+phase)})`);
+    console.log('DIAG remount-marker', JSON.stringify({ browserState, markerState, hitPoint, hostHit,viewTrace,viewHistory:await evaluate('hostFixture.viewDiagnostics.slice(-35)') }));
   };
-  if (diagnoseRemount) await frame(`window.remountPointerTrace=[];for(const type of ['pointerdown','pointerup','click'])window.addEventListener(type,event=>{const marker=event.composedPath().find(node=>node?.hasAttribute?.('data-board-interaction'));window.remountPointerTrace.push({type,trusted:event.isTrusted,x:event.clientX,y:event.clientY,target:event.target?.tagName,marker:marker?.getAttribute('data-board-interaction')});window.remountPointerTrace=window.remountPointerTrace.slice(-9)},{capture:true});true`);
+  if (diagnoseRemount) await frame(`window.remountPointerTrace=[];for(const type of ['pointerdown','pointerup','click','scroll'])window.addEventListener(type,event=>{const marker=event.composedPath().find(node=>node?.hasAttribute?.('data-board-interaction'));const root=document.querySelector('[data-board-markers]')?.shadowRoot,target=root?.querySelector(${JSON.stringify(marker(id))}),r=target?.getBoundingClientRect(),hit=Number.isFinite(event.clientX)?root?.elementFromPoint(event.clientX,event.clientY):null;window.remountPointerTrace.push({type,at:performance.now(),trusted:event.isTrusted,x:event.clientX,y:event.clientY,target:event.target?.tagName,marker:marker?.getAttribute('data-board-interaction'),viewport:{x:scrollX,y:scrollY,width:innerWidth,height:innerHeight},intendedMarker:target?{id:target.getAttribute('data-board-interaction'),hidden:target.hidden,rect:r.toJSON()}:null,actualShadowHit:hit?.closest('[data-board-interaction]')?.getAttribute('data-board-interaction')});window.remountPointerTrace=window.remountPointerTrace.slice(-20)},{capture:true});true`);
   await remountMarkerTrace('before-click');
   await click(marker(id));
   try { await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('First line')`); }
@@ -1364,9 +1372,11 @@ try {
   await until(seenUpdate('update-draft'));
   await frame('scrollTo(0,0)');
   const controlBox = await location('#control');
+  const gestureActivityStart = await evaluate('hostFixture.raw.length');
   await command('Input.dispatchMouseEvent',{type:'mouseMoved',x:controlBox.x+5,y:controlBox.y+5});
   await command('Input.dispatchMouseEvent',{type:'mousePressed',x:controlBox.x+5,y:controlBox.y+5,button:'left',buttons:1,clickCount:1});
   await until(`document.querySelector(${JSON.stringify(navPosition)})?.getAttribute('aria-label')?.includes('暂缓')`);
+  assert.equal(await evaluate(`hostFixture.raw.slice(${gestureActivityStart}).some(message=>message.type==='canvas-activity'&&message.interacting===true)`),true,'The held native pointer reports a real user interaction, separately from internal drawing work');
   const draggingRequests = await evaluate('hostFixture.updateRequests.length');
   await evaluate(`hostFixture.addUpdate({id:'update-drag-a',targets:[{selector:'#far'}]});hostFixture.addUpdate({id:'update-drag-b',targets:[{selector:'#update-far'}]});hostFixture.refetch()`);
   await until(`document.querySelector(${JSON.stringify(navPosition)})?.getAttribute('aria-label')?.includes('/9')`);
@@ -1376,6 +1386,9 @@ try {
   await until(seenUpdate('update-drag-b'));
   assert.equal(await evaluate(seenUpdate('update-drag-a')), false);
   assert.equal(await evaluate('hostFixture.updateRequests.length'), draggingRequests+1);
+  const gestureActivity = await evaluate(`hostFixture.raw.slice(${gestureActivityStart}).filter(message=>message.type==='canvas-activity').slice(-16)`);
+  assert.ok(gestureActivity.some(message=>message.interacting===false),'Releasing the native pointer ends interaction before following the latest deferred update');
+  console.log('MEASURE native-gesture-update-deferral',JSON.stringify({activity:gestureActivity,requests:await evaluate(`hostFixture.updateRequests.slice(${draggingRequests})`)}));
   check('a composer retains its draft and focus when updates arrive, and a held canvas gesture pauses following until release, then coalesces the arrivals into one latest jump');
 
   await evaluate(`hostFixture.addUpdate({id:'update-gone',targets:[{selector:'#missing-component'}]});hostFixture.refetch()`);
@@ -1402,7 +1415,9 @@ try {
     const updatesShot = await command('Page.captureScreenshot',{format:'png'});
     await writeFile(process.env.BOARD_HOST_TEST_SCREENSHOT+'.updates.png',Buffer.from(updatesShot.data,'base64'));
   }
-  await evaluate('hostFixture.index()');
+  // This assertion is the first-visit behavior. Returning visits are separately
+  // covered by the resume scope and must prioritize their saved reading position.
+  await evaluate('hostFixture.index(true)');
   await until("document.querySelector('[data-testid=board-unread-host-fixture]')&&document.querySelector('[data-testid=board-unread-another-board]')");
   const actualUnread = await evaluate('hostFixture.board().updates.filter(item=>!hostFixture.board().seenUpdateIds.includes(item.id)).length');
   assert.equal(await evaluate("document.querySelector('[data-testid=board-unread-host-fixture]').textContent"), `${actualUnread} 更新`);
@@ -1411,15 +1426,23 @@ try {
   await until('hostFixture.ready>'+beforeUpdatesReady);
   await until(`document.querySelector(${JSON.stringify(navPosition)})?.getAttribute('aria-label')?.includes('更新 11/11')`);
   assert.equal(await evaluate(seenUpdate('update-old-document')), false);
-  check('the Board index shows per-project unread badges, and entering a Board focuses its newest unread location once without claiming an unavailable target was seen');
+  check('the Board index shows per-project unread badges, and a first visit without a saved view focuses its newest unread location once without claiming an unavailable target was seen');
   }
 
+  }
   }
   const screenshot = await command('Page.captureScreenshot', { format: 'png' });
   if (process.env.BOARD_HOST_TEST_SCREENSHOT) await writeFile(process.env.BOARD_HOST_TEST_SCREENSHOT, Buffer.from(screenshot.data, 'base64'));
   console.log(`BoardView browser integration: ${passed} checks passed (Paseo transport/native primitives adapted; not a daemon UI verification).`);
 } catch (error) {
   console.error('BoardView check failed:', error);
+  if (resumeScope) {
+    try {
+      const targets=await send('Target.getTargets');
+      const page=targets.targetInfos.find(target=>target.type==='page'&&target.url.includes('?resume=1'));
+      if(page){const attached=await send('Target.attachToTarget',{targetId:page.targetId,flatten:true});const result=await send('Runtime.evaluate',{expression:`JSON.stringify({stage:hostFixture.resumeStage,route:hostFixture.route(),ready:hostFixture.mainReady(),reads:hostFixture.readMetrics,failedReads:hostFixture.failureReadMetrics,pendingFailureReads:hostFixture.pendingFailureReads(),ports:hostFixture.viewPortChannels,portMessages:hostFixture.viewPortMessages.slice(-12),retirementOutbound:hostFixture.retirementOutbound,retirementMessages:hostFixture.retirementMessages,raw:hostFixture.raw.filter(m=>['ready','view-state','view-restored','error'].includes(m.type)).slice(-12),calls:hostFixture.calls.slice(-12),tabs:hostFixture.tabWrites,viewDiagnostics:hostFixture.viewDiagnostics})`,returnByValue:true},attached.sessionId);console.error('Resume diagnostics:',result.result.value);}
+    } catch (diagnosticError) { console.error('Resume diagnostics unavailable:',diagnosticError.message); }
+  }
   console.error('Browser exceptions:', JSON.stringify(logs).slice(-5000));
   process.exitCode = 1;
 } finally {
