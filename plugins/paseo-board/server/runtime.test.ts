@@ -82,6 +82,33 @@ describe("installed CLI and stdio MCP transport", () => {
     expect((await stat(paths.socket)).mode & 0o777).toBe(0o600);
   });
 
+  it("recovers fragment root additions through the real CLI/MCP read path and rejects root removal before committing", async () => {
+    const paths = runtimePaths(dir);
+    await service.journal.bind("token-root-patches", { agentId: "owner", cwd: dir });
+    const client = mcpClient(paths.mcp, "token-root-patches");
+    const call = async (name: string, args: unknown) => client.call("tools/call", { name, arguments: args });
+    try {
+      await client.call("initialize", { protocolVersion: "2024-11-05" });
+      toolValue(await call("board_create", { id: "root-patch-mcp", title: "Root patch MCP", html: '<main id="original">Original</main>' }));
+      let current = toolValue(await call("board_read", { boardId: "root-patch-mcp" }));
+      for (const patch of [
+        { id: "body-add", selector: "body", operation: "append", html: '<article id="added">Added</article>' },
+        { id: "body-first", selector: "body", operation: "prepend", html: '<header id="first">First</header>' },
+        { id: "subsequent", selector: "#added", operation: "replace", html: '<article id="added">Later update</article>' },
+      ]) {
+        toolValue(await call("board_publish", { boardId: current.id, expectedRevision: current.revision, canvasBase: current.authoring.canvasBase, eventId: patch.id, patch }));
+        current = toolValue(await call("board_read", { boardId: current.id }));
+      }
+      expect(current.authoring.replay).toEqual({ complete: true, appliedPatchIds: ["body-add", "body-first", "subsequent"] });
+      const cli = await exec(paths.cli, ["read", "--json", JSON.stringify({ boardId: current.id, selector: "#added" })], { env: { ...process.env, PASEO_BOARD_BINDING: "token-root-patches" }, timeout: 5000 });
+      expect(JSON.parse(cli.stdout).authoring).toMatchObject({ canvasBase: current.authoring.canvasBase, materializedAuthoredHtml: '<header id="first">First</header><main id="original">Original</main><article id="added">Later update</article>', target: { selector: "#added", html: '<article id="added">Later update</article>' } });
+      const rejected = await call("board_publish", { boardId: current.id, expectedRevision: current.revision, canvasBase: current.authoring.canvasBase, eventId: "root-removal", patch: { id: "root-removal", selector: "body", operation: "remove" } });
+      const failure = rejected.result as { isError: boolean; content: Array<{ text: string }> };
+      expect(failure.isError).toBe(true); expect(JSON.parse(failure.content[0].text)).toHaveProperty("code", "invalid_input");
+      expect(toolValue(await call("board_read", { boardId: current.id }))).toEqual(current);
+    } finally { client.close(); }
+  });
+
   it("lets a bound fork publish through the installed CLI without a return-to-owner step", async () => {
     const paths = runtimePaths(dir);
     await service.store.create({ id: "shared", title: "Shared Board", ownerAgentId: "owner", html: '<main id="target"></main>' });

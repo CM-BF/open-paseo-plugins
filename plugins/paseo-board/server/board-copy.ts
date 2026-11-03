@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { CreateInputSchema, type Board } from "../shared/contracts";
 import { CopyBoardInputSchema, type CopyBoardInput } from "../shared/board-copy";
-import { describeAuthoring } from "./authored-source";
+import { authoredSourceFailure, describeAuthoring } from "./authored-source";
 import { BoardStoreError, canonicalJson, ensureDirectory, serialized } from "./store-format";
 
 const ReceiptSchema = z.object({ input: CopyBoardInputSchema, create: CreateInputSchema });
@@ -12,7 +12,7 @@ interface CopyStore { read(id: string): Promise<Board | null>; create(input: z.i
 type CopyMaterializer = (source: Board) => Promise<string>;
 const materializeLocally: CopyMaterializer = async source => {
   const authoring = describeAuthoring(source.canvas);
-  if (!authoring.replay.complete || authoring.materializedAuthoredHtml === null) throw new BoardStoreError("edit_conflict", "The current canvas cannot be copied from authored source; ask the agent to consolidate it first");
+  if (!authoring.replay.complete || authoring.materializedAuthoredHtml === null) throw new BoardStoreError("edit_conflict", authoredSourceFailure("Cannot copy current authored source", authoring));
   return authoring.materializedAuthoredHtml;
 };
 
