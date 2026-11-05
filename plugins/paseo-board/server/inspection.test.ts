@@ -14,6 +14,23 @@ const fixture = () => BoardSchema.parse({
 const inspect = (input: Record<string, unknown> = {}) => inspectBoard(fixture(), ReadInputSchema.parse({ boardId: "inspect", view: "inspect", ...input }));
 
 describe("compact persisted Board inspection", () => {
+  it("exposes every grouped comment and its location while omitting all image bytes", () => {
+    const board = fixture();
+    board.interactions.push({
+      id: "group", kind: "change", text: "Three comments", status: "saved", resultReferences: [], createdAt: "now", updatedAt: "now",
+      comments: [
+        { id: "a", text: "First", anchor: { kind: "element", selector: "#metric", boardRevision: 1, canvasRevision: 1, image: { mimeType: "image/png", data: "cHJpdmF0ZS1waXhlbHM=" } } },
+        { id: "b", text: "b".repeat(2000) },
+      ],
+    });
+    const result = inspectBoard(board, ReadInputSchema.parse({ boardId: board.id, view: "inspect", interactionIds: ["group"] }));
+    expect(result.interactions[0].comments).toMatchObject([
+      { id: "a", number: 1, text: { text: "First", truncated: false }, hasImage: true, anchor: { selector: "#metric" } },
+      { id: "b", number: 2, text: { truncated: true, totalCharacters: 2000 }, hasImage: false },
+    ]);
+    expect(result.interactions[0].comments?.[1].text?.text).toHaveLength(1200);
+    expect(JSON.stringify(result)).not.toContain("cHJpdmF0ZS1waXhlbHM=");
+  });
   it("omits old pixels and full canvas, returns exact selected values and response revisions", () => {
     const result = inspect({ dataPaths: ["/live/a", "/a~1b/~0", "/missing"], interactionIds: ["first", "absent"] });
     expect(result.data).toEqual([

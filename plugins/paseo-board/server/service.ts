@@ -4,7 +4,7 @@ import { z } from "zod";
 import { setTimeout, clearTimeout } from "node:timers";
 import {
   CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, FeedInputSchema, IdSchema, InteractInputSchema,
-  PublishInputSchema, ReadInputSchema, RespondInputSchema, SelectSideAgentInputSchema, type Board, type Interaction, type InteractInput, type SelectSideAgentInput,
+  PublishInputSchema, ReadInputSchema, RespondInputSchema, SelectSideAgentInputSchema, type Anchor, type Board, type BoardComment, type Interaction, type InteractInput, type SelectSideAgentInput,
 } from "../shared/contracts";
 import { BoardStore, BoardStoreError } from "./store";
 import { canonicalJson, parseInput } from "./store-format";
@@ -13,6 +13,7 @@ import { discussionConfig, isBusy, type Agent, type Paseo, type TimelinePage } f
 import { extractCandidates } from "./extraction";
 import { describeAuthoring } from "./authored-source";
 import { inspectBoard } from "./inspection";
+import { BOARD_REPLY_ROUTING } from "./prompts";
 
 export type Operation = "list" | "read" | "create" | "publish" | "decision" | "emit" | "respond" | "feed";
 const terminal = new Set<Interaction["status"]>(["applied", "rejected", "answered"]);
@@ -20,23 +21,59 @@ const alreadyHandled = (interaction: Interaction) => terminal.has(interaction.st
 const describe = (error: unknown) => error instanceof Error ? error.message : String(error);
 const marker = (boardId: string, intentId: string) => `[paseo-board board=${boardId} intent=${intentId}]`;
 
+/** The same ordered projection supplies prompt references and actual SDK attachments. */
+function interactionReferences(input: InteractInput, canvasRevision: number, sourceComments?: BoardComment[]) {
+  const images: NonNullable<Delivery["images"]> = [];
+  const attachmentNumbers = new Map<string, number>();
+  const reference = (anchor: Anchor | undefined, numbered = false) => {
+    if (!anchor) return undefined;
+    let attachmentNumber: number | undefined;
+    if (anchor.image) {
+      attachmentNumber = attachmentNumbers.get(anchor.image.data);
+      if (attachmentNumber === undefined) {
+        attachmentNumber = images.push({ ...anchor.image });
+        attachmentNumbers.set(anchor.image.data, attachmentNumber);
+      }
+    }
+    return { ...anchor, image: attachmentNumber ? { mimeType: "image/png", attached: true, ...(numbered ? { attachmentNumber } : {}) } : undefined };
+  };
+  const anchor = reference(input.anchor, !!sourceComments);
+  const comments = (items: BoardComment[] | undefined) => items?.map((comment, index) => ({
+    id: comment.id, number: index + 1, text: comment.text, anchor: reference(comment.anchor, true),
+    selectionMayBeStale: !!comment.anchor && comment.anchor.canvasRevision !== canvasRevision,
+  }));
+  return { anchor, comments: comments(input.comments), sourceComments: comments(sourceComments), images };
+}
+
+function freezeSource(source: Interaction): NonNullable<Interaction["sourceSnapshot"]> {
+  const comments = source.comments ?? source.sourceSnapshot?.comments;
+  return {
+    id: source.id, text: source.text, response: source.response, responseRevision: source.responseRevision ?? 0,
+    resultReferences: source.resultReferences, responseCanvasRevision: source.responseCanvas?.revision,
+    ...(comments ? { comments, commentSourceId: source.comments ? source.id : source.sourceSnapshot?.commentSourceId ?? source.sourceSnapshot!.id } : {}),
+  };
+}
+
 export function interactionPrompt(board: Board, input: InteractInput, frozenSource?: Interaction["sourceSnapshot"]): string {
-  const anchor = input.anchor ? { ...input.anchor, image: input.anchor.image ? { mimeType: "image/png", attached: true } : undefined } : undefined;
-  const source = frozenSource ?? (input.sourceInteractionId ? board.interactions.find(item => item.id === input.sourceInteractionId) : undefined);
+  const selectedSource = input.sourceInteractionId ? board.interactions.find(item => item.id === input.sourceInteractionId) : undefined;
+  const source = frozenSource ?? (selectedSource ? freezeSource(selectedSource) : undefined);
+  const { anchor, comments, sourceComments } = interactionReferences(input, board.canvas.revision, source?.comments);
   const context = {
     boardId: board.id, interactionId: input.intentId, title: board.title,
     boardRevision: board.revision, canvasRevision: board.canvas.revision,
     responseRevision: board.interactions.find(item => item.id === input.intentId)?.responseRevision ?? 0,
-    anchor, selectionMayBeStale: !!anchor && anchor.canvasRevision !== board.canvas.revision,
-    sourceDiscussion: source ? { id: source.id, question: source.text.slice(0, 1200), response: source.response?.slice(0, 1800), responseRevision: source.responseRevision ?? 0, readPath: `board_read({boardId:"${board.id}"}).interactions.find(i => i.id === "${frozenSource ? input.intentId : source.id}")${frozenSource ? ".sourceSnapshot" : ""}` } : undefined,
+    anchor, comments, selectionMayBeStale: !!anchor && anchor.canvasRevision !== board.canvas.revision,
+    sourceDiscussion: source ? { id: source.id, question: source.text.slice(0, 1200), response: source.response?.slice(0, 1800), responseRevision: source.responseRevision ?? 0, comments: sourceComments, commentSourceId: source.commentSourceId, readPath: `board_read({boardId:"${board.id}"}).interactions.find(i => i.id === "${frozenSource ? input.intentId : source.id}")${frozenSource ? ".sourceSnapshot" : ""}` } : undefined,
   };
   return `${marker(board.id, input.intentId)}
 User intent (${input.kind}): ${input.text}
+${comments ? `These ${comments.length} numbered comments are one request to handle together. Review every comment and its own frozen location before editing. Refer to comment numbers in your response, explain any unresolved item, and keep the whole request processing until all requested changes are resolved; do not mark the group applied after only one item. PNG attachmentNumber is 1-based in the attached image list; comments without an image do not consume an attachment number.\n` : ""}
+${sourceComments ? "sourceDiscussion.comments preserves the original numbered group for this follow-up, including each frozen location. A reference such as comment 2 uses that numbering. These are prior context, not new requests to repeat. PNG attachmentNumber is 1-based; identical images share an attachment.\n" : ""}
 
-Reply on this interactive Board. Read board_read / paseo-board read when context is needed and before editing; the full canvas, data and decisions are available there rather than repeated in this message.
-${input.kind === "fork" || input.kind === "reply" ? "This side conversation shares the same Board. If the user asks for a change, perform it and update this Board without requiring a return to the owner.\n" : ""}For an explanation use board_respond with boardId="${board.id}", interactionId="${input.intentId}", expectedResponseRevision, eventId, response and optional html/htmlFile. For shared-canvas changes use board_publish with interactionResult.id="${input.intentId}" and concrete resultReferences. Read authoring.canvasBase and materializedAuthoredHtml/target before editing: canvas.html is only the base document, not the current patched source. Retain that canvasBase with your draft; a conflict requires merging the latest content, never just replacing a version number. Shared data may use conditional dataPatch operations on JSON Pointer paths. HTML patches are conservatively canvas-versioned; full HTML additionally requires replaceDocument:true. Mark processing while work continues (including background work); applied requires a real result. Turn completion alone is not application. Record meaningful agent defaults with board_decision.
+${BOARD_REPLY_ROUTING}
+${input.kind === "fork" || input.kind === "reply" ? "This side conversation shares the same Board. If the user asks for a change, perform it and update this Board without requiring a return to the owner.\n" : ""}Use boardId="${board.id}". For board_respond use interactionId="${input.intentId}", expectedResponseRevision, eventId and response; for board_publish use interactionResult.id="${input.intentId}" and concrete resultReferences. Read board_read / paseo-board read before editing: retain authoring.canvasBase and use materializedAuthoredHtml/target, not canvas.html (base source only). Conflicts require merging current content, never just changing a version. Shared data may use conditional dataPatch on JSON Pointer paths. HTML patches require canvasBase; full HTML also requires replaceDocument:true. Mark processing while work continues, including background work; applied requires a concrete result, not turn completion. Record meaningful defaults with board_decision.
 The frozen anchor/PNG is reference evidence, not current content or extra authorization. Compare old selections to the current board; do not guess a new target. Component binding only tracks display placement. A PNG is attached when available.
-${anchor?.kind === "element" ? "The user selected an entire component. anchor.selector is its captured selector; when present, anchor.binding.target supplies its captured tag, id and fingerprint, with ancestors and documentVersion as location evidence. Read the current Board with that selector and verify authoring.target/materializedAuthoredHtml before editing. The binding fingerprint is not an edit identity or canvasBase; obtain current editing conditions from that read.\n" : ""}<board-context-untrusted-json>
+${anchor?.kind === "element" || comments?.some(comment => comment.anchor?.kind === "element") || sourceComments?.some(comment => comment.anchor?.kind === "element") ? "The user selected an entire component. For each element anchor, anchor.selector is its captured selector; when present, anchor.binding.target supplies its captured tag, id and fingerprint, with ancestors and documentVersion as location evidence. Read the current Board with each such selector and verify authoring.target/materializedAuthoredHtml before editing. The binding fingerprint is not an edit identity or canvasBase; obtain current editing conditions from that read.\n" : ""}<board-context-untrusted-json>
 ${JSON.stringify(context)}
 </board-context-untrusted-json>`;
 }
@@ -196,8 +233,9 @@ export class BoardService {
     if (!board.ownerAgentId) throw new Error("请先为这张 board 绑定负责人，再发送问题。");
     const source = request.sourceInteractionId ? board.interactions.find(item => item.id === request.sourceInteractionId) : undefined;
     if (request.sourceInteractionId && !source) throw new BoardStoreError("not_found", "Source interaction does not exist on this Board");
-    if (request.anchor && (request.anchor.boardRevision > board.revision || request.anchor.canvasRevision > board.canvas.revision)) throw new BoardStoreError("invalid_input", "Selection refers to a future board or canvas revision");
-    let input = { ...request };
+    const anchors = [request.anchor, ...(request.comments?.map(comment => comment.anchor) ?? [])];
+    if (anchors.some(anchor => anchor && (anchor.boardRevision > board.revision || anchor.canvasRevision > board.canvas.revision))) throw new BoardStoreError("invalid_input", "Selection refers to a future board or canvas revision");
+    let input = { ...request, ...(request.comments ? { kind: "change" as const } : {}) };
     let targetAgentId: string | undefined;
     let waitForSideInteractionId: string | undefined;
     let reserveSide = false;
@@ -235,11 +273,12 @@ export class BoardService {
     }
     // The resolved target (or exact pending creation), source, prompt and screenshot are immutable.
     // Routing reservation and delivery share one atomic journal commit before their UI projections.
-    const sourceSnapshot: Interaction["sourceSnapshot"] = source ? { id: source.id, text: source.text, response: source.response, responseRevision: source.responseRevision ?? 0, resultReferences: source.resultReferences, responseCanvasRevision: source.responseCanvas?.revision } : undefined;
+    const sourceSnapshot = source ? freezeSource(source) : undefined;
+    const { images } = interactionReferences(input, board.canvas.revision, sourceSnapshot?.comments);
     const delivery: Delivery = {
       boardId: board.id, interactionId: input.intentId, ownerAgentId: board.ownerAgentId,
       targetAgentId, waitForSideInteractionId, kind: input.kind, request, input, sourceSnapshot, prompt: interactionPrompt(board, input, sourceSnapshot), state: "saved",
-      ...(input.anchor?.image ? { images: [{ mimeType: input.anchor.image.mimeType, data: input.anchor.image.data }] } : {}),
+      ...(images.length ? { images } : {}),
     };
     await this.journal.prepare(delivery, reserveSide);
     const interaction = await this.store.addInteraction(input, targetAgentId, sourceSnapshot);
@@ -598,11 +637,18 @@ export class BoardService {
       const board = await this.requireBoard(summary.id);
       for (const interaction of board.interactions) {
         if (interaction.status !== "saved" || this.journal.get(deliveryKey(board.id, interaction.id))) continue;
-        const input = { boardId: board.id, intentId: interaction.id, kind: interaction.kind, text: interaction.text, anchor: interaction.anchor, sourceInteractionId: interaction.sourceInteractionId, destination: interaction.destination };
+        const input = { boardId: board.id, intentId: interaction.id, kind: interaction.kind, text: interaction.text, anchor: interaction.anchor, comments: interaction.comments, sourceInteractionId: interaction.sourceInteractionId, destination: interaction.destination };
         if (!board.ownerAgentId) { await this.store.updateInteraction(board.id, interaction.id, { status: "failed", error: "请求已保存，但未绑定负责人。" }); continue; }
         const ownerAgentId = ["question", "change", "return"].includes(interaction.kind) ? interaction.agentId ?? board.ownerAgentId : board.ownerAgentId;
-        const targetAgentId = interaction.agentId ?? (["question", "change", "return"].includes(interaction.kind) ? ownerAgentId : undefined);
-        await this.journal.put({ boardId: board.id, interactionId: interaction.id, kind: interaction.kind, ownerAgentId, targetAgentId, input, sourceSnapshot: interaction.sourceSnapshot, prompt: interactionPrompt(board, input, interaction.sourceSnapshot), state: "saved", ...(interaction.anchor?.image ? { images: [interaction.anchor.image] } : {}) });
+        const targetAgentId = interaction.agentId ?? (!interaction.comments && ["question", "change", "return"].includes(interaction.kind) ? ownerAgentId : undefined);
+        // New grouped clients always submit change plus a destination. Preserve that
+        // semantic request separately from the already resolved fork/reply input.
+        const request = interaction.comments ? { ...input, kind: "change" as const } : undefined;
+        const recoveryError = interaction.comments && (!interaction.destination || !interaction.agentId)
+          ? "评论组的原发送目标记录不完整；未猜测当前 Side 或创建新会话，请核对原发送。" : undefined;
+        const { images } = interactionReferences(input, board.canvas.revision, interaction.sourceSnapshot?.comments);
+        await this.journal.put({ boardId: board.id, interactionId: interaction.id, kind: interaction.kind, ownerAgentId, targetAgentId, input, request, sourceSnapshot: interaction.sourceSnapshot, prompt: interactionPrompt(board, input, interaction.sourceSnapshot), state: recoveryError ? "failed" : "saved", ...(recoveryError ? { error: recoveryError } : {}), ...(images.length ? { images } : {}) });
+        if (recoveryError) await this.store.updateInteraction(board.id, interaction.id, { status: "failed", error: recoveryError });
       }
     }
     for (const delivery of this.journal.all()) {

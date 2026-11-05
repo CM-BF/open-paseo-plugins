@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { CAPTURE_FAILURE_REASONS, FRAME_CHANNEL, interactionMarkers, readFrameMessage, sameSelectionAnchor, validAnchor, isCanvasViewState } from "./frame-contract";
-import { AnchorSchema, type Interaction } from "./contracts";
+import { CAPTURE_FAILURE_REASONS, FRAME_CHANNEL, interactionMarkerId, interactionMarkers, markerInteractionId, readFrameMessage, sameSelectionAnchor, validAnchor, isCanvasViewState } from "./frame-contract";
+import { AnchorSchema, IdSchema, type Interaction } from "./contracts";
 const scope = { boardId: "board", sessionId: "session" };
 const message = (fields: object) => ({ channel: FRAME_CHANNEL, ...scope, ...fields });
 describe("frame bridge validation", () => {
@@ -173,5 +173,62 @@ describe("frame bridge validation", () => {
     expect(markers[0].anchor?.image).toBeUndefined();
     expect(markers[1]).toMatchObject({ id: "second", status: "sending", number: 2 });
     expect(interactionMarkers(JSON.parse(JSON.stringify(items)))).toEqual(markers);
+  });
+  it("keeps each batch location under one stable discussion number and follows the latest thread status", () => {
+    const anchor = { kind: "point" as const, boardRevision: 2, canvasRevision: 1, rect: { x: 40, y: 80, width: 0, height: 0 }, image: { mimeType: "image/png" as const, data: "iVBORw0KGgoAAAA" } };
+    const base = { kind: "change" as const, text: "One group", status: "answered" as const, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", resultReferences: [] };
+    const comments = [{ id: "first", text: "Move the heading", anchor }, { id: "second", text: "Shorten the footer", anchor: { ...anchor, rect: { ...anchor.rect, y: 240 } } }, { id: "general", text: "Keep it consistent" }];
+    const items: Interaction[] = [
+      { ...base, id: "batch", comments, response: "A response that must stay outside the iframe" },
+      { ...base, id: "followup", kind: "reply", sourceInteractionId: "batch", createdAt: "2026-01-01T00:01:00Z", anchor: { ...anchor, rect: { ...anchor.rect, y: 600 } } },
+      { ...base, id: "next", kind: "reply", sourceInteractionId: "followup", createdAt: "2026-01-01T00:02:00Z", status: "processing" },
+      { ...base, id: "unrelated", anchor },
+    ];
+    const markers = interactionMarkers(items);
+    expect(markers).toHaveLength(4);
+    expect(markers.slice(0, 3).map(marker => [marker.id, marker.interactionId, marker.commentId, marker.number, marker.label, marker.status])).toEqual(comments.map((comment, index) => [interactionMarkerId("batch", comment.id), "batch", comment.id, 1, `1.${index + 1}`, "processing"]));
+    expect(markers.slice(0, 3).map(marker => marker.anchor?.rect?.y)).toEqual([80, 240, undefined]);
+    expect(markers[3]).toMatchObject({ id: "unrelated", number: 2 });
+    expect(JSON.stringify(markers)).not.toContain("image");
+    expect(JSON.stringify(markers)).not.toContain("response");
+    expect(comments[0].anchor?.image.data).toBe("iVBORw0KGgoAAAA");
+    expect(interactionMarkers(JSON.parse(JSON.stringify(items)))).toEqual(markers);
+  });
+  it("resolves only exact known comment markers and never infers a parent from a forged marker", () => {
+    const base = { kind: "change" as const, text: "Batch", status: "answered" as const, createdAt: "2026-01-01", updatedAt: "2026-01-01", resultReferences: [] };
+    const items: Interaction[] = [
+      { ...base, id: "batch", comments: [{ id: "first:comment:second", text: "One" }] },
+      { ...base, id: "batch:comment:first", comments: [{ id: "second", text: "Two" }] },
+      { ...base, id: "1:a:comment:b" },
+      { ...base, id: "a", comments: [{ id: "b", text: "Three" }] },
+    ];
+    const first = interactionMarkerId("batch", "first:comment:second");
+    const second = interactionMarkerId("batch:comment:first", "second");
+    expect(first).not.toBe(second);
+    expect(markerInteractionId(first, items)).toBe("batch");
+    expect(markerInteractionId(second, items)).toBe("batch:comment:first");
+    expect(markerInteractionId("batch", items)).toBe("batch");
+    expect(markerInteractionId(interactionMarkerId("a", "b"), items)).toBe("a");
+    expect(markerInteractionId("1:a:comment:b", items)).toBe("1:a:comment:b");
+    expect(IdSchema.safeParse(interactionMarkerId("a", "b")).success).toBe(false);
+    const currentMarkers = interactionMarkers(items);
+    for (const forged of [interactionMarkerId("batch", "missing"), interactionMarkerId("missing", "second"), "batch:comment:first:comment:second", first + ":extra"]) {
+      expect(markerInteractionId(forged, items)).toBe(forged);
+      expect(currentMarkers.some(marker => marker.id === forged)).toBe(false);
+    }
+    expect(markerInteractionId(first, [])).toBe(first);
+    expect(markerInteractionId(first, [{ ...base, id: "batch" }])).toBe(first);
+  });
+  it("allows bounded composite marker IDs without widening business IDs or scope checks", () => {
+    const id = interactionMarkerId("p".repeat(160), "c".repeat(160));
+    expect(id.length).toBeGreaterThan(160);
+    expect(IdSchema.safeParse(id).success).toBe(false);
+    for (const type of ["open-interaction", "interaction-position"]) {
+      const event = message({ type, id, position: { x: 12, y: 34 } });
+      expect(readFrameMessage(event, scope)).toEqual(event);
+      for (const change of [{ id: "x".repeat(513) }, { boardId: "other" }, { sessionId: "expired" }, { channel: "other" }]) expect(readFrameMessage({ ...event, ...change }, scope)).toBeNull();
+    }
+    expect(readFrameMessage(message({ type: "ask", id, request: { prompt: "No business ID widening" } }), scope)).toBeNull();
+    expect(readFrameMessage(message({ type: "selection-lock", id, active: true }), scope)).toBeNull();
   });
 });

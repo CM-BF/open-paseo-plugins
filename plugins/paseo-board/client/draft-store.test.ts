@@ -21,6 +21,16 @@ const input = (id = "draft-one"): DraftInput => ({ id, compose: { kind: "questio
 function saved(result: DraftWriteResult): StoredDraft { expect(result.ok).toBe(true); if (!result.ok) throw new Error(result.issue.message); return result.draft; }
 
 describe("durable contextual message drafts", () => {
+  it("keeps explicit queue order through edits and reload without enrolling ordinary or uncertain drafts", () => {
+    const { storage } = memory(), store = createDraftStore(scope, storage);
+    const queued = saved(store.put({ ...input(), queuedAt: 123 }));
+    saved(store.put({ ...queued, compose: { ...queued.compose, text: "Edited queued comment" } }, queued.revision));
+    saved(store.put(input("ordinary")));
+    const reloaded = createDraftStore(scope, storage).list().drafts;
+    expect(reloaded.find(item => item.id === queued.id)?.queuedAt).toBe(123);
+    expect(reloaded.find(item => item.id === "ordinary")?.queuedAt).toBeUndefined();
+    expect(store.put({ ...input("unknown"), queuedAt: 124, compose: { kind: "question", text: "Unknown", intentId: "unknown-intent", destination: "main" } })).toMatchObject({ ok: false });
+  });
   it("survives a fresh store with the exact frozen component, image, route and coordinates, excluding executable callbacks and capture leases", () => {
     const { storage } = memory(), store = createDraftStore(scope, storage), draft = input();
     Object.assign(draft.compose, { intentId: "intent-frozen", destination: "side", captureStatus: "pending", selectionId: "expired-lease", resolve: vi.fn() });

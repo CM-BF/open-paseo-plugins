@@ -7,6 +7,16 @@ import { BoardService } from "./service";
 import { ServiceJournal, deliveryKey } from "./journal";
 import type { Paseo, Snapshot, TimelineEntry, TimelinePage } from "./sdk";
 import { extractCandidates } from "./extraction";
+import type { InteractInput } from "../shared/contracts";
+
+const commentGroup = (intentId = "group"): InteractInput => ({
+  boardId: "board", intentId, kind: "change", destination: "main", text: "Review these changes together",
+  comments: [
+    { id: "first", text: "Change the heading", anchor: { kind: "element", selector: "#target", boardRevision: 0, canvasRevision: 0, image: { mimeType: "image/png", data: "Zmlyc3Q=" } } },
+    { id: "second", text: "Explain the ordering" },
+    { id: "third", text: "Adjust the footer", anchor: { kind: "point", boardRevision: 0, canvasRevision: 0, image: { mimeType: "image/png", data: "dGhpcmQ=" } } },
+  ],
+});
 
 function canvasBase(board: { canvas: { revision: number; documentVersion: number } }) {
   return { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion };
@@ -58,6 +68,161 @@ describe("BoardService SDK adapter", () => {
     await store.create({ id: "board", title: "自由画布", ownerAgentId: "owner", workspaceId: "wks_0123456789abcdef", html: '<main id="target">Existing visualization</main>', data: { temperature: 10 } });
   });
   afterEach(async () => { await service.dispose(); await rm(dir, { recursive: true, force: true }); });
+
+  it("delivers a comment group once with ordered image mappings and each captured revision", async () => {
+    const initial = (await store.read("board"))!;
+    const input = commentGroup(); input.kind = "question";
+    input.comments![2].anchor!.canvasRevision = initial.canvas.revision;
+    const result = await service.interact(input); await service.drain();
+    expect(result.kind).toBe("change");
+    expect(sdk.sends).toHaveLength(1);
+    expect(sdk.sends[0].options.images).toEqual([input.comments![0].anchor!.image, input.comments![2].anchor!.image]);
+    const context = JSON.parse(sdk.sends[0].text.split("<board-context-untrusted-json>\n")[1].split("\n</board-context-untrusted-json>")[0]);
+    expect(context.comments).toMatchObject([
+      { id: "first", number: 1, selectionMayBeStale: true, anchor: { image: { attached: true, attachmentNumber: 1 } } },
+      { id: "second", number: 2, selectionMayBeStale: false },
+      { id: "third", number: 3, selectionMayBeStale: false, anchor: { image: { attached: true, attachmentNumber: 2 } } },
+    ]);
+    expect(sdk.sends[0].text).not.toContain("Zmlyc3Q=");
+    expect((await store.read("board"))!.interactions).toHaveLength(1);
+    const frozen = structuredClone(input);
+    input.comments![0].text = "Changed after acceptance";
+    expect(journal.get("board/group")?.input?.comments?.[0].text).toBe("Change the heading");
+    await service.interact(frozen); await service.drain(); expect(sdk.sends).toHaveLength(1);
+    await expect(service.interact(input)).rejects.toMatchObject({ code: "idempotency_conflict" });
+    await expect(service.interact({ ...frozen, comments: [...frozen.comments!].reverse() })).rejects.toMatchObject({ code: "idempotency_conflict" });
+  });
+
+  it("creates one side and sends the entire group there once", async () => {
+    const input = { ...commentGroup(), destination: "new-side" as const };
+    await service.interact(input); await service.drain();
+    expect(sdk.create).toHaveBeenCalledTimes(1); expect(sdk.sends).toHaveLength(1);
+    expect(sdk.sends[0].id).toBe("fork-agent");
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ kind: "fork", agentId: "fork-agent", comments: input.comments });
+    await service.interact(input); await service.drain();
+    expect(sdk.create).toHaveBeenCalledTimes(1); expect(sdk.sends).toHaveLength(1);
+  });
+
+  it.each(["boardRevision", "canvasRevision"] as const)("rejects a future comment %s before durable preparation or storage", async (field) => {
+    const input = commentGroup(); input.comments![2].anchor![field] = 999;
+    await expect(service.interact(input)).rejects.toMatchObject({ code: "invalid_input" });
+    expect(journal.all()).toHaveLength(0); expect(sdk.sends).toHaveLength(0);
+    await expect(store.addInteraction(input, "owner")).rejects.toMatchObject({ code: "invalid_input" });
+    expect((await store.read("board"))!.interactions).toHaveLength(0);
+  });
+
+  it("recovers every comment and image from a saved group missing its delivery journal", async () => {
+    const input = commentGroup(); await store.addInteraction(input, "owner");
+    await service.dispose(); journal = new ServiceJournal(join(dir, "service.json")); await journal.init();
+    service = new BoardService(store, journal, () => undefined); service.capture(sdk.api);
+    await service.reconcile(); await service.drain();
+    expect(sdk.sends).toHaveLength(1);
+    expect(journal.get("board/group")?.input?.comments).toEqual(input.comments);
+    expect(sdk.sends[0].options.images).toEqual([input.comments![0].anchor!.image, input.comments![2].anchor!.image]);
+    expect(sdk.sends[0].text).toContain('"attachmentNumber":2');
+    await service.interact(input); await service.drain(); expect(sdk.sends).toHaveLength(1);
+  });
+
+  it("recovers a journal-first group without changing its frozen comments or attachments", async () => {
+    const input = commentGroup();
+    const projected = vi.spyOn(store, "addInteraction").mockRejectedValueOnce(new Error("group projection interrupted"));
+    await expect(service.interact(input)).rejects.toThrow("group projection interrupted");
+    const frozen = journal.get("board/group")!;
+    frozen.prompt = "[paseo-board board=board intent=group]\nPreviously prepared request: keep this exact legacy prompt.";
+    await journal.put(frozen);
+    projected.mockRestore(); await service.dispose(); journal = new ServiceJournal(join(dir, "service.json")); await journal.init();
+    service = new BoardService(store, journal, () => undefined); service.capture(sdk.api);
+    await service.reconcile(); await service.drain();
+    expect(sdk.sends).toHaveLength(1);
+    expect(sdk.sends[0]).toMatchObject({ text: frozen.prompt, options: { images: frozen.images } });
+    expect((await store.read("board"))!.interactions[0].comments).toEqual(input.comments);
+  });
+
+  it("retains an unknown group send across retry and restart without another native send", async () => {
+    const input = commentGroup(); sdk.send.mockRejectedValueOnce(new Error("ack lost"));
+    await service.interact(input); await service.drain();
+    expect(journal.get("board/group")?.state).toBe("unknown");
+    await service.dispose(); journal = new ServiceJournal(join(dir, "service.json")); await journal.init();
+    service = new BoardService(store, journal, () => undefined); service.capture(sdk.api);
+    await service.interact(input); await service.reconcile(); await service.drain();
+    expect(sdk.send).toHaveBeenCalledTimes(1);
+    expect(journal.get("board/group")?.input?.comments).toEqual(input.comments);
+    expect((await store.read("board"))!.interactions[0]).toMatchObject({ status: "failed", comments: input.comments });
+  });
+
+  it("freezes the original numbered group into a new-side follow-up, deduplicates its images, and preserves one flat group on later follow-ups", async () => {
+    const group = commentGroup("original-group");
+    group.comments![1].anchor = { kind: "element", selector: "#second", boardRevision: 0, canvasRevision: 0, image: { mimeType: "image/png", data: "c2Vjb25k" } };
+    await store.addInteraction(group, "owner");
+    await store.updateInteraction("board", group.intentId, { status: "answered", response: "Original grouped answer", responseRevision: 1 });
+    const follow: InteractInput = { boardId: "board", intentId: "follow-group", kind: "question", destination: "new-side", text: "请展开解释第2条", sourceInteractionId: group.intentId, anchor: group.comments![1].anchor };
+    await service.interact(follow); await service.drain();
+    expect(sdk.sends).toHaveLength(1); expect(sdk.create).toHaveBeenCalledTimes(1);
+    const sent = sdk.sends[0];
+    expect(sent.options.images).toEqual([group.comments![1].anchor.image, group.comments![0].anchor!.image, group.comments![2].anchor!.image]);
+    const context = JSON.parse(sent.text.split("<board-context-untrusted-json>\n")[1].split("\n</board-context-untrusted-json>")[0]);
+    expect(context.anchor.image.attachmentNumber).toBe(1);
+    expect(context.sourceDiscussion).toMatchObject({ commentSourceId: group.intentId, comments: [
+      { id: "first", number: 1, text: "Change the heading", anchor: { image: { attachmentNumber: 2 } } },
+      { id: "second", number: 2, text: "Explain the ordering", anchor: { selector: "#second", image: { attachmentNumber: 1 } } },
+      { id: "third", number: 3, text: "Adjust the footer", anchor: { image: { attachmentNumber: 3 } } },
+    ] });
+    for (const comment of group.comments!) expect(sent.text).not.toContain(comment.anchor!.image!.data);
+    const frozen = (await store.read("board"))!.interactions.find(item => item.id === follow.intentId)!.sourceSnapshot!;
+    expect(frozen.comments).toEqual(group.comments); expect(frozen).not.toHaveProperty("sourceSnapshot");
+    await store.updateInteraction("board", group.intentId, { response: "A later source answer", responseRevision: 2 });
+    await service.dispose(); journal = new ServiceJournal(join(dir, "service.json")); await journal.init();
+    service = new BoardService(store, journal, () => undefined); service.capture(sdk.api);
+    await service.interact(follow); await service.reconcile(); await service.drain();
+    expect(sdk.sends).toHaveLength(1); expect(sdk.create).toHaveBeenCalledTimes(1);
+    expect((await store.read("board"))!.interactions.find(item => item.id === follow.intentId)!.sourceSnapshot).toEqual(frozen);
+    const next: InteractInput = { boardId: "board", intentId: "follow-again", kind: "question", destination: "main", sourceInteractionId: follow.intentId, text: "第2条还需要一个例子" };
+    await service.interact(next); await service.drain();
+    const continued = (await store.read("board"))!.interactions.find(item => item.id === next.intentId)!.sourceSnapshot!;
+    expect(continued).toMatchObject({ id: follow.intentId, commentSourceId: group.intentId, comments: group.comments });
+    expect(continued).not.toHaveProperty("sourceSnapshot");
+    expect(sdk.sends).toHaveLength(2); expect(sdk.sends[1].options.images).toHaveLength(3);
+  });
+
+  it("rebuilds a grouped follow-up's missing journal with its frozen source comments and matching attachments", async () => {
+    const group = commentGroup("follow-source");
+    await store.addInteraction(group, "owner");
+    await store.updateInteraction("board", group.intentId, { status: "answered", response: "Group answer" });
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status: "running" });
+    const follow: InteractInput = { boardId: "board", intentId: "saved-follow", kind: "question", destination: "main", sourceInteractionId: group.intentId, text: "请解释第2条" };
+    await service.interact(follow); await service.drain(); expect(sdk.sends).toHaveLength(0);
+    const frozen = (await store.read("board"))!.interactions.find(item => item.id === follow.intentId)!.sourceSnapshot;
+    await service.dispose(); journal = new ServiceJournal(join(dir, "missing-service.json")); await journal.init();
+    service = new BoardService(store, journal, () => undefined); service.capture(sdk.api);
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status: "idle" });
+    await service.reconcile(); await service.drain();
+    expect(sdk.sends).toHaveLength(1);
+    expect(sdk.sends[0].options.images).toEqual([group.comments![0].anchor!.image, group.comments![2].anchor!.image]);
+    expect(journal.get("board/saved-follow")?.sourceSnapshot).toEqual(frozen);
+    expect(sdk.sends[0].text).toContain('"id":"second","number":2,"text":"Explain the ordering"');
+    expect(sdk.sends[0].text).not.toContain("Zmlyc3Q=");
+    await service.interact(follow); await service.drain(); expect(sdk.sends).toHaveLength(1);
+  });
+
+  it.each([["new-side", "fork"], ["side", "fork"], ["side", "reply"]] as const)("recovers a saved %s/%s group using its recorded target and original change request", async (destination, kind) => {
+    const request = { ...commentGroup("saved-side-group"), destination };
+    await store.addInteraction({ ...request, kind }, "fork-agent");
+    await service.reconcile(); await service.drain();
+    expect(journal.get("board/saved-side-group")).toMatchObject({ input: { kind }, request: { kind: "change", destination }, targetAgentId: "fork-agent" });
+    expect(sdk.create).not.toHaveBeenCalled(); expect(sdk.sends).toHaveLength(1); expect(sdk.sends[0].id).toBe("fork-agent");
+    await service.interact(request); await service.drain();
+    expect(sdk.sends).toHaveLength(1); expect(sdk.create).not.toHaveBeenCalled();
+  });
+
+  it.each(["target", "route"] as const)("retains a saved Side group with missing %s as failed without guessing or creating a target", async missing => {
+    const request = { ...commentGroup("incomplete-group"), destination: missing === "route" ? undefined : "new-side" as const };
+    await store.addInteraction({ ...request, kind: "fork" }, missing === "target" ? undefined : "fork-agent");
+    await service.reconcile(); await service.drain();
+    expect(journal.get("board/incomplete-group")).toMatchObject({ state: "failed", error: expect.stringContaining("原发送目标记录不完整") });
+    expect((await store.read("board"))!.interactions.find(item => item.id === request.intentId)?.status).toBe("failed");
+    await service.interact(request); await service.drain();
+    expect(sdk.send).not.toHaveBeenCalled(); expect(sdk.create).not.toHaveBeenCalled();
+  });
 
   it("authorizes realtime samples in storage without reading a full Board in the coordinator", async () => {
     const read = vi.spyOn(store, "read");
@@ -271,6 +436,9 @@ describe("BoardService SDK adapter", () => {
     expect(options).toHaveProperty("config.featureValues", { service_tier: "priority", plan_mode: false });
     expect(options).not.toHaveProperty("config.options");
     expect(options).toHaveProperty("config.systemPrompt", expect.stringContaining("perform it directly"));
+    expect(options).toHaveProperty("config.systemPrompt", expect.stringContaining("first reply onward"));
+    expect(options).toHaveProperty("config.systemPrompt", expect.stringContaining("shared main canvas"));
+    expect(options).toHaveProperty("config.systemPrompt", expect.stringContaining("explicitly requests a separate answer visual"));
     expect(options).toHaveProperty("config.systemPrompt", expect.not.stringContaining("not authorization to execute"));
     expect(sdk.sends[0].text).toContain('interactionId="fork-1"');
     expect(sdk.sends[0].text).toContain("board_respond");
@@ -280,6 +448,8 @@ describe("BoardService SDK adapter", () => {
     board = (await store.read("board"))!; expect(board.interactions[0].status).toBe("answered");
     await service.interact({ boardId: "board", intentId: "reply-1", kind: "reply", sourceInteractionId: "fork-1", text: "Show an alternative" }); await service.drain();
     expect(sdk.sends[1].id).toBe("fork-agent"); expect(sdk.sends[1].text).toContain("consider a fallback");
+    expect(sdk.sends[1].text).toContain("shared main canvas");
+    expect(sdk.sends[1].text).toContain("explicitly asks for a chat visual");
     expect((await store.read("board"))!.interactions[1].anchor).toEqual(anchor);
     expect(sdk.sends[1].text).toContain('interactionId="reply-1"');
     await service.interact({ boardId: "board", intentId: "return-1", kind: "return", sourceInteractionId: "fork-1", text: "Apply the fallback" }); await service.drain();
@@ -293,6 +463,12 @@ describe("BoardService SDK adapter", () => {
     await service.interact({ boardId: "board", intentId: "compact-main", kind: "question", destination: "main", text: "Explain the selected claim", anchor }); await service.drain();
     const prompt = sdk.sends[0].text;
     expect(prompt.length).toBeLessThan(3000);
+    expect(prompt).toContain("first reply onward");
+    expect(prompt).toContain("shared main canvas");
+    expect(prompt).toContain("do not create another");
+    expect(prompt).toContain("text-only explanations");
+    expect(prompt).toContain("explicitly requests a separate answer visual");
+    expect(prompt).toContain("explicitly asks for a chat visual");
     for (const unrelated of ["UNRELATED_CANVAS", "UNRELATED_DATA", "UNRELATED_DECISION", "cG5n", '"visibleText"', '"data"']) expect(prompt).not.toContain(unrelated);
     expect(prompt).toContain('"selectionMayBeStale":true'); expect(prompt).toContain('"text":"The selected claim"'); expect(prompt).toContain("board_read");
     expect(sdk.sends[0].id).toBe("owner"); expect(sdk.sends[0].options.images).toEqual([anchor.image]);

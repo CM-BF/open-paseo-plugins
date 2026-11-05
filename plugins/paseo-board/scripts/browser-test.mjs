@@ -13,6 +13,7 @@ import { build } from 'esbuild';
 import { runComponentLayoutChecks } from './component-layout-checks.mjs';
 import { runCanvasViewChecks } from './canvas-view-checks.mjs';
 import { runComponentDragChecks } from './component-drag-checks.mjs';
+import { runAuthoredCommentChecks } from './authored-comment-checks.mjs';
 const directory = dirname(fileURLToPath(import.meta.url));
 const profile = await mkdtemp(join(tmpdir(), 'paseo-board-browser-'));
 const bundle = await build({ entryPoints: [join(directory, 'browser-fixture.tsx')], bundle: true, format: 'iife', platform: 'browser', write: false, loader: { '.txt': 'text' }, define: { 'process.env.NODE_ENV': '"test"' }, plugins: [{ name: 'native-fixture', setup(build) { build.onResolve({ filter: /^react-native$/ }, () => ({ path: 'native', namespace: 'fixture' })); build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: 'export const Platform = { OS: "web" }', loader: 'js' })); } }] });
@@ -141,7 +142,7 @@ try {
   await command('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/` });
   await until('window.results?.ready === 1');
   const layoutBaseHtml = await evaluate('hostProps.canvas.html');
-  if (!['layout', 'view', 'drag'].includes(process.env.BOARD_BROWSER_SCOPE)) {
+  if (!['layout', 'view', 'drag', 'authored-comments'].includes(process.env.BOARD_BROWSER_SCOPE)) {
   assert.equal(await frame('window.boots'), 1);
   assert.deepEqual(await frame('board.getData()'), { n: 0 });
   assert.deepEqual(await frame('board.restoreState()'), { saved: 'original' });
@@ -1741,9 +1742,10 @@ try {
   check('real BoardStore rejects competing stale edits and parent replacement even with a fresh board revision; authored-source retry preserves both regions, typed input, counters, iframe identity and JS heap');
 
   }
-  if (!['view', 'drag'].includes(process.env.BOARD_BROWSER_SCOPE)) await runComponentLayoutChecks({ evaluate, frame, update, command, click, clickPoint, location, drag, key, until, untilFrame, settleFrame, profile, directory, baseHtml: layoutBaseHtml, check });
-  if (!['layout', 'drag'].includes(process.env.BOARD_BROWSER_SCOPE)) await runCanvasViewChecks({ evaluate, frame, update, command, until, untilFrame, baseHtml: layoutBaseHtml, check });
+  if (!['view', 'drag', 'authored-comments'].includes(process.env.BOARD_BROWSER_SCOPE)) await runComponentLayoutChecks({ evaluate, frame, update, command, click, clickPoint, location, drag, key, until, untilFrame, settleFrame, profile, directory, baseHtml: layoutBaseHtml, check });
+  if (!['layout', 'drag', 'authored-comments'].includes(process.env.BOARD_BROWSER_SCOPE)) await runCanvasViewChecks({ evaluate, frame, update, command, until, untilFrame, baseHtml: layoutBaseHtml, check });
   if (!process.env.BOARD_BROWSER_SCOPE || process.env.BOARD_BROWSER_SCOPE === 'drag') await runComponentDragChecks({ evaluate, frame, update, command, click, clickPoint, location, key, until, untilFrame, settleFrame, setReducedMotion, profile, directory, check });
+  if (!process.env.BOARD_BROWSER_SCOPE || process.env.BOARD_BROWSER_SCOPE === 'authored-comments') await runAuthoredCommentChecks({ evaluate, frame, update, command, click, clickPoint, key, until, untilFrame, baseHtml: layoutBaseHtml, check });
   const screenshot = await command('Page.captureScreenshot', { format: 'png' });
   const artifact = process.env.BOARD_TEST_SCREENSHOT;
   if (artifact) await writeFile(artifact, Buffer.from(screenshot.data, 'base64'));

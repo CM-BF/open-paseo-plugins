@@ -25607,6 +25607,24 @@ var AnchorSchema = external_exports.object({
   viewport: external_exports.object({ width: external_exports.number().positive(), height: external_exports.number().positive(), scrollX: external_exports.number(), scrollY: external_exports.number() }).optional(),
   image: external_exports.object({ mimeType: external_exports.literal("image/png"), data: external_exports.string().max(3e6) }).optional()
 });
+var COMMENT_LIMIT = 20;
+var COMMENT_TEXT_LIMIT = 24e3;
+var COMMENT_IMAGE_LIMIT = 6e6;
+var CommentSchema = external_exports.object({
+  id: IdSchema,
+  text: external_exports.string().min(1).max(COMMENT_TEXT_LIMIT).refine((text) => text.trim().length > 0, "Comment text cannot be blank"),
+  anchor: AnchorSchema.optional()
+}).refine((comment) => !comment.anchor?.image || /^[A-Za-z0-9+/]*={0,2}$/.test(comment.anchor.image.data), "Comment PNG must contain ASCII base64 data");
+var CommentsSchema = external_exports.array(CommentSchema).min(1).max(COMMENT_LIMIT).superRefine((comments, context2) => {
+  if (new Set(comments.map((comment) => comment.id)).size !== comments.length) context2.addIssue({ code: "custom", message: "Comment IDs must be unique" });
+  if (comments.reduce((total, comment) => total + comment.text.length, 0) > COMMENT_TEXT_LIMIT) context2.addIssue({ code: "custom", message: `Comments exceed ${COMMENT_TEXT_LIMIT} text characters` });
+  if (comments.reduce((total, comment) => total + (comment.anchor?.image?.data.length ?? 0), 0) > COMMENT_IMAGE_LIMIT) context2.addIssue({ code: "custom", message: `Comment PNGs exceed ${COMMENT_IMAGE_LIMIT} base64 characters` });
+});
+function validateCommentContext(input2, context2) {
+  if (!input2.comments) return;
+  if (input2.anchor !== void 0) context2.addIssue({ code: "custom", path: ["anchor"], message: "Grouped comments carry their own anchors" });
+  if (input2.sourceInteractionId !== void 0) context2.addIssue({ code: "custom", path: ["sourceInteractionId"], message: "Grouped comments cannot inherit a source interaction" });
+}
 var ComponentIdentitySchema = external_exports.object({
   tag: external_exports.string().min(1).max(100),
   id: external_exports.string().min(1).max(1e3).optional(),
@@ -25767,7 +25785,10 @@ var SourceSnapshotSchema = external_exports.object({
   response: external_exports.string().max(64e3).optional(),
   responseRevision: external_exports.number().int().nonnegative(),
   resultReferences: external_exports.array(external_exports.string()),
-  responseCanvasRevision: external_exports.number().int().nonnegative().optional()
+  responseCanvasRevision: external_exports.number().int().nonnegative().optional(),
+  // One flat original group survives follow-ups; never embed another snapshot.
+  comments: CommentsSchema.optional(),
+  commentSourceId: IdSchema.optional()
 });
 var InteractionSchema = external_exports.object({
   id: IdSchema,
@@ -25775,6 +25796,7 @@ var InteractionSchema = external_exports.object({
   destination: DestinationSchema.optional(),
   text: external_exports.string().min(1).max(24e3),
   anchor: AnchorSchema.optional(),
+  comments: CommentsSchema.optional(),
   status: external_exports.enum(["saved", "sending", "delivered", "processing", "answered", "applied", "rejected", "failed"]),
   agentId: external_exports.string().optional(),
   response: external_exports.string().max(64e3).optional(),
@@ -25788,7 +25810,7 @@ var InteractionSchema = external_exports.object({
   sourceSnapshot: SourceSnapshotSchema.optional(),
   createdAt: external_exports.string(),
   updatedAt: external_exports.string()
-});
+}).superRefine(validateCommentContext);
 var EventSchema = external_exports.object({ id: IdSchema, source: external_exports.string(), kind: external_exports.string(), summary: external_exports.string(), at: external_exports.string(), revision: external_exports.number(), data: JsonDataSchema.optional() });
 var ObservationSchema = external_exports.object({ id: IdSchema, name: external_exports.string(), value: external_exports.unknown(), evidence: EvidenceSchema, updatedAt: external_exports.string() });
 var BoardSchema = external_exports.object({
@@ -25855,7 +25877,7 @@ var RespondInputSchema = external_exports.object({
   resultReferences: external_exports.array(external_exports.string().max(4e3)).max(100).optional()
 });
 var EmitInputSchema = external_exports.object({ boardId: IdSchema, eventId: IdSchema, source: external_exports.string().min(1).max(200), kind: external_exports.string().max(200).default("update"), summary: external_exports.string().max(4e3), canvasBase: CanvasBaseSchema.optional(), data: JsonDataSchema.optional(), dataPatch: DataPatchesSchema.optional(), focusSelectors: FocusSelectorsSchema.optional(), observation: external_exports.object({ id: IdSchema, name: external_exports.string().max(200), value: external_exports.unknown(), evidence: EvidenceSchema }).optional() });
-var InteractInputSchema = external_exports.object({ boardId: IdSchema, intentId: IdSchema, kind: external_exports.enum(["question", "change", "fork", "return", "reply"]), destination: DestinationSchema.optional(), text: external_exports.string().min(1).max(24e3), anchor: AnchorSchema.optional(), sourceInteractionId: IdSchema.optional() });
+var InteractInputSchema = external_exports.object({ boardId: IdSchema, intentId: IdSchema, kind: external_exports.enum(["question", "change", "fork", "return", "reply"]), destination: DestinationSchema.optional(), text: external_exports.string().min(1).max(24e3), anchor: AnchorSchema.optional(), comments: CommentsSchema.optional(), sourceInteractionId: IdSchema.optional() }).superRefine(validateCommentContext);
 var SelectSideAgentInputSchema = external_exports.object({ boardId: IdSchema, agentId: external_exports.string().min(1).max(160), expectedRevision: external_exports.number().int().nonnegative(), eventId: IdSchema });
 var RenameInputSchema = external_exports.object({ boardId: IdSchema, expectedTitle: external_exports.string(), title: external_exports.string().trim().min(1).max(200), eventId: IdSchema });
 var EditInputSchema = external_exports.object({
@@ -37073,7 +37095,7 @@ function describeSource(canvas, selector, inspect) {
 }
 
 // server/store.ts
-var InteractionUpdateSchema = InteractionSchema.pick({ status: true, agentId: true, response: true, responseRevision: true, responseSource: true, responseMethod: true, responseCanvas: true, resultReferences: true, error: true }).partial();
+var InteractionUpdateSchema = external_exports.object(InteractionSchema.shape).pick({ status: true, agentId: true, response: true, responseRevision: true, responseSource: true, responseMethod: true, responseCanvas: true, resultReferences: true, error: true }).partial();
 var transitions = {
   saved: ["sending", "delivered", "processing", "answered", "applied", "rejected", "failed"],
   sending: ["delivered", "processing", "answered", "applied", "rejected", "failed"],
@@ -37401,7 +37423,8 @@ var BoardStore = class {
     const input2 = parseInput(InteractInputSchema, raw);
     const payload = sourceSnapshot ? { ...input2, sourceSnapshot } : input2;
     const board = await this.mutate(input2.boardId, "interaction", payload, (board2, at) => {
-      if (input2.anchor && (input2.anchor.boardRevision > board2.revision || input2.anchor.canvasRevision > board2.canvas.revision)) throw new BoardStoreError("invalid_input", "Selection refers to a future board or canvas revision");
+      const anchors = [input2.anchor, ...input2.comments?.map((comment) => comment.anchor) ?? []];
+      if (anchors.some((anchor2) => anchor2 && (anchor2.boardRevision > board2.revision || anchor2.canvasRevision > board2.canvas.revision))) throw new BoardStoreError("invalid_input", "Selection refers to a future board or canvas revision");
       if (input2.sourceInteractionId && !board2.interactions.some((item) => item.id === input2.sourceInteractionId)) throw new BoardStoreError("not_found", "Source interaction does not exist");
       board2.interactions.push(InteractionSchema.parse({ ...payload, id: input2.intentId, agentId, status: "saved", createdAt: at, updatedAt: at }));
       this.event(board2, input2.intentId, "user", input2.kind, input2.text.slice(0, 4e3), at);

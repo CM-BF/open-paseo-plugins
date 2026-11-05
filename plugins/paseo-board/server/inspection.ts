@@ -36,6 +36,14 @@ export function inspectBoard(board: Board, input: z.output<typeof ReadInputSchem
       boardRevision: item.anchor.boardRevision, canvasRevision: item.anchor.canvasRevision,
       quote: excerpt(item.anchor.text, 1200), hasImage: !!item.anchor.image,
     } : undefined,
+    comments: item.comments?.map((comment, index) => ({
+      id: comment.id, number: index + 1, text: excerpt(comment.text, 1200), hasImage: !!comment.anchor?.image,
+      anchor: comment.anchor ? {
+        kind: comment.anchor.kind, selector: comment.anchor.selector, rect: comment.anchor.rect,
+        boardRevision: comment.anchor.boardRevision, canvasRevision: comment.anchor.canvasRevision,
+        quote: excerpt(comment.anchor.text, 1200),
+      } : undefined,
+    })),
     responseCanvas: item.responseCanvas ? { revision: item.responseCanvas.revision, documentVersion: item.responseCanvas.documentVersion } : undefined,
   }));
   // Only replay source when explicitly requested; ordinary status checks avoid HTML parsing.

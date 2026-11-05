@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Interaction } from "../shared/contracts";
-import { anchorPoint, interactionThread, mergeInteractions, popoverPlacement } from "./interaction-layout";
+import { anchorPoint, discussionGroups, interactionThread, mergeInteractions, popoverPlacement } from "./interaction-layout";
+import { interactionMarkerId, interactionMarkers, markerInteractionId } from "../shared/frame-contract";
 
 const item = (id: string, sourceInteractionId?: string): Interaction => ({ id, sourceInteractionId, kind: sourceInteractionId ? "reply" : "fork", text: id, status: "delivered", resultReferences: [], createdAt: "2026-10-29", updatedAt: "2026-10-29" });
 
@@ -27,5 +28,14 @@ describe("in-place conversation layout", () => {
   it("lets persisted status replace optimistic status without duplicating markers", () => {
     const saved = { ...item("first"), status: "answered" as const };
     expect(mergeInteractions([saved], [{ ...item("first"), status: "sending" }, item("pending")])).toEqual([saved, item("pending")]);
+  });
+  it("indexes a batch once while preserving every marker and its shared follow-up thread", () => {
+    const all = [{ ...item("batch"), kind: "change" as const, comments: [{ id: "title", text: "Change title" }, { id: "footer", text: "Change footer" }] }, item("followup", "batch"), item("ordinary")];
+    const groups = discussionGroups(interactionMarkers(all));
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toMatchObject({ id: "batch", commentCount: 2, markerIds: [interactionMarkerId("batch", "title"), interactionMarkerId("batch", "footer")], marker: { number: 1, label: "1.1" } });
+    expect(groups[1]).toMatchObject({ id: "ordinary", commentCount: 0, markerIds: ["ordinary"], marker: { number: 2 } });
+    for (const markerId of groups[0].markerIds) expect(interactionThread(markerInteractionId(markerId, all), all).map(entry => entry.id)).toEqual(["batch", "followup"]);
+    expect(discussionGroups([])).toEqual([]);
   });
 });

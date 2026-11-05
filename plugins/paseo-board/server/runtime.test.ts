@@ -189,6 +189,9 @@ describe("installed CLI and stdio MCP transport", () => {
       expect((list.result as { tools: Array<{ name: string }> }).tools.map(tool => tool.name).sort()).toEqual([
         "board_create", "board_decision", "board_emit", "board_feed", "board_list", "board_publish", "board_read", "board_respond",
       ]);
+      const respond = (list.result as { tools: Array<{ name: string; description: string }> }).tools.find(tool => tool.name === "board_respond")!;
+      expect(respond.description).toContain("shared main canvas");
+      expect(respond.description).toContain("explicitly requests a separate answer visual");
       const created = await call("tools/call", { name: "board_create", arguments: { id: "bound-board", title: "bound" } }); expect(created).not.toHaveProperty("result.isError", true);
       expect((await service.store.read("bound-board"))!.ownerAgentId).toBe("owner");
       expect(toolValue(await call("tools/call", { name: "board_feed", arguments: { action: "open", boardId: "bound-board", sourceId: "mcp-source", path: "/live/mcp", requestId: "mcp-open", expectedGeneration: 0 } }))).toMatchObject({ source: { actorAgentId: "owner" }, ack: { generation: 1, seq: 0 } });
@@ -252,9 +255,18 @@ describe("installed CLI and stdio MCP transport", () => {
   });
 
   it("writes a discoverable skill and replaces only its own prompt block", async () => {
-    expect(await readFile(runtimePaths(dir).skill, "utf8")).toContain("free canvas is the main product");
+    const skill = await readFile(runtimePaths(dir).skill, "utf8");
+    expect(skill).toContain("free canvas is the main product");
     const original = `User instructions\n${boardInstructions("/old/cli", "/old/skill")}\nOther plugin instructions\n`;
     const updated = replaceInstructions(original, boardInstructions("/new/cli", "/new/skill"));
     expect(updated).toContain("User instructions"); expect(updated).toContain("Other plugin instructions"); expect(updated).toContain("/new/cli"); expect(updated).not.toContain("/old/cli");
+    for (const instructions of [updated, skill]) {
+      expect(instructions).toContain("first reply onward");
+      expect(instructions).toContain("shared main canvas");
+      expect(instructions).toContain("explicitly asks for a chat visual");
+      expect(instructions).toContain("Unrelated chat");
+      expect(instructions).toContain("Without an interactionId");
+      expect(instructions).toContain("board_create");
+    }
   });
 });

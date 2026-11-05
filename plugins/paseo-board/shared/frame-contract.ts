@@ -30,7 +30,7 @@ export const CAPTURE_FAILURE_REASONS = ["content-changed", "too-complex", "unsup
 export type CaptureFailureReason = typeof CAPTURE_FAILURE_REASONS[number];
 export interface SelectionCapture { selectionId: string; anchor: Anchor; status: "ready" | "failed"; reason?: CaptureFailureReason }
 export interface ComposeRequest { selectionId?: string; captureStatus?: CaptureStatus; kind: "question" | "change" | "fork"; anchor: Anchor; position?: FramePosition }
-export interface InteractionMarker { id: string; text: string; status: Interaction["status"]; anchor?: Anchor; number: number }
+export interface InteractionMarker { id: string; interactionId?: string; commentId?: string; text: string; status: Interaction["status"]; anchor?: Anchor; number: number; label?: string }
 export interface ComponentEditIdentity { tag: string; id?: string; fingerprint: string; authoredHtml?: string }
 export interface ComponentEditRequest {
   canvasBase: CanvasBase;
@@ -43,7 +43,7 @@ export interface ComponentEditRequest {
   sourceLabel?: string; destinationLabel?: string;
 }
 export interface ComponentEditResult { status: "applied" | "rejected" | "cancelled" | "unknown"; message?: string; canvasRevision?: number }
-export interface AskResult { status: "submitted" | "cancelled"; outcome?: string | null }
+export interface AskResult { status: "submitted" | "queued" | "cancelled"; outcome?: string | null }
 export interface FrameScope { channel: typeof FRAME_CHANNEL; boardId: string; sessionId: string }
 export interface FrameSnapshot { canvas: Canvas; boardRevision: number; userState: JsonData; theme: FrameTheme }
 export type FrameMessage = FrameScope & (
@@ -93,7 +93,21 @@ export function isCanvasViewState(value: unknown): value is CanvasViewState {
   return true;
 }
 
-/** Follow-ups retain the original question's location; transport excludes large image/reply data. */
+/** The reserved prefix excludes business IDs; the parent length excludes comment collisions. */
+export function interactionMarkerId(interactionId: string, commentId: string): string {
+  return `@comment:${interactionId.length}:${interactionId}:${commentId}`;
+}
+
+/** Resolve only known comments. An unrecognized marker remains unknown to membership guards. */
+export function markerInteractionId(markerId: string, interactions: readonly Interaction[]): string {
+  if (interactions.some(item => item.id === markerId)) return markerId;
+  for (const item of interactions) {
+    if (item.comments?.some(comment => interactionMarkerId(item.id, comment.id) === markerId)) return item.id;
+  }
+  return markerId;
+}
+
+/** Follow-ups retain the original question's locations; transport excludes large image/reply data. */
 export function interactionMarkers(interactions: readonly Interaction[]): InteractionMarker[] {
   const byId = new Map(interactions.map(item => [item.id, item]));
   const roots = new Map<string, { root: Interaction; latest: Interaction }>();
@@ -108,10 +122,18 @@ export function interactionMarkers(interactions: readonly Interaction[]): Intera
     if (!existing) roots.set(root.id, { root, latest: item });
     else if (item.createdAt >= existing.latest.createdAt) existing.latest = item;
   }
-  return Array.from(roots.values()).map(({ root, latest }, index) => ({
-    id: root.id, text: root.text.slice(0, 240), status: latest.status, number: index + 1,
-    ...(root.anchor ? { anchor: { ...root.anchor, image: undefined } } : {}),
-  }));
+  return Array.from(roots.values()).flatMap(({ root, latest }, index): InteractionMarker[] => {
+    const number = index + 1;
+    if (root.comments?.length) return root.comments.map((comment, commentIndex) => ({
+      id: interactionMarkerId(root.id, comment.id), interactionId: root.id, commentId: comment.id,
+      text: comment.text.slice(0, 240), status: latest.status, number, label: `${number}.${commentIndex + 1}`,
+      ...(comment.anchor ? { anchor: { ...comment.anchor, image: undefined } } : {}),
+    }));
+    return [{
+      id: root.id, text: root.text.slice(0, 240), status: latest.status, number,
+      ...(root.anchor ? { anchor: { ...root.anchor, image: undefined } } : {}),
+    }];
+  });
 }
 
 /** A frame can author arbitrary code, so every privileged bridge payload is checked again here. */
@@ -161,7 +183,7 @@ export function readFrameMessage(value: unknown, scope: Pick<FrameScope, "boardI
       break;
     }
     case "open-interaction": case "interaction-position":
-      if (!short(value.id, 160) || !position(value.position)) return null;
+      if (!short(value.id, 512) || !position(value.position)) return null;
       if (value.location !== undefined && !["component", "collapsed", "ancestor", "snapshot", "hidden"].includes(value.location as string)) return null;
       break;
     case "ask": {

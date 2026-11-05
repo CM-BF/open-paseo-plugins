@@ -9,6 +9,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BoardView } from "../client/board";
 import { BoardHome } from "../client/home";
 import { readBoardView } from "../client/view-store";
+import { createDraftStore } from "../client/draft-store";
+import { createBatchStore } from "../client/batch-store";
+import { interactionMarkers } from "../shared/frame-contract";
 import { DEFAULT_LIGHT_COLORS } from "../shared/frame-theme";
 import type { Board, BoardChange, BoardEventCursor, BoardSummary, CanvasUpdate, Interaction } from "../shared/contracts";
 import { componentIdentityFor } from "../shared/component-identity";
@@ -56,7 +59,7 @@ window.addEventListener('message',async e=>{
   }
   if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='restore-view')parent.postMessage({channel:'host-fixture-restore',request:e.data,at:performance.now(),context:board.getContext(),scroll:{x:scrollX,y:scrollY}},'*');if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-interaction')parent.postMessage({channel:'host-fixture-focus',id:e.data.id},'*');if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-update')parent.postMessage({channel:'host-fixture-update',request:e.data},'*');if(e.source===parent&&e.data?.channel==='host-fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'host-fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'host-fixture-result',id:e.data.id,error:error.message},'*')}}
 });
-</script>`;
+</script>${fixtureParams.get("batch") === "1" ? `<section id="batch-authored-target" style="position:absolute;top:360px;left:28px;width:360px;padding:12px;border:1px solid #aaa">A section with an authored Comment action</section><button id="batch-authored-comment" style="position:absolute;top:430px;left:28px">Comment</button><script>window.batchAskResults=[];window.batchAskErrors=[];document.querySelector('#batch-authored-comment').onclick=()=>board.ask({prompt:'Review this authored section',anchor:document.querySelector('#batch-authored-target')}).then(result=>batchAskResults.push(result),error=>batchAskErrors.push(error.message));</script>` : ""}`;
 let persisted: Board = retainedFixture?.board ?? { schemaVersion: 1, id: fixtureBoardId, title: "Host integration fixture", ownerAgentId: "owner-fixture", revision: 1, createdAt: now(), updatedAt: now(), canvas: { html: fragment, revision: 1, documentVersion: 1, data: { summary: "Isolated test fixture" }, patches: [] }, decisions: [], interactions: [], updates: [], seenUpdateIds: [], events: [], observations: [], userState: {}, extraction: {} };
 // Resume exercises normal inactive-cache retention; existing scopes deliberately
 // retain their zero-GC behavior to preserve their original cold-remount contract.
@@ -148,6 +151,17 @@ const fixture: any = global.hostFixture = {
   componentIdentitySource: componentIdentityFor.toString(),
   uiEvents: [] as any[], raw: [] as any[], calls: (retainedFixture?.calls ?? []) as any[], links: [] as string[], openedAgents: [] as string[], anchors: [] as any[], focusRequests: [] as string[], updateRequests: [] as any[], updatePositions: [] as any[], ready: 0, responseClicks: 0, responseResults: [] as any[],
   board: () => copy(persisted),
+  // These helpers observe the production stores. reviseDraft is an explicit
+  // concurrency fixture, never used to simulate a user's composer interaction.
+  drafts: () => createDraftStore({ hostId: fixtureHostId, boardId: fixtureBoardId }).list(),
+  batches: () => createBatchStore({ hostId: fixtureHostId, boardId: fixtureBoardId }).list(),
+  markers: () => interactionMarkers(persisted.interactions),
+  reviseDraft: (id: string, text: string) => {
+    const store = createDraftStore({ hostId: fixtureHostId, boardId: fixtureBoardId });
+    const saved = store.list().drafts.find(item => item.id === id);
+    if (!saved) throw new Error("Concurrent fixture draft does not exist");
+    return store.put({ ...saved, open: false, compose: { ...saved.compose, text } }, saved.revision);
+  },
   pageInstance: global.crypto.randomUUID(),
   backCalls: 0,
   persistServer: persistFixture,
@@ -185,7 +199,7 @@ const fixture: any = global.hostFixture = {
     if (destination === "new-side" || destination === "side" && !persisted.sideAgentId || !destination && kind === "fork") {
       kind = "fork"; agentId = `discussion-fixture-${++sideSequence}`; persisted.sideAgentId = agentId;
     } else if (destination === "side") { kind = "reply"; agentId = persisted.sideAgentId!; }
-    else if (destination === "main") kind = "question";
+    else if (destination === "main") kind = item.input.comments || item.input.kind === "change" ? "change" : "question";
     const time = now(); const result: Interaction = { ...item.input, kind, status, agentId, resultReferences: [], createdAt: time, updatedAt: time };
     delete (result as any).boardId; (result as any).id = item.input.intentId; delete (result as any).intentId;
     persisted.interactions = [...persisted.interactions.filter(entry => entry.id !== result.id), result]; advance(); if (settle) { pending.delete(id); if (submitMode === "lost-response") item.reject(new Error("Fixture interaction response lost after commit")); else item.resolve(copy(result)); } return result;
@@ -276,7 +290,7 @@ const fixture: any = global.hostFixture = {
     if (name === "board.interact") {
       const existing = persisted.interactions.find(item => item.id === input.intentId);
       if (existing) {
-        for (const key of ["text", "anchor", "destination", "sourceInteractionId"]) if (JSON.stringify((existing as any)[key]) !== JSON.stringify(input[key])) throw new Error("Fixture interaction idempotency conflict");
+        for (const key of ["text", "anchor", "comments", "destination", "sourceInteractionId"]) if (JSON.stringify((existing as any)[key]) !== JSON.stringify(input[key])) throw new Error("Fixture interaction idempotency conflict");
         return copy(existing);
       }
       if (input.sourceInteractionId && !persisted.interactions.some(item => item.id === input.sourceInteractionId)) throw new Error("Fixture source interaction does not exist");
