@@ -12,6 +12,7 @@ import { createRequire } from 'node:module';
 import { build } from 'esbuild';
 import { runComponentLayoutChecks } from './component-layout-checks.mjs';
 import { runCanvasViewChecks } from './canvas-view-checks.mjs';
+import { runComponentDragChecks } from './component-drag-checks.mjs';
 const directory = dirname(fileURLToPath(import.meta.url));
 const profile = await mkdtemp(join(tmpdir(), 'paseo-board-browser-'));
 const bundle = await build({ entryPoints: [join(directory, 'browser-fixture.tsx')], bundle: true, format: 'iife', platform: 'browser', write: false, loader: { '.txt': 'text' }, define: { 'process.env.NODE_ENV': '"test"' }, plugins: [{ name: 'native-fixture', setup(build) { build.onResolve({ filter: /^react-native$/ }, () => ({ path: 'native', namespace: 'fixture' })); build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: 'export const Platform = { OS: "web" }', loader: 'js' })); } }] });
@@ -38,11 +39,12 @@ chrome.stdio[4].on('data', (chunk) => {
 });
 const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
   const id = ++seq;
-  const timer = setTimeout(() => { commands.delete(id); reject(new Error(`CDP timeout: ${method}`)); }, 20000);
+  const timer = setTimeout(() => { commands.delete(id); reject(new Error(`CDP timeout: ${method}${method==='Runtime.evaluate'?' expression='+String(params.expression).replace(/\s+/g,' ').slice(0,600):''}`)); }, 20000);
   commands.set(id, { resolve, reject, timer });
   chrome.stdio[3].write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + '\0');
 });
 let passed = 0;
+let diagnoseHost;
 const check = (name) => { passed++; console.log(`PASS ${name}`); };
 try {
   const { targetId } = await send('Target.createTarget', { url: 'about:blank' });
@@ -55,12 +57,38 @@ try {
     if (value.exceptionDetails) throw new Error(value.exceptionDetails.exception?.description || value.exceptionDetails.text);
     return value.result.value;
   };
+  diagnoseHost = async () => {
+    const result = await command('Runtime.evaluate', { expression: `JSON.stringify({stage:window.componentDragStage,ready:window.results?.ready,boardId:window.hostProps?.boardId,documentVersion:window.hostProps?.canvas?.documentVersion,canvasRevision:window.hostProps?.canvas?.revision,frameCalls:window.fixtureTransportDiagnostics?.(),frames:Array.from(document.querySelectorAll('iframe'),f=>{const r=f.getBoundingClientRect();return {bounds:{x:r.x,y:r.y,width:r.width,height:r.height},connected:f.isConnected,hasSource:!!f.contentWindow,sandbox:f.sandbox.value,fixtureBridgeInSrcdoc:f.srcdoc.includes("channel==='fixture'"),dragBridgeInSrcdoc:f.srcdoc.includes('dragFixtureBridgeReady')}}),raw:window.results?.raw.slice(-8).map(m=>({type:m.type,boardId:m.boardId,sessionId:m.sessionId})),errors:window.results?.errors.slice(-4)})`, returnByValue:true });
+    return result.result.value;
+  };
   const until = async (expression, timeout = 10000) => {
     await evaluate(`new Promise((resolve,reject)=>{const deadline=performance.now()+${timeout};const loop=()=>{try{if(${expression}){resolve(true);return}}catch{}if(performance.now()>deadline){reject(new Error('condition timeout: '+${JSON.stringify(expression)}));return}setTimeout(loop,20)};loop()})`);
   };
   const frame = (expression) => evaluate(`window.fixtureCall(${JSON.stringify(expression)})`);
   const untilFrame = (expression, timeout = 10000) => frame(`new Promise((resolve,reject)=>{const deadline=performance.now()+${timeout};const loop=()=>{if(${expression})return resolve(true);if(performance.now()>deadline)return reject(new Error('frame condition timeout: '+${JSON.stringify(expression)}));setTimeout(loop,20)};loop()})`);
   const settleFrame = async () => { await frame('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))'); await evaluate('new Promise(resolve=>setTimeout(resolve,0))'); };
+  // Reuse the opaque-iframe target override used by marker/update checks below.
+  // Top-page emulation does not necessarily reach the sandbox's renderer.
+  const dragMediaSessions = new Map();
+  const setReducedMotion = async enabled => {
+    const features=enabled?[{name:'prefers-reduced-motion',value:'reduce'}]:[];
+    await command('Emulation.setEmulatedMedia',{features});
+    const topOnly={enabled,top:await evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches"),canvas:await frame("matchMedia('(prefers-reduced-motion: reduce)').matches")};
+    const targets=(await send('Target.getTargets')).targetInfos.filter(target=>target.type==='iframe');
+    const bound=[];
+    for(const target of targets){
+      let id=dragMediaSessions.get(target.targetId);
+      if(!id){id=(await send('Target.attachToTarget',{targetId:target.targetId,flatten:true})).sessionId;dragMediaSessions.set(target.targetId,id)}
+      const state=await send('Runtime.evaluate',{expression:"({dragFixture:window.dragFixtureReady===true,boardId:globalThis.board?.getContext?.().boardId,reduced:matchMedia('(prefers-reduced-motion: reduce)').matches})",returnByValue:true},id);
+      bound.push({targetId:target.targetId,sessionId:id,type:target.type,url:target.url,before:state.result.value});
+      await send('Emulation.setEmulatedMedia',{features},id);
+    }
+    console.log('MEASURE drag-media-targets',JSON.stringify({topOnly,targets:bound}));
+    await untilFrame(`${enabled?'':'!'}matchMedia('(prefers-reduced-motion: reduce)').matches`);
+    assert.equal(await evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches"),enabled);
+    assert.equal(await frame("matchMedia('(prefers-reduced-motion: reduce)').matches"),enabled);
+  };
+
   const key = async (name, code = name, modifiers = 0) => {
     const virtual = name === 'Escape' ? 27 : name === 'Alt' ? 18 : undefined;
     await command('Input.dispatchKeyEvent', { type: 'keyDown', key: name, code, modifiers, ...(virtual ? { windowsVirtualKeyCode: virtual } : {}) });
@@ -113,7 +141,7 @@ try {
   await command('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/` });
   await until('window.results?.ready === 1');
   const layoutBaseHtml = await evaluate('hostProps.canvas.html');
-  if (!['layout', 'view'].includes(process.env.BOARD_BROWSER_SCOPE)) {
+  if (!['layout', 'view', 'drag'].includes(process.env.BOARD_BROWSER_SCOPE)) {
   assert.equal(await frame('window.boots'), 1);
   assert.deepEqual(await frame('board.getData()'), { n: 0 });
   assert.deepEqual(await frame('board.restoreState()'), { saved: 'original' });
@@ -715,8 +743,12 @@ try {
     await untilFrame("Boolean(document.querySelector('[data-board-component-ghost]'))");
     assert.equal(await frame('directSource.parentElement.id'),'direct-fixture');
     await command('Input.dispatchMouseEvent',{type:'mouseMoved',...to,buttons:1,button:'left'});
-    await untilFrame("document.querySelector('[data-board-component-preview]')?.textContent.includes('#direct-leaf')");
-    await key('Tab');await untilFrame("document.querySelector('[data-board-component-preview]')?.textContent.includes('#direct-nested')");
+    // The leaf center is inside the source's sibling card, so automatic placement
+    // chooses that card. Keyboard depth still follows the actual ancestry.
+    await untilFrame("document.querySelector('[data-board-component-preview]')?.textContent.includes('#direct-destination')");
+    await key('Tab','Tab',8);await untilFrame("document.querySelector('[data-board-component-preview]')?.textContent.includes('#direct-nested')");
+    await key('Tab');await untilFrame("document.querySelector('[data-board-component-preview]')?.textContent.includes('#direct-destination')");
+    await key('Tab','Tab',8);await untilFrame("document.querySelector('[data-board-component-preview]')?.textContent.includes('#direct-nested')");
     await key('ArrowRight');
     const ghost=await frame("(()=>{const g=document.querySelector('[data-board-component-ghost]'),r=g.getBoundingClientRect();return {width:r.width,height:r.height,text:g.shadowRoot.textContent,script:g.shadowRoot.querySelector('script,[onclick]')!==null}})()");
     assert.ok(ghost.width>0&&ghost.height>0);assert.ok(ghost.text.includes('precise words'));assert.equal(ghost.script,false);
@@ -1079,18 +1111,24 @@ try {
   await frame("document.querySelector('#editing-fixture').scrollIntoView({block:'start'})");
   const handle = await location('[data-component-action="drag"]');
   const target = await location('#edit-drag-leaf');
+  // This check is about choosing a nested container, not its insertion edge.
+  // Keep the pointer on the authored leaf center while testing both depth keys.
+  const nestedPoint={x:target.x+target.width/2,y:target.y+target.height/2};
+  console.log('MEASURE nested-drag-target',JSON.stringify(await frame("(()=>{const ids=['edit-source','edit-drag-leaf','edit-drag-inner','edit-area-a'];return ids.map(id=>{const node=document.getElementById(id),r=node.getBoundingClientRect();return {id,parent:node.parentElement.id,rect:{x:r.x,y:r.y,width:r.width,height:r.height}}})})()")));
   await command('Input.dispatchMouseEvent',{type:'mouseMoved',x:handle.x+handle.width/2,y:handle.y+handle.height/2});
   await command('Input.dispatchMouseEvent',{type:'mousePressed',x:handle.x+handle.width/2,y:handle.y+handle.height/2,button:'left',clickCount:1});
-  await command('Input.dispatchMouseEvent',{type:'mouseMoved',x:target.x+5,y:target.y+5,button:'left',buttons:1});
-  await untilFrame("document.querySelector('[data-board-component-preview]')?.textContent.includes('#edit-drag-leaf')");
+  await command('Input.dispatchMouseEvent',{type:'mouseMoved',...nestedPoint,button:'left',buttons:1});
+  await untilFrame("document.querySelector('[data-board-component-preview]')?.textContent.includes('#edit-drag-inner')");
   const dragVisual = await frame("(()=>{const g=document.querySelector('[data-board-component-ghost]'),line=document.querySelector('[data-board-component-drop-line]');return {ghost:g?.shadowRoot.textContent.includes('Updated leading text'),scripts:g?.shadowRoot.querySelectorAll('script,[onclick]').length,width:g?.getBoundingClientRect().width,lineWidth:line?.getBoundingClientRect().width}})()");
   assert.ok(dragVisual.ghost && dragVisual.scripts===0 && dragVisual.width>80 && dragVisual.lineWidth>20,JSON.stringify(dragVisual));
   await command('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});
   await command('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});
+  await untilFrame("document.querySelector('[data-board-component-preview]')?.textContent.includes('#edit-area-a')");
+  await key('Tab','Tab',8);
   await untilFrame("document.querySelector('[data-board-component-preview]')?.textContent.includes('#edit-drag-inner')");
   await key('ArrowRight');
   const dragIndex = await evaluate('results.componentEdits.length');
-  await command('Input.dispatchMouseEvent',{type:'mouseReleased',x:target.x+5,y:target.y+5,button:'left',clickCount:1});
+  await command('Input.dispatchMouseEvent',{type:'mouseReleased',...nestedPoint,button:'left',clickCount:1});
   await until(`results.componentEdits.length===${dragIndex+1}`);
   assert.equal(await evaluate(`results.componentEdits[${dragIndex}].patch.destination`),'#edit-drag-inner');
   assert.equal(await evaluate(`results.componentEdits[${dragIndex}].patch.position`),'append');
@@ -1703,14 +1741,16 @@ try {
   check('real BoardStore rejects competing stale edits and parent replacement even with a fresh board revision; authored-source retry preserves both regions, typed input, counters, iframe identity and JS heap');
 
   }
-  if (process.env.BOARD_BROWSER_SCOPE !== 'view') await runComponentLayoutChecks({ evaluate, frame, update, command, click, clickPoint, location, drag, key, until, untilFrame, settleFrame, profile, directory, baseHtml: layoutBaseHtml, check });
-  if (process.env.BOARD_BROWSER_SCOPE !== 'layout') await runCanvasViewChecks({ evaluate, frame, update, command, until, untilFrame, baseHtml: layoutBaseHtml, check });
+  if (!['view', 'drag'].includes(process.env.BOARD_BROWSER_SCOPE)) await runComponentLayoutChecks({ evaluate, frame, update, command, click, clickPoint, location, drag, key, until, untilFrame, settleFrame, profile, directory, baseHtml: layoutBaseHtml, check });
+  if (!['layout', 'drag'].includes(process.env.BOARD_BROWSER_SCOPE)) await runCanvasViewChecks({ evaluate, frame, update, command, until, untilFrame, baseHtml: layoutBaseHtml, check });
+  if (!process.env.BOARD_BROWSER_SCOPE || process.env.BOARD_BROWSER_SCOPE === 'drag') await runComponentDragChecks({ evaluate, frame, update, command, click, clickPoint, location, key, until, untilFrame, settleFrame, setReducedMotion, profile, directory, check });
   const screenshot = await command('Page.captureScreenshot', { format: 'png' });
   const artifact = process.env.BOARD_TEST_SCREENSHOT;
   if (artifact) await writeFile(artifact, Buffer.from(screenshot.data, 'base64'));
   console.log(`Browser integration: ${passed} checks passed.`);
 } catch (error) {
   console.error('Browser check failed:', error);
+  if(process.env.BOARD_BROWSER_SCOPE==='drag'&&diagnoseHost){try{console.error('Drag host diagnostics:',await diagnoseHost())}catch(failure){console.error('Drag host diagnostics unavailable:',String(failure))}}
   console.error('Browser exceptions:', JSON.stringify(logs).slice(-5000));
   process.exitCode = 1;
 } finally {

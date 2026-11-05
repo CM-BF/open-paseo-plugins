@@ -1080,6 +1080,9 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
   let componentNotice = "";
   let componentGhost = null;
   let componentDropLine = null;
+  let componentDragPreview = null;
+  let componentDragAnimation = true;
+  const componentReducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
   let componentLayoutPreview = null;
   let componentLayoutDraft = null;
   let componentLayoutResize = null;
@@ -1129,6 +1132,16 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
       clearComponentLayoutPreview(); if (componentPending) componentPending.message = "组件内容已变化，预览已撤下；请取消后重新选择";
     }
     if (changed.length) {
+      if (componentDrag) {
+        const active = componentDrag, destination = active.target?.node;
+        if (changed.some(record => !active.gesture.node.isConnected || active.gesture.node.contains(record.target)
+          || destination && (!destination.isConnected || destination.contains(record.target))
+          || record.type === "childList" && [active.gesture.node.parentElement, destination?.parentElement].includes(record.target))) {
+          cancelComponentDrag(); setComponentNotice("拖动中的组件或目标已变化，请重新选择");
+        } else if (componentDragPreview) {
+          clearComponentDragPreview(); active.previewUnavailable = true; setComponentNotice("画布内容已变化，仅显示插入线；原组件保持不变");
+        }
+      }
       if (componentText) {
         const text=componentText;
         if (text.layoutSource!==text.source && changed.some(record=>text.layoutSource.contains(record.target) && !text.source.contains(record.target))) {
@@ -1159,7 +1172,7 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
       clearComponentLayoutPreview(); componentNotice = "画布已更新，布局预览已撤下；请取消后重新选择";
     }
     const box = visibleBox(selectedComponent), shadow = componentHost.shadowRoot;
-    const outline = shadow.querySelector(".outline"); outline.hidden = !box || Boolean(componentLayoutPreview && !componentLayoutPreview.host.hidden);
+    const outline = shadow.querySelector(".outline"); outline.hidden = !box || Boolean(componentDragPreview) || Boolean(componentLayoutPreview && !componentLayoutPreview.host.hidden);
     if (box) Object.assign(outline.style, { left: box.left + "px", top: box.top + "px", width: box.width + "px", height: box.height + "px" });
     for (const button of shadow.querySelectorAll("button")) button.disabled = Boolean(componentPending) && button.dataset.componentAction !== "preview-toggle" || (!box && button.dataset.componentAction !== "close");
     const previewToggle = shadow.querySelector('[data-component-action="preview-toggle"]'); previewToggle.hidden = !componentLayoutPreview;
@@ -1197,7 +1210,7 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
       :host{color-scheme:normal}.outline{position:fixed;box-sizing:border-box;border:3px solid #6f96ff;box-shadow:0 0 0 1px #fff9,inset 0 0 0 1px #fff5;background:#658aeb0c;pointer-events:none}.outline[hidden],[hidden]{display:none!important}
       .panel,.popover{box-sizing:border-box;border:1px solid var(--host-line-strong,#aaa);border-radius:10px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);font:12px/1.5 system-ui;box-shadow:0 3px 15px #0002;pointer-events:auto}
       .panel{position:absolute;bottom:10px;left:10px;max-width:calc(100% - 20px);padding:5px 7px}.toolbar{display:flex;align-items:center;gap:5px;max-width:100%;overflow-x:auto}.selected-name{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.status{max-width:540px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.75;font-size:11px}.status:empty{display:none}.row{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.popover{position:absolute;bottom:calc(100% + 6px);left:0;padding:9px;width:min(310px,calc(100vw - 24px));max-height:min(300px,38vh);overflow:auto}.tools{left:auto;right:0}.layout-tools label{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%}.layout-tools input{min-width:0;max-width:155px;width:155px;box-sizing:border-box}.layout-tools .layout-hint{white-space:normal;max-width:280px}.ancestors,.children{flex-direction:column}.ancestors button,.children button{text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.label{opacity:.65;font-size:11px;margin-top:6px}button,select,input{font:inherit;color:inherit;background:transparent}button,select,input{padding:4px 7px;border:1px solid var(--host-line-strong,#ccc);border-radius:5px;white-space:nowrap;flex:none}button{cursor:pointer}button[aria-current=true]{border-color:var(--host-iris,#658aeb);font-weight:600}button:focus-visible{outline:2px solid var(--host-iris,#658aeb)}button:disabled{opacity:.5;cursor:default}.hint{opacity:.75;margin-top:8px;font-size:11px}.text-tools{display:none;align-items:center;gap:5px}.text-runs{max-width:150px}.panel[data-editing=true] .toolbar>[data-component-action],.panel[data-editing=true] .popover{display:none}.panel[data-editing=true] .text-tools{display:flex}.panel[data-editing=true] .selected-name{max-width:100px}button[data-component-action=drag]{touch-action:none;cursor:grab}.panel[data-dragging=true] .toolbar> :not([data-component-action=drag]):not(.selected-name){display:none}.panel[data-dragging=true] .popover{display:none}@media(max-width:540px){.selected-name{max-width:90px}.toolbar{gap:3px}.toolbar button{padding:4px 5px}}
-    </style><div class="outline"></div><div class="panel" role="region" aria-label="组件选择"><div class="toolbar"><span class="selected-name"></span><span class="text-tools"><select class="text-runs" aria-label="文字段落"></select><button type="button" data-component-action="text-save">完成文字</button><button type="button" data-component-action="text-cancel">取消</button></span><button type="button" data-component-action="preview-toggle" hidden>看原版</button><button type="button" data-component-action="drag" title="拖动组件；Tab切换目标层级">拖动</button><button type="button" data-component-action="text">改字</button><button type="button" data-component-action="paste">粘贴</button><button type="button" data-component-action="layout" aria-expanded="false">布局</button><button type="button" data-component-action="hierarchy" aria-expanded="false">层级</button><button type="button" data-component-action="more" aria-expanded="false" aria-label="更多组件操作">•••</button><button type="button" data-component-action="close" aria-label="完成选择" title="完成选择 · Esc">×</button></div><div role="status" class="status"></div><div class="popover relations" hidden><div class="label">包含层级</div><div class="row ancestors"></div><div class="label">直接子组件</div><div class="row children"></div></div><div class="popover layout-tools" hidden><div class="row"><label>收起方式 <select class="layout-collapse" aria-label="收起方式"><option value="none">不收起</option><option value="contents">保留标题，收起内容</option><option value="group">外套折叠分组</option></select></label></div><div class="row layout-title-row" hidden><label><span class="layout-title-label">分组标题</span><input class="layout-title" aria-label="分组标题" maxlength="120" value="" /></label></div><div class="row"><label>最大高度（px）<input class="layout-height" aria-label="最大高度" type="number" min="80" max="2000" step="10" placeholder="不限高" /></label></div><div class="row"><button type="button" data-component-action="layout-preview">预览</button><button type="button" data-component-action="layout-save">完成布局</button><button type="button" data-component-action="layout-reset">恢复原样</button><button type="button" data-component-action="layout-cancel">取消</button></div><div class="hint layout-hint">先预览，再保存。预览下边缘可拖动调高；原组件保持不变。</div></div><div class="popover tools" hidden><div class="row"><button type="button" data-component-action="cut">剪切 ⌘/Ctrl X</button><button type="button" data-component-action="copy">复制 ⌘/Ctrl C</button><button type="button" data-component-action="reference">引用组件</button></div><div class="row"><label>粘贴位置 <select aria-label="粘贴位置" class="placement"><option value="append">放入末尾</option><option value="prepend">放入开头</option><option value="before">放在前面</option><option value="after">放在后面</option></select></label></div><div class="hint">拖动时 Tab / Shift+Tab 切换目标层级，↑ 前面 · ↓ 后面 · ← 开头 · → 末尾。复制结构；运行中的 JS 状态不复制。</div></div></div>`;
+    </style><div class="outline"></div><div class="panel" role="region" aria-label="组件选择"><div class="toolbar"><span class="selected-name"></span><span class="text-tools"><select class="text-runs" aria-label="文字段落"></select><button type="button" data-component-action="text-save">完成文字</button><button type="button" data-component-action="text-cancel">取消</button></span><button type="button" data-component-action="preview-toggle" hidden>看原版</button><button type="button" data-component-action="drag" title="拖动组件；Tab切换目标层级">拖动</button><button type="button" data-component-action="text">改字</button><button type="button" data-component-action="paste">粘贴</button><button type="button" data-component-action="layout" aria-expanded="false">布局</button><button type="button" data-component-action="hierarchy" aria-expanded="false">层级</button><button type="button" data-component-action="more" aria-expanded="false" aria-label="更多组件操作">•••</button><button type="button" data-component-action="close" aria-label="完成选择" title="完成选择 · Esc">×</button></div><div role="status" class="status"></div><div class="popover relations" hidden><div class="label">包含层级</div><div class="row ancestors"></div><div class="label">直接子组件</div><div class="row children"></div></div><div class="popover layout-tools" hidden><div class="row"><label>收起方式 <select class="layout-collapse" aria-label="收起方式"><option value="none">不收起</option><option value="contents">保留标题，收起内容</option><option value="group">外套折叠分组</option></select></label></div><div class="row layout-title-row" hidden><label><span class="layout-title-label">分组标题</span><input class="layout-title" aria-label="分组标题" maxlength="120" value="" /></label></div><div class="row"><label>最大高度（px）<input class="layout-height" aria-label="最大高度" type="number" min="80" max="2000" step="10" placeholder="不限高" /></label></div><div class="row"><button type="button" data-component-action="layout-preview">预览</button><button type="button" data-component-action="layout-save">完成布局</button><button type="button" data-component-action="layout-reset">恢复原样</button><button type="button" data-component-action="layout-cancel">取消</button></div><div class="hint layout-hint">先预览，再保存。预览下边缘可拖动调高；原组件保持不变。</div></div><div class="popover tools" hidden><div class="row"><button type="button" data-component-action="cut">剪切 ⌘/Ctrl X</button><button type="button" data-component-action="copy">复制 ⌘/Ctrl C</button><button type="button" data-component-action="reference">引用组件</button></div><div class="row"><label>粘贴位置 <select aria-label="粘贴位置" class="placement"><option value="append">放入末尾</option><option value="prepend">放入开头</option><option value="before">放在前面</option><option value="after">放在后面</option></select></label></div><div class="row"><label><input class="component-drag-animation" type="checkbox" aria-label="拖动让位动画" /> 拖动让位动画</label></div><div class="hint">边缘或空隙插入，容器中央放入。拖动时 Tab / Shift+Tab 切换目标层级，↑ 前面 · ↓ 后面 · ← 开头 · → 末尾。复制结构；运行中的 JS 状态不复制。</div></div></div>`;
     const addChoice = (element, container) => {
       const button = document.createElement("button"); button.type = "button"; button.dataset.componentAction = "choose"; button.dataset.componentIndex = String(componentChoices.length);
       button.textContent = componentLabel(element); button.setAttribute("aria-current", String(element === node)); componentChoices.push(element); container.append(button);
@@ -1217,15 +1230,18 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
       if (!event.isTrusted || !componentLayoutDraft || componentPending) return;
       readComponentLayoutFields(); clearComponentLayoutPreview(); positionComponent();
     });
+    const animation = shadow.querySelector(".component-drag-animation"); animation.checked = componentDragAnimation;
+    animation.addEventListener("change", event => { if (event.isTrusted) componentDragAnimation = animation.checked; });
     positionComponent();
   };
-  const clearComponentGhost = () => { componentGhost?.remove(); componentGhost = null; componentDropLine?.remove(); componentDropLine = null; };
+  const clearComponentDragPreview = () => { componentDragPreview?.host.remove(); componentDragPreview = null; };
+  const clearComponentGhost = () => { componentGhost?.remove(); componentGhost = null; componentDropLine?.remove(); componentDropLine = null; clearComponentDragPreview(); };
   const clearComponentLayoutPreview = () => { componentLayoutPreview?.host.remove(); componentLayoutPreview = null; };
   // Build inert visual copies in a document with no browsing context. In particular,
   // cloneNode/importNode in the live document can invoke custom-element constructors.
   // The copy never enters the authored tree, and scripts/handlers/custom elements cannot
   // execute when its ordinary HTML/SVG nodes are adopted into an isolated shadow root.
-  const componentVisualCopy = (source, { computed = false, maxNodes = 2400, maxMs = 180 } = {}) => {
+  const componentVisualCopy = (source, { computed = false, maxNodes = 2400, maxMs = 180, placeholders = false } = {}) => {
     const inert = document.implementation.createHTMLDocument("");
     const nodes = new Map(), scrolls = []; let count = 0, bytes = 0, bitmapPixels = 0, approximated = false;
     const deadline = performance.now() + maxMs;
@@ -1247,6 +1263,14 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
       }
       if (!(node instanceof Element) || node.hasAttribute("data-board-overlay")) return null;
       const tag = node.localName.toLowerCase();
+      if (placeholders && !closed && ["iframe", "object", "embed"].includes(tag)) {
+        const clone = inert.createElement("div"), style = getComputedStyle(node), box = node.getBoundingClientRect();
+        for (const name of style) clone.style.setProperty(name, consumeBytes(style.getPropertyValue(name)), "important");
+        if (style.display === "inline") clone.style.setProperty("display", "inline-block", "important");
+        clone.style.setProperty("box-sizing", "border-box", "important"); clone.style.setProperty("width", box.width + "px", "important"); clone.style.setProperty("height", box.height + "px", "important");
+        clone.style.setProperty("overflow", "hidden", "important"); clone.style.setProperty("background", "#dde3eb", "important"); clone.setAttribute("data-board-preview-media", "");
+        clone.textContent = "嵌入内容"; nodes.set(node, clone); approximated = true; return clone;
+      }
       if (skip.has(tag) || closed && tag !== "summary") { if (["iframe","object","embed"].includes(tag) && node.getBoundingClientRect().width) approximated=true; return null; }
       if (tag === "link") return null; // Stylesheets are copied from CSSOM below, never refetched.
       let visual = null;
@@ -1302,27 +1326,28 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     } catch { const fallback = document.createElement("div"); fallback.textContent = componentLabel(selectedComponent); fallback.style.cssText = "padding:20px;border:2px solid #6f96ff;background:#edf2ff;color:#1f3466;font:13px system-ui"; shadow.append(fallback); }
     const scale = Math.min(1, 300 / Math.max(1, box.width), 180 / Math.max(1, box.height));
     host.dataset.scale = String(scale); importantBox(host, {left:0,top:0,width:Math.max(40,box.width),height:Math.max(24,box.height)});
+    if (!componentDragAnimation || componentReducedMotion.matches) host.style.setProperty("transition", "none", "important");
     componentGhost = host; root.append(host); positionComponentGhost(point);
   };
   const positionComponentGhost = (point) => {
     if (!componentGhost) return;
     componentGhost.style.setProperty("transform", `translate(${point.x + 16}px,${point.y + 16}px) scale(${componentGhost.dataset.scale}) rotate(1deg)`, "important");
   };
-  const showComponentDropLine = (destination, position) => {
+  const showComponentDropLine = (destination, position, slot = null) => {
     if (!destination) { componentDropLine?.remove(); componentDropLine = null; return; }
     const bounds = destination.getBoundingClientRect();
     const inside = position === "append" || position === "prepend";
     const edge = inside ? (position === "append" ? destination.lastElementChild : destination.firstElementChild) : destination;
     const edgeBox = edge?.getBoundingClientRect() || bounds;
     const flow = getComputedStyle(inside ? destination : destination.parentElement);
-    const horizontal = /flex/.test(flow.display) && flow.flexDirection.startsWith("row");
-    const trailing = position === "after" || position === "append" && edge;
+    const horizontal = slot?.horizontal ?? (/flex/.test(flow.display) && flow.flexDirection.startsWith("row"));
+    const trailing = Boolean(position === "after" || position === "append" && edge) !== Boolean(slot?.reverse);
     const y = trailing ? edgeBox.bottom : edgeBox.top;
     if (!componentDropLine) { componentDropLine = document.createElement("div"); componentDropLine.setAttribute("data-board-overlay", ""); componentDropLine.setAttribute("data-board-component-drop-line", ""); componentDropLine.style.cssText = "all:initial!important;position:fixed!important;height:4px!important;border-radius:3px!important;background:#3b82f6!important;box-shadow:0 0 0 1px white!important;pointer-events:none!important;z-index:2147483646!important;"; root.append(componentDropLine); }
     importantBox(componentDropLine, horizontal
       ? {left:Math.max(1,Math.min(innerWidth-5,(trailing?edgeBox.right:edgeBox.left)-2)),top:Math.max(0,inside?bounds.top+5:edgeBox.top),width:4,height:Math.max(20,inside?bounds.height-10:edgeBox.height)}
       : {left:Math.max(0,inside?bounds.left+5:edgeBox.left),top:Math.max(1,Math.min(innerHeight-5,y-2)),width:Math.max(20,inside?bounds.width-10:edgeBox.width),height:4});
-    componentDropLine.dataset.position = position;componentDropLine.dataset.orientation=horizontal?"vertical":"horizontal";
+    componentDropLine.dataset.position = position;componentDropLine.dataset.orientation=horizontal?"vertical":"horizontal";componentDropLine.dataset.destination=selectorFor(destination);
   };
   const validateComponentLayout = () => {
     const draft = componentLayoutDraft;
@@ -1738,17 +1763,215 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     if (!equalJson(componentClipboard.identity, componentIdentity(source))) { setComponentNotice("来源内容已变化，请重新复制或剪切"); return; }
     proposeComponentEdit(componentPatch(componentClipboard.mode, source, { destination: selectorFor(destination), destinationIdentity: componentIdentity(destination), position: componentHost.shadowRoot.querySelector(".placement").value }));
   };
-  const componentDestinations = (point) => {
-    const hit = componentAt(document.elementFromPoint(point.x, point.y));
-    return hit ? componentAncestors(hit).reverse().filter(node => node !== selectedComponent && !selectedComponent.contains(node) && visibleBox(node)) : [];
+  // Pointer slots are measured against live, unchanged DOM. The layout copy below
+  // cannot participate in hit testing, so opening a slot never makes it chase itself.
+  let componentDragMeasurements = new Map();
+  const componentDragMeasure = (node, key, read) => {
+    let values = componentDragMeasurements.get(node); if (!values) { values = new Map(); componentDragMeasurements.set(node, values); }
+    if (!values.has(key)) values.set(key, read()); return values.get(key);
   };
-  const paintComponentDrag = () => {
-    if (!componentDrag) return; const destination = componentDrag.candidates[componentDrag.depth];
+  const componentDragRect = node => componentDragMeasure(node, "rect", () => node.getBoundingClientRect());
+  const componentDragBox = node => componentDragMeasure(node, "box", () => {
+    const box = node && visibleBox(node);
+    return box && box.right > 0 && box.bottom > 0 && box.left < innerWidth && box.top < innerHeight ? box : null;
+  });
+  const componentDragChildren = node => componentDragMeasure(node, "children", () => Array.from(node?.children || []).slice(0, 160).filter(child => authorElement(child)
+    && !child.matches("script,style,link,meta,template") && componentDragBox(child)));
+  const componentDragFlow = parent => componentDragMeasure(parent, "flow", () => {
+    const style = getComputedStyle(parent), grid = style.display.includes("grid"), flex = style.display.includes("flex");
+    const horizontal = flex ? style.flexDirection.startsWith("row") : grid && !style.gridAutoFlow.startsWith("column");
+    const reverse = horizontal ? (style.direction === "rtl") !== (flex && style.flexDirection === "row-reverse") : flex && style.flexDirection === "column-reverse";
+    return { horizontal, reverse, grid, wrap: grid || flex && style.flexWrap !== "nowrap" };
+  });
+  const componentDragFailure = (node, position) => {
+    if (!node?.isConnected || node === root || node === document.body || node === document.head || node === selectedComponent || selectedComponent?.contains(node)) return "这个位置不能放置组件";
+    const failure = componentTransferFailure("move", selectedComponent, node, position); if (failure) return failure;
+    const inside = position === "append" || position === "prepend", parent = inside ? node : node.parentElement;
+    if (inside && !componentDragInside(node)) return "这个元素不能作为嵌套容器，请选择它的外层容器";
+    if (!parent || !["normal", "horizontal-tb"].includes(getComputedStyle(parent).writingMode)) return "这个排版方向请使用明确的粘贴位置";
+    if (parent === selectedComponent.parentElement && (position === "before" && selectedComponent.nextElementSibling === node
+      || position === "after" && selectedComponent.previousElementSibling === node || position === "prepend" && parent.firstElementChild === selectedComponent
+      || position === "append" && parent.lastElementChild === selectedComponent)) return "已经在这个位置，原组件保持不变";
+    if (parent.children.length > 160) return "这个容器子项较多，请用粘贴位置确认布局";
+    const siblings = componentDragChildren(parent), style = getComputedStyle(parent);
+    if ([selectedComponent, node].some(child => /^(absolute|fixed)$/.test(getComputedStyle(child).position))) return "这个组件使用独立定位，请用粘贴位置确认布局";
+    if (style.display.includes("flex") && style.flexWrap === "wrap-reverse") return "这个容器使用反向换行，请用粘贴位置确认布局";
+    if (style.display.includes("flex") && [selectedComponent, ...siblings].some(child => getComputedStyle(child).order !== "0")) return "这个容器使用自定义排序，请用粘贴位置确认布局";
+    if (style.display.includes("grid") && [selectedComponent, ...siblings].some(child => {
+      const item = getComputedStyle(child); return [item.gridRowStart, item.gridRowEnd, item.gridColumnStart, item.gridColumnEnd].some(value => value !== "auto");
+    })) return "这个网格使用固定位置，请用粘贴位置确认布局";
+    return null;
+  };
+  const componentDragInside = node => authorElement(node) && !node.matches("a,button,input,textarea,select,option,img,canvas,svg,iframe,video,audio,object,embed,table,thead,tbody,tfoot,tr,td,th,col,colgroup,p,h1,h2,h3,h4,h5,h6,summary,br,hr")
+    && /block|flex|grid|flow-root|list-item/.test(getComputedStyle(node).display);
+  const componentDragSlot = (node, position, horizontal = null, reverse = null) => {
+    const inside = position === "append" || position === "prepend", flow = componentDragFlow(inside ? node : node.parentElement);
+    return { node, position, horizontal: horizontal ?? flow.horizontal, reverse: reverse ?? flow.reverse };
+  };
+  const componentDragEdge = (node, point) => {
+    const visible = componentDragBox(node); if (!visible || !node.parentElement || point.x < visible.left || point.x > visible.right || point.y < visible.top || point.y > visible.bottom) return null;
+    const box = componentDragRect(node);
+    const flow = componentDragFlow(node.parentElement), coordinate = flow.horizontal ? point.x : point.y;
+    const start = flow.horizontal ? box.left : box.top, end = flow.horizontal ? box.right : box.bottom;
+    const threshold = Math.min(26, Math.max(8, (end - start) * .2));
+    if (coordinate - start <= threshold && start >= Math.max(0, flow.horizontal ? visible.left : visible.top) - .5) return componentDragSlot(node, flow.reverse ? "after" : "before");
+    if (end - coordinate <= threshold && end <= Math.min(flow.horizontal ? innerWidth : innerHeight, flow.horizontal ? visible.right : visible.bottom) + .5) return componentDragSlot(node, flow.reverse ? "before" : "after");
+    if (flow.horizontal && flow.wrap) {
+      const row = componentDragChildren(node.parentElement).filter(child => {
+        const other = componentDragRect(child); return Math.min(box.bottom, other.bottom) - Math.max(box.top, other.top) > Math.min(box.height, other.height) / 2;
+      }).sort((a, b) => (componentDragRect(a).left - componentDragRect(b).left) * (flow.reverse ? -1 : 1));
+      if (node === row[0] && point.y - box.top < Math.min(18, box.height * .15) && box.top >= 0) return componentDragSlot(node, "before", false, false);
+      if (node === row[row.length - 1] && box.bottom - point.y < Math.min(18, box.height * .15) && box.bottom <= innerHeight) return componentDragSlot(node, "after", false, false);
+    }
+    return null;
+  };
+  const componentDragGap = (parent, point) => {
+    const children = componentDragChildren(parent);
+    if (!children.length || children.some(child => { const b = componentDragRect(child); return point.x >= b.left && point.x <= b.right && point.y >= b.top && point.y <= b.bottom; })) return null;
+    // A container's explanatory text is not a sibling slot for another container.
+    // Keep leaf-to-leaf reordering available, while group drags target group gaps
+    // or the enclosing container's interior rather than a nearby paragraph edge.
+    const destinations = componentDragInside(selectedComponent) ? children.filter(componentDragInside) : children;
+    const flow = componentDragFlow(parent), slots = [];
+    if (destinations.length < 2) return null;
+    const boxes = destinations.map(componentDragRect);
+    const across = boxes.some(box => box.right <= point.x && box.top <= point.y && point.y <= box.bottom)
+      && boxes.some(box => box.left >= point.x && box.top <= point.y && point.y <= box.bottom);
+    const betweenRows = boxes.some(box => box.bottom <= point.y) && boxes.some(box => box.top >= point.y);
+    if (!(flow.horizontal ? across || flow.wrap && betweenRows : betweenRows)) return null;
+    for (const node of destinations) {
+      if (node === selectedComponent || selectedComponent.contains(node)) continue;
+      const b = componentDragRect(node), visible = componentDragBox(node);
+      for (const trailing of [false, true]) {
+        const coordinate = flow.horizontal ? trailing ? b.right : b.left : trailing ? b.bottom : b.top;
+        if (coordinate < Math.max(0, flow.horizontal ? visible.left : visible.top) - .5 || coordinate > Math.min(flow.horizontal ? innerWidth : innerHeight, flow.horizontal ? visible.right : visible.bottom) + .5) continue;
+        const distance = flow.horizontal ? Math.hypot(point.x - coordinate, Math.max(b.top - point.y, 0, point.y - b.bottom))
+          : Math.hypot(point.y - coordinate, Math.max(b.left - point.x, 0, point.x - b.right));
+        const slot = componentDragSlot(node, trailing !== flow.reverse ? "after" : "before"); if (slot) slots.push({ ...slot, distance });
+      }
+      if (flow.horizontal && flow.wrap) {
+        const row = children.filter(child => { const other = componentDragRect(child); return Math.min(b.bottom, other.bottom) - Math.max(b.top, other.top) > Math.min(b.height, other.height) / 2; })
+          .sort((a, z) => (componentDragRect(a).left - componentDragRect(z).left) * (flow.reverse ? -1 : 1));
+        for (const [edge, position, isEnd] of [[b.top, "before", node === row[0]], [b.bottom, "after", node === row[row.length - 1]]]) {
+          if (!isEnd || edge < Math.max(0, visible.top) - .5 || edge > Math.min(innerHeight, visible.bottom) + .5) continue;
+          const slot = componentDragSlot(node, position, false, false);
+          if (slot) slots.push({ ...slot, distance: Math.hypot(point.y - edge, Math.max(b.left - point.x, 0, point.x - b.right)) });
+        }
+      }
+    }
+    slots.sort((a, b) => a.distance - b.distance);
+    return slots[0]?.distance <= 64 ? slots[0] : null;
+  };
+  const componentDestinations = point => {
+    componentDragMeasurements = new Map();
+    const raw = document.elementFromPoint(point.x, point.y), hit = componentAt(raw), chain = [];
+    for (let node = raw; node instanceof Element && chain.length < 20; node = node.parentElement) {
+      if (node.hasAttribute("data-board-overlay")) return { candidates: [], automatic: null };
+      chain.push(node);
+    }
+    const ancestors = hit ? componentAncestors(hit).reverse().filter(node => node !== selectedComponent && !selectedComponent.contains(node) && componentDragBox(node)) : [];
+    if (raw === selectedComponent || selectedComponent.contains(raw)) return { candidates: ancestors, automatic: null, overSource: true };
+    const sameLevel = chain.find(node => node.parentElement === selectedComponent.parentElement && node !== selectedComponent);
+    let automatic = sameLevel && (componentDragEdge(sameLevel, point) || componentDragInside(sameLevel) && componentDragSlot(sameLevel, "append"));
+    if (!automatic) for (const node of chain) {
+      if (selectedComponent === node || selectedComponent.contains(node)) continue;
+      automatic = componentDragGap(node, point) || (componentBoundary(node) && (!componentDragInside(selectedComponent) || componentDragInside(node)) && componentDragEdge(node, point));
+      if (automatic) break;
+    }
+    if (!automatic) {
+      const interior = ancestors.find(node => componentDragInside(node) && !componentDragFailure(node, "append"));
+      if (interior) automatic = componentDragSlot(interior, "append");
+    }
+    // Keep the actual inner-to-outer hierarchy even when automatic placement
+    // selects an outer card. Only gap neighbors are outside the hit ancestry.
+    const candidates = automatic && !ancestors.includes(automatic.node) ? [automatic.node, ...ancestors] : ancestors;
+    return { candidates, automatic };
+  };
+  const makeComponentDragPreview = () => {
+    const active = componentDrag;
+    if (!active || active.previewUnavailable) return null;
+    if (componentDragPreview) return componentDragPreview;
+    try {
+      const visual = componentVisualCopy(root, { maxNodes: 1800, maxMs: 100, placeholders: true }), source = visual.nodes.get(selectedComponent);
+      if (!source) throw new Error("这个组件仅显示插入线");
+      const host = document.createElement("div"); host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-component-drag-preview", "");
+      host.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483643!important;pointer-events:none!important;overflow:hidden!important;background:var(--host-canvas,#fff)!important;";
+      host.inert = true; host.setAttribute("aria-hidden", "true");
+      const shadow = host.attachShadow({ mode: "open" }), viewport = document.createElement("div");
+      viewport.style.cssText = "position:absolute;inset:0;overflow:hidden;pointer-events:none;";
+      visual.clone.inert = true; visual.clone.setAttribute("data-board-preview-root", ""); visual.clone.removeAttribute("data-board-selection");
+      visual.clone.style.setProperty("width", root.clientWidth + "px", "important"); visual.clone.style.setProperty("margin", "0", "important");
+      for (const name of ["font-family", "font-size", "line-height", "color", "color-scheme"]) visual.clone.style.setProperty(name, getComputedStyle(root).getPropertyValue(name));
+      for (const sheet of document.styleSheets) if (sheet.ownerNode?.tagName === "LINK") {
+        const style = document.createElement("style"); style.textContent = visual.consumeBytes(Array.from(sheet.cssRules, rule => rule.cssText).join("\n").replace(/:root\b/g, "[data-board-preview-root]")); visual.clone.prepend(style);
+      }
+      const freeze = document.createElement("style"); freeze.textContent = "[data-board-preview-root],[data-board-preview-root] *,[data-board-preview-root] *::before,[data-board-preview-root] *::after{animation:none!important;transition:none!important;caret-color:transparent!important;pointer-events:none!important}";
+      source.setAttribute("data-board-drag-placeholder", ""); source.style.setProperty("opacity", ".35", "important"); source.style.setProperty("outline", "2px dashed #3b82f6", "important");
+      shadow.append(freeze, viewport); viewport.append(visual.clone); root.append(host);
+      for (const [node, x, y] of visual.scrolls) { node.scrollLeft = x; node.scrollTop = y; } viewport.scrollLeft = scrollX; viewport.scrollTop = scrollY;
+      componentDragPreview = { host, viewport, visual, source, originalParent: source.parentNode, originalNext: source.nextSibling, animations: [] };
+      return componentDragPreview;
+    } catch (failure) { active.previewUnavailable = true; clearComponentDragPreview(); return null; }
+  };
+  const paintComponentDragPreview = slot => {
+    const preview = makeComponentDragPreview(); if (!preview) return;
+    const { visual, source, host } = preview, destination = visual.nodes.get(slot.node);
+    if (!destination) { clearComponentDragPreview(); componentDrag.previewUnavailable = true; return; }
+    if (preview.destination === slot.node && preview.position === slot.position) return;
+    for (const animation of preview.animations) animation.cancel(); preview.animations = [];
+    const parent = ["before", "after"].includes(slot.position) ? destination.parentNode : destination;
+    const affected = [...new Set([...source.parentElement.children, ...parent.children])].filter(node => node instanceof Element && node !== source).slice(0, 100);
+    const before = new Map(affected.map(node => [node, node.getBoundingClientRect()]));
+    const next = slot.position === "before" ? destination : slot.position === "after" ? destination.nextSibling : slot.position === "prepend" ? destination.firstChild : null;
+    parent.insertBefore(source, next);
+    host.dataset.position = slot.position; host.dataset.destination = selectorFor(slot.node); host.dataset.orientation = slot.horizontal ? "vertical" : "horizontal";
+    host.dataset.motion = componentDragAnimation && !componentReducedMotion.matches ? "animated" : "static";
+    if (host.dataset.motion === "animated") for (const node of affected) {
+      const old = before.get(node), now = node.getBoundingClientRect(), dx = old.left - now.left, dy = old.top - now.top;
+      if (Math.abs(dx) < .5 && Math.abs(dy) < .5 || now.right < 0 || now.bottom < 0 || now.left > innerWidth || now.top > innerHeight) continue;
+      // The independent translate longhand composes with authored transforms; only
+      // inert copies receive animations, never source nodes or their inline styles.
+      if (getComputedStyle(node).translate !== "none") continue;
+      preview.animations.push(node.animate([{ translate: `${dx}px ${dy}px` }, { translate: "0px 0px" }], { duration: 160, easing: "ease-out" }));
+    }
+    preview.destination = slot.node; preview.position = slot.position;
+  };
+  const clearComponentDragTarget = message => {
+    if (componentDrag) componentDrag.target = null;
+    clearComponentHover(); showComponentDropLine(null); clearComponentDragPreview(); setComponentNotice(message);
+  };
+  const updateComponentDragSafely = update => {
+    if (!componentDrag) return;
+    try { update(componentDrag); }
+    catch (failure) {
+      if (componentDrag) { componentDrag.candidates = []; componentDrag.automatic = null; componentDrag.depth = 0; componentDrag.manualDepth = false; }
+      clearComponentDragTarget(failure?.message || "无法确认拖动目标；请重新选择，原组件保持不变");
+    }
+  };
+  const paintComponentDrag = () => updateComponentDragSafely(active => {
+    const destination = active.candidates[active.depth], point = componentPointer || { x: 0, y: 0 };
+    const automatic = active.overSource && !active.manualDepth ? null : active.automatic?.node === destination ? active.automatic : destination && (componentDragEdge(destination, point) || componentDragSlot(destination, "append"));
+    const position = active.manualPosition || automatic?.position || "append";
+    const failure = destination ? componentDragFailure(destination, position) : null;
+    const slot = !failure && destination ? active.manualPosition ? componentDragSlot(destination, position) : automatic : null;
+    positionComponentGhost(point);
+    if (!slot) { clearComponentDragTarget(failure || "移到组件边缘或空隙插入，中央放入 · Esc 取消"); return; }
+    // A placement and its structural identity are one accepted target. A failed
+    // identity capture must never pair this placement with a previous target.
+    const target = active.target?.node === destination && active.target.position === position ? active.target
+      : { node: destination, position, identity: componentIdentity(destination), parent: destination.parentElement };
+    active.target = target;
     const names = { before: "前面", after: "后面", prepend: "放入开头", append: "放入末尾" };
-    positionComponentGhost(componentPointer || {x:0,y:0}); showComponentDropLine(destination, componentDrag.position);
-    previewComponent(destination, destination ? `${componentLabel(destination)} · ${names[componentDrag.position]} · 层级 ${componentDrag.depth + 1}/${componentDrag.candidates.length}` : "");
-    setComponentNotice(destination ? `目标 ${componentLabel(destination)} · ${names[componentDrag.position]}；Tab 切换上级，Shift+Tab 返回下级` : "移到目标组件上 · Esc 取消");
-  };
+    showComponentDropLine(destination, position, slot); paintComponentDragPreview(slot);
+    previewComponent(destination, `${componentLabel(destination)} · ${names[position]} · 层级 ${active.depth + 1}/${active.candidates.length}`);
+    setComponentNotice(`目标 ${componentLabel(destination)} · ${names[position]}${active.previewUnavailable ? " · 仅显示插入线" : " · 让位预览"}；Tab 切换层级，方向键指定位置`);
+  });
+  const updateComponentDragDestination = () => updateComponentDragSafely(active => {
+    const result = componentDestinations(componentPointer || { x: 0, y: 0 }), previous = active.candidates[active.depth];
+    active.candidates = result.candidates; active.automatic = result.automatic; active.overSource = result.overSource;
+    active.depth = active.manualDepth && result.candidates.includes(previous) ? result.candidates.indexOf(previous) : Math.max(0, result.candidates.indexOf(result.automatic?.node));
+    paintComponentDrag();
+  });
   const componentGesture = () => ({node:selectedComponent,identity:componentIdentity(selectedComponent),canvasBase:{revision:snapshot.canvas.revision,documentVersion:snapshot.canvas.documentVersion}});
   const componentGestureLive = gesture => {
     try { return gesture && gesture.node===selectedComponent && gesture.node.isConnected && visibleBox(gesture.node)
@@ -1776,19 +1999,24 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     if (!componentGestureLive(gesture)) {setComponentNotice("组件已变化，请重新选择后拖动");return;}
     const failure = componentTransferFailure("move", selectedComponent);
     if (failure) { componentPress=null; componentClick=null; setComponentNotice(failure); return; }
-    componentPress=null;componentClick=null;componentDrag = { pointerId: event.pointerId, candidates: [], depth: 0, position: "append", gesture };
+    componentPress=null;componentClick=null;componentDrag = { pointerId: event.pointerId, candidates: [], depth: 0, gesture, automatic: null, target: null, paintFrame: null };
     clearComponentHover(); showComponentGhost(eventPoint(event)); suppressPointerClick = true; try { root.setPointerCapture(event.pointerId); } catch {} paintComponentDrag();
   };
   const cancelComponentDrag = () => {
     const active = componentDrag; componentDrag = null; componentPress=null; componentClick=null; clearComponentHover(); clearComponentGhost();
+    if (active && active.paintFrame !== null) cancelAnimationFrame(active.paintFrame);
     if (active) try { if (root.hasPointerCapture(active.pointerId)) root.releasePointerCapture(active.pointerId); } catch {}
     setComponentNotice("");
   };
   const finishComponentDrag = () => {
-    const active = componentDrag, source = selectedComponent, destination = active?.candidates[active.depth]; cancelComponentDrag();
+    const active = componentDrag, source = selectedComponent;
+    if (active && active.paintFrame !== null) { cancelAnimationFrame(active.paintFrame); active.paintFrame = null; updateComponentDragDestination(); }
+    const target = active?.target, destination = target?.node; cancelComponentDrag();
     if (!source?.isConnected || !destination?.isConnected || source === destination || source.contains(destination)) return;
     if (!componentGestureLive(active.gesture)) {setComponentNotice("组件已变化，请重新选择后拖动");return;}
-    proposeComponentEdit(componentPatch("move", source, { destination: selectorFor(destination), destinationIdentity: componentIdentity(destination), position: active.position }),active.gesture.canvasBase);
+    if (destination.parentElement !== target.parent || !matchesComponentIdentity(destination, target.identity)) { setComponentNotice("目标组件已变化，请重新选择后拖动"); return; }
+    const failure = componentDragFailure(destination, target.position); if (failure) { setComponentNotice(failure); return; }
+    proposeComponentEdit(componentPatch("move", source, { destination: selectorFor(destination), destinationIdentity: target.identity, position: target.position }),active.gesture.canvasBase);
   };
   const componentAction = (event) => {
     const button = event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-component-action"));
@@ -1838,6 +2066,15 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
   window.addEventListener("resize", positionComponentLayoutResize);
   window.addEventListener("scroll", queueComponentOutline, true);
   window.addEventListener("resize", queueComponentOutline);
+  const refreshComponentDragGeometry = event => {
+    if (!componentDrag || event.target instanceof Element && event.target.closest("[data-board-overlay]")) return;
+    clearComponentDragPreview();
+    if (componentDrag.paintFrame === null) componentDrag.paintFrame = requestAnimationFrame(() => {
+      if (!componentDrag) return; componentDrag.paintFrame = null; updateComponentDragDestination();
+    });
+  };
+  window.addEventListener("scroll", refreshComponentDragGeometry, true);
+  window.addEventListener("resize", refreshComponentDragGeometry);
   let captureLibrary;
   const loadCapture = () => {
     if (!captureLibrary) {
@@ -2492,7 +2729,9 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     }
     if (componentDrag) {
       if (!componentGestureLive(componentDrag.gesture)) {cancelComponentDrag();setComponentNotice("组件已变化，请重新选择后拖动");return;}
-      if (componentDrag.pointerId === event.pointerId) { componentDrag.candidates = componentDestinations(componentPointer); componentDrag.depth = Math.min(componentDrag.depth, Math.max(0, componentDrag.candidates.length - 1)); paintComponentDrag(); }
+      if (componentDrag.pointerId === event.pointerId && componentDrag.paintFrame === null) componentDrag.paintFrame = requestAnimationFrame(() => {
+        if (!componentDrag) return; componentDrag.paintFrame = null; updateComponentDragDestination();
+      });
       event.preventDefault(); event.stopImmediatePropagation(); return;
     }
     if (selectionMode === "component" && isEditor(event)) return;
@@ -2686,8 +2925,8 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     if (componentPress && event.key === "Escape") {componentPress=null;componentClick=null;event.preventDefault();event.stopImmediatePropagation();return;}
     if (componentDrag) {
       if (event.key === "Escape") cancelComponentDrag();
-      else if (event.key === "Tab") { const size = componentDrag.candidates.length; if (size) componentDrag.depth = (componentDrag.depth + (event.shiftKey ? size - 1 : 1)) % size; paintComponentDrag(); }
-      else if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) { componentDrag.position = { ArrowUp: "before", ArrowDown: "after", ArrowLeft: "prepend", ArrowRight: "append" }[event.key]; paintComponentDrag(); }
+      else if (event.key === "Tab") { const size = componentDrag.candidates.length; if (size) componentDrag.depth = (componentDrag.depth + (event.shiftKey ? size - 1 : 1)) % size; componentDrag.manualDepth = true; paintComponentDrag(); }
+      else if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) { componentDrag.manualPosition = { ArrowUp: "before", ArrowDown: "after", ArrowLeft: "prepend", ArrowRight: "append" }[event.key]; paintComponentDrag(); }
       else return;
       event.preventDefault(); event.stopImmediatePropagation(); return;
     }

@@ -37,6 +37,8 @@ window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channe
 host.results = { componentEdits: [], asks: [], composes: [], hostAsks: [], anchors: [], errors: [], states: [], links: [], ready: 0, raw: [], openedInteractions: [], interactionPositions: [], inputSubmits: [], inputCloses: 0, canvasPointers: 0 };
 let requestId = 0;
 const pending = new Map();
+let lastFixtureCall: { id:number; code:string; at:number } | undefined;
+host.fixtureTransportDiagnostics = () => ({ pendingIds:Array.from(pending.keys()).slice(-8), lastCall:lastFixtureCall });
 const pendingComponentEdits = new Map();
 host.finishComponentEdit = (index: number, result: unknown) => { const resolve = pendingComponentEdits.get(index); if (!resolve) throw new Error("No pending edit"); pendingComponentEdits.delete(index); resolve(result); };
 let saveTimer: ReturnType<typeof setTimeout>;
@@ -50,6 +52,7 @@ host.addEventListener("message", (event: any) => {
 });
 host.fixtureCall = (code: string) => new Promise((resolve, reject) => {
   const id = ++requestId;
+  lastFixtureCall = {id,code:code.replace(/\s+/g,' ').slice(0,500),at:performance.now()};
   pending.set(id, { resolve, reject });
   host.document.querySelector("iframe").contentWindow.postMessage({ channel: "fixture", id, code }, "*");
 });

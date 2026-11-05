@@ -33,7 +33,29 @@ window.failCapture=()=>{if(!window.captureGate?.fail)throw new Error('capture ha
 window.releaseCapture=()=>{if(!window.captureGate?.release)throw new Error('capture has not reached image decode');return window.captureGate.release()};
 
 window.boots=1;window.ticks=0;window.count=0;function tick(){ticks++;requestAnimationFrame(tick)}requestAnimationFrame(tick);document.querySelector('#control').onclick=()=>{count++;document.querySelector('#count').textContent=count};
-window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='view-port'&&e.ports[0]){const port=e.ports[0],send=port.postMessage;port.postMessage=function(message,...rest){const result=send.call(this,message,...rest);if(message?.type==='view-state')parent.postMessage({channel:'host-fixture-port-send',message},'*');return result;};}if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='restore-view')parent.postMessage({channel:'host-fixture-restore',request:e.data,at:performance.now(),context:board.getContext(),scroll:{x:scrollX,y:scrollY}},'*');if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-interaction')parent.postMessage({channel:'host-fixture-focus',id:e.data.id},'*');if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-update')parent.postMessage({channel:'host-fixture-update',request:e.data},'*');if(e.source===parent&&e.data?.channel==='host-fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'host-fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'host-fixture-result',id:e.data.id,error:error.message},'*')}}});
+let fixtureViewScope=null,fixtureRetirementScroll=null;
+window.addEventListener('message',async e=>{
+  if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='view-port'&&e.ports[0]){
+    fixtureViewScope={boardId:e.data.boardId,sessionId:e.data.sessionId};
+    const port=e.ports[0],send=port.postMessage;
+    port.postMessage=function(message,...rest){
+      // Queue a read-only intent before native send: the receiving observer may
+      // remove this iframe immediately. The trusted port event, not this intent,
+      // is the independent proof that native send actually happened.
+      if(message?.type==='view-state')parent.postMessage({channel:'host-fixture-port-send-intent',message,sendIntentAtAbsolute:performance.timeOrigin+performance.now(),retirementScroll:fixtureRetirementScroll},'*');
+      return send.call(this,message,...rest);
+    };
+  }
+  // Negative-test scheduling only: the trusted parent arms a real child scroll
+  // and production capture. A native port observer later remounts before the
+  // production consumer; this bridge never constructs a view payload.
+  if(e.source===parent&&e.data?.channel==='host-fixture-retirement'&&e.data.type==='scroll'&&e.data.boardId===fixtureViewScope?.boardId&&e.data.sessionId===fixtureViewScope?.sessionId&&e.data.deltaY===125&&typeof e.data.requestId==='string'){
+    const before={x:scrollX,y:scrollY,token:window.resumeBootToken},startedAtAbsolute=performance.timeOrigin+performance.now();
+    scrollBy({top:e.data.deltaY,left:0,behavior:'instant'});
+    fixtureRetirementScroll={requestId:e.data.requestId,...fixtureViewScope,parentMatched:e.source===parent,before,after:{x:scrollX,y:scrollY,token:window.resumeBootToken},startedAtAbsolute,finishedAtAbsolute:performance.timeOrigin+performance.now()};
+  }
+  if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='restore-view')parent.postMessage({channel:'host-fixture-restore',request:e.data,at:performance.now(),context:board.getContext(),scroll:{x:scrollX,y:scrollY}},'*');if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-interaction')parent.postMessage({channel:'host-fixture-focus',id:e.data.id},'*');if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-update')parent.postMessage({channel:'host-fixture-update',request:e.data},'*');if(e.source===parent&&e.data?.channel==='host-fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'host-fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'host-fixture-result',id:e.data.id,error:error.message},'*')}}
+});
 </script>`;
 let persisted: Board = retainedFixture?.board ?? { schemaVersion: 1, id: fixtureBoardId, title: "Host integration fixture", ownerAgentId: "owner-fixture", revision: 1, createdAt: now(), updatedAt: now(), canvas: { html: fragment, revision: 1, documentVersion: 1, data: { summary: "Isolated test fixture" }, patches: [] }, decisions: [], interactions: [], updates: [], seenUpdateIds: [], events: [], observations: [], userState: {}, extraction: {} };
 // Resume exercises normal inactive-cache retention; existing scopes deliberately
@@ -300,6 +322,7 @@ fixture.viewPortMessages = [];
 let retirementSource:object | null=null;
 let retirementFrame:{isConnected:boolean} | null=null;
 let retirementProbe:any;
+let retirementSequence=0;
 fixture.traceView = (phase:string, detail?:unknown) => {
   const current=currentMainFrame(),frame=current?.frame,boardId=frame?.dataset.boardId??fixtureBoardId;
   const cached=resumeScope?fixture.cacheBoard(boardId,activeHost):persisted;
@@ -326,25 +349,36 @@ global.MessageChannel=function(...args:any[]){
   for(const side of ["port1","port2"]){
     const port=channel[side],entry:any={id:`${binding.id}:${side}`,side};binding.ports.push(entry);
     const close=port.close;port.close=function(...closeArgs:any[]){entry.closedAt=performance.now();return close.apply(this,closeArgs);};
-    const nativeAdd=port.addEventListener,observedEvents=new WeakMap<object,{row:any;retired?:any}>();
+    const nativeAdd=port.addEventListener,nativeRemove=port.removeEventListener,observedEvents=new WeakMap<object,{row:any;retired?:any}>();
+    let productionListener:unknown;
     const afterHostListener=(event:any)=>{
       const observed=observedEvents.get(event);if(!observed)return;
       if(observed.retired){
         const retired=observed.retired,target=resumeBoards.get(`${retired.targetHost}:${fixtureBoardId}`)!;
         retired.targetMemoryAfter=readBoardView(retired.targetHost,fixtureBoardId,target.canvas.documentVersion);
         retired.oldMemoryAfter=readBoardView(retired.oldHost,fixtureBoardId,resumeBoards.get(`${retired.oldHost}:${fixtureBoardId}`)!.canvas.documentVersion);
-        retired.afterAt=performance.now();retired.afterPhase="native-after-host-listener";
+        retired.afterAt=performance.now();retired.afterAtAbsolute=performance.timeOrigin+retired.afterAt;retired.afterPhase="native-after-production-consumer-slot";
       }
       fixture.traceView("port-after-host-listener",observed.row);
     };
     port.addEventListener("message",(event:any)=>{
       const message=event.data;if(message?.channel!=="paseo-board-frame-v1"||message.type!=="view-state")return;
-      const current=currentMainFrame(),row:any={portId:entry.id,boundSession:binding.sessionId,boundHost:binding.hostId,receivedAt:performance.now(),trusted:event.isTrusted,message:copy(message),currentSession:current?.sessionId,currentFrameId:current?.entry.id};
+      const current=currentMainFrame(),row:any={portId:entry.id,boundSession:binding.sessionId,boundHost:binding.hostId,receivedAt:performance.now(),receivedAtAbsolute:performance.timeOrigin+performance.now(),trusted:event.isTrusted,message:copy(message),currentSession:current?.sessionId,currentFrameId:current?.entry.id};
       fixture.raw.push(message);fixture.viewPortMessages.push(row);fixture.viewPortMessages=fixture.viewPortMessages.slice(-100);
       fixture.traceView("port-before-host",row);
       const observed:{row:any;retired?:any}={row};observedEvents.set(event,observed);
-      if(retirementProbe&&entry.id===retirementProbe.oldPortId){
-        const retired:any={...copy(retirementProbe),...row,trustedMessage:event.isTrusted,oldPortMatched:true,oldFrameRemoved:retirementFrame?.isConnected===false};
+      const probe=retirementProbe;
+      if(probe&&event.isTrusted&&entry.id===probe.oldPortId&&message.boardId===fixtureBoardId&&message.sessionId===probe.oldSession&&message.view?.x===probe.expectedView.x&&message.view?.y===probe.expectedView.y&&!probe.replacedAt){
+        // Keep this native event and native dispatch intact. Same-scope remount
+        // removes/closes its production listener; cross-host remount updates
+        // the existing mutable reader. Neither callback is invoked here.
+        probe.nativeDispatchStarted=row.receivedAt;probe.nativeDispatchStartedAbsolute=row.receivedAtAbsolute;
+        probe.oldFrameConnectedAtDispatch=retirementFrame?.isConnected===true;probe.sessionAtDispatch=current?.sessionId;
+        probe.memoryAtDispatch=readBoardView(probe.oldHost,fixtureBoardId,resumeBoards.get(`${probe.oldHost}:${fixtureBoardId}`)!.canvas.documentVersion);
+        fixture.retireMount(probe.other);
+        const next=currentMainFrame();probe.newSession=next?.sessionId;probe.newFrameId=next?.entry.id;probe.replacedAt=performance.now();probe.replacedAtAbsolute=performance.timeOrigin+probe.replacedAt;
+        fixture.retirementProbe=copy(probe);fixture.traceView("retirement-native-dispatch-replaced",fixture.retirementProbe);
+        const retired:any={...copy(probe),...row,currentSession:next?.sessionId,currentFrameId:next?.entry.id,trustedMessage:event.isTrusted,oldPortMatched:true,oldFrameRemoved:retirementFrame?.isConnected===false,portClosedAt:entry.closedAt,productionListenerRemovedAt:entry.productionListenerRemovedAt};
         fixture.retirementMessages.push(retired);fixture.retirementMessages=fixture.retirementMessages.slice(-16);
         observed.retired=retired;
       }
@@ -356,7 +390,12 @@ global.MessageChannel=function(...args:any[]){
     let afterHostRegistered=false;
     port.addEventListener=function(type:string,listener:unknown,...options:any[]){
       const result=nativeAdd.call(this,type,listener,...options);
-      if(type==="message"&&!afterHostRegistered){afterHostRegistered=true;nativeAdd.call(this,"message",afterHostListener);}
+      if(type==="message"&&!afterHostRegistered){afterHostRegistered=true;productionListener=listener;nativeAdd.call(this,"message",afterHostListener);}
+      return result;
+    };
+    port.removeEventListener=function(type:string,listener:unknown,...options:any[]){
+      const result=nativeRemove.call(this,type,listener,...options);
+      if(type==="message"&&listener===productionListener)entry.productionListenerRemovedAt=performance.now();
       return result;
     };
   }
@@ -368,13 +407,11 @@ for(const type of ["pointerdown","click"])global.addEventListener(type,(event:an
   const target=event.target?.closest?.('[data-testid^="resume-"]');
   if(target)fixture.traceView("native-"+type,{trusted:event.isTrusted,target:target.getAttribute("data-testid"),x:event.clientX,y:event.clientY});
 },true);
-// Controlled queue boundary, confined to two dedicated native test buttons.
-// The old runtime itself emits through its authenticated MessagePort; no
-// MessageEvent or production callback is synthesized. The OOPIF gets a bounded
-// window while the parent is busy, then flushSync creates the replacement before
-// this parent event task ends. Tests require proof that the expected message was
-// actually sent by the old runtime, plus either the old port's closure or its
-// actual native delivery. An absent proof is a test failure.
+// Controlled native-dispatch boundary, confined to two dedicated test buttons.
+// A trusted pointer task only arms the case and requests child scroll/capture.
+// Once the exact real view reaches the authenticated port, its observer above
+// synchronously remounts before native dispatch reaches the production consumer.
+// No busy wait, MessageEvent, payload, callback invocation or redispatch is used.
 global.addEventListener("pointerdown",(event:any)=>{
   const target=event.target?.closest?.('[data-testid="resume-retire-same"],[data-testid="resume-retire-other-host"]');
   if(!target||!event.isTrusted)return;
@@ -386,20 +423,22 @@ global.addEventListener("pointerdown",(event:any)=>{
   const oldReport=fixture.viewPortMessages.findLast((item:any)=>item.message.sessionId===current.sessionId&&item.boundSession===current.sessionId);
   const oldPort=fixture.viewPortChannels.flatMap((item:any)=>item.ports).find((item:any)=>item.id===oldReport?.portId);
   if(!oldPort)throw new Error("Retirement probe requires the current authenticated view port");
-  retirementProbe={at:performance.now(),trustedPointer:event.isTrusted,oldSession:current.sessionId,oldFrameId:current.entry.id,oldPortId:oldPort.id,targetHost,oldHost:activeHost,
+  const at=performance.now();
+  retirementProbe={at,atAbsolute:performance.timeOrigin+at,scrollRequestId:`retirement-${++retirementSequence}`,other,trustedPointer:event.isTrusted,oldSession:current.sessionId,oldFrameId:current.entry.id,oldPortId:oldPort.id,targetHost,oldHost:activeHost,
     memoryBefore:readBoardView(fixtureHostId,fixtureBoardId,resumeBoards.get(`${fixtureHostId}:${fixtureBoardId}`)!.canvas.documentVersion),
     targetMemoryBefore:readBoardView(targetHost,fixtureBoardId,resumeBoards.get(`${targetHost}:${fixtureBoardId}`)!.canvas.documentVersion)};
+  retirementProbe.expectedView={x:retirementProbe.memoryBefore.view.x,y:retirementProbe.memoryBefore.view.y+125};
+  fixture.retirementProbe=copy(retirementProbe);fixture.traceView("retirement-native-armed",fixture.retirementProbe);
+  // Same parent/source FIFO: real scroll first, then the unchanged runtime's
+  // authenticated capture request. No payload or production callback is faked.
+  current.frame.contentWindow.postMessage({channel:"host-fixture-retirement",boardId:fixtureBoardId,sessionId:current.sessionId,type:"scroll",deltaY:125,requestId:retirementProbe.scrollRequestId},"*");
   current.frame.contentWindow.postMessage({channel:"paseo-board-frame-v1",boardId:fixtureBoardId,sessionId:current.sessionId,type:"flush-view"},"*");
-  const end=performance.now()+40;while(performance.now()<end){/* bounded parent task; genuine child message remains queued */}
-  fixture.retireMount(other);
-  const next=currentMainFrame();retirementProbe.newSession=next?.sessionId;retirementProbe.newFrameId=next?.entry.id;retirementProbe.replacedAt=performance.now();
-  fixture.retirementProbe=copy(retirementProbe);fixture.traceView("retirement-native-replaced",fixture.retirementProbe);
 },true);
 global.addEventListener("message", (event: any) => {
   if (event.data?.channel === "paseo-board-frame-v1") fixture.raw.push(event.data);
-  if(retirementProbe&&event.data?.channel==="host-fixture-port-send"&&event.data.message?.sessionId===retirementProbe.oldSession){
+  if(retirementProbe&&event.data?.channel==="host-fixture-port-send-intent"&&event.data.message?.sessionId===retirementProbe.oldSession){
     const current=currentMainFrame(),port=fixture.viewPortChannels.flatMap((item:any)=>item.ports).find((item:any)=>item.id===retirementProbe.oldPortId);
-    const row:any={...copy(retirementProbe),receivedAt:performance.now(),trustedMessage:event.isTrusted,sourceWasOld:event.source===retirementSource,sourceWasNull:event.source===null,message:copy(event.data.message),portClosedAt:port?.closedAt,currentSession:current?.sessionId,oldFrameRemoved:retirementFrame?.isConnected===false};
+    const row:any={...copy(retirementProbe),receivedAt:performance.now(),receivedAtAbsolute:performance.timeOrigin+performance.now(),sendIntentAtAbsolute:event.data.sendIntentAtAbsolute,retirementScroll:copy(event.data.retirementScroll),trustedMessage:event.isTrusted,sourceWasOld:event.source===retirementSource,sourceWasNull:event.source===null,message:copy(event.data.message),portClosedAt:port?.closedAt,currentSession:current?.sessionId,oldFrameRemoved:retirementFrame?.isConnected===false};
     fixture.retirementOutbound.push(row);fixture.retirementOutbound=fixture.retirementOutbound.slice(-16);
     global.queueMicrotask(()=>{const target=resumeBoards.get(`${row.targetHost}:${fixtureBoardId}`)!;row.targetMemoryAfter=readBoardView(row.targetHost,fixtureBoardId,target.canvas.documentVersion);row.afterAt=performance.now();});
   }
