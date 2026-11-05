@@ -5,7 +5,7 @@ import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { Markdown, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
 import { interactBoardRpc, markUpdatesSeenRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc, type Anchor, type Board, type Decision, type Interaction, type JsonData } from "../shared/contracts";
 import type { AskRequest, AskResult, ComposeRequest, CaptureStatus, CaptureFailureReason, SelectionCapture, FrameTheme, InteractionLocation, SelectionMode, CanvasViewState } from "../shared/frame-contract";
-import { interactionMarkers, sameSelectionAnchor } from "../shared/frame-contract";
+import { interactionMarkers, interactionMarkerId, markerInteractionId, sameSelectionAnchor } from "../shared/frame-contract";
 import { frameThemeFromColors } from "../shared/frame-theme";
 import { CanvasFrame, WebMessageInput, canRenderFrames, usePopoverDismiss } from "./web";
 import { Action, ColorContext, Copy, Notice, errorMessage, localId, timeLabel, useColors } from "./ui";
@@ -17,6 +17,7 @@ import { BoardConnectionStatus } from "./connection-status";
 import { createStateWriter } from "./state-writer";
 import { createDraftStore, type StoredDraft } from "./draft-store";
 import { acceptedDraftInteraction } from "./message-draft";
+import { acceptedBatchInteraction, batchContainsDraft, createBatchStore, createCommentBatch, prepareCommentBatch, queuedDrafts, reconcileBatchDrafts, type CommentBatch } from "./batch-store";
 import { readBoardView, writeBoardView, retainBoardViewStore, flushBoardViewStore } from "./view-store";
 import { DiscussionRail } from "./discussion-rail";
 import { SideAgentPicker } from "./side-agent-picker";
@@ -25,7 +26,7 @@ import { anchorPoint, interactionRoot, interactionThread, mergeInteractions, pop
 
 interface Props extends PluginSurfaceProps { boardId: string; onBack(): void; onOpenBoard?(id: string): void }
 type Destination = "main" | "side" | "new-side";
-type Compose = { draftId?: string; draftRevision?: string; selectionId?: string; captureStatus?: CaptureStatus | "omitted"; captureFailureReason?: CaptureFailureReason; kind: Interaction["kind"]; text: string; intentId?: string; destination?: Destination; anchor?: Anchor; sourceInteractionId?: string; resolve?: (result: AskResult) => void };
+type Compose = { draftId?: string; draftRevision?: string; queuedAt?: number; selectionId?: string; captureStatus?: CaptureStatus | "omitted"; captureFailureReason?: CaptureFailureReason; kind: Interaction["kind"]; text: string; intentId?: string; destination?: Destination; anchor?: Anchor; sourceInteractionId?: string; resolve?: (result: AskResult) => void };
 const captureFailureNames: Record<CaptureFailureReason, string> = {
   "content-changed": "截图过程中画布内容发生变化，请重新框选。",
   "too-complex": "选区内容过于复杂，请缩小选区。",
@@ -70,6 +71,12 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
   const [releaseOpen, setReleaseOpen] = useState(false);
   const draftStore = useMemo(() => createDraftStore({ hostId: host.id, boardId }), [host.id, boardId]);
   const [draftSnapshot, setDraftSnapshot] = useState(() => draftStore.list());
+  const batchStore = useMemo(() => createBatchStore({ hostId: host.id, boardId }), [host.id, boardId]);
+  const [batchSnapshot, setBatchSnapshot] = useState(() => batchStore.list());
+  const [batchError, setBatchError] = useState<string | null>(null);
+  const acceptedBatchIds = useMemo(() => new Set(batchSnapshot.batches.filter(batch => acceptedBatchInteraction(batch, board?.interactions ?? [])).map(batch => batch.intentId)), [batchSnapshot.batches, board?.interactions]);
+  const staged = useMemo(() => queuedDrafts(draftSnapshot.drafts, batchSnapshot.batches), [draftSnapshot, batchSnapshot]);
+  const availableDrafts = useMemo(() => draftSnapshot.drafts.filter(draft => !batchSnapshot.batches.some(batch => batchContainsDraft(batch, draft))), [draftSnapshot, batchSnapshot]);
   const [draftError, setDraftError] = useState<string | null>(null);
   const restorationHandled = useRef(false);
   const [compose, setCompose] = useState<Compose | null>(null);
@@ -116,7 +123,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
   }, [host.id, boardId, viewSession, updateNavigation.follow]);
   const interactions = useMemo(() => mergeInteractions(board?.interactions ?? [], optimistic), [board?.interactions, optimistic]);
   const markers = useMemo(() => interactionMarkers(interactions), [interactions]);
-  const thread = useMemo(() => interactionThread(selectedInteractionId, interactions), [selectedInteractionId, interactions]);
+  const thread = useMemo(() => interactionThread(selectedInteractionId ? markerInteractionId(selectedInteractionId, interactions) : undefined, interactions), [selectedInteractionId, interactions]);
   const popover = popoverPlacement(popoverPoint, { width, height }, popoverHeight);
   const stateWriter = useRef<ReturnType<typeof createStateWriter> | null>(null);
   const frameTheme = useMemo(() => frameThemeFromColors(theme.colors), [theme.colors]);
@@ -126,9 +133,13 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
     refresh();
     return unsubscribe;
   }, [draftStore]);
+  useEffect(() => {
+    const refresh = () => setBatchSnapshot(batchStore.list());
+    const unsubscribe = batchStore.subscribe(refresh); refresh(); return unsubscribe;
+  }, [batchStore]);
   const persistCompose = useCallback((draft: Compose, open = true, position = popoverPointRef.current) => {
     draft.draftId ??= localId("draft");
-    const input = { id: draft.draftId, open, position, compose: {
+    const input = { id: draft.draftId, open, position, queuedAt: draft.queuedAt, compose: {
       kind: draft.kind, text: draft.text, anchor: draft.anchor, sourceInteractionId: draft.sourceInteractionId,
       intentId: draft.intentId, destination: draft.destination,
       captureStatus: draft.captureStatus === "pending" ? "omitted" as const : draft.captureStatus,
@@ -157,7 +168,9 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
   }, [draftStore]);
   const restoreDraft = (saved: StoredDraft) => {
     if (pending.current || composeRef.current) return;
-    const draft: Compose = { ...saved.compose, draftId: saved.id, draftRevision: saved.revision };
+    // Captured batches are immutable. Editing one of their sources creates a new draft.
+    const captured = batchStore.list().batches.some(batch => batchContainsDraft(batch, saved));
+    const draft: Compose = { ...saved.compose, queuedAt: saved.queuedAt, ...(captured ? {} : { draftId: saved.id, draftRevision: saved.revision }) };
     setPopoverPoint(saved.position); setAnchor(draft.anchor); setDrawer(null); setMessage(null);
     setSelectedInteractionId(draft.sourceInteractionId ? interactionRoot(draft.sourceInteractionId, interactions) : undefined);
     changeCompose(draft, saved.position); setInputFocusToken(value => value + 1);
@@ -173,10 +186,11 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
     } else changeCompose({ ...previous, text });
   };
   useEffect(() => {
+    const batches = batchSnapshot.batches;
     if (!board) {
       if (!query.isPending && !restorationHandled.current) {
         restorationHandled.current = true;
-        const saved = draftStore.list().drafts.find(item => item.open);
+        const saved = draftStore.list().drafts.find(item => item.open && !batches.some(batch => batchContainsDraft(batch, item)));
         if (saved) restoreDraft(saved);
       }
       return;
@@ -187,6 +201,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
     // This is a read-only reconciliation; reopening never sends an agent message.
     let latest: StoredDraft | undefined;
     for (const saved of draftStore.list().drafts) {
+      if (batches.some(batch => batchContainsDraft(batch, saved))) continue;
       const receipt = acceptedDraftInteraction(saved.compose, board.interactions);
       if (receipt) {
         const current = composeRef.current;
@@ -202,7 +217,16 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
       } else if (firstRead && saved.open && (!latest || saved.updatedAt > latest.updatedAt)) latest = saved;
     }
     if (latest) restoreDraft(latest);
-  }, [board, draftStore, query.isPending, sending]);
+  }, [board, draftStore, query.isPending, sending, batchSnapshot.batches]);
+  useEffect(() => {
+    if (!board || pending.current) return;
+    for (const batch of batchSnapshot.batches) {
+      if (!acceptedBatchIds.has(batch.intentId)) continue;
+      const cleanup = reconcileBatchDrafts(batch, draftStore);
+      const removed = cleanup.ok ? batchStore.remove(batch) : cleanup;
+      if (!removed.ok) setBatchError(removed.message);
+    }
+  }, [board, sending, batchStore, draftStore, batchSnapshot.batches, acceptedBatchIds]);
   const onAnchor = useCallback((next: Anchor) => { setAnchor(next); setSelectionMode("off"); }, []);
   const onAsk = useCallback((request: AskRequest): Promise<AskResult> => new Promise(resolve => {
     // A generated document cannot send a message. It can request this host-owned preview.
@@ -254,6 +278,26 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
     draft.resolve?.({ status: "cancelled" }); composeRef.current = null; setCompose(null);
     setMessage(null); setDraftError(null); setAnchor(undefined); setSelectionClearToken(value => value + 1);
   };
+  const stageCompose = () => {
+    const current = composeRef.current;
+    if (!current?.text.trim() || pending.current || current.intentId || current.sourceInteractionId) return;
+    const next: Compose = { ...current, queuedAt: current.queuedAt ?? Date.now() };
+    if (next.captureStatus === "pending") {
+      next.captureStatus = "omitted";
+      if (next.anchor?.image) next.anchor = { ...next.anchor, image: undefined };
+    }
+    try {
+      const pendingBatches = batchStore.list();
+      if (pendingBatches.issues.length) throw new Error(pendingBatches.issues[0]);
+      const other = queuedDrafts(draftStore.list().drafts, pendingBatches.batches).filter(item => item.id !== next.draftId);
+      createCommentBatch([...other, { id: next.draftId ?? "preview", revision: next.draftRevision ?? "preview", compose: { ...next, captureStatus: next.captureStatus }, open: false, queuedAt: next.queuedAt, updatedAt: Date.now(), position: popoverPointRef.current }], "preview", "main");
+    } catch (error) { setMessage(errorMessage(error)); return; }
+    if (!persistCompose(next, false)) return;
+    if (next.selectionId) setSelectionCaptureCancelId(next.selectionId);
+    composeRef.current = null; setCompose(null); setAnchor(undefined); setSelectedInteractionId(undefined);
+    setSelectionClearToken(value => value + 1); setMessage(null); setBatchError(null);
+    try { next.resolve?.({ status: "queued", outcome: "已加入待发送列表，尚未发送给 agent" }); } catch { /* authored callbacks cannot roll back durable comments */ }
+  };
   const openCompose = (kind: Compose["kind"], source?: Interaction, text?: string, resolve?: Compose["resolve"]) => {
     if (pending.current || composeRef.current) { resolve?.({ status: "cancelled", outcome: "另一条输入尚未关闭" }); return; }
     setDrawer(null);
@@ -264,6 +308,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
   };
   const retryUnconfirmed = (item: Interaction) => {
     if (pending.current || composeRef.current) return;
+    if (item.comments) { setDrawer("drafts"); return; }
     const draft: Compose = { kind: item.kind, text: item.text, intentId: item.id, destination: item.destination, anchor: item.anchor, sourceInteractionId: item.sourceInteractionId };
     changeCompose(draft); setMessage(null);
   };
@@ -272,6 +317,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
     if (!draft?.text.trim() || pending.current || sideChoicePending.current || !board?.ownerAgentId) return;
     // An uncertain send retries its immutable route and ID. Changing text starts a new intent.
     if (draft.intentId && destination !== draft.destination) return;
+    draft.queuedAt = undefined;
     draft.destination = destination;
     pending.current = true; setSending(true); setMessage(null);
     draft.intentId ??= localId("intent");
@@ -300,6 +346,36 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
       setOptimistic(items => items.map(item => item.id === local.id ? { ...item, status: "failed", error: message } : item));
     }
     finally { pending.current = false; setSending(false); }
+  };
+  const submitBatch = async (destination: Destination = "main", retry?: CommentBatch) => {
+    if (pending.current || composeRef.current || sideChoicePending.current || !board?.ownerAgentId) return;
+    pending.current = true; setSending(true); setBatchError(null);
+    let batch: CommentBatch;
+    try {
+      batch = retry ?? await prepareCommentBatch({ hostId: host.id, boardId }, draftStore, batchStore, destination, localId("batch"), staged.map(({ id, revision }) => ({ id, revision })));
+      if (acceptedBatchInteraction(batch, board.interactions)) {
+        const cleaned = reconcileBatchDrafts(batch, draftStore), removed = cleaned.ok ? batchStore.remove(batch) : cleaned;
+        if (!removed.ok) throw new Error(removed.message);
+        pending.current = false; setSending(false); setBatchError(null); return;
+      }
+      const saved = retry ? batchStore.put(batch) : { ok: true } as const;
+      if (!saved.ok) throw new Error(saved.message);
+    } catch (error) { pending.current = false; setSending(false); setBatchError(errorMessage(error)); return; }
+    const now = new Date().toISOString();
+    const local: Interaction = { id: batch.intentId, kind: "change", destination: batch.destination, text: batch.text, comments: batch.comments, status: "sending", resultReferences: [], createdAt: now, updatedAt: now };
+    setOptimistic(items => [...items.filter(item => item.id !== local.id), local]);
+    try {
+      const result = await send({ boardId, intentId: batch.intentId, kind: "change", destination: batch.destination, text: batch.text, comments: batch.comments });
+      if (!acceptedBatchInteraction(batch, [result])) throw new Error("返回的发送记录与这组评论不一致；原发送已保留，请稍后核对。");
+      setOptimistic(items => items.map(item => item.id === result.id ? result : item));
+      const cleaned = reconcileBatchDrafts(batch, draftStore), removed = cleaned.ok ? batchStore.remove(batch) : cleaned;
+      if (!removed.ok) setBatchError(removed.message);
+      else { setDrawer(null); setSelectedInteractionId(interactionMarkerId(result.id, result.comments![0].id)); setPopoverPoint({ x: 24, y: 24 }); }
+      void query.refetch();
+    } catch (error) {
+      const message = errorMessage(error); setBatchError(message);
+      setOptimistic(items => items.map(item => item.id === local.id ? { ...item, status: "failed", error: message } : item));
+    } finally { pending.current = false; setSending(false); }
   };
   const releaseSideChoice = () => {
     sideChoicePending.current = false; setChoosingSide(false); setSideChoiceUncertain(false);
@@ -334,17 +410,20 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
   };
   const openInteraction = (id: string, position?: Point, location?: InteractionLocation) => {
     if (pending.current || composeRef.current) return;
-    const item = interactions.find(item => item.id === id);
+    const item = interactions.find(item => item.id === markerInteractionId(id, interactions));
     if (!item) return;
-    setSelectedInteractionId(interactionRoot(id, interactions)); setPopoverPoint(position ?? anchorPoint(item.anchor)); setDrawer(null); setMessage(null);
+    setSelectedInteractionId(id === item.id ? interactionRoot(id, interactions) : id); setPopoverPoint(position ?? anchorPoint(item.anchor)); setDrawer(null); setMessage(null);
     setInteractionLocation(location ? { id, location } : undefined);
   };
   const locateInteraction = (id: string) => {
-    if (pending.current || composeRef.current || !markers.some(item => item.id === id)) return;
+    if (pending.current || composeRef.current) return;
+    const root = interactionRoot(markerInteractionId(id, interactions), interactions);
+    const marker = markers.find(item => item.id === id) ?? markers.find(item => markerInteractionId(item.id, interactions) === root);
+    if (!marker) return;
     // The rail is independent of DOM visibility. Open at a neutral canvas edge until the
     // frame supplies the current bound location (or its explicit unavailable fallback).
-    openInteraction(id, { x: Math.max(24, width - 24), y: 24 });
-    setFocusInteraction(previous => ({ id, token: (previous?.token ?? 0) + 1 }));
+    openInteraction(marker.id, { x: Math.max(24, width - 24), y: 24 });
+    setFocusInteraction(previous => ({ id: marker.id, token: (previous?.token ?? 0) + 1 }));
   };
   const closePopover = () => { if (!pending.current) { cancelCompose(); setSelectedInteractionId(undefined); } };
   const leaveBoard = (navigate: () => void) => {
@@ -368,10 +447,17 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
       {draftError || message ? <Notice error text={draftError ?? message ?? ""} /> : null}
       <View style={{ flexDirection: "row", gap: 8 }}><Action label="收起" testID="board-draft-dismiss" onPress={closePopover} /><Action label="丢弃草稿" testID="board-draft-discard" onPress={discardCompose} /></View>
     </View> : <View testID="board-offline-drafts" style={{ gap: 16 }}>
-      {draftSnapshot.drafts.map(saved => <View key={saved.revision} testID={`board-draft-row-${saved.id}`} style={{ gap: 6 }}>
+      {availableDrafts.map(saved => <View key={saved.revision} testID={`board-draft-row-${saved.id}`} style={{ gap: 6 }}>
         <Copy>{saved.compose.text || "尚未输入文字"}</Copy><Copy small muted>{saved.compose.anchor?.selector ?? "整个画布"}</Copy>
+        {saved.queuedAt !== undefined ? <Copy small muted>待统一发送</Copy> : null}
         <Action label="继续编辑" onPress={() => restoreDraft(saved)} />
       </View>)}
+      {batchSnapshot.batches.map(batch => <View key={batch.intentId} testID={`board-offline-batch-${batch.intentId}`} style={{ gap: 8 }}>
+        <Copy>发送结果待核对 · {batch.comments.length} 条评论</Copy>
+        {batch.comments.map((comment, index) => <View key={comment.id} style={{ gap: 4 }}><Copy>{index + 1}. {comment.text}</Copy><AnchorPreview anchor={comment.anchor} compact /></View>)}
+        <Copy small muted>恢复连接后可核对或重试原发送；不会自动重发。</Copy>
+      </View>)}
+      {batchSnapshot.issues.map((issue, index) => <Notice key={`batch-${index}`} error text={issue} />)}
       {draftSnapshot.issues.map((issue, index) => <Notice key={index} error text={issue.message} />)}
     </View>}
   </ScrollView>;
@@ -380,7 +466,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
       selectionMode={selectionMode} onSelectionModeChange={setSelectionMode} canSelect={canRenderFrames}
       anchor={anchor} selectedText={selectedText} onClearReference={() => { setAnchor(undefined); setSelectionClearToken(value => value + 1); }}
       updateNavigation={updateNavigation} onOpenDrawer={setDrawer} onCompose={() => openCompose("question")}
-      draftCount={draftSnapshot.drafts.length} draftIssue={draftSnapshot.issues.length > 0 || Boolean(draftError)}
+      draftCount={availableDrafts.length + batchSnapshot.batches.length} draftIssue={draftSnapshot.issues.length > 0 || batchSnapshot.issues.length > 0 || Boolean(draftError || batchError)}
       onPublish={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current && !pending.current) { setDrawer(null); setReleaseOpen(true); } }}
       onOpenDrafts={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current) setDrawer("drafts"); }} />
     <View testID="board-stage" style={{ flex: 1, minHeight: 180, flexDirection: "row" }} onLayout={event => setStageWidth(event.nativeEvent.layout.width)}>
@@ -395,7 +481,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
         <View style={{ flexDirection: "row", alignItems: "center", padding: 8, gap: 8, borderBottomWidth: 1, borderColor: c.border }}><Text style={{ color: c.foreground, fontWeight: "600", flex: 1 }}>{compose ? "发给 agent" : "这里的讨论"}</Text>{compose ? <Action testID="board-draft-dismiss" label="收起" disabled={sending} onPress={closePopover} /> : !canRenderFrames ? <Action label="关闭" disabled={sending} onPress={closePopover} /> : null}</View>
         <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ padding: 12, gap: 16 }} keyboardShouldPersistTaps="handled">
           {interactionLocation && interactionLocation.id === selectedInteractionId && interactionLocation.location !== "component" ? <Copy small muted>{({ collapsed: "组件当前不可见 · 标记跟随可见外层", ancestor: "原内容不可见 · 标记暂随可见外层", hidden: "组件当前隐藏 · 可从侧栏请求定位", snapshot: "未定位到当前组件 · 可查看原始引用" })[interactionLocation.location]}</Copy> : null}
-          {thread.map(item => <InteractionContent key={item.id} item={item} board={board} frameTheme={frameTheme} unconfirmed={!board.interactions.some(saved => saved.id === item.id)} onRetry={() => retryUnconfirmed(item)} onFollow={(kind, text, resolve) => openCompose(kind, item, text, resolve)} onOpenAgent={() => { if (item.agentId && navigation) navigation.openAgent({ agentId: item.agentId }); }} />)}
+          {thread.map(item => <InteractionContent key={item.id} item={item} board={board} frameTheme={frameTheme} unconfirmed={!board.interactions.some(saved => saved.id === item.id)} onLocate={id => locateInteraction(interactionMarkerId(item.id, id))} onRetry={() => retryUnconfirmed(item)} onFollow={(kind, text, resolve) => openCompose(kind, item, text, resolve)} onOpenAgent={() => { if (item.agentId && navigation) navigation.openAgent({ agentId: item.agentId }); }} />)}
           {compose ? <View style={{ gap: 10 }}>
             {!thread.length ? <AnchorPreview anchor={compose.anchor} compact captureStatus={compose.captureStatus} /> : null}
             {compose.captureStatus ? <View style={{ minHeight: 36 }}><Copy small muted>{compose.captureStatus === "pending" ? "截图准备中；现在发送会保留文字和位置，不附图片。" : compose.captureStatus === "failed" ? `截图失败：${captureFailureNames[compose.captureFailureReason ?? "generation-failed"]}文字和位置已保留。` : compose.captureStatus === "omitted" ? "此次发送不附图片，保留原来的文字和位置。" : "已附选区截图。"}</Copy></View> : null}
@@ -408,12 +494,14 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
             {sideChoiceUncertain ? <Action label={choosingSide ? "正在核对 Side 目标…" : "核对 Side 目标"} disabled={choosingSide} onPress={() => { void verifySideChoice().then(confirmed => { if (confirmed) setMessage(null); }); }} /> : null}
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
               <Action testID="board-draft-discard" label="丢弃草稿" disabled={sending} onPress={discardCompose} />
+              {!compose.intentId && !compose.sourceInteractionId ? <Action testID="board-comment-stage" label={compose.queuedAt !== undefined ? "保存到待发送" : "加入待发送"} disabled={sending || !compose.text.trim()} onPress={stageCompose} /> : null}
               {compose.intentId ? <Action label={sending ? "发送中…" : "重试原发送"} disabled={sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId} primary onPress={() => { void submit(compose.destination ?? "main"); }} /> : <>
                 <Action label={board.sideAgentId || board.pendingSideInteractionId ? "Side 发送" : "新建 Side 并发送"} icon="GitBranch" disabled={sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId} onPress={() => { void submit("side"); }} />
                 <Action label="主会话发送" disabled={sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId} primary onPress={() => { void submit("main"); }} />
               </>}
             </View>
             {compose.intentId ? <Copy small muted>重试沿原目标继续；修改文字会另存新草稿，原发送仍保留待核对。</Copy> : null}
+            {!compose.intentId && !compose.sourceInteractionId ? <Copy small muted>加入待发送后可继续评论其他位置，再从待发送清单一起发送。{compose.captureStatus === "pending" ? "现在加入会保留文字和位置，不附图片。" : ""}</Copy> : null}
             <Copy small muted>Enter 主会话 · ⌘ / Ctrl + Enter 当前 Side
 ⌘ / Ctrl + Option / Alt + Enter 新 Side · Shift+Enter 换行</Copy>
           </View> : null}
@@ -424,21 +512,51 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
     </View>
     <View style={{ paddingHorizontal: 12, paddingVertical: 5, borderTopWidth: 1, borderColor: c.border, flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}><BoardConnectionStatus status={query.error ? "disconnected" : query.liveStatus} /><Copy small muted>r{board.revision} · {timeLabel(board.updatedAt)}</Copy></View>
+      {staged.length || batchSnapshot.batches.length || batchSnapshot.issues.length ? <Action testID="board-comments-open" label={staged.length ? `待发送 ${staged.length} 条` : "核对评论发送"} disabled={sending} onPress={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current) setDrawer("drafts"); }} /> : null}
     </View>
     <Modal title="导出与发布" open={releaseOpen} onOpenChange={setReleaseOpen}><Modal.Content>
       <ColorContext.Provider value={c}>
       {releaseOpen ? <ReleasePanel board={board} hostId={host.id} onOpenBoard={id => leaveBoard(() => { setReleaseOpen(false); if (onOpenBoard) onOpenBoard(id); else onBack(); })} /> : null}
       </ColorContext.Provider>
     </Modal.Content></Modal>
-    <Modal title={drawer === "decisions" ? "Agent 做过的默认决策" : drawer === "threads" ? "围绕画布的讨论" : drawer === "drafts" ? "本机草稿" : "发生了什么变化"} open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }}><Modal.Content>
+    <Modal title={drawer === "decisions" ? "Agent 做过的默认决策" : drawer === "threads" ? "围绕画布的讨论" : drawer === "drafts" ? "待发送与本机草稿" : "发生了什么变化"} open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }}><Modal.Content>
       <ColorContext.Provider value={c}>
       {drawer === "decisions" ? <DecisionList board={board} onUpdate={updateDecision} onQuestion={decision => { if (composeRef.current) cancelCompose(); if (composeRef.current) return; setDrawer(null); const draft: Compose = { kind: "question", text: `关于这个 agent 决策：${decision.choice}\n\n`, anchor: { kind: "element", boardRevision: board.revision, canvasRevision: board.canvas.revision, text: decision.choice, selector: decision.related[0] } }; setSelectedInteractionId(undefined); setPopoverPoint(anchorPoint(draft.anchor)); changeCompose(draft, anchorPoint(draft.anchor)); }} /> : null}
       {drawer === "drafts" ? <View testID="board-drafts" style={{ gap: 16 }}>
         <Copy small muted>只保存在当前客户端，按主机和 Board 分开。继续编辑会保留原引用；不会自动发送。</Copy>
+        {batchSnapshot.issues.map((issue, index) => <Notice key={`batch-${index}`} error text={issue} />)}
+        {batchError ? <Notice error text={batchError} /> : null}
+        {staged.length ? <View testID="board-comment-queue" style={{ gap: 12 }}>
+          <Text style={{ color: c.foreground, fontWeight: "600" }}>待发送 · {staged.length} 条评论</Text>
+          <Copy small muted>这些评论会作为一组修改要求一起发送，保留各自的位置和截图。</Copy>
+          {staged.map((saved, index) => <View key={saved.revision} testID={`board-queued-comment-${saved.id}`} style={{ gap: 8, paddingBottom: 12, borderBottomWidth: 1, borderColor: c.border }}>
+            <Copy>{index + 1}. {saved.compose.text}</Copy><AnchorPreview anchor={saved.compose.anchor} compact captureStatus={saved.compose.captureStatus} />
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <Action label="编辑" disabled={sending} onPress={() => restoreDraft(saved)} />
+              <Action label="删除" disabled={sending} onPress={() => { const result = draftStore.remove(saved.id, saved.revision); if (!result.ok) setDraftError(result.issue.message); }} />
+            </View>
+          </View>)}
+          <SideAgentPicker interactions={board.interactions} selectedId={board.sideAgentId} pending={Boolean(board.pendingSideInteractionId)} disabled={sending || sideTargetBlocked} onSelect={chooseSideAgent} />
+          {sideChoiceUncertain ? <Action label={choosingSide ? "正在核对 Side 目标…" : "核对 Side 目标"} disabled={choosingSide} onPress={() => { void verifySideChoice(); }} /> : null}
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            <Action testID="board-comments-send-main" label="统一发送到主会话" primary disabled={sending || sideTargetBlocked || !board.ownerAgentId} onPress={() => { void submitBatch("main"); }} />
+            <Action testID="board-comments-send-side" label={board.sideAgentId || board.pendingSideInteractionId ? "统一发送到 Side" : "新建 Side 并统一发送"} disabled={sending || sideTargetBlocked || !board.ownerAgentId} onPress={() => { void submitBatch("side"); }} />
+            {board.sideAgentId || board.pendingSideInteractionId ? <Action testID="board-comments-send-new-side" label="新建 Side 并统一发送" disabled={sending || sideTargetBlocked || !board.ownerAgentId} onPress={() => { void submitBatch("new-side"); }} /> : null}
+          </View>
+        </View> : null}
+        {batchSnapshot.batches.map(batch => <View key={batch.intentId} testID={`board-comment-batch-${batch.intentId}`} style={{ gap: 10, paddingBottom: 14, borderBottomWidth: 1, borderColor: c.border }}>
+          <Copy>{acceptedBatchIds.has(batch.intentId) ? "评论已接收，正在清理本机记录" : "发送结果待核对"} · {batch.comments.length} 条 · {batch.destination === "main" ? "主会话" : batch.destination === "new-side" ? "新 Side" : "Side"}</Copy>
+          {batch.comments.map((comment, index) => <View key={comment.id} style={{ gap: 6 }}>
+            <Copy>{index + 1}. {comment.text}</Copy><AnchorPreview anchor={comment.anchor} compact />
+            <Action label="另存并编辑" disabled={sending} onPress={() => { if (composeRef.current || pending.current) return; setDrawer(null); setSelectedInteractionId(undefined); const next: Compose = { kind: "question", text: comment.text, anchor: comment.anchor, queuedAt: Date.now() }; setPopoverPoint(anchorPoint(next.anchor)); changeCompose(next, anchorPoint(next.anchor)); }} />
+          </View>)}
+          <Copy small muted>原内容和发送目标已固定。另存编辑会建立新草稿，原发送保留待核对。</Copy>
+          <Action testID={`board-comments-retry-${batch.intentId}`} label={sending ? "发送中…" : acceptedBatchIds.has(batch.intentId) ? "清理已接收记录" : "重试原发送"} disabled={sending || sideTargetBlocked || !board.ownerAgentId} onPress={() => { void submitBatch(batch.destination, batch); }} />
+        </View>)}
         {draftSnapshot.issues.map((issue, index) => <Notice key={`${issue.code}-${index}`} error text={issue.message} />)}
         {draftError ? <Notice error text={draftError} /> : null}
-        {!draftSnapshot.drafts.length ? <Copy muted>没有待发送的草稿。</Copy> : null}
-        {draftSnapshot.drafts.map(saved => <View testID={`board-draft-row-${saved.id}`} key={saved.revision} style={{ borderBottomWidth: 1, borderColor: c.border, paddingBottom: 14, gap: 8 }}>
+        {!availableDrafts.length && !batchSnapshot.batches.length ? <Copy muted>没有待发送的草稿。</Copy> : null}
+        {availableDrafts.filter(saved => !staged.some(item => item.revision === saved.revision)).map(saved => <View testID={`board-draft-row-${saved.id}`} key={saved.revision} style={{ borderBottomWidth: 1, borderColor: c.border, paddingBottom: 14, gap: 8 }}>
           <Text numberOfLines={2} style={{ color: c.foreground }}>{saved.compose.text || "尚未输入文字"}</Text>
           <Copy small muted>{saved.compose.anchor?.selector ?? saved.compose.anchor?.text ?? "整个画布"} · {timeLabel(new Date(saved.updatedAt).toISOString())}</Copy>
           {saved.conflicted ? <Notice text="另一窗口也修改了这份草稿；两个版本都已保留。" /> : null}
@@ -463,9 +581,9 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
   </View>;
 }
 
-function InteractionContent({ item, board, frameTheme, onFollow, onOpenAgent, unconfirmed, onRetry }: {
+function InteractionContent({ item, board, frameTheme, onFollow, onOpenAgent, unconfirmed, onRetry, onLocate }: {
   item: Interaction; board: Board; frameTheme: FrameTheme;
-  onFollow(kind: Compose["kind"], text?: string, resolve?: Compose["resolve"]): void; onOpenAgent(): void; unconfirmed: boolean; onRetry(): void;
+  onFollow(kind: Compose["kind"], text?: string, resolve?: Compose["resolve"]): void; onOpenAgent(): void; unconfirmed: boolean; onRetry(): void; onLocate(commentId: string): void;
 }) {
   const c = useColors();
   const discussion = item.kind === "fork" || item.kind === "reply";
@@ -477,6 +595,12 @@ function InteractionContent({ item, board, frameTheme, onFollow, onOpenAgent, un
   return <View style={{ gap: 10, paddingBottom: 14, borderBottomWidth: 1, borderColor: c.border }}>
     <Copy small muted>{kindNames[item.kind]} · {statusNames[item.status]} · {timeLabel(item.createdAt)}</Copy>
     <Copy>{item.text}</Copy>
+    {item.comments?.map((comment, index) => <View key={comment.id} testID={`board-sent-comment-${comment.id}`} style={{ gap: 6, paddingBottom: 8 }}>
+      <Copy>{index + 1}. {comment.text}</Copy>
+      {comment.anchor && comment.anchor.canvasRevision !== board.canvas.revision ? <Copy small muted>旧引用 · 画布 v{comment.anchor.canvasRevision}；保留评论时的位置和快照。</Copy> : null}
+      {showSnapshot ? <AnchorPreview anchor={comment.anchor} compact /> : null}
+      {comment.anchor ? <Action testID={`board-locate-comment-${comment.id}`} label={`定位第 ${index + 1} 条`} onPress={() => onLocate(comment.id)} /> : null}
+    </View>)}
     {stale ? <Copy small muted>旧引用 · 画布 v{item.anchor!.canvasRevision}，当前 v{board.canvas.revision}。引用保留提问时内容；标记可跟随仍能确认的组件，请核对当前内容。</Copy> : null}
     {showSnapshot ? <AnchorPreview anchor={item.anchor} /> : null}
     {item.response ? <Markdown>{item.response}</Markdown> : null}
@@ -487,7 +611,7 @@ function InteractionContent({ item, board, frameTheme, onFollow, onOpenAgent, un
     {item.error || visualError ? <Notice error text={item.error || visualError || ""} /> : null}
     {item.resultReferences.length ? <Copy small muted>依据：{item.resultReferences.join(" · ")}</Copy> : null}
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-      {item.anchor ? <Action label={showSnapshot ? "收起原始引用" : "原始引用"} onPress={() => setShowSnapshot(value => !value)} /> : null}
+      {item.anchor || item.comments?.some(comment => comment.anchor) ? <Action label={showSnapshot ? "收起原始引用" : "原始引用"} onPress={() => setShowSnapshot(value => !value)} /> : null}
       {unconfirmed && item.status === "failed" ? <Action label="重试发送" onPress={onRetry} /> : null}
       {!unconfirmed && (!discussion || item.agentId) ? <Action label="继续交流" onPress={() => follow()} /> : null}
       {item.agentId ? <Action label="会话" onPress={onOpenAgent} /> : null}

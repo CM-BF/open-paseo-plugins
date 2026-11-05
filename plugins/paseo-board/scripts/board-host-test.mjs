@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 const directory = dirname(fileURLToPath(import.meta.url));
 const draftScope = process.env.BOARD_HOST_TEST_SCOPE === 'drafts';
+const batchScope = process.env.BOARD_HOST_TEST_SCOPE === 'batch';
 const toolbarScope = process.env.BOARD_HOST_TEST_SCOPE === 'toolbar';
 const modalScope = process.env.BOARD_HOST_TEST_SCOPE === 'modal';
 const resumeScopeName = process.env.BOARD_HOST_TEST_SCOPE;
@@ -230,7 +231,7 @@ try {
     const { runResumeHostChecks } = await import('./resume-host-checks.mjs');
     await runResumeHostChecks({assert,command,evaluate,until,frame,untilFrame,key,clickPoint,hostClick,sendText,check,origin:`http://127.0.0.1:${server.address().port}`,scope:resumeScopeName});
   } else {
-  await command('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/${draftScope ? '?drafts=1' : ''}` });
+  await command('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/${batchScope ? '?drafts=1&batch=1' : draftScope ? '?drafts=1' : ''}` });
   await command('Page.bringToFront');
   await until('window.hostFixture?.ready >= 1');
   await until("document.querySelector('[data-testid=board-canvas-container]')");
@@ -272,6 +273,9 @@ try {
     check('New Board modal receives the explicit theme, accepts native text input and cancels without a create RPC');
   } else if (toolbarScope) {
     await runToolbarChecks();
+  } else if (batchScope) {
+    const { runBatchCommentChecks } = await import('./batch-comment-checks.mjs');
+    await runBatchCommentChecks({ assert, send, command, evaluate, until, frame, untilFrame, key, click, clickPoint, rightClickPoint, location, hostClick, hostLocation, openAt, openAuthoredReference, sendText, submitCount, noPopover, closePopover, canvasRect, input, popover, railClick, check, origin: `http://127.0.0.1:${server.address().port}` });
   } else if (draftScope) {
     const { runDurableDraftChecks } = await import('./board-draft-checks.mjs');
     await runDurableDraftChecks({ assert, command, evaluate, until, frame, untilFrame, key, clickPoint, rightClickPoint, location, hostClick, hostLocation, openAt, sendText, submitCount, noPopover, canvasRect, input, popover, railClick, check, origin: `http://127.0.0.1:${server.address().port}` });

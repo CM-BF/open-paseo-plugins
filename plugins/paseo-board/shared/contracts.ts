@@ -61,6 +61,24 @@ export const AnchorSchema = z.object({
   viewport: z.object({ width: z.number().positive(), height: z.number().positive(), scrollX: z.number(), scrollY: z.number() }).optional(),
   image: z.object({ mimeType: z.literal("image/png"), data: z.string().max(3000000) }).optional(),
 });
+export const COMMENT_LIMIT = 20;
+export const COMMENT_TEXT_LIMIT = 24000;
+export const COMMENT_IMAGE_LIMIT = 6_000_000;
+export const CommentSchema = z.object({
+  id: IdSchema,
+  text: z.string().min(1).max(COMMENT_TEXT_LIMIT).refine(text => text.trim().length > 0, "Comment text cannot be blank"),
+  anchor: AnchorSchema.optional(),
+}).refine(comment => !comment.anchor?.image || /^[A-Za-z0-9+/]*={0,2}$/.test(comment.anchor.image.data), "Comment PNG must contain ASCII base64 data");
+export const CommentsSchema = z.array(CommentSchema).min(1).max(COMMENT_LIMIT).superRefine((comments, context) => {
+  if (new Set(comments.map(comment => comment.id)).size !== comments.length) context.addIssue({ code: "custom", message: "Comment IDs must be unique" });
+  if (comments.reduce((total, comment) => total + comment.text.length, 0) > COMMENT_TEXT_LIMIT) context.addIssue({ code: "custom", message: `Comments exceed ${COMMENT_TEXT_LIMIT} text characters` });
+  if (comments.reduce((total, comment) => total + (comment.anchor?.image?.data.length ?? 0), 0) > COMMENT_IMAGE_LIMIT) context.addIssue({ code: "custom", message: `Comment PNGs exceed ${COMMENT_IMAGE_LIMIT} base64 characters` });
+});
+function validateCommentContext(input: { comments?: unknown[]; anchor?: unknown; sourceInteractionId?: string }, context: z.RefinementCtx): void {
+  if (!input.comments) return;
+  if (input.anchor !== undefined) context.addIssue({ code: "custom", path: ["anchor"], message: "Grouped comments carry their own anchors" });
+  if (input.sourceInteractionId !== undefined) context.addIssue({ code: "custom", path: ["sourceInteractionId"], message: "Grouped comments cannot inherit a source interaction" });
+}
 export const ComponentIdentitySchema = z.object({
   tag: z.string().min(1).max(100), id: z.string().min(1).max(1000).optional(),
   // Structural identity excludes live text and control values.
@@ -183,6 +201,8 @@ export const SourceSnapshotSchema = z.object({
   id: IdSchema, text: z.string().max(24000), response: z.string().max(64000).optional(),
   responseRevision: z.number().int().nonnegative(), resultReferences: z.array(z.string()),
   responseCanvasRevision: z.number().int().nonnegative().optional(),
+  // One flat original group survives follow-ups; never embed another snapshot.
+  comments: CommentsSchema.optional(), commentSourceId: IdSchema.optional(),
 });
 export const InteractionSchema = z.object({
   id: IdSchema,
@@ -190,6 +210,7 @@ export const InteractionSchema = z.object({
   destination: DestinationSchema.optional(),
   text: z.string().min(1).max(24000),
   anchor: AnchorSchema.optional(),
+  comments: CommentsSchema.optional(),
   status: z.enum(["saved", "sending", "delivered", "processing", "answered", "applied", "rejected", "failed"]),
   agentId: z.string().optional(),
   response: z.string().max(64000).optional(),
@@ -203,7 +224,7 @@ export const InteractionSchema = z.object({
   sourceSnapshot: SourceSnapshotSchema.optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
-});
+}).superRefine(validateCommentContext);
 export const EventSchema = z.object({ id: IdSchema, source: z.string(), kind: z.string(), summary: z.string(), at: z.string(), revision: z.number(), data: JsonDataSchema.optional() });
 export const ObservationSchema = z.object({ id: IdSchema, name: z.string(), value: z.unknown(), evidence: EvidenceSchema, updatedAt: z.string() });
 export const BoardSchema = z.object({
@@ -253,7 +274,7 @@ export const RespondInputSchema = z.object({
   resultReferences: z.array(z.string().max(4000)).max(100).optional(),
 });
 export const EmitInputSchema = z.object({ boardId: IdSchema, eventId: IdSchema, source: z.string().min(1).max(200), kind: z.string().max(200).default("update"), summary: z.string().max(4000), canvasBase: CanvasBaseSchema.optional(), data: JsonDataSchema.optional(), dataPatch: DataPatchesSchema.optional(), focusSelectors: FocusSelectorsSchema.optional(), observation: z.object({ id: IdSchema, name: z.string().max(200), value: z.unknown(), evidence: EvidenceSchema }).optional() });
-export const InteractInputSchema = z.object({ boardId: IdSchema, intentId: IdSchema, kind: z.enum(["question", "change", "fork", "return", "reply"]), destination: DestinationSchema.optional(), text: z.string().min(1).max(24000), anchor: AnchorSchema.optional(), sourceInteractionId: IdSchema.optional() });
+export const InteractInputSchema = z.object({ boardId: IdSchema, intentId: IdSchema, kind: z.enum(["question", "change", "fork", "return", "reply"]), destination: DestinationSchema.optional(), text: z.string().min(1).max(24000), anchor: AnchorSchema.optional(), comments: CommentsSchema.optional(), sourceInteractionId: IdSchema.optional() }).superRefine(validateCommentContext);
 export const SelectSideAgentInputSchema = z.object({ boardId: IdSchema, agentId: z.string().min(1).max(160), expectedRevision: z.number().int().nonnegative(), eventId: IdSchema });
 export const RenameInputSchema = z.object({ boardId: IdSchema, expectedTitle: z.string(), title: z.string().trim().min(1).max(200), eventId: IdSchema });
 export const EditInputSchema = z.object({
@@ -266,6 +287,7 @@ export const MarkUpdatesSeenInputSchema = z.object({ boardId: IdSchema, updateId
 export type Board = z.infer<typeof BoardSchema>;
 export type BoardSummary = z.infer<typeof BoardSummarySchema>;
 export type Anchor = z.infer<typeof AnchorSchema>;
+export type BoardComment = z.infer<typeof CommentSchema>;
 export type Canvas = z.infer<typeof CanvasSchema>;
 export type CanvasBase = z.infer<typeof CanvasBaseSchema>;
 export type DataPatch = z.infer<typeof DataPatchSchema>;

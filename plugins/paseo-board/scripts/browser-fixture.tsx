@@ -60,6 +60,7 @@ function App() {
   const [mount, setMount] = useState(0);
   const [selectedAnchor, setSelectedAnchor] = useState<any>();
   const [input, setInput] = useState<string | null>(null);
+  const [authoredAsk, setAuthoredAsk] = useState<{ text: string; resolve(result: { status: "submitted" | "queued" | "cancelled"; outcome: string | null }): void } | null>(null);
   host.showInput = (value: string) => setInput(value);
   host.reconnect = () => setMount((n) => n + 1);
   const [props, setProps] = useState({ boardId: "test-board", title: "Test board", canvas: { html: fragment, data: { n: 0 }, patches: [], revision: 1, documentVersion: 1 }, boardRevision: 1, userState: { saved: "original" }, theme: frameThemeFromColors(DEFAULT_LIGHT_COLORS), height: 700, selectionMode: "off" as any, interactions: [] as any[], selectedInteractionId: undefined as string | undefined });
@@ -69,7 +70,11 @@ function App() {
   host.replaceDocument = () => setProps((p) => ({ ...p, selectionMode: "off", boardRevision: p.boardRevision + 1, canvas: { ...p.canvas, patches: [], revision: p.canvas.revision + 1, documentVersion: p.canvas.documentVersion + 1 } }));
   return createElement(Fragment, null, createElement(CanvasFrame, { ...props, key: mount,
     onComponentEdit: (request: any) => new Promise<ComponentEditResult>(resolve => { const index = host.results.componentEdits.length; host.results.componentEdits.push(structuredClone(request)); pendingComponentEdits.set(index, resolve); }),
-    onAsk: async (request: any) => { host.results.asks.push(request); return { status: "submitted" as const, outcome: "saved" }; },
+    onAsk: async (request: any) => {
+      host.results.asks.push(request);
+      if (host.manualAuthoredAsks) return new Promise<{ status: "submitted" | "queued" | "cancelled"; outcome: string | null }>(resolve => setAuthoredAsk({ text: request.prompt, resolve }));
+      return { status: "submitted" as const, outcome: "saved" };
+    },
     onCompose: (request: any) => { host.results.composes.push(request); setProps((p) => ({ ...p, selectionMode: "off" })); },
     onSelectionCapture: (capture: any) => {
       const index = host.results.composes.findIndex((request: any) => request.selectionId === capture.selectionId);
@@ -86,6 +91,10 @@ function App() {
     onReady: () => host.results.ready++,
     onSelectionEnd: () => setProps((p) => ({ ...p, selectionMode: "off" })),
     onSelectionClear: () => setSelectedAnchor(undefined),
-  }), createElement("button", { id: "host-ask", type: "button", style: { margin: 8 }, onClick: () => host.results.hostAsks.push(selectedAnchor ?? null) }, "Host: ask about selection"), input === null ? null : createElement("div", { style: { position: "fixed", left: 200, top: 220, width: 380 } }, createElement(WebMessageInput, { value: input, onChange: setInput, onSubmit: () => host.results.inputSubmits.push(input), onClose: () => { host.results.inputCloses++; setInput(null); } })));
+  }), createElement("button", { id: "host-ask", type: "button", style: { margin: 8 }, onClick: () => host.results.hostAsks.push(selectedAnchor ?? null) }, "Host: ask about selection"), input === null ? null : createElement("div", { style: { position: "fixed", left: 200, top: 220, width: 380 } }, createElement(WebMessageInput, { value: input, onChange: setInput, onSubmit: () => host.results.inputSubmits.push(input), onClose: () => { host.results.inputCloses++; setInput(null); } })), authoredAsk === null ? null : createElement("div", { id: "authored-comment-composer", style: { position: "fixed", left: 200, top: 350, width: 380 } }, createElement(WebMessageInput, {
+    value: authoredAsk.text, onChange: (text: string) => setAuthoredAsk(previous => previous && { ...previous, text }),
+    onSubmit: () => { host.results.inputSubmits.push(authoredAsk.text); authoredAsk.resolve(host.authoredSubmitStatus === "queued" ? { status: "queued", outcome: "已加入待发送列表，尚未发送给 agent" } : { status: "submitted", outcome: "saved" }); setAuthoredAsk(null); },
+    onClose: () => { host.results.inputCloses++; authoredAsk.resolve({ status: "cancelled", outcome: null }); setAuthoredAsk(null); },
+  })));
 }
 createRoot(host.document.getElementById("app")).render(createElement(App));

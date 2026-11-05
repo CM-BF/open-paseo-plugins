@@ -39,13 +39,18 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
   const ask = (input) => {
     const request = typeof input === "string" ? { prompt: input } : input;
     if (!request || typeof request.prompt !== "string" || !request.prompt.trim() || request.prompt.length > 24000) return Promise.reject(new TypeError("board.ask requires a prompt of 1–24000 characters"));
+    if (request.kind !== undefined && !["question", "change", "fork"].includes(request.kind)) return Promise.reject(new TypeError("board.ask kind must be question, change or fork"));
     if (!acting() || pendingAsks.size >= 8 || selectionMode !== "off") return Promise.resolve(cancelAsk);
+    let anchor;
+    try { anchor = authoredAskAnchor(request.anchor === undefined ? lastAnchor || currentAnchor() : request.anchor); }
+    catch (failure) { return Promise.reject(failure); }
     lastGesture = -Infinity;
     const id = `ask-${++sequence}`;
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { pendingAsks.delete(id); resolve(cancelAsk); }, 120000);
       pendingAsks.set(id, { resolve, timer });
-      post({ type: "ask", id, request: { prompt: request.prompt, anchor: bindAuthoredAnchor(request.anchor || lastAnchor || currentAnchor()), kind: request.kind || "question", position: lastGesturePosition } });
+      try { post({ type: "ask", id, request: { prompt: request.prompt, anchor, kind: request.kind || "question", position: lastGesturePosition } }); }
+      catch (failure) { clearTimeout(timer); pendingAsks.delete(id); reject(failure); }
     });
   };
   const managedViewNamespace = "__paseoContainerViews";
@@ -564,6 +569,69 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     } catch {}
     return anchor;
   };
+  // Authored buttons sometimes pass a live element as their reference. Convert only an
+  // explicit in-document target; never send DOM objects or stringify away their identity.
+  const authoredAskAnchor = (input) => {
+    const fail = (field) => { throw new TypeError(`board.ask anchor.${field} must be valid serializable reference data`); };
+    const object = (value, field) => { if (!value || typeof value !== "object" || Array.isArray(value)) fail(field); return value; };
+    const number = (value, field, minimum = -Infinity) => { if (typeof value !== "number" || !Number.isFinite(value) || value < minimum) fail(field); return value; };
+    const version = (value, field) => { if (!Number.isSafeInteger(value) || value < 0) fail(field); return value; };
+    const string = (value, field, maximum, minimum = 1) => { if (typeof value !== "string" || value.length < minimum || value.length > maximum) fail(field); return value; };
+    const shape = (value, fields, name, minimum = -Infinity) => {
+      object(value, name); return Object.fromEntries(fields.map(field => [field, number(value[field], `${name}.${field}`, minimum)]));
+    };
+    let source = input;
+    const targetWrapper = input && typeof input === "object" && input.target !== undefined
+      && input.boardRevision === undefined && input.canvasRevision === undefined;
+    if (input instanceof Element || targetWrapper) {
+      const target = input instanceof Element ? input : input.target;
+      if (!(target instanceof Element) || target.ownerDocument !== document || !target.isConnected || target.getRootNode() !== document || !authorElement(target)) {
+        throw new TypeError("board.ask anchor target must be a connected authored element in this canvas, outside Board controls");
+      }
+      if (targetWrapper && input.kind !== undefined && input.kind !== "element") fail("kind");
+      const selector = selectorFor(target);
+      if (!selector || document.querySelectorAll(selector).length !== 1 || document.querySelector(selector) !== target) {
+        throw new TypeError("board.ask anchor target needs a unique canvas selector");
+      }
+      const region = rect(target.getBoundingClientRect());
+      source = { ...currentAnchor(), kind: "element", selector, rect: region, viewport: viewport(), binding: captureBinding(target, region),
+        ...(targetWrapper && input.text !== undefined ? { text: input.text } : {}) };
+    }
+    object(source, "value");
+    if (!["board", "text", "region", "point", "element"].includes(source.kind)) fail("kind");
+    const anchor = { kind: source.kind, boardRevision: version(source.boardRevision, "boardRevision"), canvasRevision: version(source.canvasRevision, "canvasRevision") };
+    if (source.text !== undefined) anchor.text = string(source.text, "text", 12000, 0);
+    if (source.selector !== undefined) anchor.selector = string(source.selector, "selector", 1000);
+    if (source.rect !== undefined) {
+      anchor.rect = shape(source.rect, ["x", "y", "width", "height"], "rect");
+      if (anchor.rect.width < 0 || anchor.rect.height < 0) fail("rect");
+    }
+    if (source.viewport !== undefined) {
+      anchor.viewport = shape(source.viewport, ["width", "height", "scrollX", "scrollY"], "viewport");
+      if (anchor.viewport.width <= 0 || anchor.viewport.height <= 0) fail("viewport");
+    }
+    if (source.binding !== undefined) {
+      const binding = object(source.binding, "binding");
+      const identity = (value) => {
+        object(value, "binding identity");
+        const result = { selector: string(value.selector, "binding selector", 1000), tag: string(value.tag, "binding tag", 100), fingerprint: string(value.fingerprint, "binding fingerprint", 8) };
+        if (!/^[a-f0-9]{8}$/.test(result.fingerprint)) fail("binding fingerprint");
+        if (value.id !== undefined) result.id = string(value.id, "binding id", 1000);
+        return result;
+      };
+      if (!Array.isArray(binding.ancestors) || binding.ancestors.length > 8) fail("binding.ancestors");
+      const relative = shape(binding.relative, ["x", "y"], "binding.relative", 0);
+      if (relative.x > 1 || relative.y > 1) fail("binding.relative");
+      anchor.binding = { documentVersion: version(binding.documentVersion, "binding.documentVersion"), key: string(binding.key, "binding.key", 160),
+        target: identity(binding.target), ancestors: binding.ancestors.map(identity), relative };
+    }
+    if (source.image !== undefined) {
+      const image = object(source.image, "image");
+      if (image.mimeType !== "image/png" || typeof image.data !== "string" || !/^iVBORw0KGgo[A-Za-z0-9+/=]*$/.test(image.data)) fail("image");
+      anchor.image = { mimeType: "image/png", data: string(image.data, "image.data", 3000000) };
+    }
+    return bindAuthoredAnchor(anchor);
+  };
   const resolveIdentity = (identity, cached, allowPath) => {
     if (!identity) return null;
     if (identity.id) {
@@ -893,10 +961,11 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
       const status = markerLabels[item.marker.status] || "已提交";
       let face = button.firstElementChild;
       if (!face) { face = document.createElement("span"); face.className = "face"; face.setAttribute("aria-hidden", "true"); button.append(face); }
-      face.textContent = String(item.marker.number);
+      const markerLabel = item.marker.label || String(item.marker.number);
+      face.textContent = markerLabel;
       const locationLabel = location.mode === "hidden" ? "组件当前隐藏；可从侧栏请求定位" : location.mode === "collapsed" ? "组件当前不可见，标记显示在可见上层" : location.mode === "ancestor" ? "原组件无法唯一定位，标记显示在原上层" : location.mode === "snapshot" && saved ? "原始快照位置" : "";
       button.title = `${item.marker.text}\n${status}${locationLabel ? " · " + locationLabel : ""}${!saved ? " · 未指定可定位的局部位置。" : ""}${stale ? ` · 画布已更新；引用仍为 r${anchor.canvasRevision}，请核对原始快照。` : ""}`;
-      button.setAttribute("aria-label", `${item.marker.number}. ${item.marker.text}，${status}${locationLabel ? "，" + locationLabel : ""}${saved ? stale ? "，旧版本位置" : "" : "，整板讨论"}`);
+      button.setAttribute("aria-label", `${markerLabel}. ${item.marker.text}，${status}${locationLabel ? "，" + locationLabel : ""}${saved ? stale ? "，旧版本位置" : "" : "，整板讨论"}`);
       if (item.marker.id === selectedMarkerId) {
         const next = { id: item.marker.id, x: left, y: top, location: location.mode };
         if (JSON.stringify(next) !== JSON.stringify(lastSelectedPosition)) {
@@ -1016,6 +1085,8 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
         button{all:initial;box-sizing:border-box;position:absolute;display:grid;place-items:center;width:26px;height:26px;padding:0;pointer-events:auto;border-radius:50%;background:transparent;opacity:.5;cursor:pointer;transition:opacity .15s ease}
         button[hidden]{display:none}
         .face{box-sizing:border-box;display:grid;place-items:center;width:18px;height:18px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 1px 4px #0002;font:10px/1 system-ui,-apple-system,sans-serif}
+        button[data-comment=true]{width:auto;min-width:26px}
+        button[data-comment=true] .face{width:auto;min-width:24px;padding:0 3px;border-radius:9px}
         button:hover,button:focus-visible,button[aria-pressed=true]{opacity:1}
         button:focus-visible{outline:2px solid var(--host-iris,#658aeb);outline-offset:1px}
         button[aria-pressed=true] .face{border-width:2px}
@@ -1037,6 +1108,7 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
       old.delete(marker.id);
       button.type = "button";
       button.setAttribute("data-board-interaction", marker.id);
+      button.dataset.comment = String(Boolean(marker.commentId));
       if (!button.isConnected) markerHost.shadowRoot.append(button);
       return { marker, button };
     });
@@ -3012,7 +3084,13 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     else if (message.type === "component-edit-result") receiveComponentEdit(message);
     else if (message.type === "ask-result") {
       const pending = pendingAsks.get(message.id);
-      if (pending) { pendingAsks.delete(message.id); clearTimeout(pending.timer); pending.resolve(message.result && message.result.status === "submitted" ? message.result : cancelAsk); }
+      if (pending) {
+        pendingAsks.delete(message.id); clearTimeout(pending.timer);
+        const result = message.result;
+        pending.resolve(result && ["submitted", "queued"].includes(result.status)
+          && (result.outcome === undefined || result.outcome === null || typeof result.outcome === "string")
+          ? { status: result.status, ...(result.outcome !== undefined ? { outcome: result.outcome } : {}) } : cancelAsk);
+      }
     }
   });
   const reportedErrors = new Set();

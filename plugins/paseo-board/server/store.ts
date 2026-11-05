@@ -20,7 +20,8 @@ type DecisionUpdateInput = z.input<typeof DecisionUpdateInputSchema>;
 type StateInput = z.input<typeof StateInputSchema>;
 type Mutation = (board: Board, at: string) => void;
 
-const InteractionUpdateSchema = InteractionSchema.pick({ status: true, agentId: true, response: true, responseRevision: true, responseSource: true, responseMethod: true, responseCanvas: true, resultReferences: true, error: true }).partial();
+// Updates do not change request context; omit its cross-field refinements here.
+const InteractionUpdateSchema = z.object(InteractionSchema.shape).pick({ status: true, agentId: true, response: true, responseRevision: true, responseSource: true, responseMethod: true, responseCanvas: true, resultReferences: true, error: true }).partial();
 const transitions: Record<Interaction["status"], readonly Interaction["status"][]> = {
   saved: ["sending", "delivered", "processing", "answered", "applied", "rejected", "failed"],
   sending: ["delivered", "processing", "answered", "applied", "rejected", "failed"],
@@ -349,7 +350,8 @@ export class BoardStore {
     const input = parseInput(InteractInputSchema, raw);
     const payload = sourceSnapshot ? { ...input, sourceSnapshot } : input;
     const board = await this.mutate(input.boardId, "interaction", payload, (board, at) => {
-      if (input.anchor && (input.anchor.boardRevision > board.revision || input.anchor.canvasRevision > board.canvas.revision)) throw new BoardStoreError("invalid_input", "Selection refers to a future board or canvas revision");
+      const anchors = [input.anchor, ...(input.comments?.map(comment => comment.anchor) ?? [])];
+      if (anchors.some(anchor => anchor && (anchor.boardRevision > board.revision || anchor.canvasRevision > board.canvas.revision))) throw new BoardStoreError("invalid_input", "Selection refers to a future board or canvas revision");
       if (input.sourceInteractionId && !board.interactions.some(item => item.id === input.sourceInteractionId)) throw new BoardStoreError("not_found", "Source interaction does not exist");
       board.interactions.push(InteractionSchema.parse({ ...payload, id: input.intentId, agentId, status: "saved", createdAt: at, updatedAt: at }));
       this.event(board, input.intentId, "user", input.kind, input.text.slice(0, 4000), at);

@@ -15,6 +15,7 @@ describe("durable message acknowledgement", () => {
     expect(acceptedDraftInteraction(draft, [item])).toBe(item);
   });
   it("keeps an unknown or different payload instead of discarding the draft", () => {
+    expect(acceptedDraftInteraction(draft, [receipt({ comments: [{ id: "comment", text: "Different grouped payload" }] })])).toBeUndefined();
     expect(acceptedDraftInteraction({ ...draft, intentId: undefined }, [receipt()])).toBeUndefined();
     for (const item of [receipt({ text: "Changed" }), receipt({ destination: "side" }), receipt({ sourceInteractionId: undefined }), receipt({ kind: "change" }), receipt({ anchor: { ...draft.anchor!, image: { mimeType: "image/png", data: "different-pixels" } } }), receipt({ anchor: undefined })]) {
       expect(acceptedDraftInteraction(draft, [item])).toBeUndefined();

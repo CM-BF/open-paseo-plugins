@@ -16,6 +16,8 @@ export interface DraftCompose {
 }
 export interface DraftInput {
   id: string;
+  /** Only explicitly staged comments participate; editing preserves their position. */
+  queuedAt?: number;
   compose: DraftCompose;
   position: { x: number; y: number };
   open: boolean;
@@ -58,6 +60,7 @@ const ComposeSchema = z.object({
 }).refine(value => !value.intentId || Boolean(value.destination), "An uncertain send needs its immutable destination");
 const InputSchema = z.object({
   id: IdSchema, compose: ComposeSchema, open: z.boolean(),
+  queuedAt: z.number().finite().nonnegative().optional(),
   position: z.object({ x: z.number().finite(), y: z.number().finite() }),
 });
 const RecordSchema = InputSchema.extend({
@@ -143,7 +146,7 @@ export function createDraftStore(scope: { hostId: string; boardId: string }, sto
     const anchor = record.context ? readContext(record.context, present) : undefined;
     if (anchor && record.context) inputContexts.set(anchor, { id: record.context, draftId: record.id, anchor });
     return { id: record.id, revision: record.revision, updatedAt: record.updatedAt, open: record.open,
-      position: { ...record.position }, compose: { ...record.compose, ...(anchor ? { anchor } : {}) } };
+      position: { ...record.position }, ...(record.queuedAt !== undefined ? { queuedAt: record.queuedAt } : {}), compose: { ...record.compose, ...(anchor ? { anchor } : {}) } };
   }
   function readHeads(): { heads: DraftRecord[]; issues: DraftStorageIssue[] } {
     const entries: DraftRecord[] = [], issues: DraftStorageIssue[] = [];
@@ -196,6 +199,7 @@ export function createDraftStore(scope: { hostId: string; boardId: string }, sto
       try {
         const captureStatus = (input.compose.captureStatus as string) === "pending" ? "omitted" : input.compose.captureStatus;
         draft = InputSchema.parse({ ...input, compose: { ...input.compose, captureStatus } });
+        if (draft.queuedAt !== undefined && (draft.compose.intentId || draft.compose.sourceInteractionId)) return { ok: false, issue: issue("invalid") };
       } catch { return { ok: false, issue: issue("invalid") }; }
       let createdContext: string | undefined;
       let committed = false;

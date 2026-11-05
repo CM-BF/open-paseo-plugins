@@ -1,7 +1,22 @@
 import type { Anchor, Interaction } from "../shared/contracts";
+import type { InteractionMarker } from "../shared/frame-contract";
 
 export interface Point { x: number; y: number }
 export interface Size { width: number; height: number }
+
+/** A comment batch has several canvas locations but remains one discussion in the rail. */
+export function discussionGroups(markers: readonly InteractionMarker[]) {
+  const groups = new Map<string, { id: string; marker: InteractionMarker; markerIds: string[]; commentCount: number }>();
+  for (const marker of markers) {
+    const id = marker.interactionId ?? marker.id;
+    const existing = groups.get(id);
+    if (existing) {
+      existing.markerIds.push(marker.id);
+      if (marker.commentId) existing.commentCount += 1;
+    } else groups.set(id, { id, marker, markerIds: [marker.id], commentCount: marker.commentId ? 1 : 0 });
+  }
+  return [...groups.values()];
+}
 
 export function anchorPoint(anchor?: Anchor): Point {
   if (!anchor?.rect) return { x: 24, y: 24 };
