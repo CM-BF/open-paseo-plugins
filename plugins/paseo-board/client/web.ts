@@ -5,10 +5,16 @@ import type { BoardSyncVisibility } from "./compact-sync";
 import type { Anchor, Canvas, Interaction, JsonData } from "../shared/contracts";
 import { buildBoardDocument } from "../shared/document";
 import { createFrameDelta, emptyFrameDelta, transportSnapshot, type TransportSnapshot } from "../shared/frame-delta";
-import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, sameSelectionAnchor, type SelectionCapture, type AskRequest, type AskResult, type ComposeRequest, type FrameError, type FramePosition, type FrameSnapshot, type FrameTheme, type InteractionLocation, type FocusUpdateRequest, type UpdatePosition, type SelectionMode, type ComponentEditRequest, type ComponentEditResult } from "../shared/frame-contract";
+import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, sameSelectionAnchor, isCanvasViewState, type CanvasViewState, type CanvasViewRestoreStatus, type SelectionCapture, type AskRequest, type AskResult, type ComposeRequest, type FrameError, type FramePosition, type FrameSnapshot, type FrameTheme, type InteractionLocation, type FocusUpdateRequest, type UpdatePosition, type SelectionMode, type ComponentEditRequest, type ComponentEditResult } from "../shared/frame-contract";
 
-type FrameWindow = { postMessage(message: unknown, origin: string): void };
-type Frame = { contentWindow: FrameWindow | null };
+type ViewPort = {
+  addEventListener(type: "message", listener: (event: MessageEvent) => void): void;
+  removeEventListener(type: "message", listener: (event: MessageEvent) => void): void;
+  start(): void; close(): void;
+};
+type ViewReader = { receive(event: MessageEvent): void; close(): void };
+type FrameWindow = { postMessage(message: unknown, origin: string, transfer?: ViewPort[]): void };
+type Frame = { contentWindow: FrameWindow | null; isConnected?: boolean; getBoundingClientRect?(): { width: number; height: number } };
 type MessageEvent = { source: unknown; data: unknown; isTrusted: boolean };
 type OuterPointerEvent = { isTrusted: boolean; target?: { closest?(selector: string): unknown }; preventDefault(): void };
 type BrowserWindow = {
@@ -22,8 +28,44 @@ const browser = globalThis as unknown as {
   document?: { activeElement: unknown; hidden: boolean; addEventListener(type: string, listener: () => void): void; removeEventListener(type: string, listener: () => void): void };
   navigator?: { userActivation?: { isActive: boolean } };
   crypto?: { getRandomValues(bytes: Uint8Array): Uint8Array };
+  MessageChannel?: new () => { port1: ViewPort; port2: ViewPort };
 };
 export const canRenderFrames = Platform.OS === "web" && Boolean(browser.window && browser.document);
+
+// This registry owns only brief, read-only handoffs. Live frames keep their usual
+// independent source/session checks even when several tabs show the same Board.
+const VIEW_HANDOFF_MS = 250;
+const viewLeases = new Map<string, { revoke(): void }>();
+function acquireViewLease(scope: string) {
+  viewLeases.get(scope)?.revoke();
+  let stop: (() => void) | undefined;
+  const lease = {
+    current: () => viewLeases.get(scope) === lease,
+    retire(cleanup: () => void) { stop = cleanup; },
+    revoke() {
+      stop?.(); stop = undefined;
+      if (viewLeases.get(scope) === lease) viewLeases.delete(scope);
+    },
+  };
+  viewLeases.set(scope, lease);
+  while (viewLeases.size > 64) viewLeases.values().next().value?.revoke();
+  return lease;
+}
+
+type ViewDelivery = {
+  boardId: string; sessionId: string; version: number; scope?: string;
+  canvasRevision: number; sink?: (view: CanvasViewState) => void;
+  frame: Frame | null; window: FrameWindow | null; visibleAt: number | null; settled: boolean;
+  portCapable?: boolean; reader?: ViewReader;
+};
+function observeViewVisibility(delivery: ViewDelivery) {
+  const target = delivery.frame;
+  if (browser.document?.hidden || target?.isConnected === false) { delivery.visibleAt = null; return false; }
+  const bounds = target?.getBoundingClientRect?.();
+  const visible = Boolean(bounds && bounds.width > 0 && bounds.height > 0);
+  delivery.visibleAt = visible ? performance.now() : null;
+  return visible;
+}
 export function getBoardSyncVisibility(): BoardSyncVisibility | undefined {
   const page = Platform.OS === "web" ? browser.document : undefined;
   if (!page) return undefined;
@@ -52,7 +94,7 @@ export interface CanvasFrameProps extends FrameSnapshot {
   focusUpdate?: FocusUpdateRequest;
   composerActive?: boolean;
   onUpdatePosition?(position: UpdatePosition): void;
-  onCanvasActivity?(busy: boolean): void;
+  onCanvasActivity?(busy: boolean, interacting?: boolean): void;
   onAnchor(anchor: Anchor): void;
   onAsk(request: AskRequest): Promise<AskResult>;
   onCompose?(request: ComposeRequest): void;
@@ -66,6 +108,12 @@ export interface CanvasFrameProps extends FrameSnapshot {
   onError(error: FrameError): void;
   onOpenLink?(url: string): void;
   onReady?(): void;
+  resumeView?: CanvasViewState;
+  viewScope?: string;
+  onViewState?(view: CanvasViewState): void;
+  /** A pure local-store sink, frozen for the document being removed. */
+  onFinalViewState?(view: CanvasViewState): void;
+  onViewRestored?(result: { status: CanvasViewRestoreStatus }): void;
   onSelectionEnd?(): void;
   onSelectionClear?(): void;
 }
@@ -78,7 +126,7 @@ function nonce(): string {
 }
 function documentFor(props: CanvasFrameProps) {
   const sessionId = nonce();
-  return { boardId: props.boardId, version: props.canvas.documentVersion, sessionId, html: buildBoardDocument({ ...props, sessionId }) };
+  return { boardId: props.boardId, viewScope: props.viewScope, version: props.canvas.documentVersion, sessionId, html: buildBoardDocument({ ...props, sessionId }) };
 }
 
 /** Retains the iframe and its JS heap across data, patch, theme and UI-state updates. */
@@ -94,17 +142,76 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   const document = useRef<ReturnType<typeof documentFor> | null>(null);
   const interactionLock = useRef<{ boardId: string; sessionId: string; id: string; dragging: boolean; anchor?: Anchor; capturePending?: boolean } | null>(null);
   const [, redraw] = useState(0);
-  if (interactionLock.current?.boardId !== props.boardId) interactionLock.current = null;
+  if (interactionLock.current?.boardId !== props.boardId || document.current?.viewScope !== props.viewScope) interactionLock.current = null;
   const ready = useRef(false);
   const transport = useRef<{ sessionId: string; capable: boolean; version: number; snapshot: TransportSnapshot } | null>(null);
   const focused = useRef<string | undefined>(undefined);
   const updateSent = useRef<string | undefined>(undefined);
   const updatePending = useRef<{ requestId: string; id: string; token: number; targetIndex: number; documentVersion: number } | undefined>(undefined);
-  if (!document.current || document.current.boardId !== props.boardId || (document.current.version !== props.canvas.documentVersion && props.selectionMode === "off" && !interactionLock.current)) {
+  const viewRestore = useRef<{ sessionId: string; requestId: string; version: number; settled: boolean; resume?: CanvasViewState } | undefined>(undefined);
+  if (!document.current || document.current.boardId !== props.boardId || document.current.viewScope !== props.viewScope || (document.current.version !== props.canvas.documentVersion && props.selectionMode === "off" && !interactionLock.current)) {
     document.current = documentFor({ ...props, userState: effectiveState() });
     ready.current = false;
+    viewRestore.current = { sessionId: document.current.sessionId, requestId: `${document.current.sessionId}:view`, version: document.current.version,
+      settled: false, resume: isCanvasViewState(props.resumeView) && props.resumeView.documentVersion === document.current.version ? props.resumeView : undefined };
   }
   const rendered = document.current;
+  const viewDelivery = useRef<ViewDelivery | undefined>(undefined);
+  if (viewDelivery.current?.sessionId !== rendered.sessionId || viewDelivery.current.scope !== props.viewScope) {
+    viewDelivery.current = { boardId: rendered.boardId, sessionId: rendered.sessionId, version: rendered.version,
+      scope: props.viewScope, canvasRevision: props.canvas.revision, frame: null, window: null, visibleAt: null, settled: false };
+  }
+  const delivery = viewDelivery.current;
+  // A locked old document must never acquire a new document's callback or revision.
+  if (rendered.boardId === props.boardId && rendered.version === props.canvas.documentVersion) {
+    delivery.canvasRevision = props.canvas.revision;
+    delivery.sink = props.onFinalViewState;
+  }
+  const observeCurrentView = () => {
+    const current = viewDelivery.current;
+    if (!current || current.sessionId !== document.current?.sessionId) return;
+    current.frame = frame.current;
+    current.window = frame.current?.contentWindow ?? null;
+    current.settled = Boolean(ready.current && viewRestore.current?.settled);
+    observeViewVisibility(current);
+  };
+  const acceptView = (target: ViewDelivery, view: CanvasViewState) => {
+    const current = latest.current;
+    if (viewDelivery.current !== target || document.current?.sessionId !== target.sessionId) return;
+    observeCurrentView();
+    if (!ready.current || !viewRestore.current?.settled || browser.document?.hidden || target.visibleAt === null
+      || target.version !== current.canvas.documentVersion || view.documentVersion !== target.version
+      || view.canvasRevision !== current.canvas.revision) return;
+    current.onViewState?.(view);
+  };
+  const connectViewPort = () => {
+    const target = viewDelivery.current;
+    if (!target?.scope || !target.portCapable || !target.settled || target.reader || !target.window || !browser.MessageChannel) return;
+    let channel: { port1: ViewPort; port2: ViewPort } | undefined;
+    try {
+      channel = new browser.MessageChannel();
+      const port = channel.port1;
+      const reader: ViewReader = {
+        receive(event) {
+          if (!event.isTrusted || !event.data || typeof event.data !== "object" || (event.data as { type?: unknown }).type !== "view-state") return;
+          const message = readFrameMessage(event.data, target);
+          if (message?.type === "view-state") acceptView(target, message.view);
+        },
+        close() { port.removeEventListener("message", onPortMessage); port.close(); },
+      };
+      const onPortMessage = (event: MessageEvent) => reader.receive(event);
+      port.addEventListener("message", onPortMessage); port.start();
+      target.reader = reader;
+      // The original ready event has already authenticated this exact source and
+      // session. Possession of this transferred port authenticates later positions.
+      target.window.postMessage({ type: "view-port", channel: FRAME_CHANNEL, boardId: target.boardId, sessionId: target.sessionId }, "*", [channel.port2]);
+    } catch {
+      target.reader?.close(); target.reader = undefined;
+      channel?.port1.close(); channel?.port2.close();
+      // Older hosts retain the ordinary source-checked live bridge, without an
+      // unmount handoff. A null-source window message is never accepted.
+    }
+  };
   const send = (payload: Record<string, unknown>) => {
     const current = document.current!;
     frame.current?.contentWindow?.postMessage({ ...payload, channel: FRAME_CHANNEL, boardId: current.boardId, sessionId: current.sessionId }, "*");
@@ -171,12 +278,39 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
           transport.current = { sessionId: document.current.sessionId, capable: message.capabilities?.frameDelta === 1,
             version: transport.current?.sessionId === document.current.sessionId ? transport.current.version : 0,
             snapshot: transportSnapshot({ canvas: current.canvas, boardRevision: current.boardRevision, userState: effectiveState(), theme: current.theme }) };
-          sync(); current.onReady?.(); break;
+          sync(); current.onReady?.();
+          if (viewRestore.current && !viewRestore.current.settled) {
+            const request = viewRestore.current;
+            if (request.resume && message.capabilities?.viewState === 1 && document.current.version === current.canvas.documentVersion) {
+              send({ type: "restore-view", requestId: request.requestId, view: request.resume });
+            } else { request.settled = true; current.onViewRestored?.({ status: "unavailable" }); }
+          }
+          observeCurrentView();
+          if (viewDelivery.current) viewDelivery.current.portCapable = message.capabilities?.viewPort === 1;
+          connectViewPort();
+          break;
+        case "view-state": {
+          const target = viewDelivery.current;
+          if (target && !target.reader) acceptView(target, message.view);
+          break;
+        }
+        case "view-restored": {
+          const request = viewRestore.current;
+          if (!request || request.settled || request.sessionId !== document.current.sessionId || request.requestId !== message.requestId
+            || request.version !== message.documentVersion || current.canvas.documentVersion !== request.version) break;
+          request.settled = true; current.onViewRestored?.({ status: message.status });
+          observeCurrentView();
+          // Window and MessagePort events need not be ordered with one another.
+          // Install the position port only after this restore receipt is accepted;
+          // the runtime then forces a fresh capture on that authenticated channel.
+          connectViewPort();
+          break;
+        }
         case "snapshot-request":
           if (ready.current && transport.current?.capable && message.documentVersion === document.current.version) syncSnapshot(true);
           break;
         case "canvas-pointer": if (userActing()) current.onCanvasPointer?.(); break;
-        case "canvas-activity": current.onCanvasActivity?.(message.busy); break;
+        case "canvas-activity": current.onCanvasActivity?.(message.busy, message.interacting); break;
         case "update-position": {
           const expected = updatePending.current;
           const requested = current.focusUpdate;
@@ -300,17 +434,57 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
       latest.current.onSelectionEnd?.();
       redraw(n => n + 1);
     };
+    const onOuterStart = (event: OuterPointerEvent) => {
+      // Flush before the following click can switch an agent and remove this frame.
+      if (event.isTrusted && ready.current) { observeCurrentView(); send({ type: "flush-view" }); }
+    };
     browser.window.addEventListener("message", onMessage);
+    browser.window.addEventListener("pointerdown", onOuterStart, true);
     browser.window.addEventListener("pointerup", onOuterRelease, true);
     browser.window.addEventListener("pointercancel", onOuterRelease, true);
     return () => {
+      // Best effort: the runtime also flushes synchronously on blur/pagehide before removal.
+      if (ready.current) send({ type: "flush-view" });
       disposed = true;
       latest.current.onEditScopeChange?.();
       browser.window?.removeEventListener("message", onMessage);
+      browser.window?.removeEventListener("pointerdown", onOuterStart, true);
       browser.window?.removeEventListener("pointerup", onOuterRelease, true);
       browser.window?.removeEventListener("pointercancel", onOuterRelease, true);
     };
   }, []);
+
+  useLayoutEffect(() => {
+    if (!canRenderFrames || !browser.window || !delivery.scope) return;
+    const lease = acquireViewLease(delivery.scope);
+    delivery.frame = frame.current;
+    delivery.window = frame.current?.contentWindow ?? null;
+    observeViewVisibility(delivery);
+    return () => {
+      if (!lease.current()) { delivery.reader?.close(); return; }
+      // React may already have cleared the ref or detached the element. Only a
+      // recent pre-removal observation may substitute for its now-empty bounds.
+      const recentlyVisible = delivery.frame?.isConnected === false
+        ? delivery.visibleAt !== null && performance.now() - delivery.visibleAt <= VIEW_HANDOFF_MS
+        : observeViewVisibility(delivery);
+      const reader = delivery.reader, sink = delivery.sink;
+      if (!recentlyVisible || browser.document?.hidden || !delivery.settled || !reader || !sink) { reader?.close(); lease.revoke(); return; }
+      const scope = { boardId: delivery.boardId, sessionId: delivery.sessionId };
+      const version = delivery.version, canvasRevision = delivery.canvasRevision;
+      const deadline = performance.now() + VIEW_HANDOFF_MS;
+      reader.receive = (event: MessageEvent) => {
+        // The deadline is checked here too: a suspended event loop may delay timers.
+        if (!lease.current() || performance.now() >= deadline) { lease.revoke(); return; }
+        if (!event.isTrusted) return;
+        if (!event.data || typeof event.data !== "object" || (event.data as { type?: unknown }).type !== "view-state") return;
+        const message = readFrameMessage(event.data, scope);
+        if (message?.type !== "view-state" || message.view.documentVersion !== version || message.view.canvasRevision !== canvasRevision) return;
+        sink(message.view);
+      };
+      const timer = setTimeout(() => lease.revoke(), VIEW_HANDOFF_MS);
+      lease.retire(() => { clearTimeout(timer); reader.close(); });
+    };
+  }, [rendered.sessionId, props.viewScope]);
 
   const editScope = useRef(rendered.sessionId);
   useEffect(() => {
@@ -349,7 +523,9 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   }, [props.selectionCaptureCancelId]);
   if (!canRenderFrames) return null;
   return createElement("iframe", {
-    ref: frame, title: props.title, srcDoc: rendered.html,
+    // A replacement document owns a new browsing context and bridge session.
+    // Ordinary data, patch and theme updates retain this exact key and heap.
+    key: rendered.sessionId, ref: frame, title: props.title, srcDoc: rendered.html,
     // Never allow-same-origin, popups or top navigation. The opaque frame cannot touch the app.
     sandbox: "allow-scripts", allow: "clipboard-write; fullscreen", referrerPolicy: "no-referrer",
     "data-testid": "paseo-board-canvas", "data-board-id": props.boardId,

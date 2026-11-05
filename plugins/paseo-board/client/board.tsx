@@ -4,7 +4,7 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { Markdown, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
 import { interactBoardRpc, markUpdatesSeenRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc, type Anchor, type Board, type Decision, type Interaction, type JsonData } from "../shared/contracts";
-import type { AskRequest, AskResult, ComposeRequest, CaptureStatus, CaptureFailureReason, SelectionCapture, FrameTheme, InteractionLocation, SelectionMode } from "../shared/frame-contract";
+import type { AskRequest, AskResult, ComposeRequest, CaptureStatus, CaptureFailureReason, SelectionCapture, FrameTheme, InteractionLocation, SelectionMode, CanvasViewState } from "../shared/frame-contract";
 import { interactionMarkers, sameSelectionAnchor } from "../shared/frame-contract";
 import { frameThemeFromColors } from "../shared/frame-theme";
 import { CanvasFrame, WebMessageInput, canRenderFrames, usePopoverDismiss } from "./web";
@@ -17,6 +17,7 @@ import { BoardConnectionStatus } from "./connection-status";
 import { createStateWriter } from "./state-writer";
 import { createDraftStore, type StoredDraft } from "./draft-store";
 import { acceptedDraftInteraction } from "./message-draft";
+import { readBoardView, writeBoardView, retainBoardViewStore, flushBoardViewStore } from "./view-store";
 import { DiscussionRail } from "./discussion-rail";
 import { SideAgentPicker } from "./side-agent-picker";
 import { useUpdateNavigation } from "./update-navigation";
@@ -43,6 +44,18 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
   const c = useColors();
   const query = useBoard(host.id, boardId);
   const board = query.data;
+  useEffect(() => retainBoardViewStore(), []);
+  // Read once for this document. Capturing a newer position must not issue a
+  // fresh restore command on every React render or query update.
+  const viewSession = useMemo(() => {
+    const saved = board?.canvas.documentVersion ? readBoardView(host.id, boardId, board.canvas.documentVersion) : undefined;
+    return { saved, latest: saved?.view };
+  }, [host.id, boardId, board?.canvas.documentVersion]);
+  const [settledView, setSettledView] = useState<typeof viewSession>();
+  const [reconciledView, setReconciledView] = useState<typeof viewSession>();
+  useEffect(() => {
+    if (board && !query.isFetching && !query.isError && (query.liveStatus === "connected" || query.liveStatus === "checking")) setReconciledView(viewSession);
+  }, [viewSession, board, query.isFetching, query.isError, query.liveStatus]);
   const componentEditor = useComponentEditor(host.id, boardId, board, query.accept, query.refetch);
   const send = useRpc(interactBoardRpc);
   const save = useRpc(saveStateRpc);
@@ -81,7 +94,26 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
   const [interactionLocation, setInteractionLocation] = useState<{ id: string; location: InteractionLocation }>();
   const [optimistic, setOptimistic] = useState<Interaction[]>([]);
   const updatesBlocked = Boolean(componentEditor.draft || compose || selectedInteractionId || drawer || releaseOpen || sending || selectionMode !== "off");
-  const updateNavigation = useUpdateNavigation(board, updatesBlocked, async id => { query.accept(await markUpdatesSeen({ boardId, updateIds: [id] })); });
+  const updateNavigation = useUpdateNavigation(board, updatesBlocked, async id => { query.accept(await markUpdatesSeen({ boardId, updateIds: [id] })); }, viewSession.saved ? {
+    follow: viewSession.saved.follow, skipInitialUnread: true, restoring: settledView !== viewSession, reconciling: reconciledView !== viewSession,
+  } : undefined);
+  const followRef = useRef(updateNavigation.follow); followRef.current = updateNavigation.follow;
+  const onViewState = useCallback((view: CanvasViewState) => {
+    if (view.documentVersion !== board?.canvas.documentVersion) return;
+    viewSession.latest = view;
+    writeBoardView(host.id, boardId, view, followRef.current);
+  }, [host.id, boardId, board?.canvas.documentVersion, viewSession]);
+  // A queued report can arrive just after this visit unmounts. Its bridge
+  // freezes this persistence-only callback and revokes it when a new visit starts.
+  const onFinalViewState = useCallback((view: CanvasViewState) => {
+    if (view.documentVersion !== board?.canvas.documentVersion) return;
+    writeBoardView(host.id, boardId, view, updateNavigation.follow);
+    flushBoardViewStore();
+  }, [host.id, boardId, board?.canvas.documentVersion, updateNavigation.follow]);
+  const onViewRestored = useCallback(() => { setSettledView(viewSession); }, [viewSession]);
+  useEffect(() => {
+    if (viewSession.latest) writeBoardView(host.id, boardId, viewSession.latest, updateNavigation.follow);
+  }, [host.id, boardId, viewSession, updateNavigation.follow]);
   const interactions = useMemo(() => mergeInteractions(board?.interactions ?? [], optimistic), [board?.interactions, optimistic]);
   const markers = useMemo(() => interactionMarkers(interactions), [interactions]);
   const thread = useMemo(() => interactionThread(selectedInteractionId, interactions), [selectedInteractionId, interactions]);
@@ -353,7 +385,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
       onOpenDrafts={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current) setDrawer("drafts"); }} />
     <View testID="board-stage" style={{ flex: 1, minHeight: 180, flexDirection: "row" }} onLayout={event => setStageWidth(event.nativeEvent.layout.width)}>
     <View testID="board-canvas-container" style={{ flex: 1, minWidth: 0, minHeight: 180, position: "relative", overflow: "hidden" }} onLayout={event => { setHeight(Math.max(180, event.nativeEvent.layout.height)); setWidth(event.nativeEvent.layout.width); }}>
-      {canRenderFrames ? <CanvasFrame boardId={board.id} title={board.title} canvas={board.canvas} boardRevision={board.revision} userState={board.userState} theme={frameTheme} height={height} selectionMode={selectionMode} selectionClearToken={selectionClearToken} selectionCaptureCancelId={selectionCaptureCancelId} interactions={interactions} selectedInteractionId={selectedInteractionId} focusInteraction={focusInteraction} focusUpdate={updateNavigation.request} composerActive={updatesBlocked} onUpdatePosition={updateNavigation.onPosition} onCanvasActivity={updateNavigation.onActivity} onOpenInteraction={openInteraction} onInteractionPosition={(id, point, location) => { if (id === selectedInteractionId) { if (!composeRef.current) setPopoverPoint(point); setInteractionLocation(location ? { id, location } : undefined); } }} onAnchor={onAnchor} onAsk={onAsk} onCompose={onCompose} onSelectionCapture={onSelectionCapture} onComponentEdit={request => {
+      {canRenderFrames ? <CanvasFrame viewScope={JSON.stringify([host.id, boardId])} boardId={board.id} title={board.title} canvas={board.canvas} boardRevision={board.revision} userState={board.userState} theme={frameTheme} height={height} resumeView={viewSession.saved?.view} onViewState={onViewState} onFinalViewState={onFinalViewState} onViewRestored={onViewRestored} selectionMode={selectionMode} selectionClearToken={selectionClearToken} selectionCaptureCancelId={selectionCaptureCancelId} interactions={interactions} selectedInteractionId={selectedInteractionId} focusInteraction={focusInteraction} focusUpdate={updateNavigation.request} composerActive={updatesBlocked} onUpdatePosition={updateNavigation.onPosition} onCanvasActivity={updateNavigation.onActivity} onOpenInteraction={openInteraction} onInteractionPosition={(id, point, location) => { if (id === selectedInteractionId) { if (!composeRef.current) setPopoverPoint(point); setInteractionLocation(location ? { id, location } : undefined); } }} onAnchor={onAnchor} onAsk={onAsk} onCompose={onCompose} onSelectionCapture={onSelectionCapture} onComponentEdit={request => {
         if (composeRef.current || pending.current) return Promise.resolve({ status: "rejected", message: "交流草稿已保留，请先关闭输入框再编辑组件。" });
         return componentEditor.propose(request).then(result => { if (result.status === "applied") setSelectionMode("off"); return result; });
       }} onEditScopeChange={componentEditor.invalidate} onCanvasPointer={closePopover} onState={onState} onError={error => setFrameError(`${error.message}${error.patchId ? `（${error.patchId}）` : ""}`)} onSelectionEnd={() => setSelectionMode("off")} onSelectionClear={() => { setAnchor(undefined); setSelectionMode("off"); }} onOpenLink={url => { void openExternalUrl(url).catch(e => setMessage(errorMessage(e))); }} /> : <ScrollView contentContainerStyle={{ padding: 24, gap: 16 }}><Notice text="手机兼容视图。完整的自由画布、动画和页面交互在桌面版使用；这里可以查看摘要、决策并与 agent 交流。" /><Markdown>{typeof board.canvas.data.summary === "string" ? board.canvas.data.summary : "Agent 尚未提供文字摘要。你可以直接提问，回复会出现在讨论里。"}</Markdown></ScrollView>}

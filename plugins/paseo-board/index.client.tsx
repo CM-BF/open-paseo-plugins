@@ -4,9 +4,12 @@ import { BoardHome } from "./client/home";
 import { installBoardEventTransport } from "./client/board-events";
 import { boardChangedEvent, type BoardChange } from "./shared/contracts";
 
-function Screen(props: PluginScreenProps) { return <BoardHome key={`${props.host.id}:${props.params.boardId ?? "all"}`} {...props} initialBoardId={props.params.boardId} />; }
-function AgentPanel(props: PluginAgentPanelProps) { return <BoardHome key={`${props.host.id}:${props.workspaceId}:${props.params.agentId}`} {...props} agentId={props.params.agentId} />; }
-function WorkspacePanel(props: PluginWorkspacePanelProps) { return <BoardHome key={`${props.host.id}:${props.workspaceId}`} {...props} />; }
+function Screen(props: PluginScreenProps) { return <BoardHome {...props} initialBoardId={props.params.boardId} entryScope={{ hostId: props.host.id, surface: "screen" }} />; }
+function AgentPanel(props: PluginAgentPanelProps) {
+  const agentId = props.params?.agentId ?? props.agentId;
+  return <BoardHome {...props} agentId={agentId} entryScope={{ hostId: props.host.id, surface: "agent", workspaceId: props.workspaceId, agentId }} />;
+}
+function WorkspacePanel(props: PluginWorkspacePanelProps) { return <BoardHome {...props} entryScope={{ hostId: props.host.id, surface: "workspace", workspaceId: props.workspaceId }} />; }
 function Sidebar(props: PluginSidebarItemProps) { return <SidebarRow label="Boards" icon="PanelsTopLeft" active={props.currentScreen?.screenId === "boards"} onPress={() => props.openScreen({ screenId: "boards" })} />; }
 
 export default function contribute(client: PluginClientContext) {

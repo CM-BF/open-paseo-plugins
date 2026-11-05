@@ -1,9 +1,39 @@
 import { describe, expect, it } from "vitest";
-import { CAPTURE_FAILURE_REASONS, FRAME_CHANNEL, interactionMarkers, readFrameMessage, sameSelectionAnchor, validAnchor } from "./frame-contract";
+import { CAPTURE_FAILURE_REASONS, FRAME_CHANNEL, interactionMarkers, readFrameMessage, sameSelectionAnchor, validAnchor, isCanvasViewState } from "./frame-contract";
 import { AnchorSchema, type Interaction } from "./contracts";
 const scope = { boardId: "board", sessionId: "session" };
 const message = (fields: object) => ({ channel: FRAME_CHANNEL, ...scope, ...fields });
 describe("frame bridge validation", () => {
+  it("distinguishes internal work from user interaction while accepting legacy activity reports", () => {
+    for (const fields of [{ busy: false }, { busy: true }, { busy: false, interacting: false }, { busy: true, interacting: false }, { busy: true, interacting: true }]) {
+      const report = message({ type: "canvas-activity", ...fields });
+      expect(readFrameMessage(report, scope)).toEqual(report);
+    }
+    for (const fields of [{ busy: false, interacting: true }, { busy: true, interacting: "true" }, { busy: true, interacting: null }, { busy: 1, interacting: false }, { interacting: false }]) {
+      expect(readFrameMessage(message({ type: "canvas-activity", ...fields }), scope)).toBeNull();
+    }
+    expect(readFrameMessage(message({ type: "canvas-activity", busy: true, interacting: false, sessionId: "old" }), scope)).toBeNull();
+  });
+  it("accepts only bounded reading positions and scopes both state and restore acknowledgements", () => {
+    const view = { documentVersion: 2, canvasRevision: 8, x: -15, y: 800,
+      anchor: { selector: "#section", offsetX: 10, offsetY: -50 }, scrolls: [{ selector: "#log", x: 20, y: 300 }] };
+    expect(isCanvasViewState(view)).toBe(true);
+    expect(readFrameMessage(message({ type: "view-state", view }), scope)).not.toBeNull();
+    for (const change of [{ documentVersion: -1 }, { canvasRevision: 1.5 }, { y: Infinity }, { x: 10000001 },
+      { scrolls: Array.from({ length: 33 }, (_, i) => ({ selector: `#log-${i}`, x: 0, y: 0 })) },
+      { scrolls: [...view.scrolls, ...view.scrolls] }, { scrolls: [{ selector: "", x: 0, y: 0 }] },
+      { scrolls: [{ selector: "#log", x: 0, y: NaN }] }, { anchor: { ...view.anchor, offsetY: NaN } },
+      { html: "<script>not a reading position</script>" }, { anchor: { ...view.anchor, html: "no" } }]) {
+      expect(readFrameMessage(message({ type: "view-state", view: { ...view, ...change } }), scope)).toBeNull();
+    }
+    const ack = message({ type: "view-restored", requestId: "restore-1", documentVersion: 2, status: "restored" });
+    for (const status of ["restored", "cancelled", "unavailable"]) expect(readFrameMessage({ ...ack, status }, scope)).not.toBeNull();
+    for (const change of [{ status: "saved" }, { requestId: "" }, { documentVersion: -1 }, { sessionId: "old" }, { boardId: "other" }]) expect(readFrameMessage({ ...ack, ...change }, scope)).toBeNull();
+    expect(readFrameMessage(message({ type: "ready", capabilities: { frameDelta: 1, viewState: 1 } }), scope)).not.toBeNull();
+    expect(readFrameMessage(message({ type: "ready", capabilities: { frameDelta: 1, viewState: 2 } }), scope)).toBeNull();
+    expect(readFrameMessage(message({ type: "ready", capabilities: { frameDelta: 1, viewState: 1, viewPort: 1 } }), scope)).not.toBeNull();
+    expect(readFrameMessage(message({ type: "ready", capabilities: { frameDelta: 1, viewState: 1, viewPort: 2 } }), scope)).toBeNull();
+  });
   it("accepts bounded semantic edit proposals and rejects arbitrary code, IDs and cross-scope payloads", () => {
     const request = { canvasBase: { revision: 3, documentVersion: 2 }, patch: { operation: "text", selector: "#title", sourceIdentity: { tag: "h1", id: "title", fingerprint: "abcd1234" }, text: "", expectedText: "Old" } };
     const edit = message({ type: "component-edit", id: "proposal-1", request });
