@@ -74,10 +74,11 @@ commentDiagnostic('fixture-installed',{context:board.getContext(),readyState:doc
   const configure = code => frame(`${code}; true`);
   const clickAuthored = async label => {
     lastAttempt = { number: lastAttempt.number + 1, label, phase: 'preconditions' };
-    // Bring the actual CDP target forward; native input supplies focus and user
-    // activation to the iframe. Never synthesize a click or call board.ask here.
+    // A visible foreground target need not already own DOM focus after earlier
+    // input or iframe replacement. The native click below must supply actual
+    // focus and user activation; never emulate focus or synthesize the click.
     await command('Page.bringToFront');
-    await until("document.visibilityState==='visible'&&document.hasFocus()",3000);
+    await until("document.visibilityState==='visible'",3000);
     await frame(twoFrames);
     await evaluate(twoFrames);
     if(paintedDocumentVersion!==context.documentVersion){
@@ -103,6 +104,7 @@ commentDiagnostic('fixture-installed',{context:board.getContext(),readyState:doc
     assert.equal(canvas.context.documentVersion,host.scope.documentVersion,'native Comment precondition: document scope');
     assert.equal(canvas.context.boardRevision,host.scope.boardRevision,'native Comment precondition: Board revision');
     assert.equal(canvas.context.canvasRevision,host.scope.canvasRevision,'native Comment precondition: canvas revision');
+    assert.equal(canvas.visibility,'visible','native Comment precondition: iframe visible');
     assert.ok(canvas.button?.connected&&!canvas.button.disabled&&!canvas.button.inert,'native Comment precondition: enabled attached button');
     assert.equal(canvas.button.handler,'function','native Comment precondition: authored handler installed');
     assert.ok(canvas.button.box.width>0&&canvas.button.box.height>0&&canvas.button.visibility==='visible'&&canvas.button.display!=='none'&&canvas.button.pointerEvents!=='none'&&Number(canvas.button.opacity)>0,'native Comment precondition: visible pointer target');
@@ -132,6 +134,8 @@ commentDiagnostic('fixture-installed',{context:board.getContext(),readyState:doc
     await until(`authoredCommentTrace.some(entry=>entry.attempt===${lastAttempt.number}&&entry.phase==='handler-enter')`,3000);
     const entered=await evaluate(`authoredCommentTrace.find(entry=>entry.attempt===${lastAttempt.number}&&entry.phase==='handler-enter')`);
     assert.equal(entered.trusted,true,'authored Comment must receive trusted native input');
+    assert.equal(entered.focused,true,'authored Comment native input must focus the iframe');
+    assert.equal(entered.active?.id,'authored-comment-button','authored Comment native input must focus the actual button');
     assert.equal(entered.activation.isActive,true,'authored Comment must receive transient user activation');
     assert.equal(entered.target?.id,'authored-comment-button','authored Comment native target');
     lastAttempt.phase='await-result';
