@@ -26,7 +26,7 @@ Board-originated visual work now receives consistent guidance to use the existin
 ## Cleanup and delivery
 
 - The sole fixture Board was backed up and removed; its owner and workspace were archived. Actual Web Board lists before and after full reload contain exactly the original seven IDs. The native sidebar and complete workspace directory exclude the fixture workspace; SDK readback confirms the owner is archived/closed and the workspace is recoverable by unarchive. The extra Sessions search timed out before its archived badge could be checked. That failed run remains failed; only the completed observations and seven root-reviewed card screenshots support cleanup acceptance. No repeated plugin restart, restored old data or additional message was used.
-- Delivery is a separate draft PR targeting `sw/board-drag-preview`, with runtime unchanged from `82a4054`. The final delivery receipt verifies the remote head and every installed tracked file. This is not a merge.
+- Delivery is a separate draft PR targeting `sw/board-drag-preview`, with runtime unchanged from `82a4054`. Verification of the remote head and every installed tracked file is recorded separately. This is not a merge.
 
 The seven owned Chrome profiles and two exact test-generated temporary JSON files were removed after checking no associated Chrome process remained. Private evidence and fixture backups are retained; unrelated browser profiles and files were untouched.
 
