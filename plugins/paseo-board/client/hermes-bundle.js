@@ -37,11 +37,13 @@ var __async = (__this, __arguments, generator) => {
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 
 // client/home.tsx
-import { useEffect as useEffect9, useRef as useRef9, useState as useState11 } from "react";
-import { Pressable as Pressable8, Text as Text10, View as View12 } from "react-native";
-import { useQuery as useQuery2 } from "@tanstack/react-query";
-import { usePaseo, useRpc as useRpc6 } from "@getpaseo/plugin/client";
-import { Modal as Modal3, ScrollView as ScrollView6, TextInput as TextInput5 } from "@getpaseo/plugin/client/ui";
+import { useEffect as useEffect12, useRef as useRef10, useState as useState13 } from "react";
+import { Pressable as Pressable8, Text as Text11, View as View13 } from "react-native";
+import { useQuery as useQuery3 } from "@tanstack/react-query";
+
+// client/transport.tsx
+import { createContext, useCallback, useContext, useEffect, useSyncExternalStore } from "react";
+import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 
 // shared/contracts.ts
 import { defineRpc } from "@getpaseo/plugin";
@@ -54,7 +56,7 @@ function createComponentLayoutTools() {
     keyAttr = "data-paseo-layout-key";
   var placement = ["grid-column", "grid-row", "order", "flex-grow", "flex-shrink", "flex-basis", "align-self", "justify-self", "width", "min-width", "max-width", "margin-top", "margin-right", "margin-bottom", "margin-left"];
   var flow = ["display", "flex-direction", "flex-wrap", "align-items", "justify-content", "align-content", "grid-template-columns", "grid-template-rows", "grid-auto-columns", "grid-auto-rows", "grid-auto-flow", "column-gap", "row-gap"];
-  var changed = [...placement, "height", "min-height", "max-height", "overflow-x", "overflow-y", "box-sizing"];
+  var changed2 = [...placement, "height", "min-height", "max-height", "overflow-x", "overflow-y", "box-sizing"];
   var declarations = raw => {
     var entries = [];
     var start = 0,
@@ -132,7 +134,7 @@ function createComponentLayoutTools() {
     } catch {
       throw new Error("\u5E03\u5C40\u8BB0\u5F55\u65E0\u6548\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u539F\u59CB\u5BB9\u5668\u3002");
     }
-    if (!object3(value) || Object.keys(value).some(key => !["version", "key", "config", "properties", "hadStyle", "heading"].includes(key)) || value.version !== 1 || typeof value.key !== "string" || !/^[a-zA-Z0-9_.:-]{1,160}$/.test(value.key) || !validate(value.config) || !object3(value.properties) || Object.keys(value.properties).length > changed.length || typeof value.hadStyle !== "boolean" || typeof value.heading !== "boolean" || !Object.entries(value.properties).every(([key, property]) => changed.includes(key) && object3(property) && Object.keys(property).every(name => ["value", "priority", "applied"].includes(name)) && safeValue(property.value, 2e3) && safeValue(property.applied, 2e3) && ["", "important"].includes(String(property.priority)))) throw new Error("\u5E03\u5C40\u8BB0\u5F55\u65E0\u6548\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u539F\u59CB\u5BB9\u5668\u3002");
+    if (!object3(value) || Object.keys(value).some(key => !["version", "key", "config", "properties", "hadStyle", "heading"].includes(key)) || value.version !== 1 || typeof value.key !== "string" || !/^[a-zA-Z0-9_.:-]{1,160}$/.test(value.key) || !validate(value.config) || !object3(value.properties) || Object.keys(value.properties).length > changed2.length || typeof value.hadStyle !== "boolean" || typeof value.heading !== "boolean" || !Object.entries(value.properties).every(([key, property]) => changed2.includes(key) && object3(property) && Object.keys(property).every(name => ["value", "priority", "applied"].includes(name)) && safeValue(property.value, 2e3) && safeValue(property.applied, 2e3) && ["", "important"].includes(String(property.priority)))) throw new Error("\u5E03\u5C40\u8BB0\u5F55\u65E0\u6548\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u539F\u59CB\u5BB9\u5668\u3002");
     var metadata = value;
     var expectedProperties = metadata.config.collapse === "group" ? {
       "margin-top": "0px",
@@ -752,6 +754,7 @@ var SourceSnapshotSchema = z.object({
 });
 var InteractionSchema = z.object({
   id: IdSchema,
+  expectedCreatedAt: z.string().min(1).max(100).optional(),
   kind: z.enum(["question", "change", "fork", "return", "reply"]),
   destination: DestinationSchema.optional(),
   text: z.string().min(1).max(24e3),
@@ -924,6 +927,7 @@ var EmitInputSchema = z.object({
 });
 var InteractInputSchema = z.object({
   boardId: IdSchema,
+  expectedCreatedAt: z.string().min(1).max(100).optional(),
   intentId: IdSchema,
   kind: z.enum(["question", "change", "fork", "return", "reply"]),
   destination: DestinationSchema.optional(),
@@ -946,6 +950,7 @@ var RenameInputSchema = z.object({
 });
 var EditInputSchema = z.object({
   boardId: IdSchema,
+  expectedCreatedAt: z.string().min(1).max(100).optional(),
   canvasBase: CanvasBaseSchema,
   eventId: IdSchema,
   patch: CanvasPatchSchema.refine(patch => ["move", "copy", "text", "layout"].includes(patch.operation) && patch.html === "", "User edits support move, copy, text and layout operations without caller-supplied HTML")
@@ -958,13 +963,14 @@ var DecisionUpdateInputSchema = z.object({
 });
 var StateInputSchema = z.object({
   boardId: IdSchema,
+  expectedCreatedAt: z.string().min(1).max(100).optional(),
   state: JsonDataSchema
 });
 var MarkUpdatesSeenInputSchema = z.object({
   boardId: IdSchema,
   updateIds: z.array(IdSchema).max(80)
 });
-var EditRefusalCodeSchema = z.enum(["invalid_input", "revision_conflict", "edit_conflict", "idempotency_conflict", "unauthorized", "forbidden", "board_not_found", "not_found", "size_limit"]);
+var EditRefusalCodeSchema = z.enum(["board_identity_changed", "invalid_input", "revision_conflict", "edit_conflict", "idempotency_conflict", "unauthorized", "forbidden", "board_not_found", "not_found", "size_limit"]);
 var EditResultSchema = z.discriminatedUnion("status", [z.object({
   status: z.literal("applied"),
   eventId: IdSchema,
@@ -1071,14 +1077,228 @@ var boardCheckRpc = defineRpc({
   })
 });
 
+// client/transport-registry.ts
+var BOARD_TRANSPORT_PROTOCOL = 1;
+var registryKey = /* @__PURE__ */Symbol.for("paseo-board.transports.v1");
+function registry() {
+  var root = globalThis;
+  var existing = root[registryKey];
+  if (existing) {
+    if (existing.protocol !== BOARD_TRANSPORT_PROTOCOL || !(existing.entries instanceof Map) || !(existing.listeners instanceof Set) || !Array.isArray(existing.snapshot)) throw new Error("Incompatible Board transport registry");
+    return existing;
+  }
+  return root[registryKey] = {
+    protocol: 1,
+    nextGeneration: 0,
+    entries: /* @__PURE__ */new Map(),
+    listeners: /* @__PURE__ */new Set(),
+    snapshot: []
+  };
+}
+function changed(state) {
+  state.snapshot = Object.freeze([...state.entries.values()].map(value => value.services).sort((a, b) => a.hostId.localeCompare(b.hostId)));
+  for (var listener of [...state.listeners]) listener();
+}
+var getBoardTransports = () => registry().snapshot;
+var getBoardServices = hostId => registry().entries.get(hostId)?.services;
+function observeBoardTransports(listener) {
+  var state = registry();
+  state.listeners.add(listener);
+  return () => {
+    state.listeners.delete(listener);
+  };
+}
+function boardTransportUnavailable(hostId, outcomeUnknown = false) {
+  return Object.assign(new Error(`Board host ${hostId} is unavailable or its connection has changed`), {
+    code: "board_transport_unavailable",
+    hostId,
+    outcomeUnknown
+  });
+}
+function unsupportedBoardEvents() {
+  return Object.assign(new Error("\u6B64 Paseo \u7248\u672C\u5C1A\u672A\u63D0\u4F9B Board \u4E8B\u4EF6\u8BA2\u9605\uFF1B\u9700\u8981\u914D\u5957\u5BBF\u4E3B\u66F4\u65B0\u624D\u80FD\u5B9E\u65F6\u540C\u6B65\u3002"), {
+    code: "plugin_events_unsupported"
+  });
+}
+function createBoardInstallation(client) {
+  var state = registry();
+  var stopped = false;
+  var identity;
+  var registration;
+  var subscriptions = /* @__PURE__ */new Set();
+  var bind = host => {
+    if (stopped) return void 0;
+    if (!host.id || typeof host.id !== "string" || typeof host.label !== "string") throw new Error("Invalid public Board host identity");
+    if (identity && identity.id !== host.id) {
+      dispose();
+      throw new Error("Conflicting public Board host identities");
+    }
+    if (registration) return registration.services;
+    identity = {
+      ...host
+    };
+    var active = true;
+    var generation = ++state.nextGeneration;
+    var isCurrent = () => !stopped && active && state.entries.get(host.id) === registration;
+    var assertCurrent = (outcomeUnknown = false) => {
+      if (!isCurrent()) throw boardTransportUnavailable(host.id, outcomeUnknown);
+    };
+    var services = Object.freeze({
+      protocol: 1,
+      hostId: host.id,
+      label: host.label,
+      generation,
+      paseo: client.paseo,
+      isCurrent,
+      rpc: (contract, input) => __async(null, null, function* () {
+        assertCurrent();
+        if (!/^board\.[a-z0-9._-]+$/.test(contract.name)) throw new Error("Only Board RPC contracts are available through this transport");
+        var result = yield client.rpc(contract, input);
+        assertCurrent(true);
+        return result;
+      }),
+      openScreen(input) {
+        assertCurrent();
+        client.openScreen(input);
+      },
+      subscribeEvents(listener) {
+        if (!isCurrent()) {
+          listener.error(boardTransportUnavailable(host.id));
+          return () => void 0;
+        }
+        var events = client;
+        if (typeof events.subscribeEvent !== "function") {
+          listener.error(unsupportedBoardEvents());
+          return () => void 0;
+        }
+        var listening = true;
+        var subscription;
+        var deliver = callback => {
+          if (listening && isCurrent()) callback();
+        };
+        var cleanup = () => {
+          if (!listening) return;
+          listening = false;
+          subscriptions.delete(cleanup);
+          if (subscription) void subscription.dispose().catch(() => void 0);
+        };
+        subscriptions.add(cleanup);
+        try {
+          subscription = events.subscribeEvent(boardChangedEvent, {
+            onEvent: event => deliver(() => listener.change(event)),
+            onReconnect: () => deliver(listener.reconnect),
+            onError: error => deliver(() => listener.error(error))
+          });
+          void subscription.ready.catch(error => deliver(() => listener.error(error)));
+          if (!listening) void subscription.dispose().catch(() => void 0);
+        } catch (error) {
+          deliver(() => listener.error(error));
+          cleanup();
+        }
+        return cleanup;
+      }
+    });
+    registration = {
+      services,
+      revoke() {
+        active = false;
+        for (var remove of [...subscriptions]) remove();
+      }
+    };
+    state.entries.get(host.id)?.revoke();
+    state.entries.set(host.id, registration);
+    changed(state);
+    return services;
+  };
+  var dispose = () => {
+    if (stopped) return;
+    stopped = true;
+    registration?.revoke();
+    if (identity && state.entries.get(identity.id) === registration) {
+      state.entries.delete(identity.id);
+      changed(state);
+    }
+  };
+  var ready = Promise.resolve().then(() => __async(null, null, function* () {
+    if (stopped) return;
+    try {
+      var directory = yield client.paseo.hosts.list();
+      if (!stopped) bind({
+        id: directory.self.serverId,
+        label: directory.self.label
+      });
+    } catch {}
+  }));
+  return {
+    bind,
+    dispose,
+    ready,
+    current: () => registration?.services
+  };
+}
+
+// client/transport.tsx
+import { jsx } from "react/jsx-runtime";
+var BoardServicesContext = createContext(void 0);
+function BoardServicesProvider({
+  services,
+  children
+}) {
+  return /* @__PURE__ */jsx(BoardServicesContext.Provider, {
+    value: services,
+    children
+  }, `${services.hostId}:${services.generation}`);
+}
+function useBoardTransports() {
+  return useSyncExternalStore(observeBoardTransports, getBoardTransports, getBoardTransports);
+}
+function useBoardServices(hostId) {
+  var services = useContext(BoardServicesContext);
+  if (services && hostId && hostId !== services.hostId) throw new Error("Board service host does not match its view");
+  return services;
+}
+function useBoardRpc(contract, hostId) {
+  var local = useRpc(contract);
+  var services = useBoardServices(hostId);
+  return useCallback(input => {
+    if (services) return services.rpc(contract, input);
+    if (getBoardTransports().length) return Promise.reject(new Error("Board operations require their target host services"));
+    return local(input);
+  }, [contract, services, local]);
+}
+function useBoardPaseo(hostId) {
+  var local = usePaseo();
+  var services = useBoardServices(hostId);
+  if (services && !services.isCurrent()) throw boardTransportUnavailable(services.hostId);
+  return services?.paseo ?? local;
+}
+function BoardInstallationProvider({
+  installation,
+  host,
+  children
+}) {
+  useBoardTransports();
+  useEffect(() => {
+    installation.bind(host);
+  }, [installation, host.id, host.label]);
+  var services = installation.current();
+  return services?.hostId === host.id && services.isCurrent() ? /* @__PURE__ */jsx(BoardServicesProvider, {
+    services,
+    children
+  }) : null;
+}
+
+// client/home.tsx
+import { Modal as Modal3, ScrollView as ScrollView7, TextInput as TextInput6 } from "@getpaseo/plugin/client/ui";
+
 // client/ui.tsx
-import { createContext, useContext } from "react";
+import { createContext as createContext2, useContext as useContext2 } from "react";
 import { Pressable, Text, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/ui";
-import { jsx, jsxs } from "react/jsx-runtime";
-var ColorContext = createContext(null);
+import { jsx as jsx2, jsxs } from "react/jsx-runtime";
+var ColorContext = createContext2(null);
 function useColors() {
-  var value = useContext(ColorContext);
+  var value = useContext2(ColorContext);
   if (!value) throw new Error("Board theme is missing");
   return value;
 }
@@ -1117,11 +1337,11 @@ function Action({
       backgroundColor: primary ? c.accent : pressed || active ? c.surface2 : c.surface0,
       opacity: disabled ? 0.45 : 1
     }),
-    children: [icon ? /* @__PURE__ */jsx(Icon, {
+    children: [icon ? /* @__PURE__ */jsx2(Icon, {
       name: icon,
       size: 15,
       color
-    }) : null, /* @__PURE__ */jsx(Text, {
+    }) : null, /* @__PURE__ */jsx2(Text, {
       style: {
         color,
         fontSize: 12,
@@ -1137,7 +1357,7 @@ function Copy({
   small = false
 }) {
   var c = useColors();
-  return /* @__PURE__ */jsx(Text, {
+  return /* @__PURE__ */jsx2(Text, {
     selectable: true,
     style: {
       color: muted ? c.foregroundMuted : c.foreground,
@@ -1152,7 +1372,7 @@ function Notice({
   error = false
 }) {
   var c = useColors();
-  return /* @__PURE__ */jsx(View, {
+  return /* @__PURE__ */jsx2(View, {
     accessibilityRole: error ? "alert" : void 0,
     style: {
       padding: 12,
@@ -1160,7 +1380,7 @@ function Notice({
       borderLeftWidth: 3,
       borderColor: error ? c.statusDanger : c.accent
     },
-    children: /* @__PURE__ */jsx(Copy, {
+    children: /* @__PURE__ */jsx2(Copy, {
       children: text
     })
   });
@@ -1176,10 +1396,10 @@ function timeLabel(at) {
 }
 
 // client/board.tsx
-import { useCallback as useCallback4, useEffect as useEffect8, useMemo as useMemo4, useRef as useRef8, useState as useState10 } from "react";
-import { Image as Image2, Text as Text9, View as View11 } from "react-native";
-import { openExternalUrl as openExternalUrl2, useRpc as useRpc5 } from "@getpaseo/plugin/client";
-import { Markdown, Modal as Modal2, ScrollView as ScrollView5, TextInput as TextInput4 } from "@getpaseo/plugin/client/ui";
+import { useCallback as useCallback7, useEffect as useEffect11, useMemo as useMemo6, useRef as useRef9, useState as useState12 } from "react";
+import { Image as Image2, Text as Text10, View as View12 } from "react-native";
+import { openExternalUrl as openExternalUrl2 } from "@getpaseo/plugin/client";
+import { Markdown, Modal as Modal2, ScrollView as ScrollView6, TextInput as TextInput5 } from "@getpaseo/plugin/client/ui";
 
 // shared/frame-contract.ts
 var FRAME_CHANNEL = "paseo-board-frame-v1";
@@ -1270,11 +1490,18 @@ function interactionMarkers(interactions) {
 function readFrameMessage(value, scope) {
   if (!record(value) || value.channel !== FRAME_CHANNEL || value.boardId !== scope.boardId || value.sessionId !== scope.sessionId) return null;
   switch (value.type) {
+    case "composition-slots":
+      if (!Array.isArray(value.slots) || value.slots.length > 16 || value.slots.some(slot => !record(slot) || !short(slot.id, 160) || !short(slot.hostId, 256) || !short(slot.boardId, 160) || !["interactive", "preview"].includes(String(slot.view)) || slot.snapshotId !== void 0 && !short(slot.snapshotId, 200) || !short(slot.frameToken, 160) || !Number.isSafeInteger(slot.frameIndex) || Number(slot.frameIndex) < 0 || Number(slot.frameIndex) > 1e3 || !record(slot.rect) || !finite(slot.rect.x) || !finite(slot.rect.y) || Math.abs(slot.rect.x) > 1e6 || Math.abs(slot.rect.y) > 1e6 || !finite(slot.rect.width) || !finite(slot.rect.height) || slot.rect.width < 0 || slot.rect.height < 0 || slot.rect.width > 1e5 || slot.rect.height > 1e5 || typeof slot.visible !== "boolean") || new Set(value.slots.map(slot => slot.id)).size !== value.slots.length) return null;
+      break;
+    case "composition-open":
+    case "composition-drafts":
+      if (!short(value.id, 160)) return null;
+      break;
     case "ready":
       if (value.capabilities !== void 0 && (!record(value.capabilities) || value.capabilities.frameDelta !== 1 || value.capabilities.viewState !== void 0 && value.capabilities.viewState !== 1 || value.capabilities.viewPort !== void 0 && value.capabilities.viewPort !== 1)) return null;
       break;
     case "view-state":
-      if (!isCanvasViewState(value.view)) return null;
+      if (!isCanvasViewState(value.view) || value.capturedAt !== void 0 && (!finite(value.capturedAt) || value.capturedAt < 0)) return null;
       break;
     case "view-restored":
       if (!short(value.requestId, 160) || !Number.isSafeInteger(value.documentVersion) || Number(value.documentVersion) < 0 || !["restored", "cancelled", "unavailable"].includes(value.status)) return null;
@@ -1495,8 +1722,224 @@ function relativeLuminance(color) {
 }
 
 // client/web.ts
-import { createElement, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createElement, useEffect as useEffect2, useLayoutEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
+
+// client/composition-web.ts
+var browser = globalThis;
+function secret() {
+  return Array.from(browser.crypto.getRandomValues(new Uint8Array(24)), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+function createCompositionController(input) {
+  var mounts = /* @__PURE__ */new Map();
+  var windows = /* @__PURE__ */new Map();
+  var descriptions = [];
+  var disposed = false;
+  var discover = event => {
+    var data = event.data;
+    if (disposed || !event.isTrusted || data?.type !== "composition-slot-ready" || data.boardId !== input.scope.boardId || data.sessionId !== input.scope.sessionId || typeof data.frameToken !== "string" || !descriptions.some(slot => slot.frameToken === data.frameToken) || windows.has(data.frameToken)) return;
+    var child = event.source;
+    try {
+      if (!child || child === input.owner() || child.parent !== input.owner()) return;
+    } catch {
+      return;
+    }
+    windows.set(data.frameToken, child);
+    publish();
+  };
+  browser.window?.addEventListener("message", discover);
+  function publish() {
+    var ids = new Set(descriptions.map(slot => slot.id));
+    for (var [id2, item] of mounts) if (!ids.has(id2)) {
+      item.dispose();
+      mounts.delete(id2);
+    }
+    for (var slot of descriptions) {
+      var existing = mounts.get(slot.id);
+      if (existing?.matches(slot)) existing.update(slot);else {
+        existing?.dispose();
+        mounts.delete(slot.id);
+        if (windows.has(slot.frameToken)) mounts.set(slot.id, makeMount(slot));
+      }
+    }
+    input.changed(descriptions.flatMap(slot => {
+      var item = mounts.get(slot.id);
+      return item ? [item.mount] : [];
+    }));
+  }
+  function makeMount(first) {
+    var current = first,
+      publicSnapshot = first,
+      attached,
+      onOpen,
+      onDrafts;
+    var refreshLayout;
+    var listeners2 = /* @__PURE__ */new Set();
+    var mount = {
+      id: first.id,
+      getSnapshot: () => publicSnapshot,
+      subscribe(listener) {
+        listeners2.add(listener);
+        return () => listeners2.delete(listener);
+      },
+      setStatus(text) {
+        if (!disposed && mounts.get(first.id)?.mount === mount) input.send({
+          type: "composition-status",
+          id: first.id,
+          text: text.slice(0, 300)
+        });
+      },
+      setPresentation(value) {
+        onOpen = value.onOpen;
+        onDrafts = value.onDrafts;
+        if (!disposed && mounts.get(first.id)?.mount === mount) input.send({
+          type: "composition-presentation",
+          id: first.id,
+          title: value.title.slice(0, 200),
+          hostLabel: value.hostLabel.slice(0, 200),
+          unread: Math.max(0, Math.min(9999, Math.floor(value.unread))),
+          queued: Math.max(0, Math.min(9999, Math.floor(value.queued ?? 0))),
+          canOpen: Boolean(onOpen),
+          canDrafts: Boolean(onDrafts)
+        });
+      },
+      attach(options) {
+        if (disposed || mounts.get(first.id)?.mount !== mount) throw new Error("The embedded Board slot is no longer available");
+        attached?.dispose();
+        var child = windows.get(current.frameToken);
+        if (!child) throw new Error("The embedded Board browsing context is unavailable");
+        var token2 = secret();
+        var html = options.document(token2);
+        var url = browser.URL.createObjectURL(new browser.Blob([html], {
+          type: "text/html"
+        }));
+        var channel = new browser.MessageChannel();
+        var closed = false,
+          connected = false;
+        var queue = [];
+        var receive = event => {
+          if (closed || !event.isTrusted) return;
+          options.receive({
+            data: event.data,
+            source: child,
+            isTrusted: true,
+            compositionAuthenticated: true
+          });
+        };
+        var ready = event => {
+          var data = event.data;
+          if (closed || connected || !event.isTrusted || event.source !== child || data?.type !== "composition-ready" || data.secret !== token2 || data.boardId !== options.scope.boardId || data.sessionId !== options.scope.sessionId) return;
+          connected = true;
+          browser.window?.removeEventListener("message", ready);
+          channel.port1.addEventListener("message", receive);
+          channel.port1.start();
+          child.postMessage({
+            ...options.scope,
+            type: "composition-connect",
+            secret: token2
+          }, "*", [channel.port2]);
+          for (var queued of queue.splice(0)) channel.port1.postMessage(queued.message, queued.transfer);
+          mount.setStatus("");
+        };
+        browser.window?.addEventListener("message", ready);
+        var connection = {
+          contentWindow: child,
+          send(message, transfer) {
+            if (closed) return;
+            if (connected) channel.port1.postMessage(message, transfer);else if (queue.length < 128) queue.push({
+              message,
+              transfer
+            });
+          },
+          dispose() {
+            if (closed) return;
+            closed = true;
+            options.beforeDispose?.();
+            browser.window?.removeEventListener("message", ready);
+            channel.port1.removeEventListener("message", receive);
+            channel.port1.close();
+            channel.port2.close();
+            queue.length = 0;
+            browser.URL.revokeObjectURL(url);
+            if (attached === connection) {
+              attached = void 0;
+              refreshLayout = void 0;
+              try {
+                child.location = "about:blank";
+              } catch {}
+            }
+          }
+        };
+        attached = connection;
+        refreshLayout = () => connection.send({
+          ...options.scope,
+          type: "composition-layout"
+        });
+        try {
+          child.location = url;
+        } catch (error) {
+          connection.dispose();
+          throw error;
+        }
+        return connection;
+      }
+    };
+    return {
+      mount,
+      matches(next) {
+        return current.frameToken === next.frameToken && current.hostId === next.hostId && current.boardId === next.boardId && current.view === next.view && current.snapshotId === next.snapshotId;
+      },
+      open() {
+        onOpen?.();
+      },
+      drafts() {
+        onDrafts?.();
+      },
+      update(next) {
+        var moved = current.rect.x !== next.rect.x || current.rect.y !== next.rect.y || current.rect.width !== next.rect.width || current.rect.height !== next.rect.height;
+        current = next;
+        if (moved) refreshLayout?.();
+        if (JSON.stringify(publicSnapshot) !== JSON.stringify(next)) {
+          publicSnapshot = next;
+          for (var listener of listeners2) listener();
+        }
+      },
+      dispose() {
+        attached?.dispose();
+        listeners2.clear();
+      }
+    };
+  }
+  return {
+    open(id2) {
+      if (!disposed) mounts.get(id2)?.open();
+    },
+    drafts(id2) {
+      if (!disposed) mounts.get(id2)?.drafts();
+    },
+    update(slots) {
+      if (disposed) return;
+      descriptions = slots;
+      publish();
+      var tokens = new Set(slots.map(slot => slot.frameToken));
+      for (var token2 of windows.keys()) if (!tokens.has(token2)) windows.delete(token2);
+      for (var slot of slots) if (!windows.has(slot.frameToken)) input.send({
+        type: "composition-discover",
+        id: slot.id,
+        frameToken: slot.frameToken
+      });
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      browser.window?.removeEventListener("message", discover);
+      windows.clear();
+      for (var item of mounts.values()) item.dispose();
+      mounts.clear();
+      input.changed([]);
+    }
+  };
+}
 
 // shared/assets/visualize.css.txt
 var visualize_css_default = `/*
@@ -2494,7 +2937,178 @@ var runtime_icons_default = '<script id="codex-visualization-lucide" async src="
 var runtime_tooltips_default = '<script>\n// Tooltips for [data-tooltip], positioned with floating-ui. The two scripts are inserted from\n// here instead of as parser-blocking tags, so they never hold DOMContentLoaded (or the\n// fragment code waiting for it); with async off they still run in order.\n(() => {\n  const sources = [\n    "https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js",\n    "https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js",\n  ];\n  const start = () => {\n    if (window.FloatingUIDOM == null) {\n      return;\n    }\n    const { autoUpdate, computePosition, flip, offset, shift, size } =\n      window.FloatingUIDOM;\n    const tooltipPlacements = new Set(["top", "right", "bottom", "left"]);\n    const tooltipId = `codex-visualization-tooltip-${\n      window.crypto?.randomUUID?.() ?? Date.now().toString(36)\n    }`;\n    const tooltipGap = 5;\n    const hoverDelay = 700;\n    const skipDelay = 300;\n    let activeTrigger = null;\n    let pendingTrigger = null;\n    let tooltip = null;\n    let openTimeout = null;\n    let autoUpdateCleanup = null;\n    let positionRequest = 0;\n    let skipDelayUntil = 0;\n\n    const getTrigger = (target) =>\n      target?.nodeType === Node.ELEMENT_NODE\n        ? target.closest("[data-tooltip]")\n        : null;\n    const containsTarget = (trigger, target) =>\n      target?.nodeType != null && trigger.contains(target);\n    const getContent = (trigger) =>\n      trigger.getAttribute("data-tooltip")?.trim() ?? "";\n    const getPlacement = (trigger) => {\n      const placement = trigger.getAttribute("data-tooltip-placement");\n      return tooltipPlacements.has(placement) ? placement : "top";\n    };\n    const getTooltip = () => {\n      if (tooltip == null) {\n        tooltip = document.createElement("div");\n        tooltip.id = tooltipId;\n        tooltip.className = "tooltip";\n        tooltip.setAttribute("role", "tooltip");\n      }\n      return tooltip;\n    };\n    const setDescribedBy = (trigger, described) => {\n      const ids = new Set(\n        (trigger.getAttribute("aria-describedby") ?? "")\n          .split(/\\s+/)\n          .filter(Boolean),\n      );\n      if (described) {\n        ids.add(tooltipId);\n      } else {\n        ids.delete(tooltipId);\n      }\n      if (ids.size === 0) {\n        trigger.removeAttribute("aria-describedby");\n      } else {\n        trigger.setAttribute("aria-describedby", [...ids].join(" "));\n      }\n    };\n    const clearOpenTimeout = () => {\n      if (openTimeout != null) {\n        window.clearTimeout(openTimeout);\n        openTimeout = null;\n      }\n      pendingTrigger = null;\n    };\n    const closeTooltip = (activateSkipDelay = true) => {\n      clearOpenTimeout();\n      positionRequest += 1;\n      autoUpdateCleanup?.();\n      autoUpdateCleanup = null;\n      if (activeTrigger == null) {\n        return;\n      }\n      setDescribedBy(activeTrigger, false);\n      activeTrigger = null;\n      tooltip?.remove();\n      if (activateSkipDelay) {\n        skipDelayUntil = Date.now() + skipDelay;\n      }\n    };\n    const updatePosition = (trigger, floating) => {\n      const request = ++positionRequest;\n      void computePosition(trigger, floating, {\n        middleware: [\n          offset(tooltipGap),\n          flip({ padding: tooltipGap }),\n          shift({ padding: tooltipGap }),\n          size({\n            padding: tooltipGap,\n            apply({ availableHeight, availableWidth, elements }) {\n              elements.floating.style.setProperty(\n                "--tooltip-available-width",\n                `${Math.max(0, availableWidth)}px`,\n              );\n              elements.floating.style.setProperty(\n                "--tooltip-available-height",\n                `${Math.max(0, availableHeight)}px`,\n              );\n            },\n          }),\n        ],\n        placement: getPlacement(trigger),\n        strategy: "fixed",\n      })\n        .then(({ x, y }) => {\n          if (activeTrigger !== trigger || request !== positionRequest) {\n            return;\n          }\n          const scale = window.devicePixelRatio || 1;\n          floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;\n          floating.style.visibility = "visible";\n        })\n        .catch(() => {\n          if (activeTrigger === trigger && request === positionRequest) {\n            closeTooltip(false);\n          }\n        });\n    };\n    const openTooltip = (trigger) => {\n      const content = getContent(trigger);\n      if (!trigger.isConnected || content.length === 0) {\n        return;\n      }\n      clearOpenTimeout();\n      if (activeTrigger === trigger) {\n        return;\n      }\n      closeTooltip();\n      const floating = getTooltip();\n      floating.textContent = content;\n      floating.style.visibility = "hidden";\n      floating.style.transform = "translate(0, 0)";\n      document.body.appendChild(floating);\n      activeTrigger = trigger;\n      setDescribedBy(trigger, true);\n      autoUpdateCleanup = autoUpdate(trigger, floating, () => {\n        updatePosition(trigger, floating);\n      });\n    };\n    const requestOpen = (trigger, immediate = false) => {\n      if (\n        getContent(trigger).length === 0 ||\n        activeTrigger === trigger ||\n        pendingTrigger === trigger\n      ) {\n        return;\n      }\n      clearOpenTimeout();\n      pendingTrigger = trigger;\n      const delay =\n        immediate || activeTrigger != null || Date.now() < skipDelayUntil\n          ? 0\n          : hoverDelay;\n      if (delay === 0) {\n        openTooltip(trigger);\n        return;\n      }\n      openTimeout = window.setTimeout(() => {\n        openTimeout = null;\n        pendingTrigger = null;\n        openTooltip(trigger);\n      }, delay);\n    };\n    const handlePointerOpen = (event) => {\n      if (event.pointerType === "touch") {\n        return;\n      }\n      const trigger = getTrigger(event.target);\n      if (trigger == null || containsTarget(trigger, event.relatedTarget)) {\n        return;\n      }\n      requestOpen(trigger);\n    };\n    const handleLeave = (event) => {\n      const trigger = getTrigger(event.target);\n      if (trigger == null || containsTarget(trigger, event.relatedTarget)) {\n        return;\n      }\n      if (activeTrigger === trigger || pendingTrigger === trigger) {\n        closeTooltip();\n      }\n    };\n    const handleFocusIn = (event) => {\n      const trigger = getTrigger(event.target);\n      if (trigger?.matches(":focus-visible")) {\n        requestOpen(trigger, true);\n      }\n    };\n    const handleKeyDown = (event) => {\n      if (event.key === "Escape") {\n        closeTooltip();\n      }\n    };\n    const handleContextMenu = (event) => {\n      const trigger = getTrigger(event.target);\n      if (activeTrigger === trigger || pendingTrigger === trigger) {\n        closeTooltip();\n      }\n    };\n    const destroy = () => {\n      closeTooltip(false);\n      document.removeEventListener("pointerover", handlePointerOpen);\n      document.removeEventListener("pointerout", handleLeave);\n      document.removeEventListener("focusin", handleFocusIn);\n      document.removeEventListener("focusout", handleLeave);\n      document.removeEventListener("keydown", handleKeyDown);\n      document.removeEventListener("contextmenu", handleContextMenu);\n      tooltip = null;\n    };\n\n    document.addEventListener("pointerover", handlePointerOpen);\n    document.addEventListener("pointerout", handleLeave);\n    document.addEventListener("focusin", handleFocusIn);\n    document.addEventListener("focusout", handleLeave);\n    document.addEventListener("keydown", handleKeyDown);\n    document.addEventListener("contextmenu", handleContextMenu);\n    window.addEventListener("pagehide", destroy, { once: true });\n  };\n  let last = null;\n  for (const src of sources) {\n    last = document.createElement("script");\n    last.src = src;\n    last.async = false;\n    document.head.append(last);\n  }\n  last.addEventListener("load", start, { once: true });\n})();\n</script>\n';
 
 // shared/assets/board-runtime.txt
-var board_runtime_default = 'function (initial, createFrameReceiver, createComponentLayoutTools, installComponentLayoutState) {\n  "use strict";\n  const root = document.documentElement;\n  const scope = { channel: initial.channel, boardId: initial.boardId, sessionId: initial.sessionId };\n  let snapshot = initial;\n  let state = initial.userState;\n  let localStateDirty = false;\n  let selectionMode = "off";\n  let deferredSelection = null;\n  let queued = null;\n  let applying = false;\n  let captureBusy = false;\n  let selectionSession = null;\n  let suppressPointerClick = false;\n  let dismissedPointer = null;\n  let lastAnchor;\n  let pointer = null;\n  let textPointer = null;\n  let overlay = null;\n  let lastGesture = -Infinity;\n  let lastGesturePosition;\n  let patchFailure = null;\n  let pendingMarkerFocus = null;\n  let sequence = 0;\n  const applied = new Set();\n  const dataListeners = new Set();\n  const dataWatches = new Map();\n  const stateListeners = new Set();\n  const pendingAsks = new Map();\n  const revealListeners = new Set();\n  let markerReveal = null;\n  const post = (message) => window.parent.postMessage({ ...message, ...scope }, "*");\n  const copy = (value) => value === undefined ? undefined : structuredClone(value);\n  const error = (code, message, patchId) => post({ type: "error", error: { code, message: String(message).slice(0, 4000), ...(patchId ? { patchId } : {}) } });\n  const emitListeners = (listeners, value) => { for (const listener of listeners) { try { listener(copy(value)); } catch (e) { error("listener-error", e.message); } } };\n  const currentAnchor = () => ({ kind: "board", boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision });\n  const acting = () => !markerReveal && performance.now() - lastGesture < 1800 && navigator.userActivation && navigator.userActivation.isActive;\n  const cancelAsk = { status: "cancelled", outcome: null };\n  const ask = (input) => {\n    const request = typeof input === "string" ? { prompt: input } : input;\n    if (!request || typeof request.prompt !== "string" || !request.prompt.trim() || request.prompt.length > 24000) return Promise.reject(new TypeError("board.ask requires a prompt of 1\u201324000 characters"));\n    if (request.kind !== undefined && !["question", "change", "fork"].includes(request.kind)) return Promise.reject(new TypeError("board.ask kind must be question, change or fork"));\n    if (!acting() || pendingAsks.size >= 8 || selectionMode !== "off") return Promise.resolve(cancelAsk);\n    let anchor;\n    try { anchor = authoredAskAnchor(request.anchor === undefined ? lastAnchor || currentAnchor() : request.anchor); }\n    catch (failure) { return Promise.reject(failure); }\n    lastGesture = -Infinity;\n    const id = `ask-${++sequence}`;\n    return new Promise((resolve, reject) => {\n      const timer = setTimeout(() => { pendingAsks.delete(id); resolve(cancelAsk); }, 120000);\n      pendingAsks.set(id, { resolve, timer });\n      try { post({ type: "ask", id, request: { prompt: request.prompt, anchor, kind: request.kind || "question", position: lastGesturePosition } }); }\n      catch (failure) { clearTimeout(timer); pendingAsks.delete(id); reject(failure); }\n    });\n  };\n  const managedViewNamespace = "__paseoContainerViews";\n  const writeState = (value) => {\n    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("board.saveState requires a JSON object");\n    const serialized = JSON.stringify(value);\n    if (serialized.length > 524288) throw new RangeError("board state exceeds 512 KiB");\n    state = JSON.parse(serialized);\n    localStateDirty = true;\n    post({ type: "state", state });\n    return copy(state);\n  };\n  const saveState = (value) => {\n    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("board.saveState requires a JSON object");\n    const next = { ...value };\n    // Authored state still uses replacement semantics. Its old/full snapshots\n    // cannot overwrite the independently maintained container view records.\n    if (Object.prototype.hasOwnProperty.call(state, managedViewNamespace)) next[managedViewNamespace] = state[managedViewNamespace];\n    else delete next[managedViewNamespace];\n    return writeState(next);\n  };\n  const subscribe = (listeners, fn) => {\n    if (typeof fn !== "function") throw new TypeError("listener must be a function");\n    listeners.add(fn);\n    return () => listeners.delete(fn);\n  };\n  // Watch only selected JSON values. Changed paths filter unrelated subscriptions.\n  const watchSegments = (path) => {\n    if (typeof path !== "string" || path.length > 2000 || (path !== "" && !path.startsWith("/")) || /~(?![01])/.test(path)) throw new TypeError("watch requires a JSON Pointer (empty string means all data)");\n    const parts = path === "" ? [] : path.slice(1).split("/").map(part => part.replace(/~1/g, "/").replace(/~0/g, "~"));\n    if (parts.length > 64 || parts.some(part => ["__proto__", "prototype", "constructor"].includes(part))) throw new TypeError("watch path is not allowed");\n    return parts;\n  };\n  const readWatchedValue = (data, parts) => {\n    let value = data;\n    for (const part of parts) {\n      if (!value || typeof value !== "object" || !Object.prototype.hasOwnProperty.call(value, part)) return { exists: false };\n      if (Array.isArray(value) && !/^(0|[1-9][0-9]*)$/.test(part)) return { exists: false };\n      value = value[part];\n    }\n    return { exists: true, value };\n  };\n  const equalJson = (a, b) => {\n    if (a === b) return true;\n    if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return false;\n    const keys = Object.keys(a);\n    return keys.length === Object.keys(b).length && keys.every(key => Object.prototype.hasOwnProperty.call(b, key) && equalJson(a[key], b[key]));\n  };\n  const deliverWatch = (entry, listener, immediate = false) => {\n    if (!listener.active) return;\n    if (listener.schedule === "frame" && !immediate) {\n      if (listener.frame === null) listener.frame = requestAnimationFrame(() => { listener.frame = null; deliverWatch(entry, listener, true); });\n      return;\n    }\n    try { listener.fn(entry.current.exists ? copy(entry.current.value) : undefined, Object.freeze({ path: entry.path, exists: entry.current.exists, boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision })); }\n    catch (e) { error("listener-error", e instanceof Error ? e.message : String(e)); }\n  };\n  const emitWatches = (changedPaths) => {\n    const deliveries = [];\n    // Update every cache before calling authored code. A callback may subscribe\n    // to another existing path; its initial value must belong to this snapshot.\n    for (const entry of Array.from(dataWatches.values())) {\n      if (changedPaths && !changedPaths.some(path => path === entry.path || path.startsWith(entry.path + "/") || entry.path.startsWith(path + "/"))) continue;\n      const next = readWatchedValue(snapshot.canvas.data, entry.parts);\n      if (next.exists === entry.current.exists && equalJson(next.value, entry.current.value)) continue;\n      entry.current = next;\n      deliveries.push({ entry, listeners: Array.from(entry.listeners) });\n    }\n    for (const { entry, listeners } of deliveries) {\n      for (const listener of listeners) if (entry.listeners.has(listener)) deliverWatch(entry, listener);\n    }\n  };\n  const watch = (path, fn, options) => {\n    const parts = watchSegments(path);\n    if (typeof fn !== "function") throw new TypeError("watch listener must be a function");\n    if (options !== undefined && (!options || typeof options !== "object" || options.schedule !== "frame")) throw new TypeError("watch options require schedule: \'frame\'");\n    let entry = dataWatches.get(path);\n    if (!entry) { entry = { path, parts, current: readWatchedValue(snapshot.canvas.data, parts), listeners: new Set() }; dataWatches.set(path, entry); }\n    // Frame subscriptions are latest-state rendering, not a lossless event stream.\n    const listener = { fn, schedule: options?.schedule, frame: null, active: true };\n    entry.listeners.add(listener);\n    deliverWatch(entry, listener, true);\n    return () => { listener.active = false; if (listener.frame !== null) cancelAnimationFrame(listener.frame); entry.listeners.delete(listener); if (!entry.listeners.size && dataWatches.get(path) === entry) dataWatches.delete(path); };\n  };\n  // No SDK or execution primitive is exposed. Data and view state remain task-agnostic JSON.\n  Object.defineProperty(window, "board", { configurable: false, writable: false, value: Object.freeze({\n    getData: () => copy(snapshot.canvas.data),\n    onData: (fn) => subscribe(dataListeners, fn),\n    watch,\n    getState: () => copy(state),\n    restoreState: () => copy(state),\n    onState: (fn) => subscribe(stateListeners, fn),\n    saveState,\n    ask,\n    onReveal: (fn) => subscribe(revealListeners, fn),\n    getContext: () => ({ boardId: scope.boardId, documentVersion: initial.canvas.documentVersion, boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision }),\n  }) });\n  window.openai = Object.freeze({ sendFollowUpMessage: ask });\n  const componentLayoutTools = createComponentLayoutTools();\n  const componentLayoutState = installComponentLayoutState({\n    getState: () => copy(state), saveState: writeState, onState: fn => subscribe(stateListeners, fn),\n  }, initial.canvas.documentVersion);\n\n  let appliedTheme = initial.theme;\n  const applyTheme = (theme) => {\n    if (!theme || !["light", "dark"].includes(theme.scheme) || !theme.tokens || typeof theme.tokens !== "object") return;\n    if (equalJson(appliedTheme, theme)) return;\n    if (appliedTheme?.scheme !== theme.scheme) root.setAttribute("data-theme", theme.scheme);\n    // The host scheme is a CSS-layer default. An authored fixed light/dark canvas may\n    // override color-scheme without each host refresh overwriting it with inline style.\n    for (const name of Object.keys(appliedTheme?.tokens || {})) if (!Object.prototype.hasOwnProperty.call(theme.tokens, name)) root.style.removeProperty("--" + name);\n    for (const [name, value] of Object.entries(theme.tokens)) if (appliedTheme?.tokens[name] !== value && /^host-[a-z0-9-]+$/.test(name) && typeof value === "string" && /^[#a-zA-Z0-9(),.%+*/ -]{1,200}$/.test(value)) root.style.setProperty("--" + name, value);\n    appliedTheme = theme;\n    window.dispatchEvent(new CustomEvent("paseo:themechange", { detail: { theme: theme.scheme, palette: "custom" } }));\n  };\n\n  const runScript = (old) => new Promise((resolve, reject) => {\n    const script = document.createElement("script");\n    for (const attribute of old.attributes) script.setAttribute(attribute.name, attribute.value);\n    script.textContent = old.textContent;\n    const executable = !script.type || /^(module|(?:text|application)\\/(?:java|ecma)script)$/i.test(script.type);\n    if (!executable) { old.replaceWith(script); resolve(); return; }\n    const inlineModule = !script.hasAttribute("src") && script.type === "module";\n    const originalText = script.textContent;\n    const completionEvent = inlineModule ? `paseo:patch-module:${scope.sessionId}:${++sequence}` : null;\n    let completionUrl, instrumentedText, settled = false;\n    let scriptError;\n    let timer;\n    const finish = (failure) => {\n      if (settled) return; settled = true;\n      clearTimeout(timer); window.removeEventListener("error", onError);\n      if (completionEvent) window.removeEventListener(completionEvent, onComplete);\n      if (completionUrl) URL.revokeObjectURL(completionUrl);\n      // Keep authored source identities unchanged after this transient execution marker.\n      if (instrumentedText && script.textContent === instrumentedText) script.textContent = originalText;\n      failure ? reject(failure) : resolve();\n    };\n    const onError = (event) => { scriptError = new Error(event.message || "Patch script failed"); if (inlineModule) finish(scriptError); };\n    const onComplete = () => finish(scriptError);\n    window.addEventListener("error", onError);\n    const external = script.hasAttribute("src");\n    if (inlineModule) {\n      // Inline modules never emit load. A tail import runs only after the authored body,\n      // including top-level await, without wrapping its scope or changing import.meta.url.\n      // The helper\'s globals are independent of names declared by the authored module.\n      completionUrl = URL.createObjectURL(new Blob([`window.dispatchEvent(new Event(${JSON.stringify(completionEvent)}));`], { type: "text/javascript" }));\n      instrumentedText = originalText + `\\n;await import(${JSON.stringify(completionUrl)});`;\n      script.textContent = instrumentedText;\n      window.addEventListener(completionEvent, onComplete, { once: true });\n    }\n    if (external || inlineModule) {\n      script.async = false;\n      if (external) script.addEventListener("load", () => finish(scriptError), { once: true });\n      script.addEventListener("error", () => finish(new Error("Patch script could not load")), { once: true });\n      timer = setTimeout(() => finish(new Error("Patch script timed out; it will not be retried")), 20000);\n    }\n    try { old.replaceWith(script); if (!external && !inlineModule) finish(scriptError); } catch (e) { finish(e); }\n  });\n  const componentTransferFailure = (operation, node, destination = null, position = "append") => ["move", "copy"].includes(operation)\n    ? componentLayoutTools.transferFailure(operation, node, destination, position) : null;\n  const applyPatch = async (patch) => {\n    if (applied.has(patch.id)) return;\n    // Claim before mutation. A partial script failure must never run the same patch a second time.\n    applied.add(patch.id);\n    const targets = document.querySelectorAll(patch.selector);\n    if (targets.length !== 1) throw new Error(`Patch selector must match exactly one element; matched ${targets.length}`);\n    const target = targets[0];\n    if (target === root || target === document.head || target === document.body) {\n      if (["replace", "remove", "move", "copy", "text", "layout"].includes(patch.operation)) throw new Error("Replacing document roots requires publishing a new document version");\n    }\n    if (["move", "copy", "text", "layout"].includes(patch.operation)) {\n      if (!matchesComponentIdentity(target, patch.sourceIdentity)) throw new Error("The edited component structure changed; reload its current authored version");\n      const transferFailure = componentTransferFailure(patch.operation, target);\n      if (transferFailure) throw new Error(transferFailure);\n      if (patch.operation === "layout") {\n        const focused = document.activeElement;\n        const restoreFocus = focused instanceof HTMLElement && target.contains(focused);\n        const caret = restoreFocus && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;\n        capturePatchTargets(patch, target);\n        componentLayoutTools.apply(target, patch.layout, patch.id, { move(parent, node, before) {\n          if (typeof parent.moveBefore === "function" && node.isConnected && parent.isConnected) parent.moveBefore(node, before);\n          else parent.insertBefore(node, before);\n        } });\n        componentLayoutState.refresh();\n        if (restoreFocus && focused.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });\n        if (caret) try { focused.setSelectionRange(...caret); } catch {}\n        return;\n      }\n      if (patch.operation === "text") {\n        const textNode = patch.textNodeIndex === undefined ? null : target.childNodes[patch.textNodeIndex];\n        if (textNode ? textNode.nodeType !== Node.TEXT_NODE || textNode.textContent !== patch.expectedText : target.children.length || target.textContent !== patch.expectedText) throw new Error("The edited text changed before this patch arrived");\n        capturePatchTargets(patch, target);\n        if (textNode) textNode.textContent = patch.text; else target.textContent = patch.text;\n        return;\n      }\n      const destinations = document.querySelectorAll(patch.destination);\n      if (destinations.length !== 1) throw new Error("Edit destination must match exactly one element");\n      const destination = destinations[0];\n      if (!matchesComponentIdentity(destination, patch.destinationIdentity) || target === destination || target.contains(destination)) throw new Error("The edit destination changed or contains a cycle");\n      const placementFailure = componentTransferFailure(patch.operation, target, destination, patch.position);\n      if (placementFailure) throw new Error(placementFailure);\n      const parent = ["before", "after"].includes(patch.position) ? destination.parentNode : destination;\n      const before = patch.position === "before" ? destination : patch.position === "after" ? destination.nextSibling : patch.position === "prepend" ? destination.firstChild : null;\n      if (patch.operation === "copy") {\n        // Parse in the source\'s actual namespace/context. An HTML template turns SVG\n        // subcomponents such as <g>/<rect> into invisible HTML unknown elements. Range\n        // parsing also retains SVG foreignObject\'s HTML integration points.\n        const range = document.createRange(); range.selectNode(target);\n        const content = range.createContextualFragment(patch.html);\n        // Copy authoritative authored markup, never runtime listeners/closures. Defense in\n        // depth: copied scripts and inline handler attributes never execute on insertion.\n        for (const script of content.querySelectorAll("script")) script.remove();\n        for (const element of content.querySelectorAll("*")) for (const attribute of Array.from(element.attributes)) if (/^on/i.test(attribute.name)) element.removeAttribute(attribute.name);\n        const inserted = Array.from(content.children); capturePatchTargets(patch, target, inserted);\n        parent.insertBefore(content, before); return;\n      }\n      const focused = document.activeElement;\n      const restoreFocus = focused instanceof HTMLElement && target.contains(focused);\n      const caret = restoreFocus && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;\n      capturePatchTargets(patch, target);\n      // New browsers preserve iframe/media/focus state with a same-document atomic move.\n      // The fallback still retains the actual node and listeners, then restores input caret.\n      if (typeof parent.moveBefore === "function" && target.isConnected && parent.isConnected) parent.moveBefore(target, before);\n      else parent.insertBefore(target, before);\n      if (restoreFocus && focused.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });\n      if (caret) try { focused.setSelectionRange(...caret); } catch {}\n      return;\n    }\n    if (patch.operation === "remove") { capturePatchTargets(patch, target); target.remove(); return; }\n    const template = document.createElement("template");\n    template.innerHTML = patch.html;\n    const scripts = Array.from(template.content.querySelectorAll("script"));\n    capturePatchTargets(patch, target, Array.from(template.content.children));\n    if (patch.operation === "append") target.append(template.content);\n    else if (patch.operation === "prepend") target.prepend(template.content);\n    else if (patch.operation === "replace") target.replaceWith(template.content);\n    else throw new Error("Unknown patch operation");\n    for (const script of scripts) if (script.isConnected) await runScript(script);\n  };\n  const receiver = createFrameReceiver(initial, request => post({ type: "snapshot-request", ...request }), componentLayoutTools.validate);\n  let versionedTransport = false;\n  const enqueue = (update) => {\n    if (!update) return;\n    queued = queued ? { snapshot: update.snapshot,\n      changedPaths: queued.changedPaths === null || update.changedPaths === null ? null : [...new Set([...queued.changedPaths, ...update.changedPaths])],\n      patches: [...new Map([...queued.patches, ...update.patches].map(patch => [patch.id, patch])).values()] } : update;\n    if (componentLayoutPreview && update.snapshot.canvas.revision !== componentLayoutPreview.revision) { clearComponentLayoutPreview(); setComponentNotice("\u753B\u5E03\u5DF2\u66F4\u65B0\uFF0C\u5E03\u5C40\u9884\u89C8\u5DF2\u64A4\u4E0B\uFF1B\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9"); }\n    void drain();\n  };\n  const receiveSnapshot = (next, version) => {\n    if (version !== undefined) { versionedTransport = true; enqueue(receiver.snapshot(next, version)); return; }\n    // Compatibility with older hosts. Versioned traffic exclusively uses the validated receiver.\n    if (versionedTransport) return;\n    if (!next || !next.canvas || next.canvas.documentVersion !== initial.canvas.documentVersion || next.boardRevision < (queued?.snapshot || snapshot).boardRevision) return;\n    enqueue({ snapshot: next, changedPaths: null, patches: next.canvas.patches });\n  };\n  const drain = async () => {\n    if (applying || selectionMode !== "off" || selectionSession || captureBusy) return;\n    if (!queued) { reportCanvasActivity(); drainMarkerFocus(); return; }\n    applying = true;\n    reportCanvasActivity();\n    try {\n      while (queued && selectionMode === "off" && !selectionSession && !captureBusy) {\n        const update = queued;\n        const next = update.snapshot;\n        queued = null;\n        const dataChanged = update.changedPaths === null ? !equalJson(snapshot.canvas.data, next.canvas.data) : update.changedPaths.length > 0;\n        const serverStateChanged = !equalJson(snapshot.userState, next.userState);\n        snapshot = next;\n        applyTheme(next.theme);\n        if (dataChanged) {\n          emitWatches(update.changedPaths);\n          emitListeners(dataListeners, next.canvas.data);\n          window.dispatchEvent(new CustomEvent("board:data", { detail: copy(next.canvas.data) }));\n        }\n        if (localStateDirty) {\n          // A slow acknowledgement for an earlier save must never overwrite newer local input.\n          if (equalJson(next.userState, state)) localStateDirty = false;\n        } else if (serverStateChanged && !equalJson(next.userState, state)) {\n          state = next.userState;\n          emitListeners(stateListeners, state);\n        }\n        if (patchFailure) continue;\n        for (const patch of update.patches) {\n          try { await applyPatch(patch); }\n          catch (e) {\n            patchFailure = patch.id;\n            error("patch-failed", `${e.message}. Later patches are paused until the document is republished.`, patch.id);\n            break;\n          }\n        }\n      }\n    } finally {\n      applying = false;\n      reportCanvasActivity();\n      queueMarkerPositions();\n      if (deferredSelection !== null) { const mode = deferredSelection; deferredSelection = null; setSelectionMode(mode); }\n      drainMarkerFocus();\n      resumeComponentEdit();\n      readingView.afterDrain();\n    }\n  };\n\n  // Selection is opt-in. In ordinary mode we never consume pointer, keyboard or drag events.\n  const selectorFor = (node) => {\n    if (!(node instanceof Element)) return undefined;\n    if (node.id) return "#" + CSS.escape(node.id);\n    const parts = [];\n    while (node && node !== document.body && parts.length < 12) {\n      if (node.id) { parts.unshift("#" + CSS.escape(node.id)); break; }\n      const name = node.localName;\n      if (!name) break;\n      const siblings = node.parentElement ? Array.from(node.parentElement.children).filter((n) => n.localName === name) : [];\n      parts.unshift(name + (siblings.length > 1 ? `:nth-of-type(${siblings.indexOf(node) + 1})` : ""));\n      node = node.parentElement;\n    }\n    return parts.length ? parts.join(" > ").slice(0, 1000) : undefined;\n  };\n  // Reading positions are a separate local bridge. No author-state write or Board mutation.\n  const readingView = (() => {\n    const scrollers = new Map();\n    let booted = false, pending = null, restoreTimer = null, captureTimer = null, lastCapture = 0, lastValue = "";\n    let viewPort = null;\n    let lastRestoreRequest = null, userInteracted = false, captureSuppressed = false;\n    const visible = () => !document.hidden && innerWidth > 0 && innerHeight > 0 && root.getBoundingClientRect().width > 0;\n    const idle = () => booted && !applying && !queued && !patchFailure;\n    const find = selector => { try { const nodes = document.querySelectorAll(selector); return nodes.length === 1 ? nodes[0] : null; } catch { return null; } };\n    const selector = node => {\n      if (!(node instanceof Element) || node === root || node === document.body || node.closest("[data-board-overlay]")) return null;\n      let result = node.id ? "#" + CSS.escape(node.id) : null;\n      const key = node.getAttribute("data-paseo-layout-key"), part = node.getAttribute("data-paseo-layout-part");\n      if (!result && key && part) result = `[data-paseo-layout-key=${JSON.stringify(key)}][data-paseo-layout-part=${JSON.stringify(part)}]`;\n      // A bounded authored path supports ordinary anonymous log containers too.\n      if (!result) result = selectorFor(node);\n      return result && result.length <= 1000 && find(result) === node ? result : null;\n    };\n    const documentAnchor = node => {\n      for (let current = node; current && current !== root; current = current.parentElement) {\n        if (["sticky", "fixed"].includes(getComputedStyle(current).position)) return false;\n      }\n      return true;\n    };\n    const rememberScroller = node => {\n      if (!(node instanceof Element) || node === root || node === document.body || node.closest("[data-board-overlay]")) return;\n      const key = selector(node); if (!key) return;\n      scrollers.delete(key); scrollers.set(key, { node, x: node.scrollLeft, y: node.scrollTop });\n      if (scrollers.size > 32) scrollers.delete(scrollers.keys().next().value);\n    };\n    const capture = () => {\n      clearTimeout(captureTimer); captureTimer = null;\n      if (!idle() || pending || captureSuppressed || !visible()) return;\n      const scrolls = [];\n      for (const [key, saved] of scrollers) {\n        const node = saved.node;\n        if (!node.isConnected || !node.matches(key)) { scrollers.delete(key); continue; }\n        // Hidden logs retain their previous local record until they become measurable again.\n        if (node.getClientRects().length) { saved.x = node.scrollLeft; saved.y = node.scrollTop; }\n        scrolls.push({ selector: key, x: saved.x, y: saved.y });\n      }\n      let anchor;\n      // Hit testing is constant-sized; never walk every element during scrolling.\n      for (const [x, y] of [[Math.min(80, innerWidth / 3), Math.min(80, innerHeight / 3)], [innerWidth / 2, innerHeight / 3]]) {\n        let node = document.elementFromPoint(x, y);\n        if (node?.closest("[data-board-overlay]")) continue;\n        node = node?.closest("[id]");\n        if (!node || node === root || node === document.body || !documentAnchor(node)) continue;\n        const key = selector(node), rect = node.getBoundingClientRect();\n        if (key && rect.width > 0 && rect.height > 0) { anchor = { selector: key, offsetX: rect.left, offsetY: rect.top }; break; }\n      }\n      const view = { documentVersion: snapshot.canvas.documentVersion, canvasRevision: snapshot.canvas.revision,\n        x: scrollX, y: scrollY, ...(anchor ? { anchor } : {}), scrolls };\n      const value = JSON.stringify(view); lastCapture = performance.now();\n      if (value !== lastValue) {\n        lastValue = value;\n        if (viewPort) viewPort.postMessage({ ...scope, type: "view-state", view });\n        else post({ type: "view-state", view });\n      }\n    };\n    const scheduleCapture = () => {\n      if (captureTimer !== null || pending) return;\n      const delay = Math.max(0, 120 - (performance.now() - lastCapture));\n      // Capture a new burst in this task; a zero-delay timer can otherwise run\n      // after the host has already switched agents and removed the document.\n      if (delay === 0) capture(); else captureTimer = setTimeout(capture, delay);\n    };\n    const finish = status => {\n      const request = pending; if (!request) return;\n      pending = null; clearTimeout(restoreTimer); restoreTimer = null;\n      if (status === "unavailable") captureSuppressed = true;\n      post({ type: "view-restored", requestId: request.id, documentVersion: initial.canvas.documentVersion, status });\n      // A cancelled user gesture may immediately scroll; capture the actual visible result.\n      if (status !== "unavailable") scheduleCapture();\n    };\n    const attempt = () => {\n      restoreTimer = null; if (!pending) return;\n      const now = performance.now(), expired = now >= pending.deadline;\n      if (!idle() || !visible() || pending.view.canvasRevision > snapshot.canvas.revision) {\n        if (expired) { finish("unavailable"); return; }\n        restoreTimer = setTimeout(attempt, 40); return;\n      }\n      const doc = document.scrollingElement || root;\n      const geometry = [innerWidth, innerHeight, doc.scrollWidth, doc.scrollHeight].join(":");\n      if (geometry !== pending.geometry) { pending.geometry = geometry; pending.stableSince = now; }\n      const view = pending.view;\n      const anchor = view.anchor ? find(view.anchor.selector) : null;\n      const anchorRect = anchor?.getBoundingClientRect();\n      const anchorVisible = anchorRect && anchorRect.width > 0 && anchorRect.height > 0 && !anchor.closest("[data-board-overlay]") && documentAnchor(anchor);\n      // Wait for the requested range, async patch replay and font layout, then restore once.\n      // The deadline bounds late charts/images; no observer can pull the user back afterwards.\n      const enoughRange = anchorVisible || (view.y <= Math.max(0, doc.scrollHeight - innerHeight) + 1 && Math.abs(view.x) <= Math.max(0, doc.scrollWidth - innerWidth) + 1);\n      if (!expired && (!enoughRange || now - pending.stableSince < 160 || document.fonts?.status === "loading")) {\n        restoreTimer = setTimeout(attempt, 40); return;\n      }\n      for (const saved of view.scrolls) {\n        const node = find(saved.selector);\n        if (!node || node === root || node === document.body || node.closest("[data-board-overlay]")) continue;\n        if (!node.getClientRects().length) { scrollers.set(saved.selector, { node, x: saved.x, y: saved.y }); continue; }\n        node.scrollLeft = saved.x; node.scrollTop = saved.y; rememberScroller(node);\n      }\n      let x = view.x, y = view.y;\n      if (anchorVisible) {\n        const rect = anchor.getBoundingClientRect();\n        x = scrollX + rect.left - view.anchor.offsetX; y = scrollY + rect.top - view.anchor.offsetY;\n      }\n      window.scrollTo({ left: x, top: y, behavior: "instant" });\n      finish("restored");\n    };\n    const request = message => {\n      if (typeof message.requestId !== "string" || !message.requestId || message.requestId.length > 160 || lastRestoreRequest === message.requestId) return;\n      lastRestoreRequest = message.requestId;\n      const view = message.view;\n      if (!view || view.documentVersion !== initial.canvas.documentVersion || !Number.isSafeInteger(view.canvasRevision)\n        || view.canvasRevision < 0 || !Number.isFinite(view.x) || !Number.isFinite(view.y) || Math.abs(view.x) > 10000000 || Math.abs(view.y) > 10000000\n        || !Array.isArray(view.scrolls) || view.scrolls.length > 32\n        || view.scrolls.some(item => !item || typeof item.selector !== "string" || item.selector.length > 1000 || !Number.isFinite(item.x) || !Number.isFinite(item.y))\n        || view.anchor && (typeof view.anchor.selector !== "string" || view.anchor.selector.length > 1000 || !Number.isFinite(view.anchor.offsetX) || !Number.isFinite(view.anchor.offsetY))) {\n        post({ type: "view-restored", requestId: message.requestId, documentVersion: initial.canvas.documentVersion, status: "unavailable" }); return;\n      }\n      if (pending) finish("cancelled");\n      pending = { id: message.requestId, view, deadline: performance.now() + 2400, stableSince: performance.now(), geometry: null };\n      if (userInteracted) finish("cancelled"); else attempt();\n    };\n    const cancel = () => { userInteracted = true; captureSuppressed = false; if (pending) finish("cancelled"); };\n    for (const type of ["pointerdown", "wheel", "keydown"]) window.addEventListener(type, event => { if (event.isTrusted) cancel(); }, true);\n    window.addEventListener("scroll", event => { rememberScroller(event.target); scheduleCapture(); }, true);\n    window.addEventListener("blur", capture);\n    window.addEventListener("pagehide", capture);\n    document.addEventListener("visibilitychange", () => { if (!document.hidden) { if (pending) attempt(); else scheduleCapture(); } });\n    return {\n      request, cancel, capture,\n      connect(port) {\n        if (viewPort || !port || typeof port.postMessage !== "function" || typeof port.close !== "function") { port?.close(); return; }\n        viewPort = port; lastValue = ""; capture();\n      },\n      afterDrain() { booted = true; if (pending && restoreTimer === null) attempt(); else scheduleCapture(); },\n      pending: () => Boolean(pending),\n    };\n  })();\n  const viewport = () => ({ width: innerWidth, height: innerHeight, scrollX, scrollY });\n  const rect = (r) => ({ x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height });\n  // Identity metadata is optional and never changes the author\'s DOM or the original\n  // quote/PNG/coordinates. A live reference survives reparenting; stable IDs survive patches.\n  const bindingNodes = new Map();\n  const bindingFingerprint = (node) => {\n    const text = (node.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 1000);\n    const input = [node.localName, node.getAttribute("role"), node.getAttribute("name"), node.getAttribute("type"), node.getAttribute("aria-label"), text].join("\\n");\n    let hash = 2166136261;\n    for (let i = 0; i < input.length; i++) hash = Math.imul(hash ^ input.charCodeAt(i), 16777619);\n    return (hash >>> 0).toString(16).padStart(8, "0");\n  };\n  const authorElement = (node) => node instanceof Element && node !== root && node !== document.body && node !== document.head && !node.closest("[data-board-overlay]");\n  const identityFor = (node) => {\n    const selector = selectorFor(node);\n    if (!selector || !authorElement(node)) return null;\n    return { selector, tag: node.localName, ...(node.id && node.id.length <= 1000 ? { id: node.id } : {}), fingerprint: bindingFingerprint(node) };\n  };\n  const captureBinding = (target, region, enclose = false) => {\n    if (!(target instanceof Element)) return undefined;\n    // A region may span several components; select its enclosing context, not the element\n    // where the drag happened to start. Whole-page regions remain geometric references.\n    if (enclose) {\n      while (authorElement(target)) {\n        const r = rect(target.getBoundingClientRect());\n        if (region.x >= r.x - 1 && region.y >= r.y - 1 && region.x + region.width <= r.x + r.width + 1 && region.y + region.height <= r.y + r.height + 1) break;\n        target = target.parentElement;\n      }\n    }\n    const identity = identityFor(target);\n    if (!identity) return undefined;\n    const r = rect(target.getBoundingClientRect());\n    const ancestors = [];\n    const nodes = [target];\n    for (let parent = target.parentElement; authorElement(parent) && ancestors.length < 8; parent = parent.parentElement) {\n      const ancestor = identityFor(parent);\n      if (ancestor) { ancestors.push(ancestor); nodes.push(parent); }\n    }\n    const key = `binding-${++sequence}-${scope.sessionId}`.slice(0, 160);\n    const binding = { documentVersion: snapshot.canvas.documentVersion, key, target: identity, ancestors,\n      relative: { x: Math.max(0, Math.min(1, r.width ? (region.x - r.x) / r.width : 0)), y: Math.max(0, Math.min(1, r.height ? (region.y - r.y) / r.height : 0)) } };\n    bindingNodes.set(key, nodes);\n    // Unsent selections need no long-lived registry. Active marker bindings are retained.\n    if (bindingNodes.size > 600) {\n      const retained = new Set(markerItems.map(item => item.marker.anchor?.binding?.key));\n      for (const candidate of bindingNodes.keys()) if (candidate !== key && !retained.has(candidate)) { bindingNodes.delete(candidate); if (bindingNodes.size <= 500) break; }\n    }\n    return binding;\n  };\n  const bindAuthoredAnchor = (anchor) => {\n    if (!anchor || anchor.binding || !anchor.rect || !anchor.selector || anchor.canvasRevision !== snapshot.canvas.revision || anchor.boardRevision !== snapshot.boardRevision) return anchor;\n    try {\n      const targets = document.querySelectorAll(anchor.selector);\n      if (targets.length === 1) {\n        const binding = captureBinding(targets[0], anchor.rect, anchor.kind === "region");\n        if (binding) return { ...anchor, binding };\n      }\n    } catch {}\n    return anchor;\n  };\n  // Authored buttons sometimes pass a live element as their reference. Convert only an\n  // explicit in-document target; never send DOM objects or stringify away their identity.\n  const authoredAskAnchor = (input) => {\n    const fail = (field) => { throw new TypeError(`board.ask anchor.${field} must be valid serializable reference data`); };\n    const object = (value, field) => { if (!value || typeof value !== "object" || Array.isArray(value)) fail(field); return value; };\n    const number = (value, field, minimum = -Infinity) => { if (typeof value !== "number" || !Number.isFinite(value) || value < minimum) fail(field); return value; };\n    const version = (value, field) => { if (!Number.isSafeInteger(value) || value < 0) fail(field); return value; };\n    const string = (value, field, maximum, minimum = 1) => { if (typeof value !== "string" || value.length < minimum || value.length > maximum) fail(field); return value; };\n    const shape = (value, fields, name, minimum = -Infinity) => {\n      object(value, name); return Object.fromEntries(fields.map(field => [field, number(value[field], `${name}.${field}`, minimum)]));\n    };\n    let source = input;\n    const targetWrapper = input && typeof input === "object" && input.target !== undefined\n      && input.boardRevision === undefined && input.canvasRevision === undefined;\n    if (input instanceof Element || targetWrapper) {\n      const target = input instanceof Element ? input : input.target;\n      if (!(target instanceof Element) || target.ownerDocument !== document || !target.isConnected || target.getRootNode() !== document || !authorElement(target)) {\n        throw new TypeError("board.ask anchor target must be a connected authored element in this canvas, outside Board controls");\n      }\n      if (targetWrapper && input.kind !== undefined && input.kind !== "element") fail("kind");\n      const selector = selectorFor(target);\n      if (!selector || document.querySelectorAll(selector).length !== 1 || document.querySelector(selector) !== target) {\n        throw new TypeError("board.ask anchor target needs a unique canvas selector");\n      }\n      const region = rect(target.getBoundingClientRect());\n      source = { ...currentAnchor(), kind: "element", selector, rect: region, viewport: viewport(), binding: captureBinding(target, region),\n        ...(targetWrapper && input.text !== undefined ? { text: input.text } : {}) };\n    }\n    object(source, "value");\n    if (!["board", "text", "region", "point", "element"].includes(source.kind)) fail("kind");\n    const anchor = { kind: source.kind, boardRevision: version(source.boardRevision, "boardRevision"), canvasRevision: version(source.canvasRevision, "canvasRevision") };\n    if (source.text !== undefined) anchor.text = string(source.text, "text", 12000, 0);\n    if (source.selector !== undefined) anchor.selector = string(source.selector, "selector", 1000);\n    if (source.rect !== undefined) {\n      anchor.rect = shape(source.rect, ["x", "y", "width", "height"], "rect");\n      if (anchor.rect.width < 0 || anchor.rect.height < 0) fail("rect");\n    }\n    if (source.viewport !== undefined) {\n      anchor.viewport = shape(source.viewport, ["width", "height", "scrollX", "scrollY"], "viewport");\n      if (anchor.viewport.width <= 0 || anchor.viewport.height <= 0) fail("viewport");\n    }\n    if (source.binding !== undefined) {\n      const binding = object(source.binding, "binding");\n      const identity = (value) => {\n        object(value, "binding identity");\n        const result = { selector: string(value.selector, "binding selector", 1000), tag: string(value.tag, "binding tag", 100), fingerprint: string(value.fingerprint, "binding fingerprint", 8) };\n        if (!/^[a-f0-9]{8}$/.test(result.fingerprint)) fail("binding fingerprint");\n        if (value.id !== undefined) result.id = string(value.id, "binding id", 1000);\n        return result;\n      };\n      if (!Array.isArray(binding.ancestors) || binding.ancestors.length > 8) fail("binding.ancestors");\n      const relative = shape(binding.relative, ["x", "y"], "binding.relative", 0);\n      if (relative.x > 1 || relative.y > 1) fail("binding.relative");\n      anchor.binding = { documentVersion: version(binding.documentVersion, "binding.documentVersion"), key: string(binding.key, "binding.key", 160),\n        target: identity(binding.target), ancestors: binding.ancestors.map(identity), relative };\n    }\n    if (source.image !== undefined) {\n      const image = object(source.image, "image");\n      if (image.mimeType !== "image/png" || typeof image.data !== "string" || !/^iVBORw0KGgo[A-Za-z0-9+/=]*$/.test(image.data)) fail("image");\n      anchor.image = { mimeType: "image/png", data: string(image.data, "image.data", 3000000) };\n    }\n    return bindAuthoredAnchor(anchor);\n  };\n  const resolveIdentity = (identity, cached, allowPath) => {\n    if (!identity) return null;\n    if (identity.id) {\n      let matches;\n      try { matches = document.querySelectorAll("#" + CSS.escape(identity.id)); } catch { return null; }\n      // Duplicate IDs are ambiguous even when one original node is still in memory.\n      if (matches.length !== 1 || matches[0].localName !== identity.tag) return null;\n      return matches[0];\n    }\n    if (cached) return cached.isConnected && authorElement(cached) ? cached : null;\n    if (!allowPath) return null;\n    try {\n      const matches = document.querySelectorAll(identity.selector);\n      if (matches.length === 1 && authorElement(matches[0]) && matches[0].localName === identity.tag && bindingFingerprint(matches[0]) === identity.fingerprint) return matches[0];\n    } catch {}\n    return null;\n  };\n  const visibleBox = (node, revealScroll = false) => {\n    if (!authorElement(node) || !node.isConnected || !node.getClientRects().length) return null;\n    const style = getComputedStyle(node);\n    if (style.visibility !== "visible" || style.display === "none" || style.contentVisibility === "hidden") return null;\n    const box = node.getBoundingClientRect();\n    let left = box.left, top = box.top, right = box.right, bottom = box.bottom;\n    // CSS accordions and nested scrollers can keep a child\'s layout box while completely\n    // clipping its pixels. Only visible pixels can host a marker; viewport clipping itself\n    // is excluded here because a sidebar action is allowed to scroll an offscreen component.\n    for (let parent = node.parentElement; authorElement(parent); parent = parent.parentElement) {\n      const css = getComputedStyle(parent);\n      if (css.contentVisibility === "hidden") return null;\n      if (parent.localName === "details" && !parent.open) {\n        const summary = Array.from(parent.children).find(child => child.localName === "summary");\n        if (!summary?.contains(node)) return null;\n      }\n      const clipX = /^(hidden|clip|auto|scroll)$/.test(css.overflowX) && !(revealScroll && /^(auto|scroll)$/.test(css.overflowX));\n      const clipY = /^(hidden|clip|auto|scroll)$/.test(css.overflowY) && !(revealScroll && /^(auto|scroll)$/.test(css.overflowY));\n      if (!clipX && !clipY) continue;\n      const r = parent.getBoundingClientRect();\n      const scaleX = parent.offsetWidth ? r.width / parent.offsetWidth : 1;\n      const scaleY = parent.offsetHeight ? r.height / parent.offsetHeight : 1;\n      if (clipX) { const x = r.left + parent.clientLeft * scaleX; left = Math.max(left, x); right = Math.min(right, x + parent.clientWidth * scaleX); }\n      if (clipY) { const y = r.top + parent.clientTop * scaleY; top = Math.max(top, y); bottom = Math.min(bottom, y + parent.clientHeight * scaleY); }\n    }\n    return right > left && bottom > top ? { left, top, right, bottom, width: right - left, height: bottom - top } : null;\n  };\n  const visibleContext = (target) => {\n    // Inspect current ancestors, not only captured ones: wrapping a stable component in a\n    // new <details> must work immediately. Opening or clicking authored controls is forbidden.\n    let folded;\n    let hiddenContent;\n    for (let node = target; authorElement(node); node = node.parentElement) {\n      if (getComputedStyle(node).contentVisibility === "hidden") hiddenContent = node;\n      if (node.localName === "details" && !node.open) {\n        const summary = Array.from(node.children).find(child => child.localName === "summary");\n        if (!summary || !summary.contains(target)) folded = summary || node;\n      }\n    }\n    if (folded && visibleBox(folded)) return folded;\n    for (let node = hiddenContent ? hiddenContent.parentElement : target; authorElement(node); node = node.parentElement) if (visibleBox(node)) return node;\n    return null;\n  };\n  // Only an explicit, unique ARIA relationship may activate an authored tab. Never\n  // infer navigation from class names, labels or nearby buttons.\n  const tabForPanel = (panel) => {\n    if (!panel.id || panel.getAttribute("role") !== "tabpanel" || document.querySelectorAll("#" + CSS.escape(panel.id)).length !== 1) return null;\n    const tabs = Array.from(document.querySelectorAll(\'[role="tab"][aria-controls]\')).filter(tab => tab.getAttribute("aria-controls")?.trim() === panel.id);\n    if (tabs.length !== 1) return null;\n    const tab = tabs[0];\n    const list = tab.closest(\'[role="tablist"]\');\n    if (!list || !authorElement(tab) || typeof tab.click !== "function" || tab.matches(":disabled,[aria-disabled=true]") || !["true", "false"].includes(tab.getAttribute("aria-selected"))) return null;\n    if (tab.localName === "a" || tab.closest("a[href]") || (tab.form && ((tab.localName === "button" && tab.type !== "button") || (tab.localName === "input" && tab.type !== "button")))) return null;\n    return tab;\n  };\n  const hiddenMarkerBoundary = (target) => {\n    if (!authorElement(target)) return null;\n    // Custom views need no ARIA/component schema to suppress markers. Hard hidden\n    // ancestors never fall back to a visible dashboard shell. Native closed details\n    // and scroll/accordion clipping remain distinguishable and may use their summary.\n    if (getComputedStyle(target).visibility !== "visible") return target;\n    for (let node = target; node instanceof Element; node = node.parentElement) {\n      const style = getComputedStyle(node);\n      if (node.hidden || node.getAttribute("aria-hidden") === "true" || style.display === "none" || style.contentVisibility === "hidden" || Number(style.opacity) === 0) return node;\n      if (node.getAttribute("role") === "tabpanel" && tabForPanel(node)?.getAttribute("aria-selected") === "false") return node;\n    }\n    return null;\n  };\n  const resolvedBindingNodes = (anchor) => {\n    const binding = anchor?.binding;\n    if (!binding || binding.documentVersion !== snapshot.canvas.documentVersion) return [];\n    const cached = bindingNodes.get(binding.key) || [];\n    const nodes = [binding.target, ...binding.ancestors].map((identity, index) => resolveIdentity(identity, cached[index], anchor.canvasRevision === snapshot.canvas.revision));\n    // Keep detached non-ID references as tombstones; never reuse a replacement at its path.\n    bindingNodes.set(binding.key, nodes.map((node, index) => node || cached[index]));\n    return nodes;\n  };\n  const markerLocation = (anchor) => {\n    const binding = anchor?.binding;\n    if (binding && binding.documentVersion === snapshot.canvas.documentVersion) {\n      const nodes = resolvedBindingNodes(anchor);\n      const target = nodes[0];\n      const panel = hiddenMarkerBoundary(target || nodes.slice(1).find(Boolean));\n      if (panel) return { rect: null, mode: "hidden", tracked: [...nodes.filter(Boolean), panel] };\n      const context = target ? visibleContext(target) : nodes.slice(1).map(node => node && visibleContext(node)).find(Boolean);\n      if (context) {\n        const r = rect(context.getBoundingClientRect());\n        const visible = rect(visibleBox(context));\n        const direct = context === target;\n        return { rect: { x: Math.max(visible.x, Math.min(visible.x + visible.width, r.x + (direct ? binding.relative.x * r.width : Math.min(8, r.width / 2)))), y: Math.max(visible.y, Math.min(visible.y + visible.height, r.y + (direct ? binding.relative.y * r.height : Math.min(8, r.height / 2)))), width: 0, height: 0 }, node: context,\n          focusNode: target && visibleBox(target, true) ? target : context,\n          mode: direct ? "component" : target ? "collapsed" : "ancestor", tracked: nodes.filter(Boolean) };\n      }\n      return { rect: anchor.rect, mode: "snapshot", tracked: nodes.filter(Boolean) };\n    }\n    // Legacy selectors only described surrounding context; never guess a live binding.\n    return { rect: anchor?.rect, mode: "snapshot", tracked: [] };\n  };\n  // Update navigation consumes explicit publish records only. It never turns arbitrary\n  // author DOM mutations into activity, and its finite overlays do not change the canvas.\n  const updatePatchTargets = new Map();\n  const updateTargets = new Map();\n  const rememberBounded = (map, key, value) => {\n    map.set(key, value);\n    while (map.size > 160) map.delete(map.keys().next().value);\n    return value;\n  };\n  const capturedTarget = (node) => {\n    const identity = identityFor(node);\n    return identity ? { identity, node } : null;\n  };\n  const resolveUpdateTarget = (saved) => saved && resolveIdentity(saved.identity, saved.node, false);\n  const capturePatchTargets = (patch, target, inserted = []) => rememberBounded(updatePatchTargets, patch.id, {\n    documentVersion: snapshot.canvas.documentVersion, selector: patch.selector, operation: patch.operation,\n    target: capturedTarget(target), parent: capturedTarget(target.parentElement),\n    inserted: inserted.filter(node => authorElement(node) && !node.matches("script,style,link,meta,template")).map(capturedTarget).filter(Boolean).slice(0, 12),\n  });\n  const updateContext = (target) => {\n    if (visibleBox(target, true)) return target;\n    let folded;\n    for (let node = target; authorElement(node); node = node.parentElement) {\n      if (node.localName === "details" && !node.open) {\n        const summary = Array.from(node.children).find(child => child.localName === "summary");\n        if (summary && !summary.contains(target) && visibleBox(summary, true)) folded = summary;\n      }\n    }\n    if (folded) return folded;\n    // Hidden authored views have no implied visible location. Climbing to main (or any\n    // ordinary ancestor) would highlight unrelated content and falsely acknowledge it.\n    return null;\n  };\n  const findUpdateTarget = (update, index) => {\n    const hint = update.targets[index];\n    if (!hint || typeof hint.selector !== "string" || hint.selector.length > 1000) return null;\n    const patch = hint.patchId && updatePatchTargets.get(hint.patchId);\n    if (patch && patch.documentVersion === update.documentVersion && patch.selector === hint.selector && patch.operation === hint.operation) {\n      if (patch.operation === "remove") {\n        const parent = resolveUpdateTarget(patch.parent);\n        return parent ? { node: parent, ancestor: true } : null;\n      }\n      const inserted = patch.inserted.map(resolveUpdateTarget).find(Boolean);\n      const node = patch.inserted.length ? inserted : resolveUpdateTarget(patch.target);\n      return node ? { node, ancestor: false } : null;\n    }\n    // Removal cannot be reconstructed from a newly matching selector after a cold start.\n    if (hint.operation === "remove") return null;\n    const key = `${update.id}:${index}`;\n    const saved = updateTargets.get(key);\n    if (saved) { const node = resolveUpdateTarget(saved); return node ? { node, ancestor: false } : null; }\n    let matches;\n    try { matches = document.querySelectorAll(hint.selector); } catch { return null; }\n    if (matches.length !== 1 || !authorElement(matches[0])) return null;\n    const node = matches[0];\n    // Path selectors are only meaningful in the exact revision; an ID explicitly declares\n    // stable component identity, but still cannot cross a document replacement.\n    if (update.canvasRevision !== snapshot.canvas.revision && (!node.id || hint.selector !== "#" + CSS.escape(node.id))) return null;\n    rememberBounded(updateTargets, key, capturedTarget(node));\n    return { node, ancestor: false };\n  };\n  let updateHighlight;\n  let updateHighlightTimer;\n  let updateHighlightFrame;\n  const clearUpdateHighlight = () => {\n    clearTimeout(updateHighlightTimer); updateHighlightTimer = null;\n    if (updateHighlightFrame) cancelAnimationFrame(updateHighlightFrame);\n    updateHighlightFrame = null;\n    updateHighlight?.host.remove(); updateHighlight = null;\n  };\n  const positionUpdateHighlight = () => {\n    updateHighlightFrame = null;\n    if (!updateHighlight) return false;\n    const box = updateHighlight.node ? visibleBox(updateHighlight.node) : { left: 6, top: 6, right: innerWidth - 6, bottom: innerHeight - 6 };\n    if (!box) { clearUpdateHighlight(); return false; }\n    const left = Math.max(4, box.left - 3), top = Math.max(4, box.top - 3);\n    const right = Math.min(innerWidth - 4, box.right + 3), bottom = Math.min(innerHeight - 4, box.bottom + 3);\n    if (right <= left || bottom <= top) { clearUpdateHighlight(); return false; }\n    updateHighlight.host.style.setProperty("left", left + "px", "important");\n    updateHighlight.host.style.setProperty("top", top + "px", "important");\n    updateHighlight.host.style.setProperty("width", right - left + "px", "important");\n    updateHighlight.host.style.setProperty("height", bottom - top + "px", "important");\n    return true;\n  };\n  const queueUpdateHighlight = () => { if (updateHighlight && !updateHighlightFrame) updateHighlightFrame = requestAnimationFrame(positionUpdateHighlight); };\n  const showUpdateHighlight = (node) => {\n    clearUpdateHighlight();\n    const host = document.createElement("div");\n    host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-update-highlight", "");\n    host.setAttribute("aria-hidden", "true");\n    host.style.cssText = "all:initial!important;position:fixed!important;display:block!important;z-index:2147483646!important;pointer-events:none!important;";\n    const shadow = host.attachShadow({ mode: "open" });\n    shadow.innerHTML = `<style>:host{color-scheme:normal}.ring{position:absolute;inset:0;box-sizing:border-box;border:3px solid #fff;border-radius:8px;box-shadow:0 0 0 3px #224ee8,0 0 0 5px #0a173b80;animation:board-update-flash .65s ease-in-out 3;pointer-events:none}@keyframes board-update-flash{0%,100%{opacity:.15}50%{opacity:1}}@media(prefers-reduced-motion:reduce){.ring{animation:none;opacity:1}}</style><div class="ring"></div>`;\n    root.append(host); updateHighlight = { host, node };\n    if (!positionUpdateHighlight()) return false;\n    updateHighlightTimer = setTimeout(clearUpdateHighlight, matchMedia("(prefers-reduced-motion:reduce)").matches ? 1000 : 2050);\n    return true;\n  };\n  let hostComposing = false;\n  const activePointers = new Set();\n  let activityUntil = 0;\n  let activityTimer;\n  let reportedActivity = false;\n  let reportedInteracting = false;\n  const editableActive = () => document.hasFocus() && document.activeElement instanceof Element\n    && (document.activeElement.matches("input,textarea,select") || document.activeElement.isContentEditable);\n  const updateInteracting = () => hostComposing || activePointers.size > 0 || editableActive() || selectionMode !== "off" || selectionSession || captureBusy;\n  const updateHardBusy = () => updateInteracting() || applying || queued;\n  const reportCanvasActivity = () => {\n    clearTimeout(activityTimer); activityTimer = null;\n    const delay = activityUntil - performance.now();\n    const interacting = Boolean(updateInteracting() || delay > 0);\n    const busy = Boolean(updateHardBusy() || delay > 0);\n    if (busy !== reportedActivity || interacting !== reportedInteracting) {\n      reportedActivity = busy; reportedInteracting = interacting;\n      post({ type: "canvas-activity", busy, interacting });\n    }\n    if (delay > 0) activityTimer = setTimeout(reportCanvasActivity, delay + 1);\n  };\n  const noteCanvasActivity = (event) => {\n    if (!event.isTrusted) return;\n    activityUntil = performance.now() + 1200;\n    clearUpdateHighlight();\n    reportCanvasActivity();\n  };\n  window.addEventListener("pointerdown", event => { if (event.isTrusted) { activePointers.add(event.pointerId); noteCanvasActivity(event); } }, true);\n  for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) window.addEventListener(name, event => { if (event.isTrusted) { activePointers.delete(event.pointerId); reportCanvasActivity(); } }, true);\n  for (const name of ["keydown", "wheel", "focusin", "focusout"]) window.addEventListener(name, event => { noteCanvasActivity(event); if (name === "focusout") queueMicrotask(reportCanvasActivity); }, true);\n  window.addEventListener("blur", () => { activePointers.clear(); queueMicrotask(reportCanvasActivity); });\n  window.addEventListener("scroll", queueUpdateHighlight, true);\n  window.addEventListener("resize", queueUpdateHighlight);\n  window.addEventListener("pagehide", () => { clearUpdateHighlight(); clearTimeout(activityTimer); });\n  const focusUpdate = (message) => {\n    const update = message.update;\n    const index = message.targetIndex === undefined ? 0 : message.targetIndex;\n    if (typeof message.requestId !== "string" || !message.requestId || message.requestId.length > 160\n      || !Number.isSafeInteger(message.token) || message.token < 0 || !Number.isSafeInteger(index) || index < 0 || index > 100\n      || !update || typeof update.id !== "string" || !update.id || update.id.length > 160\n      || !Number.isSafeInteger(update.documentVersion) || update.documentVersion < 0 || !Number.isSafeInteger(update.canvasRevision)\n      || !Array.isArray(update.targets) || update.targets.length > 100 || !["patch", "data", "document"].includes(update.kind)) return;\n    const reply = (status, fields = {}) => post({ type: "update-position", requestId: message.requestId, id: update.id, token: message.token,\n      targetIndex: index, documentVersion: update.documentVersion, status, ...fields });\n    if (readingView.pending() && message.automatic) { reply("deferred", { reason: "\u6B63\u5728\u6062\u590D\u6D4F\u89C8\u4F4D\u7F6E" }); return; }\n    readingView.cancel();\n    clearUpdateHighlight();\n    if (update.documentVersion !== snapshot.canvas.documentVersion) { reply("unavailable", { reason: "\u5C5E\u4E8E\u53E6\u4E00\u7248\u753B\u5E03\uFF0C\u4FDD\u7559\u539F\u66F4\u65B0\u8BB0\u5F55" }); return; }\n    if (updateHardBusy() || (message.automatic && performance.now() < activityUntil)) {\n      // The host retries after canvas-activity false; never keep a hidden scroll request\n      // that could surprise the user after they have moved on to a different update.\n      reportCanvasActivity(); reply("deferred", { reason: "\u6B63\u5728\u4EA4\u4E92\uFF0C\u7A0D\u540E\u5B9A\u4F4D" }); return;\n    }\n    if (update.canvasRevision > snapshot.canvas.revision) { reply("unavailable", { reason: "\u5BF9\u5E94\u753B\u5E03\u7248\u672C\u5C1A\u672A\u8F7D\u5165" }); return; }\n    if (!update.targets.length) {\n      if (update.kind !== "document") { reply("unavailable", { reason: "\u6B64\u6B21\u6570\u636E\u66F4\u65B0\u672A\u6307\u5B9A\u753B\u5E03\u4F4D\u7F6E" }); return; }\n      window.scrollTo({ left: 0, top: 0, behavior: "instant" });\n      if (showUpdateHighlight(null)) reply("focused", { location: "document", position: { x: 12, y: 12 } });\n      else reply("unavailable", { reason: "\u753B\u5E03\u5F53\u524D\u4E0D\u53EF\u89C1" });\n      return;\n    }\n    const target = findUpdateTarget(update, index);\n    if (!target) { reply("unavailable", { reason: "\u539F\u7EC4\u4EF6\u5DF2\u79FB\u9664\u3001\u8EAB\u4EFD\u4E0D\u660E\u786E\u6216\u5F53\u524D\u4E0D\u53EF\u89C1" }); return; }\n    const node = updateContext(target.node);\n    if (!node) { reply("unavailable", { reason: "\u7EC4\u4EF6\u5F53\u524D\u9690\u85CF\u6216\u88AB\u88C1\u526A\uFF0C\u663E\u793A\u540E\u53EF\u7EE7\u7EED\u5B9A\u4F4D" }); return; }\n    node.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });\n    const box = visibleBox(node);\n    if (!box || !showUpdateHighlight(node)) { reply("unavailable", { reason: "\u7EC4\u4EF6\u5F53\u524D\u4E0D\u53EF\u89C1" }); return; }\n    reply("focused", { location: target.ancestor || node !== target.node ? "ancestor" : "target",\n      position: { x: Math.max(8, Math.min(innerWidth - 8, box.left + box.width / 2)), y: Math.max(8, Math.min(innerHeight - 8, box.top + box.height / 2)) } });\n  };\n\n  // Host-owned discussions are independent from the authored document and its patch journal.\n  let markerHost;\n  let markerItems = [];\n  let selectedMarkerId;\n  let markerPositionFrame;\n  let lastSelectedPosition;\n  const markerLabels = { saved: "\u5DF2\u63D0\u4EA4", sending: "\u53D1\u9001\u4E2D", delivered: "\u7B49\u5F85\u56DE\u7B54", processing: "\u5904\u7406\u4E2D", answered: "\u5DF2\u56DE\u7B54", applied: "\u5DF2\u843D\u5B9E", rejected: "\u672A\u91C7\u7EB3", failed: "\u5931\u8D25" };\n  const inMarkers = (event) => markerHost && event.composedPath().includes(markerHost);\n  const markerNode = (event) => event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-board-interaction"));\n  const positionMarkers = () => {\n    markerPositionFrame = null;\n    if (!markerHost) return;\n    const overlap = new Map();\n    const observed = new Set();\n    let unanchored = 0;\n    for (const item of markerItems) {\n      const button = item.button;\n      const anchor = item.marker.anchor;\n      const location = markerLocation(anchor);\n      const saved = location.rect;\n      const stale = Boolean(anchor && anchor.canvasRevision !== snapshot.canvas.revision);\n      item.location = location;\n      for (const node of location.tracked) observed.add(node);\n      // ResizeObserver includes new wrapper ancestors introduced after selection.\n      for (let node = location.node, depth = 0; authorElement(node) && depth < 16; node = node.parentElement, depth++) observed.add(node);\n      const x = saved ? saved.x - scrollX : 12;\n      const y = saved ? saved.y - scrollY : 12 + unanchored++ * 34;\n      const key = `${Math.round(x / 28)}:${Math.round(y / 28)}`;\n      const offset = overlap.get(key) || 0;\n      overlap.set(key, offset + 1);\n      const left = x + offset * 24;\n      const top = y + offset * 10;\n      const visible = left >= -20 && left < innerWidth && top >= -20 && top < innerHeight;\n      button.hidden = !visible || location.mode === "hidden";\n      button.style.left = left + "px";\n      button.style.top = top + "px";\n      button.dataset.stale = String(stale);\n      button.dataset.location = location.mode;\n      button.dataset.status = item.marker.status;\n      button.dataset.active = String(["saved", "sending", "delivered", "processing"].includes(item.marker.status));\n      button.setAttribute("aria-pressed", String(item.marker.id === selectedMarkerId));\n      const status = markerLabels[item.marker.status] || "\u5DF2\u63D0\u4EA4";\n      let face = button.firstElementChild;\n      if (!face) { face = document.createElement("span"); face.className = "face"; face.setAttribute("aria-hidden", "true"); button.append(face); }\n      const markerLabel = item.marker.label || String(item.marker.number);\n      face.textContent = markerLabel;\n      const locationLabel = location.mode === "hidden" ? "\u7EC4\u4EF6\u5F53\u524D\u9690\u85CF\uFF1B\u53EF\u4ECE\u4FA7\u680F\u8BF7\u6C42\u5B9A\u4F4D" : location.mode === "collapsed" ? "\u7EC4\u4EF6\u5F53\u524D\u4E0D\u53EF\u89C1\uFF0C\u6807\u8BB0\u663E\u793A\u5728\u53EF\u89C1\u4E0A\u5C42" : location.mode === "ancestor" ? "\u539F\u7EC4\u4EF6\u65E0\u6CD5\u552F\u4E00\u5B9A\u4F4D\uFF0C\u6807\u8BB0\u663E\u793A\u5728\u539F\u4E0A\u5C42" : location.mode === "snapshot" && saved ? "\u539F\u59CB\u5FEB\u7167\u4F4D\u7F6E" : "";\n      button.title = `${item.marker.text}\\n${status}${locationLabel ? " \xB7 " + locationLabel : ""}${!saved ? " \xB7 \u672A\u6307\u5B9A\u53EF\u5B9A\u4F4D\u7684\u5C40\u90E8\u4F4D\u7F6E\u3002" : ""}${stale ? ` \xB7 \u753B\u5E03\u5DF2\u66F4\u65B0\uFF1B\u5F15\u7528\u4ECD\u4E3A r${anchor.canvasRevision}\uFF0C\u8BF7\u6838\u5BF9\u539F\u59CB\u5FEB\u7167\u3002` : ""}`;\n      button.setAttribute("aria-label", `${markerLabel}. ${item.marker.text}\uFF0C${status}${locationLabel ? "\uFF0C" + locationLabel : ""}${saved ? stale ? "\uFF0C\u65E7\u7248\u672C\u4F4D\u7F6E" : "" : "\uFF0C\u6574\u677F\u8BA8\u8BBA"}`);\n      if (item.marker.id === selectedMarkerId) {\n        const next = { id: item.marker.id, x: left, y: top, location: location.mode };\n        if (JSON.stringify(next) !== JSON.stringify(lastSelectedPosition)) {\n          lastSelectedPosition = next;\n          post({ type: "interaction-position", id: next.id, position: { x: next.x, y: next.y }, location: next.location });\n        }\n      }\n    }\n    syncMarkerObservers(observed);\n  };\n  const queueMarkerPositions = () => { if (!markerPositionFrame && markerItems.length) markerPositionFrame = requestAnimationFrame(positionMarkers); };\n  let markerMutationTimer;\n  const queueLayoutPositions = () => {\n    // At most one layout pass per 100ms for continuously changing authored DOM. There is\n    // no polling/RAF loop; quiet canvases cost nothing and overlay writes are excluded.\n    if (!markerMutationTimer && markerItems.length) markerMutationTimer = setTimeout(() => { markerMutationTimer = null; queueMarkerPositions(); }, 100);\n  };\n  const markerResizeObserver = new ResizeObserver(queueLayoutPositions);\n  const observedMarkerNodes = new Set();\n  const markerMutationObserver = new MutationObserver(records => {\n    if (records.some(record => !(record.target instanceof Element ? record.target : record.target.parentElement)?.closest("[data-board-overlay]")\n      && !(record.type === "childList" && [...record.addedNodes, ...record.removedNodes].every(node => node instanceof Element && node.hasAttribute("data-board-overlay"))))) queueLayoutPositions();\n  });\n  let markerObserving = false;\n  const syncMarkerObservers = (nodes) => {\n    if (markerItems.length && document.body) nodes.add(document.body);\n    for (const node of observedMarkerNodes) if (!nodes.has(node)) { markerResizeObserver.unobserve(node); observedMarkerNodes.delete(node); }\n    for (const node of nodes) if (!observedMarkerNodes.has(node)) { markerResizeObserver.observe(node); observedMarkerNodes.add(node); }\n    if (markerItems.length && !markerObserving) {\n      markerMutationObserver.observe(root, { subtree: true, childList: true, characterData: true, attributes: true });\n      markerObserving = true;\n    } else if (!markerItems.length && markerObserving) { markerMutationObserver.disconnect(); markerObserving = false; }\n  };\n  const drainMarkerFocus = () => {\n    if (pendingMarkerFocus && !applying && !queued && !selectionSession && !captureBusy && selectionMode === "off") {\n      const id = pendingMarkerFocus; pendingMarkerFocus = null; focusInteraction(id);\n    }\n  };\n  const cancelMarkerReveal = () => { markerReveal?.abort(); markerReveal = null; };\n  const revealTarget = async (target, controller) => {\n    const current = () => markerReveal === controller && !controller.signal.aborted && target.isConnected;\n    // A callback can reveal custom navigation, but gets no user-activation/message lease.\n    // Async implementations must honor signal; the runtime also revalidates after awaits.\n    for (const listener of [...revealListeners]) {\n      if (!current()) return false;\n      try { await listener(Object.freeze({ target, reason: "interaction", signal: controller.signal })); }\n      catch (cause) { if (current()) error("reveal-error", cause instanceof Error ? cause.message : String(cause)); }\n    }\n    if (!current()) return false;\n    const ancestors = [];\n    for (let node = target; authorElement(node); node = node.parentElement) ancestors.unshift(node);\n    for (const node of ancestors) {\n      if (!current()) return false;\n      if (node.localName === "details" && !node.open) node.open = true;\n      if (node.getAttribute("role") === "tabpanel") {\n        const tab = tabForPanel(node);\n        if (tab && tab.getAttribute("aria-selected") === "false" && visibleBox(tab, true)) {\n          tab.click();\n          // Let authored frameworks commit their state before inspecting nested tabs.\n          await new Promise(resolve => requestAnimationFrame(resolve));\n          if (!current() || tab.getAttribute("aria-selected") !== "true") return false;\n        }\n      }\n    }\n    return current();\n  };\n  const focusInteraction = async (id) => {\n    readingView.cancel();\n    cancelMarkerReveal();\n    const item = markerItems.find(item => item.marker.id === id);\n    if (!item) return;\n    if (applying || queued || selectionSession || captureBusy || selectionMode !== "off") { pendingMarkerFocus = id; return; }\n    selectedMarkerId = id;\n    lastGesture = -Infinity;\n    const controller = new AbortController();\n    markerReveal = controller;\n    const target = resolvedBindingNodes(item.marker.anchor)[0];\n    if (target) {\n      // The signal also bounds callbacks that ignore cancellation or never settle.\n      let timer;\n      await Promise.race([revealTarget(target, controller), new Promise(resolve => {\n        controller.signal.addEventListener("abort", () => resolve(false), { once: true });\n        timer = setTimeout(() => { controller.abort(); resolve(false); }, 3000);\n      })]);\n      clearTimeout(timer);\n    }\n    if (markerReveal !== controller || controller.signal.aborted || selectedMarkerId !== id || !markerItems.some(current => current.marker.id === id && current.marker.anchor?.binding?.key === item.marker.anchor?.binding?.key)) {\n      if (markerReveal === controller) markerReveal = null;\n      return;\n    }\n    markerReveal = null;\n    const location = markerLocation(item.marker.anchor);\n    if (location.focusNode) location.focusNode.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });\n    lastSelectedPosition = undefined;\n    positionMarkers();\n    const box = item.button.getBoundingClientRect();\n    // A missing/legacy reference still opens beside the viewport rather than disappearing\n    // offscreen. An unavailable reference is never scrolled onto an unrelated element.\n    const position = { x: Math.max(12, Math.min(innerWidth - 38, box.left)), y: Math.max(12, Math.min(innerHeight - 38, box.top)) };\n    post({ type: "interaction-position", id, position, location: item.location.mode });\n  };\n  const renderMarkers = (markers, selectedId) => {\n    // A host overview can reopen a thread using its captured viewport as a fallback. Always\n    // send this document\'s current position on re-selection, even if it has not moved since\n    // the previous opening (the host may have discarded that position while closed).\n    if (selectedMarkerId !== selectedId) { lastSelectedPosition = undefined; cancelMarkerReveal(); }\n    if (pendingMarkerFocus && pendingMarkerFocus !== selectedId) pendingMarkerFocus = null;\n    selectedMarkerId = selectedId;\n    if (!markerHost) {\n      markerHost = document.createElement("div");\n      markerHost.setAttribute("data-board-markers", "");\n      markerHost.setAttribute("data-board-overlay", "");\n      markerHost.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;width:100%!important;height:100%!important;z-index:2147483645!important;pointer-events:none!important;";\n      const shadow = markerHost.attachShadow({ mode: "open" });\n      shadow.innerHTML = `<style>\n        :host{color-scheme:normal}\n        button{all:initial;box-sizing:border-box;position:absolute;display:grid;place-items:center;width:26px;height:26px;padding:0;pointer-events:auto;border-radius:50%;background:transparent;opacity:.5;cursor:pointer;transition:opacity .15s ease}\n        button[hidden]{display:none}\n        .face{box-sizing:border-box;display:grid;place-items:center;width:18px;height:18px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 1px 4px #0002;font:10px/1 system-ui,-apple-system,sans-serif}\n        button[data-comment=true]{width:auto;min-width:26px}\n        button[data-comment=true] .face{width:auto;min-width:24px;padding:0 3px;border-radius:9px}\n        button:hover,button:focus-visible,button[aria-pressed=true]{opacity:1}\n        button:focus-visible{outline:2px solid var(--host-iris,#658aeb);outline-offset:1px}\n        button[aria-pressed=true] .face{border-width:2px}\n        button[data-status=failed] .face,button[data-status=rejected] .face{border-color:#cc6256}\n        button[data-status=answered] .face,button[data-status=applied] .face{border-color:#46846b}\n        button[data-stale=true] .face{border-color:#bd8c35}\n        button[data-active=true]::before{content:"";position:absolute;inset:1px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;pointer-events:none;animation:board-halo 2s ease-in-out infinite}\n        button[data-active=true]::after{content:"";position:absolute;right:0;top:0;width:6px;height:6px;border:1px solid var(--host-iris,#658aeb);border-right-color:transparent;border-bottom-color:transparent;border-radius:50%;background:var(--host-sheet,#fff);pointer-events:none;animation:board-orbit 1.25s linear infinite}\n        @keyframes board-halo{0%,100%{opacity:.15;transform:scale(.96)}50%{opacity:.55;transform:scale(1.03)}}\n        @keyframes board-orbit{to{transform:rotate(360deg)}}\n        @media(prefers-reduced-motion:reduce){button{transition:none}button[data-active=true]::before,button[data-active=true]::after{animation:none}button[data-active=true]::before{opacity:.3}button[data-active=true]::after{border-style:solid}}\n      </style>`;\n      root.append(markerHost);\n    }\n    // Preserve focused buttons while receiving progress, and never replace author controls.\n    const old = new Map(markerItems.map(item => [item.marker.id, item.button]));\n    markerItems = markers.map(marker => {\n      const button = old.get(marker.id) || document.createElement("button");\n      old.delete(marker.id);\n      button.type = "button";\n      button.setAttribute("data-board-interaction", marker.id);\n      button.dataset.comment = String(Boolean(marker.commentId));\n      if (!button.isConnected) markerHost.shadowRoot.append(button);\n      return { marker, button };\n    });\n    for (const button of old.values()) button.remove();\n    markerHost.style.setProperty("visibility", selectionMode === "off" && !pointer?.temporary ? "visible" : "hidden", "important");\n    positionMarkers();\n  };\n  window.addEventListener("scroll", queueMarkerPositions, true);\n  window.addEventListener("resize", queueMarkerPositions);\n  document.addEventListener("transitionend", queueLayoutPositions, true);\n  document.addEventListener("animationend", queueLayoutPositions, true);\n  document.addEventListener("load", queueLayoutPositions, true);\n  const clearOverlay = () => { if (overlay) overlay.remove(); overlay = null; };\n  const showOverlay = (r) => {\n    if (!overlay) {\n      overlay = document.createElement("div");\n      overlay.setAttribute("data-board-overlay", "");\n      overlay.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;border:2px solid #658aeb;background:#658aeb22;box-sizing:border-box;";\n      document.body.append(overlay);\n    }\n    Object.assign(overlay.style, { left: r.x + "px", top: r.y + "px", width: Math.max(2, r.width) + "px", height: Math.max(2, r.height) + "px" });\n  };\n  // The inspector is an overlay over real authored DOM; edit proposals become durable\n  // only after the host\'s Save action. Ordinary author interactions never use this layer.\n  let componentHost = null;\n  let selectedComponent = null;\n  let componentChoices = [];\n  let componentParents = [];\n  let componentChildren = [];\n  let componentFrame = null;\n  let componentHover = null;\n  let componentShortcut = false;\n  let componentPointer = null;\n  let componentClipboard = null;\n  let componentDrag = null;\n  let componentPress = null;\n  let componentClick = null;\n  let componentText = null;\n  let componentPending = null;\n  let componentResume = null;\n  let componentNotice = "";\n  let componentGhost = null;\n  let componentDropLine = null;\n  let componentDragPreview = null;\n  let componentDragAnimation = true;\n  const componentReducedMotion = matchMedia("(prefers-reduced-motion: reduce)");\n  let componentLayoutPreview = null;\n  let componentLayoutDraft = null;\n  let componentLayoutResize = null;\n  const importantBox = (node, box) => { for (const [name, value] of Object.entries(box)) node.style.setProperty(name, value + "px", "important"); };\n  const inComponentPreview = event => componentLayoutPreview && event.composedPath().includes(componentLayoutPreview.host);\n  const inComponentText = event => componentText?.host && event.composedPath().includes(componentText.host);\n  const inComponents = (event) => componentHost && event.composedPath().includes(componentHost);\n  const componentLabel = (node) => (node.getAttribute("data-board-component") || node.getAttribute("aria-label") || (node.id ? "#" + node.id : node.localName)).slice(0, 100);\n  const componentBoundary = (node) => authorElement(node) && node.matches(\'[data-board-component],[id],section,article,main,aside,nav,header,footer,form,fieldset,details,summary,button,input,textarea,select,canvas,svg,table,ul,ol,li,p,h1,h2,h3,h4,h5,h6,[role]\');\n  const componentAt = (target) => {\n    for (let node = target; authorElement(node); node = node.parentElement) if (componentBoundary(node)) return node;\n    return authorElement(target) ? target : null;\n  };\n  const componentAncestors = (node) => {\n    const ancestors = [];\n    for (let parent = node; authorElement(parent) && ancestors.length < 16; parent = parent.parentElement) ancestors.unshift(parent);\n    return ancestors;\n  };\n  const selectableChildren = (node) => Array.from(node.children).filter(child => authorElement(child) && !child.matches("script,style,link,meta,template") && visibleBox(child)).slice(0, 41);\n  const componentTextRuns = (node) => node && !node.matches("script,style,textarea,input,select,option,canvas,iframe,object,embed")\n    ? Array.from(node.childNodes).flatMap((child, index) => child.nodeType === Node.TEXT_NODE && child.textContent.trim() ? [{ index, text: child.textContent }] : []) : [];\n  const setComponentNotice = (message) => { componentNotice = message; queueComponentOutline(); };\n  const clearComponentHover = () => { componentHover?.remove(); componentHover = null; };\n  const previewComponent = (node, label) => {\n    const box = node && visibleBox(node);\n    if (!box) { clearComponentHover(); return; }\n    if (!componentHover) {\n      componentHover = document.createElement("div"); componentHover.setAttribute("data-board-overlay", ""); componentHover.setAttribute("data-board-component-preview", "");\n      componentHover.style.cssText = "all:initial!important;position:fixed!important;z-index:2147483646!important;pointer-events:none!important;box-sizing:border-box!important;border:2px dashed #658aeb!important;background:#658aeb12!important;";\n      const tag = document.createElement("span"); tag.style.cssText = "position:absolute;left:0;top:0;max-width:80vw;white-space:nowrap;padding:2px 5px;color:#fff;background:#345bb4;font:12px/1.4 system-ui;";\n      componentHover.append(tag); root.append(componentHover);\n    }\n    importantBox(componentHover, { left: box.left, top: box.top, width: box.width, height: box.height });\n    componentHover.firstChild.textContent = label || componentLabel(node);\n  };\n  const updateComponentHover = () => {\n    if (!componentPointer || (!componentShortcut && selectionMode !== "component") || componentText || componentDrag) { if (!componentDrag) clearComponentHover(); return; }\n    const node = componentAt(document.elementFromPoint(componentPointer.x, componentPointer.y));\n    previewComponent(node === selectedComponent && !componentPending ? null : node, componentPending && node ? `${componentLabel(node)} \xB7 \u8BF7\u5148\u5904\u7406\u5F85\u4FDD\u5B58\u4FEE\u6539` : undefined);\n  };\n  const componentResize = new ResizeObserver(() => queueComponentOutline());\n  const componentMutation = new MutationObserver(records => {\n    const changed = records.filter(record => !(record.target instanceof Element ? record.target : record.target.parentElement)?.closest("[data-board-overlay]")\n      && !(record.type === "childList" && [...record.addedNodes, ...record.removedNodes].every(node => node instanceof Element && node.hasAttribute("data-board-overlay"))));\n    if (componentLayoutDraft && changed.some(record => componentLayoutDraft.source.contains(record.target))) validateComponentLayout();\n    if (componentLayoutPreview && changed.some(record => [componentLayoutPreview.source,componentLayoutPreview.destination].filter(Boolean).some(node => !node.isConnected || node.contains(record.target)))) {\n      clearComponentLayoutPreview(); if (componentPending) componentPending.message = "\u7EC4\u4EF6\u5185\u5BB9\u5DF2\u53D8\u5316\uFF0C\u9884\u89C8\u5DF2\u64A4\u4E0B\uFF1B\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9";\n    }\n    if (changed.length) {\n      if (componentDrag) {\n        const active = componentDrag, destination = active.target?.node;\n        if (changed.some(record => !active.gesture.node.isConnected || active.gesture.node.contains(record.target)\n          || destination && (!destination.isConnected || destination.contains(record.target))\n          || record.type === "childList" && [active.gesture.node.parentElement, destination?.parentElement].includes(record.target))) {\n          cancelComponentDrag(); setComponentNotice("\u62D6\u52A8\u4E2D\u7684\u7EC4\u4EF6\u6216\u76EE\u6807\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9");\n        } else if (componentDragPreview) {\n          clearComponentDragPreview(); active.previewUnavailable = true; setComponentNotice("\u753B\u5E03\u5185\u5BB9\u5DF2\u53D8\u5316\uFF0C\u4EC5\u663E\u793A\u63D2\u5165\u7EBF\uFF1B\u539F\u7EC4\u4EF6\u4FDD\u6301\u4E0D\u53D8");\n        }\n      }\n      if (componentText) {\n        const text=componentText;\n        if (text.layoutSource!==text.source && changed.some(record=>text.layoutSource.contains(record.target) && !text.source.contains(record.target))) {\n          text.invalid="\u6587\u5B57\u5468\u56F4\u7684\u5E03\u5C40\u5DF2\u53D8\u5316\uFF1B\u8349\u7A3F\u4FDD\u7559\u53EF\u590D\u5236\uFF0C\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9";\n          text.recovery=true;text.run.editor.setAttribute("contenteditable","false");\n        }\n        validateComponentText();\n      }\n      queueComponentOutline();\n    }\n  });\n  const clearComponent = () => {\n    componentText?.host.remove(); componentHost?.remove(); componentHost = null; selectedComponent = null; componentChoices = []; componentParents = []; componentChildren = []; componentText = null;\n    clearComponentHover(); clearComponentGhost(); clearComponentLayoutPreview(); componentLayoutDraft = null; componentLayoutResize = null; componentDrag = null; componentPress = null; componentClick = null;\n    componentResize.disconnect(); componentMutation.disconnect();\n    if (componentFrame !== null) cancelAnimationFrame(componentFrame);\n    componentFrame = null;\n  };\n  const positionComponent = () => {\n    componentFrame = null;\n    if (!componentHost || !selectedComponent) return;\n    if (selectedComponent.isConnected && !componentText && !componentDrag && !componentPending && !componentLayoutDraft) {\n      const parents = componentAncestors(selectedComponent), children = selectableChildren(selectedComponent);\n      if (parents.length !== componentParents.length || parents.some((node, index) => node !== componentParents[index]) || children.length !== componentChildren.length || children.some((node, index) => node !== componentChildren[index])) { selectComponent(selectedComponent); return; }\n      for (const button of componentHost.shadowRoot.querySelectorAll(\'[data-component-action="choose"]\')) button.textContent = componentLabel(componentChoices[Number(button.dataset.componentIndex)]);\n    }\n    if (componentLayoutPreview && (queued?.snapshot.canvas.revision > componentLayoutPreview.revision || queued?.snapshot.canvas.documentVersion !== undefined && queued.snapshot.canvas.documentVersion !== componentLayoutPreview.documentVersion)) {\n      clearComponentLayoutPreview(); componentNotice = "\u753B\u5E03\u5DF2\u66F4\u65B0\uFF0C\u5E03\u5C40\u9884\u89C8\u5DF2\u64A4\u4E0B\uFF1B\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9";\n    }\n    const box = visibleBox(selectedComponent), shadow = componentHost.shadowRoot;\n    const outline = shadow.querySelector(".outline"); outline.hidden = !box || Boolean(componentDragPreview) || Boolean(componentLayoutPreview && !componentLayoutPreview.host.hidden);\n    if (box) Object.assign(outline.style, { left: box.left + "px", top: box.top + "px", width: box.width + "px", height: box.height + "px" });\n    for (const button of shadow.querySelectorAll("button")) button.disabled = Boolean(componentPending) && button.dataset.componentAction !== "preview-toggle" || (!box && button.dataset.componentAction !== "close");\n    const previewToggle = shadow.querySelector(\'[data-component-action="preview-toggle"]\'); previewToggle.hidden = !componentLayoutPreview;\n    const panel = shadow.querySelector(".panel"); panel.dataset.dragging = String(Boolean(componentDrag)); panel.dataset.editing = String(Boolean(componentText));\n    shadow.querySelector(".selected-name").textContent = componentLabel(selectedComponent);\n    shadow.querySelector(".selected-name").title = componentLabel(selectedComponent);\n    shadow.querySelector(\'[data-component-action="paste"]\').disabled ||= !componentClipboard?.node?.isConnected;\n    shadow.querySelector(\'[data-component-action="text"]\').disabled ||= !componentTextRuns(selectedComponent).length;\n    const layoutButton = shadow.querySelector(\'[data-component-action="layout"]\');\n    layoutButton.disabled ||= Boolean(componentHost.dataset.layoutUnsupported);\n    layoutButton.title = componentHost.dataset.layoutUnsupported || "\u8BBE\u7F6E\u6298\u53E0\u3001\u5206\u7EC4\u6216\u6EDA\u52A8\u9AD8\u5EA6";\n    shadow.querySelector(\'[role="status"]\').textContent = componentPending ? componentPending.message || (componentLayoutPreview ? "\u5E03\u5C40\u9884\u89C8 \xB7 \u5C1A\u672A\u4FDD\u5B58" : "\u7B49\u5F85\u4FDD\u5B58 \xB7 \u5728\u753B\u5E03\u4E0A\u65B9\u786E\u8BA4\u8FD9\u6B21\u4FEE\u6539") : !box ? "\u7EC4\u4EF6\u5DF2\u9690\u85CF\u6216\u79FB\u9664\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9" : componentNotice || componentHost.dataset.layoutUnsupported || "\u9009\u62E9\u7EC4\u4EF6 \xB7 \u2318 / Ctrl + Shift \u60AC\u505C\u9884\u89C8\u5E76\u70B9\u51FB";\n    for (const field of shadow.querySelectorAll("select,input")) field.disabled = Boolean(componentPending || componentText?.invalid);\n    if (componentLayoutDraft) {\n      const valid = validateComponentLayout();\n      shadow.querySelector(\'[data-component-action="layout-save"]\').disabled = Boolean(componentPending || !valid || !componentLayoutPreview);\n      shadow.querySelector(\'[data-component-action="layout-preview"]\').disabled = Boolean(componentPending || !valid);\n      if (!valid) shadow.querySelector(\'[role="status"]\').textContent = componentLayoutDraft.invalid;\n    }\n    if (componentText) {\n      positionComponentText();\n      shadow.querySelector(\'[data-component-action="text-save"]\').disabled = Boolean(componentPending || componentText.invalid);\n      shadow.querySelector(\'[data-component-action="text-cancel"]\').disabled = Boolean(componentPending);\n      shadow.querySelector(\'[role="status"]\').textContent = componentText.invalid || (componentPending ? componentPending.message || "\u7B49\u5F85\u4FDD\u5B58 \xB7 \u539F\u4F4D\u9884\u89C8" : componentNotice || "\u76F4\u63A5\u6539\u5B57 \xB7 \u2318 / Ctrl + Enter \u5B8C\u6210 \xB7 Esc \u53D6\u6D88");\n    }\n  };\n  const queueComponentOutline = () => { if (componentHost && componentFrame === null) componentFrame = requestAnimationFrame(positionComponent); };\n  const selectComponent = (node) => {\n    if (!authorElement(node) || !node.isConnected || componentPending) return;\n    clearComponent(); selectedComponent = node;\n    const host = document.createElement("div"); host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-components", "");\n    host.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483647!important;pointer-events:none!important;";\n    const shadow = host.attachShadow({ mode: "open" });\n    shadow.innerHTML = `<style>\n      :host{color-scheme:normal}.outline{position:fixed;box-sizing:border-box;border:3px solid #6f96ff;box-shadow:0 0 0 1px #fff9,inset 0 0 0 1px #fff5;background:#658aeb0c;pointer-events:none}.outline[hidden],[hidden]{display:none!important}\n      .panel,.popover{box-sizing:border-box;border:1px solid var(--host-line-strong,#aaa);border-radius:10px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);font:12px/1.5 system-ui;box-shadow:0 3px 15px #0002;pointer-events:auto}\n      .panel{position:absolute;bottom:10px;left:10px;max-width:calc(100% - 20px);padding:5px 7px}.toolbar{display:flex;align-items:center;gap:5px;max-width:100%;overflow-x:auto}.selected-name{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.status{max-width:540px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.75;font-size:11px}.status:empty{display:none}.row{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.popover{position:absolute;bottom:calc(100% + 6px);left:0;padding:9px;width:min(310px,calc(100vw - 24px));max-height:min(300px,38vh);overflow:auto}.tools{left:auto;right:0}.layout-tools label{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%}.layout-tools input{min-width:0;max-width:155px;width:155px;box-sizing:border-box}.layout-tools .layout-hint{white-space:normal;max-width:280px}.ancestors,.children{flex-direction:column}.ancestors button,.children button{text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.label{opacity:.65;font-size:11px;margin-top:6px}button,select,input{font:inherit;color:inherit;background:transparent}button,select,input{padding:4px 7px;border:1px solid var(--host-line-strong,#ccc);border-radius:5px;white-space:nowrap;flex:none}button{cursor:pointer}button[aria-current=true]{border-color:var(--host-iris,#658aeb);font-weight:600}button:focus-visible{outline:2px solid var(--host-iris,#658aeb)}button:disabled{opacity:.5;cursor:default}.hint{opacity:.75;margin-top:8px;font-size:11px}.text-tools{display:none;align-items:center;gap:5px}.text-runs{max-width:150px}.panel[data-editing=true] .toolbar>[data-component-action],.panel[data-editing=true] .popover{display:none}.panel[data-editing=true] .text-tools{display:flex}.panel[data-editing=true] .selected-name{max-width:100px}button[data-component-action=drag]{touch-action:none;cursor:grab}.panel[data-dragging=true] .toolbar> :not([data-component-action=drag]):not(.selected-name){display:none}.panel[data-dragging=true] .popover{display:none}@media(max-width:540px){.selected-name{max-width:90px}.toolbar{gap:3px}.toolbar button{padding:4px 5px}}\n    </style><div class="outline"></div><div class="panel" role="region" aria-label="\u7EC4\u4EF6\u9009\u62E9"><div class="toolbar"><span class="selected-name"></span><span class="text-tools"><select class="text-runs" aria-label="\u6587\u5B57\u6BB5\u843D"></select><button type="button" data-component-action="text-save">\u5B8C\u6210\u6587\u5B57</button><button type="button" data-component-action="text-cancel">\u53D6\u6D88</button></span><button type="button" data-component-action="preview-toggle" hidden>\u770B\u539F\u7248</button><button type="button" data-component-action="drag" title="\u62D6\u52A8\u7EC4\u4EF6\uFF1BTab\u5207\u6362\u76EE\u6807\u5C42\u7EA7">\u62D6\u52A8</button><button type="button" data-component-action="text">\u6539\u5B57</button><button type="button" data-component-action="paste">\u7C98\u8D34</button><button type="button" data-component-action="layout" aria-expanded="false">\u5E03\u5C40</button><button type="button" data-component-action="hierarchy" aria-expanded="false">\u5C42\u7EA7</button><button type="button" data-component-action="more" aria-expanded="false" aria-label="\u66F4\u591A\u7EC4\u4EF6\u64CD\u4F5C">\u2022\u2022\u2022</button><button type="button" data-component-action="close" aria-label="\u5B8C\u6210\u9009\u62E9" title="\u5B8C\u6210\u9009\u62E9 \xB7 Esc">\xD7</button></div><div role="status" class="status"></div><div class="popover relations" hidden><div class="label">\u5305\u542B\u5C42\u7EA7</div><div class="row ancestors"></div><div class="label">\u76F4\u63A5\u5B50\u7EC4\u4EF6</div><div class="row children"></div></div><div class="popover layout-tools" hidden><div class="row"><label>\u6536\u8D77\u65B9\u5F0F <select class="layout-collapse" aria-label="\u6536\u8D77\u65B9\u5F0F"><option value="none">\u4E0D\u6536\u8D77</option><option value="contents">\u4FDD\u7559\u6807\u9898\uFF0C\u6536\u8D77\u5185\u5BB9</option><option value="group">\u5916\u5957\u6298\u53E0\u5206\u7EC4</option></select></label></div><div class="row layout-title-row" hidden><label><span class="layout-title-label">\u5206\u7EC4\u6807\u9898</span><input class="layout-title" aria-label="\u5206\u7EC4\u6807\u9898" maxlength="120" value="" /></label></div><div class="row"><label>\u6700\u5927\u9AD8\u5EA6\uFF08px\uFF09<input class="layout-height" aria-label="\u6700\u5927\u9AD8\u5EA6" type="number" min="80" max="2000" step="10" placeholder="\u4E0D\u9650\u9AD8" /></label></div><div class="row"><button type="button" data-component-action="layout-preview">\u9884\u89C8</button><button type="button" data-component-action="layout-save">\u5B8C\u6210\u5E03\u5C40</button><button type="button" data-component-action="layout-reset">\u6062\u590D\u539F\u6837</button><button type="button" data-component-action="layout-cancel">\u53D6\u6D88</button></div><div class="hint layout-hint">\u5148\u9884\u89C8\uFF0C\u518D\u4FDD\u5B58\u3002\u9884\u89C8\u4E0B\u8FB9\u7F18\u53EF\u62D6\u52A8\u8C03\u9AD8\uFF1B\u539F\u7EC4\u4EF6\u4FDD\u6301\u4E0D\u53D8\u3002</div></div><div class="popover tools" hidden><div class="row"><button type="button" data-component-action="cut">\u526A\u5207 \u2318/Ctrl X</button><button type="button" data-component-action="copy">\u590D\u5236 \u2318/Ctrl C</button><button type="button" data-component-action="reference">\u5F15\u7528\u7EC4\u4EF6</button></div><div class="row"><label>\u7C98\u8D34\u4F4D\u7F6E <select aria-label="\u7C98\u8D34\u4F4D\u7F6E" class="placement"><option value="append">\u653E\u5165\u672B\u5C3E</option><option value="prepend">\u653E\u5165\u5F00\u5934</option><option value="before">\u653E\u5728\u524D\u9762</option><option value="after">\u653E\u5728\u540E\u9762</option></select></label></div><div class="row"><label><input class="component-drag-animation" type="checkbox" aria-label="\u62D6\u52A8\u8BA9\u4F4D\u52A8\u753B" /> \u62D6\u52A8\u8BA9\u4F4D\u52A8\u753B</label></div><div class="hint">\u8FB9\u7F18\u6216\u7A7A\u9699\u63D2\u5165\uFF0C\u5BB9\u5668\u4E2D\u592E\u653E\u5165\u3002\u62D6\u52A8\u65F6 Tab / Shift+Tab \u5207\u6362\u76EE\u6807\u5C42\u7EA7\uFF0C\u2191 \u524D\u9762 \xB7 \u2193 \u540E\u9762 \xB7 \u2190 \u5F00\u5934 \xB7 \u2192 \u672B\u5C3E\u3002\u590D\u5236\u7ED3\u6784\uFF1B\u8FD0\u884C\u4E2D\u7684 JS \u72B6\u6001\u4E0D\u590D\u5236\u3002</div></div></div>`;\n    const addChoice = (element, container) => {\n      const button = document.createElement("button"); button.type = "button"; button.dataset.componentAction = "choose"; button.dataset.componentIndex = String(componentChoices.length);\n      button.textContent = componentLabel(element); button.setAttribute("aria-current", String(element === node)); componentChoices.push(element); container.append(button);\n    };\n    componentParents = componentAncestors(node); for (const parent of componentParents) addChoice(parent, shadow.querySelector(".ancestors"));\n    componentChildren = selectableChildren(node); for (const child of componentChildren.slice(0, 40)) addChoice(child, shadow.querySelector(".children"));\n    if (!componentChildren.length) shadow.querySelector(".children").textContent = "\u6CA1\u6709\u53EF\u89C1\u5B50\u7EC4\u4EF6";\n    try { componentLayoutTools.capture(node, componentLayoutTools.inspect(node)); }\n    catch (failure) { host.dataset.layoutUnsupported = failure.message || "\u8FD9\u4E2A\u7EC4\u4EF6\u4E0D\u652F\u6301\u76F4\u63A5\u5E03\u5C40"; }\n    componentHost = host; root.append(host); componentMutation.observe(root, { subtree: true, childList: true, attributes: true, characterData: true });\n    for (const parent of componentParents) componentResize.observe(parent);\n    shadow.querySelector(".text-runs").addEventListener("change", () => {\n      if (!componentText) return;\n      chooseComponentTextRun(Number(shadow.querySelector(".text-runs").value), true);\n    });\n    for (const field of shadow.querySelectorAll(".layout-tools input,.layout-tools select")) field.addEventListener("input", event => {\n      if (!event.isTrusted || !componentLayoutDraft || componentPending) return;\n      readComponentLayoutFields(); clearComponentLayoutPreview(); positionComponent();\n    });\n    const animation = shadow.querySelector(".component-drag-animation"); animation.checked = componentDragAnimation;\n    animation.addEventListener("change", event => { if (event.isTrusted) componentDragAnimation = animation.checked; });\n    positionComponent();\n  };\n  const clearComponentDragPreview = () => { componentDragPreview?.host.remove(); componentDragPreview = null; };\n  const clearComponentGhost = () => { componentGhost?.remove(); componentGhost = null; componentDropLine?.remove(); componentDropLine = null; clearComponentDragPreview(); };\n  const clearComponentLayoutPreview = () => { componentLayoutPreview?.host.remove(); componentLayoutPreview = null; };\n  // Build inert visual copies in a document with no browsing context. In particular,\n  // cloneNode/importNode in the live document can invoke custom-element constructors.\n  // The copy never enters the authored tree, and scripts/handlers/custom elements cannot\n  // execute when its ordinary HTML/SVG nodes are adopted into an isolated shadow root.\n  const componentVisualCopy = (source, { computed = false, maxNodes = 2400, maxMs = 180, placeholders = false } = {}) => {\n    const inert = document.implementation.createHTMLDocument("");\n    const nodes = new Map(), scrolls = []; let count = 0, bytes = 0, bitmapPixels = 0, approximated = false;\n    const deadline = performance.now() + maxMs;\n    const consumeBytes = value => { bytes += value.length; if (bytes > 1500000) throw new Error("\u7EC4\u4EF6\u5185\u5BB9\u8F83\u5927\uFF0C\u672A\u751F\u6210\u5B8C\u6574\u5E03\u5C40\u9884\u89C8\uFF1B\u539F\u7EC4\u4EF6\u5C1A\u672A\u4FEE\u6539"); return value; };\n    const skip = new Set(["script", "iframe", "object", "embed", "template", "noscript", "base", "meta", "title", "audio", "animate", "animatetransform", "animatemotion", "set"]);\n    const visit = (node, closed = false) => {\n      if (++count > maxNodes || performance.now() > deadline) throw new Error("\u7EC4\u4EF6\u5185\u5BB9\u8F83\u590D\u6742\uFF0C\u672A\u751F\u6210\u5B8C\u6574\u5E03\u5C40\u9884\u89C8\uFF1B\u539F\u7EC4\u4EF6\u5C1A\u672A\u4FEE\u6539");\n      if (node.nodeType === Node.TEXT_NODE) return inert.createTextNode(consumeBytes(node.textContent));\n      // Preserve only a validated managed heading position, not arbitrary author\n      // comments/history. The shared restorer needs this exact marker in its copy.\n      if (node.nodeType === Node.COMMENT_NODE) {\n        const body = node.parentElement, details = body?.parentElement, owner = details?.parentElement;\n        const key = details?.getAttribute("data-paseo-layout-key");\n        if (body?.getAttribute("data-paseo-layout-part") === "body" && details?.getAttribute("data-paseo-layout-part") === "details"\n          && key && node.textContent === `paseo-layout-heading:${key}` && owner?.hasAttribute("data-paseo-layout")) {\n          try { if (componentLayoutTools.inspect(owner).collapse === "contents") return inert.createComment(consumeBytes(node.textContent)); } catch {}\n        }\n        return null;\n      }\n      if (!(node instanceof Element) || node.hasAttribute("data-board-overlay")) return null;\n      const tag = node.localName.toLowerCase();\n      if (placeholders && !closed && ["iframe", "object", "embed"].includes(tag)) {\n        const clone = inert.createElement("div"), style = getComputedStyle(node), box = node.getBoundingClientRect();\n        for (const name of style) clone.style.setProperty(name, consumeBytes(style.getPropertyValue(name)), "important");\n        if (style.display === "inline") clone.style.setProperty("display", "inline-block", "important");\n        clone.style.setProperty("box-sizing", "border-box", "important"); clone.style.setProperty("width", box.width + "px", "important"); clone.style.setProperty("height", box.height + "px", "important");\n        clone.style.setProperty("overflow", "hidden", "important"); clone.style.setProperty("background", "#dde3eb", "important"); clone.setAttribute("data-board-preview-media", "");\n        clone.textContent = "\u5D4C\u5165\u5185\u5BB9"; nodes.set(node, clone); approximated = true; return clone;\n      }\n      if (skip.has(tag) || closed && tag !== "summary") { if (["iframe","object","embed"].includes(tag) && node.getBoundingClientRect().width) approximated=true; return null; }\n      if (tag === "link") return null; // Stylesheets are copied from CSSOM below, never refetched.\n      let visual = null;\n      if (node instanceof HTMLCanvasElement || node instanceof HTMLVideoElement) {\n        try {\n          const width = node instanceof HTMLCanvasElement ? node.width : node.videoWidth, height = node instanceof HTMLCanvasElement ? node.height : node.videoHeight;\n          if (!width || !height || width*height > 4000000) throw new Error("bitmap exceeds preview source limit");\n          const scale = Math.min(1, Math.sqrt(250000 / (width*height))), canvas=document.createElement("canvas");\n          canvas.width=Math.max(1,Math.round(width*scale));canvas.height=Math.max(1,Math.round(height*scale));\n          if ((bitmapPixels += canvas.width*canvas.height) > 1000000) throw new Error("preview bitmap budget exceeded");\n          canvas.getContext("2d").drawImage(node,0,0,canvas.width,canvas.height); const data=canvas.toDataURL();\n          consumeBytes(data);\n          visual=inert.createElement("img");visual.src=data;\n        } catch { approximated=true;visual=inert.createElement("div");visual.textContent="\u52A8\u6001\u753B\u9762 \xB7 \u9759\u6001\u9884\u89C8\u5360\u4F4D"; }\n      }\n      const custom = tag.includes("-") || node.hasAttribute("is"); if (custom || node.shadowRoot) approximated = true;\n      const clone = visual || inert.createElementNS(custom ? "http://www.w3.org/1999/xhtml" : node.namespaceURI, custom ? "div" : node.localName);\n      nodes.set(node, clone);\n      for (const attr of node.attributes) {\n        if (/^on/i.test(attr.name) || ["is", "autofocus", "srcdoc", "autoplay", "contenteditable"].includes(attr.name) || /^javascript:/i.test(attr.value.trim())) continue;\n        if (visual && ["width", "height", "src"].includes(attr.name)) continue;\n        consumeBytes(attr.name); consumeBytes(attr.value); try { clone.setAttribute(attr.name, attr.value); } catch {}\n      }\n      if (tag === "style") { clone.textContent = consumeBytes(node.textContent.replace(/:root\\b/g, "[data-board-preview-root]")); return clone; }\n      if (computed) {\n        const style = getComputedStyle(node); for (const name of style) clone.style.setProperty(name, consumeBytes(style.getPropertyValue(name)), "important");\n      }\n      clone.style.setProperty("animation", "none", "important"); clone.style.setProperty("transition", "none", "important");\n      if (node instanceof HTMLInputElement) { clone.setAttribute("value", consumeBytes(node.value)); if (node.checked) clone.setAttribute("checked", ""); else clone.removeAttribute("checked"); }\n      if (node instanceof HTMLTextAreaElement) { clone.textContent = consumeBytes(node.value); return clone; }\n      if (node instanceof HTMLOptionElement) { if (node.selected) clone.setAttribute("selected", ""); else clone.removeAttribute("selected"); }\n      if (visual) { const box = node.getBoundingClientRect(); clone.style.setProperty("width", box.width + "px"); clone.style.setProperty("height", box.height + "px"); }\n      const hidden = node !== source && tag !== "head" && (node.hasAttribute("hidden") || getComputedStyle(node).display === "none" || getComputedStyle(node).contentVisibility === "hidden");\n      if (!visual && !hidden) for (const child of node.childNodes) { const copy = visit(child, tag === "details" && !node.open && !node.hasAttribute("data-paseo-layout-key")); if (copy) clone.append(copy); }\n      if (node.scrollLeft || node.scrollTop) scrolls.push([clone, node.scrollLeft, node.scrollTop]);\n      return clone;\n    };\n    const clone = visit(source);\n    return { clone, nodes, scrolls, approximated, consumeBytes };\n  };\n  const showComponentGhost = (point) => {\n    clearComponentGhost();\n    if (!selectedComponent) return;\n    const box = selectedComponent.getBoundingClientRect();\n    const host = document.createElement("div"); host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-component-ghost", "");\n    host.style.cssText = "all:initial!important;position:fixed!important;z-index:2147483645!important;pointer-events:none!important;opacity:.82!important;filter:drop-shadow(0 8px 16px #0005)!important;transform-origin:top left!important;transition:transform 70ms ease-out!important;";\n    host.inert = true; host.setAttribute("aria-hidden","true");\n    const shadow = host.attachShadow({mode:"open"});\n    try {\n      const visual = componentVisualCopy(selectedComponent, {computed:true,maxNodes:350,maxMs:100});\n      const clone = visual.clone; clone.style.setProperty("margin", "0", "important"); clone.style.setProperty("position", "relative", "important"); clone.style.setProperty("inset", "auto", "important");\n      shadow.append(clone);\n    } catch { const fallback = document.createElement("div"); fallback.textContent = componentLabel(selectedComponent); fallback.style.cssText = "padding:20px;border:2px solid #6f96ff;background:#edf2ff;color:#1f3466;font:13px system-ui"; shadow.append(fallback); }\n    const scale = Math.min(1, 300 / Math.max(1, box.width), 180 / Math.max(1, box.height));\n    host.dataset.scale = String(scale); importantBox(host, {left:0,top:0,width:Math.max(40,box.width),height:Math.max(24,box.height)});\n    if (!componentDragAnimation || componentReducedMotion.matches) host.style.setProperty("transition", "none", "important");\n    componentGhost = host; root.append(host); positionComponentGhost(point);\n  };\n  const positionComponentGhost = (point) => {\n    if (!componentGhost) return;\n    componentGhost.style.setProperty("transform", `translate(${point.x + 16}px,${point.y + 16}px) scale(${componentGhost.dataset.scale}) rotate(1deg)`, "important");\n  };\n  const showComponentDropLine = (destination, position, slot = null) => {\n    if (!destination) { componentDropLine?.remove(); componentDropLine = null; return; }\n    const bounds = destination.getBoundingClientRect();\n    const inside = position === "append" || position === "prepend";\n    const edge = inside ? (position === "append" ? destination.lastElementChild : destination.firstElementChild) : destination;\n    const edgeBox = edge?.getBoundingClientRect() || bounds;\n    const flow = getComputedStyle(inside ? destination : destination.parentElement);\n    const horizontal = slot?.horizontal ?? (/flex/.test(flow.display) && flow.flexDirection.startsWith("row"));\n    const trailing = Boolean(position === "after" || position === "append" && edge) !== Boolean(slot?.reverse);\n    const y = trailing ? edgeBox.bottom : edgeBox.top;\n    if (!componentDropLine) { componentDropLine = document.createElement("div"); componentDropLine.setAttribute("data-board-overlay", ""); componentDropLine.setAttribute("data-board-component-drop-line", ""); componentDropLine.style.cssText = "all:initial!important;position:fixed!important;height:4px!important;border-radius:3px!important;background:#3b82f6!important;box-shadow:0 0 0 1px white!important;pointer-events:none!important;z-index:2147483646!important;"; root.append(componentDropLine); }\n    importantBox(componentDropLine, horizontal\n      ? {left:Math.max(1,Math.min(innerWidth-5,(trailing?edgeBox.right:edgeBox.left)-2)),top:Math.max(0,inside?bounds.top+5:edgeBox.top),width:4,height:Math.max(20,inside?bounds.height-10:edgeBox.height)}\n      : {left:Math.max(0,inside?bounds.left+5:edgeBox.left),top:Math.max(1,Math.min(innerHeight-5,y-2)),width:Math.max(20,inside?bounds.width-10:edgeBox.width),height:4});\n    componentDropLine.dataset.position = position;componentDropLine.dataset.orientation=horizontal?"vertical":"horizontal";componentDropLine.dataset.destination=selectorFor(destination);\n  };\n  const validateComponentLayout = () => {\n    const draft = componentLayoutDraft;\n    if (!draft || draft.invalid) return Boolean(draft && !draft.invalid);\n    try {\n      if (!draft.source.isConnected || document.querySelectorAll(draft.selector).length !== 1 || document.querySelector(draft.selector) !== draft.source\n        || snapshot.canvas.revision !== draft.canvasBase.revision || snapshot.canvas.documentVersion !== draft.canvasBase.documentVersion\n        || queued && (queued.snapshot.canvas.revision !== draft.canvasBase.revision || queued.snapshot.canvas.documentVersion !== draft.canvasBase.documentVersion)\n        || !matchesComponentIdentity(draft.source, draft.identity)) draft.invalid = "\u539F\u7EC4\u4EF6\u6216\u753B\u5E03\u5DF2\u53D8\u5316\uFF1B\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9";\n    } catch { draft.invalid = "\u65E0\u6CD5\u786E\u8BA4\u539F\u7EC4\u4EF6\uFF1B\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9"; }\n    return !draft.invalid;\n  };\n  const componentLayoutNeedsTitle = collapse => collapse === "group" || collapse === "contents" && !Array.from(componentLayoutDraft.source.children).some(node => /^h[1-6]$/.test(node.localName))\n    && !componentLayoutDraft.source.querySelector(\':scope > details[data-paseo-layout-part="details"] > summary[data-paseo-layout-part="summary"] > :is(h1,h2,h3,h4,h5,h6)\');\n  const showComponentLayoutTitle = collapse => {\n    const shadow = componentHost.shadowRoot;\n    shadow.querySelector(".layout-title-row").hidden = !componentLayoutNeedsTitle(collapse);\n    shadow.querySelector(".layout-title-label").textContent = collapse === "group" ? "\u5206\u7EC4\u6807\u9898" : "\u6536\u8D77\u540E\u663E\u793A";\n  };\n  const writeComponentLayoutFields = () => {\n    if (!componentLayoutDraft || !componentHost) return;\n    const shadow = componentHost.shadowRoot, config = componentLayoutDraft.config;\n    shadow.querySelector(".layout-collapse").value = config.collapse;\n    shadow.querySelector(".layout-title").value = config.title || "";\n    showComponentLayoutTitle(config.collapse);\n    shadow.querySelector(".layout-height").value = config.maxHeight === null ? "" : String(config.maxHeight);\n  };\n  const readComponentLayoutFields = () => {\n    const shadow = componentHost.shadowRoot, collapse = shadow.querySelector(".layout-collapse").value, height = shadow.querySelector(".layout-height").value;\n    const title = shadow.querySelector(".layout-title").value;\n    componentLayoutDraft.config = { collapse, maxHeight: height.trim() ? Number(height) : null, ...(componentLayoutNeedsTitle(collapse) ? { title: title.trim() || (collapse === "group" ? "\u5206\u7EC4" : "\u5185\u5BB9") } : {}) };\n    showComponentLayoutTitle(collapse);\n  };\n  const openComponentLayout = () => {\n    if (componentText || componentPending || !selectedComponent?.isConnected) return;\n    if (!componentLayoutDraft) {\n      const config = componentLayoutTools.inspect(selectedComponent);\n      componentLayoutDraft = { source: selectedComponent, selector: selectorFor(selectedComponent), identity: componentIdentity(selectedComponent),\n        canvasBase: { revision: snapshot.canvas.revision, documentVersion: snapshot.canvas.documentVersion }, config };\n    }\n    for (const menu of componentHost.shadowRoot.querySelectorAll(".popover")) menu.hidden = true;\n    componentHost.shadowRoot.querySelector(".layout-tools").hidden = false;\n    componentHost.shadowRoot.querySelector(\'[data-component-action="layout"]\').setAttribute("aria-expanded", "true");\n    writeComponentLayoutFields(); setComponentNotice("\u8C03\u6574\u5E03\u5C40 \xB7 \u5148\u9884\u89C8\uFF0C\u518D\u4FDD\u5B58");\n  };\n  const componentLayoutPatch = () => {\n    if (!validateComponentLayout()) throw new Error(componentLayoutDraft?.invalid || "\u8BF7\u91CD\u65B0\u9009\u62E9\u7EC4\u4EF6");\n    const draft = componentLayoutDraft, config = componentLayoutTools.capture(draft.source, draft.config);\n    if (!componentLayoutTools.validate(config)) throw new Error("\u5E03\u5C40\u9009\u9879\u65E0\u6548\uFF0C\u8BF7\u68C0\u67E5\u9AD8\u5EA6\u548C\u6807\u9898");\n    const reparent = config.collapse !== "none" || componentLayoutTools.inspect(draft.source).collapse !== "none";\n    if (reparent && typeof Element.prototype.moveBefore !== "function" && draft.source.querySelector("iframe,video,audio")) throw new Error("\u5F53\u524D\u6D4F\u89C8\u5668\u65E0\u6CD5\u65E0\u635F\u79FB\u52A8\u8FD9\u4E2A\u7EC4\u4EF6\u91CC\u7684\u5A92\u4F53\u6216\u7F51\u9875\uFF1B\u8BF7\u9009\u62E9\u4EC5\u9650\u5236\u9AD8\u5EA6");\n    return { operation: "layout", selector: draft.selector, sourceIdentity: draft.identity, layout: config };\n  };\n  const previewComponentLayout = () => {\n    readComponentLayoutFields();\n    const patch = componentLayoutPatch();\n    showComponentLayoutPreview(patch);\n    if (componentLayoutPreview) componentLayoutDraft.patch = patch;\n    positionComponent();\n  };\n  const cancelComponentLayout = () => {\n    if (componentPending) return;\n    componentLayoutDraft = null; componentLayoutResize = null; clearComponentLayoutPreview();\n    componentHost.shadowRoot.querySelector(".layout-tools").hidden = true;\n    componentHost.shadowRoot.querySelector(\'[data-component-action="layout"]\').setAttribute("aria-expanded", "false");\n    setComponentNotice("\u672A\u4FDD\u5B58\uFF1B\u539F\u7EC4\u4EF6\u4FDD\u6301\u4E0D\u53D8");\n  };\n  const saveComponentLayout = () => {\n    if (!componentLayoutPreview || !componentLayoutDraft?.patch || !validateComponentLayout()) return;\n    proposeComponentEdit(componentLayoutDraft.patch, componentLayoutDraft.canvasBase);\n  };\n  const positionComponentLayoutResize = () => {\n    const preview = componentLayoutPreview;\n    if (!preview?.resizeHandle || !preview.inserted?.isConnected) return;\n    const box = preview.inserted.getBoundingClientRect();\n    importantBox(preview.resizeHandle, { left: Math.max(4, Math.min(innerWidth - 84, box.left + box.width / 2 - 40)), top: Math.max(30, Math.min(innerHeight - 190, box.bottom - 7)), width: 80, height: 14 });\n  };\n  const beginComponentLayoutResize = event => {\n    const preview = componentLayoutPreview;\n    if (!componentLayoutDraft || componentPending || !preview?.layoutBody || !validateComponentLayout()) return;\n    const height = componentLayoutDraft.config.maxHeight ?? Math.max(80, Math.min(2000, Math.round(preview.layoutBody.getBoundingClientRect().height)));\n    componentLayoutResize = { pointerId: event.pointerId, startY: event.clientY, height, original: componentLayoutDraft.config.maxHeight };\n    try { preview.resizeHandle.setPointerCapture(event.pointerId); } catch {}\n  };\n  const moveComponentLayoutResize = event => {\n    const active = componentLayoutResize, preview = componentLayoutPreview;\n    if (!active || active.pointerId !== event.pointerId || !preview?.layoutBody) return;\n    const height = Math.max(80, Math.min(2000, Math.round(active.height + event.clientY - active.startY)));\n    componentLayoutDraft.config.maxHeight = height;\n    preview.layoutBody.style.setProperty("max-height", height + "px"); preview.layoutBody.style.setProperty("overflow-y", "auto");\n    writeComponentLayoutFields(); positionComponentLayoutResize();\n  };\n  const finishComponentLayoutResize = (cancel = false) => {\n    if (!componentLayoutResize || !componentLayoutDraft) return;\n    if (cancel) componentLayoutDraft.config.maxHeight = componentLayoutResize.original;\n    componentLayoutResize = null; writeComponentLayoutFields();\n    try { previewComponentLayout(); } catch (failure) { setComponentNotice(failure.message || String(failure)); }\n  };\n  const showComponentLayoutPreview = (patch) => {\n    clearComponentLayoutPreview(); componentMutation.takeRecords();\n    const source = document.querySelector(patch.selector), destination = patch.operation === "layout" ? source : document.querySelector(patch.destination);\n    try {\n      const failure = componentTransferFailure(patch.operation, source, destination, patch.position);\n      if (failure) throw new Error(failure);\n      const visual = componentVisualCopy(root); const sourceCopy = visual.nodes.get(source), destinationCopy = visual.nodes.get(destination);\n      if (!sourceCopy || !destinationCopy) throw new Error("\u8FD9\u4E2A\u4F4D\u7F6E\u6682\u4E0D\u652F\u6301\u5E03\u5C40\u9884\u89C8\uFF1B\u539F\u7EC4\u4EF6\u5C1A\u672A\u4FEE\u6539");\n      let inserted, layoutResult;\n      if (patch.operation === "layout") {\n        layoutResult = componentLayoutTools.apply(sourceCopy, patch.layout, "component-layout-preview");\n        inserted = patch.layout.collapse === "group" ? layoutResult.details : sourceCopy;\n      } else {\n        inserted = patch.operation === "copy" ? sourceCopy.cloneNode(true) : sourceCopy;\n        const parent = ["before", "after"].includes(patch.position) ? destinationCopy.parentNode : destinationCopy;\n        const before = patch.position === "before" ? destinationCopy : patch.position === "after" ? destinationCopy.nextSibling : patch.position === "prepend" ? destinationCopy.firstChild : null;\n        parent.insertBefore(inserted, before);\n      }\n      inserted.setAttribute("data-board-preview-inserted", "true");\n      inserted.style.setProperty("outline", "3px solid #39b985", "important"); inserted.style.setProperty("outline-offset", "2px", "important");\n      const host = document.createElement("div"); host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-component-layout", "");\n      host.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483644!important;pointer-events:auto!important;background:var(--host-canvas,#fff)!important;";\n      const shadow = host.attachShadow({mode:"open"}); const viewport = document.createElement("div"); viewport.style.cssText = "position:absolute;inset:0;overflow:auto;overscroll-behavior:contain;pointer-events:auto"; viewport.tabIndex=-1;\n      // Keep original tag/ID selectors inside this shadow only. :root is explicitly\n      // rebound to the copied root; original IDs never enter document.querySelector.\n      visual.clone.inert = true; visual.clone.setAttribute("data-board-preview-root", ""); visual.clone.removeAttribute("data-board-selection");\n      visual.clone.style.setProperty("width", root.clientWidth + "px", "important"); visual.clone.style.setProperty("margin", "0", "important"); visual.clone.style.setProperty("cursor", "default", "important");\n      for (const name of ["font-family", "font-size", "line-height", "color", "color-scheme"]) visual.clone.style.setProperty(name,getComputedStyle(root).getPropertyValue(name));\n      for (const sheet of document.styleSheets) if (sheet.ownerNode?.tagName === "LINK") { try { const style = document.createElement("style"); style.textContent = visual.consumeBytes(Array.from(sheet.cssRules, rule=>rule.cssText).join("\\n").replace(/:root\\b/g,"[data-board-preview-root]")); visual.clone.prepend(style); } catch { visual.approximated = true; } }\n      const freeze = document.createElement("style"); freeze.textContent = "[data-board-preview-root],[data-board-preview-root] *,[data-board-preview-root] *::before,[data-board-preview-root] *::after{animation:none!important;transition:none!important;caret-color:transparent!important;pointer-events:none!important}"; shadow.append(freeze,viewport); viewport.append(visual.clone);\n      const safeBottom=Math.min(180,innerHeight*.3), tail=document.createElement("div");tail.style.cssText=`height:${safeBottom}px;pointer-events:none`;viewport.append(tail);\n      const badge = document.createElement("div"); badge.setAttribute("data-board-preview-status", ""); badge.textContent = visual.approximated ? "\u9759\u6001\u5E03\u5C40\u9884\u89C8 \xB7 \u90E8\u5206\u52A8\u6001\u7EC4\u4EF6\u4E3A\u5360\u4F4D \xB7 \u5C1A\u672A\u4FDD\u5B58" : "\u5E03\u5C40\u9884\u89C8 \xB7 \u7EFF\u8272\u6846\u662F\u653E\u7F6E\u540E\u7684\u7EC4\u4EF6 \xB7 \u5C1A\u672A\u4FDD\u5B58"; badge.style.cssText = "position:absolute;top:8px;left:8px;max-width:calc(100% - 32px);padding:6px 10px;border-radius:7px;background:#153c31;color:#e9fff5;font:12px/1.5 system-ui;box-shadow:0 2px 10px #0003"; shadow.append(badge);\n      root.append(host); for (const [node,x,y] of visual.scrolls) { node.scrollLeft=x;node.scrollTop=y; } viewport.scrollLeft=scrollX;viewport.scrollTop=scrollY;\n      componentLayoutPreview = {host,viewport,source,destination,inserted,layoutBody:layoutResult?.body || sourceCopy,revision:snapshot.canvas.revision,documentVersion:snapshot.canvas.documentVersion};\n      // Reveal only inside the static copy. scrollIntoView could also scroll the live\n      // outer document; walk cloned ancestors explicitly, in both axes, instead.\n      for (let container = inserted.parentElement; container && container !== host; container = container.parentElement) {\n        const area=container.getBoundingClientRect(), item=inserted.getBoundingClientRect(), style=getComputedStyle(container);\n        if (container===viewport || /auto|scroll|hidden|clip/.test(style.overflowY)) {\n          const top=area.top+container.clientTop, availableHeight=container.clientHeight-(container===viewport?safeBottom:0), bottom=top+availableHeight;\n          if (item.top<top || item.bottom>bottom) container.scrollTop += item.top-top-Math.max(0,(availableHeight-Math.min(item.height,availableHeight))/2);\n        }\n        if (container===viewport || /auto|scroll|hidden|clip/.test(style.overflowX)) {\n          const left=area.left+container.clientLeft, right=left+container.clientWidth;\n          if (item.left<left || item.right>right) container.scrollLeft += item.left-left-Math.max(0,(container.clientWidth-Math.min(item.width,container.clientWidth))/2);\n        }\n      }\n      if (patch.operation === "layout" && componentLayoutDraft && !componentPending) {\n        const handle = document.createElement("div"); handle.setAttribute("data-component-layout-resize", ""); handle.setAttribute("role", "separator"); handle.setAttribute("aria-label", "\u62D6\u52A8\u8C03\u6574\u6700\u5927\u9AD8\u5EA6"); handle.tabIndex = 0;\n        handle.style.cssText = "position:fixed;box-sizing:border-box;border:2px solid #fff;border-radius:8px;background:#238b65;box-shadow:0 1px 5px #0005;cursor:ns-resize;touch-action:none;pointer-events:auto";\n        shadow.append(handle); componentLayoutPreview.resizeHandle = handle;\n        viewport.addEventListener("scroll", positionComponentLayoutResize, { passive: true });\n        positionComponentLayoutResize();\n      }\n      const button = componentHost.shadowRoot.querySelector(\'[data-component-action="preview-toggle"]\'); button.hidden=false;button.textContent="\u770B\u539F\u7248";\n    } catch (failure) { componentNotice = failure.message || "\u672A\u751F\u6210\u5B8C\u6574\u5E03\u5C40\u9884\u89C8\uFF1B\u539F\u7EC4\u4EF6\u5C1A\u672A\u4FEE\u6539"; if (componentPending) componentPending.message = componentNotice; }\n  };\n  const componentIdentity = (node) => {\n    if (!authorElement(node)) return null;\n    const elements = [node, ...node.querySelectorAll("*")];\n    if (elements.length > 2000) throw new Error("\u7EC4\u4EF6\u5305\u542B\u8D85\u8FC7 2000 \u4E2A\u5143\u7D20\uFF0C\u8BF7\u9009\u62E9\u66F4\u5C0F\u7684\u7EC4\u4EF6");\n    const indices = new Map(elements.map((element, index) => [element, index]));\n    const input = JSON.stringify(elements.map(element => {\n      const identity = [indices.get(element.parentElement) ?? -1, element.localName.toLowerCase(), element.id || "", element.getAttribute("role") || "", element.getAttribute("name") || "", element.getAttribute("type") || ""];\n      const layout = ["data-paseo-layout", "data-paseo-layout-part", "data-paseo-layout-key"].map(name => element.getAttribute(name));\n      // Unmanaged nodes retain legacy fingerprints. Managed restoration metadata\n      // is identity evidence; a changed backup must never be silently reapplied.\n      if (layout.some(value => value !== null)) identity.push(layout.map(value => value ?? ""));\n      return identity;\n    }));\n    if (!node.id && node.outerHTML.length > 240000) throw new Error("\u6CA1\u6709\u56FA\u5B9A ID \u7684\u7EC4\u4EF6\u8FC7\u5927\uFF0C\u8BF7\u9009\u62E9\u66F4\u5C0F\u7684\u7EC4\u4EF6");\n    let hash = 2166136261; for (let i = 0; i < input.length; i++) hash = Math.imul(hash ^ input.charCodeAt(i), 16777619);\n    return { tag: node.localName.toLowerCase(), ...(node.id ? { id: node.id } : { authoredHtml: node.outerHTML }), fingerprint: (hash >>> 0).toString(16).padStart(8, "0") };\n  };\n  // Keep this anonymous-source comparison in parity with server/authored-source.ts:\n  // an ID-anchored dynamic leaf may repaint its content, while anonymous surroundings\n  // and all parent/child structure continue to provide exact positional evidence.\n  const matchesComponentIdentity = (target, expected) => {\n    if (!expected) return false;\n    const current = componentIdentity(target);\n    if (current.tag !== expected.tag || current.id !== expected.id || current.fingerprint !== expected.fingerprint) return false;\n    if (target.id) return Array.from(document.querySelectorAll("[id]")).filter(node=>node.id===target.id).length === 1;\n    const html = expected.authoredHtml; if (html === undefined) return false; if (html === target.outerHTML) return true;\n    const template = document.createElement("template"); template.innerHTML = html;\n    const roots = Array.from(template.content.childNodes); if (roots.length !== 1 || roots[0].nodeType !== Node.ELEMENT_NODE) return false;\n    const captured = roots[0], authoredIds = new Map(), capturedIds = new Map();\n    for (const node of document.querySelectorAll("[id]")) authoredIds.set(node.id,(authoredIds.get(node.id)||0)+1);\n    for (const node of [captured,...captured.querySelectorAll("[id]")]) if (node.id) capturedIds.set(node.id,(capturedIds.get(node.id)||0)+1);\n    const attrs = node => JSON.stringify(Array.from(node.attributes,a=>[a.name,a.value]).sort((a,b)=>a[0].localeCompare(b[0])));\n    let visited=0;\n    const matches = (node, reference) => {\n      if (++visited > 10000 || node.nodeType !== reference.nodeType) return false;\n      if (node.nodeType !== Node.ELEMENT_NODE) return node.textContent === reference.textContent;\n      if (node.localName.toLowerCase() !== reference.localName.toLowerCase() || node.id !== reference.id) return false;\n      if (node !== target && node.id) {\n        if (authoredIds.get(node.id)!==1 || capturedIds.get(reference.id)!==1) return false;\n        const a=componentIdentity(node),b=componentIdentity(reference); return a.tag===b.tag && a.id===b.id && a.fingerprint===b.fingerprint;\n      }\n      if (attrs(node)!==attrs(reference)) return false;\n      const children=Array.from(node.childNodes), others=Array.from(reference.childNodes);\n      return children.length===others.length && children.every((child,index)=>matches(child,others[index]));\n    };\n    return matches(target,captured);\n  };\n  const componentPatch = (operation, node, extra = {}) => {\n    const failure = componentTransferFailure(operation, node, extra.destination ? document.querySelector(extra.destination) : null, extra.position); if (failure) throw new Error(failure);\n    return { operation, selector: selectorFor(node), sourceIdentity: componentIdentity(node), ...extra };\n  };\n  const proposeComponentEdit = (patch, canvasBase = { revision: snapshot.canvas.revision, documentVersion: snapshot.canvas.documentVersion }) => {\n    if (componentPending || applying || !selectedComponent?.isConnected) return;\n    const source = document.querySelector(patch.selector);\n    const failure = source && componentTransferFailure(patch.operation, source, patch.destination ? document.querySelector(patch.destination) : null, patch.position);\n    if (failure) { setComponentNotice(failure); return; }\n    const id = `${scope.sessionId}:component-${++sequence}`;\n    componentPending = { id, node: selectedComponent, patch };\n    clearComponentHover(); setComponentNotice("");\n    if (["move", "copy", "layout"].includes(patch.operation)) showComponentLayoutPreview(patch);\n    for (const menu of componentHost.shadowRoot.querySelectorAll(".popover")) menu.hidden = true;\n    post({ type: "component-edit", id, request: { canvasBase, patch, sourceLabel: componentLabel(document.querySelector(patch.selector)), ...(patch.destination ? { destinationLabel: componentLabel(document.querySelector(patch.destination)) } : {}) } });\n    positionComponent();\n  };\n  // The editable copy occupies the authored element\'s actual position. Only one\n  // direct text node is editable; mixed markup and the original live DOM stay intact.\n  const componentTextValue = element => {\n    const visit = node => {\n      if (node.nodeType === Node.TEXT_NODE) return node.textContent;\n      if (!(node instanceof Element)) return "";\n      if (node.localName === "br") return node.hasAttribute("data-component-placeholder") ? "" : "\\n";\n      let value=""; const children=Array.from(node.childNodes);\n      for (let index=0;index<children.length;index++) {\n        const child=children[index], block=child instanceof Element && /^(div|p)$/.test(child.localName);\n        const previous=children[index-1], previousBlock=previous instanceof Element && /^(div|p)$/.test(previous.localName);\n        if (index>0 && (block || previousBlock)) value+="\\n";\n        const placeholder=block && child.childNodes.length===1 && child.firstChild.nodeName==="BR";\n        value+=placeholder?"":visit(child);\n      }\n      // Chrome\'s terminal BR is a caret placeholder; a second trailing BR denotes\n      // a real user line break. Blocks handle their own boundary above.\n      if (children.length && children.at(-1).nodeName==="BR" && value.endsWith("\\n")) value=value.slice(0,-1);\n      return value;\n    };\n    return visit(element);\n  };\n  const syncComponentText = () => {\n    if (!componentText || componentPending || componentText.invalid) return;\n    componentText.value = componentTextValue(componentText.run.editor);\n    componentText.run.editor.style.setProperty("white-space",componentText.value===componentText.run.text?"inherit":"pre-wrap","important");\n    componentText.run.editor.style.setProperty("white-space-collapse",componentText.value===componentText.run.text?"inherit":"preserve","important");\n    queueComponentOutline();\n  };\n  const validateComponentText = () => {\n    const text = componentText; if (!text || text.invalid) return !text?.invalid;\n    const source = text.source;\n    try {\n      const matches = document.querySelectorAll(text.selector);\n      if (source.isConnected && (hiddenMarkerBoundary(source) || !source.getClientRects().length)) text.invalid="\u539F\u6587\u5B57\u5DF2\u9690\u85CF\uFF1B\u8349\u7A3F\u4FDD\u7559\u53EF\u590D\u5236\uFF0C\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9";\n      if (snapshot.canvas.documentVersion !== text.canvasBase.documentVersion || snapshot.canvas.revision !== text.canvasBase.revision\n        || !source.isConnected || matches.length !== 1 || matches[0] !== source || source.childNodes[text.run.index] !== text.run.node\n        || text.run.node.textContent !== text.run.text || !matchesComponentIdentity(source, text.identity)\n        || queued?.snapshot.canvas.documentVersion !== undefined && (queued.snapshot.canvas.documentVersion !== text.canvasBase.documentVersion || queued.snapshot.canvas.revision !== text.canvasBase.revision)) {\n        text.invalid = "\u539F\u6587\u5B57\u6216\u7EC4\u4EF6\u5DF2\u53D8\u5316\uFF1B\u8349\u7A3F\u4FDD\u7559\u53EF\u590D\u5236\uFF0C\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9";\n      }\n    } catch { text.invalid = "\u65E0\u6CD5\u786E\u8BA4\u539F\u6587\u5B57\u4F4D\u7F6E\uFF1B\u8349\u7A3F\u4FDD\u7559\u53EF\u590D\u5236\uFF0C\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9"; }\n    if (text.invalid) text.run.editor.setAttribute("contenteditable", "false");\n    return !text.invalid;\n  };\n  const focusComponentText = (selectAll = false) => {\n    const editor = componentText?.run.editor; if (!editor) return;\n    editor.focus({preventScroll:true});\n    if (selectAll) { const range = document.createRange(); range.selectNodeContents(editor); const selection = componentText.host.shadowRoot.getSelection?.() || window.getSelection(); selection.removeAllRanges(); selection.addRange(range); }\n  };\n  const chooseComponentTextRun = (index, selectAll = false) => {\n    const text = componentText, next = text?.runs[index]; if (!next || componentPending || text.invalid || text.composing) return;\n    syncComponentText();\n    if (next !== text.run && text.value !== text.run.text) {\n      componentHost.shadowRoot.querySelector(".text-runs").value = String(text.runs.indexOf(text.run));\n      setComponentNotice("\u5148\u5B8C\u6210\u6216\u53D6\u6D88\u5F53\u524D\u6587\u5B57\uFF0C\u518D\u6539\u53E6\u4E00\u6BB5\uFF1B\u8FD9\u6BB5\u8349\u7A3F\u4ECD\u4FDD\u7559"); return;\n    }\n    text.run.editor.setAttribute("contenteditable", "false"); text.run.editor.removeAttribute("aria-label"); text.run.editor.removeAttribute("role");\n    text.run = next; text.value = next.text;\n    next.editor.setAttribute("contenteditable", "true"); next.editor.setAttribute("aria-label", "\u7EC4\u4EF6\u6587\u5B57"); next.editor.setAttribute("role", "textbox"); next.editor.setAttribute("aria-multiline", "true");\n    componentHost.shadowRoot.querySelector(".text-runs").value = String(index);\n    focusComponentText(selectAll); queueComponentOutline();\n  };\n  const positionComponentText = () => {\n    const text = componentText; if (!text) return;\n    validateComponentText();\n    const source = text.source, layoutSource=text.layoutSource, bounds = layoutSource.isConnected ? layoutSource.getBoundingClientRect() : text.bounds;\n    if (bounds.width && bounds.height) text.bounds = {left:bounds.left,top:bounds.top,width:bounds.width,height:bounds.height};\n    const box = text.bounds; if (!box) return;\n    importantBox(text.host, {left:box.left,top:box.top,width:box.width});\n    const style = layoutSource.isConnected ? getComputedStyle(layoutSource) : null;\n    const edge=(names)=>style?.boxSizing === "border-box" ? 0 : names.reduce((sum,name)=>sum+(parseFloat(style?.getPropertyValue(name))||0),0);\n    text.clone.style.setProperty("width", Math.max(0,box.width-edge(["padding-left","padding-right","border-left-width","border-right-width"])) + "px", "important");\n    text.clone.style.setProperty("min-height", Math.max(0,box.height-edge(["padding-top","padding-bottom","border-top-width","border-bottom-width"])) + "px", "important");\n    if (style) for (const name of ["font-family","font-size","font-weight","font-style","font-stretch","font-variant","font-feature-settings","font-variation-settings","line-height","letter-spacing","word-spacing","white-space","text-align","text-indent","text-transform","word-break","overflow-wrap","direction","writing-mode"]) text.clone.style.setProperty(name,style.getPropertyValue(name),"important");\n    text.clone.scrollLeft = layoutSource.scrollLeft; text.clone.scrollTop = layoutSource.scrollTop;\n    // Clip at the same scroll ancestors without moving the text to a clipped edge.\n    let top=0,left=0,right=innerWidth,bottom=innerHeight;\n    if (source.isConnected && !text.invalid) for (let parent=source.parentElement;parent;parent=parent.parentElement) {\n      const css=getComputedStyle(parent), area=parent.getBoundingClientRect();\n      if (/auto|scroll|hidden|clip/.test(css.overflowX)) { left=Math.max(left,area.left+parent.clientLeft);right=Math.min(right,area.left+parent.clientLeft+parent.clientWidth); }\n      if (/auto|scroll|hidden|clip/.test(css.overflowY)) { top=Math.max(top,area.top+parent.clientTop);bottom=Math.min(bottom,area.top+parent.clientTop+parent.clientHeight); }\n    }\n    const height=Math.max(box.height,text.clone.getBoundingClientRect().height);\n    text.host.style.setProperty("clip-path",`inset(${Math.max(0,top-box.top)}px ${Math.max(0,box.left+box.width-right)}px ${Math.max(0,box.top+height-bottom)}px ${Math.max(0,left-box.left)}px)`,"important");\n    for (const {source:ancestor,layer} of text.backgrounds) {\n      const area=ancestor.isConnected?ancestor.getBoundingClientRect():box;\n      Object.assign(layer.style,{left:area.left-box.left+"px",top:area.top-box.top+"px",width:area.width+"px",height:area.height+"px"});\n    }\n    const sourceBox=source.isConnected?source.getBoundingClientRect():null;\n    if (text.invalid && (text.recovery || !sourceBox?.width || !sourceBox?.height || hiddenMarkerBoundary(source) || sourceBox.bottom<0 || sourceBox.top>innerHeight || sourceBox.right<0 || sourceBox.left>innerWidth)) {\n      const firstRecovery=!text.host.hasAttribute("data-component-inline-recovery");\n      text.host.setAttribute("data-component-inline-recovery","");\n      importantBox(text.host,{left:8,top:Math.max(8,innerHeight-200),width:Math.min(480,innerWidth-16)});\n      text.host.style.setProperty("clip-path","none","important");text.host.style.setProperty("max-height","130px","important");text.host.style.setProperty("overflow","auto","important");\n      text.host.style.setProperty("pointer-events","auto","important");text.host.style.setProperty("overscroll-behavior","contain","important");\n      if (firstRecovery) {\n        // Reveal only the draft\'s own recovery viewport, never an authored scroll\n        // ancestor. Later positioning leaves the user\'s recovery scroll intact.\n        const editor=text.run.editor.getBoundingClientRect(),viewport=text.host.getBoundingClientRect();\n        text.host.scrollTop+=editor.top-viewport.top-12;text.host.scrollLeft+=editor.left-viewport.left-12;\n      }\n    }\n    const readonly = Boolean(componentPending || text.invalid);\n    text.run.editor.setAttribute("contenteditable",readonly?"false":"true");\n    text.run.editor.setAttribute("aria-readonly",String(readonly));\n  };\n  const startComponentText = (preferredTextNode = null) => {\n    if (componentText) { focusComponentText(); return; }\n    const source=selectedComponent, runs=componentTextRuns(source); if (!runs.length) return;\n    const svg=source.namespaceURI === "http://www.w3.org/2000/svg";\n    let layoutSource=source;\n    // An inline box has no independent line box. Copy its containing formatting\n    // context so its baseline and multi-line fragments remain at their real place.\n    if (!svg && getComputedStyle(source).display === "inline") {\n      while (layoutSource.parentElement && ["inline","contents"].includes(getComputedStyle(layoutSource).display)) layoutSource=layoutSource.parentElement;\n    }\n    const identity=componentIdentity(source), selector=selectorFor(source), bounds=layoutSource.getBoundingClientRect();\n    const visual=componentVisualCopy(layoutSource,{computed:true,maxNodes:350,maxMs:100});let clone=visual.clone,sourceClone=visual.nodes.get(source);\n    if (svg) {\n      // SVG glyphs keep their authored semantic target. The editing copy is HTML\n      // at the glyph bounds, with the SVG computed typography; no SVG node mutates.\n      const convert=node=>{\n        if (node.nodeType===Node.TEXT_NODE) return document.createTextNode(node.textContent);\n        const element=document.createElement(node===clone?"div":"span");\n        for(const attribute of node.attributes) if(!["x","y","dx","dy","transform"].includes(attribute.name)) element.setAttribute(attribute.name,attribute.value);\n        for(const child of node.childNodes) element.append(convert(child));return element;\n      };\n      clone=convert(clone);sourceClone=clone;clone.style.setProperty("display","block","important");\n      const fill=getComputedStyle(source).fill;\n      if (fill && fill!=="none" && !fill.includes("url(")) clone.style.setProperty("color",fill,"important");\n    }\n    const host=document.createElement("div");host.setAttribute("data-board-overlay","");host.setAttribute("data-board-component-inline","");\n    host.style.cssText="all:initial!important;position:fixed!important;z-index:2147483646!important;pointer-events:none!important;box-sizing:border-box!important;";\n    const shadow=host.attachShadow({mode:"open"}), mask=document.createElement("div"), backgrounds=[];\n    mask.style.cssText="position:absolute;inset:0;overflow:hidden;pointer-events:none;background:var(--host-canvas,#fff)";\n    // Repaint the existing ancestor backgrounds under the copy, so transparent\n    // paragraphs do not show the original glyphs through the draft. No authored\n    // node is hidden, moved or made contenteditable.\n    const backgroundSources=[];for(let ancestor=layoutSource;ancestor;ancestor=ancestor.parentElement) {if(backgroundSources.length>=64) throw new Error("\u6587\u5B57\u6240\u5728\u5C42\u7EA7\u8FC7\u6DF1\uFF0C\u8BF7\u9009\u62E9\u66F4\u5C0F\u7684\u7EC4\u4EF6");backgroundSources.unshift(ancestor);}\n    for (const ancestor of backgroundSources) {\n      const css=getComputedStyle(ancestor), layer=document.createElement("div");\n      layer.style.cssText="position:absolute;pointer-events:none;box-sizing:border-box";\n      for (const name of ["background-color","background-image","background-position","background-size","background-repeat","background-origin","background-clip","background-attachment","border-radius"]) layer.style.setProperty(name,visual.consumeBytes(css.getPropertyValue(name)));\n      mask.append(layer);backgrounds.push({source:ancestor,layer});\n    }\n    sourceClone.setAttribute("data-component-inline-root","");\n    for (const node of [clone,...clone.querySelectorAll("*")]) { for(const attribute of ["autofocus","href","xlink:href","action","formaction","form","for","target"]) node.removeAttribute(attribute);node.tabIndex=-1;node.style.setProperty("pointer-events","none","important");if ("disabled" in node) node.disabled=node!==sourceClone; }\n    for (const [name,value] of Object.entries({position:"relative",inset:"auto",margin:"0",transform:"none",translate:"none",rotate:"none",scale:"none",height:"auto","max-height":"none","min-width":"0","max-width":"none"})) clone.style.setProperty(name,value,"important");\n    let copyIndex=0;const copiedTexts=Array.from(sourceClone.childNodes).filter(node=>node.nodeType===Node.TEXT_NODE);\n    for (const child of source.childNodes) {\n      const run=runs.find(run=>source.childNodes[run.index]===child);\n      // Inert copies may omit scripts/styles; the copied text nodes are matched in\n      // source order rather than by a shifted child index.\n      if (child.nodeType !== Node.TEXT_NODE) continue;\n      const copied=copiedTexts[copyIndex++];\n      if (!run || !copied) continue;\n      const span=document.createElement("span");span.setAttribute("data-component-text-run",String(runs.indexOf(run)));span.spellcheck=false;span.tabIndex=-1;\n      span.style.cssText="display:inline;pointer-events:auto!important;user-select:text!important;cursor:text!important;outline:none;border:none;padding:0;margin:0;background:transparent;color:inherit;white-space:inherit!important;white-space-collapse:inherit!important;line-break:inherit!important;overflow-wrap:inherit!important;font:inherit;letter-spacing:inherit;word-spacing:inherit;text-transform:inherit;";\n      span.textContent=run.text;copied.replaceWith(span);run.node=child;run.editor=span;\n    }\n    if (runs.some(run=>!run.editor)) throw new Error("\u672A\u627E\u5230\u8FD9\u6BB5\u6587\u5B57\u7684\u539F\u4F4D\u526F\u672C\uFF0C\u8BF7\u9009\u62E9\u66F4\u5C0F\u7684\u7EC4\u4EF6");\n    const focusStyle=document.createElement("style");focusStyle.textContent=\'[data-component-text-run][contenteditable="true"]{outline:2px solid #6f96ff!important;outline-offset:2px;caret-color:currentColor}[data-component-text-run][aria-readonly="true"]{outline:1px dashed #6f96ff!important}\';\n    shadow.append(focusStyle,mask,clone);root.append(host);\n    componentText={source,layoutSource,sourceClone,svg,selector,identity,canvasBase:{revision:snapshot.canvas.revision,documentVersion:snapshot.canvas.documentVersion},runs,run:runs[0],value:runs[0].text,host,clone,backgrounds,bounds:{left:bounds.left,top:bounds.top,width:bounds.width,height:bounds.height},invalid:"",composing:false};\n    const choices=componentHost.shadowRoot.querySelector(".text-runs");choices.replaceChildren();\n    runs.forEach((run,index)=>{const option=document.createElement("option");option.value=String(index);option.textContent=run.text.trim().slice(0,55);choices.append(option);});choices.hidden=runs.length<2;\n    for (const menu of componentHost.shadowRoot.querySelectorAll(".popover")) menu.hidden=true;\n    clearComponentHover();setComponentNotice("");positionComponent();chooseComponentTextRun(Math.max(0,runs.findIndex(run=>run.node===preferredTextNode)),true);\n  };\n  const cancelComponentText = () => {\n    componentText?.host.remove();componentText=null;setComponentNotice("");positionComponent();\n    componentHost?.shadowRoot.querySelector(\'[data-component-action="text"]\').focus({preventScroll:true});\n  };\n  const saveComponentText = () => {\n    if (!componentText || componentText.composing || componentPending) return;\n    syncComponentText();\n    if (!validateComponentText()) { positionComponent(); return; }\n    const {run,value,selector,identity,canvasBase}=componentText;\n    if (value === run.text) { cancelComponentText(); return; }\n    if (value.length > 24000) { setComponentNotice("\u8FD9\u6BB5\u6587\u5B57\u592A\u957F\uFF0C\u8BF7\u7F29\u77ED\u540E\u91CD\u8BD5"); return; }\n    proposeComponentEdit({operation:"text",selector,sourceIdentity:identity,text:value,expectedText:run.text,textNodeIndex:run.index},canvasBase);\n  };\n  const copyComponent = (mode) => {\n    const failure = componentTransferFailure(mode, selectedComponent);\n    if (failure) { setComponentNotice(failure); return; }\n    componentClipboard = { mode, node: selectedComponent, identity: componentIdentity(selectedComponent) };\n    setComponentNotice(`${mode === "move" ? "\u5DF2\u6807\u8BB0\u526A\u5207" : "\u5DF2\u590D\u5236"} ${componentLabel(selectedComponent)} \xB7 \u9009\u62E9\u76EE\u6807\u7EC4\u4EF6\u540E\u7C98\u8D34\uFF1B\u539F\u4F4D\u7F6E\u4FDD\u6301\u5230\u4FDD\u5B58`);\n  };\n  const pasteComponent = () => {\n    const source = componentClipboard?.node, destination = selectedComponent;\n    if (!source?.isConnected || !destination?.isConnected) { setComponentNotice("\u590D\u5236\u6765\u6E90\u5DF2\u79FB\u9664\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9"); return; }\n    if (source === destination || source.contains(destination)) { setComponentNotice("\u8BF7\u9009\u62E9\u6765\u6E90\u7EC4\u4EF6\u4E4B\u5916\u7684\u76EE\u6807\u4F4D\u7F6E"); return; }\n    if (!equalJson(componentClipboard.identity, componentIdentity(source))) { setComponentNotice("\u6765\u6E90\u5185\u5BB9\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u590D\u5236\u6216\u526A\u5207"); return; }\n    proposeComponentEdit(componentPatch(componentClipboard.mode, source, { destination: selectorFor(destination), destinationIdentity: componentIdentity(destination), position: componentHost.shadowRoot.querySelector(".placement").value }));\n  };\n  // Pointer slots are measured against live, unchanged DOM. The layout copy below\n  // cannot participate in hit testing, so opening a slot never makes it chase itself.\n  let componentDragMeasurements = new Map();\n  const componentDragMeasure = (node, key, read) => {\n    let values = componentDragMeasurements.get(node); if (!values) { values = new Map(); componentDragMeasurements.set(node, values); }\n    if (!values.has(key)) values.set(key, read()); return values.get(key);\n  };\n  const componentDragRect = node => componentDragMeasure(node, "rect", () => node.getBoundingClientRect());\n  const componentDragBox = node => componentDragMeasure(node, "box", () => {\n    const box = node && visibleBox(node);\n    return box && box.right > 0 && box.bottom > 0 && box.left < innerWidth && box.top < innerHeight ? box : null;\n  });\n  const componentDragChildren = node => componentDragMeasure(node, "children", () => Array.from(node?.children || []).slice(0, 160).filter(child => authorElement(child)\n    && !child.matches("script,style,link,meta,template") && componentDragBox(child)));\n  const componentDragFlow = parent => componentDragMeasure(parent, "flow", () => {\n    const style = getComputedStyle(parent), grid = style.display.includes("grid"), flex = style.display.includes("flex");\n    const horizontal = flex ? style.flexDirection.startsWith("row") : grid && !style.gridAutoFlow.startsWith("column");\n    const reverse = horizontal ? (style.direction === "rtl") !== (flex && style.flexDirection === "row-reverse") : flex && style.flexDirection === "column-reverse";\n    return { horizontal, reverse, grid, wrap: grid || flex && style.flexWrap !== "nowrap" };\n  });\n  const componentDragFailure = (node, position) => {\n    if (!node?.isConnected || node === root || node === document.body || node === document.head || node === selectedComponent || selectedComponent?.contains(node)) return "\u8FD9\u4E2A\u4F4D\u7F6E\u4E0D\u80FD\u653E\u7F6E\u7EC4\u4EF6";\n    const failure = componentTransferFailure("move", selectedComponent, node, position); if (failure) return failure;\n    const inside = position === "append" || position === "prepend", parent = inside ? node : node.parentElement;\n    if (inside && !componentDragInside(node)) return "\u8FD9\u4E2A\u5143\u7D20\u4E0D\u80FD\u4F5C\u4E3A\u5D4C\u5957\u5BB9\u5668\uFF0C\u8BF7\u9009\u62E9\u5B83\u7684\u5916\u5C42\u5BB9\u5668";\n    if (!parent || !["normal", "horizontal-tb"].includes(getComputedStyle(parent).writingMode)) return "\u8FD9\u4E2A\u6392\u7248\u65B9\u5411\u8BF7\u4F7F\u7528\u660E\u786E\u7684\u7C98\u8D34\u4F4D\u7F6E";\n    if (parent === selectedComponent.parentElement && (position === "before" && selectedComponent.nextElementSibling === node\n      || position === "after" && selectedComponent.previousElementSibling === node || position === "prepend" && parent.firstElementChild === selectedComponent\n      || position === "append" && parent.lastElementChild === selectedComponent)) return "\u5DF2\u7ECF\u5728\u8FD9\u4E2A\u4F4D\u7F6E\uFF0C\u539F\u7EC4\u4EF6\u4FDD\u6301\u4E0D\u53D8";\n    if (parent.children.length > 160) return "\u8FD9\u4E2A\u5BB9\u5668\u5B50\u9879\u8F83\u591A\uFF0C\u8BF7\u7528\u7C98\u8D34\u4F4D\u7F6E\u786E\u8BA4\u5E03\u5C40";\n    const siblings = componentDragChildren(parent), style = getComputedStyle(parent);\n    if ([selectedComponent, node].some(child => /^(absolute|fixed)$/.test(getComputedStyle(child).position))) return "\u8FD9\u4E2A\u7EC4\u4EF6\u4F7F\u7528\u72EC\u7ACB\u5B9A\u4F4D\uFF0C\u8BF7\u7528\u7C98\u8D34\u4F4D\u7F6E\u786E\u8BA4\u5E03\u5C40";\n    if (style.display.includes("flex") && style.flexWrap === "wrap-reverse") return "\u8FD9\u4E2A\u5BB9\u5668\u4F7F\u7528\u53CD\u5411\u6362\u884C\uFF0C\u8BF7\u7528\u7C98\u8D34\u4F4D\u7F6E\u786E\u8BA4\u5E03\u5C40";\n    if (style.display.includes("flex") && [selectedComponent, ...siblings].some(child => getComputedStyle(child).order !== "0")) return "\u8FD9\u4E2A\u5BB9\u5668\u4F7F\u7528\u81EA\u5B9A\u4E49\u6392\u5E8F\uFF0C\u8BF7\u7528\u7C98\u8D34\u4F4D\u7F6E\u786E\u8BA4\u5E03\u5C40";\n    if (style.display.includes("grid") && [selectedComponent, ...siblings].some(child => {\n      const item = getComputedStyle(child); return [item.gridRowStart, item.gridRowEnd, item.gridColumnStart, item.gridColumnEnd].some(value => value !== "auto");\n    })) return "\u8FD9\u4E2A\u7F51\u683C\u4F7F\u7528\u56FA\u5B9A\u4F4D\u7F6E\uFF0C\u8BF7\u7528\u7C98\u8D34\u4F4D\u7F6E\u786E\u8BA4\u5E03\u5C40";\n    return null;\n  };\n  const componentDragInside = node => authorElement(node) && !node.matches("a,button,input,textarea,select,option,img,canvas,svg,iframe,video,audio,object,embed,table,thead,tbody,tfoot,tr,td,th,col,colgroup,p,h1,h2,h3,h4,h5,h6,summary,br,hr")\n    && /block|flex|grid|flow-root|list-item/.test(getComputedStyle(node).display);\n  const componentDragSlot = (node, position, horizontal = null, reverse = null) => {\n    const inside = position === "append" || position === "prepend", flow = componentDragFlow(inside ? node : node.parentElement);\n    return { node, position, horizontal: horizontal ?? flow.horizontal, reverse: reverse ?? flow.reverse };\n  };\n  const componentDragEdge = (node, point) => {\n    const visible = componentDragBox(node); if (!visible || !node.parentElement || point.x < visible.left || point.x > visible.right || point.y < visible.top || point.y > visible.bottom) return null;\n    const box = componentDragRect(node);\n    const flow = componentDragFlow(node.parentElement), coordinate = flow.horizontal ? point.x : point.y;\n    const start = flow.horizontal ? box.left : box.top, end = flow.horizontal ? box.right : box.bottom;\n    const threshold = Math.min(26, Math.max(8, (end - start) * .2));\n    if (coordinate - start <= threshold && start >= Math.max(0, flow.horizontal ? visible.left : visible.top) - .5) return componentDragSlot(node, flow.reverse ? "after" : "before");\n    if (end - coordinate <= threshold && end <= Math.min(flow.horizontal ? innerWidth : innerHeight, flow.horizontal ? visible.right : visible.bottom) + .5) return componentDragSlot(node, flow.reverse ? "before" : "after");\n    if (flow.horizontal && flow.wrap) {\n      const row = componentDragChildren(node.parentElement).filter(child => {\n        const other = componentDragRect(child); return Math.min(box.bottom, other.bottom) - Math.max(box.top, other.top) > Math.min(box.height, other.height) / 2;\n      }).sort((a, b) => (componentDragRect(a).left - componentDragRect(b).left) * (flow.reverse ? -1 : 1));\n      if (node === row[0] && point.y - box.top < Math.min(18, box.height * .15) && box.top >= 0) return componentDragSlot(node, "before", false, false);\n      if (node === row[row.length - 1] && box.bottom - point.y < Math.min(18, box.height * .15) && box.bottom <= innerHeight) return componentDragSlot(node, "after", false, false);\n    }\n    return null;\n  };\n  const componentDragGap = (parent, point) => {\n    const children = componentDragChildren(parent);\n    if (!children.length || children.some(child => { const b = componentDragRect(child); return point.x >= b.left && point.x <= b.right && point.y >= b.top && point.y <= b.bottom; })) return null;\n    // A container\'s explanatory text is not a sibling slot for another container.\n    // Keep leaf-to-leaf reordering available, while group drags target group gaps\n    // or the enclosing container\'s interior rather than a nearby paragraph edge.\n    const destinations = componentDragInside(selectedComponent) ? children.filter(componentDragInside) : children;\n    const flow = componentDragFlow(parent), slots = [];\n    if (destinations.length < 2) return null;\n    const boxes = destinations.map(componentDragRect);\n    const across = boxes.some(box => box.right <= point.x && box.top <= point.y && point.y <= box.bottom)\n      && boxes.some(box => box.left >= point.x && box.top <= point.y && point.y <= box.bottom);\n    const betweenRows = boxes.some(box => box.bottom <= point.y) && boxes.some(box => box.top >= point.y);\n    if (!(flow.horizontal ? across || flow.wrap && betweenRows : betweenRows)) return null;\n    for (const node of destinations) {\n      if (node === selectedComponent || selectedComponent.contains(node)) continue;\n      const b = componentDragRect(node), visible = componentDragBox(node);\n      for (const trailing of [false, true]) {\n        const coordinate = flow.horizontal ? trailing ? b.right : b.left : trailing ? b.bottom : b.top;\n        if (coordinate < Math.max(0, flow.horizontal ? visible.left : visible.top) - .5 || coordinate > Math.min(flow.horizontal ? innerWidth : innerHeight, flow.horizontal ? visible.right : visible.bottom) + .5) continue;\n        const distance = flow.horizontal ? Math.hypot(point.x - coordinate, Math.max(b.top - point.y, 0, point.y - b.bottom))\n          : Math.hypot(point.y - coordinate, Math.max(b.left - point.x, 0, point.x - b.right));\n        const slot = componentDragSlot(node, trailing !== flow.reverse ? "after" : "before"); if (slot) slots.push({ ...slot, distance });\n      }\n      if (flow.horizontal && flow.wrap) {\n        const row = children.filter(child => { const other = componentDragRect(child); return Math.min(b.bottom, other.bottom) - Math.max(b.top, other.top) > Math.min(b.height, other.height) / 2; })\n          .sort((a, z) => (componentDragRect(a).left - componentDragRect(z).left) * (flow.reverse ? -1 : 1));\n        for (const [edge, position, isEnd] of [[b.top, "before", node === row[0]], [b.bottom, "after", node === row[row.length - 1]]]) {\n          if (!isEnd || edge < Math.max(0, visible.top) - .5 || edge > Math.min(innerHeight, visible.bottom) + .5) continue;\n          const slot = componentDragSlot(node, position, false, false);\n          if (slot) slots.push({ ...slot, distance: Math.hypot(point.y - edge, Math.max(b.left - point.x, 0, point.x - b.right)) });\n        }\n      }\n    }\n    slots.sort((a, b) => a.distance - b.distance);\n    return slots[0]?.distance <= 64 ? slots[0] : null;\n  };\n  const componentDestinations = point => {\n    componentDragMeasurements = new Map();\n    const raw = document.elementFromPoint(point.x, point.y), hit = componentAt(raw), chain = [];\n    for (let node = raw; node instanceof Element && chain.length < 20; node = node.parentElement) {\n      if (node.hasAttribute("data-board-overlay")) return { candidates: [], automatic: null };\n      chain.push(node);\n    }\n    const ancestors = hit ? componentAncestors(hit).reverse().filter(node => node !== selectedComponent && !selectedComponent.contains(node) && componentDragBox(node)) : [];\n    if (raw === selectedComponent || selectedComponent.contains(raw)) return { candidates: ancestors, automatic: null, overSource: true };\n    const sameLevel = chain.find(node => node.parentElement === selectedComponent.parentElement && node !== selectedComponent);\n    let automatic = sameLevel && (componentDragEdge(sameLevel, point) || componentDragInside(sameLevel) && componentDragSlot(sameLevel, "append"));\n    if (!automatic) for (const node of chain) {\n      if (selectedComponent === node || selectedComponent.contains(node)) continue;\n      automatic = componentDragGap(node, point) || (componentBoundary(node) && (!componentDragInside(selectedComponent) || componentDragInside(node)) && componentDragEdge(node, point));\n      if (automatic) break;\n    }\n    if (!automatic) {\n      const interior = ancestors.find(node => componentDragInside(node) && !componentDragFailure(node, "append"));\n      if (interior) automatic = componentDragSlot(interior, "append");\n    }\n    // Keep the actual inner-to-outer hierarchy even when automatic placement\n    // selects an outer card. Only gap neighbors are outside the hit ancestry.\n    const candidates = automatic && !ancestors.includes(automatic.node) ? [automatic.node, ...ancestors] : ancestors;\n    return { candidates, automatic };\n  };\n  const makeComponentDragPreview = () => {\n    const active = componentDrag;\n    if (!active || active.previewUnavailable) return null;\n    if (componentDragPreview) return componentDragPreview;\n    try {\n      const visual = componentVisualCopy(root, { maxNodes: 1800, maxMs: 100, placeholders: true }), source = visual.nodes.get(selectedComponent);\n      if (!source) throw new Error("\u8FD9\u4E2A\u7EC4\u4EF6\u4EC5\u663E\u793A\u63D2\u5165\u7EBF");\n      const host = document.createElement("div"); host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-component-drag-preview", "");\n      host.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483643!important;pointer-events:none!important;overflow:hidden!important;background:var(--host-canvas,#fff)!important;";\n      host.inert = true; host.setAttribute("aria-hidden", "true");\n      const shadow = host.attachShadow({ mode: "open" }), viewport = document.createElement("div");\n      viewport.style.cssText = "position:absolute;inset:0;overflow:hidden;pointer-events:none;";\n      visual.clone.inert = true; visual.clone.setAttribute("data-board-preview-root", ""); visual.clone.removeAttribute("data-board-selection");\n      visual.clone.style.setProperty("width", root.clientWidth + "px", "important"); visual.clone.style.setProperty("margin", "0", "important");\n      for (const name of ["font-family", "font-size", "line-height", "color", "color-scheme"]) visual.clone.style.setProperty(name, getComputedStyle(root).getPropertyValue(name));\n      for (const sheet of document.styleSheets) if (sheet.ownerNode?.tagName === "LINK") {\n        const style = document.createElement("style"); style.textContent = visual.consumeBytes(Array.from(sheet.cssRules, rule => rule.cssText).join("\\n").replace(/:root\\b/g, "[data-board-preview-root]")); visual.clone.prepend(style);\n      }\n      const freeze = document.createElement("style"); freeze.textContent = "[data-board-preview-root],[data-board-preview-root] *,[data-board-preview-root] *::before,[data-board-preview-root] *::after{animation:none!important;transition:none!important;caret-color:transparent!important;pointer-events:none!important}";\n      source.setAttribute("data-board-drag-placeholder", ""); source.style.setProperty("opacity", ".35", "important"); source.style.setProperty("outline", "2px dashed #3b82f6", "important");\n      shadow.append(freeze, viewport); viewport.append(visual.clone); root.append(host);\n      for (const [node, x, y] of visual.scrolls) { node.scrollLeft = x; node.scrollTop = y; } viewport.scrollLeft = scrollX; viewport.scrollTop = scrollY;\n      componentDragPreview = { host, viewport, visual, source, originalParent: source.parentNode, originalNext: source.nextSibling, animations: [] };\n      return componentDragPreview;\n    } catch (failure) { active.previewUnavailable = true; clearComponentDragPreview(); return null; }\n  };\n  const paintComponentDragPreview = slot => {\n    const preview = makeComponentDragPreview(); if (!preview) return;\n    const { visual, source, host } = preview, destination = visual.nodes.get(slot.node);\n    if (!destination) { clearComponentDragPreview(); componentDrag.previewUnavailable = true; return; }\n    if (preview.destination === slot.node && preview.position === slot.position) return;\n    for (const animation of preview.animations) animation.cancel(); preview.animations = [];\n    const parent = ["before", "after"].includes(slot.position) ? destination.parentNode : destination;\n    const affected = [...new Set([...source.parentElement.children, ...parent.children])].filter(node => node instanceof Element && node !== source).slice(0, 100);\n    const before = new Map(affected.map(node => [node, node.getBoundingClientRect()]));\n    const next = slot.position === "before" ? destination : slot.position === "after" ? destination.nextSibling : slot.position === "prepend" ? destination.firstChild : null;\n    parent.insertBefore(source, next);\n    host.dataset.position = slot.position; host.dataset.destination = selectorFor(slot.node); host.dataset.orientation = slot.horizontal ? "vertical" : "horizontal";\n    host.dataset.motion = componentDragAnimation && !componentReducedMotion.matches ? "animated" : "static";\n    if (host.dataset.motion === "animated") for (const node of affected) {\n      const old = before.get(node), now = node.getBoundingClientRect(), dx = old.left - now.left, dy = old.top - now.top;\n      if (Math.abs(dx) < .5 && Math.abs(dy) < .5 || now.right < 0 || now.bottom < 0 || now.left > innerWidth || now.top > innerHeight) continue;\n      // The independent translate longhand composes with authored transforms; only\n      // inert copies receive animations, never source nodes or their inline styles.\n      if (getComputedStyle(node).translate !== "none") continue;\n      preview.animations.push(node.animate([{ translate: `${dx}px ${dy}px` }, { translate: "0px 0px" }], { duration: 160, easing: "ease-out" }));\n    }\n    preview.destination = slot.node; preview.position = slot.position;\n  };\n  const clearComponentDragTarget = message => {\n    if (componentDrag) componentDrag.target = null;\n    clearComponentHover(); showComponentDropLine(null); clearComponentDragPreview(); setComponentNotice(message);\n  };\n  const updateComponentDragSafely = update => {\n    if (!componentDrag) return;\n    try { update(componentDrag); }\n    catch (failure) {\n      if (componentDrag) { componentDrag.candidates = []; componentDrag.automatic = null; componentDrag.depth = 0; componentDrag.manualDepth = false; }\n      clearComponentDragTarget(failure?.message || "\u65E0\u6CD5\u786E\u8BA4\u62D6\u52A8\u76EE\u6807\uFF1B\u8BF7\u91CD\u65B0\u9009\u62E9\uFF0C\u539F\u7EC4\u4EF6\u4FDD\u6301\u4E0D\u53D8");\n    }\n  };\n  const paintComponentDrag = () => updateComponentDragSafely(active => {\n    const destination = active.candidates[active.depth], point = componentPointer || { x: 0, y: 0 };\n    const automatic = active.overSource && !active.manualDepth ? null : active.automatic?.node === destination ? active.automatic : destination && (componentDragEdge(destination, point) || componentDragSlot(destination, "append"));\n    const position = active.manualPosition || automatic?.position || "append";\n    const failure = destination ? componentDragFailure(destination, position) : null;\n    const slot = !failure && destination ? active.manualPosition ? componentDragSlot(destination, position) : automatic : null;\n    positionComponentGhost(point);\n    if (!slot) { clearComponentDragTarget(failure || "\u79FB\u5230\u7EC4\u4EF6\u8FB9\u7F18\u6216\u7A7A\u9699\u63D2\u5165\uFF0C\u4E2D\u592E\u653E\u5165 \xB7 Esc \u53D6\u6D88"); return; }\n    // A placement and its structural identity are one accepted target. A failed\n    // identity capture must never pair this placement with a previous target.\n    const target = active.target?.node === destination && active.target.position === position ? active.target\n      : { node: destination, position, identity: componentIdentity(destination), parent: destination.parentElement };\n    active.target = target;\n    const names = { before: "\u524D\u9762", after: "\u540E\u9762", prepend: "\u653E\u5165\u5F00\u5934", append: "\u653E\u5165\u672B\u5C3E" };\n    showComponentDropLine(destination, position, slot); paintComponentDragPreview(slot);\n    previewComponent(destination, `${componentLabel(destination)} \xB7 ${names[position]} \xB7 \u5C42\u7EA7 ${active.depth + 1}/${active.candidates.length}`);\n    setComponentNotice(`\u76EE\u6807 ${componentLabel(destination)} \xB7 ${names[position]}${active.previewUnavailable ? " \xB7 \u4EC5\u663E\u793A\u63D2\u5165\u7EBF" : " \xB7 \u8BA9\u4F4D\u9884\u89C8"}\uFF1BTab \u5207\u6362\u5C42\u7EA7\uFF0C\u65B9\u5411\u952E\u6307\u5B9A\u4F4D\u7F6E`);\n  });\n  const updateComponentDragDestination = () => updateComponentDragSafely(active => {\n    const result = componentDestinations(componentPointer || { x: 0, y: 0 }), previous = active.candidates[active.depth];\n    active.candidates = result.candidates; active.automatic = result.automatic; active.overSource = result.overSource;\n    active.depth = active.manualDepth && result.candidates.includes(previous) ? result.candidates.indexOf(previous) : Math.max(0, result.candidates.indexOf(result.automatic?.node));\n    paintComponentDrag();\n  });\n  const componentGesture = () => ({node:selectedComponent,identity:componentIdentity(selectedComponent),canvasBase:{revision:snapshot.canvas.revision,documentVersion:snapshot.canvas.documentVersion}});\n  const componentGestureLive = gesture => {\n    try { return gesture && gesture.node===selectedComponent && gesture.node.isConnected && visibleBox(gesture.node)\n      && snapshot.canvas.revision===gesture.canvasBase.revision && snapshot.canvas.documentVersion===gesture.canvasBase.documentVersion\n      && (!queued || queued.snapshot.canvas.revision===gesture.canvasBase.revision && queued.snapshot.canvas.documentVersion===gesture.canvasBase.documentVersion)\n      && matchesComponentIdentity(gesture.node,gesture.identity); } catch { return false; }\n  };\n  const referenceComponent = position => {\n    const target=selectedComponent;if (!target?.isConnected || componentPending || componentText || componentDrag || applying || !visibleBox(target)) return;\n    const region=rect(target.getBoundingClientRect());\n    const anchor={...currentAnchor(),kind:"element",selector:selectorFor(target),rect:region,viewport:viewport(),binding:captureBinding(target,region)};\n    const session=beginSelection(position || {x:Math.max(8,Math.min(region.x-scrollX,innerWidth-24)),y:Math.max(8,Math.min(region.y-scrollY,innerHeight-24))});\n    void finishSelection(session,anchor,region);\n  };\n  const componentTextHit = event => {\n    const range=document.caretRangeFromPoint?.(event.clientX,event.clientY),caret=range?null:document.caretPositionFromPoint?.(event.clientX,event.clientY);\n    const node=range?.startContainer || caret?.offsetNode,source=node?.parentElement;\n    if (node?.nodeType!==Node.TEXT_NODE || !selectedComponent?.contains(node) || !authorElement(source)\n      || !componentTextRuns(source).some(run=>source.childNodes[run.index]===node)) return null;\n    const bounds=document.createRange();bounds.selectNodeContents(node);\n    return Array.from(bounds.getClientRects()).some(box=>event.clientX>=box.left-2 && event.clientX<=box.right+2 && event.clientY>=box.top-2 && event.clientY<=box.bottom+2) ? {node,source}:null;\n  };\n  const startComponentDrag = (event, gesture = componentGesture()) => {\n    if (componentPending || componentText || !selectedComponent?.isConnected) return;\n    if (!componentGestureLive(gesture)) {setComponentNotice("\u7EC4\u4EF6\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u540E\u62D6\u52A8");return;}\n    const failure = componentTransferFailure("move", selectedComponent);\n    if (failure) { componentPress=null; componentClick=null; setComponentNotice(failure); return; }\n    componentPress=null;componentClick=null;componentDrag = { pointerId: event.pointerId, candidates: [], depth: 0, gesture, automatic: null, target: null, paintFrame: null };\n    clearComponentHover(); showComponentGhost(eventPoint(event)); suppressPointerClick = true; try { root.setPointerCapture(event.pointerId); } catch {} paintComponentDrag();\n  };\n  const cancelComponentDrag = () => {\n    const active = componentDrag; componentDrag = null; componentPress=null; componentClick=null; clearComponentHover(); clearComponentGhost();\n    if (active && active.paintFrame !== null) cancelAnimationFrame(active.paintFrame);\n    if (active) try { if (root.hasPointerCapture(active.pointerId)) root.releasePointerCapture(active.pointerId); } catch {}\n    setComponentNotice("");\n  };\n  const finishComponentDrag = () => {\n    const active = componentDrag, source = selectedComponent;\n    if (active && active.paintFrame !== null) { cancelAnimationFrame(active.paintFrame); active.paintFrame = null; updateComponentDragDestination(); }\n    const target = active?.target, destination = target?.node; cancelComponentDrag();\n    if (!source?.isConnected || !destination?.isConnected || source === destination || source.contains(destination)) return;\n    if (!componentGestureLive(active.gesture)) {setComponentNotice("\u7EC4\u4EF6\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u540E\u62D6\u52A8");return;}\n    if (destination.parentElement !== target.parent || !matchesComponentIdentity(destination, target.identity)) { setComponentNotice("\u76EE\u6807\u7EC4\u4EF6\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u540E\u62D6\u52A8"); return; }\n    const failure = componentDragFailure(destination, target.position); if (failure) { setComponentNotice(failure); return; }\n    proposeComponentEdit(componentPatch("move", source, { destination: selectorFor(destination), destinationIdentity: target.identity, position: target.position }),active.gesture.canvasBase);\n  };\n  const componentAction = (event) => {\n    const button = event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-component-action"));\n    if (!event.isTrusted || !button || button.disabled) return;\n    const action = button.dataset.componentAction;\n    if (action === "preview-toggle" && componentLayoutPreview) { componentLayoutPreview.host.hidden = !componentLayoutPreview.host.hidden; componentLayoutPreview.host.style.setProperty("display",componentLayoutPreview.host.hidden ? "none" : "block","important"); button.textContent = componentLayoutPreview.host.hidden ? "\u770B\u9884\u89C8" : "\u770B\u539F\u7248"; positionComponent(); return; }\n    if (componentPending) return;\n    if (action === "hierarchy" || action === "more") {\n      const menu = componentHost.shadowRoot.querySelector(action === "hierarchy" ? ".relations" : ".tools");\n      const open = menu.hidden; for (const item of componentHost.shadowRoot.querySelectorAll(".popover")) item.hidden = true;\n      for (const toggle of componentHost.shadowRoot.querySelectorAll("[aria-expanded]")) toggle.setAttribute("aria-expanded", "false");\n      menu.hidden = !open; button.setAttribute("aria-expanded", String(open)); return;\n    }\n    if (action === "layout") { openComponentLayout(); return; }\n    if (action === "layout-preview") { previewComponentLayout(); return; }\n    if (action === "layout-save") { saveComponentLayout(); return; }\n    if (action === "layout-cancel") { cancelComponentLayout(); return; }\n    if (action === "layout-reset" && componentLayoutDraft) { componentLayoutDraft.config = { collapse: "none", maxHeight: null }; writeComponentLayoutFields(); clearComponentLayoutPreview(); setComponentNotice("\u6062\u590D\u539F\u6837 \xB7 \u8BF7\u9884\u89C8\u540E\u4FDD\u5B58"); return; }\n    if (action === "choose") { componentNotice = ""; selectComponent(componentChoices[Number(button.dataset.componentIndex)]); return; }\n    if (action === "close") { setSelectionMode("off"); post({ type: "selection-end" }); return; }\n    if (action === "copy" || action === "cut") { copyComponent(action === "cut" ? "move" : "copy"); return; }\n    if (action === "paste") { pasteComponent(); return; }\n    if (action === "text") { startComponentText(); return; }\n    if (action === "text-save") { saveComponentText(); return; }\n    if (action === "text-cancel") { cancelComponentText(); return; }\n    if (action === "reference") referenceComponent();\n  };\n  const resumeComponentEdit = () => {\n    if (!componentResume || snapshot.canvas.revision < componentResume.revision || queued || applying) return;\n    if (patchFailure) { componentResume = null; return; }\n    const resume = componentResume; componentResume = null;\n    if (resume.node?.isConnected) { selectionMode = "component"; paintSelectionMode(); selectComponent(resume.node); setComponentNotice("\u5DF2\u4FDD\u5B58"); }\n  };\n  const receiveComponentEdit = (message) => {\n    if (!componentPending || message.id !== componentPending.id || !message.result) return;\n    const result = message.result;\n    if (result.status === "unknown") { componentPending.message = result.message || "\u4FDD\u5B58\u7ED3\u679C\u5F85\u786E\u8BA4\uFF0C\u8BF7\u5728\u4E0A\u65B9\u91CD\u8BD5\u540C\u4E00\u6B21\u4FEE\u6539"; positionComponent(); return; }\n    const pending = componentPending; componentPending = null; clearComponentLayoutPreview();\n    if (result.status === "applied") {\n      if (pending.patch.operation === "move") componentClipboard = null;\n      componentResume = { node: pending.node, revision: result.canvasRevision || snapshot.canvas.revision + 1 };\n      selectionMode = "off"; clearComponent(); paintSelectionMode(); post({ type: "selection-end" }); void drain().then(resumeComponentEdit);\n    } else { setComponentNotice(result.status === "cancelled" ? "\u672A\u4FDD\u5B58\uFF1B\u539F\u7EC4\u4EF6\u4FDD\u6301\u4E0D\u53D8" : result.message || "\u4FDD\u5B58\u672A\u6210\u529F\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u6700\u65B0\u7EC4\u4EF6\u540E\u91CD\u8BD5"); positionComponent(); }\n  };\n  window.addEventListener("pointercancel", event => { if (event.isTrusted && componentLayoutResize?.pointerId === event.pointerId) finishComponentLayoutResize(true); }, true);\n  window.addEventListener("blur", () => { if (componentLayoutResize) finishComponentLayoutResize(true); });\n  window.addEventListener("resize", positionComponentLayoutResize);\n  window.addEventListener("scroll", queueComponentOutline, true);\n  window.addEventListener("resize", queueComponentOutline);\n  const refreshComponentDragGeometry = event => {\n    if (!componentDrag || event.target instanceof Element && event.target.closest("[data-board-overlay]")) return;\n    clearComponentDragPreview();\n    if (componentDrag.paintFrame === null) componentDrag.paintFrame = requestAnimationFrame(() => {\n      if (!componentDrag) return; componentDrag.paintFrame = null; updateComponentDragDestination();\n    });\n  };\n  window.addEventListener("scroll", refreshComponentDragGeometry, true);\n  window.addEventListener("resize", refreshComponentDragGeometry);\n  let captureLibrary;\n  const loadCapture = () => {\n    if (!captureLibrary) {\n      const url = URL.createObjectURL(new Blob([initial.captureModule], { type: "text/javascript" }));\n      captureLibrary = import(url).finally(() => URL.revokeObjectURL(url));\n    }\n    return captureLibrary;\n  };\n  const captureOverlay = (node) => node instanceof Element && !!node.closest("[data-board-overlay],[data-board-markers],[data-board-capture-status]");\n  const captureTask = () => new Promise(resolve => setTimeout(resolve, 0));\n  // Keep the layout tree, but do not copy thousands of computed styles in off-selection\n  // subtrees. A shallow placeholder is safe only when its used size does not depend on its\n  // children and their margins cannot collapse through it. Overlapping/overflowing descendants\n  // keep every ancestor on their path. Unknown paint effects conservatively keep their subtree.\n  // Layout boxes survive closed details/content-visibility, while display:contents and\n  // visibility overrides can still paint descendants. Suppress only whole paint subtrees.\n  const capturePaintSuppressed = (node, cache = new Map()) => {\n    if (!node) return false;\n    if (cache.has(node)) return cache.get(node);\n    const parent = node.parentElement;\n    const summary = parent?.matches("details:not([open])") && Array.from(parent.children).find(child => child.tagName === "SUMMARY");\n    const hidden = getComputedStyle(node).display === "none" || Boolean(parent && (\n      getComputedStyle(parent).contentVisibility === "hidden" ||\n      (parent.matches("details:not([open])") && node !== summary && getComputedStyle(parent, "::details-content").contentVisibility === "hidden") ||\n      capturePaintSuppressed(parent, cache)));\n    cache.set(node, hidden);\n    return hidden;\n  };\n  const captureDefinition = node => {\n    for (; node; node = node.parentElement) if (node instanceof SVGElement && node.matches("defs,filter,clipPath,mask,pattern,linearGradient,radialGradient,symbol")) return true;\n    return false;\n  };\n  const captureReferenceIds = (node, style) => {\n    const ids = new Set();\n    const add = value => {\n      if (!value || value.startsWith("data:")) return;\n      if (value.startsWith("#")) { ids.add(value.slice(1)); return; }\n      try {\n        const url = new URL(value, document.baseURI);\n        if (url.hash && url.href.split("#")[0] === document.URL.split("#")[0]) ids.add(decodeURIComponent(url.hash.slice(1)));\n      } catch {}\n    };\n    // Navigation hrefs, data attributes and unused CSS variables are not paint edges.\n    if (node instanceof SVGElement && node.localName !== "a") {\n      add(node.getAttribute("href"));\n      add(node.getAttribute("xlink:href"));\n    }\n    for (const [property, value] of style) {\n      if (property.startsWith("--") || (property === "content" && !value.startsWith("url("))) continue;\n      for (const match of value.matchAll(/url\\(\\s*["\']?([^"\')\\s]+)["\']?\\s*\\)/g)) add(match[1]);\n    }\n    return ids;\n  };\n  const captureShadowOutsets = style => {\n    const outsets = { left: 2, top: 2, right: 2, bottom: 2 };\n    for (const [value, text] of [[style.boxShadow, false], [style.textShadow, true]]) {\n      if (!value || value === "none") continue;\n      if (value.length > 16384) return null;\n      // Split only outside color functions: rgba()/color() commas are not shadow layers.\n      const layers = []; let layer = "", depth = 0;\n      for (const character of value) {\n        if (character === "(") depth++;\n        if (character === ")") depth--;\n        if (depth < 0) return null;\n        if (character === "," && depth === 0) { layers.push(layer); layer = ""; }\n        else if (depth === 0 && character !== ")") layer += character;\n      }\n      layers.push(layer);\n      if (depth || layers.length > 64) return null;\n      for (const item of layers) {\n        const words = item.trim().split(/\\s+/);\n        if (words.includes("inset")) continue;\n        const lengths = words.filter(word => /^[-+]?(?:\\d*\\.)?\\d+(?:e[-+]?\\d+)?px$/i.test(word)).map(parseFloat);\n        if (lengths.length < 2 || lengths.length > (text ? 3 : 4) || lengths.some(value => !Number.isFinite(value))) return null;\n        const [x, y, blur = 0, spread = 0] = lengths;\n        if (blur < 0) return null;\n        // CSS blur radius is twice the Gaussian standard deviation. Three sigmas\n        // plus the antialias guard retain its visible tail; spread keeps its sign.\n        const extent = 1.5 * blur + spread;\n        outsets.left = Math.max(outsets.left, extent - x + 2);\n        outsets.right = Math.max(outsets.right, extent + x + 2);\n        outsets.top = Math.max(outsets.top, extent - y + 2);\n        outsets.bottom = Math.max(outsets.bottom, extent + y + 2);\n      }\n    }\n    return outsets;\n  };\n  const captureTransformedPaint = (node, cache) => {\n    if (cache.has(node)) return cache.get(node);\n    const path = []; let transformed = false;\n    for (let parent = node; parent; parent = parent.parentElement) {\n      if (cache.has(parent)) { transformed = cache.get(parent); break; }\n      path.push(parent);\n      const style = getComputedStyle(parent);\n      if (style.transform !== "none" || style.perspective !== "none" ||\n        [style.translate, style.rotate, style.scale].some(value => value && value !== "none") ||\n        ![undefined, "normal", "1"].includes(style.zoom)) { transformed = true; break; }\n    }\n    for (const parent of path) cache.set(parent, transformed);\n    return transformed;\n  };\n  const capturePaintBounds = (node, style, transformed) => {\n    const outsets = captureShadowOutsets(style);\n    // Shadow lengths are local CSS pixels while getBoundingClientRect is in the\n    // viewport coordinate space. Unknown transformed paint keeps its subtree.\n    if (!outsets || ([style.boxShadow, style.textShadow].some(value => value && value !== "none") && captureTransformedPaint(node, transformed))) return null;\n    const bounds = node.getBoundingClientRect();\n    return { left: bounds.left + scrollX - outsets.left, top: bounds.top + scrollY - outsets.top,\n      right: bounds.right + scrollX + outsets.right, bottom: bounds.bottom + scrollY + outsets.bottom };\n  };\n  const captureStickyMode = (node, plan) => {\n    const style = plan.styles.get(node);\n    const unsupported = () => { throw new Error("Sticky content cannot be captured accurately; the geometric anchor is still saved"); };\n    let scroller = null;\n    for (let parent = node, depth = 0; parent; parent = parent.parentElement) {\n      if (++depth > 256) return unsupported();\n      const current = plan.styles.get(parent);\n      if (!current || current.get("transform") !== "none" || current.get("perspective") !== "none" ||\n        ["translate", "rotate", "scale"].some(property => ![undefined, "none"].includes(current.get(property))) ||\n        ![undefined, "normal", "1"].includes(current.get("zoom"))) return unsupported();\n      // Body overflow can either establish its own scrollport or propagate to the\n      // viewport. Do not infer an unscrolled viewport from an independently scrolled body.\n      if (!scroller && parent === document.body && (parent.scrollLeft || parent.scrollTop)) return unsupported();\n      if (!scroller && parent !== node && parent !== root && parent !== document.body &&\n        [current.get("overflow-x"), current.get("overflow-y")].some(value => !["visible", "clip"].includes(value))) scroller = parent;\n    }\n    if (node.getClientRects().length !== 1) return unsupported();\n    for (const edge of ["left", "top", "right", "bottom"]) {\n      const value = style.get(edge);\n      if (value !== "auto" && !/^[-+]?(?:\\d*\\.)?\\d+px$/.test(value || "")) return unsupported();\n    }\n    if (scroller) {\n      const current = plan.styles.get(scroller);\n      const borderX = parseFloat(current.get("border-left-width")) + parseFloat(current.get("border-right-width"));\n      const borderY = parseFloat(current.get("border-top-width")) + parseFloat(current.get("border-bottom-width"));\n      // Classic scrollbar gutters cannot be removed without changing an end inset.\n      if (scroller.offsetWidth - scroller.clientWidth - borderX > 1 || scroller.offsetHeight - scroller.clientHeight - borderY > 1) return unsupported();\n      plan.stickyScrollers.add(scroller);\n    }\n    const x = scroller ? scroller.scrollLeft : scrollX;\n    const y = scroller ? scroller.scrollTop : scrollY;\n    // An unscrolled nested scrollport has the same used dimensions in the clone.\n    // A document clone is taller/wider than the viewport: only start-edge insets\n    // can be kept verbatim there, even at scroll zero.\n    if (x === 0 && y === 0 && (scroller || (style.get("right") === "auto" && style.get("bottom") === "auto"))) return "sticky";\n    const box = node.getBoundingClientRect();\n    const scrollBox = scroller?.getBoundingClientRect();\n    const port = scroller ? { left: scrollBox.left + scroller.clientLeft, top: scrollBox.top + scroller.clientTop,\n      right: scrollBox.left + scroller.clientLeft + scroller.clientWidth, bottom: scrollBox.top + scroller.clientTop + scroller.clientHeight }\n      : { left: 0, top: 0, right: innerWidth, bottom: innerHeight };\n    // Strictly inside every inset edge proves no sticky constraint moved the box.\n    // At an edge (including a parent-end clamp) the original normal position is\n    // ambiguous; refuse instead of temporarily changing the live DOM to measure it.\n    for (const edge of ["left", "top", "right", "bottom"]) {\n      const value = style.get(edge);\n      if (value === "auto") continue;\n      if (!/^[-+]?(?:\\d*\\.)?\\d+px$/.test(value || "")) return unsupported();\n      const inset = parseFloat(value);\n      if (["left", "top"].includes(edge) ? box[edge] <= port[edge] + inset + 0.5 : box[edge] >= port[edge] - inset - 0.5) return unsupported();\n    }\n    return "relative";\n  };\n  const capturePlan = async (region, signal) => {\n    const nodes = Array.from(document.querySelectorAll("*"));\n    if (nodes.length > 20000) throw new Error("Selected document is too complex to capture; the geometric anchor is still saved");\n    const needed = new Set([root]);\n    const candidates = new Map();\n    const forced = new Set();\n    const paintHidden = new Map();\n    const transformedPaint = new Map();\n    let slice = performance.now();\n    const keep = node => { for (; node && !needed.has(node); node = node.parentElement) needed.add(node); };\n    const intersects = r => r.right >= region.x && r.bottom >= region.y && r.left <= region.x + region.width && r.top <= region.y + region.height;\n    for (const node of nodes) {\n      signal.throwIfAborted();\n      if (performance.now() - slice > 8) { await captureTask(); signal.throwIfAborted(); slice = performance.now(); }\n      if (captureOverlay(node) || node.matches("script,style,link,meta,head")) continue;\n      const style = getComputedStyle(node);\n      if (capturePaintSuppressed(node, paintHidden) || captureDefinition(node)) {\n        candidates.set(node, null);\n        continue;\n      }\n      if (forced.has(node.parentElement)) { forced.add(node); keep(node); continue; }\n      const box = capturePaintBounds(node, style, transformedPaint);\n      const pseudo = ["::before", "::after"].some(part => !["none", "normal"].includes(getComputedStyle(node, part).content));\n      if (!box || node.shadowRoot || style.filter !== "none" || (style.backdropFilter && style.backdropFilter !== "none") || pseudo) { forced.add(node); keep(node); }\n      else if (intersects(box)) keep(node);\n      const block = ["block", "flex", "grid", "flow-root"].includes(style.display);\n      const closedMargins = style.display !== "block" || style.overflowY !== "visible" ||\n        (parseFloat(style.paddingTop) + parseFloat(style.borderTopWidth) > 0 && parseFloat(style.paddingBottom) + parseFloat(style.borderBottomWidth) > 0);\n      if (node instanceof HTMLElement && block && closedMargins && /^\\d+(\\.\\d+)?px$/.test(style.width) && /^\\d+(\\.\\d+)?px$/.test(style.height)) {\n        candidates.set(node, { width: style.width, height: style.height });\n      }\n    }\n    if (needed.size > 1800) throw new Error("Selected area is too complex to capture promptly; the geometric anchor is still saved");\n    const geometry = new Map();\n    const styles = new Map();\n    const pseudoStyles = new Map();\n    const references = new Set();\n    // Hidden SVG resources can paint through a visible use/fill/filter reference. Follow\n    // those dependencies (including indirect references) rather than ignoring hidden DOM.\n    for (const node of needed) {\n      if (needed.size > 1800) throw new Error("Selected area is too complex to capture promptly; the geometric anchor is still saved");\n      signal.throwIfAborted();\n      if (performance.now() - slice > 8) { await captureTask(); signal.throwIfAborted(); slice = performance.now(); }\n      geometry.set(node, captureGeometry(node));\n      const style = getComputedStyle(node);\n      const recorded = new Map(Array.from(style, property => [property, style.getPropertyValue(property)]));\n      styles.set(node, recorded);\n      const pseudos = ["::before", "::after"].map(part => {\n        const style = getComputedStyle(node, part);\n        return new Map(["none", "normal"].includes(style.content) ? [["content", style.content]] : Array.from(style, property => [property, style.getPropertyValue(property)]));\n      });\n      pseudoStyles.set(node, pseudos);\n      for (const id of new Set([recorded, ...pseudos].flatMap(style => Array.from(captureReferenceIds(node, style))))) {\n        if (references.has(id)) continue;\n        references.add(id);\n        const resource = document.getElementById(id);\n        if (!resource) continue;\n        keep(resource);\n        for (const child of resource.querySelectorAll("*")) keep(child);\n      }\n    }\n    const prune = new Map();\n    for (const [node, size] of candidates) if (!needed.has(node)) prune.set(node, size);\n    const suppressedRoots = Array.from(paintHidden).filter(([node, hidden]) => hidden && !paintHidden.get(node.parentElement)).map(([node]) => node);\n    return { prune, needed, geometry, styles, pseudoStyles, references, suppressedRoots, stickyScrollers: new Set(), outsideMutations: false };\n\n  };\n  const captureGeometry = node => {\n    const bounds = node.getBoundingClientRect();\n    return [bounds.x, bounds.y, bounds.width, bounds.height, node.scrollLeft, node.scrollTop];\n  };\n  const captureLayoutMatches = plan => plan.suppressedRoots.every(node => !node.isConnected || capturePaintSuppressed(node)) &&\n    Array.from(plan.geometry).every(([node, before]) => node.isConnected && captureGeometry(node).every((value, index) => Math.abs(value - before[index]) < 0.01));\n  const captureStylesMatch = plan => !plan.outsideMutations || Array.from(plan.styles).every(([node, recorded]) => {\n    const style = getComputedStyle(node);\n    if (!Array.from(recorded).every(([property, value]) => style.getPropertyValue(property) === value)) return false;\n    return plan.pseudoStyles.get(node).every((recorded, index) => {\n      const style = getComputedStyle(node, index === 0 ? "::before" : "::after");\n      return Array.from(recorded).every(([property, value]) => style.getPropertyValue(property) === value);\n    });\n  });\n  const captureMutationIsOutside = (record, plan, region) => {\n    const target = record.target instanceof Element ? record.target : record.target.parentElement;\n    if (!target || plan.needed.has(target)) return false;\n    // Even an off-selection mutation may create new overflowing pixels. Inspect only its\n    // affected subtree; unknown paint effects stay conservative instead of accepting a stale\n    // screenshot. The selected layout and computed styles are validated independently.\n    const affected = [target, ...target.querySelectorAll("*")];\n    if (affected.length > 2000) return false;\n    const paintHidden = new Map();\n    const transformedPaint = new Map();\n    return affected.every(node => {\n      if (plan.needed.has(node) || (node.id && plan.references.has(node.id))) return false;\n      if (capturePaintSuppressed(node, paintHidden)) return true;\n      const style = getComputedStyle(node);\n      if (node.shadowRoot || style.filter !== "none" || (style.backdropFilter && style.backdropFilter !== "none") ||\n        ["::before", "::after"].some(part => !["none", "normal"].includes(getComputedStyle(node, part).content))) return false;\n      const bounds = capturePaintBounds(node, style, transformedPaint);\n      return bounds && (bounds.right < region.x || bounds.bottom < region.y ||\n        bounds.left > region.x + region.width || bounds.top > region.y + region.height);\n    });\n  };\n  const captureFrozenRegion = async (region, signal, planReady) => {\n    signal.throwIfAborted();\n    const width = Math.max(root.scrollWidth, innerWidth);\n    const height = Math.max(root.scrollHeight, innerHeight);\n    const ratio = Math.min(devicePixelRatio || 1, 2, 16384 / region.width, 16384 / region.height, Math.sqrt(16777216 / (region.width * region.height)));\n    if (!Number.isFinite(ratio) || ratio < 0.5) throw new Error("Selection is too large to capture; the geometric anchor is still saved");\n    const api = await loadCapture();\n    signal.throwIfAborted();\n    const plan = await capturePlan(region, signal);\n    planReady(plan);\n    signal.throwIfAborted();\n    window.dispatchEvent(new CustomEvent("paseo:capture", { detail: { mime: "image/png", scale: ratio } }));\n    const shots = new Map();\n    const original = HTMLCanvasElement.prototype.toDataURL;\n    // Freeze fresh pixels per capture, never reuse a previous selection\'s dynamic bitmap.\n    for (const canvas of document.querySelectorAll("canvas")) {\n      let skipped = captureOverlay(canvas);\n      for (let parent = canvas; parent && !skipped; parent = parent.parentElement) skipped = plan.prune.has(parent);\n      if (!skipped) { try { shots.set(canvas, original.call(canvas)); } catch {} }\n    }\n    const startScroll = { x: scrollX, y: scrollY };\n    HTMLCanvasElement.prototype.toDataURL = function (...args) { return args.length === 0 && shots.has(this) ? shots.get(this) : original.apply(this, args); };\n    const parentStyles = new WeakMap();\n    let cloned = 0;\n    let slice = performance.now();\n    const started = slice;\n    const check = () => {\n      signal.throwIfAborted();\n      if (scrollX !== startScroll.x || scrollY !== startScroll.y) throw new Error("Canvas changed during capture; the geometric anchor is still saved");\n      if (cloned > 1800 || performance.now() - started > 3500) throw new Error("Selected area is too complex to capture promptly; the geometric anchor is still saved");\n    };\n    try {\n      const svg = await api.toSvg(root, {\n        width, height, captureViewport: region, skipFonts: true, style: { margin: "0" },\n        filter: node => node.nodeName !== "SCRIPT" && !captureOverlay(node),\n        filterChildren: node => !plan.prune.has(node),\n        // Computed values already resolve var(). Preserve custom-property inheritance instead\n        // of redundantly copying the same theme tokens onto every single descendant.\n        filterStyleProperty: (node, property, value, computedValue) => {\n          const recorded = plan.styles.get(node);\n          if (recorded) {\n            // The library normalizes font-size and SVG path d for its cloned output.\n            // Validate the original computed value, not that serialization transform.\n            if (recorded.get(property) !== computedValue) throw new Error("Canvas styling changed during capture; the geometric anchor is still saved");\n          }\n          if (!property.startsWith("--") || !node.parentElement) return true;\n          let style = parentStyles.get(node.parentElement);\n          if (!style) { style = getComputedStyle(node.parentElement); parentStyles.set(node.parentElement, style); }\n          return style.getPropertyValue(property) !== value;\n        },\n        beforeSerialize: async () => { await captureTask(); check(); },\n        beforeClone: async node => {\n          if (node instanceof Element) cloned++;\n          check();\n          if (performance.now() - slice > 8) { await captureTask(); check(); slice = performance.now(); }\n        },\n        afterClone: (source, clone) => {\n          if (!(source instanceof Element) || !(clone instanceof Element)) return;\n          if (clone.style) { clone.style.animation = "none"; clone.style.transition = "none"; }\n          const sourceStyle = getComputedStyle(source);\n          if (["sticky", "fixed"].includes(sourceStyle.position) && !plan.needed.has(source)) { clone.style.opacity = "0"; return; }\n          if (sourceStyle.position === "sticky" && captureStickyMode(source, plan) === "relative") {\n            clone.style.position = "relative";\n            // Sticky establishes a stacking context even at auto; relative does not.\n            if (sourceStyle.zIndex === "auto") clone.style.zIndex = "0";\n            for (const edge of ["left", "top", "right", "bottom"]) clone.style[edge] = "auto";\n          }\n          // foreignObject can start a new overlay-scrollbar fade cycle even when\n          // the live unscrolled port paints none. Keep its overflow/scrollport,\n          // suppressing only those UA bars after the sticky child was validated.\n          if (plan.stickyScrollers.has(source)) clone.style.scrollbarWidth = "none";\n          if (sourceStyle.position === "fixed") {\n            for (let parent = source.parentElement; parent && parent !== root; parent = parent.parentElement) {\n              const style = getComputedStyle(parent);\n              if (style.transform !== "none" || style.filter !== "none" || style.perspective !== "none" || parent.scrollTop || parent.scrollLeft) throw new Error("Transformed fixed content cannot be captured accurately; the geometric anchor is still saved");\n            }\n            const bounds = source.getBoundingClientRect();\n            clone.style.left = bounds.left + scrollX + "px";\n            clone.style.top = bounds.top + scrollY + "px";\n            clone.style.right = "auto";\n            clone.style.bottom = "auto";\n          }\n          const size = plan.prune.get(source);\n          if (size && clone.style) {\n            for (const key of ["width", "minWidth", "maxWidth"]) clone.style[key] = size.width;\n            for (const key of ["height", "minHeight", "maxHeight"]) clone.style[key] = size.height;\n          }\n          if ((source.scrollTop || source.scrollLeft) && source !== root && source !== document.body) {\n            // Translate already-laid-out direct children inside the original clipping box.\n            // A raw text scroller cannot be wrapped without changing line layout.\n            if (Array.from(source.childNodes).some(node => node.nodeType === 3 && node.textContent.trim())) throw new Error("This text scroller cannot be captured accurately; the geometric anchor is still saved");\n            clone.style.overflow = "hidden";\n            for (const child of clone.children) if (child.style) child.style.transform = `translate(${-source.scrollLeft}px, ${-source.scrollTop}px) ${child.style.transform === "none" ? "" : child.style.transform}`;\n          }\n        },\n      });\n      check();\n      if (!captureLayoutMatches(plan)) throw new Error("Canvas layout changed during capture; the geometric anchor is still saved");\n      if (!captureStylesMatch(plan)) throw new Error("Canvas styling changed during capture; the geometric anchor is still saved");\n      // Keep the original foreignObject/layout dimensions, but decode and allocate only the\n      // requested SVG viewport. Page length must not reduce a small selection\'s pixel ratio.\n      await captureTask();\n      check();\n      const image = new Image();\n      image.decoding = "async";\n      const ready = new Promise((resolve, reject) => { image.onload = resolve; image.onerror = () => reject(new Error("Selection image could not be decoded")); });\n      image.src = svg;\n      await ready;\n      check();\n      if (!captureLayoutMatches(plan)) throw new Error("Canvas layout changed during capture; the geometric anchor is still saved");\n      if (!captureStylesMatch(plan)) throw new Error("Canvas styling changed during capture; the geometric anchor is still saved");\n      const cropped = document.createElement("canvas");\n      cropped.width = Math.max(1, Math.round(region.width * ratio));\n      cropped.height = Math.max(1, Math.round(region.height * ratio));\n      const context = cropped.getContext("2d");\n      if (!context) throw new Error("Screenshot canvas unavailable");\n      context.drawImage(image, 0, 0, cropped.width, cropped.height);\n      const data = cropped.toDataURL("image/png").split(",")[1];\n      if (data.length > 3000000) throw new Error("Selection screenshot exceeds 3 MB; select a smaller area");\n      return { mimeType: "image/png", data };\n    } finally { HTMLCanvasElement.prototype.toDataURL = original; }\n  };\n  const captureRegion = async (region, signal) => {\n    // A cooperative clone spans several browser tasks. Pause CSS/Web Animations at their\n    // current displayed frame and resume only animations that were running before capture.\n    const controller = new AbortController();\n    const cancel = () => controller.abort(signal.reason);\n    if (signal.aborted) cancel(); else signal.addEventListener("abort", cancel, { once: true });\n    let plan;\n    let buffered = [];\n    const validate = records => {\n      const changed = records.filter(record => !captureOverlay(record.target) && (record.type !== "attributes" || record.oldValue !== record.target.getAttribute(record.attributeName)) &&\n        (record.type !== "childList" || [...record.addedNodes, ...record.removedNodes].some(node => !captureOverlay(node))));\n      if (!changed.length) return;\n      if (!plan) { buffered.push(...changed); return; }\n      if (!captureLayoutMatches(plan) || changed.some(record => !captureMutationIsOutside(record, plan, region))) {\n        controller.abort(new Error("Canvas changed during capture; the geometric anchor is still saved"));\n      } else {\n        // A hidden/outside mutation can affect already-cloned selected styles via :has().\n        plan.outsideMutations = true;\n      }\n    };\n    const observer = new MutationObserver(validate);\n    observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeOldValue: true });\n    const animations = document.getAnimations().filter(animation => animation.playState === "running" && !captureOverlay(animation.effect?.target));\n    for (const animation of animations) animation.pause();\n    try { return await captureFrozenRegion(region, controller.signal, ready => { plan = ready; validate(buffered); buffered = []; }); }\n    finally {\n      observer.disconnect();\n      signal.removeEventListener("abort", cancel);\n      for (const animation of animations) if (animation.playState === "paused") animation.play();\n    }\n  };\n  // A cancelled capture still owns its html-to-image clone until it settles. Serializing the\n  // underlying work prevents overlapping temporary canvas hooks from restoring one another.\n  let captureTail = Promise.resolve();\n  const queuedCapture = (region, signal) => {\n    const result = captureTail.catch(() => {}).then(() => captureRegion(region, signal));\n    captureTail = result.catch(() => {});\n    return result;\n  };\n  const isEditor = (event) => event.composedPath().some(node => node instanceof Element && (node.matches("input,textarea,select") || node.isContentEditable));\n  const startsTextSelection = (event) => {\n    if (isEditor(event) || !(event.target instanceof Element) || event.target.closest("button,a,input,textarea,select,canvas,svg,[draggable=true],[role=button],[role=slider]")) return false;\n    const range = document.caretRangeFromPoint?.(event.clientX, event.clientY);\n    const caret = range ? null : document.caretPositionFromPoint?.(event.clientX, event.clientY);\n    const node = range?.startContainer || caret?.offsetNode;\n    return node?.nodeType === 3 && Boolean(node.textContent?.trim()) && event.target.contains(node);\n  };\n  const paintSelectionMode = () => {\n    const mode = pointer?.temporary ? "region" : selectionMode;\n    root.setAttribute("data-board-selection", mode);\n    root.style.cursor = mode === "off" ? "" : mode === "text" ? "text" : "crosshair";\n    if (markerHost) markerHost.style.setProperty("visibility", mode === "off" ? "visible" : "hidden", "important");\n  };\n  const releasePointer = () => {\n    const active = pointer;\n    pointer = null;\n    textPointer = null;\n    if (active) { try { if (root.hasPointerCapture(active.pointerId)) root.releasePointerCapture(active.pointerId); } catch {} }\n  };\n  const eventPoint = (event) => ({ x: Math.max(0, Math.min(event.clientX, innerWidth)), y: Math.max(0, Math.min(event.clientY, innerHeight)) });\n  const cancelSelection = ({ release = true, clear = true, notify = false, drainUpdates = true } = {}) => {\n    cancelMarkerReveal();\n    const previous = selectionSession;\n    selectionSession = null;\n    releasePointer();\n    captureBusy = false;\n    clearOverlay();\n    clearComponent();\n    if (clear) lastAnchor = undefined;\n    if (previous) {\n      previous.abort.abort();\n      previous.indicator?.remove();\n      if (release) post({ type: "selection-lock", id: previous.id, active: false });\n    }\n    paintSelectionMode();\n    if (notify) post({ type: "selection-clear" });\n    reportCanvasActivity();\n    if (drainUpdates) void drain();\n  };\n  const beginSelection = (position, dragging = false) => {\n    window.focus();\n    cancelSelection({ release: false, drainUpdates: false });\n    const session = { id: `${scope.sessionId}:selection-${++sequence}`, abort: new AbortController(), indicator: null, anchor: null, position };\n    selectionSession = session;\n    reportCanvasActivity();\n    // Replace the lease atomically, with a fresh generation so old pixels cannot match it.\n    post({ type: "selection-lock", id: session.id, active: true, dragging });\n    return session;\n  };\n  const showCaptureStatus = (session) => {\n    if (selectionSession !== session || session.indicator) return;\n    const host = document.createElement("div");\n    host.setAttribute("data-board-capture-status", "");\n    host.setAttribute("data-board-overlay", "");\n    host.style.cssText = `all:initial;position:fixed;z-index:2147483647;pointer-events:none;left:${Math.max(8, Math.min(session.position.x + 12, innerWidth - 220))}px;top:${Math.max(8, Math.min(session.position.y + 12, innerHeight - 44))}px;`;\n    const shadow = host.attachShadow({ mode: "open" });\n    shadow.innerHTML = `<style>div{padding:8px 12px;border:1px solid var(--host-line-strong,#d0d0d0);border-radius:8px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 4px 14px #0002;font:12px/1.5 system-ui,-apple-system,sans-serif}</style><div role="status">\u6B63\u5728\u622A\u53D6\u5F15\u7528\u2026 \xB7 Esc \u53D6\u6D88</div>`;\n    session.indicator = host;\n    document.body.append(host);\n  };\n  const finishSelection = async (session, anchor, imageRegion, reuse = false) => {\n    if (selectionSession !== session) return;\n    releasePointer();\n    selectionMode = "off";\n    paintSelectionMode();\n    const needsCapture = !reuse && imageRegion && imageRegion.width > 0 && imageRegion.height > 0;\n    // This immutable reference is available immediately; capture adds only pixels later.\n    session.anchor = anchor;\n    lastAnchor = anchor;\n    captureBusy = Boolean(needsCapture);\n    post({ type: "selection-lock", id: session.id, active: true, dragging: false });\n    post({ type: "selection-end" });\n    post({ type: "anchor", anchor, selectionId: session.id });\n    post({ type: "compose", automatic: true, selectionId: session.id, request: { kind: "question", anchor, position: session.position, ...(needsCapture ? { captureStatus: "pending" } : {}) } });\n    if (!needsCapture) { cancelSelection({ clear: false }); return; }\n    showCaptureStatus(session);\n    // Promise microtasks do not permit painting or input. Give the host its messages, React\n    // commit and a painted frame before DOM capture begins. The capture implementation must\n    // also yield during its work to keep input responsive throughout.\n    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0))));\n    if (selectionSession !== session || session.abort.signal.aborted) return;\n    let timer;\n    let abortListener;\n    let captured;\n    let failureReason;\n    try {\n      const image = await Promise.race([\n        queuedCapture(imageRegion, session.abort.signal),\n        new Promise((_, reject) => {\n          timer = setTimeout(() => reject(new Error("Selection capture timed out")), 15000);\n          abortListener = () => reject(new DOMException("\u9009\u533A\u5DF2\u53D6\u6D88", "AbortError"));\n          session.abort.signal.addEventListener("abort", abortListener, { once: true });\n        }),\n      ]);\n      captured = { ...anchor, image };\n    } catch (cause) {\n      // Send only a bounded category, never arbitrary document/resource error text.\n      // A failed image leaves the already-open input and its text/geometry usable.\n      const message = cause instanceof Error ? cause.message : "";\n      failureReason = /Canvas (?:layout |styling )?changed during capture/.test(message) ? "content-changed"\n        : /too complex to capture/.test(message) ? "too-complex"\n        : /cannot be captured accurately/.test(message) ? "unsupported-layout"\n        : /too large to capture|screenshot exceeds 3 MB/.test(message) ? "too-large"\n        : message === "Selection capture timed out" ? "timeout" : "generation-failed";\n    } finally {\n      clearTimeout(timer);\n      if (abortListener) session.abort.signal.removeEventListener("abort", abortListener);\n    }\n    if (selectionSession !== session || session.abort.signal.aborted) return;\n    lastAnchor = captured || anchor;\n    post({ type: "selection-capture", selectionId: session.id, anchor: lastAnchor, status: captured ? "ready" : "failed", ...(!captured ? { reason: failureReason } : {}) });\n    cancelSelection({ clear: false });\n  };\n  const setSelectionMode = (mode) => {\n    if (!["off", "text", "region", "point", "component"].includes(mode)) return;\n    if (applying) { deferredSelection = mode; return; }\n    if (mode === selectionMode) return;\n    cancelSelection({ drainUpdates: false });\n    cancelMarkerReveal();\n    selectionMode = mode;\n    paintSelectionMode();\n    reportCanvasActivity();\n    if (mode === "off") void drain();\n  };\n  const selectedText = (point) => {\n    const selected = window.getSelection();\n    if (!selected || !selected.rangeCount || selected.isCollapsed || !selected.toString().trim()) return null;\n    const range = selected.getRangeAt(0);\n    if (point && !Array.from(range.getClientRects()).some(r => point.x >= r.left && point.x <= r.right && point.y >= r.top && point.y <= r.bottom)) return null;\n    const node = range.commonAncestorContainer;\n    const region = rect(range.getBoundingClientRect());\n    const target = node.nodeType === 1 ? node : node.parentElement;\n    return { anchor: { ...currentAnchor(), kind: "text", text: selected.toString().slice(0, 12000), selector: selectorFor(target), rect: region, viewport: viewport(), binding: captureBinding(target, region) }, region };\n  };\n  const pointSelection = (point, target) => {\n    const position = { x: point.x + scrollX, y: point.y + scrollY, width: 0, height: 0 };\n    return { anchor: { ...currentAnchor(), kind: "point", selector: selectorFor(target), rect: position, viewport: viewport(), binding: captureBinding(target, position) },\n      region: { x: Math.max(0, Math.min(position.x - 120, root.scrollWidth - Math.min(240, innerWidth))), y: Math.max(0, position.y - 80), width: Math.min(240, innerWidth), height: 160 } };\n  };\n  const containsAnchor = (anchor, point, target) => {\n    if (!anchor?.rect || anchor.boardRevision !== snapshot.boardRevision || anchor.canvasRevision !== snapshot.canvas.revision) return false;\n    if (anchor.binding) {\n      const location = markerLocation(anchor);\n      if (location.mode !== "component" || !(target instanceof Element) || !location.node.contains(target)\n        || Math.abs(location.rect.x - anchor.rect.x) > 1 || Math.abs(location.rect.y - anchor.rect.y) > 1) return false;\n    }\n    const { x, y, width, height } = anchor.rect;\n    const margin = anchor.kind === "point" ? 6 : 0;\n    return point.x + scrollX >= x - margin && point.x + scrollX <= x + width + margin && point.y + scrollY >= y - margin && point.y + scrollY <= y + height + margin;\n  };\n  window.addEventListener("pointerdown", (event) => {\n    if (!event.isTrusted) return;\n    lastGesture = performance.now();\n    lastGesturePosition = eventPoint(event);\n    if (inComponentText(event)) {\n      if (event.button===0 && !componentPending && !componentText.invalid && !componentText.composing) {\n        const run=event.composedPath().find(node=>node instanceof Element && node.hasAttribute("data-component-text-run"));\n        if (run && run!==componentText.run.editor) { const previous=componentText.run;chooseComponentTextRun(Number(run.getAttribute("data-component-text-run")));if (componentText.run===previous) event.preventDefault(); }\n      }\n      event.stopImmediatePropagation();return;\n    }\n    if (inComponentPreview(event)) {\n      const resize = event.composedPath().some(node => node instanceof Element && node.hasAttribute("data-component-layout-resize"));\n      if (resize && event.button === 0) { event.preventDefault(); beginComponentLayoutResize(event); event.stopImmediatePropagation(); return; }\n      if (event.button===0) { event.preventDefault();window.focus();componentLayoutPreview.viewport.focus({preventScroll:true}); } event.stopImmediatePropagation(); return; }\n    if (inComponents(event)) {\n      const handle = event.composedPath().find(node => node instanceof Element && node.dataset.componentAction === "drag");\n      if (handle && !handle.disabled && event.button === 0) { event.preventDefault();try {startComponentDrag(event);} catch(failure) {setComponentNotice(failure.message || String(failure));} }\n      event.stopImmediatePropagation(); return;\n    }\n    if (inMarkers(event)) { window.focus(); cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); event.stopImmediatePropagation(); return; }\n    if (event.button === 0) { window.focus(); post({ type: "canvas-pointer" }); }\n    suppressPointerClick = false;\n    dismissedPointer = null;\n    if (event.button !== 0) return;\n    const shortcut = event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey && !isEditor(event);\n    if (selectionMode === "component" || shortcut) {\n      if (isEditor(event)) return;\n      if (componentPending || componentText || componentDrag || applying) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n      if (!shortcut && selectionMode === "component" && selectedComponent?.isConnected && selectedComponent.contains(event.target)) {\n        event.preventDefault();event.stopImmediatePropagation();suppressPointerClick=true;\n        try {componentPress={...componentGesture(),pointerId:event.pointerId,position:eventPoint(event)};} catch(failure) {componentPress=null;componentClick=null;setComponentNotice(failure.message || String(failure));}\n        return;\n      }\n      if (shortcut && selectionMode !== "component") setSelectionMode("component");\n      componentNotice = "";\n      event.preventDefault(); event.stopImmediatePropagation(); suppressPointerClick = true;\n      selectComponent(componentAt(event.target)); return;\n    }\n    const temporary = selectionMode === "off" && event.altKey && !isEditor(event);\n    if (selectionMode === "off" && !temporary) {\n      const wasCapturing = captureBusy;\n      cancelSelection({ notify: Boolean(selectionSession || lastAnchor) });\n      // Cancelling an unfinished capture must not activate a control beneath its preview.\n      if (wasCapturing) { dismissedPointer = event.pointerId; suppressPointerClick = true; event.preventDefault(); event.stopImmediatePropagation(); return; }\n      // Freeze the displayed revision during an ordinary native text drag, but let the\n      // browser perform selection. Editors and author-controlled drags keep native behavior.\n      if (!applying && startsTextSelection(event)) {\n        const position = eventPoint(event);\n        textPointer = { pointerId: event.pointerId, position, beforeText: window.getSelection()?.toString() || "", session: beginSelection(position, true) };\n      }\n      return;\n    }\n    if (applying) return;\n    event.stopImmediatePropagation();\n    const session = beginSelection({ x: event.clientX, y: event.clientY }, true);\n    suppressPointerClick = true;\n    if (selectionMode === "text" && !temporary) return;\n    event.preventDefault();\n    pointer = { x: event.clientX, y: event.clientY, target: event.target, pointerId: event.pointerId, temporary, session };\n    try { root.setPointerCapture(event.pointerId); } catch {}\n    paintSelectionMode();\n    showOverlay({ x: pointer.x, y: pointer.y, width: 0, height: 0 });\n  }, true);\n  window.addEventListener("pointermove", (event) => {\n    if (!event.isTrusted) return;\n    componentPointer = eventPoint(event);\n    if (componentLayoutResize?.pointerId === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); moveComponentLayoutResize(event); return; }\n    if (inComponentPreview(event)) { clearComponentHover(); event.stopImmediatePropagation(); return; }\n    if (componentPress?.pointerId===event.pointerId) {\n      event.preventDefault();event.stopImmediatePropagation();\n      const press=componentPress;\n      if (!(event.buttons&1) || !componentGestureLive(press)) {componentPress=null;componentClick=null;return;}\n      if (Math.hypot(event.clientX-press.position.x,event.clientY-press.position.y)<6) return;\n      startComponentDrag(event,press);\n    }\n    if (componentDrag) {\n      if (!componentGestureLive(componentDrag.gesture)) {cancelComponentDrag();setComponentNotice("\u7EC4\u4EF6\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u540E\u62D6\u52A8");return;}\n      if (componentDrag.pointerId === event.pointerId && componentDrag.paintFrame === null) componentDrag.paintFrame = requestAnimationFrame(() => {\n        if (!componentDrag) return; componentDrag.paintFrame = null; updateComponentDragDestination();\n      });\n      event.preventDefault(); event.stopImmediatePropagation(); return;\n    }\n    if (selectionMode === "component" && isEditor(event)) return;\n    componentShortcut = event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey && !isEditor(event);\n    if (componentShortcut || selectionMode === "component") updateComponentHover(); else clearComponentHover();\n    if (inComponents(event)) { event.stopImmediatePropagation(); return; }\n    if (inMarkers(event) && !pointer) { event.stopImmediatePropagation(); return; }\n    if (dismissedPointer === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (!pointer && selectionMode === "off") return;\n    event.stopImmediatePropagation();\n    if (!pointer || event.pointerId !== pointer.pointerId) return;\n    event.preventDefault();\n    const point = eventPoint(event);\n    showOverlay({ x: Math.min(pointer.x, point.x), y: Math.min(pointer.y, point.y), width: Math.abs(point.x - pointer.x), height: Math.abs(point.y - pointer.y) });\n  }, true);\n  window.addEventListener("pointerup", (event) => {\n    if (!event.isTrusted || event.button !== 0) return;\n    if (componentLayoutResize?.pointerId === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); finishComponentLayoutResize(); return; }\n    if (inComponentPreview(event)) { event.stopImmediatePropagation(); return; }\n    if (componentPress?.pointerId===event.pointerId) {\n      const press=componentPress;componentPress=null;componentClick=componentGestureLive(press)?{...press,finished:performance.now()}:null;\n      event.preventDefault();event.stopImmediatePropagation();return;\n    }\n    if (selectionMode==="component" && isEditor(event)) return;\n    if (componentDrag?.pointerId === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); try { finishComponentDrag(); } catch (failure) { setComponentNotice(failure.message); } return; }\n    if (inComponents(event)) { event.stopImmediatePropagation(); return; }\n    if (inMarkers(event)) { event.stopImmediatePropagation(); return; }\n    if (dismissedPointer === event.pointerId) { dismissedPointer = null; event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (textPointer?.pointerId === event.pointerId) {\n      const start = textPointer;\n      textPointer = null;\n      const position = eventPoint(event);\n      const changed = (window.getSelection()?.toString() || "") !== start.beforeText;\n      const text = changed || Math.hypot(position.x - start.position.x, position.y - start.position.y) >= 3 ? selectedText() : null;\n      if (text) {\n        suppressPointerClick = true;\n        start.session.position = position;\n        void finishSelection(start.session, text.anchor, text.region);\n      } else cancelSelection();\n      return;\n    }\n    if (!pointer && selectionMode === "off") return;\n    event.stopImmediatePropagation();\n    const session = selectionSession;\n    if (!session) return;\n    if (selectionMode === "text" && !pointer) {\n      const text = selectedText();\n      session.position = eventPoint(event);\n      if (text) void finishSelection(session, text.anchor, text.region);\n      else cancelSelection();\n      return;\n    }\n    event.preventDefault();\n    if (!pointer || pointer.pointerId !== event.pointerId) return;\n    const start = pointer;\n    const point = eventPoint(event);\n    const isPoint = selectionMode === "point" || Math.hypot(point.x - start.x, point.y - start.y) < 5;\n    session.position = point;\n    if (isPoint) {\n      const selected = pointSelection(session.position, start.target);\n      void finishSelection(session, selected.anchor, selected.region);\n    } else {\n      const region = { x: Math.min(start.x, point.x) + scrollX, y: Math.min(start.y, point.y) + scrollY, width: Math.abs(point.x - start.x), height: Math.abs(point.y - start.y) };\n      void finishSelection(session, { ...currentAnchor(), kind: "region", selector: selectorFor(start.target), rect: region, viewport: viewport(), binding: captureBinding(start.target, region, true) }, region);\n    }\n  }, true);\n  window.addEventListener("pointercancel", () => { cancelComponentDrag(); dismissedPointer = null; cancelSelection({ notify: true }); }, true);\n  window.addEventListener("lostpointercapture", (event) => {\n    if (componentDrag?.pointerId===event.pointerId && !root.hasPointerCapture(event.pointerId)) cancelComponentDrag();\n    if (pointer?.pointerId === event.pointerId && !root.hasPointerCapture(event.pointerId)) cancelSelection({ notify: true });\n  }, true);\n  window.addEventListener("pointerout", (event) => {\n    if (componentPress && !event.relatedTarget) {componentPress=null;componentClick=null;}\n    if (pointer && !event.relatedTarget && !root.hasPointerCapture(pointer.pointerId)) cancelSelection({ notify: true });\n  }, true);\n  window.addEventListener("blur", () => {\n    componentPress=null;componentClick=null;componentShortcut = false; clearComponentHover(); if (componentDrag) cancelComponentDrag();\n    if (!selectionSession) return;\n    // The host input takes focus before capture finishes. Keep its completed reference alive;\n    // host dismissal/submission sends a generation-scoped cancellation explicitly.\n    if (!selectionSession.anchor) cancelSelection({ notify: true });\n  });\n  window.addEventListener("contextmenu", (event) => {\n    if (!event.isTrusted) return;\n    if (inComponentText(event)) { event.stopImmediatePropagation(); return; }\n    if (inComponents(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (inMarkers(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (event.shiftKey || isEditor(event)) { if (selectionMode!=="component") cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); return; }\n    if (componentPending || componentText || componentDrag || applying) {event.preventDefault();event.stopImmediatePropagation();return;}\n    if (selectionMode==="component" && selectedComponent?.isConnected && selectedComponent.contains(event.target)) {\n      event.preventDefault();event.stopImmediatePropagation();lastGesture=performance.now();\n      try {referenceComponent(eventPoint(event));} catch(failure) {setComponentNotice(failure.message || String(failure));}return;\n    }\n    event.preventDefault();\n    event.stopImmediatePropagation();\n    lastGesture = performance.now();\n    let point = { x: event.clientX, y: event.clientY };\n    if (point.x === 0 && point.y === 0 && event.target instanceof Element) {\n      const r = event.target.getBoundingClientRect(); point = { x: r.left + r.width / 2, y: r.top + r.height / 2 };\n    }\n    const previous = lastAnchor?.image && containsAnchor(lastAnchor, point, event.target) ? copy(lastAnchor) : null;\n    const text = !previous ? selectedText(point) : null;\n    const selected = previous ? { anchor: previous, region: null } : text || pointSelection(point, event.target);\n    const session = beginSelection(point);\n    void finishSelection(session, selected.anchor, selected.region, Boolean(previous));\n  }, true);\n  window.addEventListener("dblclick",event=>{\n    if (!event.isTrusted || inComponentText(event) || selectionMode!=="component" || isEditor(event) || !selectedComponent?.contains(event.target)) return;\n    event.preventDefault();event.stopImmediatePropagation();\n    if (componentPending || componentText || componentDrag || applying || !componentClick || performance.now()-componentClick.finished>1000 || !componentGestureLive(componentClick)) return;\n    const hit=componentTextHit(event);componentClick=null;\n    if (!hit) return;\n    try {selectComponent(hit.source);startComponentText(hit.node);} catch(failure) {setComponentNotice(failure.message || String(failure));}\n  },true);\n  window.addEventListener("click", (event) => {\n    if (selectionMode==="component" && isEditor(event) && authorElement(event.target)) return;\n    if (inComponentText(event)) { event.stopImmediatePropagation(); return; }\n    if (inComponentPreview(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (inComponents(event)) {\n      event.stopImmediatePropagation();\n      if (event.composedPath().some(node => node instanceof Element && node.matches("textarea,input,select,option"))) return;\n      event.preventDefault(); try { componentAction(event); } catch (failure) { setComponentNotice(failure.message || String(failure)); } return;\n    }\n    if (inMarkers(event)) {\n      event.preventDefault(); event.stopImmediatePropagation();\n      const button = markerNode(event);\n      if (!event.isTrusted || !button || !navigator.userActivation?.isActive) return;\n      const bounds = button.getBoundingClientRect();\n      post({ type: "open-interaction", id: button.getAttribute("data-board-interaction"), position: { x: bounds.left, y: bounds.top }, location: button.dataset.location });\n      return;\n    }\n    if ((event.detail > 0 && suppressPointerClick) || selectionMode !== "off" || pointer) {\n      suppressPointerClick = false;\n      event.preventDefault(); event.stopImmediatePropagation(); return;\n    }\n    if (event.isTrusted) lastGesture = performance.now();\n    const path = event.composedPath();\n    const link = path.find((node) => node instanceof Element && node.matches("a[href],area[href]"));\n    if (!link) return;\n    const href = link.getAttribute("href") || "";\n    event.preventDefault();\n    if (href.startsWith("#")) { try { document.getElementById(decodeURIComponent(href.slice(1)))?.scrollIntoView(); } catch {} }\n    else if (/^https?:\\/\\//i.test(href) && event.isTrusted && acting()) post({ type: "open-link", url: href });\n  }, true);\n  const submitForm = (form, submitter) => {\n    if (!form.noValidate && !(submitter && submitter.formNoValidate) && !form.reportValidity()) return;\n    const event = new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: submitter || null });\n    if (!form.dispatchEvent(event)) return;\n    if (form.method === "dialog") form.closest("dialog")?.close(submitter?.value);\n  };\n  const isSubmitter = (node) => node && node.form && ["submit", "image"].includes(node.type);\n  document.addEventListener("click", (event) => {\n    if (selectionMode !== "off") return;\n    const button = event.composedPath().find((node) => node instanceof Element && node.matches("button,input"));\n    if (isSubmitter(button) && !button.disabled) setTimeout(() => { if (!event.defaultPrevented) submitForm(button.form, button); }, 0);\n  }, true);\n  document.addEventListener("keydown", (event) => {\n    const field = event.target;\n    if (selectionMode !== "off" || event.key !== "Enter" || event.isComposing || field.tagName !== "INPUT" || !field.form) return;\n    const fields = Array.from(field.form.elements);\n    if (fields.some(isSubmitter)) return;\n    const implicit = ["text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number"];\n    if (!implicit.includes(field.type) || fields.filter((n) => n.tagName === "INPUT" && implicit.includes(n.type)).length > 1) return;\n    setTimeout(() => { if (!event.defaultPrevented) submitForm(field.form, null); }, 0);\n  }, true);\n  HTMLFormElement.prototype.requestSubmit = function (submitter) { submitForm(this, submitter || null); };\n  window.addEventListener("wheel", event => {\n    if (inComponentText(event) && componentText.host.hasAttribute("data-component-inline-recovery")) {\n      event.preventDefault();event.stopImmediatePropagation();\n      const viewport=componentText.host,scale=event.deltaMode===1?16:event.deltaMode===2?viewport.clientHeight:1;\n      viewport.scrollLeft+=event.deltaX*scale;viewport.scrollTop+=event.deltaY*scale;\n      return;\n    }\n    if (inComponentPreview(event)) event.stopImmediatePropagation();\n  }, {capture:true,passive:false});\n  window.addEventListener("keydown", (event) => {\n    if (componentLayoutResize && event.isTrusted && event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); finishComponentLayoutResize(true); return; }\n    if (inComponentPreview(event)) {\n      if (event.isTrusted && event.composedPath().some(node => node instanceof Element && node.hasAttribute("data-component-layout-resize")) && ["ArrowUp", "ArrowDown"].includes(event.key) && componentLayoutDraft && !componentPending) {\n        event.preventDefault(); event.stopImmediatePropagation(); componentLayoutDraft.config.maxHeight = Math.max(80, Math.min(2000, (componentLayoutDraft.config.maxHeight || 400) + (event.key === "ArrowUp" ? -20 : 20))); writeComponentLayoutFields(); previewComponentLayout(); componentLayoutPreview?.resizeHandle?.focus(); return;\n      }\n      // The viewport is mouse-focusable for scrolling, but not a sequential tab\n      // stop. Leave it through the one enabled toolbar action, then normal Tab can\n      // reach the host Save/Cancel controls without cycling through this copy.\n      if (event.isTrusted && event.key === "Tab") { event.preventDefault();componentHost.shadowRoot.querySelector(\'[data-component-action="preview-toggle"]\').focus({preventScroll:true});event.stopImmediatePropagation();return; }\n      if (event.isTrusted && event.key === "Escape") { componentLayoutPreview.host.hidden=true;componentLayoutPreview.host.style.setProperty("display","none","important");const toggle=componentHost.shadowRoot.querySelector(\'[data-component-action="preview-toggle"]\');toggle.textContent="\u770B\u9884\u89C8";toggle.focus({preventScroll:true});positionComponent(); }\n      if (!["Tab","ArrowUp","ArrowDown","PageUp","PageDown","Home","End"].includes(event.key)) event.preventDefault(); event.stopImmediatePropagation(); return;\n    }\n    if (event.isTrusted) lastGesture = performance.now();\n    if (!event.isTrusted) return;\n    if (componentPress && event.key === "Escape") {componentPress=null;componentClick=null;event.preventDefault();event.stopImmediatePropagation();return;}\n    if (componentDrag) {\n      if (event.key === "Escape") cancelComponentDrag();\n      else if (event.key === "Tab") { const size = componentDrag.candidates.length; if (size) componentDrag.depth = (componentDrag.depth + (event.shiftKey ? size - 1 : 1)) % size; componentDrag.manualDepth = true; paintComponentDrag(); }\n      else if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) { componentDrag.manualPosition = { ArrowUp: "before", ArrowDown: "after", ArrowLeft: "prepend", ArrowRight: "append" }[event.key]; paintComponentDrag(); }\n      else return;\n      event.preventDefault(); event.stopImmediatePropagation(); return;\n    }\n    if (componentLayoutDraft && !componentPending && event.key === "Escape" && !event.isComposing) { event.preventDefault(); event.stopImmediatePropagation(); cancelComponentLayout(); return; }\n    if (componentText) {\n      const composing=event.isComposing || event.keyCode===229 || componentText.composing;\n      if ((componentPending || componentText.invalid) && inComponentText(event) && (event.metaKey || event.ctrlKey) && event.key.toLowerCase()==="a") {event.preventDefault();focusComponentText(true);}\n      if (event.key === "Escape" && !componentPending && !composing) { event.preventDefault(); cancelComponentText(); }\n      else if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !composing && !componentPending) { event.preventDefault(); saveComponentText(); }\n      event.stopImmediatePropagation(); return;\n    }\n    if (selectedComponent && !componentPending && !isEditor(event) && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && ["c", "x", "v"].includes(event.key.toLowerCase())) {\n      event.preventDefault(); event.stopImmediatePropagation();\n      try { if (event.key.toLowerCase() === "v") pasteComponent(); else copyComponent(event.key.toLowerCase() === "x" ? "move" : "copy"); } catch (failure) { setComponentNotice(failure.message); }\n      return;\n    }\n    if (!isEditor(event) && event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey) { componentShortcut = true; updateComponentHover(); }\n    if (inComponents(event) && event.key !== "Escape") { event.stopImmediatePropagation(); return; }\n    if (inMarkers(event)) { event.stopImmediatePropagation(); return; }\n    if (event.target instanceof Element) { const r = event.target.getBoundingClientRect(); lastGesturePosition = { x: r.left, y: r.bottom }; }\n    if (event.key === "Escape" && (selectionSession || selectionMode !== "off" || lastAnchor)) {\n      event.preventDefault(); event.stopImmediatePropagation();\n      if (componentPending) return;\n      componentClipboard = null; componentNotice = ""; componentShortcut = false;\n      selectionMode = "off"; cancelSelection({ notify: true }); post({ type: "selection-end" }); return;\n    }\n  }, true);\n  for (const type of ["beforeinput","input","compositionstart","compositionupdate","compositionend","paste","copy","cut","drop","dragstart","pointerup","dblclick","mousedown","mouseup","keypress","focus","blur","focusin","focusout"]) window.addEventListener(type,event=>{\n    if (!inComponentText(event)) return;\n    if (type === "compositionstart") componentText.composing=true;\n    if (type === "compositionend") {componentText.composing=false;syncComponentText();}\n    if (type === "input") syncComponentText();\n    if (type === "beforeinput") {\n      if (componentPending || componentText.invalid || /^format|insertHTML|insertFromDrop/.test(event.inputType)) event.preventDefault();\n      else if (event.isTrusted && /^(insert|delete|history)/.test(event.inputType)) {\n        // Preserve actual spaces once editing begins. With collapsed whitespace,\n        // Chromium rewrites ordinary boundary spaces to NBSP in the DOM. Changing\n        // the active run before the edit keeps the original input bytes and native\n        // undo; an untouched run still uses the source\'s exact wrapping above.\n        const lineBreak=["insertParagraph","insertLineBreak"].includes(event.inputType) || /[\\r\\n]/.test(event.data || "");\n        // Let the browser represent new lines as blocks/BRs rather than its\n        // pre-wrap-only terminal newline sentinel. After input, the draft returns\n        // to pre-wrap; its semantic reader preserves every real block boundary.\n        componentText.run.editor.style.setProperty("white-space",lineBreak?"normal":"pre-wrap","important");\n        componentText.run.editor.style.setProperty("white-space-collapse",lineBreak?"collapse":"preserve","important");\n      }\n    }\n    if (type === "paste") {\n      event.preventDefault();\n      if (!componentPending && !componentText.invalid) {\n        const plain=event.clipboardData?.getData("text/plain")||"";\n        if (plain.length>24000) setComponentNotice("\u8FD9\u6BB5\u6587\u5B57\u592A\u957F\uFF0C\u8BF7\u7F29\u77ED\u540E\u91CD\u8BD5");\n        else document.execCommand("insertText",false,plain);\n      }\n    }\n    // Only plain text enters this isolated draft. Drops are disabled rather than\n    // allowing the browser to move authored nodes or import clipboard HTML.\n    if (type === "drop" || type === "dragstart") event.preventDefault();\n    event.stopImmediatePropagation();\n  },true);\n  window.addEventListener("keyup", (event) => {\n    if (inComponentText(event)) { event.stopImmediatePropagation(); return; }\n    if (!event.isTrusted) return;\n    componentShortcut = event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey && !isEditor(event);\n    if (componentDrag) return;\n    if (!componentShortcut) clearComponentHover(); else updateComponentHover();\n  }, true);\n  window.addEventListener("message", (event) => {\n    const message = event.data;\n    if (!event.isTrusted || event.source !== window.parent || !message || message.channel !== scope.channel || message.boardId !== scope.boardId || message.sessionId !== scope.sessionId) return;\n    if (message.type === "restore-view") readingView.request(message);\n    else if (message.type === "view-port" && event.ports?.length === 1) readingView.connect(event.ports[0]);\n    else if (message.type === "flush-view") readingView.capture();\n    else if (message.type === "snapshot") receiveSnapshot(message.snapshot, message.version);\n    else if (message.type === "delta") { versionedTransport = true; enqueue(receiver.delta(message.delta)); }\n    else if (message.type === "interactions" && Array.isArray(message.markers)) renderMarkers(message.markers, message.selectedId);\n    else if (message.type === "focus-update") focusUpdate(message);\n    else if (message.type === "host-activity" && typeof message.composing === "boolean") { hostComposing = message.composing; reportCanvasActivity(); }\n    else if (message.type === "focus-interaction" && typeof message.id === "string") focusInteraction(message.id);\n    else if (message.type === "selection") setSelectionMode(message.mode);\n    else if (message.type === "cancel-capture" && message.selectionId === selectionSession?.id) cancelSelection({ clear: false });\n    else if (message.type === "clear-selection") { selectionMode = "off"; cancelSelection(); }\n    else if (message.type === "component-edit-result") receiveComponentEdit(message);\n    else if (message.type === "ask-result") {\n      const pending = pendingAsks.get(message.id);\n      if (pending) {\n        pendingAsks.delete(message.id); clearTimeout(pending.timer);\n        const result = message.result;\n        pending.resolve(result && ["submitted", "queued"].includes(result.status)\n          && (result.outcome === undefined || result.outcome === null || typeof result.outcome === "string")\n          ? { status: result.status, ...(result.outcome !== undefined ? { outcome: result.outcome } : {}) } : cancelAsk);\n      }\n    }\n  });\n  const reportedErrors = new Set();\n  window.addEventListener("error", (event) => {\n    const message = event.message || "Canvas resource could not load";\n    if (reportedErrors.has(message) || reportedErrors.size >= 12) return;\n    reportedErrors.add(message);\n    error("runtime-error", message);\n  });\n  window.addEventListener("unhandledrejection", (event) => {\n    const message = event.reason && event.reason.message || String(event.reason || "Unhandled promise rejection");\n    if (reportedErrors.has(message) || reportedErrors.size >= 12) return;\n    reportedErrors.add(message);\n    error("runtime-error", message);\n  });\n  const ready = () => {\n    post({ type: "ready", capabilities: { frameDelta: 1, viewState: 1, viewPort: 1 } });\n    receiveSnapshot(initial);\n  };\n  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready, { once: true });\n  else ready();\n}\n';
+var board_runtime_default = 'function (initial, createFrameReceiver, createComponentLayoutTools, installComponentLayoutState, installCompositionRuntime) {\n  "use strict";\n  const root = document.documentElement;\n  const scope = { channel: initial.channel, boardId: initial.boardId, sessionId: initial.sessionId };\n  const composition = installCompositionRuntime(initial);\n  let snapshot = initial;\n  let state = initial.userState;\n  let localStateDirty = false;\n  let selectionMode = "off";\n  let deferredSelection = null;\n  let queued = null;\n  let applying = false;\n  let captureBusy = false;\n  let selectionSession = null;\n  let suppressPointerClick = false;\n  let dismissedPointer = null;\n  let lastAnchor;\n  let pointer = null;\n  let textPointer = null;\n  let overlay = null;\n  let lastGesture = -Infinity;\n  let lastGesturePosition;\n  let patchFailure = null;\n  let pendingMarkerFocus = null;\n  let sequence = 0;\n  const applied = new Set();\n  const dataListeners = new Set();\n  const dataWatches = new Map();\n  const stateListeners = new Set();\n  const pendingAsks = new Map();\n  const revealListeners = new Set();\n  let markerReveal = null;\n  const post = (message) => composition.post({ ...message, ...scope });\n  const copy = (value) => value === undefined ? undefined : structuredClone(value);\n  const error = (code, message, patchId) => post({ type: "error", error: { code, message: String(message).slice(0, 4000), ...(patchId ? { patchId } : {}) } });\n  const emitListeners = (listeners, value) => { for (const listener of listeners) { try { listener(copy(value)); } catch (e) { error("listener-error", e.message); } } };\n  const currentAnchor = () => ({ kind: "board", boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision });\n  const acting = () => !markerReveal && composition.acting() && performance.now() - lastGesture < 1800 && navigator.userActivation && navigator.userActivation.isActive;\n  const cancelAsk = { status: "cancelled", outcome: null };\n  const ask = (input) => {\n    const request = typeof input === "string" ? { prompt: input } : input;\n    if (!request || typeof request.prompt !== "string" || !request.prompt.trim() || request.prompt.length > 24000) return Promise.reject(new TypeError("board.ask requires a prompt of 1\u201324000 characters"));\n    if (request.kind !== undefined && !["question", "change", "fork"].includes(request.kind)) return Promise.reject(new TypeError("board.ask kind must be question, change or fork"));\n    if (!acting() || pendingAsks.size >= 8 || selectionMode !== "off") return Promise.resolve(cancelAsk);\n    let anchor;\n    try { anchor = authoredAskAnchor(request.anchor === undefined ? lastAnchor || currentAnchor() : request.anchor); }\n    catch (failure) { return Promise.reject(failure); }\n    lastGesture = -Infinity;\n    const id = `ask-${++sequence}`;\n    return new Promise((resolve, reject) => {\n      const timer = setTimeout(() => { pendingAsks.delete(id); resolve(cancelAsk); }, 120000);\n      pendingAsks.set(id, { resolve, timer });\n      try { post({ type: "ask", id, request: { prompt: request.prompt, anchor, kind: request.kind || "question", position: lastGesturePosition } }); }\n      catch (failure) { clearTimeout(timer); pendingAsks.delete(id); reject(failure); }\n    });\n  };\n  const managedViewNamespace = "__paseoContainerViews";\n  const writeState = (value) => {\n    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("board.saveState requires a JSON object");\n    const serialized = JSON.stringify(value);\n    if (serialized.length > 524288) throw new RangeError("board state exceeds 512 KiB");\n    state = JSON.parse(serialized);\n    localStateDirty = true;\n    post({ type: "state", state });\n    return copy(state);\n  };\n  const saveState = (value) => {\n    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("board.saveState requires a JSON object");\n    const next = { ...value };\n    // Authored state still uses replacement semantics. Its old/full snapshots\n    // cannot overwrite the independently maintained container view records.\n    if (Object.prototype.hasOwnProperty.call(state, managedViewNamespace)) next[managedViewNamespace] = state[managedViewNamespace];\n    else delete next[managedViewNamespace];\n    return writeState(next);\n  };\n  const subscribe = (listeners, fn) => {\n    if (typeof fn !== "function") throw new TypeError("listener must be a function");\n    listeners.add(fn);\n    return () => listeners.delete(fn);\n  };\n  // Watch only selected JSON values. Changed paths filter unrelated subscriptions.\n  const watchSegments = (path) => {\n    if (typeof path !== "string" || path.length > 2000 || (path !== "" && !path.startsWith("/")) || /~(?![01])/.test(path)) throw new TypeError("watch requires a JSON Pointer (empty string means all data)");\n    const parts = path === "" ? [] : path.slice(1).split("/").map(part => part.replace(/~1/g, "/").replace(/~0/g, "~"));\n    if (parts.length > 64 || parts.some(part => ["__proto__", "prototype", "constructor"].includes(part))) throw new TypeError("watch path is not allowed");\n    return parts;\n  };\n  const readWatchedValue = (data, parts) => {\n    let value = data;\n    for (const part of parts) {\n      if (!value || typeof value !== "object" || !Object.prototype.hasOwnProperty.call(value, part)) return { exists: false };\n      if (Array.isArray(value) && !/^(0|[1-9][0-9]*)$/.test(part)) return { exists: false };\n      value = value[part];\n    }\n    return { exists: true, value };\n  };\n  const equalJson = (a, b) => {\n    if (a === b) return true;\n    if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return false;\n    const keys = Object.keys(a);\n    return keys.length === Object.keys(b).length && keys.every(key => Object.prototype.hasOwnProperty.call(b, key) && equalJson(a[key], b[key]));\n  };\n  const deliverWatch = (entry, listener, immediate = false) => {\n    if (!listener.active) return;\n    if (listener.schedule === "frame" && !immediate) {\n      if (listener.frame === null) listener.frame = requestAnimationFrame(() => { listener.frame = null; deliverWatch(entry, listener, true); });\n      return;\n    }\n    try { listener.fn(entry.current.exists ? copy(entry.current.value) : undefined, Object.freeze({ path: entry.path, exists: entry.current.exists, boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision })); }\n    catch (e) { error("listener-error", e instanceof Error ? e.message : String(e)); }\n  };\n  const emitWatches = (changedPaths) => {\n    const deliveries = [];\n    // Update every cache before calling authored code. A callback may subscribe\n    // to another existing path; its initial value must belong to this snapshot.\n    for (const entry of Array.from(dataWatches.values())) {\n      if (changedPaths && !changedPaths.some(path => path === entry.path || path.startsWith(entry.path + "/") || entry.path.startsWith(path + "/"))) continue;\n      const next = readWatchedValue(snapshot.canvas.data, entry.parts);\n      if (next.exists === entry.current.exists && equalJson(next.value, entry.current.value)) continue;\n      entry.current = next;\n      deliveries.push({ entry, listeners: Array.from(entry.listeners) });\n    }\n    for (const { entry, listeners } of deliveries) {\n      for (const listener of listeners) if (entry.listeners.has(listener)) deliverWatch(entry, listener);\n    }\n  };\n  const watch = (path, fn, options) => {\n    const parts = watchSegments(path);\n    if (typeof fn !== "function") throw new TypeError("watch listener must be a function");\n    if (options !== undefined && (!options || typeof options !== "object" || options.schedule !== "frame")) throw new TypeError("watch options require schedule: \'frame\'");\n    let entry = dataWatches.get(path);\n    if (!entry) { entry = { path, parts, current: readWatchedValue(snapshot.canvas.data, parts), listeners: new Set() }; dataWatches.set(path, entry); }\n    // Frame subscriptions are latest-state rendering, not a lossless event stream.\n    const listener = { fn, schedule: options?.schedule, frame: null, active: true };\n    entry.listeners.add(listener);\n    deliverWatch(entry, listener, true);\n    return () => { listener.active = false; if (listener.frame !== null) cancelAnimationFrame(listener.frame); entry.listeners.delete(listener); if (!entry.listeners.size && dataWatches.get(path) === entry) dataWatches.delete(path); };\n  };\n  // No SDK or execution primitive is exposed. Data and view state remain task-agnostic JSON.\n  Object.defineProperty(window, "board", { configurable: false, writable: false, value: Object.freeze({\n    getData: () => copy(snapshot.canvas.data),\n    onData: (fn) => subscribe(dataListeners, fn),\n    watch,\n    getState: () => copy(state),\n    restoreState: () => copy(state),\n    onState: (fn) => subscribe(stateListeners, fn),\n    saveState,\n    ask,\n    onReveal: (fn) => subscribe(revealListeners, fn),\n    getContext: () => ({ boardId: scope.boardId, documentVersion: initial.canvas.documentVersion, boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision }),\n  }) });\n  window.openai = Object.freeze({ sendFollowUpMessage: ask });\n  const componentLayoutTools = createComponentLayoutTools();\n  const componentLayoutState = installComponentLayoutState({\n    getState: () => copy(state), saveState: writeState, onState: fn => subscribe(stateListeners, fn),\n  }, initial.canvas.documentVersion);\n\n  let appliedTheme = initial.theme;\n  const applyTheme = (theme) => {\n    if (!theme || !["light", "dark"].includes(theme.scheme) || !theme.tokens || typeof theme.tokens !== "object") return;\n    if (equalJson(appliedTheme, theme)) return;\n    if (appliedTheme?.scheme !== theme.scheme) root.setAttribute("data-theme", theme.scheme);\n    // The host scheme is a CSS-layer default. An authored fixed light/dark canvas may\n    // override color-scheme without each host refresh overwriting it with inline style.\n    for (const name of Object.keys(appliedTheme?.tokens || {})) if (!Object.prototype.hasOwnProperty.call(theme.tokens, name)) root.style.removeProperty("--" + name);\n    for (const [name, value] of Object.entries(theme.tokens)) if (appliedTheme?.tokens[name] !== value && /^host-[a-z0-9-]+$/.test(name) && typeof value === "string" && /^[#a-zA-Z0-9(),.%+*/ -]{1,200}$/.test(value)) root.style.setProperty("--" + name, value);\n    appliedTheme = theme;\n    window.dispatchEvent(new CustomEvent("paseo:themechange", { detail: { theme: theme.scheme, palette: "custom" } }));\n  };\n\n  const runScript = (old) => new Promise((resolve, reject) => {\n    const script = document.createElement("script");\n    for (const attribute of old.attributes) script.setAttribute(attribute.name, attribute.value);\n    script.textContent = old.textContent;\n    const executable = !script.type || /^(module|(?:text|application)\\/(?:java|ecma)script)$/i.test(script.type);\n    if (!executable) { old.replaceWith(script); resolve(); return; }\n    const inlineModule = !script.hasAttribute("src") && script.type === "module";\n    const originalText = script.textContent;\n    const completionEvent = inlineModule ? `paseo:patch-module:${scope.sessionId}:${++sequence}` : null;\n    let completionUrl, instrumentedText, settled = false;\n    let scriptError;\n    let timer;\n    const finish = (failure) => {\n      if (settled) return; settled = true;\n      clearTimeout(timer); window.removeEventListener("error", onError);\n      if (completionEvent) window.removeEventListener(completionEvent, onComplete);\n      if (completionUrl) URL.revokeObjectURL(completionUrl);\n      // Keep authored source identities unchanged after this transient execution marker.\n      if (instrumentedText && script.textContent === instrumentedText) script.textContent = originalText;\n      failure ? reject(failure) : resolve();\n    };\n    const onError = (event) => { scriptError = new Error(event.message || "Patch script failed"); if (inlineModule) finish(scriptError); };\n    const onComplete = () => finish(scriptError);\n    window.addEventListener("error", onError);\n    const external = script.hasAttribute("src");\n    if (inlineModule) {\n      // Inline modules never emit load. A tail import runs only after the authored body,\n      // including top-level await, without wrapping its scope or changing import.meta.url.\n      // The helper\'s globals are independent of names declared by the authored module.\n      completionUrl = URL.createObjectURL(new Blob([`window.dispatchEvent(new Event(${JSON.stringify(completionEvent)}));`], { type: "text/javascript" }));\n      instrumentedText = originalText + `\\n;await import(${JSON.stringify(completionUrl)});`;\n      script.textContent = instrumentedText;\n      window.addEventListener(completionEvent, onComplete, { once: true });\n    }\n    if (external || inlineModule) {\n      script.async = false;\n      if (external) script.addEventListener("load", () => finish(scriptError), { once: true });\n      script.addEventListener("error", () => finish(new Error("Patch script could not load")), { once: true });\n      timer = setTimeout(() => finish(new Error("Patch script timed out; it will not be retried")), 20000);\n    }\n    try { old.replaceWith(script); if (!external && !inlineModule) finish(scriptError); } catch (e) { finish(e); }\n  });\n  const componentTransferFailure = (operation, node, destination = null, position = "append") => ["move", "copy"].includes(operation)\n    ? componentLayoutTools.transferFailure(operation, node, destination, position) : null;\n  const applyPatch = async (patch) => {\n    if (applied.has(patch.id)) return;\n    // Claim before mutation. A partial script failure must never run the same patch a second time.\n    applied.add(patch.id);\n    const targets = document.querySelectorAll(patch.selector);\n    if (targets.length !== 1) throw new Error(`Patch selector must match exactly one element; matched ${targets.length}`);\n    const target = targets[0];\n    if (target === root || target === document.head || target === document.body) {\n      if (["replace", "remove", "move", "copy", "text", "layout"].includes(patch.operation)) throw new Error("Replacing document roots requires publishing a new document version");\n    }\n    if (["move", "copy", "text", "layout"].includes(patch.operation)) {\n      if (!matchesComponentIdentity(target, patch.sourceIdentity)) throw new Error("The edited component structure changed; reload its current authored version");\n      const transferFailure = componentTransferFailure(patch.operation, target);\n      if (transferFailure) throw new Error(transferFailure);\n      if (patch.operation === "layout") {\n        const focused = document.activeElement;\n        const restoreFocus = focused instanceof HTMLElement && target.contains(focused);\n        const caret = restoreFocus && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;\n        capturePatchTargets(patch, target);\n        componentLayoutTools.apply(target, patch.layout, patch.id, { move(parent, node, before) {\n          if (typeof parent.moveBefore === "function" && node.isConnected && parent.isConnected) parent.moveBefore(node, before);\n          else parent.insertBefore(node, before);\n        } });\n        componentLayoutState.refresh();\n        if (restoreFocus && focused.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });\n        if (caret) try { focused.setSelectionRange(...caret); } catch {}\n        return;\n      }\n      if (patch.operation === "text") {\n        const textNode = patch.textNodeIndex === undefined ? null : target.childNodes[patch.textNodeIndex];\n        if (textNode ? textNode.nodeType !== Node.TEXT_NODE || textNode.textContent !== patch.expectedText : target.children.length || target.textContent !== patch.expectedText) throw new Error("The edited text changed before this patch arrived");\n        capturePatchTargets(patch, target);\n        if (textNode) textNode.textContent = patch.text; else target.textContent = patch.text;\n        return;\n      }\n      const destinations = document.querySelectorAll(patch.destination);\n      if (destinations.length !== 1) throw new Error("Edit destination must match exactly one element");\n      const destination = destinations[0];\n      if (!matchesComponentIdentity(destination, patch.destinationIdentity) || target === destination || target.contains(destination)) throw new Error("The edit destination changed or contains a cycle");\n      const placementFailure = componentTransferFailure(patch.operation, target, destination, patch.position);\n      if (placementFailure) throw new Error(placementFailure);\n      const parent = ["before", "after"].includes(patch.position) ? destination.parentNode : destination;\n      const before = patch.position === "before" ? destination : patch.position === "after" ? destination.nextSibling : patch.position === "prepend" ? destination.firstChild : null;\n      if (patch.operation === "copy") {\n        // Parse in the source\'s actual namespace/context. An HTML template turns SVG\n        // subcomponents such as <g>/<rect> into invisible HTML unknown elements. Range\n        // parsing also retains SVG foreignObject\'s HTML integration points.\n        const range = document.createRange(); range.selectNode(target);\n        const content = range.createContextualFragment(patch.html);\n        // Copy authoritative authored markup, never runtime listeners/closures. Defense in\n        // depth: copied scripts and inline handler attributes never execute on insertion.\n        for (const script of content.querySelectorAll("script")) script.remove();\n        for (const element of content.querySelectorAll("*")) for (const attribute of Array.from(element.attributes)) if (/^on/i.test(attribute.name)) element.removeAttribute(attribute.name);\n        const inserted = Array.from(content.children); capturePatchTargets(patch, target, inserted);\n        parent.insertBefore(content, before); return;\n      }\n      const focused = document.activeElement;\n      const restoreFocus = focused instanceof HTMLElement && target.contains(focused);\n      const caret = restoreFocus && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;\n      capturePatchTargets(patch, target);\n      // New browsers preserve iframe/media/focus state with a same-document atomic move.\n      // The fallback still retains the actual node and listeners, then restores input caret.\n      if (typeof parent.moveBefore === "function" && target.isConnected && parent.isConnected) parent.moveBefore(target, before);\n      else parent.insertBefore(target, before);\n      if (restoreFocus && focused.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });\n      if (caret) try { focused.setSelectionRange(...caret); } catch {}\n      return;\n    }\n    if (patch.operation === "remove") { capturePatchTargets(patch, target); target.remove(); return; }\n    const template = document.createElement("template");\n    template.innerHTML = patch.html;\n    const scripts = Array.from(template.content.querySelectorAll("script"));\n    capturePatchTargets(patch, target, Array.from(template.content.children));\n    if (patch.operation === "append") target.append(template.content);\n    else if (patch.operation === "prepend") target.prepend(template.content);\n    else if (patch.operation === "replace") target.replaceWith(template.content);\n    else throw new Error("Unknown patch operation");\n    for (const script of scripts) if (script.isConnected) await runScript(script);\n  };\n  const receiver = createFrameReceiver(initial, request => post({ type: "snapshot-request", ...request }), componentLayoutTools.validate);\n  let versionedTransport = false;\n  const enqueue = (update) => {\n    if (!update) return;\n    queued = queued ? { snapshot: update.snapshot,\n      changedPaths: queued.changedPaths === null || update.changedPaths === null ? null : [...new Set([...queued.changedPaths, ...update.changedPaths])],\n      patches: [...new Map([...queued.patches, ...update.patches].map(patch => [patch.id, patch])).values()] } : update;\n    if (componentLayoutPreview && update.snapshot.canvas.revision !== componentLayoutPreview.revision) { clearComponentLayoutPreview(); setComponentNotice("\u753B\u5E03\u5DF2\u66F4\u65B0\uFF0C\u5E03\u5C40\u9884\u89C8\u5DF2\u64A4\u4E0B\uFF1B\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9"); }\n    void drain();\n  };\n  const receiveSnapshot = (next, version) => {\n    if (version !== undefined) { versionedTransport = true; enqueue(receiver.snapshot(next, version)); return; }\n    // Compatibility with older hosts. Versioned traffic exclusively uses the validated receiver.\n    if (versionedTransport) return;\n    if (!next || !next.canvas || next.canvas.documentVersion !== initial.canvas.documentVersion || next.boardRevision < (queued?.snapshot || snapshot).boardRevision) return;\n    enqueue({ snapshot: next, changedPaths: null, patches: next.canvas.patches });\n  };\n  const drain = async () => {\n    if (applying || selectionMode !== "off" || selectionSession || captureBusy) return;\n    if (!queued) { reportCanvasActivity(); drainMarkerFocus(); return; }\n    applying = true;\n    reportCanvasActivity();\n    try {\n      while (queued && selectionMode === "off" && !selectionSession && !captureBusy) {\n        const update = queued;\n        const next = update.snapshot;\n        queued = null;\n        const dataChanged = update.changedPaths === null ? !equalJson(snapshot.canvas.data, next.canvas.data) : update.changedPaths.length > 0;\n        const serverStateChanged = !equalJson(snapshot.userState, next.userState);\n        snapshot = next;\n        applyTheme(next.theme);\n        if (dataChanged) {\n          emitWatches(update.changedPaths);\n          emitListeners(dataListeners, next.canvas.data);\n          window.dispatchEvent(new CustomEvent("board:data", { detail: copy(next.canvas.data) }));\n        }\n        if (localStateDirty) {\n          // A slow acknowledgement for an earlier save must never overwrite newer local input.\n          if (equalJson(next.userState, state)) localStateDirty = false;\n        } else if (serverStateChanged && !equalJson(next.userState, state)) {\n          state = next.userState;\n          emitListeners(stateListeners, state);\n        }\n        if (patchFailure) continue;\n        for (const patch of update.patches) {\n          try { await applyPatch(patch); }\n          catch (e) {\n            patchFailure = patch.id;\n            error("patch-failed", `${e.message}. Later patches are paused until the document is republished.`, patch.id);\n            break;\n          }\n        }\n      }\n    } finally {\n      applying = false;\n      reportCanvasActivity();\n      queueMarkerPositions();\n      if (deferredSelection !== null) { const mode = deferredSelection; deferredSelection = null; setSelectionMode(mode); }\n      drainMarkerFocus();\n      resumeComponentEdit();\n      readingView.afterDrain();\n    }\n  };\n\n  // Selection is opt-in. In ordinary mode we never consume pointer, keyboard or drag events.\n  const selectorFor = (node) => {\n    if (!(node instanceof Element)) return undefined;\n    if (node.id) return "#" + CSS.escape(node.id);\n    const parts = [];\n    while (node && node !== document.body && parts.length < 12) {\n      if (node.id) { parts.unshift("#" + CSS.escape(node.id)); break; }\n      const name = node.localName;\n      if (!name) break;\n      const siblings = node.parentElement ? Array.from(node.parentElement.children).filter((n) => n.localName === name) : [];\n      parts.unshift(name + (siblings.length > 1 ? `:nth-of-type(${siblings.indexOf(node) + 1})` : ""));\n      node = node.parentElement;\n    }\n    return parts.length ? parts.join(" > ").slice(0, 1000) : undefined;\n  };\n  // Reading positions are a separate local bridge. No author-state write or Board mutation.\n  const readingView = (() => {\n    const scrollers = new Map();\n    let booted = false, pending = null, restoreTimer = null, captureTimer = null, lastCapture = 0, lastValue = "";\n    let viewPort = null;\n    let lastRestoreRequest = null, userInteracted = false, captureSuppressed = false;\n    const visible = () => !document.hidden && innerWidth > 0 && innerHeight > 0 && root.getBoundingClientRect().width > 0;\n    const idle = () => booted && !applying && !queued && !patchFailure;\n    const find = selector => { try { const nodes = document.querySelectorAll(selector); return nodes.length === 1 ? nodes[0] : null; } catch { return null; } };\n    const selector = node => {\n      if (!(node instanceof Element) || node === root || node === document.body || node.closest("[data-board-overlay]")) return null;\n      let result = node.id ? "#" + CSS.escape(node.id) : null;\n      const key = node.getAttribute("data-paseo-layout-key"), part = node.getAttribute("data-paseo-layout-part");\n      if (!result && key && part) result = `[data-paseo-layout-key=${JSON.stringify(key)}][data-paseo-layout-part=${JSON.stringify(part)}]`;\n      // A bounded authored path supports ordinary anonymous log containers too.\n      if (!result) result = selectorFor(node);\n      return result && result.length <= 1000 && find(result) === node ? result : null;\n    };\n    const documentAnchor = node => {\n      for (let current = node; current && current !== root; current = current.parentElement) {\n        if (["sticky", "fixed"].includes(getComputedStyle(current).position)) return false;\n      }\n      return true;\n    };\n    const rememberScroller = node => {\n      if (!(node instanceof Element) || node === root || node === document.body || node.closest("[data-board-overlay]")) return;\n      const key = selector(node); if (!key) return;\n      scrollers.delete(key); scrollers.set(key, { node, x: node.scrollLeft, y: node.scrollTop });\n      if (scrollers.size > 32) scrollers.delete(scrollers.keys().next().value);\n    };\n    const capture = () => {\n      clearTimeout(captureTimer); captureTimer = null;\n      if (!idle() || pending || captureSuppressed || !visible()) return;\n      const scrolls = [];\n      for (const [key, saved] of scrollers) {\n        const node = saved.node;\n        if (!node.isConnected || !node.matches(key)) { scrollers.delete(key); continue; }\n        // Hidden logs retain their previous local record until they become measurable again.\n        if (node.getClientRects().length) { saved.x = node.scrollLeft; saved.y = node.scrollTop; }\n        scrolls.push({ selector: key, x: saved.x, y: saved.y });\n      }\n      let anchor;\n      // Hit testing is constant-sized; never walk every element during scrolling.\n      for (const [x, y] of [[Math.min(80, innerWidth / 3), Math.min(80, innerHeight / 3)], [innerWidth / 2, innerHeight / 3]]) {\n        let node = document.elementFromPoint(x, y);\n        if (node?.closest("[data-board-overlay]")) continue;\n        node = node?.closest("[id]");\n        if (!node || node === root || node === document.body || !documentAnchor(node)) continue;\n        const key = selector(node), rect = node.getBoundingClientRect();\n        if (key && rect.width > 0 && rect.height > 0) { anchor = { selector: key, offsetX: rect.left, offsetY: rect.top }; break; }\n      }\n      const view = { documentVersion: snapshot.canvas.documentVersion, canvasRevision: snapshot.canvas.revision,\n        x: scrollX, y: scrollY, ...(anchor ? { anchor } : {}), scrolls };\n      const value = JSON.stringify(view); lastCapture = performance.now();\n      if (value !== lastValue) {\n        lastValue = value;\n        const capturedAt = performance.timeOrigin + performance.now();\n        if (viewPort) viewPort.postMessage({ ...scope, type: "view-state", view, capturedAt });\n        else post({ type: "view-state", view, capturedAt });\n      }\n    };\n    const scheduleCapture = () => {\n      if (captureTimer !== null || pending) return;\n      // Embedded contexts can be destroyed by their parent\'s next click. Sample\n      // each actual scroll before teardown; host persistence remains debounced.\n      // The timestamp lets the host retain queued real samples while rejecting\n      // a navigation-induced zero from the document being retired.\n      if (initial.compositionSecret) { capture(); return; }\n      const delay = Math.max(0, 120 - (performance.now() - lastCapture));\n      // Capture a new burst in this task; a zero-delay timer can otherwise run\n      // after the host has already switched agents and removed the document.\n      if (delay === 0) capture(); else captureTimer = setTimeout(capture, delay);\n    };\n    const finish = status => {\n      const request = pending; if (!request) return;\n      pending = null; clearTimeout(restoreTimer); restoreTimer = null;\n      if (status === "unavailable") captureSuppressed = true;\n      post({ type: "view-restored", requestId: request.id, documentVersion: initial.canvas.documentVersion, status });\n      // A cancelled user gesture may immediately scroll; capture the actual visible result.\n      if (status !== "unavailable") scheduleCapture();\n    };\n    const attempt = () => {\n      restoreTimer = null; if (!pending) return;\n      const now = performance.now(), expired = now >= pending.deadline;\n      if (!idle() || !visible() || pending.view.canvasRevision > snapshot.canvas.revision) {\n        if (expired) { finish("unavailable"); return; }\n        restoreTimer = setTimeout(attempt, 40); return;\n      }\n      const doc = document.scrollingElement || root;\n      const geometry = [innerWidth, innerHeight, doc.scrollWidth, doc.scrollHeight].join(":");\n      if (geometry !== pending.geometry) { pending.geometry = geometry; pending.stableSince = now; }\n      const view = pending.view;\n      const anchor = view.anchor ? find(view.anchor.selector) : null;\n      const anchorRect = anchor?.getBoundingClientRect();\n      const anchorVisible = anchorRect && anchorRect.width > 0 && anchorRect.height > 0 && !anchor.closest("[data-board-overlay]") && documentAnchor(anchor);\n      // Wait for the requested range, async patch replay and font layout, then restore once.\n      // The deadline bounds late charts/images; no observer can pull the user back afterwards.\n      const enoughRange = anchorVisible || (view.y <= Math.max(0, doc.scrollHeight - innerHeight) + 1 && Math.abs(view.x) <= Math.max(0, doc.scrollWidth - innerWidth) + 1);\n      if (!expired && (!enoughRange || now - pending.stableSince < 160 || document.fonts?.status === "loading")) {\n        restoreTimer = setTimeout(attempt, 40); return;\n      }\n      for (const saved of view.scrolls) {\n        const node = find(saved.selector);\n        if (!node || node === root || node === document.body || node.closest("[data-board-overlay]")) continue;\n        if (!node.getClientRects().length) { scrollers.set(saved.selector, { node, x: saved.x, y: saved.y }); continue; }\n        node.scrollLeft = saved.x; node.scrollTop = saved.y; rememberScroller(node);\n      }\n      let x = view.x, y = view.y;\n      if (anchorVisible) {\n        const rect = anchor.getBoundingClientRect();\n        x = scrollX + rect.left - view.anchor.offsetX; y = scrollY + rect.top - view.anchor.offsetY;\n      }\n      window.scrollTo({ left: x, top: y, behavior: "instant" });\n      finish("restored");\n    };\n    const request = message => {\n      if (typeof message.requestId !== "string" || !message.requestId || message.requestId.length > 160 || lastRestoreRequest === message.requestId) return;\n      lastRestoreRequest = message.requestId;\n      const view = message.view;\n      if (!view || view.documentVersion !== initial.canvas.documentVersion || !Number.isSafeInteger(view.canvasRevision)\n        || view.canvasRevision < 0 || !Number.isFinite(view.x) || !Number.isFinite(view.y) || Math.abs(view.x) > 10000000 || Math.abs(view.y) > 10000000\n        || !Array.isArray(view.scrolls) || view.scrolls.length > 32\n        || view.scrolls.some(item => !item || typeof item.selector !== "string" || item.selector.length > 1000 || !Number.isFinite(item.x) || !Number.isFinite(item.y))\n        || view.anchor && (typeof view.anchor.selector !== "string" || view.anchor.selector.length > 1000 || !Number.isFinite(view.anchor.offsetX) || !Number.isFinite(view.anchor.offsetY))) {\n        post({ type: "view-restored", requestId: message.requestId, documentVersion: initial.canvas.documentVersion, status: "unavailable" }); return;\n      }\n      if (pending) finish("cancelled");\n      pending = { id: message.requestId, view, deadline: performance.now() + 2400, stableSince: performance.now(), geometry: null };\n      if (userInteracted) finish("cancelled"); else attempt();\n    };\n    const cancel = () => { userInteracted = true; captureSuppressed = false; if (pending) finish("cancelled"); };\n    for (const type of ["pointerdown", "wheel", "keydown"]) window.addEventListener(type, event => { if (event.isTrusted) cancel(); }, true);\n    window.addEventListener("scroll", event => { rememberScroller(event.target); scheduleCapture(); }, true);\n    window.addEventListener("blur", capture);\n    window.addEventListener("pagehide", capture);\n    document.addEventListener("visibilitychange", () => { if (!document.hidden) { if (pending) attempt(); else scheduleCapture(); } });\n    return {\n      request, cancel, capture,\n      connect(port) {\n        if (viewPort || !port || typeof port.postMessage !== "function" || typeof port.close !== "function") { port?.close(); return; }\n        viewPort = port; lastValue = ""; capture();\n      },\n      afterDrain() { booted = true; if (pending && restoreTimer === null) attempt(); else scheduleCapture(); },\n      pending: () => Boolean(pending),\n    };\n  })();\n  const viewport = () => ({ width: innerWidth, height: innerHeight, scrollX, scrollY });\n  const rect = (r) => ({ x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height });\n  // Identity metadata is optional and never changes the author\'s DOM or the original\n  // quote/PNG/coordinates. A live reference survives reparenting; stable IDs survive patches.\n  const bindingNodes = new Map();\n  const bindingFingerprint = (node) => {\n    const text = (node.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 1000);\n    const input = [node.localName, node.getAttribute("role"), node.getAttribute("name"), node.getAttribute("type"), node.getAttribute("aria-label"), text].join("\\n");\n    let hash = 2166136261;\n    for (let i = 0; i < input.length; i++) hash = Math.imul(hash ^ input.charCodeAt(i), 16777619);\n    return (hash >>> 0).toString(16).padStart(8, "0");\n  };\n  const authorElement = (node) => node instanceof Element && node !== root && node !== document.body && node !== document.head && !node.closest("[data-board-overlay]");\n  const identityFor = (node) => {\n    const selector = selectorFor(node);\n    if (!selector || !authorElement(node)) return null;\n    return { selector, tag: node.localName, ...(node.id && node.id.length <= 1000 ? { id: node.id } : {}), fingerprint: bindingFingerprint(node) };\n  };\n  const captureBinding = (target, region, enclose = false) => {\n    if (!(target instanceof Element)) return undefined;\n    // A region may span several components; select its enclosing context, not the element\n    // where the drag happened to start. Whole-page regions remain geometric references.\n    if (enclose) {\n      while (authorElement(target)) {\n        const r = rect(target.getBoundingClientRect());\n        if (region.x >= r.x - 1 && region.y >= r.y - 1 && region.x + region.width <= r.x + r.width + 1 && region.y + region.height <= r.y + r.height + 1) break;\n        target = target.parentElement;\n      }\n    }\n    const identity = identityFor(target);\n    if (!identity) return undefined;\n    const r = rect(target.getBoundingClientRect());\n    const ancestors = [];\n    const nodes = [target];\n    for (let parent = target.parentElement; authorElement(parent) && ancestors.length < 8; parent = parent.parentElement) {\n      const ancestor = identityFor(parent);\n      if (ancestor) { ancestors.push(ancestor); nodes.push(parent); }\n    }\n    const key = `binding-${++sequence}-${scope.sessionId}`.slice(0, 160);\n    const binding = { documentVersion: snapshot.canvas.documentVersion, key, target: identity, ancestors,\n      relative: { x: Math.max(0, Math.min(1, r.width ? (region.x - r.x) / r.width : 0)), y: Math.max(0, Math.min(1, r.height ? (region.y - r.y) / r.height : 0)) } };\n    bindingNodes.set(key, nodes);\n    // Unsent selections need no long-lived registry. Active marker bindings are retained.\n    if (bindingNodes.size > 600) {\n      const retained = new Set(markerItems.map(item => item.marker.anchor?.binding?.key));\n      for (const candidate of bindingNodes.keys()) if (candidate !== key && !retained.has(candidate)) { bindingNodes.delete(candidate); if (bindingNodes.size <= 500) break; }\n    }\n    return binding;\n  };\n  const bindAuthoredAnchor = (anchor) => {\n    if (!anchor || anchor.binding || !anchor.rect || !anchor.selector || anchor.canvasRevision !== snapshot.canvas.revision || anchor.boardRevision !== snapshot.boardRevision) return anchor;\n    try {\n      const targets = document.querySelectorAll(anchor.selector);\n      if (targets.length === 1) {\n        const binding = captureBinding(targets[0], anchor.rect, anchor.kind === "region");\n        if (binding) return { ...anchor, binding };\n      }\n    } catch {}\n    return anchor;\n  };\n  // Authored buttons sometimes pass a live element as their reference. Convert only an\n  // explicit in-document target; never send DOM objects or stringify away their identity.\n  const authoredAskAnchor = (input) => {\n    const fail = (field) => { throw new TypeError(`board.ask anchor.${field} must be valid serializable reference data`); };\n    const object = (value, field) => { if (!value || typeof value !== "object" || Array.isArray(value)) fail(field); return value; };\n    const number = (value, field, minimum = -Infinity) => { if (typeof value !== "number" || !Number.isFinite(value) || value < minimum) fail(field); return value; };\n    const version = (value, field) => { if (!Number.isSafeInteger(value) || value < 0) fail(field); return value; };\n    const string = (value, field, maximum, minimum = 1) => { if (typeof value !== "string" || value.length < minimum || value.length > maximum) fail(field); return value; };\n    const shape = (value, fields, name, minimum = -Infinity) => {\n      object(value, name); return Object.fromEntries(fields.map(field => [field, number(value[field], `${name}.${field}`, minimum)]));\n    };\n    let source = input;\n    const targetWrapper = input && typeof input === "object" && input.target !== undefined\n      && input.boardRevision === undefined && input.canvasRevision === undefined;\n    if (input instanceof Element || targetWrapper) {\n      const target = input instanceof Element ? input : input.target;\n      if (!(target instanceof Element) || target.ownerDocument !== document || !target.isConnected || target.getRootNode() !== document || !authorElement(target)) {\n        throw new TypeError("board.ask anchor target must be a connected authored element in this canvas, outside Board controls");\n      }\n      if (targetWrapper && input.kind !== undefined && input.kind !== "element") fail("kind");\n      const selector = selectorFor(target);\n      if (!selector || document.querySelectorAll(selector).length !== 1 || document.querySelector(selector) !== target) {\n        throw new TypeError("board.ask anchor target needs a unique canvas selector");\n      }\n      const region = rect(target.getBoundingClientRect());\n      source = { ...currentAnchor(), kind: "element", selector, rect: region, viewport: viewport(), binding: captureBinding(target, region),\n        ...(targetWrapper && input.text !== undefined ? { text: input.text } : {}) };\n    }\n    object(source, "value");\n    if (!["board", "text", "region", "point", "element"].includes(source.kind)) fail("kind");\n    const anchor = { kind: source.kind, boardRevision: version(source.boardRevision, "boardRevision"), canvasRevision: version(source.canvasRevision, "canvasRevision") };\n    if (source.text !== undefined) anchor.text = string(source.text, "text", 12000, 0);\n    if (source.selector !== undefined) anchor.selector = string(source.selector, "selector", 1000);\n    if (source.rect !== undefined) {\n      anchor.rect = shape(source.rect, ["x", "y", "width", "height"], "rect");\n      if (anchor.rect.width < 0 || anchor.rect.height < 0) fail("rect");\n    }\n    if (source.viewport !== undefined) {\n      anchor.viewport = shape(source.viewport, ["width", "height", "scrollX", "scrollY"], "viewport");\n      if (anchor.viewport.width <= 0 || anchor.viewport.height <= 0) fail("viewport");\n    }\n    if (source.binding !== undefined) {\n      const binding = object(source.binding, "binding");\n      const identity = (value) => {\n        object(value, "binding identity");\n        const result = { selector: string(value.selector, "binding selector", 1000), tag: string(value.tag, "binding tag", 100), fingerprint: string(value.fingerprint, "binding fingerprint", 8) };\n        if (!/^[a-f0-9]{8}$/.test(result.fingerprint)) fail("binding fingerprint");\n        if (value.id !== undefined) result.id = string(value.id, "binding id", 1000);\n        return result;\n      };\n      if (!Array.isArray(binding.ancestors) || binding.ancestors.length > 8) fail("binding.ancestors");\n      const relative = shape(binding.relative, ["x", "y"], "binding.relative", 0);\n      if (relative.x > 1 || relative.y > 1) fail("binding.relative");\n      anchor.binding = { documentVersion: version(binding.documentVersion, "binding.documentVersion"), key: string(binding.key, "binding.key", 160),\n        target: identity(binding.target), ancestors: binding.ancestors.map(identity), relative };\n    }\n    if (source.image !== undefined) {\n      const image = object(source.image, "image");\n      if (image.mimeType !== "image/png" || typeof image.data !== "string" || !/^iVBORw0KGgo[A-Za-z0-9+/=]*$/.test(image.data)) fail("image");\n      anchor.image = { mimeType: "image/png", data: string(image.data, "image.data", 3000000) };\n    }\n    return bindAuthoredAnchor(anchor);\n  };\n  const resolveIdentity = (identity, cached, allowPath) => {\n    if (!identity) return null;\n    if (identity.id) {\n      let matches;\n      try { matches = document.querySelectorAll("#" + CSS.escape(identity.id)); } catch { return null; }\n      // Duplicate IDs are ambiguous even when one original node is still in memory.\n      if (matches.length !== 1 || matches[0].localName !== identity.tag) return null;\n      return matches[0];\n    }\n    if (cached) return cached.isConnected && authorElement(cached) ? cached : null;\n    if (!allowPath) return null;\n    try {\n      const matches = document.querySelectorAll(identity.selector);\n      if (matches.length === 1 && authorElement(matches[0]) && matches[0].localName === identity.tag && bindingFingerprint(matches[0]) === identity.fingerprint) return matches[0];\n    } catch {}\n    return null;\n  };\n  const visibleBox = (node, revealScroll = false) => {\n    if (!authorElement(node) || !node.isConnected || !node.getClientRects().length) return null;\n    const style = getComputedStyle(node);\n    if (style.visibility !== "visible" || style.display === "none" || style.contentVisibility === "hidden") return null;\n    const box = node.getBoundingClientRect();\n    let left = box.left, top = box.top, right = box.right, bottom = box.bottom;\n    // CSS accordions and nested scrollers can keep a child\'s layout box while completely\n    // clipping its pixels. Only visible pixels can host a marker; viewport clipping itself\n    // is excluded here because a sidebar action is allowed to scroll an offscreen component.\n    for (let parent = node.parentElement; authorElement(parent); parent = parent.parentElement) {\n      const css = getComputedStyle(parent);\n      if (css.contentVisibility === "hidden") return null;\n      if (parent.localName === "details" && !parent.open) {\n        const summary = Array.from(parent.children).find(child => child.localName === "summary");\n        if (!summary?.contains(node)) return null;\n      }\n      const clipX = /^(hidden|clip|auto|scroll)$/.test(css.overflowX) && !(revealScroll && /^(auto|scroll)$/.test(css.overflowX));\n      const clipY = /^(hidden|clip|auto|scroll)$/.test(css.overflowY) && !(revealScroll && /^(auto|scroll)$/.test(css.overflowY));\n      if (!clipX && !clipY) continue;\n      const r = parent.getBoundingClientRect();\n      const scaleX = parent.offsetWidth ? r.width / parent.offsetWidth : 1;\n      const scaleY = parent.offsetHeight ? r.height / parent.offsetHeight : 1;\n      if (clipX) { const x = r.left + parent.clientLeft * scaleX; left = Math.max(left, x); right = Math.min(right, x + parent.clientWidth * scaleX); }\n      if (clipY) { const y = r.top + parent.clientTop * scaleY; top = Math.max(top, y); bottom = Math.min(bottom, y + parent.clientHeight * scaleY); }\n    }\n    return right > left && bottom > top ? { left, top, right, bottom, width: right - left, height: bottom - top } : null;\n  };\n  const visibleContext = (target) => {\n    // Inspect current ancestors, not only captured ones: wrapping a stable component in a\n    // new <details> must work immediately. Opening or clicking authored controls is forbidden.\n    let folded;\n    let hiddenContent;\n    for (let node = target; authorElement(node); node = node.parentElement) {\n      if (getComputedStyle(node).contentVisibility === "hidden") hiddenContent = node;\n      if (node.localName === "details" && !node.open) {\n        const summary = Array.from(node.children).find(child => child.localName === "summary");\n        if (!summary || !summary.contains(target)) folded = summary || node;\n      }\n    }\n    if (folded && visibleBox(folded)) return folded;\n    for (let node = hiddenContent ? hiddenContent.parentElement : target; authorElement(node); node = node.parentElement) if (visibleBox(node)) return node;\n    return null;\n  };\n  // Only an explicit, unique ARIA relationship may activate an authored tab. Never\n  // infer navigation from class names, labels or nearby buttons.\n  const tabForPanel = (panel) => {\n    if (!panel.id || panel.getAttribute("role") !== "tabpanel" || document.querySelectorAll("#" + CSS.escape(panel.id)).length !== 1) return null;\n    const tabs = Array.from(document.querySelectorAll(\'[role="tab"][aria-controls]\')).filter(tab => tab.getAttribute("aria-controls")?.trim() === panel.id);\n    if (tabs.length !== 1) return null;\n    const tab = tabs[0];\n    const list = tab.closest(\'[role="tablist"]\');\n    if (!list || !authorElement(tab) || typeof tab.click !== "function" || tab.matches(":disabled,[aria-disabled=true]") || !["true", "false"].includes(tab.getAttribute("aria-selected"))) return null;\n    if (tab.localName === "a" || tab.closest("a[href]") || (tab.form && ((tab.localName === "button" && tab.type !== "button") || (tab.localName === "input" && tab.type !== "button")))) return null;\n    return tab;\n  };\n  const hiddenMarkerBoundary = (target) => {\n    if (!authorElement(target)) return null;\n    // Custom views need no ARIA/component schema to suppress markers. Hard hidden\n    // ancestors never fall back to a visible dashboard shell. Native closed details\n    // and scroll/accordion clipping remain distinguishable and may use their summary.\n    if (getComputedStyle(target).visibility !== "visible") return target;\n    for (let node = target; node instanceof Element; node = node.parentElement) {\n      const style = getComputedStyle(node);\n      if (node.hidden || node.getAttribute("aria-hidden") === "true" || style.display === "none" || style.contentVisibility === "hidden" || Number(style.opacity) === 0) return node;\n      if (node.getAttribute("role") === "tabpanel" && tabForPanel(node)?.getAttribute("aria-selected") === "false") return node;\n    }\n    return null;\n  };\n  const resolvedBindingNodes = (anchor) => {\n    const binding = anchor?.binding;\n    if (!binding || binding.documentVersion !== snapshot.canvas.documentVersion) return [];\n    const cached = bindingNodes.get(binding.key) || [];\n    const nodes = [binding.target, ...binding.ancestors].map((identity, index) => resolveIdentity(identity, cached[index], anchor.canvasRevision === snapshot.canvas.revision));\n    // Keep detached non-ID references as tombstones; never reuse a replacement at its path.\n    bindingNodes.set(binding.key, nodes.map((node, index) => node || cached[index]));\n    return nodes;\n  };\n  const markerLocation = (anchor) => {\n    const binding = anchor?.binding;\n    if (binding && binding.documentVersion === snapshot.canvas.documentVersion) {\n      const nodes = resolvedBindingNodes(anchor);\n      const target = nodes[0];\n      const panel = hiddenMarkerBoundary(target || nodes.slice(1).find(Boolean));\n      if (panel) return { rect: null, mode: "hidden", tracked: [...nodes.filter(Boolean), panel] };\n      const context = target ? visibleContext(target) : nodes.slice(1).map(node => node && visibleContext(node)).find(Boolean);\n      if (context) {\n        const r = rect(context.getBoundingClientRect());\n        const visible = rect(visibleBox(context));\n        const direct = context === target;\n        return { rect: { x: Math.max(visible.x, Math.min(visible.x + visible.width, r.x + (direct ? binding.relative.x * r.width : Math.min(8, r.width / 2)))), y: Math.max(visible.y, Math.min(visible.y + visible.height, r.y + (direct ? binding.relative.y * r.height : Math.min(8, r.height / 2)))), width: 0, height: 0 }, node: context,\n          focusNode: target && visibleBox(target, true) ? target : context,\n          mode: direct ? "component" : target ? "collapsed" : "ancestor", tracked: nodes.filter(Boolean) };\n      }\n      return { rect: anchor.rect, mode: "snapshot", tracked: nodes.filter(Boolean) };\n    }\n    // Legacy selectors only described surrounding context; never guess a live binding.\n    return { rect: anchor?.rect, mode: "snapshot", tracked: [] };\n  };\n  // Update navigation consumes explicit publish records only. It never turns arbitrary\n  // author DOM mutations into activity, and its finite overlays do not change the canvas.\n  const updatePatchTargets = new Map();\n  const updateTargets = new Map();\n  const rememberBounded = (map, key, value) => {\n    map.set(key, value);\n    while (map.size > 160) map.delete(map.keys().next().value);\n    return value;\n  };\n  const capturedTarget = (node) => {\n    const identity = identityFor(node);\n    return identity ? { identity, node } : null;\n  };\n  const resolveUpdateTarget = (saved) => saved && resolveIdentity(saved.identity, saved.node, false);\n  const capturePatchTargets = (patch, target, inserted = []) => rememberBounded(updatePatchTargets, patch.id, {\n    documentVersion: snapshot.canvas.documentVersion, selector: patch.selector, operation: patch.operation,\n    target: capturedTarget(target), parent: capturedTarget(target.parentElement),\n    inserted: inserted.filter(node => authorElement(node) && !node.matches("script,style,link,meta,template")).map(capturedTarget).filter(Boolean).slice(0, 12),\n  });\n  const updateContext = (target) => {\n    if (visibleBox(target, true)) return target;\n    let folded;\n    for (let node = target; authorElement(node); node = node.parentElement) {\n      if (node.localName === "details" && !node.open) {\n        const summary = Array.from(node.children).find(child => child.localName === "summary");\n        if (summary && !summary.contains(target) && visibleBox(summary, true)) folded = summary;\n      }\n    }\n    if (folded) return folded;\n    // Hidden authored views have no implied visible location. Climbing to main (or any\n    // ordinary ancestor) would highlight unrelated content and falsely acknowledge it.\n    return null;\n  };\n  const findUpdateTarget = (update, index) => {\n    const hint = update.targets[index];\n    if (!hint || typeof hint.selector !== "string" || hint.selector.length > 1000) return null;\n    const patch = hint.patchId && updatePatchTargets.get(hint.patchId);\n    if (patch && patch.documentVersion === update.documentVersion && patch.selector === hint.selector && patch.operation === hint.operation) {\n      if (patch.operation === "remove") {\n        const parent = resolveUpdateTarget(patch.parent);\n        return parent ? { node: parent, ancestor: true } : null;\n      }\n      const inserted = patch.inserted.map(resolveUpdateTarget).find(Boolean);\n      const node = patch.inserted.length ? inserted : resolveUpdateTarget(patch.target);\n      return node ? { node, ancestor: false } : null;\n    }\n    // Removal cannot be reconstructed from a newly matching selector after a cold start.\n    if (hint.operation === "remove") return null;\n    const key = `${update.id}:${index}`;\n    const saved = updateTargets.get(key);\n    if (saved) { const node = resolveUpdateTarget(saved); return node ? { node, ancestor: false } : null; }\n    let matches;\n    try { matches = document.querySelectorAll(hint.selector); } catch { return null; }\n    if (matches.length !== 1 || !authorElement(matches[0])) return null;\n    const node = matches[0];\n    // Path selectors are only meaningful in the exact revision; an ID explicitly declares\n    // stable component identity, but still cannot cross a document replacement.\n    if (update.canvasRevision !== snapshot.canvas.revision && (!node.id || hint.selector !== "#" + CSS.escape(node.id))) return null;\n    rememberBounded(updateTargets, key, capturedTarget(node));\n    return { node, ancestor: false };\n  };\n  let updateHighlight;\n  let updateHighlightTimer;\n  let updateHighlightFrame;\n  const clearUpdateHighlight = () => {\n    clearTimeout(updateHighlightTimer); updateHighlightTimer = null;\n    if (updateHighlightFrame) cancelAnimationFrame(updateHighlightFrame);\n    updateHighlightFrame = null;\n    updateHighlight?.host.remove(); updateHighlight = null;\n  };\n  const positionUpdateHighlight = () => {\n    updateHighlightFrame = null;\n    if (!updateHighlight) return false;\n    const box = updateHighlight.node ? visibleBox(updateHighlight.node) : { left: 6, top: 6, right: innerWidth - 6, bottom: innerHeight - 6 };\n    if (!box) { clearUpdateHighlight(); return false; }\n    const left = Math.max(4, box.left - 3), top = Math.max(4, box.top - 3);\n    const right = Math.min(innerWidth - 4, box.right + 3), bottom = Math.min(innerHeight - 4, box.bottom + 3);\n    if (right <= left || bottom <= top) { clearUpdateHighlight(); return false; }\n    updateHighlight.host.style.setProperty("left", left + "px", "important");\n    updateHighlight.host.style.setProperty("top", top + "px", "important");\n    updateHighlight.host.style.setProperty("width", right - left + "px", "important");\n    updateHighlight.host.style.setProperty("height", bottom - top + "px", "important");\n    return true;\n  };\n  const queueUpdateHighlight = () => { if (updateHighlight && !updateHighlightFrame) updateHighlightFrame = requestAnimationFrame(positionUpdateHighlight); };\n  const showUpdateHighlight = (node) => {\n    clearUpdateHighlight();\n    const host = document.createElement("div");\n    host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-update-highlight", "");\n    host.setAttribute("aria-hidden", "true");\n    host.style.cssText = "all:initial!important;position:fixed!important;display:block!important;z-index:2147483646!important;pointer-events:none!important;";\n    const shadow = host.attachShadow({ mode: "open" });\n    shadow.innerHTML = `<style>:host{color-scheme:normal}.ring{position:absolute;inset:0;box-sizing:border-box;border:3px solid #fff;border-radius:8px;box-shadow:0 0 0 3px #224ee8,0 0 0 5px #0a173b80;animation:board-update-flash .65s ease-in-out 3;pointer-events:none}@keyframes board-update-flash{0%,100%{opacity:.15}50%{opacity:1}}@media(prefers-reduced-motion:reduce){.ring{animation:none;opacity:1}}</style><div class="ring"></div>`;\n    root.append(host); updateHighlight = { host, node };\n    if (!positionUpdateHighlight()) return false;\n    updateHighlightTimer = setTimeout(clearUpdateHighlight, matchMedia("(prefers-reduced-motion:reduce)").matches ? 1000 : 2050);\n    return true;\n  };\n  let hostComposing = false;\n  const activePointers = new Set();\n  let activityUntil = 0;\n  let activityTimer;\n  let reportedActivity = false;\n  let reportedInteracting = false;\n  const editableActive = () => document.hasFocus() && document.activeElement instanceof Element\n    && (document.activeElement.matches("input,textarea,select") || document.activeElement.isContentEditable);\n  const updateInteracting = () => hostComposing || activePointers.size > 0 || editableActive() || selectionMode !== "off" || selectionSession || captureBusy;\n  const updateHardBusy = () => updateInteracting() || applying || queued;\n  const reportCanvasActivity = () => {\n    clearTimeout(activityTimer); activityTimer = null;\n    const delay = activityUntil - performance.now();\n    const interacting = Boolean(updateInteracting() || delay > 0);\n    const busy = Boolean(updateHardBusy() || delay > 0);\n    if (busy !== reportedActivity || interacting !== reportedInteracting) {\n      reportedActivity = busy; reportedInteracting = interacting;\n      post({ type: "canvas-activity", busy, interacting });\n    }\n    if (delay > 0) activityTimer = setTimeout(reportCanvasActivity, delay + 1);\n  };\n  const noteCanvasActivity = (event) => {\n    if (!event.isTrusted) return;\n    activityUntil = performance.now() + 1200;\n    clearUpdateHighlight();\n    reportCanvasActivity();\n  };\n  window.addEventListener("pointerdown", event => { if (event.isTrusted) { activePointers.add(event.pointerId); noteCanvasActivity(event); } }, true);\n  for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) window.addEventListener(name, event => { if (event.isTrusted) { activePointers.delete(event.pointerId); reportCanvasActivity(); } }, true);\n  for (const name of ["keydown", "wheel", "focusin", "focusout"]) window.addEventListener(name, event => { noteCanvasActivity(event); if (name === "focusout") queueMicrotask(reportCanvasActivity); }, true);\n  window.addEventListener("blur", () => { activePointers.clear(); queueMicrotask(reportCanvasActivity); });\n  window.addEventListener("scroll", queueUpdateHighlight, true);\n  window.addEventListener("resize", queueUpdateHighlight);\n  window.addEventListener("pagehide", () => { clearUpdateHighlight(); clearTimeout(activityTimer); });\n  const focusUpdate = (message) => {\n    const update = message.update;\n    const index = message.targetIndex === undefined ? 0 : message.targetIndex;\n    if (typeof message.requestId !== "string" || !message.requestId || message.requestId.length > 160\n      || !Number.isSafeInteger(message.token) || message.token < 0 || !Number.isSafeInteger(index) || index < 0 || index > 100\n      || !update || typeof update.id !== "string" || !update.id || update.id.length > 160\n      || !Number.isSafeInteger(update.documentVersion) || update.documentVersion < 0 || !Number.isSafeInteger(update.canvasRevision)\n      || !Array.isArray(update.targets) || update.targets.length > 100 || !["patch", "data", "document"].includes(update.kind)) return;\n    const reply = (status, fields = {}) => post({ type: "update-position", requestId: message.requestId, id: update.id, token: message.token,\n      targetIndex: index, documentVersion: update.documentVersion, status, ...fields });\n    if (readingView.pending() && message.automatic) { reply("deferred", { reason: "\u6B63\u5728\u6062\u590D\u6D4F\u89C8\u4F4D\u7F6E" }); return; }\n    readingView.cancel();\n    clearUpdateHighlight();\n    if (update.documentVersion !== snapshot.canvas.documentVersion) { reply("unavailable", { reason: "\u5C5E\u4E8E\u53E6\u4E00\u7248\u753B\u5E03\uFF0C\u4FDD\u7559\u539F\u66F4\u65B0\u8BB0\u5F55" }); return; }\n    if (updateHardBusy() || (message.automatic && performance.now() < activityUntil)) {\n      // The host retries after canvas-activity false; never keep a hidden scroll request\n      // that could surprise the user after they have moved on to a different update.\n      reportCanvasActivity(); reply("deferred", { reason: "\u6B63\u5728\u4EA4\u4E92\uFF0C\u7A0D\u540E\u5B9A\u4F4D" }); return;\n    }\n    if (update.canvasRevision > snapshot.canvas.revision) { reply("unavailable", { reason: "\u5BF9\u5E94\u753B\u5E03\u7248\u672C\u5C1A\u672A\u8F7D\u5165" }); return; }\n    if (!update.targets.length) {\n      if (update.kind !== "document") { reply("unavailable", { reason: "\u6B64\u6B21\u6570\u636E\u66F4\u65B0\u672A\u6307\u5B9A\u753B\u5E03\u4F4D\u7F6E" }); return; }\n      window.scrollTo({ left: 0, top: 0, behavior: "instant" });\n      if (showUpdateHighlight(null)) reply("focused", { location: "document", position: { x: 12, y: 12 } });\n      else reply("unavailable", { reason: "\u753B\u5E03\u5F53\u524D\u4E0D\u53EF\u89C1" });\n      return;\n    }\n    const target = findUpdateTarget(update, index);\n    if (!target) { reply("unavailable", { reason: "\u539F\u7EC4\u4EF6\u5DF2\u79FB\u9664\u3001\u8EAB\u4EFD\u4E0D\u660E\u786E\u6216\u5F53\u524D\u4E0D\u53EF\u89C1" }); return; }\n    const node = updateContext(target.node);\n    if (!node) { reply("unavailable", { reason: "\u7EC4\u4EF6\u5F53\u524D\u9690\u85CF\u6216\u88AB\u88C1\u526A\uFF0C\u663E\u793A\u540E\u53EF\u7EE7\u7EED\u5B9A\u4F4D" }); return; }\n    node.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });\n    const box = visibleBox(node);\n    if (!box || !showUpdateHighlight(node)) { reply("unavailable", { reason: "\u7EC4\u4EF6\u5F53\u524D\u4E0D\u53EF\u89C1" }); return; }\n    reply("focused", { location: target.ancestor || node !== target.node ? "ancestor" : "target",\n      position: { x: Math.max(8, Math.min(innerWidth - 8, box.left + box.width / 2)), y: Math.max(8, Math.min(innerHeight - 8, box.top + box.height / 2)) } });\n  };\n\n  // Host-owned discussions are independent from the authored document and its patch journal.\n  let markerHost;\n  let markerItems = [];\n  let selectedMarkerId;\n  let markerPositionFrame;\n  let lastSelectedPosition;\n  const markerLabels = { saved: "\u5DF2\u63D0\u4EA4", sending: "\u53D1\u9001\u4E2D", delivered: "\u7B49\u5F85\u56DE\u7B54", processing: "\u5904\u7406\u4E2D", answered: "\u5DF2\u56DE\u7B54", applied: "\u5DF2\u843D\u5B9E", rejected: "\u672A\u91C7\u7EB3", failed: "\u5931\u8D25" };\n  const inMarkers = (event) => markerHost && event.composedPath().includes(markerHost);\n  const markerNode = (event) => event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-board-interaction"));\n  const positionMarkers = () => {\n    markerPositionFrame = null;\n    if (!markerHost) return;\n    const overlap = new Map();\n    const observed = new Set();\n    let unanchored = 0;\n    for (const item of markerItems) {\n      const button = item.button;\n      const anchor = item.marker.anchor;\n      const location = markerLocation(anchor);\n      const saved = location.rect;\n      const stale = Boolean(anchor && anchor.canvasRevision !== snapshot.canvas.revision);\n      item.location = location;\n      for (const node of location.tracked) observed.add(node);\n      // ResizeObserver includes new wrapper ancestors introduced after selection.\n      for (let node = location.node, depth = 0; authorElement(node) && depth < 16; node = node.parentElement, depth++) observed.add(node);\n      const x = saved ? saved.x - scrollX : 12;\n      const y = saved ? saved.y - scrollY : 12 + unanchored++ * 34;\n      const key = `${Math.round(x / 28)}:${Math.round(y / 28)}`;\n      const offset = overlap.get(key) || 0;\n      overlap.set(key, offset + 1);\n      const left = x + offset * 24;\n      const top = y + offset * 10;\n      const visible = left >= -20 && left < innerWidth && top >= -20 && top < innerHeight;\n      button.hidden = !visible || location.mode === "hidden";\n      button.style.left = left + "px";\n      button.style.top = top + "px";\n      button.dataset.stale = String(stale);\n      button.dataset.location = location.mode;\n      button.dataset.status = item.marker.status;\n      button.dataset.active = String(["saved", "sending", "delivered", "processing"].includes(item.marker.status));\n      button.setAttribute("aria-pressed", String(item.marker.id === selectedMarkerId));\n      const status = markerLabels[item.marker.status] || "\u5DF2\u63D0\u4EA4";\n      let face = button.firstElementChild;\n      if (!face) { face = document.createElement("span"); face.className = "face"; face.setAttribute("aria-hidden", "true"); button.append(face); }\n      const markerLabel = item.marker.label || String(item.marker.number);\n      face.textContent = markerLabel;\n      const locationLabel = location.mode === "hidden" ? "\u7EC4\u4EF6\u5F53\u524D\u9690\u85CF\uFF1B\u53EF\u4ECE\u4FA7\u680F\u8BF7\u6C42\u5B9A\u4F4D" : location.mode === "collapsed" ? "\u7EC4\u4EF6\u5F53\u524D\u4E0D\u53EF\u89C1\uFF0C\u6807\u8BB0\u663E\u793A\u5728\u53EF\u89C1\u4E0A\u5C42" : location.mode === "ancestor" ? "\u539F\u7EC4\u4EF6\u65E0\u6CD5\u552F\u4E00\u5B9A\u4F4D\uFF0C\u6807\u8BB0\u663E\u793A\u5728\u539F\u4E0A\u5C42" : location.mode === "snapshot" && saved ? "\u539F\u59CB\u5FEB\u7167\u4F4D\u7F6E" : "";\n      button.title = `${item.marker.text}\\n${status}${locationLabel ? " \xB7 " + locationLabel : ""}${!saved ? " \xB7 \u672A\u6307\u5B9A\u53EF\u5B9A\u4F4D\u7684\u5C40\u90E8\u4F4D\u7F6E\u3002" : ""}${stale ? ` \xB7 \u753B\u5E03\u5DF2\u66F4\u65B0\uFF1B\u5F15\u7528\u4ECD\u4E3A r${anchor.canvasRevision}\uFF0C\u8BF7\u6838\u5BF9\u539F\u59CB\u5FEB\u7167\u3002` : ""}`;\n      button.setAttribute("aria-label", `${markerLabel}. ${item.marker.text}\uFF0C${status}${locationLabel ? "\uFF0C" + locationLabel : ""}${saved ? stale ? "\uFF0C\u65E7\u7248\u672C\u4F4D\u7F6E" : "" : "\uFF0C\u6574\u677F\u8BA8\u8BBA"}`);\n      if (item.marker.id === selectedMarkerId) {\n        const next = { id: item.marker.id, x: left, y: top, location: location.mode };\n        if (JSON.stringify(next) !== JSON.stringify(lastSelectedPosition)) {\n          lastSelectedPosition = next;\n          post({ type: "interaction-position", id: next.id, position: { x: next.x, y: next.y }, location: next.location });\n        }\n      }\n    }\n    syncMarkerObservers(observed);\n  };\n  const queueMarkerPositions = () => { if (!markerPositionFrame && markerItems.length) markerPositionFrame = requestAnimationFrame(positionMarkers); };\n  let markerMutationTimer;\n  const queueLayoutPositions = () => {\n    // At most one layout pass per 100ms for continuously changing authored DOM. There is\n    // no polling/RAF loop; quiet canvases cost nothing and overlay writes are excluded.\n    if (!markerMutationTimer && markerItems.length) markerMutationTimer = setTimeout(() => { markerMutationTimer = null; queueMarkerPositions(); }, 100);\n  };\n  const markerResizeObserver = new ResizeObserver(queueLayoutPositions);\n  const observedMarkerNodes = new Set();\n  const markerMutationObserver = new MutationObserver(records => {\n    if (records.some(record => !(record.target instanceof Element ? record.target : record.target.parentElement)?.closest("[data-board-overlay]")\n      && !(record.type === "childList" && [...record.addedNodes, ...record.removedNodes].every(node => node instanceof Element && node.hasAttribute("data-board-overlay"))))) queueLayoutPositions();\n  });\n  let markerObserving = false;\n  const syncMarkerObservers = (nodes) => {\n    if (markerItems.length && document.body) nodes.add(document.body);\n    for (const node of observedMarkerNodes) if (!nodes.has(node)) { markerResizeObserver.unobserve(node); observedMarkerNodes.delete(node); }\n    for (const node of nodes) if (!observedMarkerNodes.has(node)) { markerResizeObserver.observe(node); observedMarkerNodes.add(node); }\n    if (markerItems.length && !markerObserving) {\n      markerMutationObserver.observe(root, { subtree: true, childList: true, characterData: true, attributes: true });\n      markerObserving = true;\n    } else if (!markerItems.length && markerObserving) { markerMutationObserver.disconnect(); markerObserving = false; }\n  };\n  const drainMarkerFocus = () => {\n    if (pendingMarkerFocus && !applying && !queued && !selectionSession && !captureBusy && selectionMode === "off") {\n      const id = pendingMarkerFocus; pendingMarkerFocus = null; focusInteraction(id);\n    }\n  };\n  const cancelMarkerReveal = () => { markerReveal?.abort(); markerReveal = null; };\n  const revealTarget = async (target, controller) => {\n    const current = () => markerReveal === controller && !controller.signal.aborted && target.isConnected;\n    // A callback can reveal custom navigation, but gets no user-activation/message lease.\n    // Async implementations must honor signal; the runtime also revalidates after awaits.\n    for (const listener of [...revealListeners]) {\n      if (!current()) return false;\n      try { await listener(Object.freeze({ target, reason: "interaction", signal: controller.signal })); }\n      catch (cause) { if (current()) error("reveal-error", cause instanceof Error ? cause.message : String(cause)); }\n    }\n    if (!current()) return false;\n    const ancestors = [];\n    for (let node = target; authorElement(node); node = node.parentElement) ancestors.unshift(node);\n    for (const node of ancestors) {\n      if (!current()) return false;\n      if (node.localName === "details" && !node.open) node.open = true;\n      if (node.getAttribute("role") === "tabpanel") {\n        const tab = tabForPanel(node);\n        if (tab && tab.getAttribute("aria-selected") === "false" && visibleBox(tab, true)) {\n          tab.click();\n          // Let authored frameworks commit their state before inspecting nested tabs.\n          await new Promise(resolve => requestAnimationFrame(resolve));\n          if (!current() || tab.getAttribute("aria-selected") !== "true") return false;\n        }\n      }\n    }\n    return current();\n  };\n  const focusInteraction = async (id) => {\n    readingView.cancel();\n    cancelMarkerReveal();\n    const item = markerItems.find(item => item.marker.id === id);\n    if (!item) return;\n    if (applying || queued || selectionSession || captureBusy || selectionMode !== "off") { pendingMarkerFocus = id; return; }\n    selectedMarkerId = id;\n    lastGesture = -Infinity;\n    const controller = new AbortController();\n    markerReveal = controller;\n    const target = resolvedBindingNodes(item.marker.anchor)[0];\n    if (target) {\n      // The signal also bounds callbacks that ignore cancellation or never settle.\n      let timer;\n      await Promise.race([revealTarget(target, controller), new Promise(resolve => {\n        controller.signal.addEventListener("abort", () => resolve(false), { once: true });\n        timer = setTimeout(() => { controller.abort(); resolve(false); }, 3000);\n      })]);\n      clearTimeout(timer);\n    }\n    if (markerReveal !== controller || controller.signal.aborted || selectedMarkerId !== id || !markerItems.some(current => current.marker.id === id && current.marker.anchor?.binding?.key === item.marker.anchor?.binding?.key)) {\n      if (markerReveal === controller) markerReveal = null;\n      return;\n    }\n    markerReveal = null;\n    const location = markerLocation(item.marker.anchor);\n    if (location.focusNode) location.focusNode.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });\n    lastSelectedPosition = undefined;\n    positionMarkers();\n    const box = item.button.getBoundingClientRect();\n    // A missing/legacy reference still opens beside the viewport rather than disappearing\n    // offscreen. An unavailable reference is never scrolled onto an unrelated element.\n    const position = { x: Math.max(12, Math.min(innerWidth - 38, box.left)), y: Math.max(12, Math.min(innerHeight - 38, box.top)) };\n    post({ type: "interaction-position", id, position, location: item.location.mode });\n  };\n  const renderMarkers = (markers, selectedId) => {\n    // A host overview can reopen a thread using its captured viewport as a fallback. Always\n    // send this document\'s current position on re-selection, even if it has not moved since\n    // the previous opening (the host may have discarded that position while closed).\n    if (selectedMarkerId !== selectedId) { lastSelectedPosition = undefined; cancelMarkerReveal(); }\n    if (pendingMarkerFocus && pendingMarkerFocus !== selectedId) pendingMarkerFocus = null;\n    selectedMarkerId = selectedId;\n    if (!markerHost) {\n      markerHost = document.createElement("div");\n      markerHost.setAttribute("data-board-markers", "");\n      markerHost.setAttribute("data-board-overlay", "");\n      markerHost.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;width:100%!important;height:100%!important;z-index:2147483645!important;pointer-events:none!important;";\n      const shadow = markerHost.attachShadow({ mode: "open" });\n      shadow.innerHTML = `<style>\n        :host{color-scheme:normal}\n        button{all:initial;box-sizing:border-box;position:absolute;display:grid;place-items:center;width:26px;height:26px;padding:0;pointer-events:auto;border-radius:50%;background:transparent;opacity:.5;cursor:pointer;transition:opacity .15s ease}\n        button[hidden]{display:none}\n        .face{box-sizing:border-box;display:grid;place-items:center;width:18px;height:18px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 1px 4px #0002;font:10px/1 system-ui,-apple-system,sans-serif}\n        button[data-comment=true]{width:auto;min-width:26px}\n        button[data-comment=true] .face{width:auto;min-width:24px;padding:0 3px;border-radius:9px}\n        button:hover,button:focus-visible,button[aria-pressed=true]{opacity:1}\n        button:focus-visible{outline:2px solid var(--host-iris,#658aeb);outline-offset:1px}\n        button[aria-pressed=true] .face{border-width:2px}\n        button[data-status=failed] .face,button[data-status=rejected] .face{border-color:#cc6256}\n        button[data-status=answered] .face,button[data-status=applied] .face{border-color:#46846b}\n        button[data-stale=true] .face{border-color:#bd8c35}\n        button[data-active=true]::before{content:"";position:absolute;inset:1px;border:1px solid var(--host-iris,#658aeb);border-radius:50%;pointer-events:none;animation:board-halo 2s ease-in-out infinite}\n        button[data-active=true]::after{content:"";position:absolute;right:0;top:0;width:6px;height:6px;border:1px solid var(--host-iris,#658aeb);border-right-color:transparent;border-bottom-color:transparent;border-radius:50%;background:var(--host-sheet,#fff);pointer-events:none;animation:board-orbit 1.25s linear infinite}\n        @keyframes board-halo{0%,100%{opacity:.15;transform:scale(.96)}50%{opacity:.55;transform:scale(1.03)}}\n        @keyframes board-orbit{to{transform:rotate(360deg)}}\n        @media(prefers-reduced-motion:reduce){button{transition:none}button[data-active=true]::before,button[data-active=true]::after{animation:none}button[data-active=true]::before{opacity:.3}button[data-active=true]::after{border-style:solid}}\n      </style>`;\n      root.append(markerHost);\n    }\n    // Preserve focused buttons while receiving progress, and never replace author controls.\n    const old = new Map(markerItems.map(item => [item.marker.id, item.button]));\n    markerItems = markers.map(marker => {\n      const button = old.get(marker.id) || document.createElement("button");\n      old.delete(marker.id);\n      button.type = "button";\n      button.setAttribute("data-board-interaction", marker.id);\n      button.dataset.comment = String(Boolean(marker.commentId));\n      if (!button.isConnected) markerHost.shadowRoot.append(button);\n      return { marker, button };\n    });\n    for (const button of old.values()) button.remove();\n    markerHost.style.setProperty("visibility", selectionMode === "off" && !pointer?.temporary ? "visible" : "hidden", "important");\n    positionMarkers();\n  };\n  window.addEventListener("scroll", queueMarkerPositions, true);\n  window.addEventListener("resize", queueMarkerPositions);\n  document.addEventListener("transitionend", queueLayoutPositions, true);\n  document.addEventListener("animationend", queueLayoutPositions, true);\n  document.addEventListener("load", queueLayoutPositions, true);\n  const clearOverlay = () => { if (overlay) overlay.remove(); overlay = null; };\n  const showOverlay = (r) => {\n    if (!overlay) {\n      overlay = document.createElement("div");\n      overlay.setAttribute("data-board-overlay", "");\n      overlay.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;border:2px solid #658aeb;background:#658aeb22;box-sizing:border-box;";\n      document.body.append(overlay);\n    }\n    Object.assign(overlay.style, { left: r.x + "px", top: r.y + "px", width: Math.max(2, r.width) + "px", height: Math.max(2, r.height) + "px" });\n  };\n  // The inspector is an overlay over real authored DOM; edit proposals become durable\n  // only after the host\'s Save action. Ordinary author interactions never use this layer.\n  let componentHost = null;\n  let selectedComponent = null;\n  let componentChoices = [];\n  let componentParents = [];\n  let componentChildren = [];\n  let componentFrame = null;\n  let componentHover = null;\n  let componentShortcut = false;\n  let componentPointer = null;\n  let componentClipboard = null;\n  let componentDrag = null;\n  let componentPress = null;\n  let componentClick = null;\n  let componentText = null;\n  let componentPending = null;\n  let componentResume = null;\n  let componentNotice = "";\n  let componentGhost = null;\n  let componentDropLine = null;\n  let componentDragPreview = null;\n  let componentDragAnimation = true;\n  const componentReducedMotion = matchMedia("(prefers-reduced-motion: reduce)");\n  let componentLayoutPreview = null;\n  let componentLayoutDraft = null;\n  let componentLayoutResize = null;\n  const importantBox = (node, box) => { for (const [name, value] of Object.entries(box)) node.style.setProperty(name, value + "px", "important"); };\n  const inComponentPreview = event => componentLayoutPreview && event.composedPath().includes(componentLayoutPreview.host);\n  const inComponentText = event => componentText?.host && event.composedPath().includes(componentText.host);\n  const inComponents = (event) => componentHost && event.composedPath().includes(componentHost);\n  const componentLabel = (node) => (node.getAttribute("data-board-component") || node.getAttribute("aria-label") || (node.id ? "#" + node.id : node.localName)).slice(0, 100);\n  const componentBoundary = (node) => authorElement(node) && node.matches(\'[data-board-component],[id],paseo-board,section,article,main,aside,nav,header,footer,form,fieldset,details,summary,button,input,textarea,select,canvas,svg,table,ul,ol,li,p,h1,h2,h3,h4,h5,h6,[role]\');\n  const componentAt = (target) => {\n    for (let node = target; authorElement(node); node = node.parentElement) if (componentBoundary(node)) return node;\n    return authorElement(target) ? target : null;\n  };\n  const componentAncestors = (node) => {\n    const ancestors = [];\n    for (let parent = node; authorElement(parent) && ancestors.length < 16; parent = parent.parentElement) ancestors.unshift(parent);\n    return ancestors;\n  };\n  const selectableChildren = (node) => Array.from(node.children).filter(child => authorElement(child) && !child.matches("script,style,link,meta,template") && visibleBox(child)).slice(0, 41);\n  const componentTextRuns = (node) => node && !node.matches("script,style,textarea,input,select,option,canvas,iframe,object,embed")\n    ? Array.from(node.childNodes).flatMap((child, index) => child.nodeType === Node.TEXT_NODE && child.textContent.trim() ? [{ index, text: child.textContent }] : []) : [];\n  const setComponentNotice = (message) => { componentNotice = message; queueComponentOutline(); };\n  const clearComponentHover = () => { componentHover?.remove(); componentHover = null; };\n  const previewComponent = (node, label) => {\n    const box = node && visibleBox(node);\n    if (!box) { clearComponentHover(); return; }\n    if (!componentHover) {\n      componentHover = document.createElement("div"); componentHover.setAttribute("data-board-overlay", ""); componentHover.setAttribute("data-board-component-preview", "");\n      componentHover.style.cssText = "all:initial!important;position:fixed!important;z-index:2147483646!important;pointer-events:none!important;box-sizing:border-box!important;border:2px dashed #658aeb!important;background:#658aeb12!important;";\n      const tag = document.createElement("span"); tag.style.cssText = "position:absolute;left:0;top:0;max-width:80vw;white-space:nowrap;padding:2px 5px;color:#fff;background:#345bb4;font:12px/1.4 system-ui;";\n      componentHover.append(tag); root.append(componentHover);\n    }\n    importantBox(componentHover, { left: box.left, top: box.top, width: box.width, height: box.height });\n    componentHover.firstChild.textContent = label || componentLabel(node);\n  };\n  const updateComponentHover = () => {\n    if (!componentPointer || (!componentShortcut && selectionMode !== "component") || componentText || componentDrag) { if (!componentDrag) clearComponentHover(); return; }\n    const node = componentAt(document.elementFromPoint(componentPointer.x, componentPointer.y));\n    previewComponent(node === selectedComponent && !componentPending ? null : node, componentPending && node ? `${componentLabel(node)} \xB7 \u8BF7\u5148\u5904\u7406\u5F85\u4FDD\u5B58\u4FEE\u6539` : undefined);\n  };\n  const componentResize = new ResizeObserver(() => queueComponentOutline());\n  const componentMutation = new MutationObserver(records => {\n    const changed = records.filter(record => !(record.target instanceof Element ? record.target : record.target.parentElement)?.closest("[data-board-overlay]")\n      && !(record.type === "childList" && [...record.addedNodes, ...record.removedNodes].every(node => node instanceof Element && node.hasAttribute("data-board-overlay"))));\n    if (componentLayoutDraft && changed.some(record => componentLayoutDraft.source.contains(record.target))) validateComponentLayout();\n    if (componentLayoutPreview && changed.some(record => [componentLayoutPreview.source,componentLayoutPreview.destination].filter(Boolean).some(node => !node.isConnected || node.contains(record.target)))) {\n      clearComponentLayoutPreview(); if (componentPending) componentPending.message = "\u7EC4\u4EF6\u5185\u5BB9\u5DF2\u53D8\u5316\uFF0C\u9884\u89C8\u5DF2\u64A4\u4E0B\uFF1B\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9";\n    }\n    if (changed.length) {\n      if (componentDrag) {\n        const active = componentDrag, destination = active.target?.node;\n        if (changed.some(record => !active.gesture.node.isConnected || active.gesture.node.contains(record.target)\n          || destination && (!destination.isConnected || destination.contains(record.target))\n          || record.type === "childList" && [active.gesture.node.parentElement, destination?.parentElement].includes(record.target))) {\n          cancelComponentDrag(); setComponentNotice("\u62D6\u52A8\u4E2D\u7684\u7EC4\u4EF6\u6216\u76EE\u6807\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9");\n        } else if (componentDragPreview) {\n          clearComponentDragPreview(); active.previewUnavailable = true; setComponentNotice("\u753B\u5E03\u5185\u5BB9\u5DF2\u53D8\u5316\uFF0C\u4EC5\u663E\u793A\u63D2\u5165\u7EBF\uFF1B\u539F\u7EC4\u4EF6\u4FDD\u6301\u4E0D\u53D8");\n        }\n      }\n      if (componentText) {\n        const text=componentText;\n        if (text.layoutSource!==text.source && changed.some(record=>text.layoutSource.contains(record.target) && !text.source.contains(record.target))) {\n          text.invalid="\u6587\u5B57\u5468\u56F4\u7684\u5E03\u5C40\u5DF2\u53D8\u5316\uFF1B\u8349\u7A3F\u4FDD\u7559\u53EF\u590D\u5236\uFF0C\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9";\n          text.recovery=true;text.run.editor.setAttribute("contenteditable","false");\n        }\n        validateComponentText();\n      }\n      queueComponentOutline();\n    }\n  });\n  const clearComponent = () => {\n    componentText?.host.remove(); componentHost?.remove(); componentHost = null; selectedComponent = null; componentChoices = []; componentParents = []; componentChildren = []; componentText = null;\n    clearComponentHover(); clearComponentGhost(); clearComponentLayoutPreview(); componentLayoutDraft = null; componentLayoutResize = null; componentDrag = null; componentPress = null; componentClick = null;\n    componentResize.disconnect(); componentMutation.disconnect();\n    if (componentFrame !== null) cancelAnimationFrame(componentFrame);\n    componentFrame = null;\n  };\n  const positionComponent = () => {\n    componentFrame = null;\n    if (!componentHost || !selectedComponent) return;\n    if (selectedComponent.isConnected && !componentText && !componentDrag && !componentPending && !componentLayoutDraft) {\n      const parents = componentAncestors(selectedComponent), children = selectableChildren(selectedComponent);\n      if (parents.length !== componentParents.length || parents.some((node, index) => node !== componentParents[index]) || children.length !== componentChildren.length || children.some((node, index) => node !== componentChildren[index])) { selectComponent(selectedComponent); return; }\n      for (const button of componentHost.shadowRoot.querySelectorAll(\'[data-component-action="choose"]\')) button.textContent = componentLabel(componentChoices[Number(button.dataset.componentIndex)]);\n    }\n    if (componentLayoutPreview && (queued?.snapshot.canvas.revision > componentLayoutPreview.revision || queued?.snapshot.canvas.documentVersion !== undefined && queued.snapshot.canvas.documentVersion !== componentLayoutPreview.documentVersion)) {\n      clearComponentLayoutPreview(); componentNotice = "\u753B\u5E03\u5DF2\u66F4\u65B0\uFF0C\u5E03\u5C40\u9884\u89C8\u5DF2\u64A4\u4E0B\uFF1B\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9";\n    }\n    const box = visibleBox(selectedComponent), shadow = componentHost.shadowRoot;\n    const outline = shadow.querySelector(".outline"); outline.hidden = !box || Boolean(componentDragPreview) || Boolean(componentLayoutPreview && !componentLayoutPreview.host.hidden);\n    if (box) Object.assign(outline.style, { left: box.left + "px", top: box.top + "px", width: box.width + "px", height: box.height + "px" });\n    for (const button of shadow.querySelectorAll("button")) button.disabled = Boolean(componentPending) && button.dataset.componentAction !== "preview-toggle" || (!box && button.dataset.componentAction !== "close");\n    const previewToggle = shadow.querySelector(\'[data-component-action="preview-toggle"]\'); previewToggle.hidden = !componentLayoutPreview;\n    const panel = shadow.querySelector(".panel"); panel.dataset.dragging = String(Boolean(componentDrag)); panel.dataset.editing = String(Boolean(componentText));\n    shadow.querySelector(".selected-name").textContent = componentLabel(selectedComponent);\n    shadow.querySelector(".selected-name").title = componentLabel(selectedComponent);\n    shadow.querySelector(\'[data-component-action="paste"]\').disabled ||= !componentClipboard?.node?.isConnected;\n    shadow.querySelector(\'[data-component-action="text"]\').disabled ||= !componentTextRuns(selectedComponent).length;\n    const layoutButton = shadow.querySelector(\'[data-component-action="layout"]\');\n    layoutButton.disabled ||= Boolean(componentHost.dataset.layoutUnsupported);\n    layoutButton.title = componentHost.dataset.layoutUnsupported || "\u8BBE\u7F6E\u6298\u53E0\u3001\u5206\u7EC4\u6216\u6EDA\u52A8\u9AD8\u5EA6";\n    shadow.querySelector(\'[role="status"]\').textContent = componentPending ? componentPending.message || (componentLayoutPreview ? "\u5E03\u5C40\u9884\u89C8 \xB7 \u5C1A\u672A\u4FDD\u5B58" : "\u7B49\u5F85\u4FDD\u5B58 \xB7 \u5728\u753B\u5E03\u4E0A\u65B9\u786E\u8BA4\u8FD9\u6B21\u4FEE\u6539") : !box ? "\u7EC4\u4EF6\u5DF2\u9690\u85CF\u6216\u79FB\u9664\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9" : componentNotice || componentHost.dataset.layoutUnsupported || "\u9009\u62E9\u7EC4\u4EF6 \xB7 \u2318 / Ctrl + Shift \u60AC\u505C\u9884\u89C8\u5E76\u70B9\u51FB";\n    for (const field of shadow.querySelectorAll("select,input")) field.disabled = Boolean(componentPending || componentText?.invalid);\n    if (componentLayoutDraft) {\n      const valid = validateComponentLayout();\n      shadow.querySelector(\'[data-component-action="layout-save"]\').disabled = Boolean(componentPending || !valid || !componentLayoutPreview);\n      shadow.querySelector(\'[data-component-action="layout-preview"]\').disabled = Boolean(componentPending || !valid);\n      if (!valid) shadow.querySelector(\'[role="status"]\').textContent = componentLayoutDraft.invalid;\n    }\n    if (componentText) {\n      positionComponentText();\n      shadow.querySelector(\'[data-component-action="text-save"]\').disabled = Boolean(componentPending || componentText.invalid);\n      shadow.querySelector(\'[data-component-action="text-cancel"]\').disabled = Boolean(componentPending);\n      shadow.querySelector(\'[role="status"]\').textContent = componentText.invalid || (componentPending ? componentPending.message || "\u7B49\u5F85\u4FDD\u5B58 \xB7 \u539F\u4F4D\u9884\u89C8" : componentNotice || "\u76F4\u63A5\u6539\u5B57 \xB7 \u2318 / Ctrl + Enter \u5B8C\u6210 \xB7 Esc \u53D6\u6D88");\n    }\n  };\n  const queueComponentOutline = () => { if (componentHost && componentFrame === null) componentFrame = requestAnimationFrame(positionComponent); };\n  const selectComponent = (node) => {\n    if (!authorElement(node) || !node.isConnected || componentPending) return;\n    clearComponent(); selectedComponent = node;\n    const host = document.createElement("div"); host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-components", "");\n    host.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483647!important;pointer-events:none!important;";\n    const shadow = host.attachShadow({ mode: "open" });\n    shadow.innerHTML = `<style>\n      :host{color-scheme:normal}.outline{position:fixed;box-sizing:border-box;border:3px solid #6f96ff;box-shadow:0 0 0 1px #fff9,inset 0 0 0 1px #fff5;background:#658aeb0c;pointer-events:none}.outline[hidden],[hidden]{display:none!important}\n      .panel,.popover{box-sizing:border-box;border:1px solid var(--host-line-strong,#aaa);border-radius:10px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);font:12px/1.5 system-ui;box-shadow:0 3px 15px #0002;pointer-events:auto}\n      .panel{position:absolute;bottom:10px;left:10px;max-width:calc(100% - 20px);padding:5px 7px}.toolbar{display:flex;align-items:center;gap:5px;max-width:100%;overflow-x:auto}.selected-name{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.status{max-width:540px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.75;font-size:11px}.status:empty{display:none}.row{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.popover{position:absolute;bottom:calc(100% + 6px);left:0;padding:9px;width:min(310px,calc(100vw - 24px));max-height:min(300px,38vh);overflow:auto}.tools{left:auto;right:0}.layout-tools label{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%}.layout-tools input{min-width:0;max-width:155px;width:155px;box-sizing:border-box}.layout-tools .layout-hint{white-space:normal;max-width:280px}.ancestors,.children{flex-direction:column}.ancestors button,.children button{text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.label{opacity:.65;font-size:11px;margin-top:6px}button,select,input{font:inherit;color:inherit;background:transparent}button,select,input{padding:4px 7px;border:1px solid var(--host-line-strong,#ccc);border-radius:5px;white-space:nowrap;flex:none}button{cursor:pointer}button[aria-current=true]{border-color:var(--host-iris,#658aeb);font-weight:600}button:focus-visible{outline:2px solid var(--host-iris,#658aeb)}button:disabled{opacity:.5;cursor:default}.hint{opacity:.75;margin-top:8px;font-size:11px}.text-tools{display:none;align-items:center;gap:5px}.text-runs{max-width:150px}.panel[data-editing=true] .toolbar>[data-component-action],.panel[data-editing=true] .popover{display:none}.panel[data-editing=true] .text-tools{display:flex}.panel[data-editing=true] .selected-name{max-width:100px}button[data-component-action=drag]{touch-action:none;cursor:grab}.panel[data-dragging=true] .toolbar> :not([data-component-action=drag]):not(.selected-name){display:none}.panel[data-dragging=true] .popover{display:none}@media(max-width:540px){.selected-name{max-width:90px}.toolbar{gap:3px}.toolbar button{padding:4px 5px}}\n    </style><div class="outline"></div><div class="panel" role="region" aria-label="\u7EC4\u4EF6\u9009\u62E9"><div class="toolbar"><span class="selected-name"></span><span class="text-tools"><select class="text-runs" aria-label="\u6587\u5B57\u6BB5\u843D"></select><button type="button" data-component-action="text-save">\u5B8C\u6210\u6587\u5B57</button><button type="button" data-component-action="text-cancel">\u53D6\u6D88</button></span><button type="button" data-component-action="preview-toggle" hidden>\u770B\u539F\u7248</button><button type="button" data-component-action="drag" title="\u62D6\u52A8\u7EC4\u4EF6\uFF1BTab\u5207\u6362\u76EE\u6807\u5C42\u7EA7">\u62D6\u52A8</button><button type="button" data-component-action="text">\u6539\u5B57</button><button type="button" data-component-action="paste">\u7C98\u8D34</button><button type="button" data-component-action="layout" aria-expanded="false">\u5E03\u5C40</button><button type="button" data-component-action="hierarchy" aria-expanded="false">\u5C42\u7EA7</button><button type="button" data-component-action="more" aria-expanded="false" aria-label="\u66F4\u591A\u7EC4\u4EF6\u64CD\u4F5C">\u2022\u2022\u2022</button><button type="button" data-component-action="close" aria-label="\u5B8C\u6210\u9009\u62E9" title="\u5B8C\u6210\u9009\u62E9 \xB7 Esc">\xD7</button></div><div role="status" class="status"></div><div class="popover relations" hidden><div class="label">\u5305\u542B\u5C42\u7EA7</div><div class="row ancestors"></div><div class="label">\u76F4\u63A5\u5B50\u7EC4\u4EF6</div><div class="row children"></div></div><div class="popover layout-tools" hidden><div class="row"><label>\u6536\u8D77\u65B9\u5F0F <select class="layout-collapse" aria-label="\u6536\u8D77\u65B9\u5F0F"><option value="none">\u4E0D\u6536\u8D77</option><option value="contents">\u4FDD\u7559\u6807\u9898\uFF0C\u6536\u8D77\u5185\u5BB9</option><option value="group">\u5916\u5957\u6298\u53E0\u5206\u7EC4</option></select></label></div><div class="row layout-title-row" hidden><label><span class="layout-title-label">\u5206\u7EC4\u6807\u9898</span><input class="layout-title" aria-label="\u5206\u7EC4\u6807\u9898" maxlength="120" value="" /></label></div><div class="row"><label>\u6700\u5927\u9AD8\u5EA6\uFF08px\uFF09<input class="layout-height" aria-label="\u6700\u5927\u9AD8\u5EA6" type="number" min="80" max="2000" step="10" placeholder="\u4E0D\u9650\u9AD8" /></label></div><div class="row"><button type="button" data-component-action="layout-preview">\u9884\u89C8</button><button type="button" data-component-action="layout-save">\u5B8C\u6210\u5E03\u5C40</button><button type="button" data-component-action="layout-reset">\u6062\u590D\u539F\u6837</button><button type="button" data-component-action="layout-cancel">\u53D6\u6D88</button></div><div class="hint layout-hint">\u5148\u9884\u89C8\uFF0C\u518D\u4FDD\u5B58\u3002\u9884\u89C8\u4E0B\u8FB9\u7F18\u53EF\u62D6\u52A8\u8C03\u9AD8\uFF1B\u539F\u7EC4\u4EF6\u4FDD\u6301\u4E0D\u53D8\u3002</div></div><div class="popover tools" hidden><div class="row"><button type="button" data-component-action="cut">\u526A\u5207 \u2318/Ctrl X</button><button type="button" data-component-action="copy">\u590D\u5236 \u2318/Ctrl C</button><button type="button" data-component-action="reference">\u5F15\u7528\u7EC4\u4EF6</button></div><div class="row"><label>\u7C98\u8D34\u4F4D\u7F6E <select aria-label="\u7C98\u8D34\u4F4D\u7F6E" class="placement"><option value="append">\u653E\u5165\u672B\u5C3E</option><option value="prepend">\u653E\u5165\u5F00\u5934</option><option value="before">\u653E\u5728\u524D\u9762</option><option value="after">\u653E\u5728\u540E\u9762</option></select></label></div><div class="row"><label><input class="component-drag-animation" type="checkbox" aria-label="\u62D6\u52A8\u8BA9\u4F4D\u52A8\u753B" /> \u62D6\u52A8\u8BA9\u4F4D\u52A8\u753B</label></div><div class="hint">\u8FB9\u7F18\u6216\u7A7A\u9699\u63D2\u5165\uFF0C\u5BB9\u5668\u4E2D\u592E\u653E\u5165\u3002\u62D6\u52A8\u65F6 Tab / Shift+Tab \u5207\u6362\u76EE\u6807\u5C42\u7EA7\uFF0C\u2191 \u524D\u9762 \xB7 \u2193 \u540E\u9762 \xB7 \u2190 \u5F00\u5934 \xB7 \u2192 \u672B\u5C3E\u3002\u590D\u5236\u7ED3\u6784\uFF1B\u8FD0\u884C\u4E2D\u7684 JS \u72B6\u6001\u4E0D\u590D\u5236\u3002</div></div></div>`;\n    const addChoice = (element, container) => {\n      const button = document.createElement("button"); button.type = "button"; button.dataset.componentAction = "choose"; button.dataset.componentIndex = String(componentChoices.length);\n      button.textContent = componentLabel(element); button.setAttribute("aria-current", String(element === node)); componentChoices.push(element); container.append(button);\n    };\n    componentParents = componentAncestors(node); for (const parent of componentParents) addChoice(parent, shadow.querySelector(".ancestors"));\n    componentChildren = selectableChildren(node); for (const child of componentChildren.slice(0, 40)) addChoice(child, shadow.querySelector(".children"));\n    if (!componentChildren.length) shadow.querySelector(".children").textContent = "\u6CA1\u6709\u53EF\u89C1\u5B50\u7EC4\u4EF6";\n    try { componentLayoutTools.capture(node, componentLayoutTools.inspect(node)); }\n    catch (failure) { host.dataset.layoutUnsupported = failure.message || "\u8FD9\u4E2A\u7EC4\u4EF6\u4E0D\u652F\u6301\u76F4\u63A5\u5E03\u5C40"; }\n    componentHost = host; root.append(host); componentMutation.observe(root, { subtree: true, childList: true, attributes: true, characterData: true });\n    for (const parent of componentParents) componentResize.observe(parent);\n    shadow.querySelector(".text-runs").addEventListener("change", () => {\n      if (!componentText) return;\n      chooseComponentTextRun(Number(shadow.querySelector(".text-runs").value), true);\n    });\n    for (const field of shadow.querySelectorAll(".layout-tools input,.layout-tools select")) field.addEventListener("input", event => {\n      if (!event.isTrusted || !componentLayoutDraft || componentPending) return;\n      readComponentLayoutFields(); clearComponentLayoutPreview(); positionComponent();\n    });\n    const animation = shadow.querySelector(".component-drag-animation"); animation.checked = componentDragAnimation;\n    animation.addEventListener("change", event => { if (event.isTrusted) componentDragAnimation = animation.checked; });\n    positionComponent();\n  };\n  const clearComponentDragPreview = () => { componentDragPreview?.host.remove(); componentDragPreview = null; };\n  const clearComponentGhost = () => { componentGhost?.remove(); componentGhost = null; componentDropLine?.remove(); componentDropLine = null; clearComponentDragPreview(); };\n  const clearComponentLayoutPreview = () => { componentLayoutPreview?.host.remove(); componentLayoutPreview = null; };\n  // Build inert visual copies in a document with no browsing context. In particular,\n  // cloneNode/importNode in the live document can invoke custom-element constructors.\n  // The copy never enters the authored tree, and scripts/handlers/custom elements cannot\n  // execute when its ordinary HTML/SVG nodes are adopted into an isolated shadow root.\n  const componentVisualCopy = (source, { computed = false, maxNodes = 2400, maxMs = 180, placeholders = false } = {}) => {\n    const inert = document.implementation.createHTMLDocument("");\n    const nodes = new Map(), scrolls = []; let count = 0, bytes = 0, bitmapPixels = 0, approximated = false;\n    const deadline = performance.now() + maxMs;\n    const consumeBytes = value => { bytes += value.length; if (bytes > 1500000) throw new Error("\u7EC4\u4EF6\u5185\u5BB9\u8F83\u5927\uFF0C\u672A\u751F\u6210\u5B8C\u6574\u5E03\u5C40\u9884\u89C8\uFF1B\u539F\u7EC4\u4EF6\u5C1A\u672A\u4FEE\u6539"); return value; };\n    const skip = new Set(["script", "iframe", "object", "embed", "template", "noscript", "base", "meta", "title", "audio", "animate", "animatetransform", "animatemotion", "set"]);\n    const visit = (node, closed = false) => {\n      if (++count > maxNodes || performance.now() > deadline) throw new Error("\u7EC4\u4EF6\u5185\u5BB9\u8F83\u590D\u6742\uFF0C\u672A\u751F\u6210\u5B8C\u6574\u5E03\u5C40\u9884\u89C8\uFF1B\u539F\u7EC4\u4EF6\u5C1A\u672A\u4FEE\u6539");\n      if (node.nodeType === Node.TEXT_NODE) return inert.createTextNode(consumeBytes(node.textContent));\n      // Preserve only a validated managed heading position, not arbitrary author\n      // comments/history. The shared restorer needs this exact marker in its copy.\n      if (node.nodeType === Node.COMMENT_NODE) {\n        const body = node.parentElement, details = body?.parentElement, owner = details?.parentElement;\n        const key = details?.getAttribute("data-paseo-layout-key");\n        if (body?.getAttribute("data-paseo-layout-part") === "body" && details?.getAttribute("data-paseo-layout-part") === "details"\n          && key && node.textContent === `paseo-layout-heading:${key}` && owner?.hasAttribute("data-paseo-layout")) {\n          try { if (componentLayoutTools.inspect(owner).collapse === "contents") return inert.createComment(consumeBytes(node.textContent)); } catch {}\n        }\n        return null;\n      }\n      if (!(node instanceof Element) || node.hasAttribute("data-board-overlay")) return null;\n      const tag = node.localName.toLowerCase();\n      if (placeholders && !closed && ["iframe", "object", "embed"].includes(tag)) {\n        const clone = inert.createElement("div"), style = getComputedStyle(node), box = node.getBoundingClientRect();\n        for (const name of style) clone.style.setProperty(name, consumeBytes(style.getPropertyValue(name)), "important");\n        if (style.display === "inline") clone.style.setProperty("display", "inline-block", "important");\n        clone.style.setProperty("box-sizing", "border-box", "important"); clone.style.setProperty("width", box.width + "px", "important"); clone.style.setProperty("height", box.height + "px", "important");\n        clone.style.setProperty("overflow", "hidden", "important"); clone.style.setProperty("background", "#dde3eb", "important"); clone.setAttribute("data-board-preview-media", "");\n        clone.textContent = "\u5D4C\u5165\u5185\u5BB9"; nodes.set(node, clone); approximated = true; return clone;\n      }\n      if (skip.has(tag) || closed && tag !== "summary") { if (["iframe","object","embed"].includes(tag) && node.getBoundingClientRect().width) approximated=true; return null; }\n      if (tag === "link") return null; // Stylesheets are copied from CSSOM below, never refetched.\n      let visual = null;\n      if (node instanceof HTMLCanvasElement || node instanceof HTMLVideoElement) {\n        try {\n          const width = node instanceof HTMLCanvasElement ? node.width : node.videoWidth, height = node instanceof HTMLCanvasElement ? node.height : node.videoHeight;\n          if (!width || !height || width*height > 4000000) throw new Error("bitmap exceeds preview source limit");\n          const scale = Math.min(1, Math.sqrt(250000 / (width*height))), canvas=document.createElement("canvas");\n          canvas.width=Math.max(1,Math.round(width*scale));canvas.height=Math.max(1,Math.round(height*scale));\n          if ((bitmapPixels += canvas.width*canvas.height) > 1000000) throw new Error("preview bitmap budget exceeded");\n          canvas.getContext("2d").drawImage(node,0,0,canvas.width,canvas.height); const data=canvas.toDataURL();\n          consumeBytes(data);\n          visual=inert.createElement("img");visual.src=data;\n        } catch { approximated=true;visual=inert.createElement("div");visual.textContent="\u52A8\u6001\u753B\u9762 \xB7 \u9759\u6001\u9884\u89C8\u5360\u4F4D"; }\n      }\n      const custom = tag.includes("-") || node.hasAttribute("is"); if (custom || node.shadowRoot) approximated = true;\n      const clone = visual || inert.createElementNS(custom ? "http://www.w3.org/1999/xhtml" : node.namespaceURI, custom ? "div" : node.localName);\n      nodes.set(node, clone);\n      for (const attr of node.attributes) {\n        if (/^on/i.test(attr.name) || ["is", "autofocus", "srcdoc", "autoplay", "contenteditable"].includes(attr.name) || /^javascript:/i.test(attr.value.trim())) continue;\n        if (visual && ["width", "height", "src"].includes(attr.name)) continue;\n        consumeBytes(attr.name); consumeBytes(attr.value); try { clone.setAttribute(attr.name, attr.value); } catch {}\n      }\n      if (tag === "style") { clone.textContent = consumeBytes(node.textContent.replace(/:root\\b/g, "[data-board-preview-root]")); return clone; }\n      if (computed) {\n        const style = getComputedStyle(node); for (const name of style) clone.style.setProperty(name, consumeBytes(style.getPropertyValue(name)), "important");\n      }\n      if (tag === "paseo-board") {\n        // A parent cannot read another Board\'s pixels. Preserve the actual slot\n        // geometry in inert move/layout previews, with an honest placeholder.\n        const box = node.getBoundingClientRect();\n        clone.style.setProperty("box-sizing", "border-box", "important");\n        clone.style.setProperty("width", box.width + "px", "important");\n        clone.style.setProperty("height", box.height + "px", "important");\n        clone.textContent = "\u5D4C\u5165\u753B\u677F \xB7 " + consumeBytes(node.getAttribute("board-id") || "Board");\n        clone.setAttribute("data-board-preview-embed", "");\n        return clone;\n      }\n      clone.style.setProperty("animation", "none", "important"); clone.style.setProperty("transition", "none", "important");\n      if (node instanceof HTMLInputElement) { clone.setAttribute("value", consumeBytes(node.value)); if (node.checked) clone.setAttribute("checked", ""); else clone.removeAttribute("checked"); }\n      if (node instanceof HTMLTextAreaElement) { clone.textContent = consumeBytes(node.value); return clone; }\n      if (node instanceof HTMLOptionElement) { if (node.selected) clone.setAttribute("selected", ""); else clone.removeAttribute("selected"); }\n      if (visual) { const box = node.getBoundingClientRect(); clone.style.setProperty("width", box.width + "px"); clone.style.setProperty("height", box.height + "px"); }\n      const hidden = node !== source && tag !== "head" && (node.hasAttribute("hidden") || getComputedStyle(node).display === "none" || getComputedStyle(node).contentVisibility === "hidden");\n      if (!visual && !hidden) for (const child of node.childNodes) { const copy = visit(child, tag === "details" && !node.open && !node.hasAttribute("data-paseo-layout-key")); if (copy) clone.append(copy); }\n      if (node.scrollLeft || node.scrollTop) scrolls.push([clone, node.scrollLeft, node.scrollTop]);\n      return clone;\n    };\n    const clone = visit(source);\n    return { clone, nodes, scrolls, approximated, consumeBytes };\n  };\n  const showComponentGhost = (point) => {\n    clearComponentGhost();\n    if (!selectedComponent) return;\n    const box = selectedComponent.getBoundingClientRect();\n    const host = document.createElement("div"); host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-component-ghost", "");\n    host.style.cssText = "all:initial!important;position:fixed!important;z-index:2147483645!important;pointer-events:none!important;opacity:.82!important;filter:drop-shadow(0 8px 16px #0005)!important;transform-origin:top left!important;transition:transform 70ms ease-out!important;";\n    host.inert = true; host.setAttribute("aria-hidden","true");\n    const shadow = host.attachShadow({mode:"open"});\n    try {\n      const visual = componentVisualCopy(selectedComponent, {computed:true,maxNodes:350,maxMs:100});\n      const clone = visual.clone; clone.style.setProperty("margin", "0", "important"); clone.style.setProperty("position", "relative", "important"); clone.style.setProperty("inset", "auto", "important");\n      shadow.append(clone);\n    } catch { const fallback = document.createElement("div"); fallback.textContent = componentLabel(selectedComponent); fallback.style.cssText = "padding:20px;border:2px solid #6f96ff;background:#edf2ff;color:#1f3466;font:13px system-ui"; shadow.append(fallback); }\n    const scale = Math.min(1, 300 / Math.max(1, box.width), 180 / Math.max(1, box.height));\n    host.dataset.scale = String(scale); importantBox(host, {left:0,top:0,width:Math.max(40,box.width),height:Math.max(24,box.height)});\n    if (!componentDragAnimation || componentReducedMotion.matches) host.style.setProperty("transition", "none", "important");\n    componentGhost = host; root.append(host); positionComponentGhost(point);\n  };\n  const positionComponentGhost = (point) => {\n    if (!componentGhost) return;\n    componentGhost.style.setProperty("transform", `translate(${point.x + 16}px,${point.y + 16}px) scale(${componentGhost.dataset.scale}) rotate(1deg)`, "important");\n  };\n  const showComponentDropLine = (destination, position, slot = null) => {\n    if (!destination) { componentDropLine?.remove(); componentDropLine = null; return; }\n    const bounds = destination.getBoundingClientRect();\n    const inside = position === "append" || position === "prepend";\n    const edge = inside ? (position === "append" ? destination.lastElementChild : destination.firstElementChild) : destination;\n    const edgeBox = edge?.getBoundingClientRect() || bounds;\n    const flow = getComputedStyle(inside ? destination : destination.parentElement);\n    const horizontal = slot?.horizontal ?? (/flex/.test(flow.display) && flow.flexDirection.startsWith("row"));\n    const trailing = Boolean(position === "after" || position === "append" && edge) !== Boolean(slot?.reverse);\n    const y = trailing ? edgeBox.bottom : edgeBox.top;\n    if (!componentDropLine) { componentDropLine = document.createElement("div"); componentDropLine.setAttribute("data-board-overlay", ""); componentDropLine.setAttribute("data-board-component-drop-line", ""); componentDropLine.style.cssText = "all:initial!important;position:fixed!important;height:4px!important;border-radius:3px!important;background:#3b82f6!important;box-shadow:0 0 0 1px white!important;pointer-events:none!important;z-index:2147483646!important;"; root.append(componentDropLine); }\n    importantBox(componentDropLine, horizontal\n      ? {left:Math.max(1,Math.min(innerWidth-5,(trailing?edgeBox.right:edgeBox.left)-2)),top:Math.max(0,inside?bounds.top+5:edgeBox.top),width:4,height:Math.max(20,inside?bounds.height-10:edgeBox.height)}\n      : {left:Math.max(0,inside?bounds.left+5:edgeBox.left),top:Math.max(1,Math.min(innerHeight-5,y-2)),width:Math.max(20,inside?bounds.width-10:edgeBox.width),height:4});\n    componentDropLine.dataset.position = position;componentDropLine.dataset.orientation=horizontal?"vertical":"horizontal";componentDropLine.dataset.destination=selectorFor(destination);\n  };\n  const validateComponentLayout = () => {\n    const draft = componentLayoutDraft;\n    if (!draft || draft.invalid) return Boolean(draft && !draft.invalid);\n    try {\n      if (!draft.source.isConnected || document.querySelectorAll(draft.selector).length !== 1 || document.querySelector(draft.selector) !== draft.source\n        || snapshot.canvas.revision !== draft.canvasBase.revision || snapshot.canvas.documentVersion !== draft.canvasBase.documentVersion\n        || queued && (queued.snapshot.canvas.revision !== draft.canvasBase.revision || queued.snapshot.canvas.documentVersion !== draft.canvasBase.documentVersion)\n        || !matchesComponentIdentity(draft.source, draft.identity)) draft.invalid = "\u539F\u7EC4\u4EF6\u6216\u753B\u5E03\u5DF2\u53D8\u5316\uFF1B\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9";\n    } catch { draft.invalid = "\u65E0\u6CD5\u786E\u8BA4\u539F\u7EC4\u4EF6\uFF1B\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9"; }\n    return !draft.invalid;\n  };\n  const componentLayoutNeedsTitle = collapse => collapse === "group" || collapse === "contents" && !Array.from(componentLayoutDraft.source.children).some(node => /^h[1-6]$/.test(node.localName))\n    && !componentLayoutDraft.source.querySelector(\':scope > details[data-paseo-layout-part="details"] > summary[data-paseo-layout-part="summary"] > :is(h1,h2,h3,h4,h5,h6)\');\n  const showComponentLayoutTitle = collapse => {\n    const shadow = componentHost.shadowRoot;\n    shadow.querySelector(".layout-title-row").hidden = !componentLayoutNeedsTitle(collapse);\n    shadow.querySelector(".layout-title-label").textContent = collapse === "group" ? "\u5206\u7EC4\u6807\u9898" : "\u6536\u8D77\u540E\u663E\u793A";\n  };\n  const writeComponentLayoutFields = () => {\n    if (!componentLayoutDraft || !componentHost) return;\n    const shadow = componentHost.shadowRoot, config = componentLayoutDraft.config;\n    shadow.querySelector(".layout-collapse").value = config.collapse;\n    shadow.querySelector(".layout-title").value = config.title || "";\n    showComponentLayoutTitle(config.collapse);\n    shadow.querySelector(".layout-height").value = config.maxHeight === null ? "" : String(config.maxHeight);\n  };\n  const readComponentLayoutFields = () => {\n    const shadow = componentHost.shadowRoot, collapse = shadow.querySelector(".layout-collapse").value, height = shadow.querySelector(".layout-height").value;\n    const title = shadow.querySelector(".layout-title").value;\n    componentLayoutDraft.config = { collapse, maxHeight: height.trim() ? Number(height) : null, ...(componentLayoutNeedsTitle(collapse) ? { title: title.trim() || (collapse === "group" ? "\u5206\u7EC4" : "\u5185\u5BB9") } : {}) };\n    showComponentLayoutTitle(collapse);\n  };\n  const openComponentLayout = () => {\n    if (componentText || componentPending || !selectedComponent?.isConnected) return;\n    if (!componentLayoutDraft) {\n      const config = componentLayoutTools.inspect(selectedComponent);\n      componentLayoutDraft = { source: selectedComponent, selector: selectorFor(selectedComponent), identity: componentIdentity(selectedComponent),\n        canvasBase: { revision: snapshot.canvas.revision, documentVersion: snapshot.canvas.documentVersion }, config };\n    }\n    for (const menu of componentHost.shadowRoot.querySelectorAll(".popover")) menu.hidden = true;\n    componentHost.shadowRoot.querySelector(".layout-tools").hidden = false;\n    componentHost.shadowRoot.querySelector(\'[data-component-action="layout"]\').setAttribute("aria-expanded", "true");\n    writeComponentLayoutFields(); setComponentNotice("\u8C03\u6574\u5E03\u5C40 \xB7 \u5148\u9884\u89C8\uFF0C\u518D\u4FDD\u5B58");\n  };\n  const componentLayoutPatch = () => {\n    if (!validateComponentLayout()) throw new Error(componentLayoutDraft?.invalid || "\u8BF7\u91CD\u65B0\u9009\u62E9\u7EC4\u4EF6");\n    const draft = componentLayoutDraft, config = componentLayoutTools.capture(draft.source, draft.config);\n    if (!componentLayoutTools.validate(config)) throw new Error("\u5E03\u5C40\u9009\u9879\u65E0\u6548\uFF0C\u8BF7\u68C0\u67E5\u9AD8\u5EA6\u548C\u6807\u9898");\n    const reparent = config.collapse !== "none" || componentLayoutTools.inspect(draft.source).collapse !== "none";\n    if (reparent && typeof Element.prototype.moveBefore !== "function" && draft.source.querySelector("iframe,video,audio")) throw new Error("\u5F53\u524D\u6D4F\u89C8\u5668\u65E0\u6CD5\u65E0\u635F\u79FB\u52A8\u8FD9\u4E2A\u7EC4\u4EF6\u91CC\u7684\u5A92\u4F53\u6216\u7F51\u9875\uFF1B\u8BF7\u9009\u62E9\u4EC5\u9650\u5236\u9AD8\u5EA6");\n    return { operation: "layout", selector: draft.selector, sourceIdentity: draft.identity, layout: config };\n  };\n  const previewComponentLayout = () => {\n    readComponentLayoutFields();\n    const patch = componentLayoutPatch();\n    showComponentLayoutPreview(patch);\n    if (componentLayoutPreview) componentLayoutDraft.patch = patch;\n    positionComponent();\n  };\n  const cancelComponentLayout = () => {\n    if (componentPending) return;\n    componentLayoutDraft = null; componentLayoutResize = null; clearComponentLayoutPreview();\n    componentHost.shadowRoot.querySelector(".layout-tools").hidden = true;\n    componentHost.shadowRoot.querySelector(\'[data-component-action="layout"]\').setAttribute("aria-expanded", "false");\n    setComponentNotice("\u672A\u4FDD\u5B58\uFF1B\u539F\u7EC4\u4EF6\u4FDD\u6301\u4E0D\u53D8");\n  };\n  const saveComponentLayout = () => {\n    if (!componentLayoutPreview || !componentLayoutDraft?.patch || !validateComponentLayout()) return;\n    proposeComponentEdit(componentLayoutDraft.patch, componentLayoutDraft.canvasBase);\n  };\n  const positionComponentLayoutResize = () => {\n    const preview = componentLayoutPreview;\n    if (!preview?.resizeHandle || !preview.inserted?.isConnected) return;\n    const box = preview.inserted.getBoundingClientRect();\n    importantBox(preview.resizeHandle, { left: Math.max(4, Math.min(innerWidth - 84, box.left + box.width / 2 - 40)), top: Math.max(30, Math.min(innerHeight - 190, box.bottom - 7)), width: 80, height: 14 });\n  };\n  const beginComponentLayoutResize = event => {\n    const preview = componentLayoutPreview;\n    if (!componentLayoutDraft || componentPending || !preview?.layoutBody || !validateComponentLayout()) return;\n    const height = componentLayoutDraft.config.maxHeight ?? Math.max(80, Math.min(2000, Math.round(preview.layoutBody.getBoundingClientRect().height)));\n    componentLayoutResize = { pointerId: event.pointerId, startY: event.clientY, height, original: componentLayoutDraft.config.maxHeight };\n    try { preview.resizeHandle.setPointerCapture(event.pointerId); } catch {}\n  };\n  const moveComponentLayoutResize = event => {\n    const active = componentLayoutResize, preview = componentLayoutPreview;\n    if (!active || active.pointerId !== event.pointerId || !preview?.layoutBody) return;\n    const height = Math.max(80, Math.min(2000, Math.round(active.height + event.clientY - active.startY)));\n    componentLayoutDraft.config.maxHeight = height;\n    preview.layoutBody.style.setProperty("max-height", height + "px"); preview.layoutBody.style.setProperty("overflow-y", "auto");\n    writeComponentLayoutFields(); positionComponentLayoutResize();\n  };\n  const finishComponentLayoutResize = (cancel = false) => {\n    if (!componentLayoutResize || !componentLayoutDraft) return;\n    if (cancel) componentLayoutDraft.config.maxHeight = componentLayoutResize.original;\n    componentLayoutResize = null; writeComponentLayoutFields();\n    try { previewComponentLayout(); } catch (failure) { setComponentNotice(failure.message || String(failure)); }\n  };\n  const showComponentLayoutPreview = (patch) => {\n    clearComponentLayoutPreview(); componentMutation.takeRecords();\n    const source = document.querySelector(patch.selector), destination = patch.operation === "layout" ? source : document.querySelector(patch.destination);\n    try {\n      const failure = componentTransferFailure(patch.operation, source, destination, patch.position);\n      if (failure) throw new Error(failure);\n      const visual = componentVisualCopy(root); const sourceCopy = visual.nodes.get(source), destinationCopy = visual.nodes.get(destination);\n      if (!sourceCopy || !destinationCopy) throw new Error("\u8FD9\u4E2A\u4F4D\u7F6E\u6682\u4E0D\u652F\u6301\u5E03\u5C40\u9884\u89C8\uFF1B\u539F\u7EC4\u4EF6\u5C1A\u672A\u4FEE\u6539");\n      let inserted, layoutResult;\n      if (patch.operation === "layout") {\n        layoutResult = componentLayoutTools.apply(sourceCopy, patch.layout, "component-layout-preview");\n        inserted = patch.layout.collapse === "group" ? layoutResult.details : sourceCopy;\n      } else {\n        inserted = patch.operation === "copy" ? sourceCopy.cloneNode(true) : sourceCopy;\n        const parent = ["before", "after"].includes(patch.position) ? destinationCopy.parentNode : destinationCopy;\n        const before = patch.position === "before" ? destinationCopy : patch.position === "after" ? destinationCopy.nextSibling : patch.position === "prepend" ? destinationCopy.firstChild : null;\n        parent.insertBefore(inserted, before);\n      }\n      inserted.setAttribute("data-board-preview-inserted", "true");\n      inserted.style.setProperty("outline", "3px solid #39b985", "important"); inserted.style.setProperty("outline-offset", "2px", "important");\n      const host = document.createElement("div"); host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-component-layout", "");\n      host.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483644!important;pointer-events:auto!important;background:var(--host-canvas,#fff)!important;";\n      const shadow = host.attachShadow({mode:"open"}); const viewport = document.createElement("div"); viewport.style.cssText = "position:absolute;inset:0;overflow:auto;overscroll-behavior:contain;pointer-events:auto"; viewport.tabIndex=-1;\n      // Keep original tag/ID selectors inside this shadow only. :root is explicitly\n      // rebound to the copied root; original IDs never enter document.querySelector.\n      visual.clone.inert = true; visual.clone.setAttribute("data-board-preview-root", ""); visual.clone.removeAttribute("data-board-selection");\n      visual.clone.style.setProperty("width", root.clientWidth + "px", "important"); visual.clone.style.setProperty("margin", "0", "important"); visual.clone.style.setProperty("cursor", "default", "important");\n      for (const name of ["font-family", "font-size", "line-height", "color", "color-scheme"]) visual.clone.style.setProperty(name,getComputedStyle(root).getPropertyValue(name));\n      for (const sheet of document.styleSheets) if (sheet.ownerNode?.tagName === "LINK") { try { const style = document.createElement("style"); style.textContent = visual.consumeBytes(Array.from(sheet.cssRules, rule=>rule.cssText).join("\\n").replace(/:root\\b/g,"[data-board-preview-root]")); visual.clone.prepend(style); } catch { visual.approximated = true; } }\n      const freeze = document.createElement("style"); freeze.textContent = "[data-board-preview-root],[data-board-preview-root] *,[data-board-preview-root] *::before,[data-board-preview-root] *::after{animation:none!important;transition:none!important;caret-color:transparent!important;pointer-events:none!important}"; shadow.append(freeze,viewport); viewport.append(visual.clone);\n      const safeBottom=Math.min(180,innerHeight*.3), tail=document.createElement("div");tail.style.cssText=`height:${safeBottom}px;pointer-events:none`;viewport.append(tail);\n      const badge = document.createElement("div"); badge.setAttribute("data-board-preview-status", ""); badge.textContent = visual.approximated ? "\u9759\u6001\u5E03\u5C40\u9884\u89C8 \xB7 \u90E8\u5206\u52A8\u6001\u7EC4\u4EF6\u4E3A\u5360\u4F4D \xB7 \u5C1A\u672A\u4FDD\u5B58" : "\u5E03\u5C40\u9884\u89C8 \xB7 \u7EFF\u8272\u6846\u662F\u653E\u7F6E\u540E\u7684\u7EC4\u4EF6 \xB7 \u5C1A\u672A\u4FDD\u5B58"; badge.style.cssText = "position:absolute;top:8px;left:8px;max-width:calc(100% - 32px);padding:6px 10px;border-radius:7px;background:#153c31;color:#e9fff5;font:12px/1.5 system-ui;box-shadow:0 2px 10px #0003"; shadow.append(badge);\n      root.append(host); for (const [node,x,y] of visual.scrolls) { node.scrollLeft=x;node.scrollTop=y; } viewport.scrollLeft=scrollX;viewport.scrollTop=scrollY;\n      componentLayoutPreview = {host,viewport,source,destination,inserted,layoutBody:layoutResult?.body || sourceCopy,revision:snapshot.canvas.revision,documentVersion:snapshot.canvas.documentVersion};\n      // Reveal only inside the static copy. scrollIntoView could also scroll the live\n      // outer document; walk cloned ancestors explicitly, in both axes, instead.\n      for (let container = inserted.parentElement; container && container !== host; container = container.parentElement) {\n        const area=container.getBoundingClientRect(), item=inserted.getBoundingClientRect(), style=getComputedStyle(container);\n        if (container===viewport || /auto|scroll|hidden|clip/.test(style.overflowY)) {\n          const top=area.top+container.clientTop, availableHeight=container.clientHeight-(container===viewport?safeBottom:0), bottom=top+availableHeight;\n          if (item.top<top || item.bottom>bottom) container.scrollTop += item.top-top-Math.max(0,(availableHeight-Math.min(item.height,availableHeight))/2);\n        }\n        if (container===viewport || /auto|scroll|hidden|clip/.test(style.overflowX)) {\n          const left=area.left+container.clientLeft, right=left+container.clientWidth;\n          if (item.left<left || item.right>right) container.scrollLeft += item.left-left-Math.max(0,(container.clientWidth-Math.min(item.width,container.clientWidth))/2);\n        }\n      }\n      if (patch.operation === "layout" && componentLayoutDraft && !componentPending) {\n        const handle = document.createElement("div"); handle.setAttribute("data-component-layout-resize", ""); handle.setAttribute("role", "separator"); handle.setAttribute("aria-label", "\u62D6\u52A8\u8C03\u6574\u6700\u5927\u9AD8\u5EA6"); handle.tabIndex = 0;\n        handle.style.cssText = "position:fixed;box-sizing:border-box;border:2px solid #fff;border-radius:8px;background:#238b65;box-shadow:0 1px 5px #0005;cursor:ns-resize;touch-action:none;pointer-events:auto";\n        shadow.append(handle); componentLayoutPreview.resizeHandle = handle;\n        viewport.addEventListener("scroll", positionComponentLayoutResize, { passive: true });\n        positionComponentLayoutResize();\n      }\n      const button = componentHost.shadowRoot.querySelector(\'[data-component-action="preview-toggle"]\'); button.hidden=false;button.textContent="\u770B\u539F\u7248";\n    } catch (failure) { componentNotice = failure.message || "\u672A\u751F\u6210\u5B8C\u6574\u5E03\u5C40\u9884\u89C8\uFF1B\u539F\u7EC4\u4EF6\u5C1A\u672A\u4FEE\u6539"; if (componentPending) componentPending.message = componentNotice; }\n  };\n  const componentAuthoredHtml = (node) => {\n    if (!node.querySelector("[data-board-overlay]")) return node.outerHTML;\n    const clone = document.implementation.createHTMLDocument("").importNode(node, true);\n    for (const runtime of clone.querySelectorAll("[data-board-overlay]")) runtime.remove();\n    return clone.outerHTML;\n  };\n  const componentIdentity = (node) => {\n    if (!authorElement(node)) return null;\n    const elements = [node, ...node.querySelectorAll("*")].filter(element => !element.closest("[data-board-overlay]"));\n    if (elements.length > 2000) throw new Error("\u7EC4\u4EF6\u5305\u542B\u8D85\u8FC7 2000 \u4E2A\u5143\u7D20\uFF0C\u8BF7\u9009\u62E9\u66F4\u5C0F\u7684\u7EC4\u4EF6");\n    const indices = new Map(elements.map((element, index) => [element, index]));\n    const input = JSON.stringify(elements.map(element => {\n      const identity = [indices.get(element.parentElement) ?? -1, element.localName.toLowerCase(), element.id || "", element.getAttribute("role") || "", element.getAttribute("name") || "", element.getAttribute("type") || ""];\n      const layout = ["data-paseo-layout", "data-paseo-layout-part", "data-paseo-layout-key"].map(name => element.getAttribute(name));\n      // Unmanaged nodes retain legacy fingerprints. Managed restoration metadata\n      // is identity evidence; a changed backup must never be silently reapplied.\n      if (layout.some(value => value !== null)) identity.push(layout.map(value => value ?? ""));\n      return identity;\n    }));\n    const authoredHtml = node.id ? undefined : componentAuthoredHtml(node);\n    if (authoredHtml && authoredHtml.length > 240000) throw new Error("\u6CA1\u6709\u56FA\u5B9A ID \u7684\u7EC4\u4EF6\u8FC7\u5927\uFF0C\u8BF7\u9009\u62E9\u66F4\u5C0F\u7684\u7EC4\u4EF6");\n    let hash = 2166136261; for (let i = 0; i < input.length; i++) hash = Math.imul(hash ^ input.charCodeAt(i), 16777619);\n    return { tag: node.localName.toLowerCase(), ...(node.id ? { id: node.id } : { authoredHtml }), fingerprint: (hash >>> 0).toString(16).padStart(8, "0") };\n  };\n  // Keep this anonymous-source comparison in parity with server/authored-source.ts:\n  // an ID-anchored dynamic leaf may repaint its content, while anonymous surroundings\n  // and all parent/child structure continue to provide exact positional evidence.\n  const matchesComponentIdentity = (target, expected) => {\n    if (!expected) return false;\n    const current = componentIdentity(target);\n    if (current.tag !== expected.tag || current.id !== expected.id || current.fingerprint !== expected.fingerprint) return false;\n    if (target.id) return Array.from(document.querySelectorAll("[id]")).filter(node=>node.id===target.id).length === 1;\n    const html = expected.authoredHtml; if (html === undefined) return false; if (html === componentAuthoredHtml(target)) return true;\n    const template = document.createElement("template"); template.innerHTML = html;\n    const roots = Array.from(template.content.childNodes); if (roots.length !== 1 || roots[0].nodeType !== Node.ELEMENT_NODE) return false;\n    const captured = roots[0], authoredIds = new Map(), capturedIds = new Map();\n    for (const node of document.querySelectorAll("[id]")) authoredIds.set(node.id,(authoredIds.get(node.id)||0)+1);\n    for (const node of [captured,...captured.querySelectorAll("[id]")]) if (node.id) capturedIds.set(node.id,(capturedIds.get(node.id)||0)+1);\n    const attrs = node => JSON.stringify(Array.from(node.attributes,a=>[a.name,a.value]).sort((a,b)=>a[0].localeCompare(b[0])));\n    let visited=0;\n    const matches = (node, reference) => {\n      if (++visited > 10000 || node.nodeType !== reference.nodeType) return false;\n      if (node.nodeType !== Node.ELEMENT_NODE) return node.textContent === reference.textContent;\n      if (node.localName.toLowerCase() !== reference.localName.toLowerCase() || node.id !== reference.id) return false;\n      if (node !== target && node.id) {\n        if (authoredIds.get(node.id)!==1 || capturedIds.get(reference.id)!==1) return false;\n        const a=componentIdentity(node),b=componentIdentity(reference); return a.tag===b.tag && a.id===b.id && a.fingerprint===b.fingerprint;\n      }\n      if (attrs(node)!==attrs(reference)) return false;\n      const authoredChildren = parent => Array.from(parent.childNodes).filter(child => !(child instanceof Element && child.hasAttribute("data-board-overlay")));\n      const children=authoredChildren(node), others=authoredChildren(reference);\n      return children.length===others.length && children.every((child,index)=>matches(child,others[index]));\n    };\n    return matches(target,captured);\n  };\n  const componentPatch = (operation, node, extra = {}) => {\n    const failure = componentTransferFailure(operation, node, extra.destination ? document.querySelector(extra.destination) : null, extra.position); if (failure) throw new Error(failure);\n    return { operation, selector: selectorFor(node), sourceIdentity: componentIdentity(node), ...extra };\n  };\n  const proposeComponentEdit = (patch, canvasBase = { revision: snapshot.canvas.revision, documentVersion: snapshot.canvas.documentVersion }) => {\n    if (componentPending || applying || !selectedComponent?.isConnected) return;\n    const source = document.querySelector(patch.selector);\n    const failure = source && componentTransferFailure(patch.operation, source, patch.destination ? document.querySelector(patch.destination) : null, patch.position);\n    if (failure) { setComponentNotice(failure); return; }\n    const id = `${scope.sessionId}:component-${++sequence}`;\n    componentPending = { id, node: selectedComponent, patch };\n    clearComponentHover(); setComponentNotice("");\n    if (["move", "copy", "layout"].includes(patch.operation)) showComponentLayoutPreview(patch);\n    for (const menu of componentHost.shadowRoot.querySelectorAll(".popover")) menu.hidden = true;\n    post({ type: "component-edit", id, request: { canvasBase, patch, sourceLabel: componentLabel(document.querySelector(patch.selector)), ...(patch.destination ? { destinationLabel: componentLabel(document.querySelector(patch.destination)) } : {}) } });\n    positionComponent();\n  };\n  // The editable copy occupies the authored element\'s actual position. Only one\n  // direct text node is editable; mixed markup and the original live DOM stay intact.\n  const componentTextValue = element => {\n    const visit = node => {\n      if (node.nodeType === Node.TEXT_NODE) return node.textContent;\n      if (!(node instanceof Element)) return "";\n      if (node.localName === "br") return node.hasAttribute("data-component-placeholder") ? "" : "\\n";\n      let value=""; const children=Array.from(node.childNodes);\n      for (let index=0;index<children.length;index++) {\n        const child=children[index], block=child instanceof Element && /^(div|p)$/.test(child.localName);\n        const previous=children[index-1], previousBlock=previous instanceof Element && /^(div|p)$/.test(previous.localName);\n        if (index>0 && (block || previousBlock)) value+="\\n";\n        const placeholder=block && child.childNodes.length===1 && child.firstChild.nodeName==="BR";\n        value+=placeholder?"":visit(child);\n      }\n      // Chrome\'s terminal BR is a caret placeholder; a second trailing BR denotes\n      // a real user line break. Blocks handle their own boundary above.\n      if (children.length && children.at(-1).nodeName==="BR" && value.endsWith("\\n")) value=value.slice(0,-1);\n      return value;\n    };\n    return visit(element);\n  };\n  const syncComponentText = () => {\n    if (!componentText || componentPending || componentText.invalid) return;\n    componentText.value = componentTextValue(componentText.run.editor);\n    componentText.run.editor.style.setProperty("white-space",componentText.value===componentText.run.text?"inherit":"pre-wrap","important");\n    componentText.run.editor.style.setProperty("white-space-collapse",componentText.value===componentText.run.text?"inherit":"preserve","important");\n    queueComponentOutline();\n  };\n  const validateComponentText = () => {\n    const text = componentText; if (!text || text.invalid) return !text?.invalid;\n    const source = text.source;\n    try {\n      const matches = document.querySelectorAll(text.selector);\n      if (source.isConnected && (hiddenMarkerBoundary(source) || !source.getClientRects().length)) text.invalid="\u539F\u6587\u5B57\u5DF2\u9690\u85CF\uFF1B\u8349\u7A3F\u4FDD\u7559\u53EF\u590D\u5236\uFF0C\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9";\n      if (snapshot.canvas.documentVersion !== text.canvasBase.documentVersion || snapshot.canvas.revision !== text.canvasBase.revision\n        || !source.isConnected || matches.length !== 1 || matches[0] !== source || source.childNodes[text.run.index] !== text.run.node\n        || text.run.node.textContent !== text.run.text || !matchesComponentIdentity(source, text.identity)\n        || queued?.snapshot.canvas.documentVersion !== undefined && (queued.snapshot.canvas.documentVersion !== text.canvasBase.documentVersion || queued.snapshot.canvas.revision !== text.canvasBase.revision)) {\n        text.invalid = "\u539F\u6587\u5B57\u6216\u7EC4\u4EF6\u5DF2\u53D8\u5316\uFF1B\u8349\u7A3F\u4FDD\u7559\u53EF\u590D\u5236\uFF0C\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9";\n      }\n    } catch { text.invalid = "\u65E0\u6CD5\u786E\u8BA4\u539F\u6587\u5B57\u4F4D\u7F6E\uFF1B\u8349\u7A3F\u4FDD\u7559\u53EF\u590D\u5236\uFF0C\u8BF7\u53D6\u6D88\u540E\u91CD\u65B0\u9009\u62E9"; }\n    if (text.invalid) text.run.editor.setAttribute("contenteditable", "false");\n    return !text.invalid;\n  };\n  const focusComponentText = (selectAll = false) => {\n    const editor = componentText?.run.editor; if (!editor) return;\n    editor.focus({preventScroll:true});\n    if (selectAll) { const range = document.createRange(); range.selectNodeContents(editor); const selection = componentText.host.shadowRoot.getSelection?.() || window.getSelection(); selection.removeAllRanges(); selection.addRange(range); }\n  };\n  const chooseComponentTextRun = (index, selectAll = false) => {\n    const text = componentText, next = text?.runs[index]; if (!next || componentPending || text.invalid || text.composing) return;\n    syncComponentText();\n    if (next !== text.run && text.value !== text.run.text) {\n      componentHost.shadowRoot.querySelector(".text-runs").value = String(text.runs.indexOf(text.run));\n      setComponentNotice("\u5148\u5B8C\u6210\u6216\u53D6\u6D88\u5F53\u524D\u6587\u5B57\uFF0C\u518D\u6539\u53E6\u4E00\u6BB5\uFF1B\u8FD9\u6BB5\u8349\u7A3F\u4ECD\u4FDD\u7559"); return;\n    }\n    text.run.editor.setAttribute("contenteditable", "false"); text.run.editor.removeAttribute("aria-label"); text.run.editor.removeAttribute("role");\n    text.run = next; text.value = next.text;\n    next.editor.setAttribute("contenteditable", "true"); next.editor.setAttribute("aria-label", "\u7EC4\u4EF6\u6587\u5B57"); next.editor.setAttribute("role", "textbox"); next.editor.setAttribute("aria-multiline", "true");\n    componentHost.shadowRoot.querySelector(".text-runs").value = String(index);\n    focusComponentText(selectAll); queueComponentOutline();\n  };\n  const positionComponentText = () => {\n    const text = componentText; if (!text) return;\n    validateComponentText();\n    const source = text.source, layoutSource=text.layoutSource, bounds = layoutSource.isConnected ? layoutSource.getBoundingClientRect() : text.bounds;\n    if (bounds.width && bounds.height) text.bounds = {left:bounds.left,top:bounds.top,width:bounds.width,height:bounds.height};\n    const box = text.bounds; if (!box) return;\n    importantBox(text.host, {left:box.left,top:box.top,width:box.width});\n    const style = layoutSource.isConnected ? getComputedStyle(layoutSource) : null;\n    const edge=(names)=>style?.boxSizing === "border-box" ? 0 : names.reduce((sum,name)=>sum+(parseFloat(style?.getPropertyValue(name))||0),0);\n    text.clone.style.setProperty("width", Math.max(0,box.width-edge(["padding-left","padding-right","border-left-width","border-right-width"])) + "px", "important");\n    text.clone.style.setProperty("min-height", Math.max(0,box.height-edge(["padding-top","padding-bottom","border-top-width","border-bottom-width"])) + "px", "important");\n    if (style) for (const name of ["font-family","font-size","font-weight","font-style","font-stretch","font-variant","font-feature-settings","font-variation-settings","line-height","letter-spacing","word-spacing","white-space","text-align","text-indent","text-transform","word-break","overflow-wrap","direction","writing-mode"]) text.clone.style.setProperty(name,style.getPropertyValue(name),"important");\n    text.clone.scrollLeft = layoutSource.scrollLeft; text.clone.scrollTop = layoutSource.scrollTop;\n    // Clip at the same scroll ancestors without moving the text to a clipped edge.\n    let top=0,left=0,right=innerWidth,bottom=innerHeight;\n    if (source.isConnected && !text.invalid) for (let parent=source.parentElement;parent;parent=parent.parentElement) {\n      const css=getComputedStyle(parent), area=parent.getBoundingClientRect();\n      if (/auto|scroll|hidden|clip/.test(css.overflowX)) { left=Math.max(left,area.left+parent.clientLeft);right=Math.min(right,area.left+parent.clientLeft+parent.clientWidth); }\n      if (/auto|scroll|hidden|clip/.test(css.overflowY)) { top=Math.max(top,area.top+parent.clientTop);bottom=Math.min(bottom,area.top+parent.clientTop+parent.clientHeight); }\n    }\n    const height=Math.max(box.height,text.clone.getBoundingClientRect().height);\n    text.host.style.setProperty("clip-path",`inset(${Math.max(0,top-box.top)}px ${Math.max(0,box.left+box.width-right)}px ${Math.max(0,box.top+height-bottom)}px ${Math.max(0,left-box.left)}px)`,"important");\n    for (const {source:ancestor,layer} of text.backgrounds) {\n      const area=ancestor.isConnected?ancestor.getBoundingClientRect():box;\n      Object.assign(layer.style,{left:area.left-box.left+"px",top:area.top-box.top+"px",width:area.width+"px",height:area.height+"px"});\n    }\n    const sourceBox=source.isConnected?source.getBoundingClientRect():null;\n    if (text.invalid && (text.recovery || !sourceBox?.width || !sourceBox?.height || hiddenMarkerBoundary(source) || sourceBox.bottom<0 || sourceBox.top>innerHeight || sourceBox.right<0 || sourceBox.left>innerWidth)) {\n      const firstRecovery=!text.host.hasAttribute("data-component-inline-recovery");\n      text.host.setAttribute("data-component-inline-recovery","");\n      importantBox(text.host,{left:8,top:Math.max(8,innerHeight-200),width:Math.min(480,innerWidth-16)});\n      text.host.style.setProperty("clip-path","none","important");text.host.style.setProperty("max-height","130px","important");text.host.style.setProperty("overflow","auto","important");\n      text.host.style.setProperty("pointer-events","auto","important");text.host.style.setProperty("overscroll-behavior","contain","important");\n      if (firstRecovery) {\n        // Reveal only the draft\'s own recovery viewport, never an authored scroll\n        // ancestor. Later positioning leaves the user\'s recovery scroll intact.\n        const editor=text.run.editor.getBoundingClientRect(),viewport=text.host.getBoundingClientRect();\n        text.host.scrollTop+=editor.top-viewport.top-12;text.host.scrollLeft+=editor.left-viewport.left-12;\n      }\n    }\n    const readonly = Boolean(componentPending || text.invalid);\n    text.run.editor.setAttribute("contenteditable",readonly?"false":"true");\n    text.run.editor.setAttribute("aria-readonly",String(readonly));\n  };\n  const startComponentText = (preferredTextNode = null) => {\n    if (componentText) { focusComponentText(); return; }\n    const source=selectedComponent, runs=componentTextRuns(source); if (!runs.length) return;\n    const svg=source.namespaceURI === "http://www.w3.org/2000/svg";\n    let layoutSource=source;\n    // An inline box has no independent line box. Copy its containing formatting\n    // context so its baseline and multi-line fragments remain at their real place.\n    if (!svg && getComputedStyle(source).display === "inline") {\n      while (layoutSource.parentElement && ["inline","contents"].includes(getComputedStyle(layoutSource).display)) layoutSource=layoutSource.parentElement;\n    }\n    const identity=componentIdentity(source), selector=selectorFor(source), bounds=layoutSource.getBoundingClientRect();\n    const visual=componentVisualCopy(layoutSource,{computed:true,maxNodes:350,maxMs:100});let clone=visual.clone,sourceClone=visual.nodes.get(source);\n    if (svg) {\n      // SVG glyphs keep their authored semantic target. The editing copy is HTML\n      // at the glyph bounds, with the SVG computed typography; no SVG node mutates.\n      const convert=node=>{\n        if (node.nodeType===Node.TEXT_NODE) return document.createTextNode(node.textContent);\n        const element=document.createElement(node===clone?"div":"span");\n        for(const attribute of node.attributes) if(!["x","y","dx","dy","transform"].includes(attribute.name)) element.setAttribute(attribute.name,attribute.value);\n        for(const child of node.childNodes) element.append(convert(child));return element;\n      };\n      clone=convert(clone);sourceClone=clone;clone.style.setProperty("display","block","important");\n      const fill=getComputedStyle(source).fill;\n      if (fill && fill!=="none" && !fill.includes("url(")) clone.style.setProperty("color",fill,"important");\n    }\n    const host=document.createElement("div");host.setAttribute("data-board-overlay","");host.setAttribute("data-board-component-inline","");\n    host.style.cssText="all:initial!important;position:fixed!important;z-index:2147483646!important;pointer-events:none!important;box-sizing:border-box!important;";\n    const shadow=host.attachShadow({mode:"open"}), mask=document.createElement("div"), backgrounds=[];\n    mask.style.cssText="position:absolute;inset:0;overflow:hidden;pointer-events:none;background:var(--host-canvas,#fff)";\n    // Repaint the existing ancestor backgrounds under the copy, so transparent\n    // paragraphs do not show the original glyphs through the draft. No authored\n    // node is hidden, moved or made contenteditable.\n    const backgroundSources=[];for(let ancestor=layoutSource;ancestor;ancestor=ancestor.parentElement) {if(backgroundSources.length>=64) throw new Error("\u6587\u5B57\u6240\u5728\u5C42\u7EA7\u8FC7\u6DF1\uFF0C\u8BF7\u9009\u62E9\u66F4\u5C0F\u7684\u7EC4\u4EF6");backgroundSources.unshift(ancestor);}\n    for (const ancestor of backgroundSources) {\n      const css=getComputedStyle(ancestor), layer=document.createElement("div");\n      layer.style.cssText="position:absolute;pointer-events:none;box-sizing:border-box";\n      for (const name of ["background-color","background-image","background-position","background-size","background-repeat","background-origin","background-clip","background-attachment","border-radius"]) layer.style.setProperty(name,visual.consumeBytes(css.getPropertyValue(name)));\n      mask.append(layer);backgrounds.push({source:ancestor,layer});\n    }\n    sourceClone.setAttribute("data-component-inline-root","");\n    for (const node of [clone,...clone.querySelectorAll("*")]) { for(const attribute of ["autofocus","href","xlink:href","action","formaction","form","for","target"]) node.removeAttribute(attribute);node.tabIndex=-1;node.style.setProperty("pointer-events","none","important");if ("disabled" in node) node.disabled=node!==sourceClone; }\n    for (const [name,value] of Object.entries({position:"relative",inset:"auto",margin:"0",transform:"none",translate:"none",rotate:"none",scale:"none",height:"auto","max-height":"none","min-width":"0","max-width":"none"})) clone.style.setProperty(name,value,"important");\n    let copyIndex=0;const copiedTexts=Array.from(sourceClone.childNodes).filter(node=>node.nodeType===Node.TEXT_NODE);\n    for (const child of source.childNodes) {\n      const run=runs.find(run=>source.childNodes[run.index]===child);\n      // Inert copies may omit scripts/styles; the copied text nodes are matched in\n      // source order rather than by a shifted child index.\n      if (child.nodeType !== Node.TEXT_NODE) continue;\n      const copied=copiedTexts[copyIndex++];\n      if (!run || !copied) continue;\n      const span=document.createElement("span");span.setAttribute("data-component-text-run",String(runs.indexOf(run)));span.spellcheck=false;span.tabIndex=-1;\n      span.style.cssText="display:inline;pointer-events:auto!important;user-select:text!important;cursor:text!important;outline:none;border:none;padding:0;margin:0;background:transparent;color:inherit;white-space:inherit!important;white-space-collapse:inherit!important;line-break:inherit!important;overflow-wrap:inherit!important;font:inherit;letter-spacing:inherit;word-spacing:inherit;text-transform:inherit;";\n      span.textContent=run.text;copied.replaceWith(span);run.node=child;run.editor=span;\n    }\n    if (runs.some(run=>!run.editor)) throw new Error("\u672A\u627E\u5230\u8FD9\u6BB5\u6587\u5B57\u7684\u539F\u4F4D\u526F\u672C\uFF0C\u8BF7\u9009\u62E9\u66F4\u5C0F\u7684\u7EC4\u4EF6");\n    const focusStyle=document.createElement("style");focusStyle.textContent=\'[data-component-text-run][contenteditable="true"]{outline:2px solid #6f96ff!important;outline-offset:2px;caret-color:currentColor}[data-component-text-run][aria-readonly="true"]{outline:1px dashed #6f96ff!important}\';\n    shadow.append(focusStyle,mask,clone);root.append(host);\n    componentText={source,layoutSource,sourceClone,svg,selector,identity,canvasBase:{revision:snapshot.canvas.revision,documentVersion:snapshot.canvas.documentVersion},runs,run:runs[0],value:runs[0].text,host,clone,backgrounds,bounds:{left:bounds.left,top:bounds.top,width:bounds.width,height:bounds.height},invalid:"",composing:false};\n    const choices=componentHost.shadowRoot.querySelector(".text-runs");choices.replaceChildren();\n    runs.forEach((run,index)=>{const option=document.createElement("option");option.value=String(index);option.textContent=run.text.trim().slice(0,55);choices.append(option);});choices.hidden=runs.length<2;\n    for (const menu of componentHost.shadowRoot.querySelectorAll(".popover")) menu.hidden=true;\n    clearComponentHover();setComponentNotice("");positionComponent();chooseComponentTextRun(Math.max(0,runs.findIndex(run=>run.node===preferredTextNode)),true);\n  };\n  const cancelComponentText = () => {\n    componentText?.host.remove();componentText=null;setComponentNotice("");positionComponent();\n    componentHost?.shadowRoot.querySelector(\'[data-component-action="text"]\').focus({preventScroll:true});\n  };\n  const saveComponentText = () => {\n    if (!componentText || componentText.composing || componentPending) return;\n    syncComponentText();\n    if (!validateComponentText()) { positionComponent(); return; }\n    const {run,value,selector,identity,canvasBase}=componentText;\n    if (value === run.text) { cancelComponentText(); return; }\n    if (value.length > 24000) { setComponentNotice("\u8FD9\u6BB5\u6587\u5B57\u592A\u957F\uFF0C\u8BF7\u7F29\u77ED\u540E\u91CD\u8BD5"); return; }\n    proposeComponentEdit({operation:"text",selector,sourceIdentity:identity,text:value,expectedText:run.text,textNodeIndex:run.index},canvasBase);\n  };\n  const copyComponent = (mode) => {\n    const failure = componentTransferFailure(mode, selectedComponent);\n    if (failure) { setComponentNotice(failure); return; }\n    componentClipboard = { mode, node: selectedComponent, identity: componentIdentity(selectedComponent) };\n    setComponentNotice(`${mode === "move" ? "\u5DF2\u6807\u8BB0\u526A\u5207" : "\u5DF2\u590D\u5236"} ${componentLabel(selectedComponent)} \xB7 \u9009\u62E9\u76EE\u6807\u7EC4\u4EF6\u540E\u7C98\u8D34\uFF1B\u539F\u4F4D\u7F6E\u4FDD\u6301\u5230\u4FDD\u5B58`);\n  };\n  const pasteComponent = () => {\n    const source = componentClipboard?.node, destination = selectedComponent;\n    if (!source?.isConnected || !destination?.isConnected) { setComponentNotice("\u590D\u5236\u6765\u6E90\u5DF2\u79FB\u9664\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9"); return; }\n    if (source === destination || source.contains(destination)) { setComponentNotice("\u8BF7\u9009\u62E9\u6765\u6E90\u7EC4\u4EF6\u4E4B\u5916\u7684\u76EE\u6807\u4F4D\u7F6E"); return; }\n    if (!equalJson(componentClipboard.identity, componentIdentity(source))) { setComponentNotice("\u6765\u6E90\u5185\u5BB9\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u590D\u5236\u6216\u526A\u5207"); return; }\n    proposeComponentEdit(componentPatch(componentClipboard.mode, source, { destination: selectorFor(destination), destinationIdentity: componentIdentity(destination), position: componentHost.shadowRoot.querySelector(".placement").value }));\n  };\n  // Pointer slots are measured against live, unchanged DOM. The layout copy below\n  // cannot participate in hit testing, so opening a slot never makes it chase itself.\n  let componentDragMeasurements = new Map();\n  const componentDragMeasure = (node, key, read) => {\n    let values = componentDragMeasurements.get(node); if (!values) { values = new Map(); componentDragMeasurements.set(node, values); }\n    if (!values.has(key)) values.set(key, read()); return values.get(key);\n  };\n  const componentDragRect = node => componentDragMeasure(node, "rect", () => node.getBoundingClientRect());\n  const componentDragBox = node => componentDragMeasure(node, "box", () => {\n    const box = node && visibleBox(node);\n    return box && box.right > 0 && box.bottom > 0 && box.left < innerWidth && box.top < innerHeight ? box : null;\n  });\n  const componentDragChildren = node => componentDragMeasure(node, "children", () => Array.from(node?.children || []).slice(0, 160).filter(child => authorElement(child)\n    && !child.matches("script,style,link,meta,template") && componentDragBox(child)));\n  const componentDragFlow = parent => componentDragMeasure(parent, "flow", () => {\n    const style = getComputedStyle(parent), grid = style.display.includes("grid"), flex = style.display.includes("flex");\n    const horizontal = flex ? style.flexDirection.startsWith("row") : grid && !style.gridAutoFlow.startsWith("column");\n    const reverse = horizontal ? (style.direction === "rtl") !== (flex && style.flexDirection === "row-reverse") : flex && style.flexDirection === "column-reverse";\n    return { horizontal, reverse, grid, wrap: grid || flex && style.flexWrap !== "nowrap" };\n  });\n  const componentDragFailure = (node, position) => {\n    if (!node?.isConnected || node === root || node === document.body || node === document.head || node === selectedComponent || selectedComponent?.contains(node)) return "\u8FD9\u4E2A\u4F4D\u7F6E\u4E0D\u80FD\u653E\u7F6E\u7EC4\u4EF6";\n    const failure = componentTransferFailure("move", selectedComponent, node, position); if (failure) return failure;\n    const inside = position === "append" || position === "prepend", parent = inside ? node : node.parentElement;\n    if (inside && !componentDragInside(node)) return "\u8FD9\u4E2A\u5143\u7D20\u4E0D\u80FD\u4F5C\u4E3A\u5D4C\u5957\u5BB9\u5668\uFF0C\u8BF7\u9009\u62E9\u5B83\u7684\u5916\u5C42\u5BB9\u5668";\n    if (!parent || !["normal", "horizontal-tb"].includes(getComputedStyle(parent).writingMode)) return "\u8FD9\u4E2A\u6392\u7248\u65B9\u5411\u8BF7\u4F7F\u7528\u660E\u786E\u7684\u7C98\u8D34\u4F4D\u7F6E";\n    if (parent === selectedComponent.parentElement && (position === "before" && selectedComponent.nextElementSibling === node\n      || position === "after" && selectedComponent.previousElementSibling === node || position === "prepend" && parent.firstElementChild === selectedComponent\n      || position === "append" && parent.lastElementChild === selectedComponent)) return "\u5DF2\u7ECF\u5728\u8FD9\u4E2A\u4F4D\u7F6E\uFF0C\u539F\u7EC4\u4EF6\u4FDD\u6301\u4E0D\u53D8";\n    if (parent.children.length > 160) return "\u8FD9\u4E2A\u5BB9\u5668\u5B50\u9879\u8F83\u591A\uFF0C\u8BF7\u7528\u7C98\u8D34\u4F4D\u7F6E\u786E\u8BA4\u5E03\u5C40";\n    const siblings = componentDragChildren(parent), style = getComputedStyle(parent);\n    if ([selectedComponent, node].some(child => /^(absolute|fixed)$/.test(getComputedStyle(child).position))) return "\u8FD9\u4E2A\u7EC4\u4EF6\u4F7F\u7528\u72EC\u7ACB\u5B9A\u4F4D\uFF0C\u8BF7\u7528\u7C98\u8D34\u4F4D\u7F6E\u786E\u8BA4\u5E03\u5C40";\n    if (style.display.includes("flex") && style.flexWrap === "wrap-reverse") return "\u8FD9\u4E2A\u5BB9\u5668\u4F7F\u7528\u53CD\u5411\u6362\u884C\uFF0C\u8BF7\u7528\u7C98\u8D34\u4F4D\u7F6E\u786E\u8BA4\u5E03\u5C40";\n    if (style.display.includes("flex") && [selectedComponent, ...siblings].some(child => getComputedStyle(child).order !== "0")) return "\u8FD9\u4E2A\u5BB9\u5668\u4F7F\u7528\u81EA\u5B9A\u4E49\u6392\u5E8F\uFF0C\u8BF7\u7528\u7C98\u8D34\u4F4D\u7F6E\u786E\u8BA4\u5E03\u5C40";\n    if (style.display.includes("grid") && [selectedComponent, ...siblings].some(child => {\n      const item = getComputedStyle(child); return [item.gridRowStart, item.gridRowEnd, item.gridColumnStart, item.gridColumnEnd].some(value => value !== "auto");\n    })) return "\u8FD9\u4E2A\u7F51\u683C\u4F7F\u7528\u56FA\u5B9A\u4F4D\u7F6E\uFF0C\u8BF7\u7528\u7C98\u8D34\u4F4D\u7F6E\u786E\u8BA4\u5E03\u5C40";\n    return null;\n  };\n  const componentDragInside = node => authorElement(node) && !node.matches("a,button,input,textarea,select,option,img,canvas,svg,iframe,video,audio,object,embed,table,thead,tbody,tfoot,tr,td,th,col,colgroup,p,h1,h2,h3,h4,h5,h6,summary,br,hr")\n    && /block|flex|grid|flow-root|list-item/.test(getComputedStyle(node).display);\n  const componentDragSlot = (node, position, horizontal = null, reverse = null) => {\n    const inside = position === "append" || position === "prepend", flow = componentDragFlow(inside ? node : node.parentElement);\n    return { node, position, horizontal: horizontal ?? flow.horizontal, reverse: reverse ?? flow.reverse };\n  };\n  const componentDragEdge = (node, point) => {\n    const visible = componentDragBox(node); if (!visible || !node.parentElement || point.x < visible.left || point.x > visible.right || point.y < visible.top || point.y > visible.bottom) return null;\n    const box = componentDragRect(node);\n    const flow = componentDragFlow(node.parentElement), coordinate = flow.horizontal ? point.x : point.y;\n    const start = flow.horizontal ? box.left : box.top, end = flow.horizontal ? box.right : box.bottom;\n    const threshold = Math.min(26, Math.max(8, (end - start) * .2));\n    if (coordinate - start <= threshold && start >= Math.max(0, flow.horizontal ? visible.left : visible.top) - .5) return componentDragSlot(node, flow.reverse ? "after" : "before");\n    if (end - coordinate <= threshold && end <= Math.min(flow.horizontal ? innerWidth : innerHeight, flow.horizontal ? visible.right : visible.bottom) + .5) return componentDragSlot(node, flow.reverse ? "before" : "after");\n    if (flow.horizontal && flow.wrap) {\n      const row = componentDragChildren(node.parentElement).filter(child => {\n        const other = componentDragRect(child); return Math.min(box.bottom, other.bottom) - Math.max(box.top, other.top) > Math.min(box.height, other.height) / 2;\n      }).sort((a, b) => (componentDragRect(a).left - componentDragRect(b).left) * (flow.reverse ? -1 : 1));\n      if (node === row[0] && point.y - box.top < Math.min(18, box.height * .15) && box.top >= 0) return componentDragSlot(node, "before", false, false);\n      if (node === row[row.length - 1] && box.bottom - point.y < Math.min(18, box.height * .15) && box.bottom <= innerHeight) return componentDragSlot(node, "after", false, false);\n    }\n    return null;\n  };\n  const componentDragGap = (parent, point) => {\n    const children = componentDragChildren(parent);\n    if (!children.length || children.some(child => { const b = componentDragRect(child); return point.x >= b.left && point.x <= b.right && point.y >= b.top && point.y <= b.bottom; })) return null;\n    // A container\'s explanatory text is not a sibling slot for another container.\n    // Keep leaf-to-leaf reordering available, while group drags target group gaps\n    // or the enclosing container\'s interior rather than a nearby paragraph edge.\n    const destinations = componentDragInside(selectedComponent) ? children.filter(componentDragInside) : children;\n    const flow = componentDragFlow(parent), slots = [];\n    if (destinations.length < 2) return null;\n    const boxes = destinations.map(componentDragRect);\n    const across = boxes.some(box => box.right <= point.x && box.top <= point.y && point.y <= box.bottom)\n      && boxes.some(box => box.left >= point.x && box.top <= point.y && point.y <= box.bottom);\n    const betweenRows = boxes.some(box => box.bottom <= point.y) && boxes.some(box => box.top >= point.y);\n    if (!(flow.horizontal ? across || flow.wrap && betweenRows : betweenRows)) return null;\n    for (const node of destinations) {\n      if (node === selectedComponent || selectedComponent.contains(node)) continue;\n      const b = componentDragRect(node), visible = componentDragBox(node);\n      for (const trailing of [false, true]) {\n        const coordinate = flow.horizontal ? trailing ? b.right : b.left : trailing ? b.bottom : b.top;\n        if (coordinate < Math.max(0, flow.horizontal ? visible.left : visible.top) - .5 || coordinate > Math.min(flow.horizontal ? innerWidth : innerHeight, flow.horizontal ? visible.right : visible.bottom) + .5) continue;\n        const distance = flow.horizontal ? Math.hypot(point.x - coordinate, Math.max(b.top - point.y, 0, point.y - b.bottom))\n          : Math.hypot(point.y - coordinate, Math.max(b.left - point.x, 0, point.x - b.right));\n        const slot = componentDragSlot(node, trailing !== flow.reverse ? "after" : "before"); if (slot) slots.push({ ...slot, distance });\n      }\n      if (flow.horizontal && flow.wrap) {\n        const row = children.filter(child => { const other = componentDragRect(child); return Math.min(b.bottom, other.bottom) - Math.max(b.top, other.top) > Math.min(b.height, other.height) / 2; })\n          .sort((a, z) => (componentDragRect(a).left - componentDragRect(z).left) * (flow.reverse ? -1 : 1));\n        for (const [edge, position, isEnd] of [[b.top, "before", node === row[0]], [b.bottom, "after", node === row[row.length - 1]]]) {\n          if (!isEnd || edge < Math.max(0, visible.top) - .5 || edge > Math.min(innerHeight, visible.bottom) + .5) continue;\n          const slot = componentDragSlot(node, position, false, false);\n          if (slot) slots.push({ ...slot, distance: Math.hypot(point.y - edge, Math.max(b.left - point.x, 0, point.x - b.right)) });\n        }\n      }\n    }\n    slots.sort((a, b) => a.distance - b.distance);\n    return slots[0]?.distance <= 64 ? slots[0] : null;\n  };\n  const componentDestinations = point => {\n    componentDragMeasurements = new Map();\n    const raw = document.elementFromPoint(point.x, point.y), hit = componentAt(raw), chain = [];\n    for (let node = raw; node instanceof Element && chain.length < 20; node = node.parentElement) {\n      if (node.hasAttribute("data-board-overlay")) return { candidates: [], automatic: null };\n      chain.push(node);\n    }\n    const ancestors = hit ? componentAncestors(hit).reverse().filter(node => node !== selectedComponent && !selectedComponent.contains(node) && componentDragBox(node)) : [];\n    if (raw === selectedComponent || selectedComponent.contains(raw)) return { candidates: ancestors, automatic: null, overSource: true };\n    const sameLevel = chain.find(node => node.parentElement === selectedComponent.parentElement && node !== selectedComponent);\n    let automatic = sameLevel && (componentDragEdge(sameLevel, point) || componentDragInside(sameLevel) && componentDragSlot(sameLevel, "append"));\n    if (!automatic) for (const node of chain) {\n      if (selectedComponent === node || selectedComponent.contains(node)) continue;\n      automatic = componentDragGap(node, point) || (componentBoundary(node) && (!componentDragInside(selectedComponent) || componentDragInside(node)) && componentDragEdge(node, point));\n      if (automatic) break;\n    }\n    if (!automatic) {\n      const interior = ancestors.find(node => componentDragInside(node) && !componentDragFailure(node, "append"));\n      if (interior) automatic = componentDragSlot(interior, "append");\n    }\n    // Keep the actual inner-to-outer hierarchy even when automatic placement\n    // selects an outer card. Only gap neighbors are outside the hit ancestry.\n    const candidates = automatic && !ancestors.includes(automatic.node) ? [automatic.node, ...ancestors] : ancestors;\n    return { candidates, automatic };\n  };\n  const makeComponentDragPreview = () => {\n    const active = componentDrag;\n    if (!active || active.previewUnavailable) return null;\n    if (componentDragPreview) return componentDragPreview;\n    try {\n      const visual = componentVisualCopy(root, { maxNodes: 1800, maxMs: 100, placeholders: true }), source = visual.nodes.get(selectedComponent);\n      if (!source) throw new Error("\u8FD9\u4E2A\u7EC4\u4EF6\u4EC5\u663E\u793A\u63D2\u5165\u7EBF");\n      const host = document.createElement("div"); host.setAttribute("data-board-overlay", ""); host.setAttribute("data-board-component-drag-preview", "");\n      host.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483643!important;pointer-events:none!important;overflow:hidden!important;background:var(--host-canvas,#fff)!important;";\n      host.inert = true; host.setAttribute("aria-hidden", "true");\n      const shadow = host.attachShadow({ mode: "open" }), viewport = document.createElement("div");\n      viewport.style.cssText = "position:absolute;inset:0;overflow:hidden;pointer-events:none;";\n      visual.clone.inert = true; visual.clone.setAttribute("data-board-preview-root", ""); visual.clone.removeAttribute("data-board-selection");\n      visual.clone.style.setProperty("width", root.clientWidth + "px", "important"); visual.clone.style.setProperty("margin", "0", "important");\n      for (const name of ["font-family", "font-size", "line-height", "color", "color-scheme"]) visual.clone.style.setProperty(name, getComputedStyle(root).getPropertyValue(name));\n      for (const sheet of document.styleSheets) if (sheet.ownerNode?.tagName === "LINK") {\n        const style = document.createElement("style"); style.textContent = visual.consumeBytes(Array.from(sheet.cssRules, rule => rule.cssText).join("\\n").replace(/:root\\b/g, "[data-board-preview-root]")); visual.clone.prepend(style);\n      }\n      const freeze = document.createElement("style"); freeze.textContent = "[data-board-preview-root],[data-board-preview-root] *,[data-board-preview-root] *::before,[data-board-preview-root] *::after{animation:none!important;transition:none!important;caret-color:transparent!important;pointer-events:none!important}";\n      source.setAttribute("data-board-drag-placeholder", ""); source.style.setProperty("opacity", ".35", "important"); source.style.setProperty("outline", "2px dashed #3b82f6", "important");\n      shadow.append(freeze, viewport); viewport.append(visual.clone); root.append(host);\n      for (const [node, x, y] of visual.scrolls) { node.scrollLeft = x; node.scrollTop = y; } viewport.scrollLeft = scrollX; viewport.scrollTop = scrollY;\n      componentDragPreview = { host, viewport, visual, source, originalParent: source.parentNode, originalNext: source.nextSibling, animations: [] };\n      return componentDragPreview;\n    } catch (failure) { active.previewUnavailable = true; clearComponentDragPreview(); return null; }\n  };\n  const paintComponentDragPreview = slot => {\n    const preview = makeComponentDragPreview(); if (!preview) return;\n    const { visual, source, host } = preview, destination = visual.nodes.get(slot.node);\n    if (!destination) { clearComponentDragPreview(); componentDrag.previewUnavailable = true; return; }\n    if (preview.destination === slot.node && preview.position === slot.position) return;\n    for (const animation of preview.animations) animation.cancel(); preview.animations = [];\n    const parent = ["before", "after"].includes(slot.position) ? destination.parentNode : destination;\n    const affected = [...new Set([...source.parentElement.children, ...parent.children])].filter(node => node instanceof Element && node !== source).slice(0, 100);\n    const before = new Map(affected.map(node => [node, node.getBoundingClientRect()]));\n    const next = slot.position === "before" ? destination : slot.position === "after" ? destination.nextSibling : slot.position === "prepend" ? destination.firstChild : null;\n    parent.insertBefore(source, next);\n    host.dataset.position = slot.position; host.dataset.destination = selectorFor(slot.node); host.dataset.orientation = slot.horizontal ? "vertical" : "horizontal";\n    host.dataset.motion = componentDragAnimation && !componentReducedMotion.matches ? "animated" : "static";\n    if (host.dataset.motion === "animated") for (const node of affected) {\n      const old = before.get(node), now = node.getBoundingClientRect(), dx = old.left - now.left, dy = old.top - now.top;\n      if (Math.abs(dx) < .5 && Math.abs(dy) < .5 || now.right < 0 || now.bottom < 0 || now.left > innerWidth || now.top > innerHeight) continue;\n      // The independent translate longhand composes with authored transforms; only\n      // inert copies receive animations, never source nodes or their inline styles.\n      if (getComputedStyle(node).translate !== "none") continue;\n      preview.animations.push(node.animate([{ translate: `${dx}px ${dy}px` }, { translate: "0px 0px" }], { duration: 160, easing: "ease-out" }));\n    }\n    preview.destination = slot.node; preview.position = slot.position;\n  };\n  const clearComponentDragTarget = message => {\n    if (componentDrag) componentDrag.target = null;\n    clearComponentHover(); showComponentDropLine(null); clearComponentDragPreview(); setComponentNotice(message);\n  };\n  const updateComponentDragSafely = update => {\n    if (!componentDrag) return;\n    try { update(componentDrag); }\n    catch (failure) {\n      if (componentDrag) { componentDrag.candidates = []; componentDrag.automatic = null; componentDrag.depth = 0; componentDrag.manualDepth = false; }\n      clearComponentDragTarget(failure?.message || "\u65E0\u6CD5\u786E\u8BA4\u62D6\u52A8\u76EE\u6807\uFF1B\u8BF7\u91CD\u65B0\u9009\u62E9\uFF0C\u539F\u7EC4\u4EF6\u4FDD\u6301\u4E0D\u53D8");\n    }\n  };\n  const paintComponentDrag = () => updateComponentDragSafely(active => {\n    const destination = active.candidates[active.depth], point = componentPointer || { x: 0, y: 0 };\n    const automatic = active.overSource && !active.manualDepth ? null : active.automatic?.node === destination ? active.automatic : destination && (componentDragEdge(destination, point) || componentDragSlot(destination, "append"));\n    const position = active.manualPosition || automatic?.position || "append";\n    const failure = destination ? componentDragFailure(destination, position) : null;\n    const slot = !failure && destination ? active.manualPosition ? componentDragSlot(destination, position) : automatic : null;\n    positionComponentGhost(point);\n    if (!slot) { clearComponentDragTarget(failure || "\u79FB\u5230\u7EC4\u4EF6\u8FB9\u7F18\u6216\u7A7A\u9699\u63D2\u5165\uFF0C\u4E2D\u592E\u653E\u5165 \xB7 Esc \u53D6\u6D88"); return; }\n    // A placement and its structural identity are one accepted target. A failed\n    // identity capture must never pair this placement with a previous target.\n    const target = active.target?.node === destination && active.target.position === position ? active.target\n      : { node: destination, position, identity: componentIdentity(destination), parent: destination.parentElement };\n    active.target = target;\n    const names = { before: "\u524D\u9762", after: "\u540E\u9762", prepend: "\u653E\u5165\u5F00\u5934", append: "\u653E\u5165\u672B\u5C3E" };\n    showComponentDropLine(destination, position, slot); paintComponentDragPreview(slot);\n    previewComponent(destination, `${componentLabel(destination)} \xB7 ${names[position]} \xB7 \u5C42\u7EA7 ${active.depth + 1}/${active.candidates.length}`);\n    setComponentNotice(`\u76EE\u6807 ${componentLabel(destination)} \xB7 ${names[position]}${active.previewUnavailable ? " \xB7 \u4EC5\u663E\u793A\u63D2\u5165\u7EBF" : " \xB7 \u8BA9\u4F4D\u9884\u89C8"}\uFF1BTab \u5207\u6362\u5C42\u7EA7\uFF0C\u65B9\u5411\u952E\u6307\u5B9A\u4F4D\u7F6E`);\n  });\n  const updateComponentDragDestination = () => updateComponentDragSafely(active => {\n    const result = componentDestinations(componentPointer || { x: 0, y: 0 }), previous = active.candidates[active.depth];\n    active.candidates = result.candidates; active.automatic = result.automatic; active.overSource = result.overSource;\n    active.depth = active.manualDepth && result.candidates.includes(previous) ? result.candidates.indexOf(previous) : Math.max(0, result.candidates.indexOf(result.automatic?.node));\n    paintComponentDrag();\n  });\n  const componentGesture = () => ({node:selectedComponent,identity:componentIdentity(selectedComponent),canvasBase:{revision:snapshot.canvas.revision,documentVersion:snapshot.canvas.documentVersion}});\n  const componentGestureLive = gesture => {\n    try { return gesture && gesture.node===selectedComponent && gesture.node.isConnected && visibleBox(gesture.node)\n      && snapshot.canvas.revision===gesture.canvasBase.revision && snapshot.canvas.documentVersion===gesture.canvasBase.documentVersion\n      && (!queued || queued.snapshot.canvas.revision===gesture.canvasBase.revision && queued.snapshot.canvas.documentVersion===gesture.canvasBase.documentVersion)\n      && matchesComponentIdentity(gesture.node,gesture.identity); } catch { return false; }\n  };\n  const referenceComponent = position => {\n    const target=selectedComponent;if (!target?.isConnected || componentPending || componentText || componentDrag || applying || !visibleBox(target)) return;\n    const region=rect(target.getBoundingClientRect());\n    const anchor={...currentAnchor(),kind:"element",selector:selectorFor(target),rect:region,viewport:viewport(),binding:captureBinding(target,region)};\n    const session=beginSelection(position || {x:Math.max(8,Math.min(region.x-scrollX,innerWidth-24)),y:Math.max(8,Math.min(region.y-scrollY,innerHeight-24))});\n    void finishSelection(session,anchor,region);\n  };\n  const componentTextHit = event => {\n    const range=document.caretRangeFromPoint?.(event.clientX,event.clientY),caret=range?null:document.caretPositionFromPoint?.(event.clientX,event.clientY);\n    const node=range?.startContainer || caret?.offsetNode,source=node?.parentElement;\n    if (node?.nodeType!==Node.TEXT_NODE || !selectedComponent?.contains(node) || !authorElement(source)\n      || !componentTextRuns(source).some(run=>source.childNodes[run.index]===node)) return null;\n    const bounds=document.createRange();bounds.selectNodeContents(node);\n    return Array.from(bounds.getClientRects()).some(box=>event.clientX>=box.left-2 && event.clientX<=box.right+2 && event.clientY>=box.top-2 && event.clientY<=box.bottom+2) ? {node,source}:null;\n  };\n  const startComponentDrag = (event, gesture = componentGesture()) => {\n    if (componentPending || componentText || !selectedComponent?.isConnected) return;\n    if (!componentGestureLive(gesture)) {setComponentNotice("\u7EC4\u4EF6\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u540E\u62D6\u52A8");return;}\n    const failure = componentTransferFailure("move", selectedComponent);\n    if (failure) { componentPress=null; componentClick=null; setComponentNotice(failure); return; }\n    componentPress=null;componentClick=null;componentDrag = { pointerId: event.pointerId, candidates: [], depth: 0, gesture, automatic: null, target: null, paintFrame: null };\n    clearComponentHover(); showComponentGhost(eventPoint(event)); suppressPointerClick = true; try { root.setPointerCapture(event.pointerId); } catch {} paintComponentDrag();\n  };\n  const cancelComponentDrag = () => {\n    const active = componentDrag; componentDrag = null; componentPress=null; componentClick=null; clearComponentHover(); clearComponentGhost();\n    if (active && active.paintFrame !== null) cancelAnimationFrame(active.paintFrame);\n    if (active) try { if (root.hasPointerCapture(active.pointerId)) root.releasePointerCapture(active.pointerId); } catch {}\n    setComponentNotice("");\n  };\n  const finishComponentDrag = () => {\n    const active = componentDrag, source = selectedComponent;\n    if (active && active.paintFrame !== null) { cancelAnimationFrame(active.paintFrame); active.paintFrame = null; updateComponentDragDestination(); }\n    const target = active?.target, destination = target?.node; cancelComponentDrag();\n    if (!source?.isConnected || !destination?.isConnected || source === destination || source.contains(destination)) return;\n    if (!componentGestureLive(active.gesture)) {setComponentNotice("\u7EC4\u4EF6\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u540E\u62D6\u52A8");return;}\n    if (destination.parentElement !== target.parent || !matchesComponentIdentity(destination, target.identity)) { setComponentNotice("\u76EE\u6807\u7EC4\u4EF6\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u540E\u62D6\u52A8"); return; }\n    const failure = componentDragFailure(destination, target.position); if (failure) { setComponentNotice(failure); return; }\n    proposeComponentEdit(componentPatch("move", source, { destination: selectorFor(destination), destinationIdentity: target.identity, position: target.position }),active.gesture.canvasBase);\n  };\n  const componentAction = (event) => {\n    const button = event.composedPath().find(node => node instanceof Element && node.hasAttribute("data-component-action"));\n    if (!event.isTrusted || !button || button.disabled) return;\n    const action = button.dataset.componentAction;\n    if (action === "preview-toggle" && componentLayoutPreview) { componentLayoutPreview.host.hidden = !componentLayoutPreview.host.hidden; componentLayoutPreview.host.style.setProperty("display",componentLayoutPreview.host.hidden ? "none" : "block","important"); button.textContent = componentLayoutPreview.host.hidden ? "\u770B\u9884\u89C8" : "\u770B\u539F\u7248"; positionComponent(); return; }\n    if (componentPending) return;\n    if (action === "hierarchy" || action === "more") {\n      const menu = componentHost.shadowRoot.querySelector(action === "hierarchy" ? ".relations" : ".tools");\n      const open = menu.hidden; for (const item of componentHost.shadowRoot.querySelectorAll(".popover")) item.hidden = true;\n      for (const toggle of componentHost.shadowRoot.querySelectorAll("[aria-expanded]")) toggle.setAttribute("aria-expanded", "false");\n      menu.hidden = !open; button.setAttribute("aria-expanded", String(open)); return;\n    }\n    if (action === "layout") { openComponentLayout(); return; }\n    if (action === "layout-preview") { previewComponentLayout(); return; }\n    if (action === "layout-save") { saveComponentLayout(); return; }\n    if (action === "layout-cancel") { cancelComponentLayout(); return; }\n    if (action === "layout-reset" && componentLayoutDraft) { componentLayoutDraft.config = { collapse: "none", maxHeight: null }; writeComponentLayoutFields(); clearComponentLayoutPreview(); setComponentNotice("\u6062\u590D\u539F\u6837 \xB7 \u8BF7\u9884\u89C8\u540E\u4FDD\u5B58"); return; }\n    if (action === "choose") { componentNotice = ""; selectComponent(componentChoices[Number(button.dataset.componentIndex)]); return; }\n    if (action === "close") { setSelectionMode("off"); post({ type: "selection-end" }); return; }\n    if (action === "copy" || action === "cut") { copyComponent(action === "cut" ? "move" : "copy"); return; }\n    if (action === "paste") { pasteComponent(); return; }\n    if (action === "text") { startComponentText(); return; }\n    if (action === "text-save") { saveComponentText(); return; }\n    if (action === "text-cancel") { cancelComponentText(); return; }\n    if (action === "reference") referenceComponent();\n  };\n  const resumeComponentEdit = () => {\n    if (!componentResume || snapshot.canvas.revision < componentResume.revision || queued || applying) return;\n    if (patchFailure) { componentResume = null; return; }\n    const resume = componentResume; componentResume = null;\n    if (resume.node?.isConnected) { selectionMode = "component"; paintSelectionMode(); selectComponent(resume.node); setComponentNotice("\u5DF2\u4FDD\u5B58"); }\n  };\n  const receiveComponentEdit = (message) => {\n    if (!componentPending || message.id !== componentPending.id || !message.result) return;\n    const result = message.result;\n    if (result.status === "unknown") { componentPending.message = result.message || "\u4FDD\u5B58\u7ED3\u679C\u5F85\u786E\u8BA4\uFF0C\u8BF7\u5728\u4E0A\u65B9\u91CD\u8BD5\u540C\u4E00\u6B21\u4FEE\u6539"; positionComponent(); return; }\n    const pending = componentPending; componentPending = null; clearComponentLayoutPreview();\n    if (result.status === "applied") {\n      if (pending.patch.operation === "move") componentClipboard = null;\n      componentResume = { node: pending.node, revision: result.canvasRevision || snapshot.canvas.revision + 1 };\n      selectionMode = "off"; clearComponent(); paintSelectionMode(); post({ type: "selection-end" }); void drain().then(resumeComponentEdit);\n    } else { setComponentNotice(result.status === "cancelled" ? "\u672A\u4FDD\u5B58\uFF1B\u539F\u7EC4\u4EF6\u4FDD\u6301\u4E0D\u53D8" : result.message || "\u4FDD\u5B58\u672A\u6210\u529F\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u6700\u65B0\u7EC4\u4EF6\u540E\u91CD\u8BD5"); positionComponent(); }\n  };\n  window.addEventListener("pointercancel", event => { if (event.isTrusted && componentLayoutResize?.pointerId === event.pointerId) finishComponentLayoutResize(true); }, true);\n  window.addEventListener("blur", () => { if (componentLayoutResize) finishComponentLayoutResize(true); });\n  window.addEventListener("resize", positionComponentLayoutResize);\n  window.addEventListener("scroll", queueComponentOutline, true);\n  window.addEventListener("resize", queueComponentOutline);\n  const refreshComponentDragGeometry = event => {\n    if (!componentDrag || event.target instanceof Element && event.target.closest("[data-board-overlay]")) return;\n    clearComponentDragPreview();\n    if (componentDrag.paintFrame === null) componentDrag.paintFrame = requestAnimationFrame(() => {\n      if (!componentDrag) return; componentDrag.paintFrame = null; updateComponentDragDestination();\n    });\n  };\n  window.addEventListener("scroll", refreshComponentDragGeometry, true);\n  window.addEventListener("resize", refreshComponentDragGeometry);\n  let captureLibrary;\n  const loadCapture = () => {\n    if (!captureLibrary) {\n      const url = URL.createObjectURL(new Blob([initial.captureModule], { type: "text/javascript" }));\n      captureLibrary = import(url).finally(() => URL.revokeObjectURL(url));\n    }\n    return captureLibrary;\n  };\n  const captureOverlay = (node) => node instanceof Element && !!node.closest("[data-board-overlay],[data-board-markers],[data-board-capture-status]");\n  const captureTask = () => new Promise(resolve => setTimeout(resolve, 0));\n  // Keep the layout tree, but do not copy thousands of computed styles in off-selection\n  // subtrees. A shallow placeholder is safe only when its used size does not depend on its\n  // children and their margins cannot collapse through it. Overlapping/overflowing descendants\n  // keep every ancestor on their path. Unknown paint effects conservatively keep their subtree.\n  // Layout boxes survive closed details/content-visibility, while display:contents and\n  // visibility overrides can still paint descendants. Suppress only whole paint subtrees.\n  const capturePaintSuppressed = (node, cache = new Map()) => {\n    if (!node) return false;\n    if (cache.has(node)) return cache.get(node);\n    const parent = node.parentElement;\n    const summary = parent?.matches("details:not([open])") && Array.from(parent.children).find(child => child.tagName === "SUMMARY");\n    const hidden = getComputedStyle(node).display === "none" || Boolean(parent && (\n      getComputedStyle(parent).contentVisibility === "hidden" ||\n      (parent.matches("details:not([open])") && node !== summary && getComputedStyle(parent, "::details-content").contentVisibility === "hidden") ||\n      capturePaintSuppressed(parent, cache)));\n    cache.set(node, hidden);\n    return hidden;\n  };\n  const captureDefinition = node => {\n    for (; node; node = node.parentElement) if (node instanceof SVGElement && node.matches("defs,filter,clipPath,mask,pattern,linearGradient,radialGradient,symbol")) return true;\n    return false;\n  };\n  const captureReferenceIds = (node, style) => {\n    const ids = new Set();\n    const add = value => {\n      if (!value || value.startsWith("data:")) return;\n      if (value.startsWith("#")) { ids.add(value.slice(1)); return; }\n      try {\n        const url = new URL(value, document.baseURI);\n        if (url.hash && url.href.split("#")[0] === document.URL.split("#")[0]) ids.add(decodeURIComponent(url.hash.slice(1)));\n      } catch {}\n    };\n    // Navigation hrefs, data attributes and unused CSS variables are not paint edges.\n    if (node instanceof SVGElement && node.localName !== "a") {\n      add(node.getAttribute("href"));\n      add(node.getAttribute("xlink:href"));\n    }\n    for (const [property, value] of style) {\n      if (property.startsWith("--") || (property === "content" && !value.startsWith("url("))) continue;\n      for (const match of value.matchAll(/url\\(\\s*["\']?([^"\')\\s]+)["\']?\\s*\\)/g)) add(match[1]);\n    }\n    return ids;\n  };\n  const captureShadowOutsets = style => {\n    const outsets = { left: 2, top: 2, right: 2, bottom: 2 };\n    for (const [value, text] of [[style.boxShadow, false], [style.textShadow, true]]) {\n      if (!value || value === "none") continue;\n      if (value.length > 16384) return null;\n      // Split only outside color functions: rgba()/color() commas are not shadow layers.\n      const layers = []; let layer = "", depth = 0;\n      for (const character of value) {\n        if (character === "(") depth++;\n        if (character === ")") depth--;\n        if (depth < 0) return null;\n        if (character === "," && depth === 0) { layers.push(layer); layer = ""; }\n        else if (depth === 0 && character !== ")") layer += character;\n      }\n      layers.push(layer);\n      if (depth || layers.length > 64) return null;\n      for (const item of layers) {\n        const words = item.trim().split(/\\s+/);\n        if (words.includes("inset")) continue;\n        const lengths = words.filter(word => /^[-+]?(?:\\d*\\.)?\\d+(?:e[-+]?\\d+)?px$/i.test(word)).map(parseFloat);\n        if (lengths.length < 2 || lengths.length > (text ? 3 : 4) || lengths.some(value => !Number.isFinite(value))) return null;\n        const [x, y, blur = 0, spread = 0] = lengths;\n        if (blur < 0) return null;\n        // CSS blur radius is twice the Gaussian standard deviation. Three sigmas\n        // plus the antialias guard retain its visible tail; spread keeps its sign.\n        const extent = 1.5 * blur + spread;\n        outsets.left = Math.max(outsets.left, extent - x + 2);\n        outsets.right = Math.max(outsets.right, extent + x + 2);\n        outsets.top = Math.max(outsets.top, extent - y + 2);\n        outsets.bottom = Math.max(outsets.bottom, extent + y + 2);\n      }\n    }\n    return outsets;\n  };\n  const captureTransformedPaint = (node, cache) => {\n    if (cache.has(node)) return cache.get(node);\n    const path = []; let transformed = false;\n    for (let parent = node; parent; parent = parent.parentElement) {\n      if (cache.has(parent)) { transformed = cache.get(parent); break; }\n      path.push(parent);\n      const style = getComputedStyle(parent);\n      if (style.transform !== "none" || style.perspective !== "none" ||\n        [style.translate, style.rotate, style.scale].some(value => value && value !== "none") ||\n        ![undefined, "normal", "1"].includes(style.zoom)) { transformed = true; break; }\n    }\n    for (const parent of path) cache.set(parent, transformed);\n    return transformed;\n  };\n  const capturePaintBounds = (node, style, transformed) => {\n    const outsets = captureShadowOutsets(style);\n    // Shadow lengths are local CSS pixels while getBoundingClientRect is in the\n    // viewport coordinate space. Unknown transformed paint keeps its subtree.\n    if (!outsets || ([style.boxShadow, style.textShadow].some(value => value && value !== "none") && captureTransformedPaint(node, transformed))) return null;\n    const bounds = node.getBoundingClientRect();\n    return { left: bounds.left + scrollX - outsets.left, top: bounds.top + scrollY - outsets.top,\n      right: bounds.right + scrollX + outsets.right, bottom: bounds.bottom + scrollY + outsets.bottom };\n  };\n  const captureStickyMode = (node, plan) => {\n    const style = plan.styles.get(node);\n    const unsupported = () => { throw new Error("Sticky content cannot be captured accurately; the geometric anchor is still saved"); };\n    let scroller = null;\n    for (let parent = node, depth = 0; parent; parent = parent.parentElement) {\n      if (++depth > 256) return unsupported();\n      const current = plan.styles.get(parent);\n      if (!current || current.get("transform") !== "none" || current.get("perspective") !== "none" ||\n        ["translate", "rotate", "scale"].some(property => ![undefined, "none"].includes(current.get(property))) ||\n        ![undefined, "normal", "1"].includes(current.get("zoom"))) return unsupported();\n      // Body overflow can either establish its own scrollport or propagate to the\n      // viewport. Do not infer an unscrolled viewport from an independently scrolled body.\n      if (!scroller && parent === document.body && (parent.scrollLeft || parent.scrollTop)) return unsupported();\n      if (!scroller && parent !== node && parent !== root && parent !== document.body &&\n        [current.get("overflow-x"), current.get("overflow-y")].some(value => !["visible", "clip"].includes(value))) scroller = parent;\n    }\n    if (node.getClientRects().length !== 1) return unsupported();\n    for (const edge of ["left", "top", "right", "bottom"]) {\n      const value = style.get(edge);\n      if (value !== "auto" && !/^[-+]?(?:\\d*\\.)?\\d+px$/.test(value || "")) return unsupported();\n    }\n    if (scroller) {\n      const current = plan.styles.get(scroller);\n      const borderX = parseFloat(current.get("border-left-width")) + parseFloat(current.get("border-right-width"));\n      const borderY = parseFloat(current.get("border-top-width")) + parseFloat(current.get("border-bottom-width"));\n      // Classic scrollbar gutters cannot be removed without changing an end inset.\n      if (scroller.offsetWidth - scroller.clientWidth - borderX > 1 || scroller.offsetHeight - scroller.clientHeight - borderY > 1) return unsupported();\n      plan.stickyScrollers.add(scroller);\n    }\n    const x = scroller ? scroller.scrollLeft : scrollX;\n    const y = scroller ? scroller.scrollTop : scrollY;\n    // An unscrolled nested scrollport has the same used dimensions in the clone.\n    // A document clone is taller/wider than the viewport: only start-edge insets\n    // can be kept verbatim there, even at scroll zero.\n    if (x === 0 && y === 0 && (scroller || (style.get("right") === "auto" && style.get("bottom") === "auto"))) return "sticky";\n    const box = node.getBoundingClientRect();\n    const scrollBox = scroller?.getBoundingClientRect();\n    const port = scroller ? { left: scrollBox.left + scroller.clientLeft, top: scrollBox.top + scroller.clientTop,\n      right: scrollBox.left + scroller.clientLeft + scroller.clientWidth, bottom: scrollBox.top + scroller.clientTop + scroller.clientHeight }\n      : { left: 0, top: 0, right: innerWidth, bottom: innerHeight };\n    // Strictly inside every inset edge proves no sticky constraint moved the box.\n    // At an edge (including a parent-end clamp) the original normal position is\n    // ambiguous; refuse instead of temporarily changing the live DOM to measure it.\n    for (const edge of ["left", "top", "right", "bottom"]) {\n      const value = style.get(edge);\n      if (value === "auto") continue;\n      if (!/^[-+]?(?:\\d*\\.)?\\d+px$/.test(value || "")) return unsupported();\n      const inset = parseFloat(value);\n      if (["left", "top"].includes(edge) ? box[edge] <= port[edge] + inset + 0.5 : box[edge] >= port[edge] - inset - 0.5) return unsupported();\n    }\n    return "relative";\n  };\n  const capturePlan = async (region, signal) => {\n    const nodes = Array.from(document.querySelectorAll("*"));\n    if (nodes.length > 20000) throw new Error("Selected document is too complex to capture; the geometric anchor is still saved");\n    const needed = new Set([root]);\n    const candidates = new Map();\n    const forced = new Set();\n    const paintHidden = new Map();\n    const transformedPaint = new Map();\n    let slice = performance.now();\n    const keep = node => { for (; node && !needed.has(node); node = node.parentElement) needed.add(node); };\n    const intersects = r => r.right >= region.x && r.bottom >= region.y && r.left <= region.x + region.width && r.top <= region.y + region.height;\n    for (const node of nodes) {\n      signal.throwIfAborted();\n      if (performance.now() - slice > 8) { await captureTask(); signal.throwIfAborted(); slice = performance.now(); }\n      if (captureOverlay(node) || node.matches("script,style,link,meta,head")) continue;\n      const style = getComputedStyle(node);\n      if (capturePaintSuppressed(node, paintHidden) || captureDefinition(node)) {\n        candidates.set(node, null);\n        continue;\n      }\n      if (forced.has(node.parentElement)) { forced.add(node); keep(node); continue; }\n      const box = capturePaintBounds(node, style, transformedPaint);\n      const pseudo = ["::before", "::after"].some(part => !["none", "normal"].includes(getComputedStyle(node, part).content));\n      if (!box || node.shadowRoot || style.filter !== "none" || (style.backdropFilter && style.backdropFilter !== "none") || pseudo) { forced.add(node); keep(node); }\n      else if (intersects(box)) keep(node);\n      const block = ["block", "flex", "grid", "flow-root"].includes(style.display);\n      const closedMargins = style.display !== "block" || style.overflowY !== "visible" ||\n        (parseFloat(style.paddingTop) + parseFloat(style.borderTopWidth) > 0 && parseFloat(style.paddingBottom) + parseFloat(style.borderBottomWidth) > 0);\n      if (node instanceof HTMLElement && block && closedMargins && /^\\d+(\\.\\d+)?px$/.test(style.width) && /^\\d+(\\.\\d+)?px$/.test(style.height)) {\n        candidates.set(node, { width: style.width, height: style.height });\n      }\n    }\n    if (needed.size > 1800) throw new Error("Selected area is too complex to capture promptly; the geometric anchor is still saved");\n    const geometry = new Map();\n    const styles = new Map();\n    const pseudoStyles = new Map();\n    const references = new Set();\n    // Hidden SVG resources can paint through a visible use/fill/filter reference. Follow\n    // those dependencies (including indirect references) rather than ignoring hidden DOM.\n    for (const node of needed) {\n      if (needed.size > 1800) throw new Error("Selected area is too complex to capture promptly; the geometric anchor is still saved");\n      signal.throwIfAborted();\n      if (performance.now() - slice > 8) { await captureTask(); signal.throwIfAborted(); slice = performance.now(); }\n      geometry.set(node, captureGeometry(node));\n      const style = getComputedStyle(node);\n      const recorded = new Map(Array.from(style, property => [property, style.getPropertyValue(property)]));\n      styles.set(node, recorded);\n      const pseudos = ["::before", "::after"].map(part => {\n        const style = getComputedStyle(node, part);\n        return new Map(["none", "normal"].includes(style.content) ? [["content", style.content]] : Array.from(style, property => [property, style.getPropertyValue(property)]));\n      });\n      pseudoStyles.set(node, pseudos);\n      for (const id of new Set([recorded, ...pseudos].flatMap(style => Array.from(captureReferenceIds(node, style))))) {\n        if (references.has(id)) continue;\n        references.add(id);\n        const resource = document.getElementById(id);\n        if (!resource) continue;\n        keep(resource);\n        for (const child of resource.querySelectorAll("*")) keep(child);\n      }\n    }\n    const prune = new Map();\n    for (const [node, size] of candidates) if (!needed.has(node)) prune.set(node, size);\n    const suppressedRoots = Array.from(paintHidden).filter(([node, hidden]) => hidden && !paintHidden.get(node.parentElement)).map(([node]) => node);\n    return { prune, needed, geometry, styles, pseudoStyles, references, suppressedRoots, stickyScrollers: new Set(), outsideMutations: false };\n\n  };\n  const captureGeometry = node => {\n    const bounds = node.getBoundingClientRect();\n    return [bounds.x, bounds.y, bounds.width, bounds.height, node.scrollLeft, node.scrollTop];\n  };\n  const captureLayoutMatches = plan => plan.suppressedRoots.every(node => !node.isConnected || capturePaintSuppressed(node)) &&\n    Array.from(plan.geometry).every(([node, before]) => node.isConnected && captureGeometry(node).every((value, index) => Math.abs(value - before[index]) < 0.01));\n  const captureStylesMatch = plan => !plan.outsideMutations || Array.from(plan.styles).every(([node, recorded]) => {\n    const style = getComputedStyle(node);\n    if (!Array.from(recorded).every(([property, value]) => style.getPropertyValue(property) === value)) return false;\n    return plan.pseudoStyles.get(node).every((recorded, index) => {\n      const style = getComputedStyle(node, index === 0 ? "::before" : "::after");\n      return Array.from(recorded).every(([property, value]) => style.getPropertyValue(property) === value);\n    });\n  });\n  const captureMutationIsOutside = (record, plan, region) => {\n    const target = record.target instanceof Element ? record.target : record.target.parentElement;\n    if (!target || plan.needed.has(target)) return false;\n    // Even an off-selection mutation may create new overflowing pixels. Inspect only its\n    // affected subtree; unknown paint effects stay conservative instead of accepting a stale\n    // screenshot. The selected layout and computed styles are validated independently.\n    const affected = [target, ...target.querySelectorAll("*")];\n    if (affected.length > 2000) return false;\n    const paintHidden = new Map();\n    const transformedPaint = new Map();\n    return affected.every(node => {\n      if (plan.needed.has(node) || (node.id && plan.references.has(node.id))) return false;\n      if (capturePaintSuppressed(node, paintHidden)) return true;\n      const style = getComputedStyle(node);\n      if (node.shadowRoot || style.filter !== "none" || (style.backdropFilter && style.backdropFilter !== "none") ||\n        ["::before", "::after"].some(part => !["none", "normal"].includes(getComputedStyle(node, part).content))) return false;\n      const bounds = capturePaintBounds(node, style, transformedPaint);\n      return bounds && (bounds.right < region.x || bounds.bottom < region.y ||\n        bounds.left > region.x + region.width || bounds.top > region.y + region.height);\n    });\n  };\n  const captureFrozenRegion = async (region, signal, planReady) => {\n    signal.throwIfAborted();\n    if (composition.intersects(region)) throw new Error("Embedded Board content cannot be captured accurately in its parent; capture inside the embedded Board instead. The geometric anchor is still saved");\n    const width = Math.max(root.scrollWidth, innerWidth);\n    const height = Math.max(root.scrollHeight, innerHeight);\n    const ratio = Math.min(devicePixelRatio || 1, 2, 16384 / region.width, 16384 / region.height, Math.sqrt(16777216 / (region.width * region.height)));\n    if (!Number.isFinite(ratio) || ratio < 0.5) throw new Error("Selection is too large to capture; the geometric anchor is still saved");\n    const api = await loadCapture();\n    signal.throwIfAborted();\n    const plan = await capturePlan(region, signal);\n    planReady(plan);\n    signal.throwIfAborted();\n    window.dispatchEvent(new CustomEvent("paseo:capture", { detail: { mime: "image/png", scale: ratio } }));\n    const shots = new Map();\n    const original = HTMLCanvasElement.prototype.toDataURL;\n    // Freeze fresh pixels per capture, never reuse a previous selection\'s dynamic bitmap.\n    for (const canvas of document.querySelectorAll("canvas")) {\n      let skipped = captureOverlay(canvas);\n      for (let parent = canvas; parent && !skipped; parent = parent.parentElement) skipped = plan.prune.has(parent);\n      if (!skipped) { try { shots.set(canvas, original.call(canvas)); } catch {} }\n    }\n    const startScroll = { x: scrollX, y: scrollY };\n    HTMLCanvasElement.prototype.toDataURL = function (...args) { return args.length === 0 && shots.has(this) ? shots.get(this) : original.apply(this, args); };\n    const parentStyles = new WeakMap();\n    let cloned = 0;\n    let slice = performance.now();\n    const started = slice;\n    const check = () => {\n      signal.throwIfAborted();\n      if (scrollX !== startScroll.x || scrollY !== startScroll.y) throw new Error("Canvas changed during capture; the geometric anchor is still saved");\n      if (cloned > 1800 || performance.now() - started > 3500) throw new Error("Selected area is too complex to capture promptly; the geometric anchor is still saved");\n    };\n    try {\n      const svg = await api.toSvg(root, {\n        width, height, captureViewport: region, skipFonts: true, style: { margin: "0" },\n        filter: node => node.nodeName !== "SCRIPT" && !captureOverlay(node),\n        filterChildren: node => !plan.prune.has(node),\n        // Computed values already resolve var(). Preserve custom-property inheritance instead\n        // of redundantly copying the same theme tokens onto every single descendant.\n        filterStyleProperty: (node, property, value, computedValue) => {\n          const recorded = plan.styles.get(node);\n          if (recorded) {\n            // The library normalizes font-size and SVG path d for its cloned output.\n            // Validate the original computed value, not that serialization transform.\n            if (recorded.get(property) !== computedValue) throw new Error("Canvas styling changed during capture; the geometric anchor is still saved");\n          }\n          if (!property.startsWith("--") || !node.parentElement) return true;\n          let style = parentStyles.get(node.parentElement);\n          if (!style) { style = getComputedStyle(node.parentElement); parentStyles.set(node.parentElement, style); }\n          return style.getPropertyValue(property) !== value;\n        },\n        beforeSerialize: async () => { await captureTask(); check(); },\n        beforeClone: async node => {\n          if (node instanceof Element) cloned++;\n          check();\n          if (performance.now() - slice > 8) { await captureTask(); check(); slice = performance.now(); }\n        },\n        afterClone: (source, clone) => {\n          if (!(source instanceof Element) || !(clone instanceof Element)) return;\n          if (clone.style) { clone.style.animation = "none"; clone.style.transition = "none"; }\n          const sourceStyle = getComputedStyle(source);\n          if (["sticky", "fixed"].includes(sourceStyle.position) && !plan.needed.has(source)) { clone.style.opacity = "0"; return; }\n          if (sourceStyle.position === "sticky" && captureStickyMode(source, plan) === "relative") {\n            clone.style.position = "relative";\n            // Sticky establishes a stacking context even at auto; relative does not.\n            if (sourceStyle.zIndex === "auto") clone.style.zIndex = "0";\n            for (const edge of ["left", "top", "right", "bottom"]) clone.style[edge] = "auto";\n          }\n          // foreignObject can start a new overlay-scrollbar fade cycle even when\n          // the live unscrolled port paints none. Keep its overflow/scrollport,\n          // suppressing only those UA bars after the sticky child was validated.\n          if (plan.stickyScrollers.has(source)) clone.style.scrollbarWidth = "none";\n          if (sourceStyle.position === "fixed") {\n            for (let parent = source.parentElement; parent && parent !== root; parent = parent.parentElement) {\n              const style = getComputedStyle(parent);\n              if (style.transform !== "none" || style.filter !== "none" || style.perspective !== "none" || parent.scrollTop || parent.scrollLeft) throw new Error("Transformed fixed content cannot be captured accurately; the geometric anchor is still saved");\n            }\n            const bounds = source.getBoundingClientRect();\n            clone.style.left = bounds.left + scrollX + "px";\n            clone.style.top = bounds.top + scrollY + "px";\n            clone.style.right = "auto";\n            clone.style.bottom = "auto";\n          }\n          const size = plan.prune.get(source);\n          if (size && clone.style) {\n            for (const key of ["width", "minWidth", "maxWidth"]) clone.style[key] = size.width;\n            for (const key of ["height", "minHeight", "maxHeight"]) clone.style[key] = size.height;\n          }\n          if ((source.scrollTop || source.scrollLeft) && source !== root && source !== document.body) {\n            // Translate already-laid-out direct children inside the original clipping box.\n            // A raw text scroller cannot be wrapped without changing line layout.\n            if (Array.from(source.childNodes).some(node => node.nodeType === 3 && node.textContent.trim())) throw new Error("This text scroller cannot be captured accurately; the geometric anchor is still saved");\n            clone.style.overflow = "hidden";\n            for (const child of clone.children) if (child.style) child.style.transform = `translate(${-source.scrollLeft}px, ${-source.scrollTop}px) ${child.style.transform === "none" ? "" : child.style.transform}`;\n          }\n        },\n      });\n      check();\n      if (!captureLayoutMatches(plan)) throw new Error("Canvas layout changed during capture; the geometric anchor is still saved");\n      if (!captureStylesMatch(plan)) throw new Error("Canvas styling changed during capture; the geometric anchor is still saved");\n      // Keep the original foreignObject/layout dimensions, but decode and allocate only the\n      // requested SVG viewport. Page length must not reduce a small selection\'s pixel ratio.\n      await captureTask();\n      check();\n      const image = new Image();\n      image.decoding = "async";\n      const ready = new Promise((resolve, reject) => { image.onload = resolve; image.onerror = () => reject(new Error("Selection image could not be decoded")); });\n      image.src = svg;\n      await ready;\n      check();\n      if (!captureLayoutMatches(plan)) throw new Error("Canvas layout changed during capture; the geometric anchor is still saved");\n      if (!captureStylesMatch(plan)) throw new Error("Canvas styling changed during capture; the geometric anchor is still saved");\n      const cropped = document.createElement("canvas");\n      cropped.width = Math.max(1, Math.round(region.width * ratio));\n      cropped.height = Math.max(1, Math.round(region.height * ratio));\n      const context = cropped.getContext("2d");\n      if (!context) throw new Error("Screenshot canvas unavailable");\n      context.drawImage(image, 0, 0, cropped.width, cropped.height);\n      const data = cropped.toDataURL("image/png").split(",")[1];\n      if (data.length > 3000000) throw new Error("Selection screenshot exceeds 3 MB; select a smaller area");\n      return { mimeType: "image/png", data };\n    } finally { HTMLCanvasElement.prototype.toDataURL = original; }\n  };\n  const captureRegion = async (region, signal) => {\n    // A cooperative clone spans several browser tasks. Pause CSS/Web Animations at their\n    // current displayed frame and resume only animations that were running before capture.\n    const controller = new AbortController();\n    const cancel = () => controller.abort(signal.reason);\n    if (signal.aborted) cancel(); else signal.addEventListener("abort", cancel, { once: true });\n    let plan;\n    let buffered = [];\n    const validate = records => {\n      const changed = records.filter(record => !captureOverlay(record.target) && (record.type !== "attributes" || record.oldValue !== record.target.getAttribute(record.attributeName)) &&\n        (record.type !== "childList" || [...record.addedNodes, ...record.removedNodes].some(node => !captureOverlay(node))));\n      if (!changed.length) return;\n      if (!plan) { buffered.push(...changed); return; }\n      if (!captureLayoutMatches(plan) || changed.some(record => !captureMutationIsOutside(record, plan, region))) {\n        controller.abort(new Error("Canvas changed during capture; the geometric anchor is still saved"));\n      } else {\n        // A hidden/outside mutation can affect already-cloned selected styles via :has().\n        plan.outsideMutations = true;\n      }\n    };\n    const observer = new MutationObserver(validate);\n    observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeOldValue: true });\n    const animations = document.getAnimations().filter(animation => animation.playState === "running" && !captureOverlay(animation.effect?.target));\n    for (const animation of animations) animation.pause();\n    try { return await captureFrozenRegion(region, controller.signal, ready => { plan = ready; validate(buffered); buffered = []; }); }\n    finally {\n      observer.disconnect();\n      signal.removeEventListener("abort", cancel);\n      for (const animation of animations) if (animation.playState === "paused") animation.play();\n    }\n  };\n  // A cancelled capture still owns its html-to-image clone until it settles. Serializing the\n  // underlying work prevents overlapping temporary canvas hooks from restoring one another.\n  let captureTail = Promise.resolve();\n  const queuedCapture = (region, signal) => {\n    const result = captureTail.catch(() => {}).then(() => captureRegion(region, signal));\n    captureTail = result.catch(() => {});\n    return result;\n  };\n  const isEditor = (event) => event.composedPath().some(node => node instanceof Element && (node.matches("input,textarea,select") || node.isContentEditable));\n  const startsTextSelection = (event) => {\n    if (isEditor(event) || !(event.target instanceof Element) || event.target.closest("button,a,input,textarea,select,canvas,svg,[draggable=true],[role=button],[role=slider]")) return false;\n    const range = document.caretRangeFromPoint?.(event.clientX, event.clientY);\n    const caret = range ? null : document.caretPositionFromPoint?.(event.clientX, event.clientY);\n    const node = range?.startContainer || caret?.offsetNode;\n    return node?.nodeType === 3 && Boolean(node.textContent?.trim()) && event.target.contains(node);\n  };\n  const paintSelectionMode = () => {\n    const mode = pointer?.temporary ? "region" : selectionMode;\n    root.setAttribute("data-board-selection", mode);\n    root.style.cursor = mode === "off" ? "" : mode === "text" ? "text" : "crosshair";\n    if (markerHost) markerHost.style.setProperty("visibility", mode === "off" ? "visible" : "hidden", "important");\n  };\n  const releasePointer = () => {\n    const active = pointer;\n    pointer = null;\n    textPointer = null;\n    if (active) { try { if (root.hasPointerCapture(active.pointerId)) root.releasePointerCapture(active.pointerId); } catch {} }\n  };\n  const eventPoint = (event) => ({ x: Math.max(0, Math.min(event.clientX, innerWidth)), y: Math.max(0, Math.min(event.clientY, innerHeight)) });\n  const cancelSelection = ({ release = true, clear = true, notify = false, drainUpdates = true } = {}) => {\n    cancelMarkerReveal();\n    const previous = selectionSession;\n    selectionSession = null;\n    releasePointer();\n    captureBusy = false;\n    clearOverlay();\n    clearComponent();\n    if (clear) lastAnchor = undefined;\n    if (previous) {\n      previous.abort.abort();\n      previous.indicator?.remove();\n      if (release) post({ type: "selection-lock", id: previous.id, active: false });\n    }\n    paintSelectionMode();\n    if (notify) post({ type: "selection-clear" });\n    reportCanvasActivity();\n    if (drainUpdates) void drain();\n  };\n  const beginSelection = (position, dragging = false) => {\n    window.focus();\n    cancelSelection({ release: false, drainUpdates: false });\n    const session = { id: `${scope.sessionId}:selection-${++sequence}`, abort: new AbortController(), indicator: null, anchor: null, position };\n    selectionSession = session;\n    reportCanvasActivity();\n    // Replace the lease atomically, with a fresh generation so old pixels cannot match it.\n    post({ type: "selection-lock", id: session.id, active: true, dragging });\n    return session;\n  };\n  const showCaptureStatus = (session) => {\n    if (selectionSession !== session || session.indicator) return;\n    const host = document.createElement("div");\n    host.setAttribute("data-board-capture-status", "");\n    host.setAttribute("data-board-overlay", "");\n    host.style.cssText = `all:initial;position:fixed;z-index:2147483647;pointer-events:none;left:${Math.max(8, Math.min(session.position.x + 12, innerWidth - 220))}px;top:${Math.max(8, Math.min(session.position.y + 12, innerHeight - 44))}px;`;\n    const shadow = host.attachShadow({ mode: "open" });\n    shadow.innerHTML = `<style>div{padding:8px 12px;border:1px solid var(--host-line-strong,#d0d0d0);border-radius:8px;background:var(--host-sheet,#fff);color:var(--host-ink,#222);box-shadow:0 4px 14px #0002;font:12px/1.5 system-ui,-apple-system,sans-serif}</style><div role="status">\u6B63\u5728\u622A\u53D6\u5F15\u7528\u2026 \xB7 Esc \u53D6\u6D88</div>`;\n    session.indicator = host;\n    document.body.append(host);\n  };\n  const finishSelection = async (session, anchor, imageRegion, reuse = false) => {\n    if (selectionSession !== session) return;\n    releasePointer();\n    selectionMode = "off";\n    paintSelectionMode();\n    const needsCapture = !reuse && imageRegion && imageRegion.width > 0 && imageRegion.height > 0;\n    // This immutable reference is available immediately; capture adds only pixels later.\n    session.anchor = anchor;\n    lastAnchor = anchor;\n    captureBusy = Boolean(needsCapture);\n    post({ type: "selection-lock", id: session.id, active: true, dragging: false });\n    post({ type: "selection-end" });\n    post({ type: "anchor", anchor, selectionId: session.id });\n    post({ type: "compose", automatic: true, selectionId: session.id, request: { kind: "question", anchor, position: session.position, ...(needsCapture ? { captureStatus: "pending" } : {}) } });\n    if (!needsCapture) { cancelSelection({ clear: false }); return; }\n    showCaptureStatus(session);\n    // Promise microtasks do not permit painting or input. Give the host its messages, React\n    // commit and a painted frame before DOM capture begins. The capture implementation must\n    // also yield during its work to keep input responsive throughout.\n    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0))));\n    if (selectionSession !== session || session.abort.signal.aborted) return;\n    let timer;\n    let abortListener;\n    let captured;\n    let failureReason;\n    try {\n      const image = await Promise.race([\n        queuedCapture(imageRegion, session.abort.signal),\n        new Promise((_, reject) => {\n          timer = setTimeout(() => reject(new Error("Selection capture timed out")), 15000);\n          abortListener = () => reject(new DOMException("\u9009\u533A\u5DF2\u53D6\u6D88", "AbortError"));\n          session.abort.signal.addEventListener("abort", abortListener, { once: true });\n        }),\n      ]);\n      captured = { ...anchor, image };\n    } catch (cause) {\n      // Send only a bounded category, never arbitrary document/resource error text.\n      // A failed image leaves the already-open input and its text/geometry usable.\n      const message = cause instanceof Error ? cause.message : "";\n      failureReason = /Canvas (?:layout |styling )?changed during capture/.test(message) ? "content-changed"\n        : /too complex to capture/.test(message) ? "too-complex"\n        : /cannot be captured accurately/.test(message) ? "unsupported-layout"\n        : /too large to capture|screenshot exceeds 3 MB/.test(message) ? "too-large"\n        : message === "Selection capture timed out" ? "timeout" : "generation-failed";\n    } finally {\n      clearTimeout(timer);\n      if (abortListener) session.abort.signal.removeEventListener("abort", abortListener);\n    }\n    if (selectionSession !== session || session.abort.signal.aborted) return;\n    lastAnchor = captured || anchor;\n    post({ type: "selection-capture", selectionId: session.id, anchor: lastAnchor, status: captured ? "ready" : "failed", ...(!captured ? { reason: failureReason } : {}) });\n    cancelSelection({ clear: false });\n  };\n  const setSelectionMode = (mode) => {\n    if (!["off", "text", "region", "point", "component"].includes(mode)) return;\n    if (applying) { deferredSelection = mode; return; }\n    if (mode === selectionMode) return;\n    cancelSelection({ drainUpdates: false });\n    cancelMarkerReveal();\n    selectionMode = mode;\n    paintSelectionMode();\n    reportCanvasActivity();\n    if (mode === "off") void drain();\n  };\n  const selectedText = (point) => {\n    const selected = window.getSelection();\n    if (!selected || !selected.rangeCount || selected.isCollapsed || !selected.toString().trim()) return null;\n    const range = selected.getRangeAt(0);\n    if (point && !Array.from(range.getClientRects()).some(r => point.x >= r.left && point.x <= r.right && point.y >= r.top && point.y <= r.bottom)) return null;\n    const node = range.commonAncestorContainer;\n    const region = rect(range.getBoundingClientRect());\n    const target = node.nodeType === 1 ? node : node.parentElement;\n    return { anchor: { ...currentAnchor(), kind: "text", text: selected.toString().slice(0, 12000), selector: selectorFor(target), rect: region, viewport: viewport(), binding: captureBinding(target, region) }, region };\n  };\n  const pointSelection = (point, target) => {\n    const position = { x: point.x + scrollX, y: point.y + scrollY, width: 0, height: 0 };\n    return { anchor: { ...currentAnchor(), kind: "point", selector: selectorFor(target), rect: position, viewport: viewport(), binding: captureBinding(target, position) },\n      region: { x: Math.max(0, Math.min(position.x - 120, root.scrollWidth - Math.min(240, innerWidth))), y: Math.max(0, position.y - 80), width: Math.min(240, innerWidth), height: 160 } };\n  };\n  const containsAnchor = (anchor, point, target) => {\n    if (!anchor?.rect || anchor.boardRevision !== snapshot.boardRevision || anchor.canvasRevision !== snapshot.canvas.revision) return false;\n    if (anchor.binding) {\n      const location = markerLocation(anchor);\n      if (location.mode !== "component" || !(target instanceof Element) || !location.node.contains(target)\n        || Math.abs(location.rect.x - anchor.rect.x) > 1 || Math.abs(location.rect.y - anchor.rect.y) > 1) return false;\n    }\n    const { x, y, width, height } = anchor.rect;\n    const margin = anchor.kind === "point" ? 6 : 0;\n    return point.x + scrollX >= x - margin && point.x + scrollX <= x + width + margin && point.y + scrollY >= y - margin && point.y + scrollY <= y + height + margin;\n  };\n  window.addEventListener("pointerdown", (event) => {\n    if (!event.isTrusted) return;\n    lastGesture = performance.now();\n    lastGesturePosition = eventPoint(event);\n    if (inComponentText(event)) {\n      if (event.button===0 && !componentPending && !componentText.invalid && !componentText.composing) {\n        const run=event.composedPath().find(node=>node instanceof Element && node.hasAttribute("data-component-text-run"));\n        if (run && run!==componentText.run.editor) { const previous=componentText.run;chooseComponentTextRun(Number(run.getAttribute("data-component-text-run")));if (componentText.run===previous) event.preventDefault(); }\n      }\n      event.stopImmediatePropagation();return;\n    }\n    if (inComponentPreview(event)) {\n      const resize = event.composedPath().some(node => node instanceof Element && node.hasAttribute("data-component-layout-resize"));\n      if (resize && event.button === 0) { event.preventDefault(); beginComponentLayoutResize(event); event.stopImmediatePropagation(); return; }\n      if (event.button===0) { event.preventDefault();window.focus();componentLayoutPreview.viewport.focus({preventScroll:true}); } event.stopImmediatePropagation(); return; }\n    if (inComponents(event)) {\n      const handle = event.composedPath().find(node => node instanceof Element && node.dataset.componentAction === "drag");\n      if (handle && !handle.disabled && event.button === 0) { event.preventDefault();try {startComponentDrag(event);} catch(failure) {setComponentNotice(failure.message || String(failure));} }\n      event.stopImmediatePropagation(); return;\n    }\n    if (inMarkers(event)) { window.focus(); cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); event.stopImmediatePropagation(); return; }\n    if (event.button === 0) { window.focus(); post({ type: "canvas-pointer" }); }\n    suppressPointerClick = false;\n    dismissedPointer = null;\n    if (event.button !== 0) return;\n    const shortcut = event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey && !isEditor(event);\n    if (selectionMode === "component" || shortcut) {\n      if (isEditor(event)) return;\n      if (componentPending || componentText || componentDrag || applying) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n      if (!shortcut && selectionMode === "component" && selectedComponent?.isConnected && selectedComponent.contains(event.target)) {\n        event.preventDefault();event.stopImmediatePropagation();suppressPointerClick=true;\n        try {componentPress={...componentGesture(),pointerId:event.pointerId,position:eventPoint(event)};} catch(failure) {componentPress=null;componentClick=null;setComponentNotice(failure.message || String(failure));}\n        return;\n      }\n      if (shortcut && selectionMode !== "component") setSelectionMode("component");\n      componentNotice = "";\n      event.preventDefault(); event.stopImmediatePropagation(); suppressPointerClick = true;\n      selectComponent(componentAt(event.target)); return;\n    }\n    const temporary = selectionMode === "off" && event.altKey && !isEditor(event);\n    if (selectionMode === "off" && !temporary) {\n      const wasCapturing = captureBusy;\n      cancelSelection({ notify: Boolean(selectionSession || lastAnchor) });\n      // Cancelling an unfinished capture must not activate a control beneath its preview.\n      if (wasCapturing) { dismissedPointer = event.pointerId; suppressPointerClick = true; event.preventDefault(); event.stopImmediatePropagation(); return; }\n      // Freeze the displayed revision during an ordinary native text drag, but let the\n      // browser perform selection. Editors and author-controlled drags keep native behavior.\n      if (!applying && startsTextSelection(event)) {\n        const position = eventPoint(event);\n        textPointer = { pointerId: event.pointerId, position, beforeText: window.getSelection()?.toString() || "", session: beginSelection(position, true) };\n      }\n      return;\n    }\n    if (applying) return;\n    event.stopImmediatePropagation();\n    const session = beginSelection({ x: event.clientX, y: event.clientY }, true);\n    suppressPointerClick = true;\n    if (selectionMode === "text" && !temporary) return;\n    event.preventDefault();\n    pointer = { x: event.clientX, y: event.clientY, target: event.target, pointerId: event.pointerId, temporary, session };\n    try { root.setPointerCapture(event.pointerId); } catch {}\n    paintSelectionMode();\n    showOverlay({ x: pointer.x, y: pointer.y, width: 0, height: 0 });\n  }, true);\n  window.addEventListener("pointermove", (event) => {\n    if (!event.isTrusted) return;\n    componentPointer = eventPoint(event);\n    if (componentLayoutResize?.pointerId === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); moveComponentLayoutResize(event); return; }\n    if (inComponentPreview(event)) { clearComponentHover(); event.stopImmediatePropagation(); return; }\n    if (componentPress?.pointerId===event.pointerId) {\n      event.preventDefault();event.stopImmediatePropagation();\n      const press=componentPress;\n      if (!(event.buttons&1) || !componentGestureLive(press)) {componentPress=null;componentClick=null;return;}\n      if (Math.hypot(event.clientX-press.position.x,event.clientY-press.position.y)<6) return;\n      startComponentDrag(event,press);\n    }\n    if (componentDrag) {\n      if (!componentGestureLive(componentDrag.gesture)) {cancelComponentDrag();setComponentNotice("\u7EC4\u4EF6\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u540E\u62D6\u52A8");return;}\n      if (componentDrag.pointerId === event.pointerId && componentDrag.paintFrame === null) componentDrag.paintFrame = requestAnimationFrame(() => {\n        if (!componentDrag) return; componentDrag.paintFrame = null; updateComponentDragDestination();\n      });\n      event.preventDefault(); event.stopImmediatePropagation(); return;\n    }\n    if (selectionMode === "component" && isEditor(event)) return;\n    componentShortcut = event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey && !isEditor(event);\n    if (componentShortcut || selectionMode === "component") updateComponentHover(); else clearComponentHover();\n    if (inComponents(event)) { event.stopImmediatePropagation(); return; }\n    if (inMarkers(event) && !pointer) { event.stopImmediatePropagation(); return; }\n    if (dismissedPointer === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (!pointer && selectionMode === "off") return;\n    event.stopImmediatePropagation();\n    if (!pointer || event.pointerId !== pointer.pointerId) return;\n    event.preventDefault();\n    const point = eventPoint(event);\n    showOverlay({ x: Math.min(pointer.x, point.x), y: Math.min(pointer.y, point.y), width: Math.abs(point.x - pointer.x), height: Math.abs(point.y - pointer.y) });\n  }, true);\n  window.addEventListener("pointerup", (event) => {\n    if (!event.isTrusted || event.button !== 0) return;\n    if (componentLayoutResize?.pointerId === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); finishComponentLayoutResize(); return; }\n    if (inComponentPreview(event)) { event.stopImmediatePropagation(); return; }\n    if (componentPress?.pointerId===event.pointerId) {\n      const press=componentPress;componentPress=null;componentClick=componentGestureLive(press)?{...press,finished:performance.now()}:null;\n      event.preventDefault();event.stopImmediatePropagation();return;\n    }\n    if (selectionMode==="component" && isEditor(event)) return;\n    if (componentDrag?.pointerId === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); try { finishComponentDrag(); } catch (failure) { setComponentNotice(failure.message); } return; }\n    if (inComponents(event)) { event.stopImmediatePropagation(); return; }\n    if (inMarkers(event)) { event.stopImmediatePropagation(); return; }\n    if (dismissedPointer === event.pointerId) { dismissedPointer = null; event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (textPointer?.pointerId === event.pointerId) {\n      const start = textPointer;\n      textPointer = null;\n      const position = eventPoint(event);\n      const changed = (window.getSelection()?.toString() || "") !== start.beforeText;\n      const text = changed || Math.hypot(position.x - start.position.x, position.y - start.position.y) >= 3 ? selectedText() : null;\n      if (text) {\n        suppressPointerClick = true;\n        start.session.position = position;\n        void finishSelection(start.session, text.anchor, text.region);\n      } else cancelSelection();\n      return;\n    }\n    if (!pointer && selectionMode === "off") return;\n    event.stopImmediatePropagation();\n    const session = selectionSession;\n    if (!session) return;\n    if (selectionMode === "text" && !pointer) {\n      const text = selectedText();\n      session.position = eventPoint(event);\n      if (text) void finishSelection(session, text.anchor, text.region);\n      else cancelSelection();\n      return;\n    }\n    event.preventDefault();\n    if (!pointer || pointer.pointerId !== event.pointerId) return;\n    const start = pointer;\n    const point = eventPoint(event);\n    const isPoint = selectionMode === "point" || Math.hypot(point.x - start.x, point.y - start.y) < 5;\n    session.position = point;\n    if (isPoint) {\n      const selected = pointSelection(session.position, start.target);\n      void finishSelection(session, selected.anchor, selected.region);\n    } else {\n      const region = { x: Math.min(start.x, point.x) + scrollX, y: Math.min(start.y, point.y) + scrollY, width: Math.abs(point.x - start.x), height: Math.abs(point.y - start.y) };\n      void finishSelection(session, { ...currentAnchor(), kind: "region", selector: selectorFor(start.target), rect: region, viewport: viewport(), binding: captureBinding(start.target, region, true) }, region);\n    }\n  }, true);\n  window.addEventListener("pointercancel", () => { cancelComponentDrag(); dismissedPointer = null; cancelSelection({ notify: true }); }, true);\n  window.addEventListener("lostpointercapture", (event) => {\n    if (componentDrag?.pointerId===event.pointerId && !root.hasPointerCapture(event.pointerId)) cancelComponentDrag();\n    if (pointer?.pointerId === event.pointerId && !root.hasPointerCapture(event.pointerId)) cancelSelection({ notify: true });\n  }, true);\n  window.addEventListener("pointerout", (event) => {\n    if (componentPress && !event.relatedTarget) {componentPress=null;componentClick=null;}\n    if (pointer && !event.relatedTarget && !root.hasPointerCapture(pointer.pointerId)) cancelSelection({ notify: true });\n  }, true);\n  window.addEventListener("blur", () => {\n    componentPress=null;componentClick=null;componentShortcut = false; clearComponentHover(); if (componentDrag) cancelComponentDrag();\n    if (!selectionSession) return;\n    // The host input takes focus before capture finishes. Keep its completed reference alive;\n    // host dismissal/submission sends a generation-scoped cancellation explicitly.\n    if (!selectionSession.anchor) cancelSelection({ notify: true });\n  });\n  window.addEventListener("contextmenu", (event) => {\n    if (!event.isTrusted) return;\n    if (inComponentText(event)) { event.stopImmediatePropagation(); return; }\n    if (inComponents(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (inMarkers(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (event.shiftKey || isEditor(event)) { if (selectionMode!=="component") cancelSelection({ notify: Boolean(selectionSession || lastAnchor) }); return; }\n    if (componentPending || componentText || componentDrag || applying) {event.preventDefault();event.stopImmediatePropagation();return;}\n    if (selectionMode==="component" && selectedComponent?.isConnected && selectedComponent.contains(event.target)) {\n      event.preventDefault();event.stopImmediatePropagation();lastGesture=performance.now();\n      try {referenceComponent(eventPoint(event));} catch(failure) {setComponentNotice(failure.message || String(failure));}return;\n    }\n    event.preventDefault();\n    event.stopImmediatePropagation();\n    lastGesture = performance.now();\n    let point = { x: event.clientX, y: event.clientY };\n    if (point.x === 0 && point.y === 0 && event.target instanceof Element) {\n      const r = event.target.getBoundingClientRect(); point = { x: r.left + r.width / 2, y: r.top + r.height / 2 };\n    }\n    const previous = lastAnchor?.image && containsAnchor(lastAnchor, point, event.target) ? copy(lastAnchor) : null;\n    const text = !previous ? selectedText(point) : null;\n    const selected = previous ? { anchor: previous, region: null } : text || pointSelection(point, event.target);\n    const session = beginSelection(point);\n    void finishSelection(session, selected.anchor, selected.region, Boolean(previous));\n  }, true);\n  window.addEventListener("dblclick",event=>{\n    if (!event.isTrusted || inComponentText(event) || selectionMode!=="component" || isEditor(event) || !selectedComponent?.contains(event.target)) return;\n    event.preventDefault();event.stopImmediatePropagation();\n    if (componentPending || componentText || componentDrag || applying || !componentClick || performance.now()-componentClick.finished>1000 || !componentGestureLive(componentClick)) return;\n    const hit=componentTextHit(event);componentClick=null;\n    if (!hit) return;\n    try {selectComponent(hit.source);startComponentText(hit.node);} catch(failure) {setComponentNotice(failure.message || String(failure));}\n  },true);\n  window.addEventListener("click", (event) => {\n    if (selectionMode==="component" && isEditor(event) && authorElement(event.target)) return;\n    if (inComponentText(event)) { event.stopImmediatePropagation(); return; }\n    if (inComponentPreview(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; }\n    if (inComponents(event)) {\n      event.stopImmediatePropagation();\n      if (event.composedPath().some(node => node instanceof Element && node.matches("textarea,input,select,option"))) return;\n      event.preventDefault(); try { componentAction(event); } catch (failure) { setComponentNotice(failure.message || String(failure)); } return;\n    }\n    if (inMarkers(event)) {\n      event.preventDefault(); event.stopImmediatePropagation();\n      const button = markerNode(event);\n      if (!event.isTrusted || !button || !navigator.userActivation?.isActive) return;\n      const bounds = button.getBoundingClientRect();\n      post({ type: "open-interaction", id: button.getAttribute("data-board-interaction"), position: { x: bounds.left, y: bounds.top }, location: button.dataset.location });\n      return;\n    }\n    if ((event.detail > 0 && suppressPointerClick) || selectionMode !== "off" || pointer) {\n      suppressPointerClick = false;\n      event.preventDefault(); event.stopImmediatePropagation(); return;\n    }\n    if (event.isTrusted) lastGesture = performance.now();\n    const path = event.composedPath();\n    const link = path.find((node) => node instanceof Element && node.matches("a[href],area[href]"));\n    if (!link) return;\n    const href = link.getAttribute("href") || "";\n    event.preventDefault();\n    if (href.startsWith("#")) { try { document.getElementById(decodeURIComponent(href.slice(1)))?.scrollIntoView(); } catch {} }\n    else if (/^https?:\\/\\//i.test(href) && event.isTrusted && acting()) post({ type: "open-link", url: href });\n  }, true);\n  const submitForm = (form, submitter) => {\n    if (!form.noValidate && !(submitter && submitter.formNoValidate) && !form.reportValidity()) return;\n    const event = new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: submitter || null });\n    if (!form.dispatchEvent(event)) return;\n    if (form.method === "dialog") form.closest("dialog")?.close(submitter?.value);\n  };\n  const isSubmitter = (node) => node && node.form && ["submit", "image"].includes(node.type);\n  document.addEventListener("click", (event) => {\n    if (selectionMode !== "off") return;\n    const button = event.composedPath().find((node) => node instanceof Element && node.matches("button,input"));\n    if (isSubmitter(button) && !button.disabled) setTimeout(() => { if (!event.defaultPrevented) submitForm(button.form, button); }, 0);\n  }, true);\n  document.addEventListener("keydown", (event) => {\n    const field = event.target;\n    if (selectionMode !== "off" || event.key !== "Enter" || event.isComposing || field.tagName !== "INPUT" || !field.form) return;\n    const fields = Array.from(field.form.elements);\n    if (fields.some(isSubmitter)) return;\n    const implicit = ["text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number"];\n    if (!implicit.includes(field.type) || fields.filter((n) => n.tagName === "INPUT" && implicit.includes(n.type)).length > 1) return;\n    setTimeout(() => { if (!event.defaultPrevented) submitForm(field.form, null); }, 0);\n  }, true);\n  HTMLFormElement.prototype.requestSubmit = function (submitter) { submitForm(this, submitter || null); };\n  window.addEventListener("wheel", event => {\n    if (inComponentText(event) && componentText.host.hasAttribute("data-component-inline-recovery")) {\n      event.preventDefault();event.stopImmediatePropagation();\n      const viewport=componentText.host,scale=event.deltaMode===1?16:event.deltaMode===2?viewport.clientHeight:1;\n      viewport.scrollLeft+=event.deltaX*scale;viewport.scrollTop+=event.deltaY*scale;\n      return;\n    }\n    if (inComponentPreview(event)) event.stopImmediatePropagation();\n  }, {capture:true,passive:false});\n  window.addEventListener("keydown", (event) => {\n    if (componentLayoutResize && event.isTrusted && event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); finishComponentLayoutResize(true); return; }\n    if (inComponentPreview(event)) {\n      if (event.isTrusted && event.composedPath().some(node => node instanceof Element && node.hasAttribute("data-component-layout-resize")) && ["ArrowUp", "ArrowDown"].includes(event.key) && componentLayoutDraft && !componentPending) {\n        event.preventDefault(); event.stopImmediatePropagation(); componentLayoutDraft.config.maxHeight = Math.max(80, Math.min(2000, (componentLayoutDraft.config.maxHeight || 400) + (event.key === "ArrowUp" ? -20 : 20))); writeComponentLayoutFields(); previewComponentLayout(); componentLayoutPreview?.resizeHandle?.focus(); return;\n      }\n      // The viewport is mouse-focusable for scrolling, but not a sequential tab\n      // stop. Leave it through the one enabled toolbar action, then normal Tab can\n      // reach the host Save/Cancel controls without cycling through this copy.\n      if (event.isTrusted && event.key === "Tab") { event.preventDefault();componentHost.shadowRoot.querySelector(\'[data-component-action="preview-toggle"]\').focus({preventScroll:true});event.stopImmediatePropagation();return; }\n      if (event.isTrusted && event.key === "Escape") { componentLayoutPreview.host.hidden=true;componentLayoutPreview.host.style.setProperty("display","none","important");const toggle=componentHost.shadowRoot.querySelector(\'[data-component-action="preview-toggle"]\');toggle.textContent="\u770B\u9884\u89C8";toggle.focus({preventScroll:true});positionComponent(); }\n      if (!["Tab","ArrowUp","ArrowDown","PageUp","PageDown","Home","End"].includes(event.key)) event.preventDefault(); event.stopImmediatePropagation(); return;\n    }\n    if (event.isTrusted) lastGesture = performance.now();\n    if (!event.isTrusted) return;\n    if (componentPress && event.key === "Escape") {componentPress=null;componentClick=null;event.preventDefault();event.stopImmediatePropagation();return;}\n    if (componentDrag) {\n      if (event.key === "Escape") cancelComponentDrag();\n      else if (event.key === "Tab") { const size = componentDrag.candidates.length; if (size) componentDrag.depth = (componentDrag.depth + (event.shiftKey ? size - 1 : 1)) % size; componentDrag.manualDepth = true; paintComponentDrag(); }\n      else if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) { componentDrag.manualPosition = { ArrowUp: "before", ArrowDown: "after", ArrowLeft: "prepend", ArrowRight: "append" }[event.key]; paintComponentDrag(); }\n      else return;\n      event.preventDefault(); event.stopImmediatePropagation(); return;\n    }\n    if (componentLayoutDraft && !componentPending && event.key === "Escape" && !event.isComposing) { event.preventDefault(); event.stopImmediatePropagation(); cancelComponentLayout(); return; }\n    if (componentText) {\n      const composing=event.isComposing || event.keyCode===229 || componentText.composing;\n      if ((componentPending || componentText.invalid) && inComponentText(event) && (event.metaKey || event.ctrlKey) && event.key.toLowerCase()==="a") {event.preventDefault();focusComponentText(true);}\n      if (event.key === "Escape" && !componentPending && !composing) { event.preventDefault(); cancelComponentText(); }\n      else if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !composing && !componentPending) { event.preventDefault(); saveComponentText(); }\n      event.stopImmediatePropagation(); return;\n    }\n    if (selectedComponent && !componentPending && !isEditor(event) && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && ["c", "x", "v"].includes(event.key.toLowerCase())) {\n      event.preventDefault(); event.stopImmediatePropagation();\n      try { if (event.key.toLowerCase() === "v") pasteComponent(); else copyComponent(event.key.toLowerCase() === "x" ? "move" : "copy"); } catch (failure) { setComponentNotice(failure.message); }\n      return;\n    }\n    if (!isEditor(event) && event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey) { componentShortcut = true; updateComponentHover(); }\n    if (inComponents(event) && event.key !== "Escape") { event.stopImmediatePropagation(); return; }\n    if (inMarkers(event)) { event.stopImmediatePropagation(); return; }\n    if (event.target instanceof Element) { const r = event.target.getBoundingClientRect(); lastGesturePosition = { x: r.left, y: r.bottom }; }\n    if (event.key === "Escape" && (selectionSession || selectionMode !== "off" || lastAnchor)) {\n      event.preventDefault(); event.stopImmediatePropagation();\n      if (componentPending) return;\n      componentClipboard = null; componentNotice = ""; componentShortcut = false;\n      selectionMode = "off"; cancelSelection({ notify: true }); post({ type: "selection-end" }); return;\n    }\n  }, true);\n  for (const type of ["beforeinput","input","compositionstart","compositionupdate","compositionend","paste","copy","cut","drop","dragstart","pointerup","dblclick","mousedown","mouseup","keypress","focus","blur","focusin","focusout"]) window.addEventListener(type,event=>{\n    if (!inComponentText(event)) return;\n    if (type === "compositionstart") componentText.composing=true;\n    if (type === "compositionend") {componentText.composing=false;syncComponentText();}\n    if (type === "input") syncComponentText();\n    if (type === "beforeinput") {\n      if (componentPending || componentText.invalid || /^format|insertHTML|insertFromDrop/.test(event.inputType)) event.preventDefault();\n      else if (event.isTrusted && /^(insert|delete|history)/.test(event.inputType)) {\n        // Preserve actual spaces once editing begins. With collapsed whitespace,\n        // Chromium rewrites ordinary boundary spaces to NBSP in the DOM. Changing\n        // the active run before the edit keeps the original input bytes and native\n        // undo; an untouched run still uses the source\'s exact wrapping above.\n        const lineBreak=["insertParagraph","insertLineBreak"].includes(event.inputType) || /[\\r\\n]/.test(event.data || "");\n        // Let the browser represent new lines as blocks/BRs rather than its\n        // pre-wrap-only terminal newline sentinel. After input, the draft returns\n        // to pre-wrap; its semantic reader preserves every real block boundary.\n        componentText.run.editor.style.setProperty("white-space",lineBreak?"normal":"pre-wrap","important");\n        componentText.run.editor.style.setProperty("white-space-collapse",lineBreak?"collapse":"preserve","important");\n      }\n    }\n    if (type === "paste") {\n      event.preventDefault();\n      if (!componentPending && !componentText.invalid) {\n        const plain=event.clipboardData?.getData("text/plain")||"";\n        if (plain.length>24000) setComponentNotice("\u8FD9\u6BB5\u6587\u5B57\u592A\u957F\uFF0C\u8BF7\u7F29\u77ED\u540E\u91CD\u8BD5");\n        else document.execCommand("insertText",false,plain);\n      }\n    }\n    // Only plain text enters this isolated draft. Drops are disabled rather than\n    // allowing the browser to move authored nodes or import clipboard HTML.\n    if (type === "drop" || type === "dragstart") event.preventDefault();\n    event.stopImmediatePropagation();\n  },true);\n  window.addEventListener("keyup", (event) => {\n    if (inComponentText(event)) { event.stopImmediatePropagation(); return; }\n    if (!event.isTrusted) return;\n    componentShortcut = event.shiftKey && (event.metaKey || event.ctrlKey) && !event.altKey && !isEditor(event);\n    if (componentDrag) return;\n    if (!componentShortcut) clearComponentHover(); else updateComponentHover();\n  }, true);\n  composition.listen((event) => {\n    const message = event.data;\n    if (!event.isTrusted || !message || message.channel !== scope.channel || message.boardId !== scope.boardId || message.sessionId !== scope.sessionId) return;\n    if (message.type === "composition-layout" && initial.compositionSecret) {\n      // A state-preserving iframe move does not resize its child viewport. Refresh\n      // runtime overlays after the parent move, before the next user scroll: in\n      // Chromium, postponing this first child layout until that scroll can restore\n      // the pre-move compositor offset. Do not fake an authored resize event or\n      // compensate by writing a saved scroll position over the user\'s gesture.\n      positionMarkers(); positionComponent(); markerHost?.getBoundingClientRect();\n    }\n    else if (message.type === "restore-view") readingView.request(message);\n    else if (message.type === "view-port" && event.ports?.length === 1) readingView.connect(event.ports[0]);\n    else if (message.type === "flush-view") readingView.capture();\n    else if (message.type === "snapshot") receiveSnapshot(message.snapshot, message.version);\n    else if (message.type === "delta") { versionedTransport = true; enqueue(receiver.delta(message.delta)); }\n    else if (message.type === "interactions" && Array.isArray(message.markers)) renderMarkers(message.markers, message.selectedId);\n    else if (message.type === "focus-update") focusUpdate(message);\n    else if (message.type === "host-activity" && typeof message.composing === "boolean") { hostComposing = message.composing; reportCanvasActivity(); }\n    else if (message.type === "focus-interaction" && typeof message.id === "string") focusInteraction(message.id);\n    else if (message.type === "selection") setSelectionMode(message.mode);\n    else if (message.type === "cancel-capture" && message.selectionId === selectionSession?.id) cancelSelection({ clear: false });\n    else if (message.type === "clear-selection") { selectionMode = "off"; cancelSelection(); }\n    else if (message.type === "component-edit-result") receiveComponentEdit(message);\n    else if (message.type === "ask-result") {\n      const pending = pendingAsks.get(message.id);\n      if (pending) {\n        pendingAsks.delete(message.id); clearTimeout(pending.timer);\n        const result = message.result;\n        pending.resolve(result && ["submitted", "queued"].includes(result.status)\n          && (result.outcome === undefined || result.outcome === null || typeof result.outcome === "string")\n          ? { status: result.status, ...(result.outcome !== undefined ? { outcome: result.outcome } : {}) } : cancelAsk);\n      }\n    }\n  });\n  const reportedErrors = new Set();\n  window.addEventListener("error", (event) => {\n    const message = event.message || "Canvas resource could not load";\n    if (reportedErrors.has(message) || reportedErrors.size >= 12) return;\n    reportedErrors.add(message);\n    error("runtime-error", message);\n  });\n  window.addEventListener("unhandledrejection", (event) => {\n    const message = event.reason && event.reason.message || String(event.reason || "Unhandled promise rejection");\n    if (reportedErrors.has(message) || reportedErrors.size >= 12) return;\n    reportedErrors.add(message);\n    error("runtime-error", message);\n  });\n  const ready = () => {\n    post({ type: "ready", capabilities: { frameDelta: 1, viewState: 1, viewPort: 1 } });\n    receiveSnapshot(initial);\n  };\n  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready, { once: true });\n  else ready();\n}\n';
+
+// shared/assets/composition-runtime.txt
+var composition_runtime_default = `function (initial) {
+  "use strict";
+  const scope = { channel: initial.channel, boardId: initial.boardId, sessionId: initial.sessionId };
+  const embedded = initial.compositionSecret;
+  const add = Function.prototype.call.bind(EventTarget.prototype.addEventListener);
+  const remove = Function.prototype.call.bind(EventTarget.prototype.removeEventListener);
+  const sendPort = Function.prototype.call.bind(MessagePort.prototype.postMessage);
+  const startPort = Function.prototype.call.bind(MessagePort.prototype.start);
+  const stopEvent = Function.prototype.call.bind(Event.prototype.stopImmediatePropagation);
+  const dataOf = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(MessageEvent.prototype, "data").get);
+  const sourceOf = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(MessageEvent.prototype, "source").get);
+  const portsOf = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(MessageEvent.prototype, "ports").get);
+  const hasFocus = document.hasFocus.bind(document);
+  const host = embedded ? window.top : window.parent;
+  const postWindow = host.postMessage.bind(host);
+  let port = null, controlPort = null, listener = null;
+  const pending = [], controlPending = [];
+  const deliver = event => {
+    if (!event.isTrusted) return;
+    const data = dataOf(event);
+    if (!data || data.channel !== scope.channel || data.boardId !== scope.boardId || data.sessionId !== scope.sessionId) return;
+    if (handleSlots(data)) return;
+    listener?.({ data, ports: portsOf(event), isTrusted: true });
+  };
+  const connect = event => {
+    if (!event.isTrusted || sourceOf(event) !== host) return;
+    const data = dataOf(event), ports = portsOf(event);
+    if (!data || data.type !== "composition-connect" || data.secret !== embedded || data.boardId !== scope.boardId || data.sessionId !== scope.sessionId || ports.length !== 1 || port) return;
+    // The bootstrap listener runs before authored scripts. Its private port is not
+    // observable through author message listeners or patched prototype methods.
+    stopEvent(event);
+    port = ports[0]; add(port, "message", deliver); startPort(port);
+    for (const message of pending.splice(0)) sendPort(port, message);
+    remove(window, "message", connect, true);
+  };
+  if (!embedded && initial.compositionHostId) add(window, "message", event => {
+    if (!event.isTrusted || sourceOf(event) !== host) return;
+    const data = dataOf(event), ports = portsOf(event);
+    if (!data || data.type !== "composition-control-connect" || data.boardId !== scope.boardId || data.sessionId !== scope.sessionId || ports.length !== 1) return;
+    stopEvent(event);
+    if (controlPort) return;
+    controlPort = ports[0];
+    for (const message of controlPending.splice(0)) sendPort(controlPort, message);
+  }, true);
+  if (embedded) {
+    add(window, "message", connect, true);
+    postWindow({ ...scope, type: "composition-ready", secret: embedded }, "*");
+  } else add(window, "message", event => {
+    if (sourceOf(event) === host) deliver(event);
+  }, true);
+  function post(message) {
+    if (!embedded && initial.compositionHostId && ["composition-slots", "composition-open", "composition-drafts"].includes(message.type)) {
+      if (controlPort) sendPort(controlPort, message);
+      else if (controlPending.length < 32) controlPending.push(message);
+      return;
+    }
+    if (!embedded) { postWindow(message, "*"); return; }
+    if (port) sendPort(port, message);
+    else if (pending.length < 128) pending.push(message);
+  }
+
+  const slots = new Map();
+  const states = new WeakMap();
+  const unavailable = new WeakSet();
+  let scheduled = false, previous = "", sequence = 0;
+  const defaultHost = initial.compositionHostId;
+  function prepareFrame(item) {
+    // This tiny locator contains no source document or authority. Its native
+    // MessageEvent gives the host a stable WindowProxy even during DOM reorder.
+    const value = JSON.stringify({ ...scope, type: "composition-slot-ready", frameToken: item.frameToken }).replace(/</g, "\\\\u003c");
+    item.frame.srcdoc = "<script>const value=" + value + ";const send=top.postMessage.bind(top);addEventListener('message',event=>{if(event.isTrusted&&event.source===parent&&event.data?.type==='composition-slot-discover'&&event.data.frameToken===value.frameToken)send(value,'*')});send(value,'*');<" + "/script>";
+  }
+  function notify() {
+    scheduled = false;
+    if (!defaultHost || embedded) return;
+    const next = [], seen = new Set();
+    for (const element of document.querySelectorAll("paseo-board")) {
+      if (next.length >= 16) break;
+      if (unavailable.has(element)) continue;
+      let item = states.get(element);
+      if (!item) {
+        let shadow;
+        try { shadow = element.attachShadow({ mode: "closed" }); } catch { unavailable.add(element); continue; }
+        const style = document.createElement("style");
+        style.textContent = ":host{display:block;position:relative;min-height:108px}header{box-sizing:border-box;height:28px;display:flex;gap:8px;align-items:center;padding:0 8px;border-bottom:1px solid var(--host-line,#ddd);background:var(--host-sheet,#fff);color:var(--host-ink,#333);font:12px system-ui}span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}button{border:0;background:transparent;color:inherit;cursor:pointer;font:inherit}::slotted(iframe){display:block;border:0;width:100%;height:calc(100% - 28px);min-height:80px}div{position:absolute;inset:28px 0 0;display:grid;place-items:center;padding:12px;background:var(--host-sheet,#fff);color:var(--host-ink,#333);font:13px system-ui;pointer-events:none}[hidden]{display:none!important}";
+        const header = document.createElement("header"), title = document.createElement("span"), open = document.createElement("button"), drafts = document.createElement("button");
+        title.textContent = element.getAttribute("board-id") || "Board"; open.textContent = "\u6253\u5F00"; open.hidden = true;
+        drafts.hidden = true; drafts.textContent = "\u5F85\u53D1\u9001";
+        header.append(title, drafts, open);
+        const frame = document.createElement("iframe"); frame.sandbox = "allow-scripts"; frame.referrerPolicy = "no-referrer"; frame.title = "Embedded Board"; frame.slot = "canvas"; frame.setAttribute("data-board-embedded-frame", ""); frame.setAttribute("data-board-overlay", "");
+        const status = document.createElement("div"); status.textContent = "\u8FDE\u63A5\u753B\u677F\u2026";
+        const outlet = document.createElement("slot"); outlet.name = "canvas";
+        item = { element, frame, window: null, frameReady: false, status, title, open, drafts, frameToken: String(++sequence), fallbackId: "slot-" + sequence }; states.set(element, item);
+        // A newly appended opaque iframe can be present in this renderer's frames
+        // list before the top renderer can resolve its WindowProxy. Publish only
+        // after its native initial load has completed.
+        add(frame, "load", () => { item.frameReady = true; schedule(); });
+        prepareFrame(item); shadow.append(style, header, outlet, status); element.append(frame); item.window = frame.contentWindow;
+        add(open, "click", event => { if (event.isTrusted) post({ ...scope, type: "composition-open", id: element.getAttribute("slot-id") || element.id || item.fallbackId }); });
+        add(drafts, "click", event => { if (event.isTrusted) post({ ...scope, type: "composition-drafts", id: element.getAttribute("slot-id") || element.id || item.fallbackId }); });
+        resize?.observe(element);
+      }
+      if (item.frame.parentElement !== element) element.append(item.frame);
+      if (item.window !== item.frame.contentWindow) { item.window = item.frame.contentWindow; item.frameReady = false; item.frameToken = String(++sequence); prepareFrame(item); }
+      const id = element.getAttribute("slot-id") || element.id || item.fallbackId;
+      const hostId = element.getAttribute("host-id") || defaultHost, boardId = element.getAttribute("board-id") || "";
+      const snapshotId = element.getAttribute("snapshot-id");
+      if (!id || id.length > 160 || !hostId || hostId.length > 256 || !boardId || boardId.length > 160 || snapshotId && snapshotId.length > 200) { item.status.hidden = false; item.status.textContent = "\u753B\u677F\u5F15\u7528\u7F3A\u5C11\u6709\u6548\u7684 host-id\u3001board-id \u6216 snapshot-id"; continue; }
+      if (seen.has(id)) { item.status.hidden = false; item.status.textContent = "\u753B\u677F\u5F15\u7528 ID \u91CD\u590D"; continue; }
+      seen.add(id); slots.set(id, item);
+      const preview = element.getAttribute("view") === "preview";
+      if (item.frame.inert !== preview) item.frame.inert = preview;
+      const tabIndex = preview ? -1 : 0, pointerEvents = preview ? "none" : "auto";
+      if (item.frame.tabIndex !== tabIndex) item.frame.tabIndex = tabIndex;
+      // A redundant style assignment still emits a MutationRecord. Avoid
+      // feeding our own style observer an endless requestAnimationFrame loop.
+      if (item.frame.style.pointerEvents !== pointerEvents) item.frame.style.pointerEvents = pointerEvents;
+      const rect = item.frame.getBoundingClientRect();
+      let index = -1;
+      for (let i = 0; i < window.frames.length; i++) if (window.frames[i] === item.frame.contentWindow) { index = i; break; }
+      const style = getComputedStyle(element);
+      if (index < 0 || !item.frameReady) continue;
+      next.push({ id, hostId, boardId, view: preview ? "preview" : "interactive", ...(snapshotId ? { snapshotId } : {}), frameIndex: index, frameToken: item.frameToken, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, visible: !document.hidden && rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden" && rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight });
+    }
+    for (const [id, item] of slots) if (!seen.has(id)) { slots.delete(id); if (!item.element.isConnected) resize?.unobserve(item.element); }
+    const serialized = JSON.stringify(next);
+    if (serialized !== previous) { previous = serialized; post({ ...scope, type: "composition-slots", slots: next }); }
+  }
+  function schedule() { if (!scheduled) { scheduled = true; requestAnimationFrame(notify); } }
+  function handleSlots(message) {
+    if (message.type === "composition-discover") {
+      const item = slots.get(message.id);
+      if (item?.frameToken === message.frameToken) item.frame.contentWindow?.postMessage({ type: "composition-slot-discover", frameToken: item.frameToken }, "*");
+      return true;
+    }
+    if (message.type === "composition-presentation") {
+      const item = slots.get(message.id);
+      if (item && typeof message.title === "string" && typeof message.hostLabel === "string") {
+        item.title.textContent = message.title.slice(0, 200) + " \xB7 " + message.hostLabel.slice(0, 200) + (message.unread > 0 ? " \xB7 " + Math.min(9999, message.unread) + " \u6761\u66F4\u65B0" : "");
+        item.open.hidden = !message.canOpen;
+        item.drafts.hidden = !message.canDrafts || !(message.queued > 0);
+        item.drafts.textContent = "\u5F85\u53D1\u9001 " + Math.min(9999, message.queued || 0);
+      }
+      return true;
+    }
+    if (message.type !== "composition-status") return false;
+    const item = slots.get(message.id);
+    if (item && typeof message.text === "string") { item.status.textContent = message.text.slice(0, 300); item.status.hidden = message.text === ""; }
+    return true;
+  }
+  const resize = typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
+  if (defaultHost && !embedded) {
+    new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["host-id", "board-id", "view", "snapshot-id", "slot-id", "id", "class", "style", "hidden"] });
+    add(window, "scroll", schedule, true); add(window, "resize", schedule); add(document, "visibilitychange", schedule); schedule();
+  }
+  return {
+    post,
+    listen(fn) { listener = fn; },
+    acting() { return !embedded || hasFocus(); },
+    intersects(region) {
+      for (const item of slots.values()) {
+        const r = item.element.getBoundingClientRect(), x = r.x + scrollX, y = r.y + scrollY;
+        if (r.width > 0 && r.height > 0 && x < region.x + region.width && x + r.width > region.x && y < region.y + region.height && y + r.height > region.y) return true;
+      }
+      return false;
+    },
+  };
+}
+`;
 
 // shared/assets/component-layout-state.txt
 var component_layout_state_default = `function (api, documentVersion) {
@@ -2576,10 +3190,13 @@ function buildBoardDocument(input) {
     boardRevision: input.boardRevision,
     userState: input.userState,
     theme: input.theme,
-    captureModule: html_to_image_default
+    captureModule: html_to_image_default,
+    compositionHostId: input.compositionHostId,
+    compositionSecret: input.compositionSecret
   };
-  var bootstrap = `<script>(${board_runtime_default})(${scriptJson(initial)}, (${frame_delta_default}), (${createComponentLayoutTools.toString()}), (${component_layout_state_default}));</script>`;
-  return `<!doctype html><html lang="en" data-surface="page" data-palette="custom" data-theme="${input.theme.scheme}" style="${escapeHtml(tokens)}"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${BOARD_CSP}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(input.title)}</title><style>@layer paseo-board-defaults {${visualize_css_default}
+  var bootstrap = `<script>(${board_runtime_default})(${scriptJson(initial)}, (${frame_delta_default}), (${createComponentLayoutTools.toString()}), (${component_layout_state_default}), (${composition_runtime_default}));</script>`;
+  var csp = input.compositionHostId && !input.compositionSecret ? BOARD_CSP.replace("frame-src 'none'", "frame-src blob:") : BOARD_CSP;
+  return `<!doctype html><html lang="en" data-surface="page" data-palette="custom" data-theme="${input.theme.scheme}" style="${escapeHtml(tokens)}"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(input.title)}</title><style>@layer paseo-board-defaults {${visualize_css_default}
 }</style></head><body>${bootstrap}${html.replace(/^\uFEFF/, "")}
 ${/data-tooltip|dataset\.tooltip|floatingui/i.test(html) ? runtime_tooltips_default : ""}${/lucide/i.test(html) ? runtime_icons_default : ""}</body></html>`;
 }
@@ -2715,8 +3332,8 @@ function emptyFrameDelta(delta) {
 }
 
 // client/web.ts
-var browser = globalThis;
-var canRenderFrames = Platform.OS === "web" && Boolean(browser.window && browser.document);
+var browser2 = globalThis;
+var canRenderFrames = Platform.OS === "web" && Boolean(browser2.window && browser2.document);
 var VIEW_HANDOFF_MS = 250;
 var viewLeases = /* @__PURE__ */new Map();
 function acquireViewLease(scope) {
@@ -2737,9 +3354,12 @@ function acquireViewLease(scope) {
   while (viewLeases.size > 64) viewLeases.values().next().value?.revoke();
   return lease;
 }
+function capturedBeforeRetirement(delivery, capturedAt) {
+  return delivery.retiredAt === void 0 || capturedAt !== void 0 && capturedAt <= delivery.retiredAt;
+}
 function observeViewVisibility(delivery) {
   var target = delivery.frame;
-  if (browser.document?.hidden || target?.isConnected === false) {
+  if (browser2.document?.hidden || target?.isConnected === false) {
     delivery.visibleAt = null;
     return false;
   }
@@ -2749,7 +3369,7 @@ function observeViewVisibility(delivery) {
   return visible;
 }
 function getBoardSyncVisibility() {
-  var page = Platform.OS === "web" ? browser.document : void 0;
+  var page = Platform.OS === "web" ? browser2.document : void 0;
   if (!page) return void 0;
   return {
     visible: () => !page.hidden,
@@ -2761,7 +3381,7 @@ function getBoardSyncVisibility() {
 }
 function nonce() {
   var bytes = new Uint8Array(16);
-  if (browser.crypto) browser.crypto.getRandomValues(bytes);else for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  if (browser2.crypto) browser2.crypto.getRandomValues(bytes);else for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
   return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
 }
 function documentFor(props) {
@@ -2773,12 +3393,17 @@ function documentFor(props) {
     sessionId,
     html: buildBoardDocument({
       ...props,
-      sessionId
+      sessionId,
+      compositionHostId: props.embeddedMount ? void 0 : props.composition?.hostId
     })
   };
 }
 function CanvasFrame(props) {
   var frame = useRef(null);
+  var embeddedConnection = useRef(void 0);
+  var embeddedReceive = useRef(void 0);
+  var compositionController = useRef(void 0);
+  var compositionControl = useRef(void 0);
   var latest = useRef(props);
   latest.current = props;
   var localState = useRef(null);
@@ -2840,21 +3465,21 @@ function CanvasFrame(props) {
     var current = latest.current;
     if (viewDelivery.current !== target || document.current?.sessionId !== target.sessionId) return;
     observeCurrentView();
-    if (!ready.current || !viewRestore.current?.settled || browser.document?.hidden || target.visibleAt === null || target.version !== current.canvas.documentVersion || view.documentVersion !== target.version || view.canvasRevision !== current.canvas.revision) return;
+    if (!ready.current || !viewRestore.current?.settled || browser2.document?.hidden || target.visibleAt === null || target.version !== current.canvas.documentVersion || view.documentVersion !== target.version || view.canvasRevision !== current.canvas.revision) return;
     current.onViewState?.(view);
   };
   var connectViewPort = () => {
     var target = viewDelivery.current;
-    if (!target?.scope || !target.portCapable || !target.settled || target.reader || !target.window || !browser.MessageChannel) return;
+    if (!target?.scope || !target.portCapable || !target.settled || target.reader || !target.window || !browser2.MessageChannel) return;
     var channel;
     try {
-      channel = new browser.MessageChannel();
+      channel = new browser2.MessageChannel();
       var port = channel.port1;
       var reader = {
         receive(event) {
           if (!event.isTrusted || !event.data || typeof event.data !== "object" || event.data.type !== "view-state") return;
-          var message = readFrameMessage(event.data, target);
-          if (message?.type === "view-state") acceptView(target, message.view);
+          var message2 = readFrameMessage(event.data, target);
+          if (message2?.type === "view-state" && capturedBeforeRetirement(target, message2.capturedAt)) acceptView(target, message2.view);
         },
         close() {
           port.removeEventListener("message", onPortMessage);
@@ -2865,12 +3490,13 @@ function CanvasFrame(props) {
       port.addEventListener("message", onPortMessage);
       port.start();
       target.reader = reader;
-      target.window.postMessage({
+      var message = {
         type: "view-port",
         channel: FRAME_CHANNEL,
         boardId: target.boardId,
         sessionId: target.sessionId
-      }, "*", [channel.port2]);
+      };
+      if (latest.current.embeddedMount) embeddedConnection.current?.send(message, [channel.port2]);else target.window.postMessage(message, "*", [channel.port2]);
     } catch {
       target.reader?.close();
       target.reader = void 0;
@@ -2880,6 +3506,15 @@ function CanvasFrame(props) {
   };
   var send = payload => {
     var current = document.current;
+    if (latest.current.embeddedMount) {
+      embeddedConnection.current?.send({
+        ...payload,
+        channel: FRAME_CHANNEL,
+        boardId: current.boardId,
+        sessionId: current.sessionId
+      });
+      return;
+    }
     frame.current?.contentWindow?.postMessage({
       ...payload,
       channel: FRAME_CHANNEL,
@@ -2959,7 +3594,7 @@ function CanvasFrame(props) {
     });
   };
   useLayoutEffect(() => {
-    if (!canRenderFrames || !browser.window) return;
+    if (!canRenderFrames || !browser2.window) return;
     var waiting = /* @__PURE__ */new Set();
     var pendingEdits = /* @__PURE__ */new Set();
     var cancelledSelections = /* @__PURE__ */new Set();
@@ -2985,14 +3620,71 @@ function CanvasFrame(props) {
       focusRequestedInteraction();
       focusRequestedUpdate();
     };
-    var userActing = () => browser.document?.activeElement === frame.current && browser.navigator?.userActivation?.isActive === true;
+    var authenticatedEmbeddedMessage = false;
+    var userActing = () => (latest.current.embeddedMount ? authenticatedEmbeddedMessage : browser2.document?.activeElement === frame.current) && browser2.navigator?.userActivation?.isActive === true;
     var onMessage = event => {
       if (disposed || !event.isTrusted || event.source !== frame.current?.contentWindow || !document.current) return;
+      if (latest.current.embeddedMount && !event.compositionAuthenticated) return;
+      authenticatedEmbeddedMessage = event.compositionAuthenticated === true;
       var message = readFrameMessage(event.data, document.current);
       if (!message) return;
       var current = latest.current;
       switch (message.type) {
+        case "composition-slots":
+          {
+            if (!current.composition || current.embeddedMount || !event.compositionAuthenticated) break;
+            if (compositionController.current?.sessionId !== document.current.sessionId) {
+              compositionController.current?.controller.dispose();
+              compositionController.current = {
+                sessionId: document.current.sessionId,
+                controller: createCompositionController({
+                  scope: {
+                    ...document.current,
+                    channel: FRAME_CHANNEL
+                  },
+                  owner: () => frame.current?.contentWindow ?? null,
+                  send,
+                  changed: mounts => latest.current.composition?.onSlots(mounts)
+                })
+              };
+            }
+            compositionController.current.controller.update(message.slots);
+            break;
+          }
+        case "composition-open":
+          if (event.compositionAuthenticated && userActing()) compositionController.current?.controller.open(message.id);
+          break;
+        case "composition-drafts":
+          if (event.compositionAuthenticated && userActing()) compositionController.current?.controller.drafts(message.id);
+          break;
         case "ready":
+          if (current.composition && !current.embeddedMount && browser2.MessageChannel && compositionControl.current?.sessionId !== document.current.sessionId) {
+            compositionControl.current?.close();
+            var channel = new browser2.MessageChannel(),
+              source = frame.current?.contentWindow;
+            var receive = message2 => onMessage({
+              data: message2.data,
+              isTrusted: message2.isTrusted,
+              source,
+              compositionAuthenticated: true
+            });
+            channel.port1.addEventListener("message", receive);
+            channel.port1.start();
+            compositionControl.current = {
+              sessionId: document.current.sessionId,
+              close() {
+                channel.port1.removeEventListener("message", receive);
+                channel.port1.close();
+                channel.port2.close();
+              }
+            };
+            source?.postMessage({
+              channel: FRAME_CHANNEL,
+              type: "composition-control-connect",
+              boardId: document.current.boardId,
+              sessionId: document.current.sessionId
+            }, "*", [channel.port2]);
+          }
           ready.current = true;
           transport2.current = {
             sessionId: document.current.sessionId,
@@ -3029,7 +3721,7 @@ function CanvasFrame(props) {
         case "view-state":
           {
             var target = viewDelivery.current;
-            if (target && !target.reader) acceptView(target, message.view);
+            if (target && !target.reader && capturedBeforeRetirement(target, message.capturedAt)) acceptView(target, message.view);
             break;
           }
         case "view-restored":
@@ -3132,7 +3824,7 @@ function CanvasFrame(props) {
           {
             var lock = interactionLock.current;
             var _key = document.current.sessionId + ":" + message.selectionId;
-            var automatic = message.automatic === true && browser.document?.activeElement === frame.current && lock?.dragging === false && lock.anchor && JSON.stringify(lock.anchor) === JSON.stringify(message.request.anchor);
+            var automatic = message.automatic === true && browser2.document?.activeElement === frame.current && lock?.dragging === false && lock.anchor && JSON.stringify(lock.anchor) === JSON.stringify(message.request.anchor);
             if ((userActing() || automatic) && message.selectionId === lock?.id && !composedSelections.has(_key) && message.request.anchor.boardRevision <= current.boardRevision && message.request.anchor.canvasRevision <= current.canvas.revision) {
               composedSelections.add(_key);
               lock.capturePending = message.request.captureStatus === "pending";
@@ -3230,24 +3922,70 @@ function CanvasFrame(props) {
         });
       }
     };
-    browser.window.addEventListener("message", onMessage);
-    browser.window.addEventListener("pointerdown", onOuterStart, true);
-    browser.window.addEventListener("pointerup", onOuterRelease, true);
-    browser.window.addEventListener("pointercancel", onOuterRelease, true);
+    embeddedReceive.current = onMessage;
+    browser2.window.addEventListener("message", onMessage);
+    browser2.window.addEventListener("pointerdown", onOuterStart, true);
+    browser2.window.addEventListener("pointerup", onOuterRelease, true);
+    browser2.window.addEventListener("pointercancel", onOuterRelease, true);
     return () => {
       if (ready.current) send({
         type: "flush-view"
       });
       disposed = true;
+      embeddedReceive.current = void 0;
+      compositionController.current?.controller.dispose();
+      compositionController.current = void 0;
+      compositionControl.current?.close();
+      compositionControl.current = void 0;
       latest.current.onEditScopeChange?.();
-      browser.window?.removeEventListener("message", onMessage);
-      browser.window?.removeEventListener("pointerdown", onOuterStart, true);
-      browser.window?.removeEventListener("pointerup", onOuterRelease, true);
-      browser.window?.removeEventListener("pointercancel", onOuterRelease, true);
+      browser2.window?.removeEventListener("message", onMessage);
+      browser2.window?.removeEventListener("pointerdown", onOuterStart, true);
+      browser2.window?.removeEventListener("pointerup", onOuterRelease, true);
+      browser2.window?.removeEventListener("pointercancel", onOuterRelease, true);
     };
   }, []);
   useLayoutEffect(() => {
-    if (!canRenderFrames || !browser.window || !delivery.scope) return;
+    if (!props.embeddedMount || !canRenderFrames) return;
+    var mount = props.embeddedMount;
+    try {
+      var connection = mount.attach({
+        scope: {
+          channel: FRAME_CHANNEL,
+          boardId: rendered.boardId,
+          sessionId: rendered.sessionId
+        },
+        document: secret2 => buildBoardDocument({
+          ...latest.current,
+          sessionId: rendered.sessionId,
+          compositionSecret: secret2
+        }),
+        receive: event => embeddedReceive.current?.(event),
+        beforeDispose: () => {
+          delivery.retiredAt ?? (delivery.retiredAt = performance.timeOrigin + performance.now());
+        }
+      });
+      embeddedConnection.current = connection;
+      frame.current = {
+        contentWindow: connection.contentWindow,
+        isConnected: true,
+        getBoundingClientRect: () => mount.getSnapshot().rect
+      };
+      return () => {
+        connection.dispose();
+        if (embeddedConnection.current === connection) {
+          embeddedConnection.current = void 0;
+          frame.current = null;
+        }
+      };
+    } catch (error) {
+      latest.current.onError({
+        code: "composition-mount-failed",
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }, [props.embeddedMount, rendered.sessionId]);
+  useLayoutEffect(() => {
+    if (!canRenderFrames || !browser2.window || !delivery.scope) return;
     var lease = acquireViewLease(delivery.scope);
     delivery.frame = frame.current;
     delivery.window = frame.current?.contentWindow ?? null;
@@ -3260,7 +3998,7 @@ function CanvasFrame(props) {
       var recentlyVisible = delivery.frame?.isConnected === false ? delivery.visibleAt !== null && performance.now() - delivery.visibleAt <= VIEW_HANDOFF_MS : observeViewVisibility(delivery);
       var reader = delivery.reader,
         sink = delivery.sink;
-      if (!recentlyVisible || browser.document?.hidden || !delivery.settled || !reader || !sink) {
+      if (!recentlyVisible || browser2.document?.hidden || !delivery.settled || !reader || !sink) {
         reader?.close();
         lease.revoke();
         return;
@@ -3280,7 +4018,7 @@ function CanvasFrame(props) {
         if (!event.isTrusted) return;
         if (!event.data || typeof event.data !== "object" || event.data.type !== "view-state") return;
         var message = readFrameMessage(event.data, scope);
-        if (message?.type !== "view-state" || message.view.documentVersion !== version || message.view.canvasRevision !== canvasRevision) return;
+        if (message?.type !== "view-state" || message.view.documentVersion !== version || message.view.canvasRevision !== canvasRevision || !capturedBeforeRetirement(delivery, message.capturedAt)) return;
         sink(message.view);
       };
       var timer = setTimeout(() => lease.revoke(), VIEW_HANDOFF_MS);
@@ -3291,41 +4029,41 @@ function CanvasFrame(props) {
     };
   }, [rendered.sessionId, props.viewScope]);
   var editScope = useRef(rendered.sessionId);
-  useEffect(() => {
+  useEffect2(() => {
     if (editScope.current !== rendered.sessionId) {
       editScope.current = rendered.sessionId;
       latest.current.onEditScopeChange?.();
     }
   }, [rendered.sessionId]);
-  useEffect(() => {
+  useEffect2(() => {
     if (!ready.current) return;
     syncSnapshot();
   }, [props.canvas, props.boardRevision, props.userState, props.theme]);
-  useEffect(() => {
+  useEffect2(() => {
     if (ready.current) send({
       type: "interactions",
       markers: interactionMarkers(props.interactions || []),
       selectedId: props.selectedInteractionId
     });
   }, [props.interactions, props.selectedInteractionId]);
-  useEffect(() => {
+  useEffect2(() => {
     focusRequestedInteraction();
   }, [props.focusInteraction, props.selectedInteractionId, props.interactions]);
-  useEffect(() => {
+  useEffect2(() => {
     if (ready.current) send({
       type: "host-activity",
       composing: Boolean(props.composerActive)
     });
     focusRequestedUpdate();
   }, [props.focusUpdate, props.composerActive, props.selectionMode]);
-  useEffect(() => {
+  useEffect2(() => {
     if (ready.current) send({
       type: "selection",
       mode: props.selectionMode
     });
   }, [props.selectionMode]);
   var cleared = useRef(props.selectionClearToken);
-  useEffect(() => {
+  useEffect2(() => {
     if (cleared.current === props.selectionClearToken) return;
     cleared.current = props.selectionClearToken;
     interactionLock.current = null;
@@ -3334,7 +4072,7 @@ function CanvasFrame(props) {
     });
     redraw(n => n + 1);
   }, [props.selectionClearToken]);
-  useEffect(() => {
+  useEffect2(() => {
     var selectionId = props.selectionCaptureCancelId;
     if (!selectionId || selectionId !== interactionLock.current?.id) return;
     interactionLock.current = null;
@@ -3344,7 +4082,7 @@ function CanvasFrame(props) {
     });
     redraw(n => n + 1);
   }, [props.selectionCaptureCancelId]);
-  if (!canRenderFrames) return null;
+  if (!canRenderFrames || props.embeddedMount) return null;
   return createElement("iframe", {
     // A replacement document owns a new browsing context and bridge session.
     // Ordinary data, patch and theme updates retain this exact key and heap.
@@ -3371,8 +4109,8 @@ function CanvasFrame(props) {
 function usePopoverDismiss(active, onDismiss, preserveInput = false) {
   var latest = useRef(onDismiss);
   latest.current = onDismiss;
-  useEffect(() => {
-    if (!active || !canRenderFrames || !browser.window) return;
+  useEffect2(() => {
+    if (!active || !canRenderFrames || !browser2.window) return;
     var dismiss = event => {
       if (!event.isTrusted) return;
       if (event.target?.closest?.('[data-testid="board-discussion-rail"], [data-testid="board-update-navigation"]')) {
@@ -3381,15 +4119,15 @@ function usePopoverDismiss(active, onDismiss, preserveInput = false) {
       }
       if (!event.target?.closest?.('[data-testid="board-local-popover"], [data-testid="board-offline-draft"]')) latest.current();
     };
-    browser.window.addEventListener("pointerdown", dismiss, true);
-    return () => browser.window?.removeEventListener("pointerdown", dismiss, true);
+    browser2.window.addEventListener("pointerdown", dismiss, true);
+    return () => browser2.window?.removeEventListener("pointerdown", dismiss, true);
   }, [active, preserveInput]);
 }
 function WebMessageInput(props) {
   var input = useRef(null);
   var composing = useRef(false);
   var compositionEnded = useRef(0);
-  useEffect(() => {
+  useEffect2(() => {
     if (!props.disabled) input.current?.focus();
   }, [props.focusToken]);
   if (!canRenderFrames) return null;
@@ -3440,10 +4178,9 @@ function WebMessageInput(props) {
 }
 
 // client/data.ts
-import { useCallback, useEffect as useEffect2, useState as useState2 } from "react";
+import { useCallback as useCallback2, useEffect as useEffect3, useState as useState2 } from "react";
 import { AppState } from "react-native";
 import { useQuery, useQueryClient, replaceEqualDeep } from "@tanstack/react-query";
-import { useRpc } from "@getpaseo/plugin/client";
 
 // client/board-cache.ts
 function isBoardReadRecovery(previous, next) {
@@ -3494,7 +4231,7 @@ var BoardReadRecovery = /*#__PURE__*/function () {
   }]);
 }();
 function mergeBoardSnapshot(previous, incoming) {
-  if (!previous || previous.id !== incoming.id) return incoming;
+  if (!previous || previous.id !== incoming.id || previous.createdAt !== incoming.createdAt) return incoming;
   var current = previous.revision > incoming.revision ? previous : incoming;
   var live = new Set((current.updates ?? []).map(update => update.id));
   var seen = /* @__PURE__ */new Set([...(previous.seenUpdateIds ?? []), ...(incoming.seenUpdateIds ?? [])]);
@@ -3513,6 +4250,8 @@ var BoardCacheAuthority = /*#__PURE__*/function () {
     __publicField(this, "token", Object.freeze({
       generation: 0
     }));
+    __publicField(this, "entities", /* @__PURE__ */new Map());
+    __publicField(this, "indexed", false);
   }
   return _createClass(BoardCacheAuthority, [{
     key: "current",
@@ -3520,12 +4259,65 @@ var BoardCacheAuthority = /*#__PURE__*/function () {
       return this.token;
     }
   }, {
+    key: "capture",
+    value: function capture(boardId) {
+      var entity = this.entities.get(boardId);
+      if (!entity) {
+        entity = Object.freeze({
+          boardId,
+          createdAt: this.indexed ? null : void 0
+        });
+        this.entities.set(boardId, entity);
+      }
+      return {
+        epoch: this.token,
+        entity
+      };
+    }
+    /** Only the cursor-ordered metadata stream may change entity identity. A
+     * read result can confirm it, but may not elect itself over a newer index. */
+  }, {
+    key: "observeSummary",
+    value: function observeSummary(name, summary) {
+      this.observe(name);
+      return this.setEntity(summary.id, summary.createdAt);
+    }
+  }, {
+    key: "observeIndex",
+    value: function observeIndex(name, boards) {
+      this.observe(name);
+      var present = new Set(boards.map(board => board.id)),
+        changed2 = [];
+      for (var board of boards) if (this.setEntity(board.id, board.createdAt)) changed2.push(board.id);
+      for (var id2 of this.entities.keys()) if (!present.has(id2) && this.setEntity(id2, null)) changed2.push(id2);
+      this.indexed = true;
+      return changed2;
+    }
+  }, {
+    key: "setEntity",
+    value: function setEntity(boardId, createdAt) {
+      var prior = this.entities.get(boardId);
+      if (prior && prior.createdAt === createdAt) return false;
+      this.entities.set(boardId, Object.freeze({
+        boardId,
+        createdAt
+      }));
+      return true;
+    }
+  }, {
     key: "observe",
     value: function observe(name) {
-      if (name !== this.token.name) this.token = Object.freeze({
-        name,
-        generation: this.token.generation + 1
-      });
+      if (name !== this.token.name) {
+        this.token = Object.freeze({
+          name,
+          generation: this.token.generation + 1
+        });
+        for (var id2 of this.entities.keys()) this.entities.set(id2, Object.freeze({
+          boardId: id2,
+          createdAt: void 0
+        }));
+        this.indexed = false;
+      }
     }
     /** Called at the final React Query commit, not just before resolving the RPC.
      * This also fences late null/deletion replies and mutation acknowledgements. */
@@ -3536,13 +4328,19 @@ var BoardCacheAuthority = /*#__PURE__*/function () {
         epoch: void 0,
         board: previous
       };
-      if (incoming.epoch !== this.token || incoming.unchanged) return prior ?? {
+      var entity = incoming.entity;
+      var identified = entity ? this.entities.get(entity.boardId) : incoming.board ? this.entities.get(incoming.board.id) : void 0;
+      var wrongEntity = identified !== entity || Boolean(entity && incoming.board && (incoming.board.id !== entity.boardId || entity.createdAt !== void 0 && incoming.board.createdAt !== entity.createdAt));
+      if (incoming.epoch !== this.token || wrongEntity || incoming.unchanged) return prior ?? {
         epoch: void 0,
         board: void 0
       };
-      if (prior?.epoch !== this.token || !prior.board || !incoming.board) return incoming;
+      if (prior?.epoch !== this.token || prior.entity !== entity || !prior.board || !incoming.board) return incoming;
       return {
         epoch: this.token,
+        ...(entity ? {
+          entity
+        } : {}),
         board: mergeBoardSnapshot(prior.board, incoming.board)
       };
     }
@@ -3551,17 +4349,11 @@ var BoardCacheAuthority = /*#__PURE__*/function () {
 
 // client/board-events.ts
 var transport;
-function installBoardEventTransport(next) {
-  transport = next;
-  return () => {
-    if (transport === next) transport = void 0;
-  };
-}
 function connectBoardEvents(hostId, listener) {
+  var services = getBoardServices(hostId);
+  if (services) return services.subscribeEvents(listener);
   if (!transport) {
-    listener.error(Object.assign(new Error("\u6B64 Paseo \u7248\u672C\u5C1A\u672A\u63D0\u4F9B Board \u4E8B\u4EF6\u8BA2\u9605\uFF1B\u9700\u8981\u914D\u5957\u5BBF\u4E3B\u66F4\u65B0\u624D\u80FD\u5B9E\u65F6\u540C\u6B65\u3002"), {
-      code: "plugin_events_unsupported"
-    }));
+    listener.error(unsupportedBoardEvents());
     return () => void 0;
   }
   return transport(hostId, listener);
@@ -3756,9 +4548,9 @@ var BoardCompactSync = /*#__PURE__*/function () {
         var active = () => !this.stopped && generation === this.generation;
         try {
           var cursor = this.options.cursor();
-          var changed = cursor ? (yield this.options.check(cursor)).changed : true;
+          var changed2 = cursor ? (yield this.options.check(cursor)).changed : true;
           if (!active() || !this.visibility.visible()) return;
-          if (changed) {
+          if (changed2) {
             this.options.state(cursor ? "recovering" : "connecting");
             yield this.options.recover();
           }
@@ -3795,10 +4587,12 @@ var visibility = getBoardSyncVisibility() ?? {
   }
 };
 var sessions = /* @__PURE__ */new WeakMap();
+var scopedKey = (key, services) => services ? [...key, services.generation] : key;
 var BoardQuerySession = /*#__PURE__*/function () {
-  function BoardQuerySession(cache, hostId, fetchChanges, check) {
+  function BoardQuerySession(cache, hostId, fetchChanges, check, services) {
     _classCallCheck(this, BoardQuerySession);
     __publicField(this, "check", check);
+    __publicField(this, "services", services);
     __publicField(this, "receiver");
     __publicField(this, "cacheAuthority", new BoardCacheAuthority());
     __publicField(this, "readRecovery", new BoardReadRecovery());
@@ -3818,20 +4612,46 @@ var BoardQuerySession = /*#__PURE__*/function () {
     this.hostId = hostId;
     this.receiver = new BoardEventReceiver({
       fetchChanges,
-      changed: change => this.refreshBoard(change.summary.id),
+      changed: change => {
+        if (services && !services.isCurrent()) return;
+        if (this.cacheAuthority.observeSummary(change.cursor.epoch, change.summary)) this.clearReplacedBoard(change.summary.id);
+        this.refreshBoard(change.summary.id);
+      },
       updated: (snapshot, reset) => {
-        this.cacheAuthority.observe(snapshot.cursor.epoch);
-        cache.setQueryData(["paseo-board-list", hostId, "all"], snapshot);
-        if (reset) for (var query of cache.getQueryCache().findAll({
-          queryKey: ["paseo-board", hostId]
-        })) this.refreshBoard(String(query.queryKey[2]));
+        if (services && !services.isCurrent()) return;
+        var replaced = this.cacheAuthority.observeIndex(snapshot.cursor.epoch, snapshot.boards);
+        for (var boardId of replaced) this.clearReplacedBoard(boardId);
+        cache.setQueryData(scopedKey(["paseo-board-list", hostId, "all"], services), snapshot);
+        if (reset) for (var query of this.queries()) this.refreshBoard(String(query.queryKey[2]));
       }
     });
   }
   return _createClass(BoardQuerySession, [{
+    key: "clearReplacedBoard",
+    value: function clearReplacedBoard(boardId) {
+      var key = scopedKey(["paseo-board", this.hostId, boardId], this.services);
+      if (!this.cache.getQueryCache().find({
+        queryKey: key,
+        exact: true
+      })) return;
+      var captured = this.cacheAuthority.capture(boardId);
+      this.cache.setQueryData(key, previous => this.cacheAuthority.merge(previous, {
+        ...captured,
+        board: captured.entity?.createdAt === null ? null : void 0
+      }));
+    }
+  }, {
+    key: "queries",
+    value: function queries() {
+      return this.cache.getQueryCache().findAll({
+        queryKey: ["paseo-board", this.hostId]
+      }).filter(query => query.queryKey[3] === this.services?.generation);
+    }
+  }, {
     key: "report",
     value: function report(error, status) {
       var _this = this;
+      if (this.services && !this.services.isCurrent()) return;
       var nextError = error ? error instanceof Error ? error : new Error(String(error)) : null;
       var nextStatus = status ?? (nextError ? "disconnected" : this.status);
       if (nextError === this.error && nextStatus === this.status) return;
@@ -3846,9 +4666,7 @@ var BoardQuerySession = /*#__PURE__*/function () {
             exact: true
           }) === query, () => _this.refreshBoard(String(query.queryKey[2])));
         };
-        for (var query of this.cache.getQueryCache().findAll({
-          queryKey: ["paseo-board", this.hostId]
-        })) {
+        for (var query of this.queries()) {
           _loop2(query);
         }
       }
@@ -3880,7 +4698,8 @@ var BoardQuerySession = /*#__PURE__*/function () {
       });
       if (!this.disconnect) {
         this.report(null, "connecting");
-        var disconnect = connectBoardEvents(this.hostId, {
+        var connect = this.services ? (_hostId, listener2) => this.services.subscribeEvents(listener2) : connectBoardEvents;
+        var disconnect = connect(this.hostId, {
           change: event => {
             this.streamReady = true;
             var cursor = this.receiver.snapshot()?.cursor;
@@ -3926,7 +4745,7 @@ var BoardQuerySession = /*#__PURE__*/function () {
   }, {
     key: "refreshBoard",
     value: function refreshBoard(boardId) {
-      var key = ["paseo-board", this.hostId, boardId];
+      var key = scopedKey(["paseo-board", this.hostId, boardId], this.services);
       var query = this.cache.getQueryCache().find({
         queryKey: key,
         exact: true
@@ -3975,34 +4794,49 @@ var BoardQuerySession = /*#__PURE__*/function () {
         this.refreshing.delete(boardId);
       });
     }
+  }, {
+    key: "dispose",
+    value: function dispose() {
+      this.disconnect?.();
+      this.disconnect = void 0;
+      this.readRecovery.invalidate();
+      this.receiver.dispose();
+      this.users.clear();
+    }
   }]);
 }();
 function useBoardIndex(hostId) {
-  var changes = useRpc(boardChangesRpc);
-  var check = useRpc(boardCheckRpc);
+  var changes = useBoardRpc(boardChangesRpc, hostId);
+  var check = useBoardRpc(boardCheckRpc, hostId);
+  var services = useBoardServices(hostId);
   var cache = useQueryClient();
   var hosts = sessions.get(cache);
   if (!hosts) {
     hosts = /* @__PURE__ */new Map();
     sessions.set(cache, hosts);
   }
-  var session = hosts.get(hostId);
+  var sessionKey = JSON.stringify([hostId, services?.generation ?? null]);
+  var session = hosts.get(sessionKey);
   if (!session) {
+    for (var [key, old] of hosts) if (old.services && !old.services.isCurrent()) {
+      old.dispose();
+      hosts.delete(key);
+    }
     session = new BoardQuerySession(cache, hostId, cursor => changes({
       cursor,
       compact: true
     }), cursor => check({
       cursor
-    }));
-    hosts.set(hostId, session);
+    }), services);
+    hosts.set(sessionKey, session);
   }
   var [connection, setConnection] = useState2({
     liveError: null,
     liveStatus: "connecting"
   });
-  useEffect2(() => session.attach(setConnection), [session]);
+  useEffect3(() => session.attach(setConnection), [session]);
   var query = useQuery({
-    queryKey: ["paseo-board-list", hostId, "all"],
+    queryKey: scopedKey(["paseo-board-list", hostId, "all"], services),
     queryFn: () => session.load(),
     structuralSharing: (_previous, incoming) => session.receiver.snapshot() ?? incoming,
     staleTime: Infinity,
@@ -4028,19 +4862,20 @@ function useBoardList(hostId, workspaceId) {
 }
 function useBoard(hostId, boardId) {
   var events = useBoardIndex(hostId);
-  var read = useRpc(readBoardRpc);
+  var read = useBoardRpc(readBoardRpc, hostId);
+  var services = useBoardServices(hostId);
   var cache = useQueryClient();
-  var key = ["paseo-board", hostId, boardId];
+  var key = scopedKey(["paseo-board", hostId, boardId], services);
   var authority = events.cacheAuthority;
   var query = useQuery({
     queryKey: key,
     queryFn: () => __async(null, null, function* () {
-      var epoch = authority.current();
+      var captured = authority.capture(boardId);
       var result = yield read({
         boardId
       });
       return {
-        epoch,
+        ...captured,
         board: result.board,
         ...(result.unchanged ? {
           unchanged: true
@@ -4056,13 +4891,18 @@ function useBoard(hostId, boardId) {
     refetchOnReconnect: false,
     retry: 1
   });
-  var acceptanceEpoch = authority.current();
-  var accept = useCallback(next => {
-    cache.setQueryData(["paseo-board", hostId, boardId], previous => authority.merge(previous, {
+  var {
+    epoch: acceptanceEpoch,
+    entity: acceptanceEntity
+  } = authority.capture(boardId);
+  var accept = useCallback2(next => {
+    if (services && !services.isCurrent()) return;
+    cache.setQueryData(scopedKey(["paseo-board", hostId, boardId], services), previous => authority.merge(previous, {
       epoch: acceptanceEpoch,
+      entity: acceptanceEntity,
       board: next
     }));
-  }, [cache, hostId, boardId, authority, acceptanceEpoch]);
+  }, [cache, hostId, boardId, authority, acceptanceEpoch, acceptanceEntity, services]);
   return {
     ...query,
     accept,
@@ -4072,9 +4912,8 @@ function useBoard(hostId, boardId) {
 }
 
 // client/component-editor.tsx
-import { useCallback as useCallback2, useEffect as useEffect3, useRef as useRef2, useState as useState3 } from "react";
+import { useCallback as useCallback3, useEffect as useEffect4, useRef as useRef2, useState as useState3 } from "react";
 import { Text as Text2, View as View2 } from "react-native";
-import { useRpc as useRpc2 } from "@getpaseo/plugin/client";
 import { TextInput } from "@getpaseo/plugin/client/ui";
 
 // client/component-edit-writer.ts
@@ -4087,6 +4926,7 @@ var refusalMessages = {
   unauthorized: "\u5F53\u524D\u65E0\u6CD5\u4FEE\u6539\u8FD9\u5757\u753B\u677F\uFF0C\u8BF7\u786E\u8BA4\u8BBF\u95EE\u6743\u9650\u3002",
   forbidden: "\u5F53\u524D\u65E0\u6CD5\u4FEE\u6539\u8FD9\u5757\u753B\u677F\uFF0C\u8BF7\u786E\u8BA4\u8BBF\u95EE\u6743\u9650\u3002",
   board_not_found: "\u753B\u677F\u5DF2\u4E0D\u5B58\u5728\uFF0C\u8FD9\u6B21\u4FEE\u6539\u672A\u4FDD\u5B58\u3002",
+  board_identity_changed: "\u753B\u677F\u5DF2\u88AB\u66FF\u6362\uFF0C\u8FD9\u6B21\u4FEE\u6539\u672A\u4FDD\u5B58\u3002\u8BF7\u91CD\u65B0\u9009\u62E9\u7EC4\u4EF6\u3002",
   not_found: "\u753B\u677F\u5DF2\u4E0D\u5B58\u5728\uFF0C\u8FD9\u6B21\u4FEE\u6539\u672A\u4FDD\u5B58\u3002",
   size_limit: "\u4FEE\u6539\u5185\u5BB9\u8FC7\u5927\uFF0C\u8FD9\u6B21\u4FEE\u6539\u672A\u4FDD\u5B58\u3002\u8BF7\u7F29\u5C0F\u8303\u56F4\u3002"
 };
@@ -4118,7 +4958,7 @@ var ComponentEditWriter = /*#__PURE__*/function () {
     }
   }, {
     key: "propose",
-    value: function propose(boardId, input, eventId) {
+    value: function propose(boardId, input, eventId, expectedCreatedAt) {
       if (this.draft) return Promise.resolve({
         status: "rejected",
         message: "\u8BF7\u5148\u4FDD\u5B58\u6216\u53D6\u6D88\u5F53\u524D\u4FEE\u6539\u3002"
@@ -4130,6 +4970,9 @@ var ComponentEditWriter = /*#__PURE__*/function () {
         destinationLabel: proposed.destinationLabel,
         request: immutable({
           boardId,
+          ...(expectedCreatedAt ? {
+            expectedCreatedAt
+          } : {}),
           canvasBase: proposed.canvasBase,
           eventId,
           patch: {
@@ -4222,7 +5065,7 @@ var ComponentEditWriter = /*#__PURE__*/function () {
             void refresh().catch(() => void 0);
             return;
           }
-          if (result.status !== "applied" || result.board?.id !== draft.request.boardId) throw new Error("Invalid component edit receipt");
+          if (result.status !== "applied" || result.board?.id !== draft.request.boardId || draft.request.expectedCreatedAt && result.board.createdAt !== draft.request.expectedCreatedAt) throw new Error("Invalid component edit receipt");
           var board = result.board;
           accepted(board);
           this.resolve?.({
@@ -4248,10 +5091,10 @@ var ComponentEditWriter = /*#__PURE__*/function () {
 }();
 
 // client/component-editor.tsx
-import { Fragment, jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
+import { Fragment, jsx as jsx3, jsxs as jsxs2 } from "react/jsx-runtime";
 var writers = /* @__PURE__ */new Map();
-function useComponentEditor(hostId, boardId, board, accept, refresh) {
-  var key = JSON.stringify([hostId, boardId]);
+function useComponentEditor(hostId, boardId, board, accept, refresh, instance) {
+  var key = JSON.stringify(instance ? [hostId, boardId, instance] : [hostId, boardId]);
   var writerRef = useRef2(void 0);
   if (writerRef.current?.key !== key) {
     var writer2 = writers.get(key);
@@ -4266,10 +5109,10 @@ function useComponentEditor(hostId, boardId, board, accept, refresh) {
   }
   var writer = writerRef.current.writer;
   var [draft, setDraft] = useState3(writer.snapshot());
-  var edit = useRpc2(editBoardRpc);
+  var edit = useBoardRpc(editBoardRpc);
   var currentBoard = useRef2(board);
   currentBoard.current = board;
-  useEffect3(() => {
+  useEffect4(() => {
     setDraft(writer.snapshot());
     var dispose = writer.subscribe(() => setDraft(writer.snapshot()));
     return () => {
@@ -4278,16 +5121,16 @@ function useComponentEditor(hostId, boardId, board, accept, refresh) {
       if (!writer.snapshot()) writers.delete(key);
     };
   }, [writer, key]);
-  useEffect3(() => {
+  useEffect4(() => {
     if (board) writer.invalidate(board.canvas);
   }, [writer, board?.canvas.revision, board?.canvas.documentVersion]);
-  var propose = useCallback2(request => {
+  var propose = useCallback3(request => {
     var live = currentBoard.current;
     if (!live || live.canvas.revision !== request.canvasBase.revision || live.canvas.documentVersion !== request.canvasBase.documentVersion) return Promise.resolve({
       status: "rejected",
       message: "\u753B\u5E03\u5DF2\u66F4\u65B0\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u7EC4\u4EF6\u3002"
     });
-    return writer.propose(boardId, request, localId("component-edit"));
+    return writer.propose(boardId, request, localId("component-edit"), live.createdAt);
   }, [writer, boardId]);
   return {
     draft,
@@ -4302,7 +5145,8 @@ function useComponentEditor(hostId, boardId, board, accept, refresh) {
   };
 }
 function ComponentEditPanel({
-  editor
+  editor,
+  inline = false
 }) {
   var c = useColors(),
     draft = editor.draft;
@@ -4320,7 +5164,7 @@ function ComponentEditPanel({
   var title = patch.operation === "text" ? "\u4FEE\u6539\u6587\u5B57" : patch.operation === "copy" ? "\u590D\u5236\u7EC4\u4EF6" : patch.operation === "layout" ? "\u4FEE\u6539\u5E03\u5C40" : "\u79FB\u52A8\u7EC4\u4EF6";
   return /* @__PURE__ */jsxs2(View2, {
     testID: "board-component-edit",
-    style: {
+    style: [{
       position: "absolute",
       bottom: 10,
       right: 10,
@@ -4335,21 +5179,28 @@ function ComponentEditPanel({
       shadowColor: "#000",
       shadowOpacity: 0.18,
       shadowRadius: 12
-    },
+    }, inline ? {
+      position: "relative",
+      bottom: 0,
+      right: 0,
+      width: "100%",
+      maxWidth: "100%",
+      shadowOpacity: 0
+    } : void 0],
     children: [/* @__PURE__ */jsxs2(View2, {
       style: {
         flexDirection: "row",
         alignItems: "center",
         gap: 8
       },
-      children: [/* @__PURE__ */jsx2(Text2, {
+      children: [/* @__PURE__ */jsx3(Text2, {
         style: {
           color: c.foreground,
           fontWeight: "600",
           fontSize: 12
         },
         children: title
-      }), /* @__PURE__ */jsx2(Text2, {
+      }), /* @__PURE__ */jsx3(Text2, {
         numberOfLines: 1,
         style: {
           color: c.foregroundMuted,
@@ -4366,7 +5217,7 @@ function ComponentEditPanel({
       },
       children: [layoutSummary, layout.title ? ` \xB7 ${layout.title}` : ""]
     }) : null, patch.operation === "text" && (draft.status === "rejected" || draft.status === "unknown") ? /* @__PURE__ */jsxs2(Fragment, {
-      children: [/* @__PURE__ */jsx2(TextInput, {
+      children: [/* @__PURE__ */jsx3(TextInput, {
         testID: "board-component-edit-text",
         accessibilityLabel: "\u4FDD\u7559\u7684\u6587\u5B57\u8349\u7A3F",
         value: patch.text ?? "",
@@ -4383,14 +5234,14 @@ function ComponentEditPanel({
           borderColor: c.border,
           borderRadius: 5
         }
-      }), draft.status === "rejected" ? /* @__PURE__ */jsx2(Text2, {
+      }), draft.status === "rejected" ? /* @__PURE__ */jsx3(Text2, {
         style: {
           color: c.foregroundMuted,
           fontSize: 11
         },
         children: "\u6587\u5B57\u8349\u7A3F\u5DF2\u4FDD\u7559\uFF0C\u53EF\u590D\u5236\u540E\u91CD\u65B0\u9009\u62E9\u3002"
       }) : null]
-    }) : null, draft.error ? /* @__PURE__ */jsx2(Text2, {
+    }) : null, draft.error ? /* @__PURE__ */jsx3(Text2, {
       numberOfLines: 3,
       accessibilityRole: "alert",
       style: {
@@ -4404,14 +5255,14 @@ function ComponentEditPanel({
         flexWrap: "wrap",
         gap: 6
       },
-      children: [draft.status !== "rejected" ? /* @__PURE__ */jsx2(Action, {
+      children: [draft.status !== "rejected" ? /* @__PURE__ */jsx3(Action, {
         primary: true,
         label: draft.status === "saving" ? "\u4FDD\u5B58\u4FEE\u6539\u4E2D\u2026" : draft.status === "unknown" ? "\u91CD\u8BD5\u540C\u4E00\u6B21\u4FEE\u6539" : "\u4FDD\u5B58\u4FEE\u6539",
         disabled: draft.status === "saving",
         onPress: () => {
           void editor.save();
         }
-      }) : null, /* @__PURE__ */jsx2(Action, {
+      }) : null, /* @__PURE__ */jsx3(Action, {
         label: draft.status === "rejected" ? "\u5173\u95ED\u4FEE\u6539\u63D0\u793A" : "\u53D6\u6D88\u4FEE\u6539",
         disabled: draft.status === "saving" || draft.status === "unknown",
         onPress: editor.cancel
@@ -4426,20 +5277,19 @@ import { Image, Pressable as Pressable5, Text as Text6, View as View6 } from "re
 import { Icon as Icon4 } from "@getpaseo/plugin/client/ui";
 
 // client/board-title.tsx
-import { useEffect as useEffect5, useRef as useRef5, useState as useState5 } from "react";
+import { useEffect as useEffect6, useRef as useRef5, useState as useState5 } from "react";
 import { Pressable as Pressable3, Text as Text4, View as View4 } from "react-native";
-import { useRpc as useRpc3 } from "@getpaseo/plugin/client";
 import { Icon as Icon3 } from "@getpaseo/plugin/client/ui";
 
 // client/title-input.tsx
-import { createElement as createElement2, useEffect as useEffect4, useRef as useRef3 } from "react";
+import { createElement as createElement2, useEffect as useEffect5, useRef as useRef3 } from "react";
 import { TextInput as TextInput2 } from "@getpaseo/plugin/client/ui";
-import { jsx as jsx3 } from "react/jsx-runtime";
+import { jsx as jsx4 } from "react/jsx-runtime";
 function TitleInput(props) {
   var input = useRef3(null);
   var composing = useRef3(false);
   var compositionEnded = useRef3(0);
-  useEffect4(() => {
+  useEffect5(() => {
     input.current?.focus();
     input.current?.select?.();
   }, []);
@@ -4456,7 +5306,7 @@ function TitleInput(props) {
     fontSize: 16,
     fontWeight: "600"
   };
-  if (!canRenderFrames) return /* @__PURE__ */jsx3(TextInput2, {
+  if (!canRenderFrames) return /* @__PURE__ */jsx4(TextInput2, {
     ref: input,
     value: props.value,
     onChangeText: props.onChange,
@@ -4520,16 +5370,16 @@ function useToolbarPopover(open, onClose, containerId) {
   close.current = onClose;
   var [height, setHeight] = useState4(360);
   useLayoutEffect2(() => {
-    var browser3 = runtime.window,
+    var browser4 = runtime.window,
       page = runtime.document;
-    if (!open || !browser3 || !page) return;
+    if (!open || !browser4 || !page) return;
     var active = true;
     var composing = false,
       compositionEnded = 0;
     var selector = `[data-testid="${containerId}"]`;
     var measure = () => {
       var bottom = page.querySelector(selector)?.getBoundingClientRect().bottom ?? 48;
-      setHeight(Math.max(96, Math.min(460, browser3.innerHeight - bottom - 12)));
+      setHeight(Math.max(96, Math.min(460, browser4.innerHeight - bottom - 12)));
     };
     var pointer2 = event => {
       if (event.isTrusted && !event.target?.closest?.(selector)) close.current();
@@ -4555,27 +5405,27 @@ function useToolbarPopover(open, onClose, containerId) {
       }, 0);
     };
     measure();
-    browser3.addEventListener("resize", measure);
-    browser3.addEventListener("pointerdown", pointer2, true);
-    browser3.addEventListener("keydown", key);
-    browser3.addEventListener("blur", blur);
-    browser3.addEventListener("compositionstart", compositionStart);
-    browser3.addEventListener("compositionend", compositionEnd);
+    browser4.addEventListener("resize", measure);
+    browser4.addEventListener("pointerdown", pointer2, true);
+    browser4.addEventListener("keydown", key);
+    browser4.addEventListener("blur", blur);
+    browser4.addEventListener("compositionstart", compositionStart);
+    browser4.addEventListener("compositionend", compositionEnd);
     return () => {
       active = false;
-      browser3.removeEventListener("resize", measure);
-      browser3.removeEventListener("pointerdown", pointer2, true);
-      browser3.removeEventListener("keydown", key);
-      browser3.removeEventListener("blur", blur);
-      browser3.removeEventListener("compositionstart", compositionStart);
-      browser3.removeEventListener("compositionend", compositionEnd);
+      browser4.removeEventListener("resize", measure);
+      browser4.removeEventListener("pointerdown", pointer2, true);
+      browser4.removeEventListener("keydown", key);
+      browser4.removeEventListener("blur", blur);
+      browser4.removeEventListener("compositionstart", compositionStart);
+      browser4.removeEventListener("compositionend", compositionEnd);
     };
   }, [open, containerId]);
   return height;
 }
 
 // client/toolbar-popover.tsx
-import { jsx as jsx4, jsxs as jsxs3 } from "react/jsx-runtime";
+import { jsx as jsx5, jsxs as jsxs3 } from "react/jsx-runtime";
 function ToolbarPopover({
   open,
   title,
@@ -4590,14 +5440,14 @@ function ToolbarPopover({
   var c = useColors(),
     maxHeight = useToolbarPopover(open, onClose, containerId);
   if (!open) return null;
-  if (!canRenderFrames) return /* @__PURE__ */jsx4(Modal, {
+  if (!canRenderFrames) return /* @__PURE__ */jsx5(Modal, {
     open: true,
     title,
     onOpenChange: value => {
       if (!value) onClose();
     },
-    children: /* @__PURE__ */jsx4(Modal.Content, {
-      children: /* @__PURE__ */jsx4(ColorContext.Provider, {
+    children: /* @__PURE__ */jsx5(Modal.Content, {
+      children: /* @__PURE__ */jsx5(ColorContext.Provider, {
         value: c,
         children
       })
@@ -4640,7 +5490,7 @@ function ToolbarPopover({
         borderBottomWidth: 1,
         borderColor: c.border
       },
-      children: [/* @__PURE__ */jsx4(Text3, {
+      children: [/* @__PURE__ */jsx5(Text3, {
         numberOfLines: 1,
         style: {
           flex: 1,
@@ -4649,20 +5499,20 @@ function ToolbarPopover({
           fontWeight: "600"
         },
         children: title
-      }), /* @__PURE__ */jsx4(Pressable2, {
+      }), /* @__PURE__ */jsx5(Pressable2, {
         accessibilityRole: "button",
         accessibilityLabel: `\u5173\u95ED${title}`,
         onPress: onClose,
         style: {
           padding: 8
         },
-        children: /* @__PURE__ */jsx4(Icon2, {
+        children: /* @__PURE__ */jsx5(Icon2, {
           name: "X",
           size: 15,
           color: c.foregroundMuted
         })
       })]
-    }), /* @__PURE__ */jsx4(ScrollView, {
+    }), /* @__PURE__ */jsx5(ScrollView, {
       style: {
         flexShrink: 1,
         minHeight: 0
@@ -4678,7 +5528,7 @@ function ToolbarPopover({
 }
 
 // client/board-title.tsx
-import { Fragment as Fragment2, jsx as jsx5, jsxs as jsxs4 } from "react/jsx-runtime";
+import { Fragment as Fragment2, jsx as jsx6, jsxs as jsxs4 } from "react/jsx-runtime";
 function BoardTitle({
   board,
   onAccepted,
@@ -4689,12 +5539,12 @@ function BoardTitle({
   onEditStart
 }) {
   var c = useColors();
-  var rename = useRpc3(renameBoardRpc);
+  var rename = useBoardRpc(renameBoardRpc);
   var [draft, setDraft] = useState5(null);
   var [saving, setSaving] = useState5(false);
   var pending = useRef5(false);
   var mounted = useRef5(true);
-  useEffect5(() => {
+  useEffect6(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
@@ -4766,7 +5616,7 @@ function BoardTitle({
         minWidth: 0,
         gap: 2
       },
-      children: [/* @__PURE__ */jsx5(Text4, {
+      children: [/* @__PURE__ */jsx6(Text4, {
         numberOfLines: 1,
         style: {
           color: c.foreground,
@@ -4776,7 +5626,7 @@ function BoardTitle({
           flexShrink: 1
         },
         children: board.title
-      }), /* @__PURE__ */jsx5(Pressable3, {
+      }), /* @__PURE__ */jsx6(Pressable3, {
         accessibilityRole: "button",
         accessibilityLabel: "\u4FEE\u6539 Board \u540D\u79F0",
         onPress: start,
@@ -4788,13 +5638,13 @@ function BoardTitle({
           borderRadius: 5,
           backgroundColor: pressed || draft ? c.surface2 : "transparent"
         }),
-        children: /* @__PURE__ */jsx5(Icon3, {
+        children: /* @__PURE__ */jsx6(Icon3, {
           name: "Pencil",
           size: 14,
           color: c.foregroundMuted
         })
       })]
-    }), /* @__PURE__ */jsx5(ToolbarPopover, {
+    }), /* @__PURE__ */jsx6(ToolbarPopover, {
       open: !!draft,
       title: "\u4FEE\u6539 Board \u540D\u79F0",
       onClose: cancel,
@@ -4803,11 +5653,11 @@ function BoardTitle({
       width: menuWidth ?? 320,
       left: menuOffset ?? 0,
       children: draft ? /* @__PURE__ */jsxs4(Fragment2, {
-        children: [/* @__PURE__ */jsx5(View4, {
+        children: [/* @__PURE__ */jsx6(View4, {
           style: {
             flexDirection: "row"
           },
-          children: /* @__PURE__ */jsx5(TitleInput, {
+          children: /* @__PURE__ */jsx6(TitleInput, {
             value: draft.value,
             disabled: saving,
             color: c.foreground,
@@ -4832,18 +5682,18 @@ function BoardTitle({
             gap: 6,
             flexWrap: "wrap"
           },
-          children: [/* @__PURE__ */jsx5(Action, {
+          children: [/* @__PURE__ */jsx6(Action, {
             label: saving ? "\u4FDD\u5B58\u4E2D\u2026" : draft.request ? "\u91CD\u8BD5\u4FDD\u5B58" : "\u4FDD\u5B58\u540D\u79F0",
             disabled: saving || !draft.value.trim() || changedElsewhere && !draft.request,
             onPress: () => {
               void submit();
             }
-          }), /* @__PURE__ */jsx5(Action, {
+          }), /* @__PURE__ */jsx6(Action, {
             label: "\u53D6\u6D88\u6539\u540D",
             disabled: saving,
             onPress: cancel
           })]
-        }), draft.error ? /* @__PURE__ */jsx5(Text4, {
+        }), draft.error ? /* @__PURE__ */jsx6(Text4, {
           accessibilityRole: "alert",
           style: {
             color: c.statusDanger,
@@ -4855,7 +5705,7 @@ function BoardTitle({
             muted: true,
             small: true,
             children: ["\u5F53\u524D\u540D\u79F0\u5DF2\u53D8\u4E3A\u300C", board.title, "\u300D\u3002\u4F60\u7684\u8F93\u5165\u5DF2\u4FDD\u7559\u3002"]
-          }), /* @__PURE__ */jsx5(Action, {
+          }), /* @__PURE__ */jsx6(Action, {
             label: "\u786E\u8BA4\u5F53\u524D\u540D\u79F0\u540E\u7EE7\u7EED\u7F16\u8F91",
             onPress: () => setDraft({
               ...draft,
@@ -4875,14 +5725,14 @@ function BoardTitle({
       gap: 6
     },
     testID: "board-title",
-    children: [/* @__PURE__ */jsx5(View4, {
+    children: [/* @__PURE__ */jsx6(View4, {
       style: {
         flexDirection: "row",
         alignItems: "center",
         gap: 5
       },
       children: draft ? /* @__PURE__ */jsxs4(Fragment2, {
-        children: [/* @__PURE__ */jsx5(TitleInput, {
+        children: [/* @__PURE__ */jsx6(TitleInput, {
           value: draft.value,
           disabled: saving,
           color: c.foreground,
@@ -4900,19 +5750,19 @@ function BoardTitle({
             void submit();
           },
           onCancel: cancel
-        }), /* @__PURE__ */jsx5(Action, {
+        }), /* @__PURE__ */jsx6(Action, {
           label: saving ? "\u4FDD\u5B58\u4E2D\u2026" : draft.request ? "\u91CD\u8BD5\u4FDD\u5B58" : "\u4FDD\u5B58\u540D\u79F0",
           disabled: saving || !draft.value.trim() || changedElsewhere && !draft.request,
           onPress: () => {
             void submit();
           }
-        }), /* @__PURE__ */jsx5(Action, {
+        }), /* @__PURE__ */jsx6(Action, {
           label: "\u53D6\u6D88\u6539\u540D",
           disabled: saving,
           onPress: cancel
         })]
       }) : /* @__PURE__ */jsxs4(Fragment2, {
-        children: [/* @__PURE__ */jsx5(Text4, {
+        children: [/* @__PURE__ */jsx6(Text4, {
           numberOfLines: 1,
           style: {
             color: c.foreground,
@@ -4921,7 +5771,7 @@ function BoardTitle({
             flexShrink: 1
           },
           children: board.title
-        }), /* @__PURE__ */jsx5(Pressable3, {
+        }), /* @__PURE__ */jsx6(Pressable3, {
           accessibilityRole: "button",
           accessibilityLabel: "\u4FEE\u6539 Board \u540D\u79F0",
           onPress: start,
@@ -4932,14 +5782,14 @@ function BoardTitle({
             borderRadius: 5,
             backgroundColor: pressed ? c.surface2 : "transparent"
           }),
-          children: /* @__PURE__ */jsx5(Icon3, {
+          children: /* @__PURE__ */jsx6(Icon3, {
             name: "Pencil",
             size: 15,
             color: c.foregroundMuted
           })
         })]
       })
-    }), draft?.error ? /* @__PURE__ */jsx5(Text4, {
+    }), draft?.error ? /* @__PURE__ */jsx6(Text4, {
       accessibilityRole: "alert",
       style: {
         color: c.statusDanger,
@@ -4954,7 +5804,7 @@ function BoardTitle({
         muted: true,
         small: true,
         children: ["\u5F53\u524D\u540D\u79F0\u5DF2\u53D8\u4E3A\u300C", board.title, "\u300D\u3002\u4F60\u7684\u8F93\u5165\u5DF2\u4FDD\u7559\u3002"]
-      }), /* @__PURE__ */jsx5(Action, {
+      }), /* @__PURE__ */jsx6(Action, {
         label: "\u786E\u8BA4\u5F53\u524D\u540D\u79F0\u540E\u7EE7\u7EED\u7F16\u8F91",
         onPress: () => setDraft({
           ...draft,
@@ -4968,9 +5818,9 @@ function BoardTitle({
 }
 
 // client/update-navigation.tsx
-import { useCallback as useCallback3, useEffect as useEffect6, useMemo, useRef as useRef6, useState as useState6 } from "react";
+import { useCallback as useCallback4, useEffect as useEffect7, useMemo, useRef as useRef6, useState as useState6 } from "react";
 import { Pressable as Pressable4, Text as Text5, View as View5 } from "react-native";
-import { jsx as jsx6, jsxs as jsxs5 } from "react/jsx-runtime";
+import { jsx as jsx7, jsxs as jsxs5 } from "react/jsx-runtime";
 var placesFor = updates => updates.flatMap(update => Array.from({
   length: Math.max(1, update.targets.length)
 }, (_, targetIndex) => ({
@@ -5006,7 +5856,7 @@ function useUpdateNavigation(board, blocked, markSeen, resume) {
   });
   var focused = useRef6(/* @__PURE__ */new Map());
   var acknowledging = useRef6(/* @__PURE__ */new Set());
-  var show = useCallback3((place, automatic) => {
+  var show = useCallback4((place, automatic) => {
     var documentVersion = latest.current.board?.canvas.documentVersion;
     if (documentVersion === void 0) return;
     var next = {
@@ -5023,7 +5873,7 @@ function useUpdateNavigation(board, blocked, markSeen, resume) {
     setRequest(next);
     setStatus("locating");
   }, []);
-  useEffect6(() => {
+  useEffect7(() => {
     if (!board) return;
     var newest = updates.at(-1)?.id;
     var first = !known.current.initialized || known.current.documentVersion !== board.canvas.documentVersion;
@@ -5050,14 +5900,14 @@ function useUpdateNavigation(board, blocked, markSeen, resume) {
     var live = new Set(updates.map(item => item.id));
     for (var id2 of focused.current.keys()) if (!live.has(id2)) focused.current.delete(id2);
   }, [board, updates, resume?.skipInitialUnread, resume?.reconciling]);
-  useEffect6(() => {
+  useEffect7(() => {
     if (!follow || blocked || busy || resume?.restoring || !automaticCandidate) return;
     if (automaticCandidate.documentVersion !== board?.canvas.documentVersion) return;
     var place = places.find(item => item.update.id === automaticCandidate.id);
     setAutomaticCandidate(void 0);
     if (place) show(place, true);
   }, [follow, blocked, busy, resume?.restoring, automaticCandidate, places, show, board?.canvas.documentVersion]);
-  useEffect6(() => {
+  useEffect7(() => {
     if (!blocked || !pending.current?.automatic) return;
     if (pending.current.canvasDocumentVersion === latest.current.board?.canvas.documentVersion) setAutomaticCandidate({
       id: pending.current.update.id,
@@ -5067,7 +5917,7 @@ function useUpdateNavigation(board, blocked, markSeen, resume) {
     setRequest(void 0);
     setStatus("deferred");
   }, [blocked]);
-  var onActivity = useCallback3((active, userInteracting = active) => {
+  var onActivity = useCallback4((active, userInteracting = active) => {
     interacting.current = active && userInteracting;
     setBusy(active);
     if (interacting.current && pending.current?.automatic) {
@@ -5080,7 +5930,7 @@ function useUpdateNavigation(board, blocked, markSeen, resume) {
       setStatus("deferred");
     }
   }, []);
-  var onPosition = useCallback3(result => {
+  var onPosition = useCallback4(result => {
     var expected = pending.current;
     var current = latest.current;
     if (!expected || expected.canvasDocumentVersion !== current.board?.canvas.documentVersion || result.id !== expected.update.id || result.token !== expected.token || result.targetIndex !== (expected.targetIndex ?? 0) || result.documentVersion !== expected.update.documentVersion || result.status === "focused" && current.board?.canvas.documentVersion !== result.documentVersion) return;
@@ -5159,7 +6009,7 @@ function UpdateNavigation({
     blocked,
     toggleFollow
   } = navigation;
-  var button = (label, text, onPress, disabled) => /* @__PURE__ */jsx6(Pressable4, {
+  var button = (label, text, onPress, disabled) => /* @__PURE__ */jsx7(Pressable4, {
     accessibilityRole: "button",
     accessibilityLabel: label,
     disabled,
@@ -5175,7 +6025,7 @@ function UpdateNavigation({
       borderRadius: 5,
       opacity: disabled ? 0.4 : 1
     },
-    children: /* @__PURE__ */jsx6(Text5, {
+    children: /* @__PURE__ */jsx7(Text5, {
       style: {
         color: c.foreground,
         fontSize: 12
@@ -5193,7 +6043,7 @@ function UpdateNavigation({
       gap: 2,
       flexShrink: 0
     },
-    children: [button("\u4E0A\u4E00\u5904\u66F4\u65B0", "\u2039", () => move(-1), blocked || !total), /* @__PURE__ */jsx6(Text5, {
+    children: [button("\u4E0A\u4E00\u5904\u66F4\u65B0", "\u2039", () => move(-1), blocked || !total), /* @__PURE__ */jsx7(Text5, {
       testID: "board-update-position",
       accessibilityLabel: `\u66F4\u65B0 ${index < 0 ? 0 : index + 1}/${total}${unread ? ` \xB7 ${unread} \u672A\u770B` : ""}${note ? ` \xB7 ${note}` : ""}`,
       numberOfLines: 1,
@@ -5208,7 +6058,7 @@ function UpdateNavigation({
 }
 
 // client/board-toolbar.tsx
-import { Fragment as Fragment3, jsx as jsx7, jsxs as jsxs6 } from "react/jsx-runtime";
+import { Fragment as Fragment3, jsx as jsx8, jsxs as jsxs6 } from "react/jsx-runtime";
 var modes = [["off", "\u4EA4\u4E92", "MousePointer2"], ["component", "\u9009\u7EC4\u4EF6", "Component"], ["text", "\u9009\u6587\u5B57", "TextSelect"], ["region", "\u6846\u9009", "Scan"], ["point", "\u6307\u5B9A\u4F4D\u7F6E", "MapPin"]];
 var modeDescriptions = {
   off: "\u64CD\u4F5C\u753B\u5E03\uFF1B\u53F3\u952E\u6253\u5F00\u6D88\u606F\u8F93\u5165\u3002",
@@ -5250,11 +6100,11 @@ function ToolbarButton({
       borderWidth: 0,
       backgroundColor: primary ? c.accent : pressed || active ? c.surface2 : "transparent"
     }),
-    children: [/* @__PURE__ */jsx7(Icon4, {
+    children: [/* @__PURE__ */jsx8(Icon4, {
       name: icon,
       size: 16,
       color: primary ? c.accentForeground : c.foregroundMuted
-    }), text ? /* @__PURE__ */jsx7(Text6, {
+    }), text ? /* @__PURE__ */jsx8(Text6, {
       numberOfLines: 1,
       style: {
         color: primary ? c.accentForeground : c.foreground,
@@ -5291,7 +6141,7 @@ function MenuAction({
       borderRadius: 6,
       backgroundColor: pressed || selected ? c.surface2 : "transparent"
     }),
-    children: [/* @__PURE__ */jsx7(Icon4, {
+    children: [/* @__PURE__ */jsx8(Icon4, {
       name: icon,
       size: 16,
       color: selected ? c.accent : c.foregroundMuted
@@ -5301,13 +6151,13 @@ function MenuAction({
         minWidth: 0,
         gap: 3
       },
-      children: [/* @__PURE__ */jsx7(Text6, {
+      children: [/* @__PURE__ */jsx8(Text6, {
         style: {
           color: c.foreground,
           fontSize: 12
         },
         children: label
-      }), detail ? /* @__PURE__ */jsx7(Text6, {
+      }), detail ? /* @__PURE__ */jsx8(Text6, {
         style: {
           color: c.foregroundMuted,
           fontSize: 11,
@@ -5328,14 +6178,14 @@ function Shortcut({
       gap: 3,
       paddingVertical: 3
     },
-    children: [/* @__PURE__ */jsx7(Text6, {
+    children: [/* @__PURE__ */jsx8(Text6, {
       style: {
         color: c.foreground,
         fontSize: 12,
         fontWeight: "600"
       },
       children: keys
-    }), /* @__PURE__ */jsx7(Copy, {
+    }), /* @__PURE__ */jsx8(Copy, {
       small: true,
       muted: true,
       children
@@ -5373,12 +6223,12 @@ function BoardToolbar(props) {
       overflow: "visible",
       zIndex: 40
     },
-    children: [/* @__PURE__ */jsx7(ToolbarButton, {
+    children: [/* @__PURE__ */jsx8(ToolbarButton, {
       label: "Boards",
       icon: "PanelsTopLeft",
       text: compact ? void 0 : "Boards",
       onPress: props.onBack
-    }), /* @__PURE__ */jsx7(BoardTitle, {
+    }), /* @__PURE__ */jsx8(BoardTitle, {
       compact: true,
       menuWidth: Math.min(340, width - 16),
       menuOffset: compact ? -36 : 0,
@@ -5386,42 +6236,42 @@ function BoardToolbar(props) {
       onAccepted: props.onAccepted,
       onRefresh: props.onRefresh,
       onEditStart: () => setMenu(null)
-    }), props.canSelect ? /* @__PURE__ */jsx7(ToolbarButton, {
+    }), props.canSelect ? /* @__PURE__ */jsx8(ToolbarButton, {
       testID: "board-tools-open",
       label: "\u9009\u62E9\u5DE5\u5177",
       icon: current[2],
       text: compact ? void 0 : `${current[1]} \u25BE`,
       active: menu === "tools" || props.selectionMode !== "off",
       onPress: () => open("tools")
-    }) : null, !compact ? /* @__PURE__ */jsx7(ToolbarButton, {
+    }) : null, !compact ? /* @__PURE__ */jsx8(ToolbarButton, {
       testID: "board-reference-bar",
       label: "\u5F53\u524D\u5F15\u7528",
       icon: props.anchor ? "Quote" : "Info",
       text: props.anchor ? "\u5DF2\u5F15\u7528" : "\u5F15\u7528",
       active: menu === "reference",
       onPress: () => open("reference")
-    }) : null, !compact && props.canSelect ? /* @__PURE__ */jsx7(UpdateNavigation, {
+    }) : null, !compact && props.canSelect ? /* @__PURE__ */jsx8(UpdateNavigation, {
       navigation: props.updateNavigation,
       compact: true
-    }) : null, drafts && !narrow ? /* @__PURE__ */jsx7(ToolbarButton, {
+    }) : null, drafts && !narrow ? /* @__PURE__ */jsx8(ToolbarButton, {
       testID: "board-drafts-open",
       label: `\u8349\u7A3F ${props.draftCount ?? 0}`,
       icon: props.draftIssue ? "FileWarning" : "FilePenLine",
       text: compact ? void 0 : `\u8349\u7A3F ${props.draftCount ?? 0}`,
       onPress: () => run(() => props.onOpenDrafts?.())
-    }) : null, /* @__PURE__ */jsx7(ToolbarButton, {
+    }) : null, /* @__PURE__ */jsx8(ToolbarButton, {
       testID: "board-shortcuts-open",
       label: "\u5FEB\u6377\u952E",
       icon: "Keyboard",
       active: menu === "shortcuts",
       onPress: () => open("shortcuts")
-    }), /* @__PURE__ */jsx7(ToolbarButton, {
+    }), /* @__PURE__ */jsx8(ToolbarButton, {
       testID: "board-more-open",
       label: "\u66F4\u591A",
       icon: "Ellipsis",
       active: menu === "more",
       onPress: () => open("more")
-    }), /* @__PURE__ */jsx7(ToolbarButton, {
+    }), /* @__PURE__ */jsx8(ToolbarButton, {
       label: "\u53D1\u6D88\u606F",
       icon: "MessageCircle",
       text: compact ? void 0 : "\u53D1\u6D88\u606F",
@@ -5436,25 +6286,25 @@ function BoardToolbar(props) {
       width: Math.min(340, width - 16),
       right: 8,
       children: [menu === "tools" ? /* @__PURE__ */jsxs6(Fragment3, {
-        children: [modes.map(([mode, label, icon]) => /* @__PURE__ */jsx7(MenuAction, {
+        children: [modes.map(([mode, label, icon]) => /* @__PURE__ */jsx8(MenuAction, {
           label,
           icon,
           selected: props.selectionMode === mode,
           detail: modeDescriptions[mode],
           onPress: () => run(() => props.onSelectionModeChange(mode))
-        }, mode)), /* @__PURE__ */jsx7(Copy, {
+        }, mode)), /* @__PURE__ */jsx8(Copy, {
           small: true,
           muted: true,
           children: "Esc \u8FD4\u56DE\u4EA4\u4E92\u3002\u4E5F\u53EF\u6309\u4F4F \u2318 / Ctrl + Shift\uFF0C\u76F4\u63A5\u70B9\u51FB\u7EC4\u4EF6\u3002"
         })]
       }) : null, menu === "reference" ? /* @__PURE__ */jsxs6(Fragment3, {
-        children: [/* @__PURE__ */jsx7(Copy, {
+        children: [/* @__PURE__ */jsx8(Copy, {
           children: props.anchor ? `\u5DF2\u5F15\u7528 r${props.anchor.boardRevision} \xB7 ${props.selectedText}` : modeDescriptions[props.selectionMode]
-        }), props.anchor?.selector ? /* @__PURE__ */jsx7(Copy, {
+        }), props.anchor?.selector ? /* @__PURE__ */jsx8(Copy, {
           small: true,
           muted: true,
           children: props.anchor.selector
-        }) : null, props.anchor?.image ? /* @__PURE__ */jsx7(Image, {
+        }) : null, props.anchor?.image ? /* @__PURE__ */jsx8(Image, {
           accessibilityLabel: "\u5F53\u524D\u5F15\u7528\u622A\u56FE",
           source: {
             uri: `data:${props.anchor.image.mimeType};base64,${props.anchor.image.data}`
@@ -5466,80 +6316,86 @@ function BoardToolbar(props) {
             backgroundColor: c.surface1,
             borderRadius: 5
           }
-        }) : null, props.anchor ? /* @__PURE__ */jsx7(MenuAction, {
+        }) : null, props.anchor ? /* @__PURE__ */jsx8(MenuAction, {
           label: "\u6E05\u9664\u5F15\u7528",
           icon: "X",
           onPress: () => run(props.onClearReference)
-        }) : /* @__PURE__ */jsx7(Copy, {
+        }) : /* @__PURE__ */jsx8(Copy, {
           small: true,
           muted: true,
           children: "\u53F3\u952E\u6216\u6846\u9009\u540E\uFF0C\u5728\u5BF9\u5E94\u4F4D\u7F6E\u8F93\u5165\u6D88\u606F\u3002"
         })]
       }) : null, menu === "shortcuts" ? /* @__PURE__ */jsxs6(Fragment3, {
-        children: [/* @__PURE__ */jsx7(Shortcut, {
+        children: [/* @__PURE__ */jsx8(Shortcut, {
           keys: "\u2318 / Ctrl + Shift \xB7 \u79FB\u52A8\u5E76\u70B9\u51FB",
           children: "\u6309\u4F4F\u65F6\u9884\u89C8\u7EC4\u4EF6\u8FB9\u6846\uFF0C\u70B9\u51FB\u9009\u4E2D\u3002"
-        }), /* @__PURE__ */jsx7(Shortcut, {
+        }), /* @__PURE__ */jsx8(Shortcut, {
           keys: "\u9009\u4E2D\u540E\uFF1A\u53F3\u952E / \u76F4\u63A5\u62D6\u52A8 / \u53CC\u51FB\u6587\u5B57",
           children: "\u53F3\u952E\u5F15\u7528\u6574\u4E2A\u7EC4\u4EF6\uFF1B\u62D6\u52A8\u672C\u4F53\u79FB\u52A8\uFF1B\u53CC\u51FB\u547D\u4E2D\u7684\u6587\u5B57\u539F\u4F4D\u6539\u5B57\u3002"
-        }), /* @__PURE__ */jsx7(Shortcut, {
+        }), /* @__PURE__ */jsx8(Shortcut, {
           keys: "\u62D6\u52A8\u4E2D\uFF1ATab / Shift + Tab",
           children: "\u5207\u6362\u76EE\u6807\u5BB9\u5668\u5C42\u7EA7\u3002\u2191 \u653E\u524D\u9762\uFF0C\u2193 \u653E\u540E\u9762\uFF0C\u2190 \u653E\u5165\u5F00\u5934\uFF0C\u2192 \u653E\u5165\u672B\u5C3E\u3002"
-        }), /* @__PURE__ */jsx7(Shortcut, {
+        }), /* @__PURE__ */jsx8(Shortcut, {
           keys: "\u2318 / Ctrl + C\u3001X\u3001V",
           children: "\u590D\u5236\u3001\u526A\u5207\u7EC4\u4EF6\uFF1B\u9009\u4E2D\u76EE\u6807\u540E\u7C98\u8D34\u3002\u8F93\u5165\u6846\u5185\u4ECD\u662F\u666E\u901A\u6587\u5B57\u5FEB\u6377\u952E\u3002"
-        }), /* @__PURE__ */jsx7(Shortcut, {
+        }), /* @__PURE__ */jsx8(Shortcut, {
           keys: "\u539F\u4F4D\u6539\u5B57\uFF1A\u2318 / Ctrl + Enter",
           children: "\u5B8C\u6210\u7F16\u8F91\u5E76\u67E5\u770B\u4FDD\u5B58\u64CD\u4F5C\uFF1B\u666E\u901A Enter \u6362\u884C\uFF0CEsc \u53D6\u6D88\u3002"
-        }), /* @__PURE__ */jsx7(Shortcut, {
+        }), /* @__PURE__ */jsx8(Shortcut, {
           keys: "Option / Alt + \u62D6\u52A8",
           children: "\u6846\u9009\u533A\u57DF\u5F15\u7528\u3002Esc \u9000\u51FA\u9009\u62E9\u6216\u53D6\u6D88\u5F53\u524D\u62D6\u52A8\u3002"
-        }), /* @__PURE__ */jsx7(Shortcut, {
+        }), /* @__PURE__ */jsx8(Shortcut, {
           keys: "\u6D88\u606F\uFF1AEnter / Shift + Enter",
           children: "\u53D1\u9001\u7ED9\u4E3B\u4F1A\u8BDD / \u6362\u884C\u3002"
-        }), /* @__PURE__ */jsx7(Shortcut, {
+        }), /* @__PURE__ */jsx8(Shortcut, {
           keys: "\u6D88\u606F\uFF1A\u2318 / Ctrl + Enter",
           children: "\u53D1\u9001\u5230\u6240\u9009 Side\uFF1B\u518D\u52A0 Option / Alt \u5219\u65B0\u5F00 Side\u3002"
-        }), /* @__PURE__ */jsx7(Shortcut, {
+        }), /* @__PURE__ */jsx8(Shortcut, {
           keys: "\u6D88\u606F\uFF1AEsc",
           children: "\u6536\u8D77\u8F93\u5165\u5E76\u4FDD\u7559\u8349\u7A3F\uFF0C\u53EF\u4ECE\u5DE5\u5177\u6761\u7684\u8349\u7A3F\u5165\u53E3\u7EE7\u7EED\u3002"
-        }), /* @__PURE__ */jsx7(Copy, {
+        }), /* @__PURE__ */jsx8(Copy, {
           small: true,
           muted: true,
           children: "\u62D6\u52A8\u3001\u526A\u5207\u3001\u7C98\u8D34\u548C\u6539\u5B57\u5747\u5148\u9884\u89C8\uFF0C\u518D\u4FDD\u5B58\u3002\u4E2D\u6587\u8F93\u5165\u6CD5\u786E\u8BA4\u5019\u9009\u65F6\u4E0D\u4F1A\u89E6\u53D1\u53D1\u9001\u3002"
         })]
       }) : null, menu === "more" ? /* @__PURE__ */jsxs6(Fragment3, {
-        children: [compact ? /* @__PURE__ */jsx7(MenuAction, {
+        children: [compact ? /* @__PURE__ */jsx8(MenuAction, {
           label: "\u5F53\u524D\u5F15\u7528",
           icon: "Quote",
           detail: props.anchor ? props.selectedText : "\u67E5\u770B\u5F15\u7528\u4E0E\u64CD\u4F5C\u63D0\u793A",
           onPress: () => setMenu("reference")
-        }) : null, drafts && narrow ? /* @__PURE__ */jsx7(MenuAction, {
+        }) : null, drafts && narrow ? /* @__PURE__ */jsx8(MenuAction, {
           testID: "board-drafts-open",
           label: `\u8349\u7A3F ${props.draftCount ?? 0}`,
           icon: "FilePenLine",
           onPress: () => run(() => props.onOpenDrafts?.())
-        }) : null, compact && props.canSelect ? /* @__PURE__ */jsx7(View6, {
+        }) : null, compact && props.canSelect ? /* @__PURE__ */jsx8(View6, {
           style: {
             paddingVertical: 5
           },
-          children: /* @__PURE__ */jsx7(UpdateNavigation, {
+          children: /* @__PURE__ */jsx8(UpdateNavigation, {
             navigation: props.updateNavigation,
             compact: true
           })
-        }) : null, /* @__PURE__ */jsx7(MenuAction, {
+        }) : null, /* @__PURE__ */jsx8(MenuAction, {
           label: `\u51B3\u7B56 ${props.board.decisions.filter(item => !["dismissed", "superseded"].includes(item.status)).length}`,
           icon: "ListChecks",
           onPress: () => run(() => props.onOpenDrawer("decisions"))
-        }), /* @__PURE__ */jsx7(MenuAction, {
+        }), /* @__PURE__ */jsx8(MenuAction, {
           label: "\u8BA8\u8BBA",
           icon: "MessagesSquare",
           onPress: () => run(() => props.onOpenDrawer("threads"))
-        }), /* @__PURE__ */jsx7(MenuAction, {
+        }), /* @__PURE__ */jsx8(MenuAction, {
           label: "\u53D8\u5316",
           icon: "History",
           onPress: () => run(() => props.onOpenDrawer("history"))
-        }), props.onPublish ? /* @__PURE__ */jsx7(MenuAction, {
+        }), props.onSources ? /* @__PURE__ */jsx8(MenuAction, {
+          testID: "board-composition-open",
+          label: `\u7EC4\u5408\u6765\u6E90${props.sourceCount ? ` ${props.sourceCount}` : ""}`,
+          icon: "PanelsTopLeft",
+          detail: "\u8BA9 agent \u5F15\u7528\u3001\u8BFB\u53D6\u5E76\u7EC4\u5408\u5176\u4ED6 Board",
+          onPress: () => run(() => props.onSources?.())
+        }) : null, props.onPublish ? /* @__PURE__ */jsx8(MenuAction, {
           label: "\u5BFC\u51FA\u4E0E\u53D1\u5E03",
           icon: "Upload",
           onPress: () => run(() => props.onPublish?.())
@@ -5550,9 +6406,9 @@ function BoardToolbar(props) {
 }
 
 // client/release-panel.tsx
-import { useEffect as useEffect7, useMemo as useMemo2, useRef as useRef7, useState as useState8 } from "react";
+import { useEffect as useEffect8, useMemo as useMemo2, useRef as useRef7, useState as useState8 } from "react";
 import { View as View7 } from "react-native";
-import { openExternalUrl, useRpc as useRpc4 } from "@getpaseo/plugin/client";
+import { openExternalUrl } from "@getpaseo/plugin/client";
 import { ScrollView as ScrollView2, TextInput as TextInput3 } from "@getpaseo/plugin/client/ui";
 
 // shared/board-copy.ts
@@ -5719,28 +6575,28 @@ var listPagesJobsRpc = defineRpc3({
 
 // client/release-web.ts
 import { createElement as createElement3 } from "react";
-var browser2 = globalThis;
+var browser3 = globalThis;
 function downloadReleaseZip(base64, fileName) {
-  if (!browser2.document || !browser2.URL || !browser2.Blob || !browser2.atob) throw new Error("\u6B64\u5BA2\u6237\u7AEF\u65E0\u6CD5\u4E0B\u8F7D\u6587\u4EF6\uFF0C\u8BF7\u4F7F\u7528\u5BFC\u51FA\u76EE\u5F55\u6216\u684C\u9762\u7248\u3002");
-  var bytes = Uint8Array.from(browser2.atob(base64), character => character.charCodeAt(0));
-  var url = browser2.URL.createObjectURL(new browser2.Blob([bytes], {
+  if (!browser3.document || !browser3.URL || !browser3.Blob || !browser3.atob) throw new Error("\u6B64\u5BA2\u6237\u7AEF\u65E0\u6CD5\u4E0B\u8F7D\u6587\u4EF6\uFF0C\u8BF7\u4F7F\u7528\u5BFC\u51FA\u76EE\u5F55\u6216\u684C\u9762\u7248\u3002");
+  var bytes = Uint8Array.from(browser3.atob(base64), character => character.charCodeAt(0));
+  var url = browser3.URL.createObjectURL(new browser3.Blob([bytes], {
     type: "application/zip"
   }));
-  var link = browser2.document.createElement("a");
+  var link = browser3.document.createElement("a");
   link.href = url;
   link.download = fileName;
-  browser2.document.body.appendChild(link);
+  browser3.document.body.appendChild(link);
   try {
     link.click();
   } finally {
     link.remove();
-    setTimeout(() => browser2.URL?.revokeObjectURL(url), 6e4);
+    setTimeout(() => browser3.URL?.revokeObjectURL(url), 6e4);
   }
 }
 function ReleasePreview({
   html
 }) {
-  if (!browser2.document) return null;
+  if (!browser3.document) return null;
   return createElement3("iframe", {
     title: "\u53D1\u5E03\u7248\u672C\u9884\u89C8",
     "data-testid": "board-release-preview",
@@ -5761,8 +6617,8 @@ function ReleasePreview({
 function browserDraftStorage() {
   var runtime2 = globalThis;
   try {
-    var browser3 = runtime2.window,
-      storage = browser3?.localStorage;
+    var browser4 = runtime2.window,
+      storage = browser4?.localStorage;
     if (!storage) return null;
     void storage.length;
     return {
@@ -5774,11 +6630,11 @@ function browserDraftStorage() {
       setItem: (key, value) => storage.setItem(key, value),
       removeItem: key => storage.removeItem(key),
       subscribe(listener) {
-        var changed = event => {
+        var changed2 = event => {
           if (!event.storageArea || event.storageArea === storage) listener(event.key);
         };
-        browser3.addEventListener?.("storage", changed);
-        return () => browser3.removeEventListener?.("storage", changed);
+        browser4.addEventListener?.("storage", changed2);
+        return () => browser4.removeEventListener?.("storage", changed2);
       }
     };
   } catch {
@@ -5832,7 +6688,7 @@ function createPagesOutbox(hostId, boardId, storage = browserDraftStorage()) {
 }
 
 // client/release-panel.tsx
-import { jsx as jsx8, jsxs as jsxs7 } from "react/jsx-runtime";
+import { jsx as jsx9, jsxs as jsxs7 } from "react/jsx-runtime";
 var statusNames = {
   prepared: "\u51C6\u5907\u53D1\u5E03\u6587\u4EF6",
   "pr-open": "PR \u5DF2\u521B\u5EFA\uFF0C\u7B49\u5F85\u81EA\u52A8\u5408\u5E76",
@@ -5851,16 +6707,16 @@ function ReleasePanel({
   onOpenBoard
 }) {
   var c = useColors();
-  var copyBoard = useRpc4(copyBoardRpc),
-    create = useRpc4(createReleaseRpc),
-    list = useRpc4(listReleasesRpc);
-  var preview = useRpc4(previewReleaseRpc),
-    download = useRpc4(downloadReleaseRpc);
-  var accounts = useRpc4(githubAccountsRpc),
-    repositories = useRpc4(githubRepositoriesRpc);
-  var publish = useRpc4(publishPagesRpc),
-    refresh = useRpc4(refreshPagesRpc),
-    listJobs = useRpc4(listPagesJobsRpc);
+  var copyBoard = useBoardRpc(copyBoardRpc),
+    create = useBoardRpc(createReleaseRpc),
+    list = useBoardRpc(listReleasesRpc);
+  var preview = useBoardRpc(previewReleaseRpc),
+    download = useBoardRpc(downloadReleaseRpc);
+  var accounts = useBoardRpc(githubAccountsRpc),
+    repositories = useBoardRpc(githubRepositoriesRpc);
+  var publish = useBoardRpc(publishPagesRpc),
+    refresh = useBoardRpc(refreshPagesRpc),
+    listJobs = useBoardRpc(listPagesJobsRpc);
   var [title, setTitle] = useState8(`${board.title} \xB7 \u53D1\u5E03\u7248`);
   var [publicData, setPublicData] = useState8("{}");
   var [network, setNetwork] = useState8("offline");
@@ -5897,7 +6753,7 @@ function ReleasePanel({
     padding: 8,
     fontSize: 13
   };
-  useEffect7(() => {
+  useEffect8(() => {
     mounted.current = true;
     void list({
       boardId: board.id
@@ -5910,14 +6766,14 @@ function ReleasePanel({
       mounted.current = false;
     };
   }, [board.id, list]);
-  useEffect7(() => {
+  useEffect8(() => {
     try {
       setPendingPages(outbox.list());
     } catch (error) {
       setFailure(errorMessage(error));
     }
   }, [outbox]);
-  useEffect7(() => {
+  useEffect8(() => {
     if (!job || !automaticallyPublishing(job)) return;
     var active = true,
       attempts = 0;
@@ -6050,15 +6906,15 @@ function ReleasePanel({
     style: {
       gap: 18
     },
-    children: [/* @__PURE__ */jsx8(Copy, {
+    children: [/* @__PURE__ */jsx9(Copy, {
       children: "\u628A\u5F53\u524D\u5185\u5BB9\u56FA\u5B9A\u6210\u4E00\u4E2A\u53EF\u72EC\u7ACB\u6253\u5F00\u7684\u7F51\u7AD9\u3002\u4E4B\u540E\u7EE7\u7EED\u4FEE\u6539 Board\uFF0C\u4E0D\u4F1A\u6539\u53D8\u5DF2\u5BFC\u51FA\u6216\u5DF2\u4E0A\u7EBF\u7684\u7248\u672C\u3002"
     }), /* @__PURE__ */jsxs7(View7, {
       style: {
         gap: 8
       },
-      children: [/* @__PURE__ */jsx8(Copy, {
+      children: [/* @__PURE__ */jsx9(Copy, {
         children: "\u53D1\u5E03\u540D\u79F0"
-      }), /* @__PURE__ */jsx8(TextInput3, {
+      }), /* @__PURE__ */jsx9(TextInput3, {
         accessibilityLabel: "\u53D1\u5E03\u540D\u79F0",
         value: title,
         onChangeText: value => {
@@ -6067,7 +6923,7 @@ function ReleasePanel({
         },
         editable: !busy,
         style: field
-      }), /* @__PURE__ */jsx8(Action, {
+      }), /* @__PURE__ */jsx9(Action, {
         label: "\u590D\u5236\u4E3A\u53D1\u5E03 Board",
         disabled: busy || !title.trim(),
         onPress: () => {
@@ -6085,7 +6941,7 @@ function ReleasePanel({
             if (mounted.current) onOpenBoard?.(copied.id);
           }));
         }
-      }), /* @__PURE__ */jsx8(Copy, {
+      }), /* @__PURE__ */jsx9(Copy, {
         small: true,
         muted: true,
         children: "\u9700\u8981\u53E6\u505A\u4E00\u7248\u65F6\u5148\u590D\u5236\uFF0C\u518D\u5728\u526F\u672C\u91CC\u6539\u5B57\u3001\u62D6\u52A8\u6216\u8BF7 agent \u4FEE\u6539\u3002\u526F\u672C\u4E0D\u5E26\u8BA8\u8BBA\u548C\u8349\u7A3F\u3002"
@@ -6094,17 +6950,17 @@ function ReleasePanel({
       style: {
         gap: 8
       },
-      children: [/* @__PURE__ */jsx8(Copy, {
+      children: [/* @__PURE__ */jsx9(Copy, {
         children: "\u516C\u5F00\u6570\u636E JSON"
-      }), /* @__PURE__ */jsx8(Copy, {
+      }), /* @__PURE__ */jsx9(Copy, {
         small: true,
         muted: true,
         children: "\u9ED8\u8BA4\u4E0D\u5E26 Board \u6570\u636E\u3002\u9875\u9762\u9700\u8981\u56FE\u8868\u6216\u7B5B\u9009\u6570\u636E\u65F6\uFF0C\u53EF\u8F7D\u5165\u5F53\u524D\u6570\u636E\u540E\u5220\u53BB\u4E0D\u516C\u5F00\u7684\u5B57\u6BB5\u3002"
-      }), /* @__PURE__ */jsx8(Action, {
+      }), /* @__PURE__ */jsx9(Action, {
         label: "\u8F7D\u5165\u5F53\u524D\u753B\u5E03\u6570\u636E",
         disabled: busy,
         onPress: () => setPublicData(JSON.stringify(board.canvas.data, null, 2))
-      }), /* @__PURE__ */jsx8(TextInput3, {
+      }), /* @__PURE__ */jsx9(TextInput3, {
         testID: "board-release-data",
         accessibilityLabel: "\u516C\u5F00\u6570\u636E JSON",
         multiline: true,
@@ -6122,28 +6978,28 @@ function ReleasePanel({
           flexWrap: "wrap",
           gap: 8
         },
-        children: [/* @__PURE__ */jsx8(Action, {
+        children: [/* @__PURE__ */jsx9(Action, {
           label: "\u79BB\u7EBF\u7F51\u9875",
           active: network === "offline",
           disabled: busy,
           onPress: () => setNetwork("offline")
-        }), /* @__PURE__ */jsx8(Action, {
+        }), /* @__PURE__ */jsx9(Action, {
           label: "\u5141\u8BB8 CDN \u5E93",
           active: network === "cdn",
           disabled: busy,
           onPress: () => setNetwork("cdn")
-        }), /* @__PURE__ */jsx8(Action, {
+        }), /* @__PURE__ */jsx9(Action, {
           label: "\u6D45\u8272",
           active: theme === "light",
           disabled: busy,
           onPress: () => setTheme("light")
-        }), /* @__PURE__ */jsx8(Action, {
+        }), /* @__PURE__ */jsx9(Action, {
           label: "\u6DF1\u8272",
           active: theme === "dark",
           disabled: busy,
           onPress: () => setTheme("dark")
         })]
-      }), /* @__PURE__ */jsx8(Action, {
+      }), /* @__PURE__ */jsx9(Action, {
         label: busy ? "\u5904\u7406\u4E2D\u2026" : "\u751F\u6210\u56FA\u5B9A\u7248\u672C\u5E76\u9884\u89C8",
         primary: true,
         disabled: busy || !title.trim(),
@@ -6168,20 +7024,20 @@ function ReleasePanel({
           }));
         }
       })]
-    }), failure ? /* @__PURE__ */jsx8(Notice, {
+    }), failure ? /* @__PURE__ */jsx9(Notice, {
       error: true,
       text: failure
     }) : null, pendingPages.length ? /* @__PURE__ */jsxs7(View7, {
       style: {
         gap: 6
       },
-      children: [/* @__PURE__ */jsx8(Copy, {
+      children: [/* @__PURE__ */jsx9(Copy, {
         children: "\u5F85\u6838\u5BF9\u7684\u53D1\u5E03\u8BF7\u6C42"
-      }), /* @__PURE__ */jsx8(Copy, {
+      }), /* @__PURE__ */jsx9(Copy, {
         small: true,
         muted: true,
         children: "\u4E0A\u6B21\u5173\u95ED\u6216\u65AD\u7EBF\u524D\u7684\u7248\u672C\u548C\u76EE\u6807\u5DF2\u4FDD\u7559\u3002\u5DF2\u53D7\u7406\u7684\u53D1\u5E03\u4F1A\u5728\u540E\u53F0\u7EE7\u7EED\uFF1B\u6CA1\u6709\u53D7\u7406\u56DE\u6267\u65F6\u53EF\u91CD\u8BD5\u540C\u4E00\u6B21\u8BF7\u6C42\u3002"
-      }), pendingPages.map(request => /* @__PURE__ */jsx8(Action, {
+      }), pendingPages.map(request => /* @__PURE__ */jsx9(Action, {
         label: `\u6062\u590D\u53D1\u5E03 \xB7 ${request.repository}`,
         disabled: busy,
         onPress: () => {
@@ -6202,16 +7058,16 @@ function ReleasePanel({
       style: {
         gap: 6
       },
-      children: [/* @__PURE__ */jsx8(Copy, {
+      children: [/* @__PURE__ */jsx9(Copy, {
         children: "\u672C\u673A\u53D1\u5E03\u7248\u672C"
-      }), /* @__PURE__ */jsx8(ScrollView2, {
+      }), /* @__PURE__ */jsx9(ScrollView2, {
         style: {
           maxHeight: 160
         },
         contentContainerStyle: {
           gap: 4
         },
-        children: releases.map(release => /* @__PURE__ */jsx8(Action, {
+        children: releases.map(release => /* @__PURE__ */jsx9(Action, {
           label: `${release.title} \xB7 ${release.artifactHash.slice(0, 10)}`,
           active: release.releaseId === selected?.releaseId,
           disabled: busy,
@@ -6226,16 +7082,16 @@ function ReleasePanel({
       },
       children: [/* @__PURE__ */jsxs7(Copy, {
         children: [selected.title, " \xB7 \u56FA\u5B9A\u7248\u672C ", selected.artifactHash.slice(0, 12)]
-      }), html ? /* @__PURE__ */jsx8(ReleasePreview, {
+      }), html ? /* @__PURE__ */jsx9(ReleasePreview, {
         html
-      }) : null, selected.warnings.map((warning, index) => /* @__PURE__ */jsx8(Notice, {
+      }) : null, selected.warnings.map((warning, index) => /* @__PURE__ */jsx9(Notice, {
         text: warning
       }, index)), /* @__PURE__ */jsxs7(Copy, {
         small: true,
         muted: true,
         children: ["\u6587\u4EF6\uFF1A", selected.files.map(file => file.path).join("\u3001"), selected.dependencies.length ? `
 \u5916\u90E8\u4F9D\u8D56\uFF1A${selected.dependencies.join("\u3001")}` : "\n\u65E0\u9700\u5916\u90E8\u4F9D\u8D56\u3002"]
-      }), /* @__PURE__ */jsx8(Action, {
+      }), /* @__PURE__ */jsx9(Action, {
         label: "\u4E0B\u8F7D ZIP",
         disabled: busy,
         onPress: () => {
@@ -6246,11 +7102,11 @@ function ReleasePanel({
             downloadReleaseZip(bundle.zipBase64, bundle.fileName);
           }));
         }
-      }), /* @__PURE__ */jsx8(Copy, {
+      }), /* @__PURE__ */jsx9(Copy, {
         small: true,
         muted: true,
         children: "\u81EA\u6709\u670D\u52A1\u5668\uFF1A\u89E3\u538B\u540E\u628A\u76EE\u5F55\u4EA4\u7ED9 Nginx\u3001Caddy \u6216\u73B0\u6709\u9759\u6001\u7AD9\u70B9\u670D\u52A1\u3002\u7F51\u7AD9\u65E0\u9700\u8FD0\u884C Paseo\u3002"
-      }), /* @__PURE__ */jsx8(Action, {
+      }), /* @__PURE__ */jsx9(Action, {
         label: reviewed === selected.artifactHash ? "\u5DF2\u786E\u8BA4\u6B64\u7248\u672C\u53EF\u516C\u5F00" : "\u786E\u8BA4\u9884\u89C8\u548C\u6570\u636E\uFF0C\u53EF\u53D1\u5E03\u6B64\u7248\u672C",
         active: reviewed === selected.artifactHash,
         disabled: busy,
@@ -6262,17 +7118,17 @@ function ReleasePanel({
           borderColor: c.border,
           paddingTop: 14
         },
-        children: [/* @__PURE__ */jsx8(Copy, {
+        children: [/* @__PURE__ */jsx9(Copy, {
           children: "GitHub Pages"
-        }), /* @__PURE__ */jsx8(Copy, {
+        }), /* @__PURE__ */jsx9(Copy, {
           small: true,
           muted: true,
           children: "\u70B9\u51FB\u53D1\u5E03\u540E\u81EA\u52A8\u521B\u5EFA PR\u3001\u5408\u5E76\u3001\u90E8\u7F72\u5E76\u6838\u5BF9\u7F51\u9875\u3002\u5173\u95ED\u9762\u677F\u540E\u4ECD\u4F1A\u7EE7\u7EED\u3002\u5DF2\u6709\u7AD9\u70B9\u4F1A\u4F7F\u7528\u72EC\u7ACB\u76EE\u5F55\uFF0C\u4FDD\u7559\u539F\u6765\u7684\u9875\u9762\u3002"
-        }), /* @__PURE__ */jsx8(Copy, {
+        }), /* @__PURE__ */jsx9(Copy, {
           small: true,
           muted: true,
           children: "Pages \u7F51\u7AD9\u901A\u5E38\u516C\u5F00\uFF0C\u5373\u4F7F\u6E90\u7801\u4ED3\u5E93\u4E3A\u79C1\u6709\u3002\u9009\u62E9\u5177\u4F53\u8D26\u53F7\u548C\u4ED3\u5E93\u540E\u624D\u4F1A\u4E0A\u4F20\u3002"
-        }), /* @__PURE__ */jsx8(Action, {
+        }), /* @__PURE__ */jsx9(Action, {
           label: "\u8BFB\u53D6 GitHub \u8D26\u53F7",
           disabled: busy,
           onPress: () => {
@@ -6280,7 +7136,7 @@ function ReleasePanel({
               setAccountList(yield accounts({}));
             }));
           }
-        }), accountList.map(item => /* @__PURE__ */jsx8(Action, {
+        }), accountList.map(item => /* @__PURE__ */jsx9(Action, {
           label: item.login,
           active: account === item.login,
           disabled: busy,
@@ -6294,7 +7150,7 @@ function ReleasePanel({
               }));
             }));
           }
-        }, item.login)), /* @__PURE__ */jsx8(TextInput3, {
+        }, item.login)), /* @__PURE__ */jsx9(TextInput3, {
           accessibilityLabel: "GitHub \u4ED3\u5E93 owner/repo",
           placeholder: "owner/repository",
           placeholderTextColor: c.foregroundMuted,
@@ -6305,14 +7161,14 @@ function ReleasePanel({
           },
           editable: !busy,
           style: field
-        }), repoList.length ? /* @__PURE__ */jsx8(ScrollView2, {
+        }), repoList.length ? /* @__PURE__ */jsx9(ScrollView2, {
           style: {
             maxHeight: 180
           },
           contentContainerStyle: {
             gap: 4
           },
-          children: repoList.map(item => /* @__PURE__ */jsx8(Action, {
+          children: repoList.map(item => /* @__PURE__ */jsx9(Action, {
             label: `${item.name}${item.private ? " \xB7 \u79C1\u6709\u4ED3\u5E93" : ""}`,
             active: repository === item.name,
             disabled: busy,
@@ -6328,7 +7184,7 @@ function ReleasePanel({
             flexWrap: "wrap",
             gap: 6
           },
-          children: [/* @__PURE__ */jsx8(Action, {
+          children: [/* @__PURE__ */jsx9(Action, {
             label: "\u73B0\u6709\u4ED3\u5E93",
             active: !createRepository,
             disabled: busy,
@@ -6336,7 +7192,7 @@ function ReleasePanel({
               setCreateRepository(void 0);
               pageRequest.current = void 0;
             }
-          }), /* @__PURE__ */jsx8(Action, {
+          }), /* @__PURE__ */jsx9(Action, {
             label: "\u65B0\u5EFA\u516C\u5F00\u4ED3\u5E93",
             active: createRepository === "public",
             disabled: busy,
@@ -6344,7 +7200,7 @@ function ReleasePanel({
               setCreateRepository("public");
               pageRequest.current = void 0;
             }
-          }), /* @__PURE__ */jsx8(Action, {
+          }), /* @__PURE__ */jsx9(Action, {
             label: "\u65B0\u5EFA\u79C1\u6709\u4ED3\u5E93",
             active: createRepository === "private",
             disabled: busy,
@@ -6353,14 +7209,14 @@ function ReleasePanel({
               pageRequest.current = void 0;
             }
           })]
-        }), /* @__PURE__ */jsx8(Action, {
+        }), /* @__PURE__ */jsx9(Action, {
           label: createRepository ? "\u521B\u5EFA\u4ED3\u5E93\u5E76\u4E00\u952E\u53D1\u5E03" : "\u4E00\u952E\u53D1\u5E03",
           disabled: busy || !account || !repository.trim() || reviewed !== selected.artifactHash || jobs.some(item => item.releaseId === selected.releaseId && item.account === account && item.repository === repository.trim() && automaticallyPublishing(item)),
           primary: true,
           onPress: () => {
             void requestPages();
           }
-        }), jobs.map(item => /* @__PURE__ */jsx8(Action, {
+        }), jobs.map(item => /* @__PURE__ */jsx9(Action, {
           label: `${item.repository} \xB7 ${jobStatusName(item)}`,
           active: item.jobId === job?.jobId,
           disabled: busy,
@@ -6382,17 +7238,17 @@ function ReleasePanel({
             small: true,
             muted: true,
             children: ["\u53D1\u5E03\u76EE\u5F55\uFF1A", job.sitePath]
-          }) : null, automaticallyPublishing(job) ? /* @__PURE__ */jsx8(Copy, {
+          }) : null, automaticallyPublishing(job) ? /* @__PURE__ */jsx9(Copy, {
             small: true,
             muted: true,
             children: "\u53D1\u5E03\u5DF2\u4EA4\u7ED9\u540E\u53F0\uFF0C\u6B63\u5728\u81EA\u52A8\u5B8C\u6210\u540E\u7EED\u6B65\u9AA4\u3002"
-          }) : null, job.error ? /* @__PURE__ */jsx8(Notice, {
+          }) : null, job.error ? /* @__PURE__ */jsx9(Notice, {
             error: true,
             text: job.error
-          }) : null, job.prUrl ? /* @__PURE__ */jsx8(Action, {
+          }) : null, job.prUrl ? /* @__PURE__ */jsx9(Action, {
             label: "\u67E5\u770B PR",
             onPress: () => openUrl(job.prUrl)
-          }) : null, job.status !== "live" && !automaticallyPublishing(job) ? /* @__PURE__ */jsx8(Action, {
+          }) : null, job.status !== "live" && !automaticallyPublishing(job) ? /* @__PURE__ */jsx9(Action, {
             label: "\u4E00\u952E\u7EE7\u7EED\u53D1\u5E03",
             disabled: busy || reviewed !== job.artifactHash,
             onPress: () => {
@@ -6405,7 +7261,7 @@ function ReleasePanel({
                 createRepository: job.createRepository
               }));
             }
-          }) : null, /* @__PURE__ */jsx8(Action, {
+          }) : null, /* @__PURE__ */jsx9(Action, {
             label: "\u6838\u5BF9\u90E8\u7F72\u72B6\u6001",
             disabled: busy,
             onPress: () => {
@@ -6415,7 +7271,7 @@ function ReleasePanel({
                 }));
               }));
             }
-          }), job.status === "live" && job.url ? /* @__PURE__ */jsx8(Action, {
+          }), job.status === "live" && job.url ? /* @__PURE__ */jsx9(Action, {
             label: "\u6253\u5F00\u5DF2\u53D1\u5E03\u7F51\u9875",
             onPress: () => openUrl(job.url)
           }) : null]
@@ -6427,7 +7283,7 @@ function ReleasePanel({
 
 // client/connection-status.tsx
 import { View as View8 } from "react-native";
-import { jsx as jsx9, jsxs as jsxs8 } from "react/jsx-runtime";
+import { jsx as jsx10, jsxs as jsxs8 } from "react/jsx-runtime";
 var labels = {
   connecting: "\u72B6\u6001\u68C0\u67E5\u4E2D",
   checking: "\u5DF2\u540C\u6B65",
@@ -6449,7 +7305,7 @@ function BoardConnectionStatus({
       alignItems: "center",
       gap: 6
     },
-    children: [/* @__PURE__ */jsx9(View8, {
+    children: [/* @__PURE__ */jsx10(View8, {
       style: {
         width: 7,
         height: 7,
@@ -6544,6 +7400,7 @@ var ComposeSchema = z4.object({
   text: z4.string().max(24e4),
   sourceInteractionId: IdSchema.optional(),
   intentId: IdSchema.optional(),
+  expectedCreatedAt: z4.string().min(1).max(100).optional(),
   destination: z4.enum(["main", "side", "new-side"]).optional(),
   captureStatus: z4.enum(["ready", "failed", "omitted"]).optional(),
   captureFailureReason: z4.enum(["content-changed", "too-complex", "unsupported-layout", "too-large", "timeout", "generation-failed"]).optional()
@@ -6614,7 +7471,7 @@ function createDraftStore(scope, storage = browserDraftStorage()) {
   var inputContexts = /* @__PURE__ */new WeakMap();
   var records = /* @__PURE__ */new Map();
   var keyFor = revision => recordPrefix + revision;
-  var changed = () => {
+  var changed2 = () => {
     for (var listener of samePageListeners) if (listener.scope === prefix) {
       try {
         listener.notify();
@@ -6894,7 +7751,7 @@ function createDraftStore(scope, storage = browserDraftStorage()) {
             } : {})
           }
         };
-        changed();
+        changed2();
         return {
           ok: true,
           draft: result
@@ -6954,7 +7811,7 @@ function createDraftStore(scope, storage = browserDraftStorage()) {
           try {
             releaseUnused(record2.context);
           } catch {}
-          changed();
+          changed2();
           return {
             ok: true
           };
@@ -6972,7 +7829,7 @@ function createDraftStore(scope, storage = browserDraftStorage()) {
           records.delete(keyFor(revision));
           releaseUnused(record2.context);
         } catch {}
-        changed();
+        changed2();
         return {
           ok: true
         };
@@ -7005,7 +7862,7 @@ function createDraftStore(scope, storage = browserDraftStorage()) {
 function acceptedDraftInteraction(draft, interactions) {
   if (!draft.intentId) return void 0;
   var item = interactions.find(candidate => candidate.id === draft.intentId);
-  if (!item || item.comments || item.text !== draft.text.trim() || item.destination !== draft.destination || item.sourceInteractionId !== draft.sourceInteractionId) return void 0;
+  if (!item || item.expectedCreatedAt !== draft.expectedCreatedAt || item.comments || item.text !== draft.text.trim() || item.destination !== draft.destination || item.sourceInteractionId !== draft.sourceInteractionId) return void 0;
   var kinds = draft.destination === "main" ? [draft.kind === "change" ? "change" : "question"] : draft.destination === "new-side" ? ["fork"] : draft.destination === "side" ? ["fork", "reply"] : [draft.kind];
   if (!kinds.includes(item.kind)) return void 0;
   if (!item.anchor || !draft.anchor) return item.anchor === draft.anchor ? item : void 0;
@@ -7044,6 +7901,7 @@ var BATCH_READ_LIMIT = 12e6;
 var BatchSchema = z5.object({
   intentId: IdSchema,
   destination: z5.enum(["main", "side", "new-side"]),
+  expectedCreatedAt: z5.string().min(1).max(100).optional(),
   text: z5.string().min(1).max(24e3),
   comments: CommentsSchema,
   drafts: z5.array(z5.object({
@@ -7059,9 +7917,13 @@ function batchContainsDraft(batch, draft) {
 function queuedDrafts(drafts, batches) {
   return drafts.filter(draft => draft.queuedAt !== void 0 && draft.compose.text.trim() && !draft.conflicted && !draft.compose.intentId && !draft.compose.sourceInteractionId && !batches.some(batch => batchContainsDraft(batch, draft))).sort((a, b) => a.queuedAt - b.queuedAt || a.id.localeCompare(b.id));
 }
-function createCommentBatch(drafts, intentId, destination) {
+function createCommentBatch(drafts, intentId, destination, expectedCreatedAt) {
   var ordered = queuedDrafts(drafts, []);
   if (!ordered.length || ordered.length !== drafts.length) throw new Error("\u8BF7\u5148\u68C0\u67E5\u5F85\u53D1\u9001\u8BC4\u8BBA\uFF1B\u7A7A\u767D\u3001\u51B2\u7A81\u6216\u7ED3\u679C\u672A\u77E5\u7684\u8349\u7A3F\u4E0D\u80FD\u5408\u5E76\u53D1\u9001\u3002");
+  var identities = new Set(ordered.map(draft => draft.compose.expectedCreatedAt).filter(value => value !== void 0));
+  if (expectedCreatedAt) identities.add(expectedCreatedAt);
+  if (identities.size > 1) throw new Error("\u753B\u677F\u5DF2\u88AB\u66FF\u6362\uFF1B\u539F\u8BC4\u8BBA\u5DF2\u4FDD\u7559\uFF0C\u8BF7\u91CD\u65B0\u6838\u5BF9\u6765\u6E90\u540E\u8BC4\u8BBA\u3002");
+  var identity = identities.values().next().value;
   var comments = ordered.map(draft => ({
     id: draft.id,
     text: draft.compose.text.trim(),
@@ -7074,6 +7936,9 @@ function createCommentBatch(drafts, intentId, destination) {
   return BatchSchema.parse({
     intentId,
     destination,
+    ...(identity ? {
+      expectedCreatedAt: identity
+    } : {}),
     text: `\u8BF7\u5C06\u4EE5\u4E0B ${comments.length} \u6761\u8BC4\u8BBA\u4F5C\u4E3A\u4E00\u7EC4\u4FEE\u6539\u8981\u6C42\u4E00\u8D77\u5904\u7406\u3002`,
     comments: parsed.data,
     drafts: ordered.map(draft => ({
@@ -7086,7 +7951,7 @@ function createCommentBatch(drafts, intentId, destination) {
 function acceptedBatchInteraction(batch, interactions) {
   var item = interactions.find(item2 => item2.id === batch.intentId);
   var kinds = batch.destination === "main" ? ["change"] : batch.destination === "new-side" ? ["fork"] : ["fork", "reply"];
-  if (!item || item.destination !== batch.destination || item.text !== batch.text || item.anchor || item.sourceInteractionId || !kinds.includes(item.kind)) return void 0;
+  if (!item || item.expectedCreatedAt !== batch.expectedCreatedAt || item.destination !== batch.destination || item.text !== batch.text || item.anchor || item.sourceInteractionId || !kinds.includes(item.kind)) return void 0;
   var comments = CommentsSchema.safeParse(item.comments);
   return comments.success && sameData(comments.data, batch.comments) ? item : void 0;
 }
@@ -7128,7 +7993,7 @@ function reconcileBatchDrafts(batch, store2) {
 }
 function createBatchStore(scope, storage = browserDraftStorage()) {
   var prefix = PREFIX + encodeURIComponent(JSON.stringify([scope.hostId, scope.boardId])) + ":";
-  var changed = () => {
+  var changed2 = () => {
     for (var listener of listeners) if (listener.scope === prefix) {
       try {
         listener.notify();
@@ -7199,7 +8064,7 @@ function createBatchStore(scope, storage = browserDraftStorage()) {
           }
         }
         if (existing === null) storage.setItem(key, raw);
-        changed();
+        changed2();
         return {
           ok: true
         };
@@ -7214,7 +8079,7 @@ function createBatchStore(scope, storage = browserDraftStorage()) {
           raw = storage.getItem(key);
         if (raw !== null && raw !== JSON.stringify(BatchSchema.parse(batch))) return failure("\u53D1\u9001\u8BB0\u5F55\u5DF2\u53D1\u751F\u53D8\u5316\uFF0C\u5DF2\u4FDD\u7559\u539F\u8BB0\u5F55\u3002");
         storage.removeItem(key);
-        changed();
+        changed2();
         return {
           ok: true
         };
@@ -7253,7 +8118,7 @@ function prepareCommentBatch(scope, drafts, batches, destination, intentId, revi
     if (outbox.batches.some(batch2 => expected.some(draft => batchContainsDraft(batch2, draft)))) throw new Error("\u8FD9\u4E9B\u8BC4\u8BBA\u5DF2\u5728\u53E6\u4E00\u7A97\u53E3\u53D1\u9001\uFF1B\u8BF7\u6838\u5BF9\u539F\u53D1\u9001\u3002");
     var current = queuedDrafts(queued.drafts, outbox.batches);
     if (current.length !== expected.length || current.some((draft, index) => draft.id !== expected[index].id || draft.revision !== expected[index].revision)) throw new Error("\u5F85\u53D1\u9001\u8BC4\u8BBA\u5DF2\u5728\u53E6\u4E00\u7A97\u53E3\u66F4\u65B0\uFF0C\u8BF7\u91CD\u65B0\u6838\u5BF9\u540E\u518D\u7EDF\u4E00\u53D1\u9001\u3002");
-    var batch = createCommentBatch(current, intentId, destination);
+    var batch = createCommentBatch(current, intentId, destination, scope.expectedCreatedAt);
     var result = batches.put(batch);
     if (!result.ok) throw new Error(result.message);
     return batch;
@@ -7264,11 +8129,13 @@ function prepareCommentBatch(scope, drafts, batches, destination, intentId, revi
 var BOARD_VIEW_STORAGE_KEY = "@paseo:board-view:v1";
 var BOARD_VIEW_MAX_RECORDS = 64;
 var BOARD_VIEW_MAX_BYTES = 512 * 1024;
+var BOARD_VIEW_MAX_INSTANCE_LENGTH = 2048;
 var MAX_RECORD_BYTES = 64 * 1024;
 var TAB_KEY = "paseoBoardEntry";
 var object2 = value => value !== null && typeof value === "object" && !Array.isArray(value);
 var id = value => typeof value === "string" && value.length > 0 && value.length <= 256;
 var optionalId = value => value === void 0 || id(value);
+var validInstance = value => typeof value === "string" && value.length > 0 && value.length <= BOARD_VIEW_MAX_INSTANCE_LENGTH;
 function cleanScope(value) {
   if (!object2(value) || !id(value.hostId) || !["agent", "workspace", "screen"].includes(String(value.surface)) || !optionalId(value.workspaceId) || !optionalId(value.agentId)) return;
   if (value.surface === "agent" && !id(value.agentId)) return;
@@ -7325,10 +8192,15 @@ function cleanRecord(value) {
       selection
     };
   }
-  if (value.kind === "view" && id(value.hostId) && id(value.boardId) && typeof value.follow === "boolean") {
+  if ((value.kind === "view" || value.kind === "instance-view" && validInstance(value.instance)) && id(value.hostId) && id(value.boardId) && typeof value.follow === "boolean") {
     var view = cleanView(value.view);
     if (view) return {
-      kind: "view",
+      ...(value.kind === "instance-view" ? {
+        kind: "instance-view",
+        instance: value.instance
+      } : {
+        kind: "view"
+      }),
       hostId: value.hostId,
       boardId: value.boardId,
       view,
@@ -7337,7 +8209,9 @@ function cleanRecord(value) {
   }
 }
 var scopeKey = scope => JSON.stringify([scope.hostId, scope.surface, scope.workspaceId ?? null, scope.agentId ?? null]);
-var recordKey = value => value.kind === "entry" ? "entry:" + scopeKey(value.scope) : "view:" + JSON.stringify([value.hostId, value.boardId]);
+var viewKey = (hostId, boardId, instance) => instance === void 0 ? "view:" + JSON.stringify([hostId, boardId]) : "instance-view:" + JSON.stringify([hostId, boardId, instance]);
+var recordKey = value => value.kind === "entry" ? "entry:" + scopeKey(value.scope) : viewKey(value.hostId, value.boardId, value.kind === "instance-view" ? value.instance : void 0);
+var isViewRecord = value => value?.kind === "view" || value?.kind === "instance-view";
 var copy = value => JSON.parse(JSON.stringify(value));
 var samePageChanges = /* @__PURE__ */new Set();
 var WRITE_INTERVAL_MS = 500;
@@ -7352,7 +8226,7 @@ function createBoardViewStore(storage = browserDraftStorage) {
     removeListeners,
     timer;
   var lastWrite;
-  var changed = () => {
+  var changed2 = () => {
     externalChange = true;
   };
   var encode = () => '{"version":1,"records":[' + [...memory.values()].map(item => item.json).join(",") + "]}";
@@ -7420,7 +8294,7 @@ function createBoardViewStore(storage = browserDraftStorage) {
       lastRaw = encoded;
       externalChange = false;
       unsaved.clear();
-      for (var listener of samePageChanges) if (listener !== changed) listener();
+      for (var listener of samePageChanges) if (listener !== changed2) listener();
     } catch {}
   };
   var put = (value, important) => {
@@ -7458,21 +8332,21 @@ function createBoardViewStore(storage = browserDraftStorage) {
         var offStorage;
         try {
           offStorage = db?.subscribe?.(key => {
-            if (key === null || key === BOARD_VIEW_STORAGE_KEY) changed();
+            if (key === null || key === BOARD_VIEW_STORAGE_KEY) changed2();
           });
         } catch {}
-        var browser3 = globalThis.window;
+        var browser4 = globalThis.window;
         var onHidden = () => {
-          if (browser3?.document?.hidden) flush();
+          if (browser4?.document?.hidden) flush();
         };
-        browser3?.addEventListener?.("pagehide", flush);
-        browser3?.document?.addEventListener?.("visibilitychange", onHidden);
-        samePageChanges.add(changed);
+        browser4?.addEventListener?.("pagehide", flush);
+        browser4?.document?.addEventListener?.("visibilitychange", onHidden);
+        samePageChanges.add(changed2);
         removeListeners = () => {
           offStorage?.();
-          samePageChanges.delete(changed);
-          browser3?.removeEventListener?.("pagehide", flush);
-          browser3?.document?.removeEventListener?.("visibilitychange", onHidden);
+          samePageChanges.delete(changed2);
+          browser4?.removeEventListener?.("pagehide", flush);
+          browser4?.document?.removeEventListener?.("visibilitychange", onHidden);
         };
       }
       var released = false;
@@ -7526,26 +8400,32 @@ function createBoardViewStore(storage = browserDraftStorage) {
         });
       } catch {}
     },
-    readBoardView(hostId, boardId, documentVersion) {
-      if (!id(hostId) || !id(boardId) || !Number.isSafeInteger(documentVersion) || documentVersion < 0) return;
+    readBoardView(hostId, boardId, documentVersion, instance) {
+      if (!id(hostId) || !id(boardId) || !Number.isSafeInteger(documentVersion) || documentVersion < 0 || instance !== void 0 && !validInstance(instance)) return;
       synchronize(!owners);
-      var saved = memory.get("view:" + JSON.stringify([hostId, boardId]))?.value;
-      if (saved?.kind === "view" && saved.view.documentVersion === documentVersion) return copy({
+      var saved = memory.get(viewKey(hostId, boardId, instance))?.value;
+      if (isViewRecord(saved) && saved.view.documentVersion === documentVersion) return copy({
         view: saved.view,
         follow: saved.follow
       });
     },
-    writeBoardView(hostId, boardId, rawView, follow) {
+    writeBoardView(hostId, boardId, rawView, follow, instance) {
       var view = cleanView(rawView);
-      if (!id(hostId) || !id(boardId) || !view || typeof follow !== "boolean") return;
-      var previous = memory.get("view:" + JSON.stringify([hostId, boardId]))?.value;
-      put({
-        kind: "view",
+      if (!id(hostId) || !id(boardId) || !view || typeof follow !== "boolean" || instance !== void 0 && !validInstance(instance)) return;
+      var previous = memory.get(viewKey(hostId, boardId, instance))?.value;
+      var value = {
+        ...(instance === void 0 ? {
+          kind: "view"
+        } : {
+          kind: "instance-view",
+          instance
+        }),
         hostId,
         boardId,
         view,
         follow
-      }, previous?.kind !== "view" || previous.view.documentVersion !== view.documentVersion || previous.follow !== follow);
+      };
+      put(value, !isViewRecord(previous) || previous.view.documentVersion !== view.documentVersion || previous.follow !== follow);
     }
   };
 }
@@ -7647,7 +8527,7 @@ ${request.prompt ?? ""}`.slice(0, 24e3);
 }
 
 // client/discussion-rail.tsx
-import { jsx as jsx10, jsxs as jsxs9 } from "react/jsx-runtime";
+import { jsx as jsx11, jsxs as jsxs9 } from "react/jsx-runtime";
 function DiscussionRail({
   markers,
   compact,
@@ -7669,14 +8549,14 @@ function DiscussionRail({
       borderColor: c.border,
       backgroundColor: c.surface0
     },
-    children: [/* @__PURE__ */jsx10(View9, {
+    children: [/* @__PURE__ */jsx11(View9, {
       style: {
         paddingHorizontal: compact ? 4 : 12,
         paddingVertical: 12,
         borderBottomWidth: 1,
         borderColor: c.border
       },
-      children: /* @__PURE__ */jsx10(Text7, {
+      children: /* @__PURE__ */jsx11(Text7, {
         numberOfLines: 1,
         style: {
           color: c.foregroundMuted,
@@ -7696,7 +8576,7 @@ function DiscussionRail({
         gap: 4
       },
       keyboardShouldPersistTaps: "handled",
-      children: [!groups.length ? /* @__PURE__ */jsx10(Text7, {
+      children: [!groups.length ? /* @__PURE__ */jsx11(Text7, {
         style: {
           paddingVertical: 12,
           color: c.foregroundMuted,
@@ -7735,7 +8615,7 @@ function DiscussionRail({
             backgroundColor: selected || pressed ? c.surface2 : "transparent",
             opacity: disabled ? 0.5 : 1
           }),
-          children: [/* @__PURE__ */jsx10(View9, {
+          children: [/* @__PURE__ */jsx11(View9, {
             style: {
               width: 24,
               height: 24,
@@ -7747,7 +8627,7 @@ function DiscussionRail({
               borderRadius: 12,
               backgroundColor: c.surface1
             },
-            children: /* @__PURE__ */jsx10(Text7, {
+            children: /* @__PURE__ */jsx11(Text7, {
               style: {
                 fontSize: marker.number > 99 ? 9 : 11,
                 fontWeight: "600",
@@ -7761,7 +8641,7 @@ function DiscussionRail({
               minWidth: 0,
               gap: 4
             },
-            children: [/* @__PURE__ */jsx10(Text7, {
+            children: [/* @__PURE__ */jsx11(Text7, {
               numberOfLines: 2,
               style: {
                 color: c.foreground,
@@ -7790,7 +8670,7 @@ function DiscussionRail({
 import { useMemo as useMemo3, useState as useState9 } from "react";
 import { Pressable as Pressable7, Text as Text8, View as View10 } from "react-native";
 import { ScrollView as ScrollView4 } from "@getpaseo/plugin/client/ui";
-import { jsx as jsx11, jsxs as jsxs10 } from "react/jsx-runtime";
+import { jsx as jsx12, jsxs as jsxs10 } from "react/jsx-runtime";
 function SideAgentPicker({
   interactions,
   selectedId,
@@ -7822,20 +8702,20 @@ function SideAgentPicker({
         gap: 8,
         flexWrap: "wrap"
       },
-      children: [/* @__PURE__ */jsx11(Copy, {
+      children: [/* @__PURE__ */jsx12(Copy, {
         small: true,
         muted: true,
         children: "Side \u76EE\u6807"
-      }), /* @__PURE__ */jsx11(Action, {
+      }), /* @__PURE__ */jsx12(Action, {
         label: `${pending ? "\u65C1\u652F\u5EFA\u7ACB\u4E2D" : selectedId ? current?.label ?? "\u5F53\u524D\u65C1\u652F" : "\u9996\u6B21\u53D1\u9001\u65F6\u65B0\u5EFA"} \u25BE`,
         disabled,
         onPress: () => setOpen(value => !value)
       })]
-    }), pending ? /* @__PURE__ */jsx11(Copy, {
+    }), pending ? /* @__PURE__ */jsx12(Copy, {
       small: true,
       muted: true,
       children: "Side \u53D1\u9001\u5C06\u7EE7\u7EED\u6B63\u5728\u5EFA\u7ACB\u7684\u65C1\u652F\uFF1B\u4E5F\u53EF\u6539\u9009\u4EE5\u524D\u7684\u65C1\u652F\u3002"
-    }) : null, open ? /* @__PURE__ */jsx11(View10, {
+    }) : null, open ? /* @__PURE__ */jsx12(View10, {
       testID: "board-side-agent-options",
       style: {
         borderWidth: 1,
@@ -7852,7 +8732,7 @@ function SideAgentPicker({
           gap: 3
         },
         keyboardShouldPersistTaps: "handled",
-        children: [!choices.length ? /* @__PURE__ */jsx11(Copy, {
+        children: [!choices.length ? /* @__PURE__ */jsx12(Copy, {
           small: true,
           muted: true,
           children: "\u8FD8\u6CA1\u6709\u65C1\u652F\u3002Side \u53D1\u9001\u4F1A\u5EFA\u7ACB\u4E00\u4E2A\uFF0C\u5E76\u5728\u4E4B\u540E\u7EE7\u7EED\u4F7F\u7528\u3002"
@@ -7866,8 +8746,8 @@ function SideAgentPicker({
           },
           disabled,
           onPress: () => {
-            void onSelect(item.id).then(changed => {
-              if (changed) setOpen(false);
+            void onSelect(item.id).then(changed2 => {
+              if (changed2) setOpen(false);
             });
           },
           style: ({
@@ -7885,7 +8765,7 @@ function SideAgentPicker({
               fontWeight: "600"
             },
             children: [item.label, !pending && selectedId === item.id ? " \xB7 \u5F53\u524D" : ""]
-          }), /* @__PURE__ */jsx11(Text8, {
+          }), /* @__PURE__ */jsx12(Text8, {
             numberOfLines: 2,
             style: {
               color: c.foregroundMuted,
@@ -7900,8 +8780,783 @@ function SideAgentPicker({
   });
 }
 
+// client/composition-sources.tsx
+import { useCallback as useCallback5, useEffect as useEffect9, useMemo as useMemo4, useRef as useRef8, useState as useState10 } from "react";
+import { Text as Text9, View as View11 } from "react-native";
+import { useQuery as useQuery2, useQueryClient as useQueryClient2 } from "@tanstack/react-query";
+import { ScrollView as ScrollView5, TextInput as TextInput4 } from "@getpaseo/plugin/client/ui";
+
+// shared/composition.ts
+import { defineRpc as defineRpc4 } from "@getpaseo/plugin";
+import { z as z6 } from "zod";
+var COMPOSITION_SOURCE_LIMIT = 32;
+var BoardRefSchema = z6.object({
+  hostId: IdSchema,
+  boardId: IdSchema
+}).strict();
+var boardRefKey = ref => JSON.stringify([ref.hostId, ref.boardId]);
+var Revision = z6.number().int().nonnegative();
+var Time = z6.string().datetime();
+var CoverageCount = z6.object({
+  included: Revision,
+  total: Revision,
+  truncated: z6.boolean()
+}).strict();
+var CompositionSnapshotSchema = z6.object({
+  sourceRef: BoardRefSchema,
+  revision: Revision,
+  canvasRevision: Revision,
+  documentVersion: Revision,
+  observedAt: Time,
+  title: z6.string().max(1e3),
+  createdAt: z6.string().max(100),
+  updatedAt: z6.string().max(100),
+  coverage: z6.object({
+    source: z6.literal("persistent-store"),
+    liveBrowserObserved: z6.literal(false),
+    historyComplete: z6.literal(false),
+    text: CoverageCount.extend({
+      replayComplete: z6.boolean()
+    }).strict(),
+    data: CoverageCount,
+    updates: CoverageCount,
+    interactions: CoverageCount,
+    note: z6.string().max(1e3)
+  }).strict(),
+  text: z6.string().max(24e3),
+  data: z6.array(z6.object({
+    key: z6.string().max(500),
+    json: z6.string().max(16e3)
+  }).strict()).max(32),
+  updates: z6.array(z6.object({
+    id: IdSchema,
+    at: z6.string().max(100),
+    kind: z6.enum(["data", "patch", "document"]),
+    boardRevision: Revision,
+    canvasRevision: Revision,
+    documentVersion: Revision,
+    selectors: z6.array(z6.string().max(1e3)).max(12)
+  }).strict()).max(12),
+  interactions: z6.array(z6.object({
+    id: IdSchema,
+    status: z6.enum(["saved", "sending", "delivered", "processing", "answered", "applied", "rejected", "failed"]),
+    question: z6.string().max(1200),
+    response: z6.string().max(2400).optional(),
+    updatedAt: z6.string().max(100)
+  }).strict()).max(8),
+  unreadUpdateCount: Revision,
+  pendingCount: Revision
+}).strict();
+var CompositionSnapshotReceiptSchema = z6.object({
+  sourceCreatedAt: z6.string().min(1).max(100),
+  revision: Revision,
+  canvasRevision: Revision,
+  documentVersion: Revision,
+  observedAt: Time,
+  receivedAt: Time
+}).strict();
+var CompositionSourcesStateSchema = z6.object({
+  boardId: IdSchema,
+  boardCreatedAt: z6.string().max(100),
+  revision: Revision,
+  sources: z6.array(z6.object({
+    ref: BoardRefSchema,
+    grantedAt: Time,
+    sourceCreatedAt: z6.string().min(1).max(100).optional(),
+    snapshot: CompositionSnapshotReceiptSchema.optional()
+  }).strict()).max(COMPOSITION_SOURCE_LIMIT)
+}).strict();
+var SourcesInputSchema = z6.object({
+  boardId: IdSchema
+}).strict();
+var ReadSourceInputSchema = z6.object({
+  boardId: IdSchema,
+  source: BoardRefSchema
+}).strict();
+var SourceReadResultSchema = z6.object({
+  boardId: IdSchema,
+  sourceRef: BoardRefSchema,
+  sourcesRevision: Revision,
+  availability: z6.enum(["available", "not-yet-observed", "source-missing"]),
+  provenance: z6.enum(["local-store", "client-observed-cache", "none"]),
+  snapshot: CompositionSnapshotSchema.optional(),
+  receivedAt: Time.optional(),
+  ageMs: Revision.optional(),
+  stale: z6.boolean(),
+  freshness: z6.enum(["read-now", "cached-not-live", "unavailable"])
+}).strict();
+var CompositionSourceSelectionSchema = BoardRefSchema.extend({
+  sourceCreatedAt: z6.string().min(1).max(100)
+}).strict();
+var SetCompositionSourcesInputSchema = z6.object({
+  boardId: IdSchema,
+  expectedRevision: Revision,
+  sources: z6.array(CompositionSourceSelectionSchema).max(COMPOSITION_SOURCE_LIMIT)
+}).strict();
+var SyncCompositionSourceInputSchema = z6.object({
+  boardId: IdSchema,
+  expectedSourcesRevision: Revision,
+  ref: BoardRefSchema,
+  snapshot: CompositionSnapshotSchema
+}).strict();
+var compositionSourcesRpc = defineRpc4({
+  name: "board.composition.sources",
+  input: SourcesInputSchema,
+  output: CompositionSourcesStateSchema
+});
+var setCompositionSourcesRpc = defineRpc4({
+  name: "board.composition.set-sources",
+  input: SetCompositionSourcesInputSchema,
+  output: CompositionSourcesStateSchema
+});
+var inspectCompositionSourceRpc = defineRpc4({
+  name: "board.composition.inspect",
+  input: SourcesInputSchema,
+  output: CompositionSnapshotSchema
+});
+var syncCompositionSourceRpc = defineRpc4({
+  name: "board.composition.sync-source",
+  input: SyncCompositionSourceInputSchema,
+  output: CompositionSnapshotReceiptSchema
+});
+var readCompositionSourceRpc = defineRpc4({
+  name: "board.composition.read-source",
+  input: ReadSourceInputSchema,
+  output: SourceReadResultSchema
+});
+
+// client/composition-source-cache.ts
+function newerSourceReceipt(previous, incoming) {
+  if (!previous) return incoming;
+  if (!incoming || incoming.sourceCreatedAt !== previous.sourceCreatedAt || incoming.revision < previous.revision || incoming.canvasRevision < previous.canvasRevision || incoming.documentVersion < previous.documentVersion) return previous;
+  if (incoming.revision === previous.revision && incoming.observedAt < previous.observedAt) return previous;
+  return incoming;
+}
+function mergeCompositionSources(previous, incoming) {
+  if (!previous || previous.boardId !== incoming.boardId) return incoming;
+  if (previous.boardCreatedAt !== incoming.boardCreatedAt) return incoming.boardCreatedAt > previous.boardCreatedAt ? incoming : previous;
+  if (incoming.revision < previous.revision) return previous;
+  if (incoming.revision > previous.revision) return incoming;
+  return {
+    ...incoming,
+    sources: incoming.sources.map(source => {
+      var old = previous.sources.find(item => boardRefKey(item.ref) === boardRefKey(source.ref));
+      if (old?.grantedAt !== source.grantedAt) return source;
+      if (old.sourceCreatedAt && source.sourceCreatedAt && old.sourceCreatedAt !== source.sourceCreatedAt) return old;
+      var sourceCreatedAt = old.sourceCreatedAt ?? source.sourceCreatedAt;
+      var snapshot = newerSourceReceipt(old.snapshot, source.snapshot);
+      return {
+        ...source,
+        ...(sourceCreatedAt ? {
+          sourceCreatedAt
+        } : {}),
+        ...(snapshot ? {
+          snapshot
+        } : {})
+      };
+    })
+  };
+}
+function hasCompositionSource(state, revision, ref) {
+  return state?.revision === revision && state.sources.some(source => boardRefKey(source.ref) === boardRefKey(ref));
+}
+var compositionSourceSignal = summary => summary ? JSON.stringify(summary) : void 0;
+
+// client/composition-sources.tsx
+import { Fragment as Fragment4, jsx as jsx13, jsxs as jsxs11 } from "react/jsx-runtime";
+function useCompositionSources(parent, enabled = true) {
+  var service = useBoardServices(parent.hostId);
+  var read = useBoardRpc(compositionSourcesRpc, parent.hostId);
+  var set = useBoardRpc(setCompositionSourcesRpc, parent.hostId);
+  var sendSnapshot = useBoardRpc(syncCompositionSourceRpc, parent.hostId);
+  var cache = useQueryClient2();
+  var scope = useMemo4(() => ({}), [parent.hostId, parent.boardId, service?.generation, enabled]);
+  var scopeRef = useRef8(scope);
+  scopeRef.current = scope;
+  var active = Boolean(enabled && service?.isCurrent());
+  var current = useCallback5(() => enabled && scopeRef.current === scope && Boolean(service?.isCurrent()), [enabled, scope, service]);
+  useEffect9(() => {
+    scopeRef.current = scope;
+    return () => {
+      if (scopeRef.current === scope) scopeRef.current = {};
+    };
+  }, [scope]);
+  var key = useMemo4(() => ["paseo-board-composition-sources", parent.hostId, parent.boardId, service?.generation], [parent.hostId, parent.boardId, service?.generation]);
+  var query = useQuery2({
+    queryKey: key,
+    queryFn: () => __async(null, null, function* () {
+      if (!current()) throw new Error("\u6765\u6E90\u8FDE\u63A5\u5DF2\u53D8\u66F4\uFF0C\u8BF7\u91CD\u65B0\u6253\u5F00\u3002");
+      var result = yield read({
+        boardId: parent.boardId
+      });
+      if (!current()) throw new Error("\u6765\u6E90\u8FDE\u63A5\u5DF2\u53D8\u66F4\uFF0C\u8BF7\u91CD\u65B0\u6253\u5F00\u3002");
+      return result;
+    }),
+    structuralSharing: (previous, incoming) => mergeCompositionSources(previous, incoming),
+    enabled: active,
+    staleTime: 1e4,
+    refetchInterval: active ? 1e4 : false,
+    refetchIntervalInBackground: false
+  });
+  var [problems, setProblems] = useState10({});
+  useEffect9(() => {
+    setProblems({});
+  }, [scope, query.data?.revision]);
+  var report = useCallback5((ref, error) => {
+    if (!current()) return;
+    setProblems(previous => {
+      var id2 = boardRefKey(ref),
+        next = error === void 0 ? void 0 : errorMessage(error);
+      if (previous[id2] === next) return previous;
+      var result = {
+        ...previous
+      };
+      if (next) result[id2] = next;else delete result[id2];
+      return result;
+    });
+  }, [current]);
+  var save = (sources, expectedRevision) => __async(null, null, function* () {
+    if (!current()) throw new Error("\u6765\u6E90\u8FDE\u63A5\u5DF2\u53D8\u66F4\uFF0C\u8BF7\u91CD\u65B0\u6253\u5F00\u3002");
+    var accepted = yield set({
+      boardId: parent.boardId,
+      expectedRevision,
+      sources
+    });
+    if (!current()) throw new Error("\u4FDD\u5B58\u7ED3\u679C\u9700\u8981\u91CD\u65B0\u6838\u5BF9\uFF0C\u8BF7\u91CD\u65B0\u6253\u5F00\u6765\u6E90\u5217\u8868\u3002");
+    cache.setQueryData(key, previous => mergeCompositionSources(previous, accepted));
+    return accepted;
+  });
+  var canSynchronize = useCallback5((revision, ref) => current() && hasCompositionSource(cache.getQueryData(key), revision, ref), [cache, key, current]);
+  var sync = input => __async(null, null, function* () {
+    if (input.boardId !== parent.boardId || !canSynchronize(input.expectedSourcesRevision, input.ref)) throw new Error("\u6765\u6E90\u6388\u6743\u5DF2\u53D8\u66F4\uFF0C\u5DF2\u4E22\u5F03\u5F85\u540C\u6B65\u8D44\u6599\u3002");
+    var accepted = yield sendSnapshot(input);
+    if (!canSynchronize(input.expectedSourcesRevision, input.ref)) throw new Error("\u6765\u6E90\u6388\u6743\u5DF2\u53D8\u66F4\uFF0C\u5DF2\u4E22\u5F03\u65E7\u540C\u6B65\u56DE\u6267\u3002");
+    return accepted;
+  });
+  var acceptedReceipt = (ref, revision, receipt) => {
+    if (!canSynchronize(revision, ref)) return;
+    cache.setQueryData(key, state => state?.revision === revision ? {
+      ...state,
+      sources: state.sources.map(source => boardRefKey(source.ref) === boardRefKey(ref) && receipt && (!source.sourceCreatedAt || source.sourceCreatedAt === receipt.sourceCreatedAt) ? {
+        ...source,
+        sourceCreatedAt: receipt.sourceCreatedAt,
+        snapshot: newerSourceReceipt(source.snapshot, receipt)
+      } : source)
+    } : state);
+  };
+  return {
+    ...query,
+    data: active ? query.data : void 0,
+    enabled: active,
+    scope,
+    save,
+    sync,
+    problems,
+    report,
+    acceptedReceipt,
+    canSynchronize
+  };
+}
+function CompositionSourceSync({
+  parent,
+  controller
+}) {
+  var services = useBoardTransports();
+  return /* @__PURE__ */jsx13(Fragment4, {
+    children: controller.enabled ? controller.data?.sources.map(({
+      ref
+    }) => {
+      if (ref.hostId === parent.hostId) return null;
+      var service = services.find(item => item.hostId === ref.hostId);
+      return service ? /* @__PURE__ */jsx13(BoardServicesProvider, {
+        services: service,
+        children: /* @__PURE__ */jsx13(SourceObservation, {
+          parent,
+          source: ref,
+          service,
+          controller,
+          sourcesRevision: controller.data.revision
+        })
+      }, boardRefKey(ref)) : null;
+    }) : null
+  });
+}
+function SourceObservation({
+  parent,
+  source,
+  service,
+  controller,
+  sourcesRevision
+}) {
+  var list = useBoardList(source.hostId);
+  var summary = list.data?.boards.find(board => board.id === source.boardId);
+  var available = Boolean(summary);
+  var sourceSignal = compositionSourceSignal(summary);
+  var sourceEpoch = list.data?.cursor.epoch;
+  var connected = !list.liveError && list.liveStatus !== "disconnected";
+  useEffect9(() => {
+    if (!available || !connected || !service.isCurrent() || !controller.canSynchronize(sourcesRevision, source)) return;
+    var live = true,
+      attempts = 0,
+      retry;
+    var valid = () => live && service.isCurrent() && controller.canSynchronize(sourcesRevision, source);
+    var observe = () => __async(null, null, function* () {
+      try {
+        var snapshot = yield service.rpc(inspectCompositionSourceRpc, {
+          boardId: source.boardId
+        });
+        if (!valid()) return;
+        if (boardRefKey(snapshot.sourceRef) !== boardRefKey(source)) throw new Error("\u6765\u6E90\u8EAB\u4EFD\u4E0E\u8BF7\u6C42\u4E0D\u7B26\uFF0C\u672A\u540C\u6B65\u3002");
+        var receipt = yield controller.sync({
+          boardId: parent.boardId,
+          expectedSourcesRevision: sourcesRevision,
+          ref: source,
+          snapshot
+        });
+        if (!valid()) return;
+        controller.acceptedReceipt(source, sourcesRevision, receipt);
+        controller.report(source);
+      } catch (error) {
+        if (!valid()) return;
+        controller.report(source, error);
+        if (++attempts < 3) retry = setTimeout(() => {
+          retry = void 0;
+          if (valid()) void observe();
+        }, attempts * 2e3);
+      }
+    });
+    void observe();
+    return () => {
+      live = false;
+      if (retry !== void 0) clearTimeout(retry);
+    };
+  }, [parent.hostId, parent.boardId, source.hostId, source.boardId, service.generation, available, connected, sourceEpoch, sourceSignal, sourcesRevision, controller.scope]);
+  return null;
+}
+function CompositionSourcesPanel({
+  parent,
+  controller
+}) {
+  var c = useColors();
+  var services = useBoardTransports();
+  var [filter, setFilter] = useState10("");
+  var [draft, setDraft] = useState10();
+  var [baseRevision, setBaseRevision] = useState10();
+  var [pending, setPending] = useState10(false);
+  var [failure, setFailure] = useState10();
+  var panelScope = useRef8(controller.scope);
+  panelScope.current = controller.scope;
+  useEffect9(() => {
+    setDraft(void 0);
+    setBaseRevision(void 0);
+    setPending(false);
+    setFailure(void 0);
+  }, [controller.scope]);
+  var selected = draft ?? controller.data?.sources.map(source => ({
+    ...source.ref,
+    sourceCreatedAt: source.sourceCreatedAt
+  })) ?? [];
+  var selectedKeys = useMemo4(() => new Set(selected.map(boardRefKey)), [selected]);
+  var toggle = ref => {
+    if (pending || !controller.data) return;
+    var id2 = boardRefKey(ref);
+    if (!selectedKeys.has(id2) && selected.length >= COMPOSITION_SOURCE_LIMIT) {
+      setFailure(`\u6BCF\u5F20 Board \u6700\u591A\u9009\u62E9 ${COMPOSITION_SOURCE_LIMIT} \u4E2A\u6765\u6E90\u3002`);
+      return;
+    }
+    setBaseRevision(value => value ?? controller.data.revision);
+    setDraft(selectedKeys.has(id2) ? selected.filter(item => boardRefKey(item) !== id2) : [...selected, ref]);
+    setFailure(void 0);
+  };
+  var save = () => __async(null, null, function* () {
+    if (pending || !draft || baseRevision === void 0) return;
+    if (draft.some(source => !source.sourceCreatedAt)) {
+      setFailure("\u8BF7\u79FB\u9664\u5E76\u91CD\u65B0\u9009\u62E9\u5C1A\u672A\u6838\u5BF9\u8EAB\u4EFD\u7684\u6765\u6E90\uFF0C\u518D\u4FDD\u5B58\u3002");
+      return;
+    }
+    var scope = controller.scope;
+    setPending(true);
+    setFailure(void 0);
+    try {
+      yield controller.save(draft, baseRevision);
+      if (panelScope.current === scope) {
+        setDraft(void 0);
+        setBaseRevision(void 0);
+      }
+    } catch (error) {
+      if (panelScope.current === scope) {
+        setFailure(errorMessage(error));
+        void controller.refetch();
+      }
+    } finally {
+      if (panelScope.current === scope) setPending(false);
+    }
+  });
+  return /* @__PURE__ */jsxs11(View11, {
+    testID: "board-composition-sources",
+    style: {
+      gap: 14
+    },
+    children: [/* @__PURE__ */jsx13(Copy, {
+      children: "\u9009\u62E9\u8FD9\u5F20 Board \u7684 agent \u53EF\u4EE5\u8BFB\u53D6\u7684\u6765\u6E90\uFF0C\u7528\u4E8E\u6C47\u603B\u3001\u6BD4\u8F83\u6216\u751F\u6210\u7B80\u62A5\u3002\u6E90\u753B\u677F\u4ECD\u7531\u539F\u6765\u7684 agent \u8D1F\u8D23\u3002"
+    }), /* @__PURE__ */jsx13(Copy, {
+      small: true,
+      muted: true,
+      children: "\u4FDD\u5B58\u540E\uFF0C\u8BA9 agent \u4F7F\u7528\u8FD9\u4E9B\u6765\u6E90\u7EC4\u5408\u9875\u9762\u3002\u5B83\u53EF\u4EE5\u81EA\u7531\u5B89\u6392\u4EA4\u4E92\u753B\u677F\u548C\u7F29\u7565\u9884\u89C8\uFF1B\u6765\u6E90\u8BFB\u53D6\u4E0D\u4F1A\u53D1\u9001\u6D88\u606F\u3002"
+    }), controller.isPending ? /* @__PURE__ */jsx13(Copy, {
+      muted: true,
+      children: "\u6B63\u5728\u8BFB\u53D6\u6765\u6E90\u2026"
+    }) : null, controller.error ? /* @__PURE__ */jsx13(Notice, {
+      error: true,
+      text: errorMessage(controller.error)
+    }) : null, /* @__PURE__ */jsx13(TextInput4, {
+      accessibilityLabel: "\u67E5\u627E\u6765\u6E90 Board",
+      value: filter,
+      onChangeText: setFilter,
+      placeholder: "\u6309 Board \u6216 host \u540D\u79F0\u67E5\u627E",
+      placeholderTextColor: c.foregroundMuted,
+      style: {
+        color: c.foreground,
+        borderWidth: 1,
+        borderColor: c.border,
+        borderRadius: 8,
+        padding: 10
+      }
+    }), /* @__PURE__ */jsxs11(ScrollView5, {
+      style: {
+        maxHeight: 420
+      },
+      contentContainerStyle: {
+        gap: 18
+      },
+      children: [services.map(service => /* @__PURE__ */jsx13(BoardServicesProvider, {
+        services: service,
+        children: /* @__PURE__ */jsx13(HostSourceChoices, {
+          parent,
+          service,
+          filter,
+          selected: selectedKeys,
+          selectedRefs: selected,
+          disabled: pending || !controller.data,
+          toggle
+        })
+      }, `${service.hostId}:${service.generation}`)), selected.filter(ref => !services.some(service => service.hostId === ref.hostId)).map(ref => /* @__PURE__ */jsxs11(View11, {
+        style: {
+          gap: 4
+        },
+        children: [/* @__PURE__ */jsx13(Action, {
+          label: `${ref.boardId} \xB7 ${ref.hostId}`,
+          active: true,
+          disabled: pending,
+          onPress: () => toggle(ref)
+        }), /* @__PURE__ */jsx13(Copy, {
+          small: true,
+          muted: true,
+          children: "\u8BE5 host \u5F53\u524D\u672A\u63D0\u4F9B\u517C\u5BB9\u7684 Board \u8FDE\u63A5\uFF0C\u5DF2\u4FDD\u5B58\u7684\u6765\u6E90\u4ECD\u4FDD\u7559\u3002"
+        })]
+      }, boardRefKey(ref))), services.length === 0 ? /* @__PURE__ */jsx13(Copy, {
+        muted: true,
+        children: "\u5C1A\u65E0\u53EF\u7528\u6765\u6E90\u3002\u8BF7\u5148\u8FDE\u63A5\u5B89\u88C5\u4E86\u517C\u5BB9 Board \u63D2\u4EF6\u7684 host\u3002"
+      }) : null]
+    }), controller.data?.sources.map(source => controller.problems[boardRefKey(source.ref)] ? /* @__PURE__ */jsx13(Notice, {
+      error: true,
+      text: `${source.ref.boardId}\uFF1A${controller.problems[boardRefKey(source.ref)]}`
+    }, boardRefKey(source.ref)) : null), controller.data?.sources.some(source => source.snapshot) ? /* @__PURE__ */jsx13(Copy, {
+      small: true,
+      muted: true,
+      children: "\u8FDC\u7AEF\u8D44\u6599\u4EE5\u5404\u6765\u6E90\u6700\u8FD1\u540C\u6B65\u7684\u7248\u672C\u63D0\u4F9B\uFF0Cagent \u4F1A\u770B\u5230\u91C7\u96C6\u65F6\u95F4\u548C\u8BB0\u5F55\u8303\u56F4\u3002"
+    }) : null, failure ? /* @__PURE__ */jsx13(Notice, {
+      error: true,
+      text: failure
+    }) : null, draft && controller.data && controller.data.revision !== baseRevision ? /* @__PURE__ */jsx13(Notice, {
+      error: true,
+      text: "\u6765\u6E90\u9009\u62E9\u5DF2\u5728\u522B\u5904\u4FEE\u6539\u3002\u8BF7\u91CD\u65B0\u8F7D\u5165\u540E\u518D\u9009\u62E9\uFF0C\u4EE5\u514D\u8986\u76D6\u53E6\u4E00\u5904\u4FEE\u6539\u3002"
+    }) : null, /* @__PURE__ */jsxs11(View11, {
+      style: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 8,
+        alignItems: "center",
+        justifyContent: "flex-end"
+      },
+      children: [/* @__PURE__ */jsxs11(Copy, {
+        small: true,
+        muted: true,
+        children: ["\u5DF2\u9009 ", selected.length, " / ", COMPOSITION_SOURCE_LIMIT]
+      }), draft ? /* @__PURE__ */jsx13(Action, {
+        label: "\u653E\u5F03\u8FD9\u6B21\u9009\u62E9",
+        disabled: pending,
+        onPress: () => {
+          setDraft(void 0);
+          setBaseRevision(void 0);
+          setFailure(void 0);
+        }
+      }) : null, /* @__PURE__ */jsx13(Action, {
+        label: pending ? "\u4FDD\u5B58\u4E2D\u2026" : "\u4FDD\u5B58\u6765\u6E90",
+        primary: true,
+        disabled: pending || !draft || controller.data?.revision !== baseRevision,
+        onPress: () => {
+          void save();
+        }
+      })]
+    })]
+  });
+}
+function HostSourceChoices({
+  parent,
+  service,
+  filter,
+  selected,
+  selectedRefs,
+  disabled,
+  toggle
+}) {
+  var c = useColors();
+  var query = useBoardList(service.hostId);
+  var text = filter.trim().toLocaleLowerCase();
+  var boards = query.data?.boards.filter(board => !(parent.hostId === service.hostId && parent.boardId === board.id) && (!text || `${service.label} ${board.title} ${board.id}`.toLocaleLowerCase().includes(text))) ?? [];
+  return /* @__PURE__ */jsxs11(View11, {
+    style: {
+      gap: 7
+    },
+    children: [/* @__PURE__ */jsx13(Text9, {
+      style: {
+        color: c.foreground,
+        fontSize: 13,
+        fontWeight: "600"
+      },
+      children: service.label
+    }), query.isPending ? /* @__PURE__ */jsx13(Copy, {
+      small: true,
+      muted: true,
+      children: "\u6B63\u5728\u8BFB\u53D6\u2026"
+    }) : null, query.error ? /* @__PURE__ */jsx13(Notice, {
+      error: true,
+      text: errorMessage(query.error)
+    }) : null, boards.map(board => {
+      var ref = {
+        hostId: service.hostId,
+        boardId: board.id,
+        sourceCreatedAt: board.createdAt
+      };
+      return /* @__PURE__ */jsxs11(View11, {
+        style: {
+          gap: 3
+        },
+        children: [/* @__PURE__ */jsx13(Action, {
+          label: board.title,
+          active: selected.has(boardRefKey(ref)),
+          disabled,
+          icon: selected.has(boardRefKey(ref)) ? "Check" : "Plus",
+          onPress: () => toggle(ref)
+        }), /* @__PURE__ */jsxs11(Copy, {
+          small: true,
+          muted: true,
+          children: [board.unreadUpdateCount ? `${board.unreadUpdateCount} \u5904\u672A\u770B\u66F4\u65B0 \xB7 ` : "", timeLabel(board.updatedAt)]
+        })]
+      }, board.id);
+    }), selectedRefs.filter(ref => ref.hostId === service.hostId && !query.data?.boards.some(board => board.id === ref.boardId)).map(ref => /* @__PURE__ */jsxs11(View11, {
+      style: {
+        gap: 3
+      },
+      children: [/* @__PURE__ */jsx13(Action, {
+        label: ref.boardId,
+        active: true,
+        disabled,
+        icon: "Check",
+        onPress: () => toggle(ref)
+      }), /* @__PURE__ */jsx13(Copy, {
+        small: true,
+        muted: true,
+        children: "\u8FD9\u4E2A\u5DF2\u9009\u6765\u6E90\u6682\u4E0D\u53EF\u8BFB\uFF0C\u4ECD\u53EF\u4ECE\u6765\u6E90\u4E2D\u79FB\u9664\u3002"
+      })]
+    }, boardRefKey(ref))), !query.isPending && !query.error && !boards.length ? /* @__PURE__ */jsx13(Copy, {
+      small: true,
+      muted: true,
+      children: "\u6CA1\u6709\u7B26\u5408\u6761\u4EF6\u7684 Board\u3002"
+    }) : null]
+  });
+}
+
+// client/composition-view.tsx
+import { useCallback as useCallback6, useEffect as useEffect10, useMemo as useMemo5, useState as useState11, useSyncExternalStore as useSyncExternalStore2 } from "react";
+import { Fragment as Fragment5, jsx as jsx14 } from "react/jsx-runtime";
+var MAX_EMBEDS = 8;
+var mountKeys = /* @__PURE__ */new WeakMap();
+var nextMountKey = 0;
+function mountKey(mount) {
+  var key = mountKeys.get(mount);
+  if (key === void 0) {
+    key = ++nextMountKey;
+    mountKeys.set(mount, key);
+  }
+  return key;
+}
+function CompositionEmbeds({
+  parent,
+  parentCreatedAt,
+  mounts,
+  sources,
+  ...surface
+}) {
+  var services = useBoardTransports();
+  var grants = useMemo5(() => new Map(sources?.boardCreatedAt === parentCreatedAt ? sources.sources.map(source => [boardRefKey(source.ref), source]) : []), [sources, parentCreatedAt]);
+  return /* @__PURE__ */jsx14(Fragment5, {
+    children: mounts.map((mount, index) => /* @__PURE__ */jsx14(CompositionEmbed, {
+      mount,
+      parent,
+      grants,
+      services,
+      overBudget: index >= MAX_EMBEDS,
+      ...surface
+    }, mountKey(mount)))
+  });
+}
+function CompositionEmbed({
+  mount,
+  parent,
+  grants,
+  services,
+  overBudget,
+  ...surface
+}) {
+  var slot = useSyncExternalStore2(mount.subscribe, mount.getSnapshot, mount.getSnapshot);
+  var ref = useMemo5(() => ({
+    hostId: slot.hostId,
+    boardId: slot.boardId
+  }), [slot.hostId, slot.boardId]);
+  var key = boardRefKey(ref);
+  var grant = grants.get(key);
+  var service = services.find(item => item.hostId === ref.hostId);
+  var failure = key === boardRefKey(parent) ? "\u8FD9\u5F20\u753B\u677F\u4E0D\u80FD\u5D4C\u5165\u81EA\u5DF1" : !grant ? "\u8BF7\u5148\u5728\u300C\u7EC4\u5408\u6765\u6E90\u300D\u4E2D\u9009\u62E9\u8FD9\u5F20\u753B\u677F" : !grant.sourceCreatedAt ? "\u6B63\u5728\u6838\u5BF9\u6765\u6E90\u753B\u677F\u2026" : slot.snapshotId ? "\u6B64\u56FA\u5B9A\u7248\u672C\u7F29\u7565\u6682\u4E0D\u53EF\u7528\uFF0C\u8BF7\u6253\u5F00\u539F\u753B\u677F\u6838\u5BF9" : overBudget ? "\u672C\u9875\u540C\u65F6\u663E\u793A\u7684\u753B\u677F\u5DF2\u8FBE\u4E0A\u9650\uFF0C\u8BF7\u6253\u5F00\u539F\u753B\u677F" : !service ? "\u7B49\u5F85\u6B64 host \u7684 Board \u63D2\u4EF6\u8FDE\u63A5" : void 0;
+  var open = useCallback6(() => {
+    service?.openScreen({
+      screenId: "boards",
+      params: {
+        boardId: ref.boardId
+      }
+    });
+  }, [service, ref.boardId]);
+  useEffect10(() => {
+    if (!failure) return;
+    mount.setPresentation({
+      title: ref.boardId,
+      hostLabel: service?.label ?? ref.hostId,
+      unread: 0,
+      onOpen: service ? open : void 0
+    });
+    mount.setStatus(failure);
+  }, [mount, ref, service, failure, open]);
+  var embedded = useMemo5(() => ({
+    mount,
+    viewScope: JSON.stringify([parent.hostId, parent.boardId, slot.id, grant?.sourceCreatedAt]),
+    onOpen: open
+  }), [mount, parent.hostId, parent.boardId, slot.id, grant?.sourceCreatedAt, open]);
+  if (failure || !service || !grant?.sourceCreatedAt) return null;
+  return /* @__PURE__ */jsx14(BoardServicesProvider, {
+    services: service,
+    children: /* @__PURE__ */jsx14(AuthorizedSource, {
+      mount,
+      service,
+      source: ref,
+      createdAt: grant.sourceCreatedAt,
+      open,
+      children: slot.view === "preview" ? /* @__PURE__ */jsx14(BoardPreview, {
+        mount,
+        service,
+        refValue: ref,
+        open,
+        ...surface
+      }, grant.sourceCreatedAt) : /* @__PURE__ */jsx14(BoardView, {
+        ...surface,
+        host: {
+          id: service.hostId,
+          label: service.label
+        },
+        boardId: ref.boardId,
+        onBack: open,
+        onOpenBoard: boardId => service.openScreen({
+          screenId: "boards",
+          params: {
+            boardId
+          }
+        }),
+        embedded
+      }, grant.sourceCreatedAt)
+    })
+  }, key);
+}
+function AuthorizedSource({
+  mount,
+  service,
+  source,
+  createdAt,
+  open,
+  children
+}) {
+  var query = useBoard(service.hostId, source.boardId);
+  var index = useBoardList(service.hostId);
+  var board = query.data;
+  var listed = index.data?.boards.find(item => item.id === source.boardId);
+  var valid = board?.createdAt === createdAt && listed?.createdAt === createdAt;
+  useEffect10(() => {
+    if (valid) return;
+    mount.setPresentation({
+      title: source.boardId,
+      hostLabel: service.label,
+      unread: 0,
+      onOpen: open
+    });
+    var replaced = board && board.createdAt !== createdAt || listed && listed.createdAt !== createdAt;
+    mount.setStatus(replaced ? "\u6765\u6E90\u753B\u677F\u5DF2\u88AB\u66FF\u6362\uFF0C\u8BF7\u5728\u300C\u7EC4\u5408\u6765\u6E90\u300D\u4E2D\u91CD\u65B0\u9009\u62E9" : query.isPending || index.isPending ? "\u6B63\u5728\u8FDE\u63A5\u753B\u677F\u2026" : "\u6765\u6E90\u753B\u677F\u6682\u4E0D\u53EF\u7528");
+  }, [mount, service.label, source.boardId, createdAt, valid, board, listed, query.isPending, index.isPending, open]);
+  return valid ? children : null;
+}
+function BoardPreview({
+  mount,
+  service,
+  refValue,
+  open,
+  theme
+}) {
+  var query = useBoard(service.hostId, refValue.boardId);
+  var board = query.data;
+  var frameTheme = useMemo5(() => frameThemeFromColors(theme.colors), [theme.colors]);
+  var [failure, setFailure] = useState11();
+  useEffect10(() => {
+    mount.setPresentation({
+      title: board ? `${board.title} \xB7 r${board.revision} \xB7 \u53EA\u8BFB\u9884\u89C8` : refValue.boardId,
+      hostLabel: service.label,
+      unread: board?.updates.filter(item => !board.seenUpdateIds.includes(item.id)).length ?? 0,
+      onOpen: open
+    });
+    mount.setStatus(failure ?? (!board ? query.isPending ? "\u6B63\u5728\u8BFB\u53D6\u9884\u89C8\u2026" : "\u9884\u89C8\u6682\u65F6\u65E0\u6CD5\u8FDE\u63A5" : query.error || query.liveError ? "\u8FDE\u63A5\u4E2D\u65AD \xB7 \u663E\u793A\u4E0A\u6B21\u6536\u5230\u7684\u9884\u89C8" : ""));
+  }, [mount, board, service.label, refValue.boardId, query.isPending, query.error, query.liveError, failure, open]);
+  if (!board) return null;
+  return /* @__PURE__ */jsx14(CanvasFrame, {
+    embeddedMount: mount,
+    boardId: board.id,
+    title: board.title,
+    canvas: board.canvas,
+    boardRevision: board.revision,
+    userState: {},
+    theme: frameTheme,
+    height: 300,
+    selectionMode: "off",
+    onAnchor: () => void 0,
+    onAsk: () => __async(null, null, function* () {
+      return {
+        status: "cancelled",
+        outcome: "\u8BF7\u6253\u5F00\u539F\u753B\u677F\u540E\u8BC4\u8BBA\u3002"
+      };
+    }),
+    onState: () => void 0,
+    onError: error => setFailure(error.message)
+  });
+}
+
 // client/board.tsx
-import { Fragment as Fragment4, jsx as jsx12, jsxs as jsxs11 } from "react/jsx-runtime";
+import { Fragment as Fragment6, jsx as jsx15, jsxs as jsxs12 } from "react/jsx-runtime";
 var captureFailureNames = {
   "content-changed": "\u622A\u56FE\u8FC7\u7A0B\u4E2D\u753B\u5E03\u5185\u5BB9\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u6846\u9009\u3002",
   "too-complex": "\u9009\u533A\u5185\u5BB9\u8FC7\u4E8E\u590D\u6742\uFF0C\u8BF7\u7F29\u5C0F\u9009\u533A\u3002",
@@ -7928,9 +9583,9 @@ var kindNames = {
   reply: "Fork \u56DE\u590D"
 };
 function BoardView(props) {
-  return /* @__PURE__ */jsx12(ColorContext.Provider, {
+  return /* @__PURE__ */jsx15(ColorContext.Provider, {
     value: props.theme.colors,
-    children: /* @__PURE__ */jsx12(BoardContent, {
+    children: /* @__PURE__ */jsx15(BoardContent, {
       ...props
     }, JSON.stringify([props.host.id, props.boardId]))
   });
@@ -7939,132 +9594,165 @@ function BoardContent({
   boardId,
   host,
   theme,
+  layout,
   onBack,
   navigation,
-  onOpenBoard
+  onOpenBoard,
+  embedded
 }) {
   var c = useColors();
+  var services = useBoardServices(host.id);
+  var sourceRef = useMemo6(() => ({
+    hostId: host.id,
+    boardId
+  }), [host.id, boardId]);
+  var sources = useCompositionSources(sourceRef, !embedded);
+  var [sourcesOpen, setSourcesOpen] = useState12(false);
+  var [compositionMounts, setCompositionMounts] = useState12([]);
+  var composition = useMemo6(() => embedded ? void 0 : {
+    hostId: host.id,
+    onSlots: setCompositionMounts
+  }, [host.id, Boolean(embedded)]);
+  var viewInstance = embedded?.viewScope;
   var query = useBoard(host.id, boardId);
   var board = query.data;
-  useEffect8(() => retainBoardViewStore(), []);
-  var viewSession = useMemo4(() => {
-    var saved = board?.canvas.documentVersion ? readBoardView(host.id, boardId, board.canvas.documentVersion) : void 0;
+  useEffect11(() => retainBoardViewStore(), []);
+  var viewSession = useMemo6(() => {
+    var saved = board?.canvas.documentVersion ? readBoardView(host.id, boardId, board.canvas.documentVersion, viewInstance) : void 0;
     return {
       saved,
       latest: saved?.view
     };
-  }, [host.id, boardId, board?.canvas.documentVersion]);
-  var [settledView, setSettledView] = useState10();
-  var [reconciledView, setReconciledView] = useState10();
-  useEffect8(() => {
+  }, [host.id, boardId, board?.canvas.documentVersion, viewInstance]);
+  var [settledView, setSettledView] = useState12();
+  var [reconciledView, setReconciledView] = useState12();
+  useEffect11(() => {
     if (board && !query.isFetching && !query.isError && (query.liveStatus === "connected" || query.liveStatus === "checking")) setReconciledView(viewSession);
   }, [viewSession, board, query.isFetching, query.isError, query.liveStatus]);
-  var componentEditor = useComponentEditor(host.id, boardId, board, query.accept, query.refetch);
-  var send = useRpc5(interactBoardRpc);
-  var save = useRpc5(saveStateRpc);
-  var record2 = useRpc5(recordDecisionRpc);
-  var selectSide = useRpc5(selectSideAgentRpc);
-  var markUpdatesSeen = useRpc5(markUpdatesSeenRpc);
-  var [selectionMode, setSelectionMode] = useState10("off");
-  var [anchor, setAnchor] = useState10();
-  var [selectionClearToken, setSelectionClearToken] = useState10(0);
-  var [selectionCaptureCancelId, setSelectionCaptureCancelId] = useState10();
-  var [drawer, setDrawer] = useState10(null);
-  var [releaseOpen, setReleaseOpen] = useState10(false);
-  var draftStore = useMemo4(() => createDraftStore({
+  var componentEditor = useComponentEditor(host.id, boardId, board, query.accept, query.refetch, viewInstance);
+  var send = useBoardRpc(interactBoardRpc);
+  var save = useBoardRpc(saveStateRpc);
+  var record2 = useBoardRpc(recordDecisionRpc);
+  var selectSide = useBoardRpc(selectSideAgentRpc);
+  var markUpdatesSeen = useBoardRpc(markUpdatesSeenRpc);
+  var [selectionMode, setSelectionMode] = useState12("off");
+  var [anchor, setAnchor] = useState12();
+  var [selectionClearToken, setSelectionClearToken] = useState12(0);
+  var [selectionCaptureCancelId, setSelectionCaptureCancelId] = useState12();
+  var [drawer, setDrawer] = useState12(null);
+  var [releaseOpen, setReleaseOpen] = useState12(false);
+  var draftStore = useMemo6(() => createDraftStore({
     hostId: host.id,
     boardId
   }), [host.id, boardId]);
-  var [draftSnapshot, setDraftSnapshot] = useState10(() => draftStore.list());
-  var batchStore = useMemo4(() => createBatchStore({
+  var [draftSnapshot, setDraftSnapshot] = useState12(() => draftStore.list());
+  var batchStore = useMemo6(() => createBatchStore({
     hostId: host.id,
     boardId
   }), [host.id, boardId]);
-  var [batchSnapshot, setBatchSnapshot] = useState10(() => batchStore.list());
-  var [batchError, setBatchError] = useState10(null);
-  var acceptedBatchIds = useMemo4(() => new Set(batchSnapshot.batches.filter(batch => acceptedBatchInteraction(batch, board?.interactions ?? [])).map(batch => batch.intentId)), [batchSnapshot.batches, board?.interactions]);
-  var staged = useMemo4(() => queuedDrafts(draftSnapshot.drafts, batchSnapshot.batches), [draftSnapshot, batchSnapshot]);
-  var availableDrafts = useMemo4(() => draftSnapshot.drafts.filter(draft => !batchSnapshot.batches.some(batch => batchContainsDraft(batch, draft))), [draftSnapshot, batchSnapshot]);
-  var [draftError, setDraftError] = useState10(null);
-  var restorationHandled = useRef8(false);
-  var [compose, setCompose] = useState10(null);
-  var composeRef = useRef8(compose);
+  var [batchSnapshot, setBatchSnapshot] = useState12(() => batchStore.list());
+  var [batchError, setBatchError] = useState12(null);
+  var acceptedBatchIds = useMemo6(() => new Set(batchSnapshot.batches.filter(batch => (!batch.expectedCreatedAt || batch.expectedCreatedAt === board?.createdAt) && acceptedBatchInteraction(batch, board?.interactions ?? [])).map(batch => batch.intentId)), [batchSnapshot.batches, board?.interactions, board?.createdAt]);
+  var staged = useMemo6(() => queuedDrafts(draftSnapshot.drafts, batchSnapshot.batches), [draftSnapshot, batchSnapshot]);
+  var availableDrafts = useMemo6(() => draftSnapshot.drafts.filter(draft => !batchSnapshot.batches.some(batch => batchContainsDraft(batch, draft))), [draftSnapshot, batchSnapshot]);
+  var [draftError, setDraftError] = useState12(null);
+  var restorationHandled = useRef9(false);
+  var [compose, setCompose] = useState12(null);
+  var composeRef = useRef9(compose);
   composeRef.current = compose;
-  var [sending, setSending] = useState10(false);
-  var pending = useRef8(false);
-  var sideChoicePending = useRef8(false);
-  var [choosingSide, setChoosingSide] = useState10(false);
-  var [sideChoiceUncertain, setSideChoiceUncertain] = useState10(false);
+  var [sending, setSending] = useState12(false);
+  var pending = useRef9(false);
+  var sideChoicePending = useRef9(false);
+  var [choosingSide, setChoosingSide] = useState12(false);
+  var [sideChoiceUncertain, setSideChoiceUncertain] = useState12(false);
   var sideTargetBlocked = choosingSide || sideChoiceUncertain;
-  var [inputFocusToken, setInputFocusToken] = useState10(0);
-  var [message, setMessage] = useState10(null);
-  var [frameError, setFrameError] = useState10(null);
-  var [height, setHeight] = useState10(500);
-  var [width, setWidth] = useState10(900);
-  var [stageWidth, setStageWidth] = useState10(900);
-  var [popoverHeight, setPopoverHeight] = useState10(300);
-  var [popoverPoint, setPopoverPoint] = useState10({
+  var [inputFocusToken, setInputFocusToken] = useState12(0);
+  var [message, setMessage] = useState12(null);
+  var [frameError, setFrameError] = useState12(null);
+  var [height, setHeight] = useState12(500);
+  var [width, setWidth] = useState12(900);
+  var [stageWidth, setStageWidth] = useState12(900);
+  var [popoverHeight, setPopoverHeight] = useState12(300);
+  var [popoverPoint, setPopoverPoint] = useState12({
     x: 24,
     y: 24
   });
-  var popoverPointRef = useRef8(popoverPoint);
+  var popoverPointRef = useRef9(popoverPoint);
   popoverPointRef.current = popoverPoint;
-  var [selectedInteractionId, setSelectedInteractionId] = useState10();
-  var [focusInteraction, setFocusInteraction] = useState10();
-  var [interactionLocation, setInteractionLocation] = useState10();
-  var [optimistic, setOptimistic] = useState10([]);
-  var updatesBlocked = Boolean(componentEditor.draft || compose || selectedInteractionId || drawer || releaseOpen || sending || selectionMode !== "off");
+  var [selectedInteractionId, setSelectedInteractionId] = useState12();
+  var [focusInteraction, setFocusInteraction] = useState12();
+  var [interactionLocation, setInteractionLocation] = useState12();
+  var [optimistic, setOptimistic] = useState12([]);
+  var updatesBlocked = Boolean(componentEditor.draft || compose || selectedInteractionId || drawer || releaseOpen || sourcesOpen || sending || selectionMode !== "off");
   var updateNavigation = useUpdateNavigation(board, updatesBlocked, id2 => __async(null, null, function* () {
-    query.accept(yield markUpdatesSeen({
+    if (!embedded) query.accept(yield markUpdatesSeen({
       boardId,
       updateIds: [id2]
     }));
-  }), viewSession.saved ? {
+  }), embedded ? {
+    follow: false,
+    skipInitialUnread: true
+  } : viewSession.saved ? {
     follow: viewSession.saved.follow,
     skipInitialUnread: true,
     restoring: settledView !== viewSession,
     reconciling: reconciledView !== viewSession
   } : void 0);
-  var followRef = useRef8(updateNavigation.follow);
+  var followRef = useRef9(updateNavigation.follow);
   followRef.current = updateNavigation.follow;
-  var onViewState = useCallback4(view => {
+  var onViewState = useCallback7(view => {
     if (view.documentVersion !== board?.canvas.documentVersion) return;
     viewSession.latest = view;
-    writeBoardView(host.id, boardId, view, followRef.current);
-  }, [host.id, boardId, board?.canvas.documentVersion, viewSession]);
-  var onFinalViewState = useCallback4(view => {
+    writeBoardView(host.id, boardId, view, followRef.current, viewInstance);
+  }, [host.id, boardId, board?.canvas.documentVersion, viewSession, viewInstance]);
+  var onFinalViewState = useCallback7(view => {
     if (view.documentVersion !== board?.canvas.documentVersion) return;
-    writeBoardView(host.id, boardId, view, updateNavigation.follow);
+    writeBoardView(host.id, boardId, view, updateNavigation.follow, viewInstance);
     flushBoardViewStore();
-  }, [host.id, boardId, board?.canvas.documentVersion, updateNavigation.follow]);
-  var onViewRestored = useCallback4(() => {
+  }, [host.id, boardId, board?.canvas.documentVersion, updateNavigation.follow, viewInstance]);
+  var onViewRestored = useCallback7(() => {
     setSettledView(viewSession);
   }, [viewSession]);
-  useEffect8(() => {
-    if (viewSession.latest) writeBoardView(host.id, boardId, viewSession.latest, updateNavigation.follow);
-  }, [host.id, boardId, viewSession, updateNavigation.follow]);
-  var interactions = useMemo4(() => mergeInteractions(board?.interactions ?? [], optimistic), [board?.interactions, optimistic]);
-  var markers = useMemo4(() => interactionMarkers(interactions), [interactions]);
-  var thread = useMemo4(() => interactionThread(selectedInteractionId ? markerInteractionId(selectedInteractionId, interactions) : void 0, interactions), [selectedInteractionId, interactions]);
+  useEffect11(() => {
+    if (viewSession.latest) writeBoardView(host.id, boardId, viewSession.latest, updateNavigation.follow, viewInstance);
+  }, [host.id, boardId, viewSession, updateNavigation.follow, viewInstance]);
+  useEffect11(() => {
+    if (!embedded) return;
+    var unread = board?.updates.filter(item => !board.seenUpdateIds.includes(item.id)).length ?? 0;
+    embedded.mount.setPresentation({
+      title: board?.title ?? boardId,
+      hostLabel: host.label,
+      unread,
+      onOpen: embedded.onOpen,
+      queued: staged.length + batchSnapshot.batches.length,
+      onDrafts: () => {
+        if (!pending.current && !composeRef.current) setDrawer("drafts");
+      }
+    });
+    embedded.mount.setStatus(!board ? query.isPending ? "\u6B63\u5728\u8FDE\u63A5\u753B\u677F\u2026" : "\u753B\u677F\u6682\u65F6\u65E0\u6CD5\u8FDE\u63A5" : query.error || query.liveError ? "\u8FDE\u63A5\u4E2D\u65AD \xB7 \u5F53\u524D\u663E\u793A\u4E0A\u6B21\u6536\u5230\u7684\u5185\u5BB9" : frameError ?? "");
+  }, [embedded, board, boardId, host.label, query.isPending, query.error, query.liveError, frameError, staged.length, batchSnapshot.batches.length]);
+  var interactions = useMemo6(() => mergeInteractions(board?.interactions ?? [], optimistic), [board?.interactions, optimistic]);
+  var markers = useMemo6(() => interactionMarkers(interactions), [interactions]);
+  var thread = useMemo6(() => interactionThread(selectedInteractionId ? markerInteractionId(selectedInteractionId, interactions) : void 0, interactions), [selectedInteractionId, interactions]);
   var popover = popoverPlacement(popoverPoint, {
     width,
     height
   }, popoverHeight);
-  var stateWriter = useRef8(null);
-  var frameTheme = useMemo4(() => frameThemeFromColors(theme.colors), [theme.colors]);
-  useEffect8(() => {
+  var stateWriter = useRef9(null);
+  var frameTheme = useMemo6(() => frameThemeFromColors(theme.colors), [theme.colors]);
+  useEffect11(() => {
     var refresh = () => setDraftSnapshot(draftStore.list());
     var unsubscribe = draftStore.subscribe(refresh);
     refresh();
     return unsubscribe;
   }, [draftStore]);
-  useEffect8(() => {
+  useEffect11(() => {
     var refresh = () => setBatchSnapshot(batchStore.list());
     var unsubscribe = batchStore.subscribe(refresh);
     refresh();
     return unsubscribe;
   }, [batchStore]);
-  var persistCompose = useCallback4((draft, open = true, position2 = popoverPointRef.current) => {
+  var persistCompose = useCallback7((draft, open = true, position2 = popoverPointRef.current) => {
     draft.draftId ?? (draft.draftId = localId("draft"));
     var input = {
       id: draft.draftId,
@@ -8077,6 +9765,7 @@ function BoardContent({
         anchor: draft.anchor,
         sourceInteractionId: draft.sourceInteractionId,
         intentId: draft.intentId,
+        expectedCreatedAt: draft.expectedCreatedAt,
         destination: draft.destination,
         captureStatus: draft.captureStatus === "pending" ? "omitted" : draft.captureStatus,
         captureFailureReason: draft.captureFailureReason
@@ -8098,13 +9787,14 @@ function BoardContent({
     } else setDraftError(result.issue.message);
     return result.ok;
   }, [draftStore]);
-  var changeCompose = useCallback4((draft, position2 = popoverPointRef.current) => {
+  var changeCompose = useCallback7((draft, position2 = popoverPointRef.current) => {
     restorationHandled.current = true;
+    if (!draft.intentId) draft.expectedCreatedAt ?? (draft.expectedCreatedAt = board?.createdAt);
     persistCompose(draft, true, position2);
     composeRef.current = draft;
     setCompose(draft);
-  }, [persistCompose]);
-  var removeDraft = useCallback4(draft => {
+  }, [persistCompose, board?.createdAt]);
+  var removeDraft = useCallback7(draft => {
     if (!draft.draftId || !draft.draftRevision) return true;
     var result = draftStore.remove(draft.draftId, draft.draftRevision);
     if (!result.ok) setDraftError(result.issue.message);
@@ -8147,13 +9837,13 @@ function BoardContent({
       text
     });
   };
-  useEffect8(() => {
+  useEffect11(() => {
     var batches = batchSnapshot.batches;
     if (!board) {
       if (!query.isPending && !restorationHandled.current) {
         restorationHandled.current = true;
         var saved = draftStore.list().drafts.find(item => item.open && !batches.some(batch => batchContainsDraft(batch, item)));
-        if (saved) restoreDraft(saved);
+        if (saved && !embedded) restoreDraft(saved);
       }
       return;
     }
@@ -8162,7 +9852,7 @@ function BoardContent({
     var latest;
     var _loop6 = function (_saved) {
         if (batches.some(batch => batchContainsDraft(batch, _saved))) return 0; // continue
-        var receipt = acceptedDraftInteraction(_saved.compose, board.interactions);
+        var receipt = !_saved.compose.expectedCreatedAt || _saved.compose.expectedCreatedAt === board.createdAt ? acceptedDraftInteraction(_saved.compose, board.interactions) : void 0;
         if (receipt) {
           var current = composeRef.current;
           var isCurrent = current?.draftId === _saved.id && current.draftRevision === _saved.revision;
@@ -8178,7 +9868,7 @@ function BoardContent({
             setCompose(null);
             setMessage(null);
           }
-          if (isCurrent || firstRead && _saved.open) {
+          if (isCurrent || !embedded && firstRead && _saved.open) {
             setSelectedInteractionId(interactionRoot(receipt.id, board.interactions));
             setPopoverPoint(_saved.position);
           }
@@ -8189,9 +9879,9 @@ function BoardContent({
       _ret4 = _loop6(_saved);
       if (_ret4 === 0) continue;
     }
-    if (latest) restoreDraft(latest);
+    if (latest && !embedded) restoreDraft(latest);
   }, [board, draftStore, query.isPending, sending, batchSnapshot.batches]);
-  useEffect8(() => {
+  useEffect11(() => {
     if (!board || pending.current) return;
     for (var batch of batchSnapshot.batches) {
       if (!acceptedBatchIds.has(batch.intentId)) continue;
@@ -8200,11 +9890,11 @@ function BoardContent({
       if (!removed.ok) setBatchError(removed.message);
     }
   }, [board, sending, batchStore, draftStore, batchSnapshot.batches, acceptedBatchIds]);
-  var onAnchor = useCallback4(next => {
+  var onAnchor = useCallback7(next => {
     setAnchor(next);
     setSelectionMode("off");
   }, []);
-  var onAsk = useCallback4(request => new Promise(resolve => {
+  var onAsk = useCallback7(request => new Promise(resolve => {
     if (composeRef.current || pending.current) {
       resolve({
         status: "cancelled",
@@ -8223,7 +9913,7 @@ function BoardContent({
     setMessage(null);
     changeCompose(next, request.position ?? anchorPoint(request.anchor));
   }), [changeCompose]);
-  var onCompose = useCallback4(request => {
+  var onCompose = useCallback7(request => {
     if (composeRef.current || pending.current) return;
     var next = {
       kind: "question",
@@ -8240,7 +9930,7 @@ function BoardContent({
     setDrawer(null);
     changeCompose(next, request.position ?? anchorPoint(request.anchor));
   }, [changeCompose]);
-  var onSelectionCapture = useCallback4(capture => {
+  var onSelectionCapture = useCallback7(capture => {
     var draft = composeRef.current;
     if (!draft || pending.current || draft.intentId || draft.captureStatus !== "pending" || draft.selectionId !== capture.selectionId || !draft.anchor || !sameSelectionAnchor(draft.anchor, capture.anchor)) return;
     var next = {
@@ -8252,10 +9942,13 @@ function BoardContent({
     changeCompose(next);
     setAnchor(capture.anchor);
   }, [changeCompose]);
-  var onState = useCallback4(state => stateWriter.current?.schedule(state), []);
-  useEffect8(() => {
+  var onState = useCallback7(state => stateWriter.current?.schedule(state), []);
+  useEffect11(() => {
+    var expectedCreatedAt = board?.createdAt;
+    if (!expectedCreatedAt) return;
     var writer = createStateWriter(state => save({
       boardId,
+      expectedCreatedAt,
       state
     }).then(() => void 0), error => setMessage(`\u4FDD\u5B58\u4EA4\u4E92\u72B6\u6001\u5931\u8D25\uFF1A${errorMessage(error)}`));
     stateWriter.current = writer;
@@ -8263,15 +9956,15 @@ function BoardContent({
       writer.dispose();
       if (stateWriter.current === writer) stateWriter.current = null;
     };
-  }, [save, boardId]);
-  useEffect8(() => {
+  }, [save, boardId, board?.createdAt]);
+  useEffect11(() => {
     setFrameError(null);
   }, [board?.canvas.documentVersion]);
-  useEffect8(() => {
+  useEffect11(() => {
     var persisted = new Set(board?.interactions.map(item => item.id));
     setOptimistic(items => items.some(item => persisted.has(item.id)) ? items.filter(item => !persisted.has(item.id)) : items);
   }, [board?.interactions]);
-  useEffect8(() => () => {
+  useEffect11(() => () => {
     if (!pending.current) composeRef.current?.resolve?.({
       status: "cancelled"
     });
@@ -8388,6 +10081,7 @@ function BoardContent({
       kind: item.kind,
       text: item.text,
       intentId: item.id,
+      expectedCreatedAt: item.expectedCreatedAt,
       destination: item.destination,
       anchor: item.anchor,
       sourceInteractionId: item.sourceInteractionId
@@ -8398,12 +10092,17 @@ function BoardContent({
   var submit = (destination = "main") => __async(null, null, function* () {
     var draft = composeRef.current;
     if (!draft?.text.trim() || pending.current || sideChoicePending.current || !board?.ownerAgentId) return;
+    if (draft.expectedCreatedAt && draft.expectedCreatedAt !== board.createdAt) {
+      setMessage("\u753B\u677F\u5DF2\u88AB\u66FF\u6362\uFF1B\u539F\u8F93\u5165\u5DF2\u4FDD\u7559\uFF0C\u8BF7\u91CD\u65B0\u6838\u5BF9\u6765\u6E90\u540E\u8BC4\u8BBA\u3002");
+      return;
+    }
     if (draft.intentId && destination !== draft.destination) return;
     draft.queuedAt = void 0;
     draft.destination = destination;
     pending.current = true;
     setSending(true);
     setMessage(null);
+    if (!draft.intentId) draft.expectedCreatedAt ?? (draft.expectedCreatedAt = board.createdAt);
     draft.intentId ?? (draft.intentId = localId("intent"));
     if (draft.selectionId) setSelectionCaptureCancelId(draft.selectionId);
     if (draft.captureStatus === "pending") draft.captureStatus = "omitted";
@@ -8417,13 +10116,23 @@ function BoardContent({
       return;
     }
     var now = (/* @__PURE__ */new Date()).toISOString();
-    var local = {
-      id: draft.intentId,
+    var submitted = {
+      expectedCreatedAt: draft.expectedCreatedAt,
+      intentId: draft.intentId,
       kind: draft.kind,
       destination,
       text: draft.text.trim(),
       anchor: draft.anchor,
-      sourceInteractionId: draft.sourceInteractionId,
+      sourceInteractionId: draft.sourceInteractionId
+    };
+    var local = {
+      id: submitted.intentId,
+      expectedCreatedAt: submitted.expectedCreatedAt,
+      kind: submitted.kind,
+      destination,
+      text: submitted.text,
+      anchor: submitted.anchor,
+      sourceInteractionId: submitted.sourceInteractionId,
       status: "sending",
       resultReferences: [],
       createdAt: now,
@@ -8434,13 +10143,9 @@ function BoardContent({
     try {
       var result = yield send({
         boardId,
-        intentId: draft.intentId,
-        kind: draft.kind,
-        destination,
-        text: draft.text.trim(),
-        anchor: draft.anchor,
-        sourceInteractionId: draft.sourceInteractionId
+        ...submitted
       });
+      if (!acceptedDraftInteraction(submitted, [result])) throw new Error("\u8FD4\u56DE\u7684\u53D1\u9001\u8BB0\u5F55\u4E0E\u8FD9\u6761\u8BC4\u8BBA\u4E0D\u4E00\u81F4\uFF1B\u539F\u53D1\u9001\u5DF2\u4FDD\u7559\uFF0C\u8BF7\u7A0D\u540E\u6838\u5BF9\u3002");
       setOptimistic(items => items.map(item => item.id === result.id ? result : item));
       draft.resolve?.({
         status: "submitted",
@@ -8474,7 +10179,8 @@ function BoardContent({
     try {
       batch = retry ?? (yield prepareCommentBatch({
         hostId: host.id,
-        boardId
+        boardId,
+        expectedCreatedAt: board.createdAt
       }, draftStore, batchStore, destination, localId("batch"), staged.map(({
         id: id2,
         revision
@@ -8482,6 +10188,7 @@ function BoardContent({
         id: id2,
         revision
       }))));
+      if (batch.expectedCreatedAt && batch.expectedCreatedAt !== board.createdAt) throw new Error("\u753B\u677F\u5DF2\u88AB\u66FF\u6362\uFF1B\u539F\u53D1\u9001\u8BB0\u5F55\u5DF2\u4FDD\u7559\uFF0C\u4E0D\u80FD\u53D1\u9001\u7ED9\u65B0\u753B\u677F\u3002");
       if (acceptedBatchInteraction(batch, board.interactions)) {
         var cleaned = reconcileBatchDrafts(batch, draftStore),
           removed = cleaned.ok ? batchStore.remove(batch) : cleaned;
@@ -8517,6 +10224,7 @@ function BoardContent({
     try {
       var result = yield send({
         boardId,
+        expectedCreatedAt: batch.expectedCreatedAt,
         intentId: batch.intentId,
         kind: "change",
         destination: batch.destination,
@@ -8632,7 +10340,7 @@ function BoardContent({
     if (composeRef.current) cancelCompose();
     if (!composeRef.current && !pending.current) navigate();
   };
-  usePopoverDismiss(Boolean(compose || selectedInteractionId), closePopover, Boolean(compose));
+  usePopoverDismiss(!embedded && Boolean(compose || selectedInteractionId), closePopover, !embedded && Boolean(compose));
   var updateDecision = (decision, status) => __async(null, null, function* () {
     if (!board) return;
     try {
@@ -8657,33 +10365,34 @@ function BoardContent({
     board: "\u6574\u4E2A\u753B\u5E03",
     text: "\u9009\u4E2D\u6587\u5B57"
   }[anchor.kind] : "\u6574\u4E2A\u753B\u5E03";
-  if (!board) return /* @__PURE__ */jsxs11(ScrollView5, {
+  if (!board && embedded) return null;
+  if (!board) return /* @__PURE__ */jsxs12(ScrollView6, {
     contentContainerStyle: {
       padding: 24,
       gap: 16,
       backgroundColor: c.surface0
     },
-    children: [/* @__PURE__ */jsx12(Action, {
+    children: [/* @__PURE__ */jsx15(Action, {
       label: "\u6240\u6709 Boards",
       onPress: () => leaveBoard(onBack)
-    }), /* @__PURE__ */jsx12(Notice, {
+    }), /* @__PURE__ */jsx15(Notice, {
       text: query.isPending ? "\u6B63\u5728\u6253\u5F00\u2026" : query.error ? "\u6682\u65F6\u65E0\u6CD5\u8FDE\u63A5 Board\uFF1B\u672C\u673A\u8349\u7A3F\u4ECD\u53EF\u67E5\u770B\u548C\u7F16\u8F91\uFF0C\u6062\u590D\u8FDE\u63A5\u540E\u518D\u53D1\u9001\u3002" : "\u8FD9\u5757 Board \u4E0D\u5B58\u5728\uFF1B\u672C\u673A\u8349\u7A3F\u4ECD\u4FDD\u7559\u3002",
       error: !!query.error
-    }), query.error ? /* @__PURE__ */jsx12(Action, {
+    }), query.error ? /* @__PURE__ */jsx15(Action, {
       label: "\u91CD\u8BD5\u8FDE\u63A5",
       onPress: () => {
         void query.refetch();
       }
-    }) : null, compose ? /* @__PURE__ */jsxs11(View11, {
+    }) : null, compose ? /* @__PURE__ */jsxs12(View12, {
       testID: "board-offline-draft",
       style: {
         gap: 12
       },
-      children: [/* @__PURE__ */jsx12(AnchorPreview, {
+      children: [/* @__PURE__ */jsx15(AnchorPreview, {
         anchor: compose.anchor,
         compact: true,
         captureStatus: compose.captureStatus
-      }), canRenderFrames ? /* @__PURE__ */jsx12(WebMessageInput, {
+      }), canRenderFrames ? /* @__PURE__ */jsx15(WebMessageInput, {
         value: compose.text,
         disabled: false,
         onChange: changeDraftText,
@@ -8699,91 +10408,95 @@ function BoardContent({
           padding: 10,
           minHeight: 120
         }
-      }) : /* @__PURE__ */jsx12(TextInput4, {
+      }) : /* @__PURE__ */jsx15(TextInput5, {
         accessibilityLabel: "\u53D1\u7ED9 agent \u7684\u6D88\u606F",
         multiline: true,
         value: compose.text,
         onChangeText: changeDraftText
-      }), draftError || message ? /* @__PURE__ */jsx12(Notice, {
+      }), draftError || message ? /* @__PURE__ */jsx15(Notice, {
         error: true,
         text: draftError ?? message ?? ""
-      }) : null, /* @__PURE__ */jsxs11(View11, {
+      }) : null, /* @__PURE__ */jsxs12(View12, {
         style: {
           flexDirection: "row",
           gap: 8
         },
-        children: [/* @__PURE__ */jsx12(Action, {
+        children: [/* @__PURE__ */jsx15(Action, {
           label: "\u6536\u8D77",
           testID: "board-draft-dismiss",
           onPress: closePopover
-        }), /* @__PURE__ */jsx12(Action, {
+        }), /* @__PURE__ */jsx15(Action, {
           label: "\u4E22\u5F03\u8349\u7A3F",
           testID: "board-draft-discard",
           onPress: discardCompose
         })]
       })]
-    }) : /* @__PURE__ */jsxs11(View11, {
+    }) : /* @__PURE__ */jsxs12(View12, {
       testID: "board-offline-drafts",
       style: {
         gap: 16
       },
-      children: [availableDrafts.map(saved => /* @__PURE__ */jsxs11(View11, {
+      children: [availableDrafts.map(saved => /* @__PURE__ */jsxs12(View12, {
         testID: `board-draft-row-${saved.id}`,
         style: {
           gap: 6
         },
-        children: [/* @__PURE__ */jsx12(Copy, {
+        children: [/* @__PURE__ */jsx15(Copy, {
           children: saved.compose.text || "\u5C1A\u672A\u8F93\u5165\u6587\u5B57"
-        }), /* @__PURE__ */jsx12(Copy, {
+        }), /* @__PURE__ */jsx15(Copy, {
           small: true,
           muted: true,
           children: saved.compose.anchor?.selector ?? "\u6574\u4E2A\u753B\u5E03"
-        }), saved.queuedAt !== void 0 ? /* @__PURE__ */jsx12(Copy, {
+        }), saved.queuedAt !== void 0 ? /* @__PURE__ */jsx15(Copy, {
           small: true,
           muted: true,
           children: "\u5F85\u7EDF\u4E00\u53D1\u9001"
-        }) : null, /* @__PURE__ */jsx12(Action, {
+        }) : null, /* @__PURE__ */jsx15(Action, {
           label: "\u7EE7\u7EED\u7F16\u8F91",
           onPress: () => restoreDraft(saved)
         })]
-      }, saved.revision)), batchSnapshot.batches.map(batch => /* @__PURE__ */jsxs11(View11, {
+      }, saved.revision)), batchSnapshot.batches.map(batch => /* @__PURE__ */jsxs12(View12, {
         testID: `board-offline-batch-${batch.intentId}`,
         style: {
           gap: 8
         },
-        children: [/* @__PURE__ */jsxs11(Copy, {
+        children: [/* @__PURE__ */jsxs12(Copy, {
           children: ["\u53D1\u9001\u7ED3\u679C\u5F85\u6838\u5BF9 \xB7 ", batch.comments.length, " \u6761\u8BC4\u8BBA"]
-        }), batch.comments.map((comment, index) => /* @__PURE__ */jsxs11(View11, {
+        }), batch.comments.map((comment, index) => /* @__PURE__ */jsxs12(View12, {
           style: {
             gap: 4
           },
-          children: [/* @__PURE__ */jsxs11(Copy, {
+          children: [/* @__PURE__ */jsxs12(Copy, {
             children: [index + 1, ". ", comment.text]
-          }), /* @__PURE__ */jsx12(AnchorPreview, {
+          }), /* @__PURE__ */jsx15(AnchorPreview, {
             anchor: comment.anchor,
             compact: true
           })]
-        }, comment.id)), /* @__PURE__ */jsx12(Copy, {
+        }, comment.id)), /* @__PURE__ */jsx15(Copy, {
           small: true,
           muted: true,
           children: "\u6062\u590D\u8FDE\u63A5\u540E\u53EF\u6838\u5BF9\u6216\u91CD\u8BD5\u539F\u53D1\u9001\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u91CD\u53D1\u3002"
         })]
-      }, batch.intentId)), batchSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx12(Notice, {
+      }, batch.intentId)), batchSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx15(Notice, {
         error: true,
         text: issue2
-      }, `batch-${index}`)), draftSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx12(Notice, {
+      }, `batch-${index}`)), draftSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx15(Notice, {
         error: true,
         text: issue2.message
       }, index))]
     })]
   });
-  return /* @__PURE__ */jsxs11(View11, {
-    style: {
+  return /* @__PURE__ */jsxs12(View12, {
+    style: embedded ? {
+      width: 0,
+      height: 0,
+      overflow: "visible"
+    } : {
       flex: 1,
       minHeight: 0,
       backgroundColor: c.surface0
     },
-    children: [/* @__PURE__ */jsx12(BoardToolbar, {
+    children: [!embedded ? /* @__PURE__ */jsx15(BoardToolbar, {
       board,
       onAccepted: query.accept,
       onRefresh: query.refetch,
@@ -8812,18 +10525,27 @@ function BoardContent({
       onOpenDrafts: () => {
         if (composeRef.current) cancelCompose();
         if (!composeRef.current) setDrawer("drafts");
-      }
-    }), /* @__PURE__ */jsxs11(View11, {
+      },
+      sourceCount: sources.data?.sources.length,
+      onSources: sources.enabled ? () => setSourcesOpen(true) : void 0
+    }) : null, /* @__PURE__ */jsxs12(View12, {
       testID: "board-stage",
-      style: {
+      style: embedded ? {
+        width: 0,
+        height: 0
+      } : {
         flex: 1,
         minHeight: 180,
         flexDirection: "row"
       },
       onLayout: event => setStageWidth(event.nativeEvent.layout.width),
-      children: [/* @__PURE__ */jsxs11(View11, {
+      children: [/* @__PURE__ */jsxs12(View12, {
         testID: "board-canvas-container",
-        style: {
+        style: embedded ? {
+          width: 0,
+          height: 0,
+          overflow: "visible"
+        } : {
           flex: 1,
           minWidth: 0,
           minHeight: 180,
@@ -8834,8 +10556,10 @@ function BoardContent({
           setHeight(Math.max(180, event.nativeEvent.layout.height));
           setWidth(event.nativeEvent.layout.width);
         },
-        children: [canRenderFrames ? /* @__PURE__ */jsx12(CanvasFrame, {
-          viewScope: JSON.stringify([host.id, boardId]),
+        children: [canRenderFrames ? /* @__PURE__ */jsx15(CanvasFrame, {
+          composition,
+          embeddedMount: embedded?.mount,
+          viewScope: JSON.stringify([host.id, boardId, viewInstance]),
           boardId: board.id,
           title: board.title,
           canvas: board.canvas,
@@ -8893,51 +10617,53 @@ function BoardContent({
           onOpenLink: url => {
             void openExternalUrl2(url).catch(e => setMessage(errorMessage(e)));
           }
-        }) : /* @__PURE__ */jsxs11(ScrollView5, {
+        }, board.createdAt) : /* @__PURE__ */jsxs12(ScrollView6, {
           contentContainerStyle: {
             padding: 24,
             gap: 16
           },
-          children: [/* @__PURE__ */jsx12(Notice, {
+          children: [/* @__PURE__ */jsx15(Notice, {
             text: "\u624B\u673A\u517C\u5BB9\u89C6\u56FE\u3002\u5B8C\u6574\u7684\u81EA\u7531\u753B\u5E03\u3001\u52A8\u753B\u548C\u9875\u9762\u4EA4\u4E92\u5728\u684C\u9762\u7248\u4F7F\u7528\uFF1B\u8FD9\u91CC\u53EF\u4EE5\u67E5\u770B\u6458\u8981\u3001\u51B3\u7B56\u5E76\u4E0E agent \u4EA4\u6D41\u3002"
-          }), /* @__PURE__ */jsx12(Markdown, {
+          }), /* @__PURE__ */jsx15(Markdown, {
             children: typeof board.canvas.data.summary === "string" ? board.canvas.data.summary : "Agent \u5C1A\u672A\u63D0\u4F9B\u6587\u5B57\u6458\u8981\u3002\u4F60\u53EF\u4EE5\u76F4\u63A5\u63D0\u95EE\uFF0C\u56DE\u590D\u4F1A\u51FA\u73B0\u5728\u8BA8\u8BBA\u91CC\u3002"
           })]
-        }), /* @__PURE__ */jsx12(ComponentEditPanel, {
+        }), embedded ? /* @__PURE__ */jsx15(Modal2, {
+          title: `${board.title} \xB7 ${host.label} \xB7 \u7EC4\u4EF6\u4FEE\u6539`,
+          open: Boolean(componentEditor.draft),
+          onOpenChange: open => {
+            if (!open) componentEditor.cancel();
+          },
+          children: /* @__PURE__ */jsx15(Modal2.Content, {
+            children: /* @__PURE__ */jsx15(BoardServicesBoundary, {
+              services,
+              children: /* @__PURE__ */jsx15(ColorContext.Provider, {
+                value: c,
+                children: /* @__PURE__ */jsx15(ComponentEditPanel, {
+                  editor: componentEditor,
+                  inline: true
+                })
+              })
+            })
+          })
+        }) : /* @__PURE__ */jsx15(ComponentEditPanel, {
           editor: componentEditor
-        }), query.error || query.liveError || frameError || message && !compose && !selectedInteractionId ? /* @__PURE__ */jsx12(View11, {
+        }), !embedded && (query.error || query.liveError || frameError || message && !compose && !selectedInteractionId) ? /* @__PURE__ */jsx15(View12, {
           style: {
             position: "absolute",
             left: 8,
             right: 8,
             top: 8
           },
-          children: /* @__PURE__ */jsx12(Notice, {
+          children: /* @__PURE__ */jsx15(Notice, {
             error: true,
             text: query.error ? "\u8FDE\u63A5\u6682\u65F6\u4E2D\u65AD\u3002\u5F53\u524D\u662F\u4E0A\u6B21\u6536\u5230\u7684\u5185\u5BB9\uFF0C\u5C1A\u672A\u786E\u8BA4\u6700\u65B0\u72B6\u6001\u3002" : query.liveError ? errorMessage(query.liveError) : frameError || message || ""
           })
-        }) : null, compose || selectedInteractionId ? /* @__PURE__ */jsxs11(View11, {
-          testID: "board-local-popover",
-          accessibilityLabel: "\u539F\u4F4D\u4EA4\u6D41",
-          onLayout: event => setPopoverHeight(event.nativeEvent.layout.height),
-          style: {
-            position: "absolute",
-            ...popover,
-            borderWidth: 1,
-            borderColor: c.border,
-            borderRadius: 12,
-            backgroundColor: c.surface0,
-            overflow: "hidden",
-            shadowColor: "#000",
-            shadowOpacity: 0.22,
-            shadowRadius: 16,
-            shadowOffset: {
-              width: 0,
-              height: 5
-            },
-            elevation: 10
-          },
-          children: [/* @__PURE__ */jsxs11(View11, {
+        }) : null, compose || selectedInteractionId ? /* @__PURE__ */jsxs12(BoardComposerSurface, {
+          embeddedTitle: embedded ? `${board.title} \xB7 ${host.label}` : void 0,
+          onClose: closePopover,
+          onHeight: setPopoverHeight,
+          placement: popover,
+          children: [/* @__PURE__ */jsxs12(View12, {
             style: {
               flexDirection: "row",
               alignItems: "center",
@@ -8946,24 +10672,24 @@ function BoardContent({
               borderBottomWidth: 1,
               borderColor: c.border
             },
-            children: [/* @__PURE__ */jsx12(Text9, {
+            children: [/* @__PURE__ */jsx15(Text10, {
               style: {
                 color: c.foreground,
                 fontWeight: "600",
                 flex: 1
               },
               children: compose ? "\u53D1\u7ED9 agent" : "\u8FD9\u91CC\u7684\u8BA8\u8BBA"
-            }), compose ? /* @__PURE__ */jsx12(Action, {
+            }), compose ? /* @__PURE__ */jsx15(Action, {
               testID: "board-draft-dismiss",
               label: "\u6536\u8D77",
               disabled: sending,
               onPress: closePopover
-            }) : !canRenderFrames ? /* @__PURE__ */jsx12(Action, {
+            }) : !canRenderFrames ? /* @__PURE__ */jsx15(Action, {
               label: "\u5173\u95ED",
               disabled: sending,
               onPress: closePopover
             }) : null]
-          }), /* @__PURE__ */jsxs11(ScrollView5, {
+          }), /* @__PURE__ */jsxs12(ScrollView6, {
             style: {
               flexShrink: 1
             },
@@ -8972,7 +10698,7 @@ function BoardContent({
               gap: 16
             },
             keyboardShouldPersistTaps: "handled",
-            children: [interactionLocation && interactionLocation.id === selectedInteractionId && interactionLocation.location !== "component" ? /* @__PURE__ */jsx12(Copy, {
+            children: [interactionLocation && interactionLocation.id === selectedInteractionId && interactionLocation.location !== "component" ? /* @__PURE__ */jsx15(Copy, {
               small: true,
               muted: true,
               children: {
@@ -8981,7 +10707,7 @@ function BoardContent({
                 hidden: "\u7EC4\u4EF6\u5F53\u524D\u9690\u85CF \xB7 \u53EF\u4ECE\u4FA7\u680F\u8BF7\u6C42\u5B9A\u4F4D",
                 snapshot: "\u672A\u5B9A\u4F4D\u5230\u5F53\u524D\u7EC4\u4EF6 \xB7 \u53EF\u67E5\u770B\u539F\u59CB\u5F15\u7528"
               }[interactionLocation.location]
-            }) : null, thread.map(item => /* @__PURE__ */jsx12(InteractionContent, {
+            }) : null, thread.map(item => /* @__PURE__ */jsx15(InteractionContent, {
               item,
               board,
               frameTheme,
@@ -8991,37 +10717,38 @@ function BoardContent({
               onFollow: (kind, text, resolve) => openCompose(kind, item, text, resolve),
               onOpenAgent: () => {
                 if (item.agentId && navigation) navigation.openAgent({
-                  agentId: item.agentId
+                  agentId: item.agentId,
+                  serverId: host.id
                 });
               }
-            }, item.id)), compose ? /* @__PURE__ */jsxs11(View11, {
+            }, item.id)), compose ? /* @__PURE__ */jsxs12(View12, {
               style: {
                 gap: 10
               },
-              children: [!thread.length ? /* @__PURE__ */jsx12(AnchorPreview, {
+              children: [!thread.length ? /* @__PURE__ */jsx15(AnchorPreview, {
                 anchor: compose.anchor,
                 compact: true,
                 captureStatus: compose.captureStatus
-              }) : null, compose.captureStatus ? /* @__PURE__ */jsx12(View11, {
+              }) : null, compose.captureStatus ? /* @__PURE__ */jsx15(View12, {
                 style: {
                   minHeight: 36
                 },
-                children: /* @__PURE__ */jsx12(Copy, {
+                children: /* @__PURE__ */jsx15(Copy, {
                   small: true,
                   muted: true,
                   children: compose.captureStatus === "pending" ? "\u622A\u56FE\u51C6\u5907\u4E2D\uFF1B\u73B0\u5728\u53D1\u9001\u4F1A\u4FDD\u7559\u6587\u5B57\u548C\u4F4D\u7F6E\uFF0C\u4E0D\u9644\u56FE\u7247\u3002" : compose.captureStatus === "failed" ? `\u622A\u56FE\u5931\u8D25\uFF1A${captureFailureNames[compose.captureFailureReason ?? "generation-failed"]}\u6587\u5B57\u548C\u4F4D\u7F6E\u5DF2\u4FDD\u7559\u3002` : compose.captureStatus === "omitted" ? "\u6B64\u6B21\u53D1\u9001\u4E0D\u9644\u56FE\u7247\uFF0C\u4FDD\u7559\u539F\u6765\u7684\u6587\u5B57\u548C\u4F4D\u7F6E\u3002" : "\u5DF2\u9644\u9009\u533A\u622A\u56FE\u3002"
                 })
-              }) : null, compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsx12(Copy, {
+              }) : null, compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsx15(Copy, {
                 small: true,
                 muted: true,
                 children: "\u5F15\u7528\u6765\u81EA\u65E7\u753B\u5E03\u7248\u672C\uFF1Bagent \u4F1A\u5BF9\u7167\u539F\u6765\u7684\u4F4D\u7F6E\u548C\u5FEB\u7167\u3002"
-              }) : null, /* @__PURE__ */jsx12(SideAgentPicker, {
+              }) : null, /* @__PURE__ */jsx15(SideAgentPicker, {
                 interactions: board.interactions,
                 selectedId: board.sideAgentId,
                 pending: Boolean(board.pendingSideInteractionId),
                 disabled: sending || sideTargetBlocked || Boolean(compose.intentId),
                 onSelect: chooseSideAgent
-              }), canRenderFrames ? /* @__PURE__ */jsx12(WebMessageInput, {
+              }), canRenderFrames ? /* @__PURE__ */jsx15(WebMessageInput, {
                 value: compose.text,
                 focusToken: inputFocusToken,
                 disabled: sending || sideTargetBlocked,
@@ -9040,7 +10767,7 @@ function BoardContent({
                   minHeight: 80,
                   fontSize: 14
                 }
-              }) : /* @__PURE__ */jsx12(TextInput4, {
+              }) : /* @__PURE__ */jsx15(TextInput5, {
                 autoFocus: true,
                 accessibilityLabel: "\u53D1\u7ED9 agent \u7684\u6D88\u606F",
                 value: compose.text,
@@ -9060,20 +10787,20 @@ function BoardContent({
                   minHeight: 80,
                   textAlignVertical: "top"
                 }
-              }), draftError ? /* @__PURE__ */jsx12(Notice, {
+              }), draftError ? /* @__PURE__ */jsx15(Notice, {
                 error: true,
                 text: `\u8349\u7A3F\u672A\u80FD\u4FDD\u5B58\u5728\u672C\u673A\uFF1A${draftError} \u5F53\u524D\u8F93\u5165\u4ECD\u4FDD\u7559\uFF0C\u8BF7\u5148\u590D\u5236\u6587\u5B57\u3002`
-              }) : /* @__PURE__ */jsx12(Copy, {
+              }) : /* @__PURE__ */jsx15(Copy, {
                 small: true,
                 muted: true,
                 children: "\u8349\u7A3F\u4FDD\u5B58\u5728\u672C\u673A\uFF1B\u6536\u8D77\u6216\u65AD\u7EBF\u540E\u53EF\u7EE7\u7EED\u7F16\u8F91\u3002"
-              }), !board.ownerAgentId ? /* @__PURE__ */jsx12(Notice, {
+              }), !board.ownerAgentId ? /* @__PURE__ */jsx15(Notice, {
                 error: true,
                 text: "\u8FD9\u5757 Board \u5C1A\u672A\u5173\u8054\u8D1F\u8D23\u7684 agent\u3002\u8BF7\u8BA9 agent \u63A5\u7BA1\u540E\u518D\u53D1\u9001\u3002"
-              }) : null, message ? /* @__PURE__ */jsx12(Notice, {
+              }) : null, message ? /* @__PURE__ */jsx15(Notice, {
                 error: true,
                 text: message
-              }) : null, sideChoiceUncertain ? /* @__PURE__ */jsx12(Action, {
+              }) : null, sideChoiceUncertain ? /* @__PURE__ */jsx15(Action, {
                 label: choosingSide ? "\u6B63\u5728\u6838\u5BF9 Side \u76EE\u6807\u2026" : "\u6838\u5BF9 Side \u76EE\u6807",
                 disabled: choosingSide,
                 onPress: () => {
@@ -9081,7 +10808,7 @@ function BoardContent({
                     if (confirmed) setMessage(null);
                   });
                 }
-              }) : null, /* @__PURE__ */jsxs11(View11, {
+              }) : null, /* @__PURE__ */jsxs12(View12, {
                 style: {
                   flexDirection: "row",
                   alignItems: "center",
@@ -9089,32 +10816,32 @@ function BoardContent({
                   flexWrap: "wrap",
                   justifyContent: "flex-end"
                 },
-                children: [/* @__PURE__ */jsx12(Action, {
+                children: [/* @__PURE__ */jsx15(Action, {
                   testID: "board-draft-discard",
                   label: "\u4E22\u5F03\u8349\u7A3F",
                   disabled: sending,
                   onPress: discardCompose
-                }), !compose.intentId && !compose.sourceInteractionId ? /* @__PURE__ */jsx12(Action, {
+                }), !compose.intentId && !compose.sourceInteractionId ? /* @__PURE__ */jsx15(Action, {
                   testID: "board-comment-stage",
                   label: compose.queuedAt !== void 0 ? "\u4FDD\u5B58\u5230\u5F85\u53D1\u9001" : "\u52A0\u5165\u5F85\u53D1\u9001",
                   disabled: sending || !compose.text.trim(),
                   onPress: stageCompose
-                }) : null, compose.intentId ? /* @__PURE__ */jsx12(Action, {
+                }) : null, compose.intentId ? /* @__PURE__ */jsx15(Action, {
                   label: sending ? "\u53D1\u9001\u4E2D\u2026" : "\u91CD\u8BD5\u539F\u53D1\u9001",
                   disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                   primary: true,
                   onPress: () => {
                     void submit(compose.destination ?? "main");
                   }
-                }) : /* @__PURE__ */jsxs11(Fragment4, {
-                  children: [/* @__PURE__ */jsx12(Action, {
+                }) : /* @__PURE__ */jsxs12(Fragment6, {
+                  children: [/* @__PURE__ */jsx15(Action, {
                     label: board.sideAgentId || board.pendingSideInteractionId ? "Side \u53D1\u9001" : "\u65B0\u5EFA Side \u5E76\u53D1\u9001",
                     icon: "GitBranch",
                     disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                     onPress: () => {
                       void submit("side");
                     }
-                  }), /* @__PURE__ */jsx12(Action, {
+                  }), /* @__PURE__ */jsx15(Action, {
                     label: "\u4E3B\u4F1A\u8BDD\u53D1\u9001",
                     disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                     primary: true,
@@ -9123,15 +10850,15 @@ function BoardContent({
                     }
                   })]
                 })]
-              }), compose.intentId ? /* @__PURE__ */jsx12(Copy, {
+              }), compose.intentId ? /* @__PURE__ */jsx15(Copy, {
                 small: true,
                 muted: true,
                 children: "\u91CD\u8BD5\u6CBF\u539F\u76EE\u6807\u7EE7\u7EED\uFF1B\u4FEE\u6539\u6587\u5B57\u4F1A\u53E6\u5B58\u65B0\u8349\u7A3F\uFF0C\u539F\u53D1\u9001\u4ECD\u4FDD\u7559\u5F85\u6838\u5BF9\u3002"
-              }) : null, !compose.intentId && !compose.sourceInteractionId ? /* @__PURE__ */jsxs11(Copy, {
+              }) : null, !compose.intentId && !compose.sourceInteractionId ? /* @__PURE__ */jsxs12(Copy, {
                 small: true,
                 muted: true,
                 children: ["\u52A0\u5165\u5F85\u53D1\u9001\u540E\u53EF\u7EE7\u7EED\u8BC4\u8BBA\u5176\u4ED6\u4F4D\u7F6E\uFF0C\u518D\u4ECE\u5F85\u53D1\u9001\u6E05\u5355\u4E00\u8D77\u53D1\u9001\u3002", compose.captureStatus === "pending" ? "\u73B0\u5728\u52A0\u5165\u4F1A\u4FDD\u7559\u6587\u5B57\u548C\u4F4D\u7F6E\uFF0C\u4E0D\u9644\u56FE\u7247\u3002" : ""]
-              }) : null, /* @__PURE__ */jsx12(Copy, {
+              }) : null, /* @__PURE__ */jsx15(Copy, {
                 small: true,
                 muted: true,
                 children: "Enter \u4E3B\u4F1A\u8BDD \xB7 \u2318 / Ctrl + Enter \u5F53\u524D Side \u2318 / Ctrl + Option / Alt + Enter \u65B0 Side \xB7 Shift+Enter \u6362\u884C"
@@ -9139,7 +10866,7 @@ function BoardContent({
             }) : null]
           })]
         }) : null]
-      }), canRenderFrames ? /* @__PURE__ */jsx12(DiscussionRail, {
+      }), canRenderFrames && !embedded ? /* @__PURE__ */jsx15(DiscussionRail, {
         markers,
         compact: stageWidth < 720,
         selectedId: selectedInteractionId,
@@ -9147,7 +10874,7 @@ function BoardContent({
         statusNames: statusNames2,
         onOpen: locateInteraction
       }) : null]
-    }), /* @__PURE__ */jsxs11(View11, {
+    }), !embedded ? /* @__PURE__ */jsxs12(View12, {
       style: {
         paddingHorizontal: 12,
         paddingVertical: 5,
@@ -9158,20 +10885,20 @@ function BoardContent({
         justifyContent: "space-between",
         gap: 8
       },
-      children: [/* @__PURE__ */jsxs11(View11, {
+      children: [/* @__PURE__ */jsxs12(View12, {
         style: {
           flexDirection: "row",
           alignItems: "center",
           gap: 12
         },
-        children: [/* @__PURE__ */jsx12(BoardConnectionStatus, {
+        children: [/* @__PURE__ */jsx15(BoardConnectionStatus, {
           status: query.error ? "disconnected" : query.liveStatus
-        }), /* @__PURE__ */jsxs11(Copy, {
+        }), /* @__PURE__ */jsxs12(Copy, {
           small: true,
           muted: true,
           children: ["r", board.revision, " \xB7 ", timeLabel(board.updatedAt)]
         })]
-      }), staged.length || batchSnapshot.batches.length || batchSnapshot.issues.length ? /* @__PURE__ */jsx12(Action, {
+      }), staged.length || batchSnapshot.batches.length || batchSnapshot.issues.length ? /* @__PURE__ */jsx15(Action, {
         testID: "board-comments-open",
         label: staged.length ? `\u5F85\u53D1\u9001 ${staged.length} \u6761` : "\u6838\u5BF9\u8BC4\u8BBA\u53D1\u9001",
         disabled: sending,
@@ -9180,303 +10907,338 @@ function BoardContent({
           if (!composeRef.current) setDrawer("drafts");
         }
       }) : null]
-    }), /* @__PURE__ */jsx12(Modal2, {
+    }) : null, !embedded ? /* @__PURE__ */jsxs12(Fragment6, {
+      children: [/* @__PURE__ */jsx15(CompositionSourceSync, {
+        parent: sourceRef,
+        controller: sources
+      }), /* @__PURE__ */jsx15(CompositionEmbeds, {
+        parent: sourceRef,
+        parentCreatedAt: board.createdAt,
+        mounts: compositionMounts,
+        sources: sources.data,
+        theme,
+        layout,
+        navigation
+      }), /* @__PURE__ */jsx15(Modal2, {
+        title: "\u7EC4\u5408\u6765\u6E90",
+        open: sourcesOpen,
+        onOpenChange: setSourcesOpen,
+        children: /* @__PURE__ */jsx15(Modal2.Content, {
+          children: /* @__PURE__ */jsx15(BoardServicesBoundary, {
+            services,
+            children: /* @__PURE__ */jsx15(ColorContext.Provider, {
+              value: c,
+              children: sourcesOpen ? /* @__PURE__ */jsx15(CompositionSourcesPanel, {
+                parent: sourceRef,
+                controller: sources
+              }) : null
+            })
+          })
+        })
+      })]
+    }) : null, /* @__PURE__ */jsx15(Modal2, {
       title: "\u5BFC\u51FA\u4E0E\u53D1\u5E03",
       open: releaseOpen,
       onOpenChange: setReleaseOpen,
-      children: /* @__PURE__ */jsx12(Modal2.Content, {
-        children: /* @__PURE__ */jsx12(ColorContext.Provider, {
-          value: c,
-          children: releaseOpen ? /* @__PURE__ */jsx12(ReleasePanel, {
-            board,
-            hostId: host.id,
-            onOpenBoard: id2 => leaveBoard(() => {
-              setReleaseOpen(false);
-              if (onOpenBoard) onOpenBoard(id2);else onBack();
-            })
-          }) : null
+      children: /* @__PURE__ */jsx15(Modal2.Content, {
+        children: /* @__PURE__ */jsx15(BoardServicesBoundary, {
+          services,
+          children: /* @__PURE__ */jsx15(ColorContext.Provider, {
+            value: c,
+            children: releaseOpen ? /* @__PURE__ */jsx15(ReleasePanel, {
+              board,
+              hostId: host.id,
+              onOpenBoard: id2 => leaveBoard(() => {
+                setReleaseOpen(false);
+                if (onOpenBoard) onOpenBoard(id2);else onBack();
+              })
+            }) : null
+          })
         })
       })
-    }), /* @__PURE__ */jsx12(Modal2, {
+    }), /* @__PURE__ */jsx15(Modal2, {
       title: drawer === "decisions" ? "Agent \u505A\u8FC7\u7684\u9ED8\u8BA4\u51B3\u7B56" : drawer === "threads" ? "\u56F4\u7ED5\u753B\u5E03\u7684\u8BA8\u8BBA" : drawer === "drafts" ? "\u5F85\u53D1\u9001\u4E0E\u672C\u673A\u8349\u7A3F" : "\u53D1\u751F\u4E86\u4EC0\u4E48\u53D8\u5316",
       open: drawer !== null,
       onOpenChange: open => {
         if (!open) setDrawer(null);
       },
-      children: /* @__PURE__ */jsx12(Modal2.Content, {
-        children: /* @__PURE__ */jsxs11(ColorContext.Provider, {
-          value: c,
-          children: [drawer === "decisions" ? /* @__PURE__ */jsx12(DecisionList, {
-            board,
-            onUpdate: updateDecision,
-            onQuestion: decision => {
-              if (composeRef.current) cancelCompose();
-              if (composeRef.current) return;
-              setDrawer(null);
-              var draft = {
-                kind: "question",
-                text: `\u5173\u4E8E\u8FD9\u4E2A agent \u51B3\u7B56\uFF1A${decision.choice}
+      children: /* @__PURE__ */jsx15(Modal2.Content, {
+        children: /* @__PURE__ */jsx15(BoardServicesBoundary, {
+          services,
+          children: /* @__PURE__ */jsxs12(ColorContext.Provider, {
+            value: c,
+            children: [drawer === "decisions" ? /* @__PURE__ */jsx15(DecisionList, {
+              board,
+              onUpdate: updateDecision,
+              onQuestion: decision => {
+                if (composeRef.current) cancelCompose();
+                if (composeRef.current) return;
+                setDrawer(null);
+                var draft = {
+                  kind: "question",
+                  text: `\u5173\u4E8E\u8FD9\u4E2A agent \u51B3\u7B56\uFF1A${decision.choice}
 
 `,
-                anchor: {
-                  kind: "element",
-                  boardRevision: board.revision,
-                  canvasRevision: board.canvas.revision,
-                  text: decision.choice,
-                  selector: decision.related[0]
-                }
-              };
-              setSelectedInteractionId(void 0);
-              setPopoverPoint(anchorPoint(draft.anchor));
-              changeCompose(draft, anchorPoint(draft.anchor));
-            }
-          }) : null, drawer === "drafts" ? /* @__PURE__ */jsxs11(View11, {
-            testID: "board-drafts",
-            style: {
-              gap: 16
-            },
-            children: [/* @__PURE__ */jsx12(Copy, {
-              small: true,
-              muted: true,
-              children: "\u53EA\u4FDD\u5B58\u5728\u5F53\u524D\u5BA2\u6237\u7AEF\uFF0C\u6309\u4E3B\u673A\u548C Board \u5206\u5F00\u3002\u7EE7\u7EED\u7F16\u8F91\u4F1A\u4FDD\u7559\u539F\u5F15\u7528\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u53D1\u9001\u3002"
-            }), batchSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx12(Notice, {
-              error: true,
-              text: issue2
-            }, `batch-${index}`)), batchError ? /* @__PURE__ */jsx12(Notice, {
-              error: true,
-              text: batchError
-            }) : null, staged.length ? /* @__PURE__ */jsxs11(View11, {
-              testID: "board-comment-queue",
+                  anchor: {
+                    kind: "element",
+                    boardRevision: board.revision,
+                    canvasRevision: board.canvas.revision,
+                    text: decision.choice,
+                    selector: decision.related[0]
+                  }
+                };
+                setSelectedInteractionId(void 0);
+                setPopoverPoint(anchorPoint(draft.anchor));
+                changeCompose(draft, anchorPoint(draft.anchor));
+              }
+            }) : null, drawer === "drafts" ? /* @__PURE__ */jsxs12(View12, {
+              testID: "board-drafts",
               style: {
-                gap: 12
+                gap: 16
               },
-              children: [/* @__PURE__ */jsxs11(Text9, {
-                style: {
-                  color: c.foreground,
-                  fontWeight: "600"
-                },
-                children: ["\u5F85\u53D1\u9001 \xB7 ", staged.length, " \u6761\u8BC4\u8BBA"]
-              }), /* @__PURE__ */jsx12(Copy, {
+              children: [/* @__PURE__ */jsx15(Copy, {
                 small: true,
                 muted: true,
-                children: "\u8FD9\u4E9B\u8BC4\u8BBA\u4F1A\u4F5C\u4E3A\u4E00\u7EC4\u4FEE\u6539\u8981\u6C42\u4E00\u8D77\u53D1\u9001\uFF0C\u4FDD\u7559\u5404\u81EA\u7684\u4F4D\u7F6E\u548C\u622A\u56FE\u3002"
-              }), staged.map((saved, index) => /* @__PURE__ */jsxs11(View11, {
-                testID: `board-queued-comment-${saved.id}`,
+                children: "\u53EA\u4FDD\u5B58\u5728\u5F53\u524D\u5BA2\u6237\u7AEF\uFF0C\u6309\u4E3B\u673A\u548C Board \u5206\u5F00\u3002\u7EE7\u7EED\u7F16\u8F91\u4F1A\u4FDD\u7559\u539F\u5F15\u7528\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u53D1\u9001\u3002"
+              }), batchSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx15(Notice, {
+                error: true,
+                text: issue2
+              }, `batch-${index}`)), batchError ? /* @__PURE__ */jsx15(Notice, {
+                error: true,
+                text: batchError
+              }) : null, staged.length ? /* @__PURE__ */jsxs12(View12, {
+                testID: "board-comment-queue",
                 style: {
-                  gap: 8,
-                  paddingBottom: 12,
+                  gap: 12
+                },
+                children: [/* @__PURE__ */jsxs12(Text10, {
+                  style: {
+                    color: c.foreground,
+                    fontWeight: "600"
+                  },
+                  children: ["\u5F85\u53D1\u9001 \xB7 ", staged.length, " \u6761\u8BC4\u8BBA"]
+                }), /* @__PURE__ */jsx15(Copy, {
+                  small: true,
+                  muted: true,
+                  children: "\u8FD9\u4E9B\u8BC4\u8BBA\u4F1A\u4F5C\u4E3A\u4E00\u7EC4\u4FEE\u6539\u8981\u6C42\u4E00\u8D77\u53D1\u9001\uFF0C\u4FDD\u7559\u5404\u81EA\u7684\u4F4D\u7F6E\u548C\u622A\u56FE\u3002"
+                }), staged.map((saved, index) => /* @__PURE__ */jsxs12(View12, {
+                  testID: `board-queued-comment-${saved.id}`,
+                  style: {
+                    gap: 8,
+                    paddingBottom: 12,
+                    borderBottomWidth: 1,
+                    borderColor: c.border
+                  },
+                  children: [/* @__PURE__ */jsxs12(Copy, {
+                    children: [index + 1, ". ", saved.compose.text]
+                  }), /* @__PURE__ */jsx15(AnchorPreview, {
+                    anchor: saved.compose.anchor,
+                    compact: true,
+                    captureStatus: saved.compose.captureStatus
+                  }), /* @__PURE__ */jsxs12(View12, {
+                    style: {
+                      flexDirection: "row",
+                      gap: 8
+                    },
+                    children: [/* @__PURE__ */jsx15(Action, {
+                      label: "\u7F16\u8F91",
+                      disabled: sending,
+                      onPress: () => restoreDraft(saved)
+                    }), /* @__PURE__ */jsx15(Action, {
+                      label: "\u5220\u9664",
+                      disabled: sending,
+                      onPress: () => {
+                        var result = draftStore.remove(saved.id, saved.revision);
+                        if (!result.ok) setDraftError(result.issue.message);
+                      }
+                    })]
+                  })]
+                }, saved.revision)), /* @__PURE__ */jsx15(SideAgentPicker, {
+                  interactions: board.interactions,
+                  selectedId: board.sideAgentId,
+                  pending: Boolean(board.pendingSideInteractionId),
+                  disabled: sending || sideTargetBlocked,
+                  onSelect: chooseSideAgent
+                }), sideChoiceUncertain ? /* @__PURE__ */jsx15(Action, {
+                  label: choosingSide ? "\u6B63\u5728\u6838\u5BF9 Side \u76EE\u6807\u2026" : "\u6838\u5BF9 Side \u76EE\u6807",
+                  disabled: choosingSide,
+                  onPress: () => {
+                    void verifySideChoice();
+                  }
+                }) : null, /* @__PURE__ */jsxs12(View12, {
+                  style: {
+                    flexDirection: "row",
+                    flexWrap: "wrap",
+                    gap: 8
+                  },
+                  children: [/* @__PURE__ */jsx15(Action, {
+                    testID: "board-comments-send-main",
+                    label: "\u7EDF\u4E00\u53D1\u9001\u5230\u4E3B\u4F1A\u8BDD",
+                    primary: true,
+                    disabled: sending || sideTargetBlocked || !board.ownerAgentId,
+                    onPress: () => {
+                      void submitBatch("main");
+                    }
+                  }), /* @__PURE__ */jsx15(Action, {
+                    testID: "board-comments-send-side",
+                    label: board.sideAgentId || board.pendingSideInteractionId ? "\u7EDF\u4E00\u53D1\u9001\u5230 Side" : "\u65B0\u5EFA Side \u5E76\u7EDF\u4E00\u53D1\u9001",
+                    disabled: sending || sideTargetBlocked || !board.ownerAgentId,
+                    onPress: () => {
+                      void submitBatch("side");
+                    }
+                  }), board.sideAgentId || board.pendingSideInteractionId ? /* @__PURE__ */jsx15(Action, {
+                    testID: "board-comments-send-new-side",
+                    label: "\u65B0\u5EFA Side \u5E76\u7EDF\u4E00\u53D1\u9001",
+                    disabled: sending || sideTargetBlocked || !board.ownerAgentId,
+                    onPress: () => {
+                      void submitBatch("new-side");
+                    }
+                  }) : null]
+                })]
+              }) : null, batchSnapshot.batches.map(batch => /* @__PURE__ */jsxs12(View12, {
+                testID: `board-comment-batch-${batch.intentId}`,
+                style: {
+                  gap: 10,
+                  paddingBottom: 14,
                   borderBottomWidth: 1,
                   borderColor: c.border
                 },
-                children: [/* @__PURE__ */jsxs11(Copy, {
-                  children: [index + 1, ". ", saved.compose.text]
-                }), /* @__PURE__ */jsx12(AnchorPreview, {
-                  anchor: saved.compose.anchor,
-                  compact: true,
-                  captureStatus: saved.compose.captureStatus
-                }), /* @__PURE__ */jsxs11(View11, {
+                children: [/* @__PURE__ */jsxs12(Copy, {
+                  children: [acceptedBatchIds.has(batch.intentId) ? "\u8BC4\u8BBA\u5DF2\u63A5\u6536\uFF0C\u6B63\u5728\u6E05\u7406\u672C\u673A\u8BB0\u5F55" : "\u53D1\u9001\u7ED3\u679C\u5F85\u6838\u5BF9", " \xB7 ", batch.comments.length, " \u6761 \xB7 ", batch.destination === "main" ? "\u4E3B\u4F1A\u8BDD" : batch.destination === "new-side" ? "\u65B0 Side" : "Side"]
+                }), batch.comments.map((comment, index) => /* @__PURE__ */jsxs12(View12, {
+                  style: {
+                    gap: 6
+                  },
+                  children: [/* @__PURE__ */jsxs12(Copy, {
+                    children: [index + 1, ". ", comment.text]
+                  }), /* @__PURE__ */jsx15(AnchorPreview, {
+                    anchor: comment.anchor,
+                    compact: true
+                  }), /* @__PURE__ */jsx15(Action, {
+                    label: "\u53E6\u5B58\u5E76\u7F16\u8F91",
+                    disabled: sending,
+                    onPress: () => {
+                      if (composeRef.current || pending.current) return;
+                      setDrawer(null);
+                      setSelectedInteractionId(void 0);
+                      var next = {
+                        kind: "question",
+                        text: comment.text,
+                        anchor: comment.anchor,
+                        queuedAt: Date.now()
+                      };
+                      setPopoverPoint(anchorPoint(next.anchor));
+                      changeCompose(next, anchorPoint(next.anchor));
+                    }
+                  })]
+                }, comment.id)), /* @__PURE__ */jsx15(Copy, {
+                  small: true,
+                  muted: true,
+                  children: "\u539F\u5185\u5BB9\u548C\u53D1\u9001\u76EE\u6807\u5DF2\u56FA\u5B9A\u3002\u53E6\u5B58\u7F16\u8F91\u4F1A\u5EFA\u7ACB\u65B0\u8349\u7A3F\uFF0C\u539F\u53D1\u9001\u4FDD\u7559\u5F85\u6838\u5BF9\u3002"
+                }), /* @__PURE__ */jsx15(Action, {
+                  testID: `board-comments-retry-${batch.intentId}`,
+                  label: sending ? "\u53D1\u9001\u4E2D\u2026" : acceptedBatchIds.has(batch.intentId) ? "\u6E05\u7406\u5DF2\u63A5\u6536\u8BB0\u5F55" : "\u91CD\u8BD5\u539F\u53D1\u9001",
+                  disabled: sending || sideTargetBlocked || !board.ownerAgentId,
+                  onPress: () => {
+                    void submitBatch(batch.destination, batch);
+                  }
+                })]
+              }, batch.intentId)), draftSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx15(Notice, {
+                error: true,
+                text: issue2.message
+              }, `${issue2.code}-${index}`)), draftError ? /* @__PURE__ */jsx15(Notice, {
+                error: true,
+                text: draftError
+              }) : null, !availableDrafts.length && !batchSnapshot.batches.length ? /* @__PURE__ */jsx15(Copy, {
+                muted: true,
+                children: "\u6CA1\u6709\u5F85\u53D1\u9001\u7684\u8349\u7A3F\u3002"
+              }) : null, availableDrafts.filter(saved => !staged.some(item => item.revision === saved.revision)).map(saved => /* @__PURE__ */jsxs12(View12, {
+                testID: `board-draft-row-${saved.id}`,
+                style: {
+                  borderBottomWidth: 1,
+                  borderColor: c.border,
+                  paddingBottom: 14,
+                  gap: 8
+                },
+                children: [/* @__PURE__ */jsx15(Text10, {
+                  numberOfLines: 2,
+                  style: {
+                    color: c.foreground
+                  },
+                  children: saved.compose.text || "\u5C1A\u672A\u8F93\u5165\u6587\u5B57"
+                }), /* @__PURE__ */jsxs12(Copy, {
+                  small: true,
+                  muted: true,
+                  children: [saved.compose.anchor?.selector ?? saved.compose.anchor?.text ?? "\u6574\u4E2A\u753B\u5E03", " \xB7 ", timeLabel(new Date(saved.updatedAt).toISOString())]
+                }), saved.conflicted ? /* @__PURE__ */jsx15(Notice, {
+                  text: "\u53E6\u4E00\u7A97\u53E3\u4E5F\u4FEE\u6539\u4E86\u8FD9\u4EFD\u8349\u7A3F\uFF1B\u4E24\u4E2A\u7248\u672C\u90FD\u5DF2\u4FDD\u7559\u3002"
+                }) : null, saved.compose.intentId ? /* @__PURE__ */jsx15(Copy, {
+                  small: true,
+                  muted: true,
+                  children: "\u4E0A\u6B21\u53D1\u9001\u7ED3\u679C\u5F85\u6838\u5BF9\uFF1B\u7EE7\u7EED\u65F6\u4FDD\u7559\u539F\u53D1\u9001\u7F16\u53F7\u548C\u76EE\u6807\u3002"
+                }) : null, /* @__PURE__ */jsxs12(View12, {
                   style: {
                     flexDirection: "row",
                     gap: 8
                   },
-                  children: [/* @__PURE__ */jsx12(Action, {
-                    label: "\u7F16\u8F91",
-                    disabled: sending,
+                  children: [/* @__PURE__ */jsx15(Action, {
+                    label: "\u7EE7\u7EED\u7F16\u8F91",
                     onPress: () => restoreDraft(saved)
-                  }), /* @__PURE__ */jsx12(Action, {
-                    label: "\u5220\u9664",
-                    disabled: sending,
+                  }), /* @__PURE__ */jsx15(Action, {
+                    label: "\u4E22\u5F03",
                     onPress: () => {
                       var result = draftStore.remove(saved.id, saved.revision);
                       if (!result.ok) setDraftError(result.issue.message);
                     }
                   })]
                 })]
-              }, saved.revision)), /* @__PURE__ */jsx12(SideAgentPicker, {
-                interactions: board.interactions,
-                selectedId: board.sideAgentId,
-                pending: Boolean(board.pendingSideInteractionId),
-                disabled: sending || sideTargetBlocked,
-                onSelect: chooseSideAgent
-              }), sideChoiceUncertain ? /* @__PURE__ */jsx12(Action, {
-                label: choosingSide ? "\u6B63\u5728\u6838\u5BF9 Side \u76EE\u6807\u2026" : "\u6838\u5BF9 Side \u76EE\u6807",
-                disabled: choosingSide,
-                onPress: () => {
-                  void verifySideChoice();
-                }
-              }) : null, /* @__PURE__ */jsxs11(View11, {
-                style: {
-                  flexDirection: "row",
-                  flexWrap: "wrap",
-                  gap: 8
-                },
-                children: [/* @__PURE__ */jsx12(Action, {
-                  testID: "board-comments-send-main",
-                  label: "\u7EDF\u4E00\u53D1\u9001\u5230\u4E3B\u4F1A\u8BDD",
-                  primary: true,
-                  disabled: sending || sideTargetBlocked || !board.ownerAgentId,
-                  onPress: () => {
-                    void submitBatch("main");
-                  }
-                }), /* @__PURE__ */jsx12(Action, {
-                  testID: "board-comments-send-side",
-                  label: board.sideAgentId || board.pendingSideInteractionId ? "\u7EDF\u4E00\u53D1\u9001\u5230 Side" : "\u65B0\u5EFA Side \u5E76\u7EDF\u4E00\u53D1\u9001",
-                  disabled: sending || sideTargetBlocked || !board.ownerAgentId,
-                  onPress: () => {
-                    void submitBatch("side");
-                  }
-                }), board.sideAgentId || board.pendingSideInteractionId ? /* @__PURE__ */jsx12(Action, {
-                  testID: "board-comments-send-new-side",
-                  label: "\u65B0\u5EFA Side \u5E76\u7EDF\u4E00\u53D1\u9001",
-                  disabled: sending || sideTargetBlocked || !board.ownerAgentId,
-                  onPress: () => {
-                    void submitBatch("new-side");
-                  }
-                }) : null]
-              })]
-            }) : null, batchSnapshot.batches.map(batch => /* @__PURE__ */jsxs11(View11, {
-              testID: `board-comment-batch-${batch.intentId}`,
+              }, saved.revision))]
+            }) : null, drawer === "threads" ? /* @__PURE__ */jsxs12(View12, {
               style: {
-                gap: 10,
-                paddingBottom: 14,
-                borderBottomWidth: 1,
-                borderColor: c.border
+                gap: 20
               },
-              children: [/* @__PURE__ */jsxs11(Copy, {
-                children: [acceptedBatchIds.has(batch.intentId) ? "\u8BC4\u8BBA\u5DF2\u63A5\u6536\uFF0C\u6B63\u5728\u6E05\u7406\u672C\u673A\u8BB0\u5F55" : "\u53D1\u9001\u7ED3\u679C\u5F85\u6838\u5BF9", " \xB7 ", batch.comments.length, " \u6761 \xB7 ", batch.destination === "main" ? "\u4E3B\u4F1A\u8BDD" : batch.destination === "new-side" ? "\u65B0 Side" : "Side"]
-              }), batch.comments.map((comment, index) => /* @__PURE__ */jsxs11(View11, {
+              children: [!board.interactions.length ? /* @__PURE__ */jsx15(Copy, {
+                muted: true,
+                children: "\u6307\u7740\u753B\u5E03\u63D0\u95EE\u3001\u63D0\u51FA\u4FEE\u6539\uFF0C\u6216\u5F00\u4E00\u4E2A\u72EC\u7ACB\u8BA8\u8BBA\u3002\u4EA4\u6D41\u4F1A\u4FDD\u7559\u5F53\u65F6\u7684\u5F15\u7528\u548C\u7248\u672C\u3002"
+              }) : null, [...interactions].filter(item => interactionRoot(item.id, interactions) === item.id).reverse().map(interaction => /* @__PURE__ */jsxs12(View12, {
                 style: {
-                  gap: 6
+                  borderBottomWidth: 1,
+                  borderColor: c.border,
+                  paddingBottom: 18,
+                  gap: 10
                 },
-                children: [/* @__PURE__ */jsxs11(Copy, {
-                  children: [index + 1, ". ", comment.text]
-                }), /* @__PURE__ */jsx12(AnchorPreview, {
-                  anchor: comment.anchor,
-                  compact: true
-                }), /* @__PURE__ */jsx12(Action, {
-                  label: "\u53E6\u5B58\u5E76\u7F16\u8F91",
-                  disabled: sending,
-                  onPress: () => {
-                    if (composeRef.current || pending.current) return;
-                    setDrawer(null);
-                    setSelectedInteractionId(void 0);
-                    var next = {
-                      kind: "question",
-                      text: comment.text,
-                      anchor: comment.anchor,
-                      queuedAt: Date.now()
-                    };
-                    setPopoverPoint(anchorPoint(next.anchor));
-                    changeCompose(next, anchorPoint(next.anchor));
-                  }
+                children: [/* @__PURE__ */jsxs12(Copy, {
+                  small: true,
+                  muted: true,
+                  children: [kindNames[interaction.kind], " \xB7 ", statusNames2[interactionThread(interaction.id, interactions).at(-1)?.status ?? interaction.status], " \xB7 ", timeLabel(interaction.createdAt)]
+                }), /* @__PURE__ */jsx15(Copy, {
+                  children: interaction.text
+                }), /* @__PURE__ */jsx15(Action, {
+                  label: "\u539F\u4F4D\u67E5\u770B\u548C\u7EE7\u7EED\u4EA4\u6D41",
+                  onPress: () => locateInteraction(interaction.id)
                 })]
-              }, comment.id)), /* @__PURE__ */jsx12(Copy, {
-                small: true,
-                muted: true,
-                children: "\u539F\u5185\u5BB9\u548C\u53D1\u9001\u76EE\u6807\u5DF2\u56FA\u5B9A\u3002\u53E6\u5B58\u7F16\u8F91\u4F1A\u5EFA\u7ACB\u65B0\u8349\u7A3F\uFF0C\u539F\u53D1\u9001\u4FDD\u7559\u5F85\u6838\u5BF9\u3002"
-              }), /* @__PURE__ */jsx12(Action, {
-                testID: `board-comments-retry-${batch.intentId}`,
-                label: sending ? "\u53D1\u9001\u4E2D\u2026" : acceptedBatchIds.has(batch.intentId) ? "\u6E05\u7406\u5DF2\u63A5\u6536\u8BB0\u5F55" : "\u91CD\u8BD5\u539F\u53D1\u9001",
-                disabled: sending || sideTargetBlocked || !board.ownerAgentId,
-                onPress: () => {
-                  void submitBatch(batch.destination, batch);
-                }
-              })]
-            }, batch.intentId)), draftSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx12(Notice, {
-              error: true,
-              text: issue2.message
-            }, `${issue2.code}-${index}`)), draftError ? /* @__PURE__ */jsx12(Notice, {
-              error: true,
-              text: draftError
-            }) : null, !availableDrafts.length && !batchSnapshot.batches.length ? /* @__PURE__ */jsx12(Copy, {
-              muted: true,
-              children: "\u6CA1\u6709\u5F85\u53D1\u9001\u7684\u8349\u7A3F\u3002"
-            }) : null, availableDrafts.filter(saved => !staged.some(item => item.revision === saved.revision)).map(saved => /* @__PURE__ */jsxs11(View11, {
-              testID: `board-draft-row-${saved.id}`,
+              }, interaction.id))]
+            }) : null, drawer === "history" ? /* @__PURE__ */jsxs12(View12, {
               style: {
-                borderBottomWidth: 1,
-                borderColor: c.border,
-                paddingBottom: 14,
-                gap: 8
+                gap: 14
               },
-              children: [/* @__PURE__ */jsx12(Text9, {
-                numberOfLines: 2,
+              children: [[...board.events].reverse().slice(0, 100).map(event => /* @__PURE__ */jsxs12(View12, {
                 style: {
-                  color: c.foreground
+                  gap: 3
                 },
-                children: saved.compose.text || "\u5C1A\u672A\u8F93\u5165\u6587\u5B57"
-              }), /* @__PURE__ */jsxs11(Copy, {
-                small: true,
-                muted: true,
-                children: [saved.compose.anchor?.selector ?? saved.compose.anchor?.text ?? "\u6574\u4E2A\u753B\u5E03", " \xB7 ", timeLabel(new Date(saved.updatedAt).toISOString())]
-              }), saved.conflicted ? /* @__PURE__ */jsx12(Notice, {
-                text: "\u53E6\u4E00\u7A97\u53E3\u4E5F\u4FEE\u6539\u4E86\u8FD9\u4EFD\u8349\u7A3F\uFF1B\u4E24\u4E2A\u7248\u672C\u90FD\u5DF2\u4FDD\u7559\u3002"
-              }) : null, saved.compose.intentId ? /* @__PURE__ */jsx12(Copy, {
-                small: true,
-                muted: true,
-                children: "\u4E0A\u6B21\u53D1\u9001\u7ED3\u679C\u5F85\u6838\u5BF9\uFF1B\u7EE7\u7EED\u65F6\u4FDD\u7559\u539F\u53D1\u9001\u7F16\u53F7\u548C\u76EE\u6807\u3002"
-              }) : null, /* @__PURE__ */jsxs11(View11, {
-                style: {
-                  flexDirection: "row",
-                  gap: 8
-                },
-                children: [/* @__PURE__ */jsx12(Action, {
-                  label: "\u7EE7\u7EED\u7F16\u8F91",
-                  onPress: () => restoreDraft(saved)
-                }), /* @__PURE__ */jsx12(Action, {
-                  label: "\u4E22\u5F03",
-                  onPress: () => {
-                    var result = draftStore.remove(saved.id, saved.revision);
-                    if (!result.ok) setDraftError(result.issue.message);
-                  }
+                children: [/* @__PURE__ */jsx15(Copy, {
+                  children: event.summary
+                }), /* @__PURE__ */jsxs12(Copy, {
+                  muted: true,
+                  small: true,
+                  children: ["r", event.revision, " \xB7 ", event.source, " \xB7 ", timeLabel(event.at)]
                 })]
-              })]
-            }, saved.revision))]
-          }) : null, drawer === "threads" ? /* @__PURE__ */jsxs11(View11, {
-            style: {
-              gap: 20
-            },
-            children: [!board.interactions.length ? /* @__PURE__ */jsx12(Copy, {
-              muted: true,
-              children: "\u6307\u7740\u753B\u5E03\u63D0\u95EE\u3001\u63D0\u51FA\u4FEE\u6539\uFF0C\u6216\u5F00\u4E00\u4E2A\u72EC\u7ACB\u8BA8\u8BBA\u3002\u4EA4\u6D41\u4F1A\u4FDD\u7559\u5F53\u65F6\u7684\u5F15\u7528\u548C\u7248\u672C\u3002"
-            }) : null, [...interactions].filter(item => interactionRoot(item.id, interactions) === item.id).reverse().map(interaction => /* @__PURE__ */jsxs11(View11, {
-              style: {
-                borderBottomWidth: 1,
-                borderColor: c.border,
-                paddingBottom: 18,
-                gap: 10
-              },
-              children: [/* @__PURE__ */jsxs11(Copy, {
-                small: true,
+              }, event.id)), !board.events.length ? /* @__PURE__ */jsx15(Copy, {
                 muted: true,
-                children: [kindNames[interaction.kind], " \xB7 ", statusNames2[interactionThread(interaction.id, interactions).at(-1)?.status ?? interaction.status], " \xB7 ", timeLabel(interaction.createdAt)]
-              }), /* @__PURE__ */jsx12(Copy, {
-                children: interaction.text
-              }), /* @__PURE__ */jsx12(Action, {
-                label: "\u539F\u4F4D\u67E5\u770B\u548C\u7EE7\u7EED\u4EA4\u6D41",
-                onPress: () => locateInteraction(interaction.id)
-              })]
-            }, interaction.id))]
-          }) : null, drawer === "history" ? /* @__PURE__ */jsxs11(View11, {
-            style: {
-              gap: 14
-            },
-            children: [[...board.events].reverse().slice(0, 100).map(event => /* @__PURE__ */jsxs11(View11, {
-              style: {
-                gap: 3
-              },
-              children: [/* @__PURE__ */jsx12(Copy, {
-                children: event.summary
-              }), /* @__PURE__ */jsxs11(Copy, {
-                muted: true,
-                small: true,
-                children: ["r", event.revision, " \xB7 ", event.source, " \xB7 ", timeLabel(event.at)]
-              })]
-            }, event.id)), !board.events.length ? /* @__PURE__ */jsx12(Copy, {
-              muted: true,
-              children: "\u8FD8\u6CA1\u6709\u53D8\u5316\u3002"
+                children: "\u8FD8\u6CA1\u6709\u53D8\u5316\u3002"
+              }) : null]
             }) : null]
-          }) : null]
+          })
         })
       })
     })]
@@ -9494,53 +11256,53 @@ function InteractionContent({
 }) {
   var c = useColors();
   var discussion = item.kind === "fork" || item.kind === "reply";
-  var [showSnapshot, setShowSnapshot] = useState10(false);
-  var [visualState, setVisualState] = useState10({});
-  var [visualError, setVisualError] = useState10();
+  var [showSnapshot, setShowSnapshot] = useState12(false);
+  var [visualState, setVisualState] = useState12({});
+  var [visualError, setVisualError] = useState12();
   var stale = item.anchor && item.anchor.canvasRevision !== board.canvas.revision;
   var follow = text => onFollow(discussion ? "reply" : "question", text);
-  return /* @__PURE__ */jsxs11(View11, {
+  return /* @__PURE__ */jsxs12(View12, {
     style: {
       gap: 10,
       paddingBottom: 14,
       borderBottomWidth: 1,
       borderColor: c.border
     },
-    children: [/* @__PURE__ */jsxs11(Copy, {
+    children: [/* @__PURE__ */jsxs12(Copy, {
       small: true,
       muted: true,
       children: [kindNames[item.kind], " \xB7 ", statusNames2[item.status], " \xB7 ", timeLabel(item.createdAt)]
-    }), /* @__PURE__ */jsx12(Copy, {
+    }), /* @__PURE__ */jsx15(Copy, {
       children: item.text
-    }), item.comments?.map((comment, index) => /* @__PURE__ */jsxs11(View11, {
+    }), item.comments?.map((comment, index) => /* @__PURE__ */jsxs12(View12, {
       testID: `board-sent-comment-${comment.id}`,
       style: {
         gap: 6,
         paddingBottom: 8
       },
-      children: [/* @__PURE__ */jsxs11(Copy, {
+      children: [/* @__PURE__ */jsxs12(Copy, {
         children: [index + 1, ". ", comment.text]
-      }), comment.anchor && comment.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsxs11(Copy, {
+      }), comment.anchor && comment.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsxs12(Copy, {
         small: true,
         muted: true,
         children: ["\u65E7\u5F15\u7528 \xB7 \u753B\u5E03 v", comment.anchor.canvasRevision, "\uFF1B\u4FDD\u7559\u8BC4\u8BBA\u65F6\u7684\u4F4D\u7F6E\u548C\u5FEB\u7167\u3002"]
-      }) : null, showSnapshot ? /* @__PURE__ */jsx12(AnchorPreview, {
+      }) : null, showSnapshot ? /* @__PURE__ */jsx15(AnchorPreview, {
         anchor: comment.anchor,
         compact: true
-      }) : null, comment.anchor ? /* @__PURE__ */jsx12(Action, {
+      }) : null, comment.anchor ? /* @__PURE__ */jsx15(Action, {
         testID: `board-locate-comment-${comment.id}`,
         label: `\u5B9A\u4F4D\u7B2C ${index + 1} \u6761`,
         onPress: () => onLocate(comment.id)
       }) : null]
-    }, comment.id)), stale ? /* @__PURE__ */jsxs11(Copy, {
+    }, comment.id)), stale ? /* @__PURE__ */jsxs12(Copy, {
       small: true,
       muted: true,
       children: ["\u65E7\u5F15\u7528 \xB7 \u753B\u5E03 v", item.anchor.canvasRevision, "\uFF0C\u5F53\u524D v", board.canvas.revision, "\u3002\u5F15\u7528\u4FDD\u7559\u63D0\u95EE\u65F6\u5185\u5BB9\uFF1B\u6807\u8BB0\u53EF\u8DDF\u968F\u4ECD\u80FD\u786E\u8BA4\u7684\u7EC4\u4EF6\uFF0C\u8BF7\u6838\u5BF9\u5F53\u524D\u5185\u5BB9\u3002"]
-    }) : null, showSnapshot ? /* @__PURE__ */jsx12(AnchorPreview, {
+    }) : null, showSnapshot ? /* @__PURE__ */jsx15(AnchorPreview, {
       anchor: item.anchor
-    }) : null, item.response ? /* @__PURE__ */jsx12(Markdown, {
+    }) : null, item.response ? /* @__PURE__ */jsx15(Markdown, {
       children: item.response
-    }) : null, item.responseCanvas && canRenderFrames ? /* @__PURE__ */jsx12(View11, {
+    }) : null, item.responseCanvas && canRenderFrames ? /* @__PURE__ */jsx15(View12, {
       style: {
         height: 260,
         borderWidth: 1,
@@ -9548,7 +11310,7 @@ function InteractionContent({
         borderRadius: 8,
         overflow: "hidden"
       },
-      children: /* @__PURE__ */jsx12(CanvasFrame, {
+      children: /* @__PURE__ */jsx15(CanvasFrame, {
         boardId: `${board.id}.response.${item.id}`,
         title: "Agent \u7684\u53EF\u4EA4\u4E92\u56DE\u7B54",
         canvas: item.responseCanvas,
@@ -9566,33 +11328,33 @@ function InteractionContent({
           void openExternalUrl2(url).catch(error => setVisualError(errorMessage(error)));
         }
       })
-    }) : null, item.responseCanvas && !canRenderFrames ? /* @__PURE__ */jsx12(Copy, {
+    }) : null, item.responseCanvas && !canRenderFrames ? /* @__PURE__ */jsx15(Copy, {
       small: true,
       muted: true,
       children: "\u8FD9\u6761\u56DE\u590D\u5305\u542B\u53EF\u4EA4\u4E92\u56FE\u89E3\uFF0C\u8BF7\u5728\u684C\u9762\u67E5\u770B\u3002"
-    }) : null, item.error || visualError ? /* @__PURE__ */jsx12(Notice, {
+    }) : null, item.error || visualError ? /* @__PURE__ */jsx15(Notice, {
       error: true,
       text: item.error || visualError || ""
-    }) : null, item.resultReferences.length ? /* @__PURE__ */jsxs11(Copy, {
+    }) : null, item.resultReferences.length ? /* @__PURE__ */jsxs12(Copy, {
       small: true,
       muted: true,
       children: ["\u4F9D\u636E\uFF1A", item.resultReferences.join(" \xB7 ")]
-    }) : null, /* @__PURE__ */jsxs11(View11, {
+    }) : null, /* @__PURE__ */jsxs12(View12, {
       style: {
         flexDirection: "row",
         flexWrap: "wrap",
         gap: 6
       },
-      children: [item.anchor || item.comments?.some(comment => comment.anchor) ? /* @__PURE__ */jsx12(Action, {
+      children: [item.anchor || item.comments?.some(comment => comment.anchor) ? /* @__PURE__ */jsx15(Action, {
         label: showSnapshot ? "\u6536\u8D77\u539F\u59CB\u5F15\u7528" : "\u539F\u59CB\u5F15\u7528",
         onPress: () => setShowSnapshot(value => !value)
-      }) : null, unconfirmed && item.status === "failed" ? /* @__PURE__ */jsx12(Action, {
+      }) : null, unconfirmed && item.status === "failed" ? /* @__PURE__ */jsx15(Action, {
         label: "\u91CD\u8BD5\u53D1\u9001",
         onPress: onRetry
-      }) : null, !unconfirmed && (!discussion || item.agentId) ? /* @__PURE__ */jsx12(Action, {
+      }) : null, !unconfirmed && (!discussion || item.agentId) ? /* @__PURE__ */jsx15(Action, {
         label: "\u7EE7\u7EED\u4EA4\u6D41",
         onPress: () => follow()
-      }) : null, item.agentId ? /* @__PURE__ */jsx12(Action, {
+      }) : null, item.agentId ? /* @__PURE__ */jsx15(Action, {
         label: "\u4F1A\u8BDD",
         onPress: onOpenAgent
       }) : null]
@@ -9605,15 +11367,15 @@ function AnchorPreview({
   captureStatus
 }) {
   if (!anchor) return null;
-  return /* @__PURE__ */jsxs11(View11, {
+  return /* @__PURE__ */jsxs12(View12, {
     style: {
       gap: 6
     },
-    children: [/* @__PURE__ */jsxs11(Copy, {
+    children: [/* @__PURE__ */jsxs12(Copy, {
       muted: true,
       small: true,
       children: ["\u5F15\u7528 r", anchor.boardRevision, " \xB7 ", anchor.text || (anchor.kind === "point" ? "\u6307\u5B9A\u4F4D\u7F6E" : anchor.kind === "region" ? "\u6846\u9009\u533A\u57DF" : "\u753B\u5E03"), anchor.rect ? ` \xB7 (${Math.round(anchor.rect.x)}, ${Math.round(anchor.rect.y)})` : ""]
-    }), anchor.image ? /* @__PURE__ */jsx12(Image2, {
+    }), anchor.image ? /* @__PURE__ */jsx15(Image2, {
       source: {
         uri: `data:${anchor.image.mimeType};base64,${anchor.image.data}`
       },
@@ -9623,12 +11385,12 @@ function AnchorPreview({
         height: compact ? 72 : 150
       },
       accessibilityLabel: "\u63D0\u95EE\u65F6\u7684\u753B\u9762\u5FEB\u7167"
-    }) : captureStatus ? /* @__PURE__ */jsx12(View11, {
+    }) : captureStatus ? /* @__PURE__ */jsx15(View12, {
       style: {
         height: compact ? 72 : 150,
         justifyContent: "center"
       },
-      children: /* @__PURE__ */jsx12(Copy, {
+      children: /* @__PURE__ */jsx15(Copy, {
         small: true,
         muted: true,
         children: captureStatus === "pending" ? "\u622A\u56FE\u51C6\u5907\u4E2D\u2026" : "\u672A\u9644\u56FE\u7247"
@@ -9642,38 +11404,38 @@ function DecisionList({
   onQuestion
 }) {
   var c = useColors();
-  var [showDismissed, setShowDismissed] = useState10(false);
+  var [showDismissed, setShowDismissed] = useState12(false);
   var basisNames = {
     explicit: "Agent \u660E\u786E\u8BB0\u5F55",
     observed: "\u89C2\u5BDF\u5230\u7684\u884C\u4E3A\u53D8\u5316",
     inferred: "\u5F85\u6838\u5B9E\u7684\u53EF\u80FD\u51B3\u7B56"
   };
   var decisions = board.decisions.filter(d => showDismissed || !["dismissed", "superseded"].includes(d.status)).sort((a, b) => Number(b.status === "questioned") - Number(a.status === "questioned") || b.updatedAt.localeCompare(a.updatedAt));
-  return /* @__PURE__ */jsxs11(View11, {
+  return /* @__PURE__ */jsxs12(View12, {
     style: {
       gap: 18
     },
-    children: [/* @__PURE__ */jsx12(Copy, {
+    children: [/* @__PURE__ */jsx15(Copy, {
       muted: true,
       children: "\u8BB0\u5F55 agent \u5728\u5DE5\u4F5C\u9014\u4E2D\u81EA\u884C\u4F5C\u51FA\u7684\u9009\u62E9\u3002\u63A8\u65AD\u4E0E\u4E8B\u5B9E\u5206\u5F00\uFF1B\u6CA1\u6709\u8BF4\u51FA\u7684\u7406\u7531\u4F1A\u6807\u4E3A\u201C\u672A\u8BF4\u660E\u201D\u3002"
-    }), /* @__PURE__ */jsxs11(Copy, {
+    }), /* @__PURE__ */jsxs12(Copy, {
       small: true,
       muted: true,
       children: [board.extraction.lastCheckedAt ? `\u6700\u8FD1\u68C0\u67E5\uFF1A${timeLabel(board.extraction.lastCheckedAt)}` : "\u5C1A\u672A\u5B8C\u6210\u4F1A\u8BDD\u68C0\u67E5", board.extraction.note ? ` \xB7 ${board.extraction.note}` : ""]
-    }), !decisions.length ? /* @__PURE__ */jsx12(Copy, {
+    }), !decisions.length ? /* @__PURE__ */jsx15(Copy, {
       children: "\u5C1A\u65E0\u5DF2\u8BB0\u5F55\u7684\u51B3\u7B56\u3002\u8FD9\u4E0D\u4EE3\u8868 agent \u6CA1\u6709\u4F5C\u8FC7\u9ED8\u8BA4\u9009\u62E9\u3002"
-    }) : null, decisions.map(decision => /* @__PURE__ */jsxs11(View11, {
+    }) : null, decisions.map(decision => /* @__PURE__ */jsxs12(View12, {
       style: {
         gap: 8,
         paddingBottom: 16,
         borderBottomWidth: 1,
         borderColor: c.border
       },
-      children: [/* @__PURE__ */jsxs11(Copy, {
+      children: [/* @__PURE__ */jsxs12(Copy, {
         small: true,
         muted: true,
         children: [basisNames[decision.basis], decision.status === "questioned" ? " \xB7 \u5DF2\u8D28\u7591" : decision.status === "dismissed" ? " \xB7 \u5DF2\u6392\u9664" : decision.status === "superseded" ? " \xB7 \u5DF2\u53D6\u4EE3" : ""]
-      }), /* @__PURE__ */jsx12(Text9, {
+      }), /* @__PURE__ */jsx15(Text10, {
         selectable: true,
         style: {
           color: c.foreground,
@@ -9682,56 +11444,122 @@ function DecisionList({
           lineHeight: 23
         },
         children: decision.choice
-      }), /* @__PURE__ */jsx12(Copy, {
+      }), /* @__PURE__ */jsx15(Copy, {
         children: decision.rationale || "\u7406\u7531\u672A\u8BF4\u660E"
-      }), decision.impact ? /* @__PURE__ */jsxs11(Copy, {
+      }), decision.impact ? /* @__PURE__ */jsxs12(Copy, {
         muted: true,
         children: ["\u5F71\u54CD\uFF1A", decision.impact]
-      }) : null, decision.evidence.map((evidence, i) => /* @__PURE__ */jsxs11(View11, {
+      }) : null, decision.evidence.map((evidence, i) => /* @__PURE__ */jsxs12(View12, {
         style: {
           gap: 2
         },
-        children: [/* @__PURE__ */jsxs11(Copy, {
+        children: [/* @__PURE__ */jsxs12(Copy, {
           small: true,
           muted: true,
           children: [evidence.kind, " \xB7 ", evidence.reference]
-        }), evidence.excerpt ? /* @__PURE__ */jsx12(Copy, {
+        }), evidence.excerpt ? /* @__PURE__ */jsx15(Copy, {
           small: true,
           children: evidence.excerpt
         }) : null]
-      }, i)), /* @__PURE__ */jsxs11(View11, {
+      }, i)), /* @__PURE__ */jsxs12(View12, {
         style: {
           flexDirection: "row",
           gap: 8,
           flexWrap: "wrap"
         },
-        children: [/* @__PURE__ */jsx12(Action, {
+        children: [/* @__PURE__ */jsx15(Action, {
           label: "\u56F4\u7ED5\u8FD9\u6761\u51B3\u7B56\u63D0\u95EE",
           onPress: () => onQuestion(decision)
-        }), decision.status === "active" ? /* @__PURE__ */jsx12(Action, {
+        }), decision.status === "active" ? /* @__PURE__ */jsx15(Action, {
           label: "\u6807\u4E3A\u6709\u5F02\u8BAE",
           onPress: () => {
             void onUpdate(decision, "questioned");
           }
-        }) : null, decision.basis === "inferred" ? /* @__PURE__ */jsx12(Action, {
+        }) : null, decision.basis === "inferred" ? /* @__PURE__ */jsx15(Action, {
           label: "\u8FD9\u4E0D\u662F\u4E00\u4E2A\u51B3\u7B56",
           onPress: () => {
             void onUpdate(decision, "dismissed");
           }
         }) : null]
       })]
-    }, decision.id)), /* @__PURE__ */jsx12(Action, {
+    }, decision.id)), /* @__PURE__ */jsx15(Action, {
       label: showDismissed ? "\u9690\u85CF\u5DF2\u6392\u9664\u4E0E\u88AB\u53D6\u4EE3\u7684\u51B3\u7B56" : "\u67E5\u770B\u5DF2\u6392\u9664\u4E0E\u88AB\u53D6\u4EE3\u7684\u51B3\u7B56",
       onPress: () => setShowDismissed(value => !value)
     })]
   });
 }
+function BoardComposerSurface({
+  embeddedTitle,
+  onClose,
+  onHeight,
+  placement,
+  children
+}) {
+  var c = useColors();
+  var services = useBoardServices();
+  if (embeddedTitle) return /* @__PURE__ */jsx15(Modal2, {
+    title: embeddedTitle,
+    open: true,
+    onOpenChange: open => {
+      if (!open) onClose();
+    },
+    children: /* @__PURE__ */jsx15(Modal2.Content, {
+      children: /* @__PURE__ */jsx15(BoardServicesBoundary, {
+        services,
+        children: /* @__PURE__ */jsx15(ColorContext.Provider, {
+          value: c,
+          children: /* @__PURE__ */jsx15(View12, {
+            testID: "board-embedded-composer",
+            style: {
+              maxHeight: 700
+            },
+            children
+          })
+        })
+      })
+    })
+  });
+  return /* @__PURE__ */jsx15(View12, {
+    testID: "board-local-popover",
+    accessibilityLabel: "\u539F\u4F4D\u4EA4\u6D41",
+    onLayout: event => onHeight(event.nativeEvent.layout.height),
+    style: {
+      position: "absolute",
+      ...placement,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 12,
+      backgroundColor: c.surface0,
+      overflow: "hidden",
+      shadowColor: "#000",
+      shadowOpacity: 0.22,
+      shadowRadius: 16,
+      shadowOffset: {
+        width: 0,
+        height: 5
+      },
+      elevation: 10
+    },
+    children
+  });
+}
+function BoardServicesBoundary({
+  services,
+  children
+}) {
+  return services ? /* @__PURE__ */jsx15(BoardServicesProvider, {
+    services,
+    children
+  }) : /* @__PURE__ */jsx15(Fragment6, {
+    children
+  });
+}
 
 // client/home.tsx
-import { jsx as jsx13, jsxs as jsxs12 } from "react/jsx-runtime";
+import { jsx as jsx16, jsxs as jsxs13 } from "react/jsx-runtime";
 var EMPTY_CANVAS = `<style>main{padding:clamp(24px,8vw,100px);max-width:760px;margin:auto}h1{font-size:clamp(30px,5vw,54px);letter-spacing:-.04em}p{line-height:1.8;opacity:.65}#content{min-height:30vh}</style><main><p>YOUR SHARED SURFACE</p><h1>\u4ECE\u4E00\u4E2A\u95EE\u9898\u5F00\u59CB\u3002</h1><p>\u8BA9 agent \u6839\u636E\u773C\u524D\u7684\u4EFB\u52A1\u7EC4\u7EC7\u8FD9\u91CC\u3002\u89E3\u91CA\u3001\u56FE\u8868\u3001\u52A8\u753B\u548C\u4E92\u52A8\u5DE5\u5177\uFF0C\u90FD\u53EF\u4EE5\u5728\u540C\u4E00\u5757\u753B\u5E03\u4E0A\u4E0D\u65AD\u751F\u957F\u3002</p><div id="content"></div></main>`;
 function BoardHome(props) {
-  useEffect9(retainBoardViewStore, []);
+  useEffect12(retainBoardViewStore, []);
   var scope = props.entryScope ? {
     ...props.entryScope,
     hostId: props.host.id
@@ -9742,24 +11570,24 @@ function BoardHome(props) {
     agentId: props.agentId
   };
   var key = JSON.stringify([scope.hostId, scope.surface, scope.workspaceId ?? null, scope.agentId ?? null, props.initialBoardId ?? null]);
-  return /* @__PURE__ */jsx13(RememberedBoardHome, {
+  return /* @__PURE__ */jsx16(RememberedBoardHome, {
     ...props,
     entryScope: scope
   }, key);
 }
 function RememberedBoardHome(props) {
-  var [selected, setSelected] = useState11(() => {
+  var [selected, setSelected] = useState13(() => {
     if (props.initialBoardId) return props.initialBoardId;
     var saved = readLastBoard(props.entryScope, props.tab);
     return saved?.kind === "board" ? saved.boardId : void 0;
   });
-  var navigated = useRef9(false);
+  var navigated = useRef10(false);
   var choose = selection => {
     navigated.current = true;
     writeLastBoard(props.entryScope, selection, props.tab);
     setSelected(selection.kind === "board" ? selection.boardId : void 0);
   };
-  useEffect9(() => {
+  useEffect12(() => {
     if (props.initialBoardId && !navigated.current) writeLastBoard(props.entryScope, {
       kind: "board",
       boardId: props.initialBoardId
@@ -9769,16 +11597,16 @@ function RememberedBoardHome(props) {
     kind: "board",
     boardId
   });
-  return selected ? /* @__PURE__ */jsx13(BoardView, {
+  return selected ? /* @__PURE__ */jsx16(BoardView, {
     ...props,
     boardId: selected,
     onBack: () => choose({
       kind: "index"
     }),
     onOpenBoard: open
-  }, `${props.host.id}:${selected}`) : /* @__PURE__ */jsx13(ColorContext.Provider, {
+  }, `${props.host.id}:${selected}`) : /* @__PURE__ */jsx16(ColorContext.Provider, {
     value: props.theme.colors,
-    children: /* @__PURE__ */jsx13(BoardIndex, {
+    children: /* @__PURE__ */jsx16(BoardIndex, {
       ...props,
       onSelect: open
     })
@@ -9791,18 +11619,24 @@ function BoardIndex({
   onSelect
 }) {
   var c = useColors();
-  var create = useRpc6(createBoardRpc);
-  var paseo = usePaseo();
+  var create = useBoardRpc(createBoardRpc, host.id);
+  var paseo = useBoardPaseo(host.id);
+  var services = useBoardServices(host.id);
   var boards = useBoardList(host.id, workspaceId);
-  var [creating, setCreating] = useState11(false);
-  var [title, setTitle] = useState11("");
-  var [owner, setOwner] = useState11(agentId);
-  var [pending, setPending] = useState11(false);
-  var [failure, setFailure] = useState11(null);
-  var [draftId, setDraftId] = useState11(() => localId("board"));
-  var agents = useQuery2({
-    queryKey: ["paseo-board-owners", host.id],
-    queryFn: () => paseo.agents.list(),
+  var [creating, setCreating] = useState13(false);
+  var [title, setTitle] = useState13("");
+  var [owner, setOwner] = useState13(agentId);
+  var [pending, setPending] = useState13(false);
+  var [failure, setFailure] = useState13(null);
+  var [draftId, setDraftId] = useState13(() => localId("board"));
+  var agents = useQuery3({
+    queryKey: ["paseo-board-owners", host.id, services?.generation ?? null],
+    queryFn: () => __async(null, null, function* () {
+      if (services && !services.isCurrent()) throw new Error("Board host connection changed");
+      var result = yield paseo.agents.list();
+      if (services && !services.isCurrent()) throw new Error("Board host connection changed");
+      return result;
+    }),
     enabled: creating
   });
   var newBoard = () => __async(null, null, function* () {
@@ -9829,12 +11663,12 @@ function BoardIndex({
       setPending(false);
     }
   });
-  return /* @__PURE__ */jsxs12(View12, {
+  return /* @__PURE__ */jsxs13(View13, {
     style: {
       flex: 1,
       backgroundColor: c.surface0
     },
-    children: [/* @__PURE__ */jsxs12(ScrollView6, {
+    children: [/* @__PURE__ */jsxs13(ScrollView7, {
       contentContainerStyle: {
         padding: 28,
         gap: 24,
@@ -9842,18 +11676,18 @@ function BoardIndex({
         width: "100%",
         alignSelf: "center"
       },
-      children: [/* @__PURE__ */jsxs12(View12, {
+      children: [/* @__PURE__ */jsxs13(View13, {
         style: {
           flexDirection: "row",
           alignItems: "center",
           gap: 16
         },
-        children: [/* @__PURE__ */jsxs12(View12, {
+        children: [/* @__PURE__ */jsxs13(View13, {
           style: {
             flex: 1,
             gap: 7
           },
-          children: [/* @__PURE__ */jsx13(Text10, {
+          children: [/* @__PURE__ */jsx16(Text11, {
             style: {
               color: c.foreground,
               fontSize: 28,
@@ -9861,11 +11695,11 @@ function BoardIndex({
               letterSpacing: -0.7
             },
             children: "Boards"
-          }), /* @__PURE__ */jsx13(Copy, {
+          }), /* @__PURE__ */jsx16(Copy, {
             muted: true,
             children: "\u56DE\u5230\u9879\u76EE\u7684\u73B0\u72B6\uFF0C\u6307\u7740\u5185\u5BB9\u4E0E agent \u4EA4\u6D41\u3002"
           })]
-        }), /* @__PURE__ */jsx13(Action, {
+        }), /* @__PURE__ */jsx16(Action, {
           label: "\u65B0\u5EFA Board",
           icon: "Plus",
           primary: true,
@@ -9874,29 +11708,29 @@ function BoardIndex({
             setCreating(true);
           }
         })]
-      }), /* @__PURE__ */jsx13(BoardConnectionStatus, {
+      }), /* @__PURE__ */jsx16(BoardConnectionStatus, {
         status: boards.liveStatus
-      }), boards.error ? /* @__PURE__ */jsx13(Notice, {
+      }), boards.error ? /* @__PURE__ */jsx16(Notice, {
         error: true,
         text: errorMessage(boards.error)
-      }) : null, boards.liveError ? /* @__PURE__ */jsx13(Notice, {
+      }) : null, boards.liveError ? /* @__PURE__ */jsx16(Notice, {
         error: true,
         text: errorMessage(boards.liveError)
-      }) : null, boards.isPending ? /* @__PURE__ */jsx13(Copy, {
+      }) : null, boards.isPending ? /* @__PURE__ */jsx16(Copy, {
         muted: true,
         children: "\u6B63\u5728\u8BFB\u53D6\u2026"
-      }) : null, boards.data?.boards.length === 0 ? /* @__PURE__ */jsxs12(View12, {
+      }) : null, boards.data?.boards.length === 0 ? /* @__PURE__ */jsxs13(View13, {
         style: {
           paddingVertical: 60,
           gap: 14
         },
-        children: [/* @__PURE__ */jsx13(Copy, {
+        children: [/* @__PURE__ */jsx16(Copy, {
           children: "\u8FD8\u6CA1\u6709 Board\u3002"
-        }), /* @__PURE__ */jsx13(Copy, {
+        }), /* @__PURE__ */jsx16(Copy, {
           muted: true,
           children: "\u4F60\u53EF\u4EE5\u8BA9 agent \u4E3A\u5F53\u524D\u4EFB\u52A1\u5EFA\u7ACB\u4E00\u5757\u6301\u7EED\u66F4\u65B0\u7684\u81EA\u7531\u753B\u5E03\uFF0C\u6216\u5148\u5173\u8054\u4E00\u4E2A agent \u5F00\u59CB\u3002"
         })]
-      }) : null, boards.data?.boards.map(board => /* @__PURE__ */jsxs12(Pressable8, {
+      }) : null, boards.data?.boards.map(board => /* @__PURE__ */jsxs13(Pressable8, {
         accessibilityRole: "button",
         accessibilityLabel: `\u6253\u5F00 ${board.title}`,
         onPress: () => onSelect(board.id),
@@ -9911,13 +11745,13 @@ function BoardIndex({
           backgroundColor: pressed ? c.surface2 : c.surface1,
           gap: 10
         }),
-        children: [/* @__PURE__ */jsxs12(View12, {
+        children: [/* @__PURE__ */jsxs13(View13, {
           style: {
             flexDirection: "row",
             alignItems: "center",
             gap: 12
           },
-          children: [/* @__PURE__ */jsx13(Text10, {
+          children: [/* @__PURE__ */jsx16(Text11, {
             style: {
               color: c.foreground,
               fontSize: 19,
@@ -9925,7 +11759,7 @@ function BoardIndex({
               flex: 1
             },
             children: board.title
-          }), /* @__PURE__ */jsxs12(View12, {
+          }), /* @__PURE__ */jsxs13(View13, {
             testID: `board-status-${board.id}`,
             accessibilityLabel: board.status === "processing" ? "\u5DE5\u4F5C\uFF1A\u5904\u7406\u4E2D" : board.status === "error" ? "\u5DE5\u4F5C\uFF1A\u9700\u8981\u5173\u6CE8" : "\u5DE5\u4F5C\uFF1A\u7A7A\u95F2",
             style: {
@@ -9933,19 +11767,19 @@ function BoardIndex({
               alignItems: "center",
               gap: 6
             },
-            children: [/* @__PURE__ */jsx13(View12, {
+            children: [/* @__PURE__ */jsx16(View13, {
               style: {
                 width: 7,
                 height: 7,
                 borderRadius: 4,
                 backgroundColor: board.status === "processing" ? c.accent : board.status === "error" ? c.statusDanger : c.foregroundMuted
               }
-            }), /* @__PURE__ */jsxs12(Copy, {
+            }), /* @__PURE__ */jsxs13(Copy, {
               muted: true,
               small: true,
               children: ["\u5DE5\u4F5C \xB7 ", board.status === "processing" ? "\u5904\u7406\u4E2D" : board.status === "error" ? "\u9700\u8981\u5173\u6CE8" : "\u7A7A\u95F2"]
             })]
-          }), board.unreadUpdateCount > 0 ? /* @__PURE__ */jsx13(View12, {
+          }), board.unreadUpdateCount > 0 ? /* @__PURE__ */jsx16(View13, {
             testID: `board-unread-${board.id}`,
             accessibilityLabel: `${board.unreadUpdateCount} \u5904\u672A\u770B\u66F4\u65B0`,
             style: {
@@ -9954,7 +11788,7 @@ function BoardIndex({
               paddingVertical: 3,
               borderRadius: 12
             },
-            children: /* @__PURE__ */jsxs12(Text10, {
+            children: /* @__PURE__ */jsxs13(Text11, {
               style: {
                 color: c.accentForeground,
                 fontSize: 12,
@@ -9963,32 +11797,32 @@ function BoardIndex({
               children: [board.unreadUpdateCount, " \u66F4\u65B0"]
             })
           }) : null]
-        }), /* @__PURE__ */jsxs12(Copy, {
+        }), /* @__PURE__ */jsxs13(Copy, {
           muted: true,
           small: true,
           children: [board.decisionCount, " \u4E2A agent \u51B3\u7B56 \xB7 ", board.pendingCount, " \u4E2A\u5F85\u843D\u5B9E\u4EA4\u6D41"]
-        }), /* @__PURE__ */jsxs12(Copy, {
+        }), /* @__PURE__ */jsxs13(Copy, {
           muted: true,
           small: true,
           children: ["\u66F4\u65B0\u4E8E ", timeLabel(board.updatedAt)]
         })]
       }, board.id))]
-    }), /* @__PURE__ */jsx13(Modal3, {
+    }), /* @__PURE__ */jsx16(Modal3, {
       title: "\u65B0\u5EFA Board",
       open: creating,
       onOpenChange: open => {
         if (!pending) setCreating(open);
       },
-      children: /* @__PURE__ */jsx13(Modal3.Content, {
-        children: /* @__PURE__ */jsx13(ColorContext.Provider, {
+      children: /* @__PURE__ */jsx16(Modal3.Content, {
+        children: /* @__PURE__ */jsx16(ColorContext.Provider, {
           value: c,
-          children: /* @__PURE__ */jsxs12(View12, {
+          children: /* @__PURE__ */jsxs13(View13, {
             style: {
               gap: 16
             },
-            children: [/* @__PURE__ */jsx13(Copy, {
+            children: [/* @__PURE__ */jsx16(Copy, {
               children: "\u5173\u8054\u8D1F\u8D23\u7684 agent\u3002\u753B\u5E03\u5185\u5BB9\u548C\u5E03\u5C40\u7531\u5B83\u968F\u4EFB\u52A1\u81EA\u7531\u6784\u5EFA\u3002"
-            }), /* @__PURE__ */jsx13(TextInput5, {
+            }), /* @__PURE__ */jsx16(TextInput6, {
               value: title,
               onChangeText: setTitle,
               editable: !pending,
@@ -10003,17 +11837,17 @@ function BoardIndex({
                 borderRadius: 8,
                 padding: 12
               }
-            }), /* @__PURE__ */jsx13(Copy, {
+            }), /* @__PURE__ */jsx16(Copy, {
               muted: true,
               small: true,
               children: "\u8D1F\u8D23\u7684 agent"
-            }), agents.error ? /* @__PURE__ */jsx13(Notice, {
+            }), agents.error ? /* @__PURE__ */jsx16(Notice, {
               error: true,
               text: errorMessage(agents.error)
-            }) : null, agents.isPending ? /* @__PURE__ */jsx13(Copy, {
+            }) : null, agents.isPending ? /* @__PURE__ */jsx16(Copy, {
               muted: true,
               children: "\u8BFB\u53D6\u4F1A\u8BDD\u2026"
-            }) : null, /* @__PURE__ */jsx13(ScrollView6, {
+            }) : null, /* @__PURE__ */jsx16(ScrollView7, {
               style: {
                 maxHeight: 250
               },
@@ -10022,26 +11856,26 @@ function BoardIndex({
               },
               children: agents.data?.entries.filter(entry => entry.agent.status !== "closed" && (!workspaceId || entry.agent.workspaceId === workspaceId)).map(({
                 agent
-              }) => /* @__PURE__ */jsx13(Action, {
+              }) => /* @__PURE__ */jsx16(Action, {
                 label: agent.title || `Agent ${agent.id.slice(0, 8)}`,
                 active: owner === agent.id,
                 disabled: pending,
                 onPress: () => setOwner(agent.id)
               }, agent.id))
-            }), failure ? /* @__PURE__ */jsx13(Notice, {
+            }), failure ? /* @__PURE__ */jsx16(Notice, {
               error: true,
               text: failure
-            }) : null, /* @__PURE__ */jsxs12(View12, {
+            }) : null, /* @__PURE__ */jsxs13(View13, {
               style: {
                 flexDirection: "row",
                 justifyContent: "flex-end",
                 gap: 8
               },
-              children: [/* @__PURE__ */jsx13(Action, {
+              children: [/* @__PURE__ */jsx16(Action, {
                 label: "\u53D6\u6D88",
                 disabled: pending,
                 onPress: () => setCreating(false)
-              }), /* @__PURE__ */jsx13(Action, {
+              }), /* @__PURE__ */jsx16(Action, {
                 label: pending ? "\u521B\u5EFA\u4E2D\u2026" : "\u521B\u5EFA",
                 primary: true,
                 disabled: pending || !owner || !title.trim(),
@@ -10058,9 +11892,9 @@ function BoardIndex({
 }
 
 // index.client.tsx
-import { jsx as jsx14 } from "react/jsx-runtime";
+import { jsx as jsx17 } from "react/jsx-runtime";
 function Screen(props) {
-  return /* @__PURE__ */jsx14(BoardHome, {
+  return /* @__PURE__ */jsx17(BoardHome, {
     ...props,
     initialBoardId: props.params.boardId,
     entryScope: {
@@ -10071,7 +11905,7 @@ function Screen(props) {
 }
 function AgentPanel(props) {
   var agentId = props.params?.agentId ?? props.agentId;
-  return /* @__PURE__ */jsx14(BoardHome, {
+  return /* @__PURE__ */jsx17(BoardHome, {
     ...props,
     agentId,
     entryScope: {
@@ -10083,7 +11917,7 @@ function AgentPanel(props) {
   });
 }
 function WorkspacePanel(props) {
-  return /* @__PURE__ */jsx14(BoardHome, {
+  return /* @__PURE__ */jsx17(BoardHome, {
     ...props,
     entryScope: {
       hostId: props.host.id,
@@ -10093,7 +11927,7 @@ function WorkspacePanel(props) {
   });
 }
 function Sidebar(props) {
-  return /* @__PURE__ */jsx14(SidebarRow, {
+  return /* @__PURE__ */jsx17(SidebarRow, {
     label: "Boards",
     icon: "PanelsTopLeft",
     active: props.currentScreen?.screenId === "boards",
@@ -10103,43 +11937,51 @@ function Sidebar(props) {
   });
 }
 function contribute(client) {
-  var events = client;
-  var removeEvents = typeof events.subscribeEvent === "function" ? installBoardEventTransport((_hostId, listener) => {
-    try {
-      var subscription = events.subscribeEvent(boardChangedEvent, {
-        onEvent: listener.change,
-        onReconnect: listener.reconnect,
-        onError: listener.error
-      });
-      void subscription.ready.catch(listener.error);
-      return () => {
-        void subscription.dispose().catch(listener.error);
-      };
-    } catch (error) {
-      listener.error(error);
-      return () => void 0;
-    }
-  }) : () => void 0;
-  var removers = [removeEvents, client.addScreen({
+  var installation = createBoardInstallation(client);
+  var removers = [client.addScreen({
     id: "boards",
     title: "Boards",
-    Component: Screen
+    Component: props => /* @__PURE__ */jsx17(BoardInstallationProvider, {
+      installation,
+      host: props.host,
+      children: /* @__PURE__ */jsx17(Screen, {
+        ...props
+      })
+    })
   }), client.addSidebarHeaderItem({
     id: "boards",
     title: "Boards",
-    Component: Sidebar
+    Component: props => /* @__PURE__ */jsx17(BoardInstallationProvider, {
+      installation,
+      host: props.host,
+      children: /* @__PURE__ */jsx17(Sidebar, {
+        ...props
+      })
+    })
   }), client.addAgentPanel({
     id: "agent-board",
     title: "Boards",
     icon: "PanelsTopLeft",
     locations: ["workspace", "explorer"],
-    Component: AgentPanel
+    Component: props => /* @__PURE__ */jsx17(BoardInstallationProvider, {
+      installation,
+      host: props.host,
+      children: /* @__PURE__ */jsx17(AgentPanel, {
+        ...props
+      })
+    })
   }), client.addWorkspacePanel({
     id: "workspace-boards",
     title: "Boards",
     icon: "PanelsTopLeft",
     locations: ["workspace", "explorer"],
-    Component: WorkspacePanel
+    Component: props => /* @__PURE__ */jsx17(BoardInstallationProvider, {
+      installation,
+      host: props.host,
+      children: /* @__PURE__ */jsx17(WorkspacePanel, {
+        ...props
+      })
+    })
   }), client.addCommandCenterItem({
     id: "open-boards",
     title: "Open Boards",
@@ -10157,6 +11999,7 @@ function contribute(client) {
     onSubmit: context => context.openPanel("agent-board")
   })];
   return () => __async(null, null, function* () {
+    installation.dispose();
     for (var remove of removers.reverse()) yield remove();
   });
 }

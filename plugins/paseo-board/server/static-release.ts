@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, writeFile, link, unlink, lstat, open } from "
 import { join, resolve } from "node:path";
 import { createServer } from "node:http";
 import { DOMParser } from "linkedom";
-import type { Board, CanvasBase } from "../shared/contracts";
+import { IdSchema, type Board, type CanvasBase } from "../shared/contracts";
 import { ReleaseCreateSchema, ReleaseIdSchema, ReleaseManifestSchema, type ReleaseCreateInput, type ReleaseManifest } from "../shared/release-contracts";
 import { STATIC_VIEWER_RUNTIME, STATIC_VIEWER_SHELL, STATIC_VIEWER_VERSION } from "../shared/static-viewer";
 import { DEFAULT_DARK_COLORS, DEFAULT_LIGHT_COLORS, frameThemeFromColors } from "../shared/frame-theme";
@@ -56,6 +56,10 @@ export function buildRelease(input: ReleaseCreateInput & { board: Board }): Stat
   const authored = describeAuthoring(board.canvas);
   if (!authored.replay.complete || authored.materializedAuthoredHtml === null) throw new Error(authoredSourceFailure("Cannot export current authored source", authored));
   let html = authored.materializedAuthoredHtml;
+  const composition = new DOMParser().parseFromString(html, "text/html");
+  for (const element of composition.querySelectorAll("paseo-board[board-id]")) {
+    if (IdSchema.safeParse(element.getAttribute("board-id")).success) throw new Error("这张 Board 嵌入了其他画板，当前导出无法固定这些来源画板的内容。请分别打开并独立导出源 Board，或移除嵌入后再导出。");
+  }
   const helpers = `${/data-tooltip|dataset\.tooltip|floatingui/i.test(html) ? tooltips : ""}${/lucide/i.test(html) ? icons : ""}`;
   const resources = dependenciesFor(html + helpers);
   const missing = resources.resources.filter(url => !url.startsWith("#") && !url.startsWith("data:") && !/^https:\/\//.test(url));

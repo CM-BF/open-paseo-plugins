@@ -2,6 +2,8 @@
 import { createElement, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
 import { Platform } from "react-native";
 import type { BoardSyncVisibility } from "./compact-sync";
+import type { CanvasComposition, CompositionAttachment, CompositionMessageEvent, CompositionMount, CompositionPort } from "./composition-mount";
+import { createCompositionController, type CompositionController } from "./composition-web";
 import type { Anchor, Canvas, Interaction, JsonData } from "../shared/contracts";
 import { buildBoardDocument } from "../shared/document";
 import { createFrameDelta, emptyFrameDelta, transportSnapshot, type TransportSnapshot } from "../shared/frame-delta";
@@ -15,7 +17,7 @@ type ViewPort = {
 type ViewReader = { receive(event: MessageEvent): void; close(): void };
 type FrameWindow = { postMessage(message: unknown, origin: string, transfer?: ViewPort[]): void };
 type Frame = { contentWindow: FrameWindow | null; isConnected?: boolean; getBoundingClientRect?(): { width: number; height: number } };
-type MessageEvent = { source: unknown; data: unknown; isTrusted: boolean };
+type MessageEvent = { source: unknown; data: unknown; isTrusted: boolean; compositionAuthenticated?: true };
 type OuterPointerEvent = { isTrusted: boolean; target?: { closest?(selector: string): unknown }; preventDefault(): void };
 type BrowserWindow = {
   addEventListener(name: "message", fn: (event: MessageEvent) => void): void;
@@ -57,7 +59,11 @@ type ViewDelivery = {
   canvasRevision: number; sink?: (view: CanvasViewState) => void;
   frame: Frame | null; window: FrameWindow | null; visibleAt: number | null; settled: boolean;
   portCapable?: boolean; reader?: ViewReader;
+  retiredAt?: number;
 };
+function capturedBeforeRetirement(delivery: ViewDelivery, capturedAt?: number) {
+  return delivery.retiredAt === undefined || capturedAt !== undefined && capturedAt <= delivery.retiredAt;
+}
 function observeViewVisibility(delivery: ViewDelivery) {
   const target = delivery.frame;
   if (browser.document?.hidden || target?.isConnected === false) { delivery.visibleAt = null; return false; }
@@ -78,6 +84,8 @@ export function getBoardSyncVisibility(): BoardSyncVisibility | undefined {
   };
 }
 export interface CanvasFrameProps extends FrameSnapshot {
+  composition?: CanvasComposition;
+  embeddedMount?: CompositionMount;
   boardId: string;
   title: string;
   canvas: Canvas;
@@ -126,12 +134,16 @@ function nonce(): string {
 }
 function documentFor(props: CanvasFrameProps) {
   const sessionId = nonce();
-  return { boardId: props.boardId, viewScope: props.viewScope, version: props.canvas.documentVersion, sessionId, html: buildBoardDocument({ ...props, sessionId }) };
+  return { boardId: props.boardId, viewScope: props.viewScope, version: props.canvas.documentVersion, sessionId, html: buildBoardDocument({ ...props, sessionId, compositionHostId: props.embeddedMount ? undefined : props.composition?.hostId }) };
 }
 
 /** Retains the iframe and its JS heap across data, patch, theme and UI-state updates. */
 export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   const frame = useRef<Frame | null>(null);
+  const embeddedConnection = useRef<CompositionAttachment | undefined>(undefined);
+  const embeddedReceive = useRef<((event: CompositionMessageEvent) => void) | undefined>(undefined);
+  const compositionController = useRef<{ sessionId: string; controller: CompositionController } | undefined>(undefined);
+  const compositionControl = useRef<{ sessionId: string; close(): void } | undefined>(undefined);
   const latest = useRef(props);
   latest.current = props;
   // Keep a save received from the live document across a document replacement even while its
@@ -195,7 +207,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
         receive(event) {
           if (!event.isTrusted || !event.data || typeof event.data !== "object" || (event.data as { type?: unknown }).type !== "view-state") return;
           const message = readFrameMessage(event.data, target);
-          if (message?.type === "view-state") acceptView(target, message.view);
+          if (message?.type === "view-state" && capturedBeforeRetirement(target, message.capturedAt)) acceptView(target, message.view);
         },
         close() { port.removeEventListener("message", onPortMessage); port.close(); },
       };
@@ -204,7 +216,9 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
       target.reader = reader;
       // The original ready event has already authenticated this exact source and
       // session. Possession of this transferred port authenticates later positions.
-      target.window.postMessage({ type: "view-port", channel: FRAME_CHANNEL, boardId: target.boardId, sessionId: target.sessionId }, "*", [channel.port2]);
+      const message = { type: "view-port", channel: FRAME_CHANNEL, boardId: target.boardId, sessionId: target.sessionId };
+      if (latest.current.embeddedMount) embeddedConnection.current?.send(message, [channel.port2 as CompositionPort]);
+      else target.window.postMessage(message, "*", [channel.port2]);
     } catch {
       target.reader?.close(); target.reader = undefined;
       channel?.port1.close(); channel?.port2.close();
@@ -214,6 +228,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   };
   const send = (payload: Record<string, unknown>) => {
     const current = document.current!;
+    if (latest.current.embeddedMount) { embeddedConnection.current?.send({ ...payload, channel: FRAME_CHANNEL, boardId: current.boardId, sessionId: current.sessionId }); return; }
     frame.current?.contentWindow?.postMessage({ ...payload, channel: FRAME_CHANNEL, boardId: current.boardId, sessionId: current.sessionId }, "*");
   };
   const syncSnapshot = (force = false) => {
@@ -266,14 +281,36 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
       focusRequestedInteraction();
       focusRequestedUpdate();
     };
-    const userActing = () => browser.document?.activeElement === frame.current && browser.navigator?.userActivation?.isActive === true;
+    let authenticatedEmbeddedMessage = false;
+    const userActing = () => (latest.current.embeddedMount ? authenticatedEmbeddedMessage : browser.document?.activeElement === frame.current) && browser.navigator?.userActivation?.isActive === true;
     const onMessage = (event: MessageEvent) => {
       if (disposed || !event.isTrusted || event.source !== frame.current?.contentWindow || !document.current) return;
+      if (latest.current.embeddedMount && !event.compositionAuthenticated) return;
+      authenticatedEmbeddedMessage = event.compositionAuthenticated === true;
       const message = readFrameMessage(event.data, document.current);
       if (!message) return;
       const current = latest.current;
       switch (message.type) {
+        case "composition-slots": {
+          if (!current.composition || current.embeddedMount || !event.compositionAuthenticated) break;
+          if (compositionController.current?.sessionId !== document.current.sessionId) {
+            compositionController.current?.controller.dispose();
+            compositionController.current = { sessionId: document.current.sessionId, controller: createCompositionController({ scope: { ...document.current, channel: FRAME_CHANNEL }, owner: () => frame.current?.contentWindow ?? null, send, changed: mounts => latest.current.composition?.onSlots(mounts) }) };
+          }
+          compositionController.current.controller.update(message.slots);
+          break;
+        }
+        case "composition-open": if (event.compositionAuthenticated && userActing()) compositionController.current?.controller.open(message.id); break;
+        case "composition-drafts": if (event.compositionAuthenticated && userActing()) compositionController.current?.controller.drafts(message.id); break;
         case "ready":
+          if (current.composition && !current.embeddedMount && browser.MessageChannel && compositionControl.current?.sessionId !== document.current.sessionId) {
+            compositionControl.current?.close();
+            const channel = new browser.MessageChannel(), source = frame.current?.contentWindow;
+            const receive = (message: MessageEvent) => onMessage({ data: message.data, isTrusted: message.isTrusted, source, compositionAuthenticated: true });
+            channel.port1.addEventListener("message", receive); channel.port1.start();
+            compositionControl.current = { sessionId: document.current.sessionId, close() { channel.port1.removeEventListener("message", receive); channel.port1.close(); channel.port2.close(); } };
+            source?.postMessage({ channel: FRAME_CHANNEL, type: "composition-control-connect", boardId: document.current.boardId, sessionId: document.current.sessionId }, "*", [channel.port2]);
+          }
           ready.current = true;
           transport.current = { sessionId: document.current.sessionId, capable: message.capabilities?.frameDelta === 1,
             version: transport.current?.sessionId === document.current.sessionId ? transport.current.version : 0,
@@ -291,7 +328,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
           break;
         case "view-state": {
           const target = viewDelivery.current;
-          if (target && !target.reader) acceptView(target, message.view);
+          if (target && !target.reader && capturedBeforeRetirement(target, message.capturedAt)) acceptView(target, message.view);
           break;
         }
         case "view-restored": {
@@ -438,6 +475,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
       // Flush before the following click can switch an agent and remove this frame.
       if (event.isTrusted && ready.current) { observeCurrentView(); send({ type: "flush-view" }); }
     };
+    embeddedReceive.current = onMessage;
     browser.window.addEventListener("message", onMessage);
     browser.window.addEventListener("pointerdown", onOuterStart, true);
     browser.window.addEventListener("pointerup", onOuterRelease, true);
@@ -446,6 +484,9 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
       // Best effort: the runtime also flushes synchronously on blur/pagehide before removal.
       if (ready.current) send({ type: "flush-view" });
       disposed = true;
+      embeddedReceive.current = undefined;
+      compositionController.current?.controller.dispose(); compositionController.current = undefined;
+      compositionControl.current?.close(); compositionControl.current = undefined;
       latest.current.onEditScopeChange?.();
       browser.window?.removeEventListener("message", onMessage);
       browser.window?.removeEventListener("pointerdown", onOuterStart, true);
@@ -453,6 +494,24 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
       browser.window?.removeEventListener("pointercancel", onOuterRelease, true);
     };
   }, []);
+
+  useLayoutEffect(() => {
+    if (!props.embeddedMount || !canRenderFrames) return;
+    const mount = props.embeddedMount;
+    try {
+      const connection = mount.attach({
+        scope: { channel: FRAME_CHANNEL, boardId: rendered.boardId, sessionId: rendered.sessionId },
+        document: secret => buildBoardDocument({ ...latest.current, sessionId: rendered.sessionId, compositionSecret: secret }),
+        receive: event => embeddedReceive.current?.(event),
+        beforeDispose: () => { delivery.retiredAt ??= performance.timeOrigin + performance.now(); },
+      });
+      embeddedConnection.current = connection;
+      frame.current = { contentWindow: connection.contentWindow, isConnected: true, getBoundingClientRect: () => mount.getSnapshot().rect };
+      return () => { connection.dispose(); if (embeddedConnection.current === connection) { embeddedConnection.current = undefined; frame.current = null; } };
+    } catch (error) {
+      latest.current.onError({ code: "composition-mount-failed", message: error instanceof Error ? error.message : String(error) });
+    }
+  }, [props.embeddedMount, rendered.sessionId]);
 
   useLayoutEffect(() => {
     if (!canRenderFrames || !browser.window || !delivery.scope) return;
@@ -478,7 +537,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
         if (!event.isTrusted) return;
         if (!event.data || typeof event.data !== "object" || (event.data as { type?: unknown }).type !== "view-state") return;
         const message = readFrameMessage(event.data, scope);
-        if (message?.type !== "view-state" || message.view.documentVersion !== version || message.view.canvasRevision !== canvasRevision) return;
+        if (message?.type !== "view-state" || message.view.documentVersion !== version || message.view.canvasRevision !== canvasRevision || !capturedBeforeRetirement(delivery, message.capturedAt)) return;
         sink(message.view);
       };
       const timer = setTimeout(() => lease.revoke(), VIEW_HANDOFF_MS);
@@ -521,7 +580,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
     send({ type: "cancel-capture", selectionId });
     redraw(n => n + 1);
   }, [props.selectionCaptureCancelId]);
-  if (!canRenderFrames) return null;
+  if (!canRenderFrames || props.embeddedMount) return null;
   return createElement("iframe", {
     // A replacement document owns a new browsing context and bridge session.
     // Ordinary data, patch and theme updates retain this exact key and heap.

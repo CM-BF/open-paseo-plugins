@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { AppState } from "react-native";
 import { useQuery, useQueryClient, replaceEqualDeep, type QueryClient } from "@tanstack/react-query";
-import { useRpc } from "@getpaseo/plugin/client";
+import { useBoardRpc, useBoardServices, type BoardServices } from "./transport";
 import { boardChangesRpc, boardCheckRpc, readBoardRpc, type Board, type BoardChanges, type BoardEventCursor } from "../shared/contracts";
 import { BoardCacheAuthority, BoardReadRecovery, boardFromCache, isBoardCacheEntry, isBoardReadRecovery, type BoardCacheEntry } from "./board-cache";
 import { BoardEventReceiver, connectBoardEvents, type BoardIndexSnapshot, type BoardLiveStatus } from "./board-events";
@@ -15,6 +15,7 @@ const visibility: BoardSyncVisibility = getBoardSyncVisibility() ?? {
 
 interface ConnectionState { liveError: Error | null; liveStatus: BoardLiveStatus }
 const sessions = new WeakMap<QueryClient, Map<string, BoardQuerySession>>();
+const scopedKey = (key: readonly string[], services?: BoardServices) => services ? [...key, services.generation] : key;
 class BoardQuerySession {
   readonly receiver: BoardEventReceiver;
   readonly cacheAuthority = new BoardCacheAuthority();
@@ -28,21 +29,41 @@ class BoardQuerySession {
   private refreshing = new Map<string, { dirty: boolean; work: Promise<void> }>();
   private readonly cache: QueryClient;
   private readonly hostId: string;
-  constructor(cache: QueryClient, hostId: string, fetchChanges: (cursor?: BoardEventCursor) => Promise<BoardChanges>, private readonly check: (cursor: BoardEventCursor) => Promise<{ changed: boolean }>) {
+  constructor(cache: QueryClient, hostId: string, fetchChanges: (cursor?: BoardEventCursor) => Promise<BoardChanges>, private readonly check: (cursor: BoardEventCursor) => Promise<{ changed: boolean }>, readonly services?: BoardServices) {
     this.cache = cache; this.hostId = hostId;
     this.receiver = new BoardEventReceiver({
       fetchChanges,
-      changed: change => this.refreshBoard(change.summary.id),
+      changed: change => {
+        if (services && !services.isCurrent()) return;
+        if (this.cacheAuthority.observeSummary(change.cursor.epoch, change.summary)) this.clearReplacedBoard(change.summary.id);
+        this.refreshBoard(change.summary.id);
+      },
       updated: (snapshot, reset) => {
         // Advance authority before any observer or refreshed read can consume
-        // this snapshot. Keep cached content for paint, but not as revision truth.
-        this.cacheAuthority.observe(snapshot.cursor.epoch);
-        cache.setQueryData(["paseo-board-list", hostId, "all"], snapshot);
-        if (reset) for (const query of cache.getQueryCache().findAll({ queryKey: ["paseo-board", hostId] })) this.refreshBoard(String(query.queryKey[2]));
+        // this snapshot. A changed creation identity retires the old first paint;
+        // same-entity content remains available while its refresh is pending.
+        if (services && !services.isCurrent()) return;
+        const replaced = this.cacheAuthority.observeIndex(snapshot.cursor.epoch, snapshot.boards);
+        for (const boardId of replaced) this.clearReplacedBoard(boardId);
+        cache.setQueryData(scopedKey(["paseo-board-list", hostId, "all"], services), snapshot);
+        if (reset) for (const query of this.queries()) this.refreshBoard(String(query.queryKey[2]));
       },
     });
   }
+  private clearReplacedBoard(boardId: string): void {
+    const key = scopedKey(["paseo-board", this.hostId, boardId], this.services);
+    if (!this.cache.getQueryCache().find({ queryKey: key, exact: true })) return;
+    const captured = this.cacheAuthority.capture(boardId);
+    this.cache.setQueryData<BoardCacheEntry>(key, previous => this.cacheAuthority.merge(previous, {
+      ...captured, board: captured.entity?.createdAt === null ? null : undefined,
+    }));
+  }
+  private queries() {
+    return this.cache.getQueryCache().findAll({ queryKey: ["paseo-board", this.hostId] })
+      .filter(query => query.queryKey[3] === this.services?.generation);
+  }
   private report(error: unknown, status?: BoardLiveStatus): void {
+    if (this.services && !this.services.isCurrent()) return;
     const nextError = error ? error instanceof Error ? error : new Error(String(error)) : null;
     const nextStatus = status ?? (nextError ? "disconnected" : this.status);
     if (nextError === this.error && nextStatus === this.status) return;
@@ -50,7 +71,7 @@ class BoardQuerySession {
     if (retryFailedReads || nextStatus !== "connected" && nextStatus !== "checking") this.readRecovery.invalidate();
     this.error = nextError; this.status = nextStatus;
     if (retryFailedReads) {
-      for (const query of this.cache.getQueryCache().findAll({ queryKey: ["paseo-board", this.hostId] })) {
+      for (const query of this.queries()) {
         // An unchanged cursor cannot prove that an independent read succeeded.
         // An old in-flight read may report its final failure after this edge.
         if (query.state.status === "error" && query.state.fetchStatus === "idle") this.refreshBoard(String(query.queryKey[2]));
@@ -76,7 +97,8 @@ class BoardQuerySession {
     this.users.add(listener); listener({ liveError: this.error, liveStatus: this.status });
     if (!this.disconnect) {
       this.report(null, "connecting");
-      const disconnect = connectBoardEvents(this.hostId, {
+      const connect = this.services ? (_hostId: string, listener: Parameters<BoardServices["subscribeEvents"]>[0]) => this.services!.subscribeEvents(listener) : connectBoardEvents;
+      const disconnect = connect(this.hostId, {
         change: event => {
           this.streamReady = true;
           const cursor = this.receiver.snapshot()?.cursor;
@@ -108,7 +130,7 @@ class BoardQuerySession {
     return this.receiver.snapshot()!;
   }
   private refreshBoard(boardId: string): void {
-    const key = ["paseo-board", this.hostId, boardId];
+    const key = scopedKey(["paseo-board", this.hostId, boardId], this.services);
     const query = this.cache.getQueryCache().find({ queryKey: key, exact: true });
     if (!query) return;
     // Inactive Boards retain their cached first paint, but must refresh when
@@ -137,20 +159,28 @@ class BoardQuerySession {
       } while (flight.dirty && query.isActive());
     })().catch(error => this.report(error)).finally(() => { this.refreshing.delete(boardId); });
   }
+  dispose(): void {
+    this.disconnect?.(); this.disconnect = undefined; this.readRecovery.invalidate(); this.receiver.dispose(); this.users.clear();
+  }
 }
 
 function useBoardIndex(hostId: string) {
-  const changes = useRpc(boardChangesRpc);
-  const check = useRpc(boardCheckRpc);
+  const changes = useBoardRpc(boardChangesRpc, hostId);
+  const check = useBoardRpc(boardCheckRpc, hostId);
+  const services = useBoardServices(hostId);
   const cache = useQueryClient();
   let hosts = sessions.get(cache);
   if (!hosts) { hosts = new Map(); sessions.set(cache, hosts); }
-  let session = hosts.get(hostId);
-  if (!session) { session = new BoardQuerySession(cache, hostId, cursor => changes({ cursor, compact: true }), cursor => check({ cursor })); hosts.set(hostId, session); }
+  const sessionKey = JSON.stringify([hostId, services?.generation ?? null]);
+  let session = hosts.get(sessionKey);
+  if (!session) {
+    for (const [key, old] of hosts) if (old.services && !old.services.isCurrent()) { old.dispose(); hosts.delete(key); }
+    session = new BoardQuerySession(cache, hostId, cursor => changes({ cursor, compact: true }), cursor => check({ cursor }), services); hosts.set(sessionKey, session);
+  }
   const [connection, setConnection] = useState<ConnectionState>({ liveError: null, liveStatus: "connecting" });
   useEffect(() => session.attach(setConnection), [session]);
   const query = useQuery({
-    queryKey: ["paseo-board-list", hostId, "all"], queryFn: () => session.load(),
+    queryKey: scopedKey(["paseo-board-list", hostId, "all"], services), queryFn: () => session.load(),
     structuralSharing: (_previous, incoming) => session.receiver.snapshot() ?? incoming,
     staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false, retry: false,
   });
@@ -164,17 +194,18 @@ export function useBoardList(hostId: string, workspaceId?: string) {
 
 export function useBoard(hostId: string, boardId: string) {
   const events = useBoardIndex(hostId);
-  const read = useRpc(readBoardRpc);
+  const read = useBoardRpc(readBoardRpc, hostId);
+  const services = useBoardServices(hostId);
   const cache = useQueryClient();
-  const key = ["paseo-board", hostId, boardId] as const;
+  const key = scopedKey(["paseo-board", hostId, boardId], services);
   const authority = events.cacheAuthority;
   const query = useQuery<BoardCacheEntry, Error, Board | null | undefined>({
     queryKey: key,
     queryFn: async () => {
       // Attention changes have their own event sequence and can keep Board.revision.
-      const epoch = authority.current();
+      const captured = authority.capture(boardId);
       const result = await read({ boardId });
-      return { epoch, board: result.board, ...(result.unchanged ? { unchanged: true as const } : {}) };
+      return { ...captured, board: result.board, ...(result.unchanged ? { unchanged: true as const } : {}) };
     },
     select: boardFromCache,
     // React Query also invokes this for the selected (unwrapped) Board. That
@@ -186,9 +217,10 @@ export function useBoard(hostId: string, boardId: string) {
   });
   // Async handlers retain this render's callback across their await. A receipt
   // from the previous daemon epoch cannot be adopted by a newer render.
-  const acceptanceEpoch = authority.current();
+  const { epoch: acceptanceEpoch, entity: acceptanceEntity } = authority.capture(boardId);
   const accept = useCallback((next: Board) => {
-    cache.setQueryData<BoardCacheEntry>(["paseo-board", hostId, boardId], previous => authority.merge(previous, { epoch: acceptanceEpoch, board: next }));
-  }, [cache, hostId, boardId, authority, acceptanceEpoch]);
+    if (services && !services.isCurrent()) return;
+    cache.setQueryData<BoardCacheEntry>(scopedKey(["paseo-board", hostId, boardId], services), previous => authority.merge(previous, { epoch: acceptanceEpoch, entity: acceptanceEntity, board: next }));
+  }, [cache, hostId, boardId, authority, acceptanceEpoch, acceptanceEntity, services]);
   return { ...query, accept, liveError: events.liveError, liveStatus: events.liveStatus };
 }

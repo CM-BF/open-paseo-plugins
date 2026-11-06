@@ -5,7 +5,7 @@ import type { DraftCompose } from "./draft-store";
 export function acceptedDraftInteraction(draft: DraftCompose, interactions: Interaction[]): Interaction | undefined {
   if (!draft.intentId) return undefined;
   const item = interactions.find(candidate => candidate.id === draft.intentId);
-  if (!item || item.comments || item.text !== draft.text.trim() || item.destination !== draft.destination || item.sourceInteractionId !== draft.sourceInteractionId) return undefined;
+  if (!item || item.expectedCreatedAt !== draft.expectedCreatedAt || item.comments || item.text !== draft.text.trim() || item.destination !== draft.destination || item.sourceInteractionId !== draft.sourceInteractionId) return undefined;
   const kinds = draft.destination === "main" ? [draft.kind === "change" ? "change" : "question"]
     : draft.destination === "new-side" ? ["fork"] : draft.destination === "side" ? ["fork", "reply"] : [draft.kind];
   if (!kinds.includes(item.kind)) return undefined;

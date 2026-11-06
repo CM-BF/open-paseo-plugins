@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { View } from "react-native";
-import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
+import { openExternalUrl } from "@getpaseo/plugin/client";
+import { useBoardRpc } from "./transport";
 import { ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
 import type { Board } from "../shared/contracts";
 import { copyBoardRpc, type CopyBoardInput } from "../shared/board-copy";
@@ -27,10 +28,10 @@ const jobStatusName = (value: PagesJob) => value.status === "pr-open" && !automa
 
 export function ReleasePanel({ board, hostId, onOpenBoard }: { board: Board; hostId: string; onOpenBoard?(id: string): void }) {
   const c = useColors();
-  const copyBoard = useRpc(copyBoardRpc), create = useRpc(createReleaseRpc), list = useRpc(listReleasesRpc);
-  const preview = useRpc(previewReleaseRpc), download = useRpc(downloadReleaseRpc);
-  const accounts = useRpc(githubAccountsRpc), repositories = useRpc(githubRepositoriesRpc);
-  const publish = useRpc(publishPagesRpc), refresh = useRpc(refreshPagesRpc), listJobs = useRpc(listPagesJobsRpc);
+  const copyBoard = useBoardRpc(copyBoardRpc), create = useBoardRpc(createReleaseRpc), list = useBoardRpc(listReleasesRpc);
+  const preview = useBoardRpc(previewReleaseRpc), download = useBoardRpc(downloadReleaseRpc);
+  const accounts = useBoardRpc(githubAccountsRpc), repositories = useBoardRpc(githubRepositoriesRpc);
+  const publish = useBoardRpc(publishPagesRpc), refresh = useBoardRpc(refreshPagesRpc), listJobs = useBoardRpc(listPagesJobsRpc);
   const [title, setTitle] = useState(`${board.title} · 发布版`);
   const [publicData, setPublicData] = useState("{}");
   const [network, setNetwork] = useState<"offline" | "cdn">("offline");

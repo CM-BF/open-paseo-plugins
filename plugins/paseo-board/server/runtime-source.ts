@@ -59,9 +59,10 @@ if (mode === 'mcp') {
 } else {
   try {
     const args = process.argv.slice(3);
-    const operation = args.shift();
+    let operation = args.shift();
+    if (operation === 'source' && args[0] === 'read') { args.shift(); operation = 'read_source'; }
     if (!operation || ['--help', '-h', 'help'].includes(operation)) {
-      process.stdout.write('Usage: paseo-board <list|read|create|publish|respond|decision|emit> [--file /absolute/input.json | --json JSON]\nNo input option reads JSON from stdin. list defaults to {}. create/publish/respond accept htmlFile. read accepts selector. Canvas writes require canvasBase or conditional dataPatch; full publish html also requires replaceDocument:true.\n');
+      process.stdout.write('Usage: paseo-board <list|read|sources|source read|create|publish|respond|decision|emit> [--file /absolute/input.json | --json JSON]\nNo input option reads JSON from stdin. list defaults to {}. create/publish/respond accept htmlFile. read accepts selector. Canvas writes require canvasBase or conditional dataPatch; full publish html also requires replaceDocument:true.\n');
     } else {
       if (!definitions.some(tool => tool.name === 'board_' + operation)) throw new Error('Unknown operation: ' + operation);
       let raw = '{}';

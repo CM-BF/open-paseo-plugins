@@ -46,9 +46,16 @@ export interface ComponentEditResult { status: "applied" | "rejected" | "cancell
 export interface AskResult { status: "submitted" | "queued" | "cancelled"; outcome?: string | null }
 export interface FrameScope { channel: typeof FRAME_CHANNEL; boardId: string; sessionId: string }
 export interface FrameSnapshot { canvas: Canvas; boardRevision: number; userState: JsonData; theme: FrameTheme }
+export interface FrameCompositionSlot {
+  id: string; hostId: string; boardId: string; view: "interactive" | "preview"; snapshotId?: string;
+  frameIndex: number; frameToken: string; rect: { x: number; y: number; width: number; height: number }; visible: boolean;
+}
 export type FrameMessage = FrameScope & (
   | { type: "ready"; capabilities?: { frameDelta: 1; viewState?: 1; viewPort?: 1 } }
-  | { type: "view-state"; view: CanvasViewState }
+  | { type: "view-state"; view: CanvasViewState; capturedAt?: number }
+  | { type: "composition-slots"; slots: FrameCompositionSlot[] }
+  | { type: "composition-open"; id: string }
+  | { type: "composition-drafts"; id: string }
   | { type: "view-restored"; requestId: string; documentVersion: number; status: CanvasViewRestoreStatus }
   | { type: "snapshot-request"; documentVersion: number; version: number; reason: string }
   | { type: "canvas-pointer" }
@@ -140,10 +147,19 @@ export function interactionMarkers(interactions: readonly Interaction[]): Intera
 export function readFrameMessage(value: unknown, scope: Pick<FrameScope, "boardId" | "sessionId">): FrameMessage | null {
   if (!record(value) || value.channel !== FRAME_CHANNEL || value.boardId !== scope.boardId || value.sessionId !== scope.sessionId) return null;
   switch (value.type) {
+    case "composition-slots":
+      if (!Array.isArray(value.slots) || value.slots.length > 16 || value.slots.some(slot => !record(slot)
+        || !short(slot.id, 160) || !short(slot.hostId, 256) || !short(slot.boardId, 160)
+        || !["interactive", "preview"].includes(String(slot.view)) || slot.snapshotId !== undefined && !short(slot.snapshotId, 200)
+        || !short(slot.frameToken, 160) || !Number.isSafeInteger(slot.frameIndex) || Number(slot.frameIndex) < 0 || Number(slot.frameIndex) > 1000
+        || !record(slot.rect) || !finite(slot.rect.x) || !finite(slot.rect.y) || Math.abs(slot.rect.x) > 1000000 || Math.abs(slot.rect.y) > 1000000 || !finite(slot.rect.width) || !finite(slot.rect.height) || slot.rect.width < 0 || slot.rect.height < 0 || slot.rect.width > 100000 || slot.rect.height > 100000 || typeof slot.visible !== "boolean")
+        || new Set(value.slots.map(slot => slot.id)).size !== value.slots.length) return null;
+      break;
+    case "composition-open": case "composition-drafts": if (!short(value.id, 160)) return null; break;
     case "ready":
       if (value.capabilities !== undefined && (!record(value.capabilities) || value.capabilities.frameDelta !== 1 || value.capabilities.viewState !== undefined && value.capabilities.viewState !== 1 || value.capabilities.viewPort !== undefined && value.capabilities.viewPort !== 1)) return null;
       break;
-    case "view-state": if (!isCanvasViewState(value.view)) return null; break;
+    case "view-state": if (!isCanvasViewState(value.view) || value.capturedAt !== undefined && (!finite(value.capturedAt) || value.capturedAt < 0)) return null; break;
     case "view-restored":
       if (!short(value.requestId, 160) || !Number.isSafeInteger(value.documentVersion) || Number(value.documentVersion) < 0 || !["restored", "cancelled", "unavailable"].includes(value.status as string)) return null;
       break;

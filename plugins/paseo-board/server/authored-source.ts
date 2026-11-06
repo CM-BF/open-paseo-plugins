@@ -151,6 +151,15 @@ function applyComponentPatch(document: AuthoredDocument, target: AuthoredElement
       }
       cloneNodes[index].id = newId;
     });
+    // Managed embed slots have an identity independent of DOM IDs. Copies
+    // retain their source reference but must create a separate frame lease.
+    const documentSlots = new Set((Array.from(document.querySelectorAll("paseo-board")) as AuthoredElement[]).map(node => node.getAttribute("slot-id") || node.id).filter(Boolean));
+    const copiedSlots = [inserted, ...Array.from(inserted.querySelectorAll("paseo-board")) as AuthoredElement[]].filter(node => node.localName === "paseo-board");
+    copiedSlots.forEach((node, index) => {
+      const slotId = `${patch.copyIdPrefix}-slot-${index}`;
+      if (documentSlots.has(slotId)) throw new Error("Copy slot ID already exists; choose a new copy identity");
+      node.setAttribute("slot-id", slotId); documentSlots.add(slotId);
+    });
     const references = new Set(["for", "list", "form", "headers", "aria-labelledby", "aria-describedby", "aria-controls", "aria-owns", "aria-flowto", "aria-activedescendant", "aria-details", "aria-errormessage"]);
     const rewriteUrls = (value: string) => value.replace(/url\(\s*(['"]?)#([^\s)'"\\]+)\1\s*\)/g, (match, _quote, id: string) => ids.has(id) ? `url(#${ids.get(id)})` : match);
     for (const node of [inserted, ...Array.from(inserted.querySelectorAll("*")) as AuthoredElement[]]) {

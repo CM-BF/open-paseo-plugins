@@ -37,6 +37,8 @@ describe("component edit RPC outcomes", () => {
       writer.cancel(); expect(writer.snapshot()).toBeNull();
 
       const valid: EditInput = { ...request, boardId: "board", eventId: "accepted-edit", patch: { ...request.patch, id: "accepted-edit", sourceIdentity: source, expectedText: "original" } };
+      expect(EditResultSchema.parse(await editBoardResult(store, { ...valid, expectedCreatedAt: "old-entity" }))).toEqual({ status: "rejected", eventId: valid.eventId, code: "board_identity_changed" });
+      expect(await store.read("board")).toEqual(before);
       const applied = EditResultSchema.parse(await editBoardResult(store, valid));
       expect(applied).toMatchObject({ status: "applied", eventId: "accepted-edit", board: { canvas: { revision: 2 } } });
       expect(EditResultSchema.parse(await editBoardResult(store, valid))).toEqual(applied);

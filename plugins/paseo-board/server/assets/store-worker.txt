@@ -25792,6 +25792,7 @@ var SourceSnapshotSchema = external_exports.object({
 });
 var InteractionSchema = external_exports.object({
   id: IdSchema,
+  expectedCreatedAt: external_exports.string().min(1).max(100).optional(),
   kind: external_exports.enum(["question", "change", "fork", "return", "reply"]),
   destination: DestinationSchema.optional(),
   text: external_exports.string().min(1).max(24e3),
@@ -25877,19 +25878,20 @@ var RespondInputSchema = external_exports.object({
   resultReferences: external_exports.array(external_exports.string().max(4e3)).max(100).optional()
 });
 var EmitInputSchema = external_exports.object({ boardId: IdSchema, eventId: IdSchema, source: external_exports.string().min(1).max(200), kind: external_exports.string().max(200).default("update"), summary: external_exports.string().max(4e3), canvasBase: CanvasBaseSchema.optional(), data: JsonDataSchema.optional(), dataPatch: DataPatchesSchema.optional(), focusSelectors: FocusSelectorsSchema.optional(), observation: external_exports.object({ id: IdSchema, name: external_exports.string().max(200), value: external_exports.unknown(), evidence: EvidenceSchema }).optional() });
-var InteractInputSchema = external_exports.object({ boardId: IdSchema, intentId: IdSchema, kind: external_exports.enum(["question", "change", "fork", "return", "reply"]), destination: DestinationSchema.optional(), text: external_exports.string().min(1).max(24e3), anchor: AnchorSchema.optional(), comments: CommentsSchema.optional(), sourceInteractionId: IdSchema.optional() }).superRefine(validateCommentContext);
+var InteractInputSchema = external_exports.object({ boardId: IdSchema, expectedCreatedAt: external_exports.string().min(1).max(100).optional(), intentId: IdSchema, kind: external_exports.enum(["question", "change", "fork", "return", "reply"]), destination: DestinationSchema.optional(), text: external_exports.string().min(1).max(24e3), anchor: AnchorSchema.optional(), comments: CommentsSchema.optional(), sourceInteractionId: IdSchema.optional() }).superRefine(validateCommentContext);
 var SelectSideAgentInputSchema = external_exports.object({ boardId: IdSchema, agentId: external_exports.string().min(1).max(160), expectedRevision: external_exports.number().int().nonnegative(), eventId: IdSchema });
 var RenameInputSchema = external_exports.object({ boardId: IdSchema, expectedTitle: external_exports.string(), title: external_exports.string().trim().min(1).max(200), eventId: IdSchema });
 var EditInputSchema = external_exports.object({
   boardId: IdSchema,
+  expectedCreatedAt: external_exports.string().min(1).max(100).optional(),
   canvasBase: CanvasBaseSchema,
   eventId: IdSchema,
   patch: CanvasPatchSchema.refine((patch) => ["move", "copy", "text", "layout"].includes(patch.operation) && patch.html === "", "User edits support move, copy, text and layout operations without caller-supplied HTML")
 });
 var DecisionUpdateInputSchema = external_exports.object({ boardId: IdSchema, expectedRevision: external_exports.number().int().nonnegative(), eventId: IdSchema, decision: DecisionInputSchema });
-var StateInputSchema = external_exports.object({ boardId: IdSchema, state: JsonDataSchema });
+var StateInputSchema = external_exports.object({ boardId: IdSchema, expectedCreatedAt: external_exports.string().min(1).max(100).optional(), state: JsonDataSchema });
 var MarkUpdatesSeenInputSchema = external_exports.object({ boardId: IdSchema, updateIds: external_exports.array(IdSchema).max(80) });
-var EditRefusalCodeSchema = external_exports.enum(["invalid_input", "revision_conflict", "edit_conflict", "idempotency_conflict", "unauthorized", "forbidden", "board_not_found", "not_found", "size_limit"]);
+var EditRefusalCodeSchema = external_exports.enum(["board_identity_changed", "invalid_input", "revision_conflict", "edit_conflict", "idempotency_conflict", "unauthorized", "forbidden", "board_not_found", "not_found", "size_limit"]);
 var EditResultSchema = external_exports.discriminatedUnion("status", [
   external_exports.object({ status: external_exports.literal("applied"), eventId: IdSchema, board: BoardSchema }),
   external_exports.object({ status: external_exports.literal("rejected"), eventId: IdSchema, code: EditRefusalCodeSchema, componentTarget: external_exports.enum(["source", "destination"]).optional() })
@@ -36972,6 +36974,14 @@ function applyComponentPatch(document, target, patch, targetFor) {
       }
       cloneNodes[index].id = newId;
     });
+    const documentSlots = new Set(Array.from(document.querySelectorAll("paseo-board")).map((node2) => node2.getAttribute("slot-id") || node2.id).filter(Boolean));
+    const copiedSlots = [inserted, ...Array.from(inserted.querySelectorAll("paseo-board"))].filter((node2) => node2.localName === "paseo-board");
+    copiedSlots.forEach((node2, index) => {
+      const slotId = `${patch.copyIdPrefix}-slot-${index}`;
+      if (documentSlots.has(slotId)) throw new Error("Copy slot ID already exists; choose a new copy identity");
+      node2.setAttribute("slot-id", slotId);
+      documentSlots.add(slotId);
+    });
     const references = /* @__PURE__ */ new Set(["for", "list", "form", "headers", "aria-labelledby", "aria-describedby", "aria-controls", "aria-owns", "aria-flowto", "aria-activedescendant", "aria-details", "aria-errormessage"]);
     const rewriteUrls = (value) => value.replace(/url\(\s*(['"]?)#([^\s)'"\\]+)\1\s*\)/g, (match, _quote, id) => ids.has(id) ? `url(#${ids.get(id)})` : match);
     for (const node2 of [inserted, ...Array.from(inserted.querySelectorAll("*"))]) {
@@ -37212,7 +37222,7 @@ var BoardStore = class {
       const selector = patch.operation === "copy" ? `#${patch.copyIdPrefix}-0` : patch.operation === "move" ? patch.destination : patch.selector;
       this.canvasUpdate(board, input2.eventId, at, "patch", [{ selector, operation: patch.operation, patchId: patch.id }]);
       this.event(board, input2.eventId, "user", "component-edit", `Component ${patch.operation}`, at);
-    }, input2.eventId);
+    }, input2.eventId, (board) => this.expectCreatedAt(board, input2.expectedCreatedAt));
   }
   prepareEdit(canvas, patch) {
     try {
@@ -37386,18 +37396,19 @@ var BoardStore = class {
       this.feedPending--;
     }
   }
-  async recordDecision(raw) {
+  async recordDecision(raw, expectedCreatedAt) {
     const input2 = parseInput(DecisionUpdateInputSchema, raw);
     return this.mutate(input2.boardId, "decision", input2, (board, at) => {
       this.expectRevision(board, input2.expectedRevision);
       this.putDecision(board, input2.decision, at);
       this.event(board, input2.eventId, "agent", "decision", input2.decision.choice, at);
-    }, input2.eventId);
+    }, input2.eventId, (board) => this.expectCreatedAt(board, expectedCreatedAt));
   }
   async saveState(raw) {
     const input2 = parseInput(StateInputSchema, raw);
     assertJson(input2.state, "User state");
     return this.mutate(input2.boardId, "state", input2, (board) => {
+      if (input2.expectedCreatedAt !== void 0 && board.createdAt !== input2.expectedCreatedAt) throw new BoardStoreError("board_identity_changed", "This Board was replaced; reopen it before saving interaction state");
       board.userState = { ...board.userState, ...input2.state };
       assertJson(board.userState, "User state");
     });
@@ -37428,32 +37439,33 @@ var BoardStore = class {
       if (input2.sourceInteractionId && !board2.interactions.some((item) => item.id === input2.sourceInteractionId)) throw new BoardStoreError("not_found", "Source interaction does not exist");
       board2.interactions.push(InteractionSchema.parse({ ...payload, id: input2.intentId, agentId, status: "saved", createdAt: at, updatedAt: at }));
       this.event(board2, input2.intentId, "user", input2.kind, input2.text.slice(0, 4e3), at);
-    }, input2.intentId);
+    }, input2.intentId, (board2) => this.expectCreatedAt(board2, input2.expectedCreatedAt));
     return board.interactions.find((item) => item.id === input2.intentId);
   }
-  async updateInteraction(boardId, id, raw) {
+  async updateInteraction(boardId, id, raw, expectedCreatedAt) {
     assertId(id);
     const update2 = parseInput(InteractionUpdateSchema, raw);
-    const board = await this.mutate(boardId, "interaction-update", { id, ...update2 }, (board2, at) => this.changeInteraction(board2, id, update2, at));
+    const board = await this.mutate(boardId, "interaction-update", { id, ...update2 }, (board2, at) => this.changeInteraction(board2, id, update2, at), void 0, (board2) => this.expectCreatedAt(board2, expectedCreatedAt));
     return board.interactions.find((item) => item.id === id);
   }
   /** Side routing is owned by the service journal; this is its versioned UI projection. */
-  async projectSideAgent(boardId, route) {
+  async projectSideAgent(boardId, route, expectedCreatedAt) {
     return this.mutate(boardId, "side-agent", route, (board, at) => {
       if ((board.sideAgentRevision ?? 0) >= route.version) return;
       board.sideAgentId = route.agentId;
       board.pendingSideInteractionId = route.pendingInteractionId;
       board.sideAgentRevision = route.version;
       this.event(board, `side-agent:${route.version}`, "user", "side-agent", route.pendingInteractionId ? "Creating a side conversation" : "Side conversation selected", at);
-    });
+    }, void 0, (board) => this.expectCreatedAt(board, expectedCreatedAt));
   }
-  async updateExtraction(boardId, raw) {
+  async updateExtraction(boardId, raw, expectedCreatedAt) {
     const update2 = parseInput(BoardSchema.shape.extraction, raw);
     const path = this.path(boardId);
     await this.init();
     return serialized(path, async () => {
       const envelope = await readEnvelope(path, boardId);
       if (!envelope) throw new BoardStoreError("not_found", `Board ${boardId} does not exist`);
+      this.expectCreatedAt(envelope.board, expectedCreatedAt);
       const next = { ...envelope.board.extraction, ...update2 };
       if (canonicalJson(next) === canonicalJson(envelope.board.extraction)) return envelope.board;
       envelope.board.extraction = next;
@@ -37500,6 +37512,9 @@ var BoardStore = class {
     if (!receipt) return false;
     if (receipt.fingerprint !== digest) throw new BoardStoreError("idempotency_conflict", `Event ID ${key2} was already used with a different payload`, { eventId: key2, appliedRevision: receipt.revision });
     return true;
+  }
+  expectCreatedAt(board, expected) {
+    if (expected !== void 0 && expected !== board.createdAt) throw new BoardStoreError("board_identity_changed", "This Board was replaced; reopen it before applying this request");
   }
   expectRevision(board, expected) {
     if (board.revision !== expected) throw new BoardStoreError("revision_conflict", `Board changed: expected revision ${expected}, current revision ${board.revision}`, { scope: "board", expectedRevision: expected, currentRevision: board.revision, ...this.conflictContext(board, void 0, expected) });
@@ -39114,6 +39129,10 @@ function buildRelease(input2) {
   const authored = describeAuthoring(board.canvas);
   if (!authored.replay.complete || authored.materializedAuthoredHtml === null) throw new Error(authoredSourceFailure("Cannot export current authored source", authored));
   let html = authored.materializedAuthoredHtml;
+  const composition = new DOMParser().parseFromString(html, "text/html");
+  for (const element of composition.querySelectorAll("paseo-board[board-id]")) {
+    if (IdSchema.safeParse(element.getAttribute("board-id")).success) throw new Error("\u8FD9\u5F20 Board \u5D4C\u5165\u4E86\u5176\u4ED6\u753B\u677F\uFF0C\u5F53\u524D\u5BFC\u51FA\u65E0\u6CD5\u56FA\u5B9A\u8FD9\u4E9B\u6765\u6E90\u753B\u677F\u7684\u5185\u5BB9\u3002\u8BF7\u5206\u522B\u6253\u5F00\u5E76\u72EC\u7ACB\u5BFC\u51FA\u6E90 Board\uFF0C\u6216\u79FB\u9664\u5D4C\u5165\u540E\u518D\u5BFC\u51FA\u3002");
+  }
   const helpers = `${/data-tooltip|dataset\.tooltip|floatingui/i.test(html) ? runtime_tooltips_default : ""}${/lucide/i.test(html) ? runtime_icons_default : ""}`;
   const resources = dependenciesFor(html + helpers);
   const missing = resources.resources.filter((url2) => !url2.startsWith("#") && !url2.startsWith("data:") && !/^https:\/\//.test(url2));

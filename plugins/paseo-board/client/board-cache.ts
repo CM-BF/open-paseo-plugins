@@ -1,4 +1,4 @@
-import type { Board } from "../shared/contracts";
+import type { Board, BoardSummary } from "../shared/contracts";
 import type { BoardLiveStatus } from "./board-events";
 
 /** A successful connection edge can retry failed reads even when its event
@@ -50,7 +50,7 @@ export class BoardReadRecovery {
 
 /** Seen receipts are monotonic within the bounded update window, independently of content revision. */
 export function mergeBoardSnapshot(previous: Board | null | undefined, incoming: Board): Board {
-  if (!previous || previous.id !== incoming.id) return incoming;
+  if (!previous || previous.id !== incoming.id || previous.createdAt !== incoming.createdAt) return incoming;
   const current = previous.revision > incoming.revision ? previous : incoming;
   const live = new Set((current.updates ?? []).map(update => update.id));
   const seen = new Set([...(previous.seenUpdateIds ?? []), ...(incoming.seenUpdateIds ?? [])]);
@@ -61,7 +61,13 @@ export function mergeBoardSnapshot(previous: Board | null | undefined, incoming:
  * names may be reused after another reset, so identity also carries a local
  * generation. The wrapper references the existing Board; it is not a second cache. */
 export interface BoardCacheEpochToken { readonly name?: string; readonly generation: number }
+export interface BoardCacheEntityToken {
+  readonly boardId: string;
+  /** undefined = not indexed yet; null = absent from an authoritative index. */
+  readonly createdAt: string | null | undefined;
+}
 export interface BoardCacheEntry {
+  entity?: BoardCacheEntityToken;
   epoch: BoardCacheEpochToken | undefined;
   board: Board | null | undefined;
   unchanged?: true;
@@ -77,16 +83,52 @@ export function boardFromCache(value: PreviousBoardCache): Board | null | undefi
 
 export class BoardCacheAuthority {
   private token: BoardCacheEpochToken = Object.freeze({ generation: 0 });
+  private entities = new Map<string, BoardCacheEntityToken>();
+  private indexed = false;
   current(): BoardCacheEpochToken { return this.token; }
+  capture(boardId: string): Pick<BoardCacheEntry, "epoch" | "entity"> {
+    let entity = this.entities.get(boardId);
+    if (!entity) { entity = Object.freeze({ boardId, createdAt: this.indexed ? null : undefined }); this.entities.set(boardId, entity); }
+    return { epoch: this.token, entity };
+  }
+  /** Only the cursor-ordered metadata stream may change entity identity. A
+   * read result can confirm it, but may not elect itself over a newer index. */
+  observeSummary(name: string, summary: Pick<BoardSummary, "id" | "createdAt">): boolean {
+    this.observe(name);
+    return this.setEntity(summary.id, summary.createdAt);
+  }
+  observeIndex(name: string, boards: readonly Pick<BoardSummary, "id" | "createdAt">[]): string[] {
+    this.observe(name);
+    const present = new Set(boards.map(board => board.id)), changed: string[] = [];
+    for (const board of boards) if (this.setEntity(board.id, board.createdAt)) changed.push(board.id);
+    for (const id of this.entities.keys()) if (!present.has(id) && this.setEntity(id, null)) changed.push(id);
+    this.indexed = true;
+    return changed;
+  }
+  private setEntity(boardId: string, createdAt: string | null): boolean {
+    const prior = this.entities.get(boardId);
+    if (prior && prior.createdAt === createdAt) return false;
+    this.entities.set(boardId, Object.freeze({ boardId, createdAt }));
+    return true;
+  }
   observe(name: string): void {
-    if (name !== this.token.name) this.token = Object.freeze({ name, generation: this.token.generation + 1 });
+    if (name !== this.token.name) {
+      this.token = Object.freeze({ name, generation: this.token.generation + 1 });
+      for (const id of this.entities.keys()) this.entities.set(id, Object.freeze({ boardId: id, createdAt: undefined }));
+      this.indexed = false;
+    }
   }
   /** Called at the final React Query commit, not just before resolving the RPC.
    * This also fences late null/deletion replies and mutation acknowledgements. */
   merge(previous: PreviousBoardCache, incoming: BoardCacheEntry): BoardCacheEntry {
     const prior = isBoardCacheEntry(previous) ? previous : previous === undefined ? undefined : { epoch: undefined, board: previous };
-    if (incoming.epoch !== this.token || incoming.unchanged) return prior ?? { epoch: undefined, board: undefined };
-    if (prior?.epoch !== this.token || !prior.board || !incoming.board) return incoming;
-    return { epoch: this.token, board: mergeBoardSnapshot(prior.board, incoming.board) };
+    const entity = incoming.entity;
+    const identified = entity ? this.entities.get(entity.boardId) : incoming.board ? this.entities.get(incoming.board.id) : undefined;
+    const wrongEntity = identified !== entity || Boolean(entity && incoming.board && (
+      incoming.board.id !== entity.boardId || entity.createdAt !== undefined && incoming.board.createdAt !== entity.createdAt
+    ));
+    if (incoming.epoch !== this.token || wrongEntity || incoming.unchanged) return prior ?? { epoch: undefined, board: undefined };
+    if (prior?.epoch !== this.token || prior.entity !== entity || !prior.board || !incoming.board) return incoming;
+    return { epoch: this.token, ...(entity ? { entity } : {}), board: mergeBoardSnapshot(prior.board, incoming.board) };
   }
 }

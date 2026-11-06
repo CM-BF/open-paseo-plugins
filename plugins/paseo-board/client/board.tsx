@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Image, Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
+import { openExternalUrl } from "@getpaseo/plugin/client";
+import { BoardServicesProvider, useBoardRpc, useBoardServices, type BoardServices } from "./transport";
 import { Markdown, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
 import { interactBoardRpc, markUpdatesSeenRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc, type Anchor, type Board, type Decision, type Interaction, type JsonData } from "../shared/contracts";
 import type { AskRequest, AskResult, ComposeRequest, CaptureStatus, CaptureFailureReason, SelectionCapture, FrameTheme, InteractionLocation, SelectionMode, CanvasViewState } from "../shared/frame-contract";
@@ -22,11 +23,17 @@ import { readBoardView, writeBoardView, retainBoardViewStore, flushBoardViewStor
 import { DiscussionRail } from "./discussion-rail";
 import { SideAgentPicker } from "./side-agent-picker";
 import { useUpdateNavigation } from "./update-navigation";
+import { CompositionSourceSync, CompositionSourcesPanel, useCompositionSources } from "./composition-sources";
+import { CompositionEmbeds } from "./composition-view";
+import type { CompositionMount } from "./composition-mount";
 import { anchorPoint, interactionRoot, interactionThread, mergeInteractions, popoverPlacement, visualQuestion, type Point } from "./interaction-layout";
 
-interface Props extends PluginSurfaceProps { boardId: string; onBack(): void; onOpenBoard?(id: string): void }
+export interface BoardViewProps extends PluginSurfaceProps {
+  boardId: string; onBack(): void; onOpenBoard?(id: string): void;
+  embedded?: { mount: CompositionMount; viewScope: string; onOpen(): void };
+}
 type Destination = "main" | "side" | "new-side";
-type Compose = { draftId?: string; draftRevision?: string; queuedAt?: number; selectionId?: string; captureStatus?: CaptureStatus | "omitted"; captureFailureReason?: CaptureFailureReason; kind: Interaction["kind"]; text: string; intentId?: string; destination?: Destination; anchor?: Anchor; sourceInteractionId?: string; resolve?: (result: AskResult) => void };
+type Compose = { draftId?: string; draftRevision?: string; queuedAt?: number; selectionId?: string; captureStatus?: CaptureStatus | "omitted"; captureFailureReason?: CaptureFailureReason; kind: Interaction["kind"]; text: string; intentId?: string; expectedCreatedAt?: string; destination?: Destination; anchor?: Anchor; sourceInteractionId?: string; resolve?: (result: AskResult) => void };
 const captureFailureNames: Record<CaptureFailureReason, string> = {
   "content-changed": "截图过程中画布内容发生变化，请重新框选。",
   "too-complex": "选区内容过于复杂，请缩小选区。",
@@ -38,31 +45,38 @@ const captureFailureNames: Record<CaptureFailureReason, string> = {
 const statusNames: Record<Interaction["status"], string> = { saved: "已保存", sending: "发送中", delivered: "已送达", processing: "处理中", answered: "已有回复", applied: "已落实", rejected: "未采用", failed: "失败" };
 const kindNames: Record<Interaction["kind"], string> = { question: "消息", change: "消息", fork: "Fork", return: "转给主会话", reply: "Fork 回复" };
 
-export function BoardView(props: Props) {
+export function BoardView(props: BoardViewProps) {
   return <ColorContext.Provider value={props.theme.colors}><BoardContent key={JSON.stringify([props.host.id, props.boardId])} {...props} /></ColorContext.Provider>;
 }
-function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }: Props) {
+function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpenBoard, embedded }: BoardViewProps) {
   const c = useColors();
+  const services = useBoardServices(host.id);
+  const sourceRef = useMemo(() => ({ hostId: host.id, boardId }), [host.id, boardId]);
+  const sources = useCompositionSources(sourceRef, !embedded);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [compositionMounts, setCompositionMounts] = useState<readonly CompositionMount[]>([]);
+  const composition = useMemo(() => embedded ? undefined : { hostId: host.id, onSlots: setCompositionMounts }, [host.id, Boolean(embedded)]);
+  const viewInstance = embedded?.viewScope;
   const query = useBoard(host.id, boardId);
   const board = query.data;
   useEffect(() => retainBoardViewStore(), []);
   // Read once for this document. Capturing a newer position must not issue a
   // fresh restore command on every React render or query update.
   const viewSession = useMemo(() => {
-    const saved = board?.canvas.documentVersion ? readBoardView(host.id, boardId, board.canvas.documentVersion) : undefined;
+    const saved = board?.canvas.documentVersion ? readBoardView(host.id, boardId, board.canvas.documentVersion, viewInstance) : undefined;
     return { saved, latest: saved?.view };
-  }, [host.id, boardId, board?.canvas.documentVersion]);
+  }, [host.id, boardId, board?.canvas.documentVersion, viewInstance]);
   const [settledView, setSettledView] = useState<typeof viewSession>();
   const [reconciledView, setReconciledView] = useState<typeof viewSession>();
   useEffect(() => {
     if (board && !query.isFetching && !query.isError && (query.liveStatus === "connected" || query.liveStatus === "checking")) setReconciledView(viewSession);
   }, [viewSession, board, query.isFetching, query.isError, query.liveStatus]);
-  const componentEditor = useComponentEditor(host.id, boardId, board, query.accept, query.refetch);
-  const send = useRpc(interactBoardRpc);
-  const save = useRpc(saveStateRpc);
-  const record = useRpc(recordDecisionRpc);
-  const selectSide = useRpc(selectSideAgentRpc);
-  const markUpdatesSeen = useRpc(markUpdatesSeenRpc);
+  const componentEditor = useComponentEditor(host.id, boardId, board, query.accept, query.refetch, viewInstance);
+  const send = useBoardRpc(interactBoardRpc);
+  const save = useBoardRpc(saveStateRpc);
+  const record = useBoardRpc(recordDecisionRpc);
+  const selectSide = useBoardRpc(selectSideAgentRpc);
+  const markUpdatesSeen = useBoardRpc(markUpdatesSeenRpc);
   const [selectionMode, setSelectionMode] = useState<SelectionMode>("off");
   const [anchor, setAnchor] = useState<Anchor>();
   const [selectionClearToken, setSelectionClearToken] = useState(0);
@@ -74,7 +88,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
   const batchStore = useMemo(() => createBatchStore({ hostId: host.id, boardId }), [host.id, boardId]);
   const [batchSnapshot, setBatchSnapshot] = useState(() => batchStore.list());
   const [batchError, setBatchError] = useState<string | null>(null);
-  const acceptedBatchIds = useMemo(() => new Set(batchSnapshot.batches.filter(batch => acceptedBatchInteraction(batch, board?.interactions ?? [])).map(batch => batch.intentId)), [batchSnapshot.batches, board?.interactions]);
+  const acceptedBatchIds = useMemo(() => new Set(batchSnapshot.batches.filter(batch => (!batch.expectedCreatedAt || batch.expectedCreatedAt === board?.createdAt) && acceptedBatchInteraction(batch, board?.interactions ?? [])).map(batch => batch.intentId)), [batchSnapshot.batches, board?.interactions, board?.createdAt]);
   const staged = useMemo(() => queuedDrafts(draftSnapshot.drafts, batchSnapshot.batches), [draftSnapshot, batchSnapshot]);
   const availableDrafts = useMemo(() => draftSnapshot.drafts.filter(draft => !batchSnapshot.batches.some(batch => batchContainsDraft(batch, draft))), [draftSnapshot, batchSnapshot]);
   const [draftError, setDraftError] = useState<string | null>(null);
@@ -100,27 +114,35 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
   const [focusInteraction, setFocusInteraction] = useState<{ id: string; token: number }>();
   const [interactionLocation, setInteractionLocation] = useState<{ id: string; location: InteractionLocation }>();
   const [optimistic, setOptimistic] = useState<Interaction[]>([]);
-  const updatesBlocked = Boolean(componentEditor.draft || compose || selectedInteractionId || drawer || releaseOpen || sending || selectionMode !== "off");
-  const updateNavigation = useUpdateNavigation(board, updatesBlocked, async id => { query.accept(await markUpdatesSeen({ boardId, updateIds: [id] })); }, viewSession.saved ? {
+  const updatesBlocked = Boolean(componentEditor.draft || compose || selectedInteractionId || drawer || releaseOpen || sourcesOpen || sending || selectionMode !== "off");
+  const updateNavigation = useUpdateNavigation(board, updatesBlocked, async id => { if (!embedded) query.accept(await markUpdatesSeen({ boardId, updateIds: [id] })); }, embedded ? { follow: false, skipInitialUnread: true } : viewSession.saved ? {
     follow: viewSession.saved.follow, skipInitialUnread: true, restoring: settledView !== viewSession, reconciling: reconciledView !== viewSession,
   } : undefined);
   const followRef = useRef(updateNavigation.follow); followRef.current = updateNavigation.follow;
   const onViewState = useCallback((view: CanvasViewState) => {
     if (view.documentVersion !== board?.canvas.documentVersion) return;
     viewSession.latest = view;
-    writeBoardView(host.id, boardId, view, followRef.current);
-  }, [host.id, boardId, board?.canvas.documentVersion, viewSession]);
+    writeBoardView(host.id, boardId, view, followRef.current, viewInstance);
+  }, [host.id, boardId, board?.canvas.documentVersion, viewSession, viewInstance]);
   // A queued report can arrive just after this visit unmounts. Its bridge
   // freezes this persistence-only callback and revokes it when a new visit starts.
   const onFinalViewState = useCallback((view: CanvasViewState) => {
     if (view.documentVersion !== board?.canvas.documentVersion) return;
-    writeBoardView(host.id, boardId, view, updateNavigation.follow);
+    writeBoardView(host.id, boardId, view, updateNavigation.follow, viewInstance);
     flushBoardViewStore();
-  }, [host.id, boardId, board?.canvas.documentVersion, updateNavigation.follow]);
+  }, [host.id, boardId, board?.canvas.documentVersion, updateNavigation.follow, viewInstance]);
   const onViewRestored = useCallback(() => { setSettledView(viewSession); }, [viewSession]);
   useEffect(() => {
-    if (viewSession.latest) writeBoardView(host.id, boardId, viewSession.latest, updateNavigation.follow);
-  }, [host.id, boardId, viewSession, updateNavigation.follow]);
+    if (viewSession.latest) writeBoardView(host.id, boardId, viewSession.latest, updateNavigation.follow, viewInstance);
+  }, [host.id, boardId, viewSession, updateNavigation.follow, viewInstance]);
+  useEffect(() => {
+    if (!embedded) return;
+    const unread = board?.updates.filter(item => !board.seenUpdateIds.includes(item.id)).length ?? 0;
+    embedded.mount.setPresentation({ title: board?.title ?? boardId, hostLabel: host.label, unread, onOpen: embedded.onOpen,
+      queued: staged.length + batchSnapshot.batches.length,
+      onDrafts: () => { if (!pending.current && !composeRef.current) setDrawer("drafts"); } });
+    embedded.mount.setStatus(!board ? query.isPending ? "正在连接画板…" : "画板暂时无法连接" : query.error || query.liveError ? "连接中断 · 当前显示上次收到的内容" : frameError ?? "");
+  }, [embedded, board, boardId, host.label, query.isPending, query.error, query.liveError, frameError, staged.length, batchSnapshot.batches.length]);
   const interactions = useMemo(() => mergeInteractions(board?.interactions ?? [], optimistic), [board?.interactions, optimistic]);
   const markers = useMemo(() => interactionMarkers(interactions), [interactions]);
   const thread = useMemo(() => interactionThread(selectedInteractionId ? markerInteractionId(selectedInteractionId, interactions) : undefined, interactions), [selectedInteractionId, interactions]);
@@ -141,7 +163,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
     draft.draftId ??= localId("draft");
     const input = { id: draft.draftId, open, position, queuedAt: draft.queuedAt, compose: {
       kind: draft.kind, text: draft.text, anchor: draft.anchor, sourceInteractionId: draft.sourceInteractionId,
-      intentId: draft.intentId, destination: draft.destination,
+      intentId: draft.intentId, expectedCreatedAt: draft.expectedCreatedAt, destination: draft.destination,
       captureStatus: draft.captureStatus === "pending" ? "omitted" as const : draft.captureStatus,
       captureFailureReason: draft.captureFailureReason,
     } };
@@ -157,9 +179,10 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
   }, [draftStore]);
   const changeCompose = useCallback((draft: Compose, position = popoverPointRef.current) => {
     restorationHandled.current = true;
+    if (!draft.intentId) draft.expectedCreatedAt ??= board?.createdAt;
     persistCompose(draft, true, position);
     composeRef.current = draft; setCompose(draft);
-  }, [persistCompose]);
+  }, [persistCompose, board?.createdAt]);
   const removeDraft = useCallback((draft: Compose) => {
     if (!draft.draftId || !draft.draftRevision) return true;
     const result = draftStore.remove(draft.draftId, draft.draftRevision);
@@ -191,7 +214,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
       if (!query.isPending && !restorationHandled.current) {
         restorationHandled.current = true;
         const saved = draftStore.list().drafts.find(item => item.open && !batches.some(batch => batchContainsDraft(batch, item)));
-        if (saved) restoreDraft(saved);
+        if (saved && !embedded) restoreDraft(saved);
       }
       return;
     }
@@ -202,7 +225,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
     let latest: StoredDraft | undefined;
     for (const saved of draftStore.list().drafts) {
       if (batches.some(batch => batchContainsDraft(batch, saved))) continue;
-      const receipt = acceptedDraftInteraction(saved.compose, board.interactions);
+      const receipt = !saved.compose.expectedCreatedAt || saved.compose.expectedCreatedAt === board.createdAt ? acceptedDraftInteraction(saved.compose, board.interactions) : undefined;
       if (receipt) {
         const current = composeRef.current;
         const isCurrent = current?.draftId === saved.id && current.draftRevision === saved.revision;
@@ -213,10 +236,10 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
           current.resolve?.({ status: "submitted", outcome: statusNames[receipt.status] });
           composeRef.current = null; setCompose(null); setMessage(null);
         }
-        if (isCurrent || firstRead && saved.open) { setSelectedInteractionId(interactionRoot(receipt.id, board.interactions)); setPopoverPoint(saved.position); }
+        if (isCurrent || !embedded && firstRead && saved.open) { setSelectedInteractionId(interactionRoot(receipt.id, board.interactions)); setPopoverPoint(saved.position); }
       } else if (firstRead && saved.open && (!latest || saved.updatedAt > latest.updatedAt)) latest = saved;
     }
-    if (latest) restoreDraft(latest);
+    if (latest && !embedded) restoreDraft(latest);
   }, [board, draftStore, query.isPending, sending, batchSnapshot.batches]);
   useEffect(() => {
     if (!board || pending.current) return;
@@ -250,10 +273,14 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
   }, [changeCompose]);
   const onState = useCallback((state: JsonData) => stateWriter.current?.schedule(state), []);
   useEffect(() => {
-    const writer = createStateWriter(state => save({ boardId, state }).then(() => undefined), error => setMessage(`保存交互状态失败：${errorMessage(error)}`));
+    const expectedCreatedAt = board?.createdAt;
+    if (!expectedCreatedAt) return;
+    // A delayed final save belongs to this entity, even if its ID has since
+    // been reused. The store checks the captured identity atomically.
+    const writer = createStateWriter(state => save({ boardId, expectedCreatedAt, state }).then(() => undefined), error => setMessage(`保存交互状态失败：${errorMessage(error)}`));
     stateWriter.current = writer;
     return () => { writer.dispose(); if (stateWriter.current === writer) stateWriter.current = null; };
-  }, [save, boardId]);
+  }, [save, boardId, board?.createdAt]);
   useEffect(() => { setFrameError(null); }, [board?.canvas.documentVersion]);
   useEffect(() => {
     const persisted = new Set(board?.interactions.map(item => item.id));
@@ -309,17 +336,19 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
   const retryUnconfirmed = (item: Interaction) => {
     if (pending.current || composeRef.current) return;
     if (item.comments) { setDrawer("drafts"); return; }
-    const draft: Compose = { kind: item.kind, text: item.text, intentId: item.id, destination: item.destination, anchor: item.anchor, sourceInteractionId: item.sourceInteractionId };
+    const draft: Compose = { kind: item.kind, text: item.text, intentId: item.id, expectedCreatedAt: item.expectedCreatedAt, destination: item.destination, anchor: item.anchor, sourceInteractionId: item.sourceInteractionId };
     changeCompose(draft); setMessage(null);
   };
   const submit = async (destination: Destination = "main") => {
     const draft = composeRef.current;
     if (!draft?.text.trim() || pending.current || sideChoicePending.current || !board?.ownerAgentId) return;
+    if (draft.expectedCreatedAt && draft.expectedCreatedAt !== board.createdAt) { setMessage("画板已被替换；原输入已保留，请重新核对来源后评论。"); return; }
     // An uncertain send retries its immutable route and ID. Changing text starts a new intent.
     if (draft.intentId && destination !== draft.destination) return;
     draft.queuedAt = undefined;
     draft.destination = destination;
     pending.current = true; setSending(true); setMessage(null);
+    if (!draft.intentId) draft.expectedCreatedAt ??= board.createdAt;
     draft.intentId ??= localId("intent");
     // Sending fixes this exact payload, including the explicit decision not to await pixels.
     if (draft.selectionId) setSelectionCaptureCancelId(draft.selectionId);
@@ -331,11 +360,13 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
       return;
     }
     const now = new Date().toISOString();
-    const local: Interaction = { id: draft.intentId, kind: draft.kind, destination, text: draft.text.trim(), anchor: draft.anchor, sourceInteractionId: draft.sourceInteractionId, status: "sending", resultReferences: [], createdAt: now, updatedAt: now };
+    const submitted = { expectedCreatedAt: draft.expectedCreatedAt, intentId: draft.intentId, kind: draft.kind, destination, text: draft.text.trim(), anchor: draft.anchor, sourceInteractionId: draft.sourceInteractionId };
+    const local: Interaction = { id: submitted.intentId, expectedCreatedAt: submitted.expectedCreatedAt, kind: submitted.kind, destination, text: submitted.text, anchor: submitted.anchor, sourceInteractionId: submitted.sourceInteractionId, status: "sending", resultReferences: [], createdAt: now, updatedAt: now };
     setOptimistic(items => [...items.filter(item => item.id !== local.id), local]);
     setSelectedInteractionId(interactionRoot(draft.sourceInteractionId ?? draft.intentId, interactions));
     try {
-      const result = await send({ boardId, intentId: draft.intentId, kind: draft.kind, destination, text: draft.text.trim(), anchor: draft.anchor, sourceInteractionId: draft.sourceInteractionId });
+      const result = await send({ boardId, ...submitted });
+      if (!acceptedDraftInteraction(submitted, [result])) throw new Error("返回的发送记录与这条评论不一致；原发送已保留，请稍后核对。");
       setOptimistic(items => items.map(item => item.id === result.id ? result : item));
       draft.resolve?.({ status: "submitted", outcome: statusNames[result.status] });
       removeDraft(draft);
@@ -352,7 +383,8 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
     pending.current = true; setSending(true); setBatchError(null);
     let batch: CommentBatch;
     try {
-      batch = retry ?? await prepareCommentBatch({ hostId: host.id, boardId }, draftStore, batchStore, destination, localId("batch"), staged.map(({ id, revision }) => ({ id, revision })));
+      batch = retry ?? await prepareCommentBatch({ hostId: host.id, boardId, expectedCreatedAt: board.createdAt }, draftStore, batchStore, destination, localId("batch"), staged.map(({ id, revision }) => ({ id, revision })));
+      if (batch.expectedCreatedAt && batch.expectedCreatedAt !== board.createdAt) throw new Error("画板已被替换；原发送记录已保留，不能发送给新画板。");
       if (acceptedBatchInteraction(batch, board.interactions)) {
         const cleaned = reconcileBatchDrafts(batch, draftStore), removed = cleaned.ok ? batchStore.remove(batch) : cleaned;
         if (!removed.ok) throw new Error(removed.message);
@@ -365,7 +397,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
     const local: Interaction = { id: batch.intentId, kind: "change", destination: batch.destination, text: batch.text, comments: batch.comments, status: "sending", resultReferences: [], createdAt: now, updatedAt: now };
     setOptimistic(items => [...items.filter(item => item.id !== local.id), local]);
     try {
-      const result = await send({ boardId, intentId: batch.intentId, kind: "change", destination: batch.destination, text: batch.text, comments: batch.comments });
+      const result = await send({ boardId, expectedCreatedAt: batch.expectedCreatedAt, intentId: batch.intentId, kind: "change", destination: batch.destination, text: batch.text, comments: batch.comments });
       if (!acceptedBatchInteraction(batch, [result])) throw new Error("返回的发送记录与这组评论不一致；原发送已保留，请稍后核对。");
       setOptimistic(items => items.map(item => item.id === result.id ? result : item));
       const cleaned = reconcileBatchDrafts(batch, draftStore), removed = cleaned.ok ? batchStore.remove(batch) : cleaned;
@@ -430,13 +462,14 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
     if (composeRef.current) cancelCompose();
     if (!composeRef.current && !pending.current) navigate();
   };
-  usePopoverDismiss(Boolean(compose || selectedInteractionId), closePopover, Boolean(compose));
+  usePopoverDismiss(!embedded && Boolean(compose || selectedInteractionId), closePopover, !embedded && Boolean(compose));
   const updateDecision = async (decision: Decision, status: "questioned" | "dismissed") => {
     if (!board) return;
     try { query.accept(await record({ boardId, expectedRevision: board.revision, eventId: localId("decision"), decision: { ...decision, status } })); }
     catch (error) { setMessage(errorMessage(error)); void query.refetch(); }
   };
   const selectedText = anchor ? anchor.text || ({ point: "指定位置", region: "框选区域", element: "页面元素", board: "整个画布", text: "选中文字" }[anchor.kind]) : "整个画布";
+  if (!board && embedded) return null;
   if (!board) return <ScrollView contentContainerStyle={{ padding: 24, gap: 16, backgroundColor: c.surface0 }}>
     <Action label="所有 Boards" onPress={() => leaveBoard(onBack)} />
     <Notice text={query.isPending ? "正在打开…" : query.error ? "暂时无法连接 Board；本机草稿仍可查看和编辑，恢复连接后再发送。" : "这块 Board 不存在；本机草稿仍保留。"} error={!!query.error} />
@@ -461,27 +494,30 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
       {draftSnapshot.issues.map((issue, index) => <Notice key={index} error text={issue.message} />)}
     </View>}
   </ScrollView>;
-  return <View style={{ flex: 1, minHeight: 0, backgroundColor: c.surface0 }}>
-    <BoardToolbar board={board} onAccepted={query.accept} onRefresh={query.refetch} onBack={() => leaveBoard(onBack)}
+  return <View style={embedded ? { width: 0, height: 0, overflow: "visible" } : { flex: 1, minHeight: 0, backgroundColor: c.surface0 }}>
+    {!embedded ? <BoardToolbar board={board} onAccepted={query.accept} onRefresh={query.refetch} onBack={() => leaveBoard(onBack)}
       selectionMode={selectionMode} onSelectionModeChange={setSelectionMode} canSelect={canRenderFrames}
       anchor={anchor} selectedText={selectedText} onClearReference={() => { setAnchor(undefined); setSelectionClearToken(value => value + 1); }}
       updateNavigation={updateNavigation} onOpenDrawer={setDrawer} onCompose={() => openCompose("question")}
       draftCount={availableDrafts.length + batchSnapshot.batches.length} draftIssue={draftSnapshot.issues.length > 0 || batchSnapshot.issues.length > 0 || Boolean(draftError || batchError)}
       onPublish={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current && !pending.current) { setDrawer(null); setReleaseOpen(true); } }}
-      onOpenDrafts={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current) setDrawer("drafts"); }} />
-    <View testID="board-stage" style={{ flex: 1, minHeight: 180, flexDirection: "row" }} onLayout={event => setStageWidth(event.nativeEvent.layout.width)}>
-    <View testID="board-canvas-container" style={{ flex: 1, minWidth: 0, minHeight: 180, position: "relative", overflow: "hidden" }} onLayout={event => { setHeight(Math.max(180, event.nativeEvent.layout.height)); setWidth(event.nativeEvent.layout.width); }}>
-      {canRenderFrames ? <CanvasFrame viewScope={JSON.stringify([host.id, boardId])} boardId={board.id} title={board.title} canvas={board.canvas} boardRevision={board.revision} userState={board.userState} theme={frameTheme} height={height} resumeView={viewSession.saved?.view} onViewState={onViewState} onFinalViewState={onFinalViewState} onViewRestored={onViewRestored} selectionMode={selectionMode} selectionClearToken={selectionClearToken} selectionCaptureCancelId={selectionCaptureCancelId} interactions={interactions} selectedInteractionId={selectedInteractionId} focusInteraction={focusInteraction} focusUpdate={updateNavigation.request} composerActive={updatesBlocked} onUpdatePosition={updateNavigation.onPosition} onCanvasActivity={updateNavigation.onActivity} onOpenInteraction={openInteraction} onInteractionPosition={(id, point, location) => { if (id === selectedInteractionId) { if (!composeRef.current) setPopoverPoint(point); setInteractionLocation(location ? { id, location } : undefined); } }} onAnchor={onAnchor} onAsk={onAsk} onCompose={onCompose} onSelectionCapture={onSelectionCapture} onComponentEdit={request => {
+      onOpenDrafts={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current) setDrawer("drafts"); }}
+      sourceCount={sources.data?.sources.length} onSources={sources.enabled ? () => setSourcesOpen(true) : undefined} /> : null}
+    <View testID="board-stage" style={embedded ? { width: 0, height: 0 } : { flex: 1, minHeight: 180, flexDirection: "row" }} onLayout={event => setStageWidth(event.nativeEvent.layout.width)}>
+    <View testID="board-canvas-container" style={embedded ? { width: 0, height: 0, overflow: "visible" } : { flex: 1, minWidth: 0, minHeight: 180, position: "relative", overflow: "hidden" }} onLayout={event => { setHeight(Math.max(180, event.nativeEvent.layout.height)); setWidth(event.nativeEvent.layout.width); }}>
+      {canRenderFrames ? <CanvasFrame key={board.createdAt} composition={composition} embeddedMount={embedded?.mount} viewScope={JSON.stringify([host.id, boardId, viewInstance])} boardId={board.id} title={board.title} canvas={board.canvas} boardRevision={board.revision} userState={board.userState} theme={frameTheme} height={height} resumeView={viewSession.saved?.view} onViewState={onViewState} onFinalViewState={onFinalViewState} onViewRestored={onViewRestored} selectionMode={selectionMode} selectionClearToken={selectionClearToken} selectionCaptureCancelId={selectionCaptureCancelId} interactions={interactions} selectedInteractionId={selectedInteractionId} focusInteraction={focusInteraction} focusUpdate={updateNavigation.request} composerActive={updatesBlocked} onUpdatePosition={updateNavigation.onPosition} onCanvasActivity={updateNavigation.onActivity} onOpenInteraction={openInteraction} onInteractionPosition={(id, point, location) => { if (id === selectedInteractionId) { if (!composeRef.current) setPopoverPoint(point); setInteractionLocation(location ? { id, location } : undefined); } }} onAnchor={onAnchor} onAsk={onAsk} onCompose={onCompose} onSelectionCapture={onSelectionCapture} onComponentEdit={request => {
         if (composeRef.current || pending.current) return Promise.resolve({ status: "rejected", message: "交流草稿已保留，请先关闭输入框再编辑组件。" });
         return componentEditor.propose(request).then(result => { if (result.status === "applied") setSelectionMode("off"); return result; });
       }} onEditScopeChange={componentEditor.invalidate} onCanvasPointer={closePopover} onState={onState} onError={error => setFrameError(`${error.message}${error.patchId ? `（${error.patchId}）` : ""}`)} onSelectionEnd={() => setSelectionMode("off")} onSelectionClear={() => { setAnchor(undefined); setSelectionMode("off"); }} onOpenLink={url => { void openExternalUrl(url).catch(e => setMessage(errorMessage(e))); }} /> : <ScrollView contentContainerStyle={{ padding: 24, gap: 16 }}><Notice text="手机兼容视图。完整的自由画布、动画和页面交互在桌面版使用；这里可以查看摘要、决策并与 agent 交流。" /><Markdown>{typeof board.canvas.data.summary === "string" ? board.canvas.data.summary : "Agent 尚未提供文字摘要。你可以直接提问，回复会出现在讨论里。"}</Markdown></ScrollView>}
-      <ComponentEditPanel editor={componentEditor} />
-      {query.error || query.liveError || frameError || (message && !compose && !selectedInteractionId) ? <View style={{ position: "absolute", left: 8, right: 8, top: 8 }}><Notice error text={query.error ? "连接暂时中断。当前是上次收到的内容，尚未确认最新状态。" : query.liveError ? errorMessage(query.liveError) : frameError || message || ""} /></View> : null}
-      {compose || selectedInteractionId ? <View testID="board-local-popover" accessibilityLabel="原位交流" onLayout={event => setPopoverHeight(event.nativeEvent.layout.height)} style={{ position: "absolute", ...popover, borderWidth: 1, borderColor: c.border, borderRadius: 12, backgroundColor: c.surface0, overflow: "hidden", shadowColor: "#000", shadowOpacity: 0.22, shadowRadius: 16, shadowOffset: { width: 0, height: 5 }, elevation: 10 }}>
+      {embedded ? <Modal title={`${board.title} · ${host.label} · 组件修改`} open={Boolean(componentEditor.draft)} onOpenChange={open => { if (!open) componentEditor.cancel(); }}><Modal.Content><BoardServicesBoundary services={services}>
+        <ColorContext.Provider value={c}><ComponentEditPanel editor={componentEditor} inline /></ColorContext.Provider>
+      </BoardServicesBoundary></Modal.Content></Modal> : <ComponentEditPanel editor={componentEditor} />}
+      {!embedded && (query.error || query.liveError || frameError || (message && !compose && !selectedInteractionId)) ? <View style={{ position: "absolute", left: 8, right: 8, top: 8 }}><Notice error text={query.error ? "连接暂时中断。当前是上次收到的内容，尚未确认最新状态。" : query.liveError ? errorMessage(query.liveError) : frameError || message || ""} /></View> : null}
+      {compose || selectedInteractionId ? <BoardComposerSurface embeddedTitle={embedded ? `${board.title} · ${host.label}` : undefined} onClose={closePopover} onHeight={setPopoverHeight} placement={popover}>
         <View style={{ flexDirection: "row", alignItems: "center", padding: 8, gap: 8, borderBottomWidth: 1, borderColor: c.border }}><Text style={{ color: c.foreground, fontWeight: "600", flex: 1 }}>{compose ? "发给 agent" : "这里的讨论"}</Text>{compose ? <Action testID="board-draft-dismiss" label="收起" disabled={sending} onPress={closePopover} /> : !canRenderFrames ? <Action label="关闭" disabled={sending} onPress={closePopover} /> : null}</View>
         <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ padding: 12, gap: 16 }} keyboardShouldPersistTaps="handled">
           {interactionLocation && interactionLocation.id === selectedInteractionId && interactionLocation.location !== "component" ? <Copy small muted>{({ collapsed: "组件当前不可见 · 标记跟随可见外层", ancestor: "原内容不可见 · 标记暂随可见外层", hidden: "组件当前隐藏 · 可从侧栏请求定位", snapshot: "未定位到当前组件 · 可查看原始引用" })[interactionLocation.location]}</Copy> : null}
-          {thread.map(item => <InteractionContent key={item.id} item={item} board={board} frameTheme={frameTheme} unconfirmed={!board.interactions.some(saved => saved.id === item.id)} onLocate={id => locateInteraction(interactionMarkerId(item.id, id))} onRetry={() => retryUnconfirmed(item)} onFollow={(kind, text, resolve) => openCompose(kind, item, text, resolve)} onOpenAgent={() => { if (item.agentId && navigation) navigation.openAgent({ agentId: item.agentId }); }} />)}
+          {thread.map(item => <InteractionContent key={item.id} item={item} board={board} frameTheme={frameTheme} unconfirmed={!board.interactions.some(saved => saved.id === item.id)} onLocate={id => locateInteraction(interactionMarkerId(item.id, id))} onRetry={() => retryUnconfirmed(item)} onFollow={(kind, text, resolve) => openCompose(kind, item, text, resolve)} onOpenAgent={() => { if (item.agentId && navigation) navigation.openAgent({ agentId: item.agentId, serverId: host.id }); }} />)}
           {compose ? <View style={{ gap: 10 }}>
             {!thread.length ? <AnchorPreview anchor={compose.anchor} compact captureStatus={compose.captureStatus} /> : null}
             {compose.captureStatus ? <View style={{ minHeight: 36 }}><Copy small muted>{compose.captureStatus === "pending" ? "截图准备中；现在发送会保留文字和位置，不附图片。" : compose.captureStatus === "failed" ? `截图失败：${captureFailureNames[compose.captureFailureReason ?? "generation-failed"]}文字和位置已保留。` : compose.captureStatus === "omitted" ? "此次发送不附图片，保留原来的文字和位置。" : "已附选区截图。"}</Copy></View> : null}
@@ -506,20 +542,27 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
 ⌘ / Ctrl + Option / Alt + Enter 新 Side · Shift+Enter 换行</Copy>
           </View> : null}
         </ScrollView>
-      </View> : null}
+      </BoardComposerSurface> : null}
     </View>
-    {canRenderFrames ? <DiscussionRail markers={markers} compact={stageWidth < 720} selectedId={selectedInteractionId} disabled={sending || Boolean(compose)} statusNames={statusNames} onOpen={locateInteraction} /> : null}
+    {canRenderFrames && !embedded ? <DiscussionRail markers={markers} compact={stageWidth < 720} selectedId={selectedInteractionId} disabled={sending || Boolean(compose)} statusNames={statusNames} onOpen={locateInteraction} /> : null}
     </View>
-    <View style={{ paddingHorizontal: 12, paddingVertical: 5, borderTopWidth: 1, borderColor: c.border, flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
+    {!embedded ? <View style={{ paddingHorizontal: 12, paddingVertical: 5, borderTopWidth: 1, borderColor: c.border, flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}><BoardConnectionStatus status={query.error ? "disconnected" : query.liveStatus} /><Copy small muted>r{board.revision} · {timeLabel(board.updatedAt)}</Copy></View>
       {staged.length || batchSnapshot.batches.length || batchSnapshot.issues.length ? <Action testID="board-comments-open" label={staged.length ? `待发送 ${staged.length} 条` : "核对评论发送"} disabled={sending} onPress={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current) setDrawer("drafts"); }} /> : null}
-    </View>
-    <Modal title="导出与发布" open={releaseOpen} onOpenChange={setReleaseOpen}><Modal.Content>
+    </View> : null}
+    {!embedded ? <>
+      <CompositionSourceSync parent={sourceRef} controller={sources} />
+      <CompositionEmbeds parent={sourceRef} parentCreatedAt={board.createdAt} mounts={compositionMounts} sources={sources.data} theme={theme} layout={layout} navigation={navigation} />
+      <Modal title="组合来源" open={sourcesOpen} onOpenChange={setSourcesOpen}><Modal.Content><BoardServicesBoundary services={services}>
+        <ColorContext.Provider value={c}>{sourcesOpen ? <CompositionSourcesPanel parent={sourceRef} controller={sources} /> : null}</ColorContext.Provider>
+      </BoardServicesBoundary></Modal.Content></Modal>
+    </> : null}
+    <Modal title="导出与发布" open={releaseOpen} onOpenChange={setReleaseOpen}><Modal.Content><BoardServicesBoundary services={services}>
       <ColorContext.Provider value={c}>
       {releaseOpen ? <ReleasePanel board={board} hostId={host.id} onOpenBoard={id => leaveBoard(() => { setReleaseOpen(false); if (onOpenBoard) onOpenBoard(id); else onBack(); })} /> : null}
       </ColorContext.Provider>
-    </Modal.Content></Modal>
-    <Modal title={drawer === "decisions" ? "Agent 做过的默认决策" : drawer === "threads" ? "围绕画布的讨论" : drawer === "drafts" ? "待发送与本机草稿" : "发生了什么变化"} open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }}><Modal.Content>
+    </BoardServicesBoundary></Modal.Content></Modal>
+    <Modal title={drawer === "decisions" ? "Agent 做过的默认决策" : drawer === "threads" ? "围绕画布的讨论" : drawer === "drafts" ? "待发送与本机草稿" : "发生了什么变化"} open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }}><Modal.Content><BoardServicesBoundary services={services}>
       <ColorContext.Provider value={c}>
       {drawer === "decisions" ? <DecisionList board={board} onUpdate={updateDecision} onQuestion={decision => { if (composeRef.current) cancelCompose(); if (composeRef.current) return; setDrawer(null); const draft: Compose = { kind: "question", text: `关于这个 agent 决策：${decision.choice}\n\n`, anchor: { kind: "element", boardRevision: board.revision, canvasRevision: board.canvas.revision, text: decision.choice, selector: decision.related[0] } }; setSelectedInteractionId(undefined); setPopoverPoint(anchorPoint(draft.anchor)); changeCompose(draft, anchorPoint(draft.anchor)); }} /> : null}
       {drawer === "drafts" ? <View testID="board-drafts" style={{ gap: 16 }}>
@@ -577,7 +620,7 @@ function BoardContent({ boardId, host, theme, onBack, navigation, onOpenBoard }:
       </View> : null}
       {drawer === "history" ? <View style={{ gap: 14 }}>{[...board.events].reverse().slice(0, 100).map(event => <View key={event.id} style={{ gap: 3 }}><Copy>{event.summary}</Copy><Copy muted small>r{event.revision} · {event.source} · {timeLabel(event.at)}</Copy></View>)}{!board.events.length ? <Copy muted>还没有变化。</Copy> : null}</View> : null}
       </ColorContext.Provider>
-    </Modal.Content></Modal>
+    </BoardServicesBoundary></Modal.Content></Modal>
   </View>;
 }
 
@@ -643,4 +686,22 @@ function DecisionList({ board, onUpdate, onQuestion }: { board: Board; onUpdate(
     </View>)}
     <Action label={showDismissed ? "隐藏已排除与被取代的决策" : "查看已排除与被取代的决策"} onPress={() => setShowDismissed(value => !value)} />
   </View>;
+}
+
+/** Embedded canvases keep their actual iframe mounted inside the authored slot.
+ * Only their trusted conversation UI is portalled into the host. */
+function BoardComposerSurface({ embeddedTitle, onClose, onHeight, placement, children }: {
+  embeddedTitle?: string; onClose(): void; onHeight(height: number): void;
+  placement: ReturnType<typeof popoverPlacement>; children: ReactNode;
+}) {
+  const c = useColors();
+  const services = useBoardServices();
+  if (embeddedTitle) return <Modal title={embeddedTitle} open onOpenChange={open => { if (!open) onClose(); }}><Modal.Content><BoardServicesBoundary services={services}>
+    <ColorContext.Provider value={c}><View testID="board-embedded-composer" style={{ maxHeight: 700 }}>{children}</View></ColorContext.Provider>
+  </BoardServicesBoundary></Modal.Content></Modal>;
+  return <View testID="board-local-popover" accessibilityLabel="原位交流" onLayout={event => onHeight(event.nativeEvent.layout.height)} style={{ position: "absolute", ...placement, borderWidth: 1, borderColor: c.border, borderRadius: 12, backgroundColor: c.surface0, overflow: "hidden", shadowColor: "#000", shadowOpacity: 0.22, shadowRadius: 16, shadowOffset: { width: 0, height: 5 }, elevation: 10 }}>{children}</View>;
+}
+
+function BoardServicesBoundary({ services, children }: { services?: BoardServices; children: ReactNode }) {
+  return services ? <BoardServicesProvider services={services}>{children}</BoardServicesProvider> : <>{children}</>;
 }

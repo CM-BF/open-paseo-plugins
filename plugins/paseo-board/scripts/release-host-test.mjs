@@ -71,6 +71,7 @@ let seq = 0;
 let buffer = '';
 const commands = new Map();
 const logs = [];
+const downloadEvents = [], downloadListeners = new Set();
 chrome.stdio[4].on('data', (chunk) => {
   buffer += chunk.toString();
   let end;
@@ -79,6 +80,9 @@ chrome.stdio[4].on('data', (chunk) => {
     if (message.id && commands.has(message.id)) {
       const entry = commands.get(message.id); commands.delete(message.id); clearTimeout(entry.timer);
       message.error ? entry.reject(new Error(message.error.message)) : entry.resolve(message.result);
+    } else if (message.method === 'Browser.downloadWillBegin' || message.method === 'Browser.downloadProgress') {
+      downloadEvents.push({ method: message.method, ...message.params });
+      for (const listener of [...downloadListeners]) listener();
     } else if (message.method === 'Runtime.exceptionThrown') logs.push(message.params.exceptionDetails);
   }
 });
@@ -87,6 +91,25 @@ const send = (method, params = {}, sessionId) => new Promise((resolve, reject) =
   const timer = setTimeout(() => { commands.delete(id); reject(new Error(`CDP timeout: ${method}`)); }, 20000);
   commands.set(id, { resolve, reject, timer });
   chrome.stdio[3].write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + '\0');
+});
+// A click or completed RPC is not a completed browser download. Match the
+// native GUID begun after this click and wait for its terminal browser receipt.
+const completedDownload = (since, fileName, timeout = 15000) => new Promise((resolve, reject) => {
+  let timer;
+  const finish = (error, value) => { clearTimeout(timer); downloadListeners.delete(check); error ? reject(error) : resolve(value); };
+  const check = () => {
+    const begins = downloadEvents.slice(since).filter(event => event.method === 'Browser.downloadWillBegin' && event.suggestedFilename === fileName);
+    if (begins.length > 1) { finish(new Error('One download click began multiple matching downloads')); return; }
+    if (!begins.length) return;
+    const begin = begins[0], terminal = downloadEvents.slice(since).find(event => event.method === 'Browser.downloadProgress' && event.guid === begin.guid && ['completed', 'canceled'].includes(event.state));
+    if (!terminal) return;
+    if (terminal.state !== 'completed') { finish(new Error('Browser download canceled: ' + JSON.stringify({ begin, terminal }))); return; }
+    const filePath = terminal.filePath ?? join(downloads, fileName);
+    if (dirname(filePath) !== downloads) { finish(new Error('Completed download escaped the owned directory')); return; }
+    finish(undefined, { ...terminal, filePath, suggestedFilename: begin.suggestedFilename });
+  };
+  timer = setTimeout(() => finish(new Error('Browser download did not complete: ' + JSON.stringify(downloadEvents.slice(since)))), timeout);
+  downloadListeners.add(check); check();
 });
 let passed = 0;
 const check = (name) => { passed++; console.log(`PASS ${name}`); };
@@ -147,7 +170,7 @@ try {
     check('A failed version preview clears the old preview and publication controls; reselecting a valid version restores its exact scope and requires fresh confirmation');
   };
   const screenshot=async name=>{if(process.env.BOARD_RELEASE_SCREENSHOT_DIR){const shot=await command('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.BOARD_RELEASE_SCREENSHOT_DIR,name+'.png'),Buffer.from(shot.data,'base64'))}};
-  await command('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:downloads});
+  await command('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:downloads,eventsEnabled:true});
   await command('Page.navigate',{url:origin+'/?drafts=1'});await open();
   await replace('input[aria-label="发布名称"]','Publication copy fixture');await click(button('复制为发布 Board'));
   await until('hostFixture.backCalls===1');assert.equal(copiedBoards.length,1);assert.equal(copiedBoards[0].title,'Publication copy fixture');
@@ -167,10 +190,11 @@ try {
   check('Public data starts empty; invalid JSON objects never invoke export, and the actual static snapshot previews in a sandbox without inheriting private Board data');
   await evaluate('hostFixture.updateCanvas();true');await until("document.body.textContent.includes('r2')");
   const fixed=await repository.read(frozen.manifest.releaseId);assert.deepEqual(fixed,frozen);
+  const downloadStart = downloadEvents.length;
   await click(button('下载 ZIP'));
-  await evaluate('new Promise(resolve=>setTimeout(resolve,150))');
+  const downloaded = await completedDownload(downloadStart, frozen.manifest.releaseId + '.zip');
   const zipNames=(await readdir(downloads)).filter(n=>n.endsWith('.zip'));assert.equal(zipNames.length,1);
-  const bytes=await readFile(join(downloads,zipNames[0]));assert.equal(bytes.readUInt32LE(0),0x04034b50);
+  const bytes=await readFile(downloaded.filePath);assert.equal(bytes.length,downloaded.receivedBytes);assert.equal(bytes.length,downloaded.totalBytes);assert.equal(bytes.readUInt32LE(0),0x04034b50);
   const entries={};let offset=0;while(bytes.readUInt32LE(offset)===0x04034b50){const size=bytes.readUInt32LE(offset+18),nameLength=bytes.readUInt16LE(offset+26),extra=bytes.readUInt16LE(offset+28),name=bytes.subarray(offset+30,offset+30+nameLength).toString(),start=offset+30+nameLength+extra;entries[name]=bytes.subarray(start,start+size).toString();offset=start+size}
   assert.deepEqual(entries,frozen.files);assert.ok(!JSON.stringify(entries).includes('owner-fixture'));
   check('Editing the working Board leaves the selected snapshot unchanged, and a real browser ZIP download contains exactly its frozen public files');
@@ -269,12 +293,13 @@ try {
   assert.equal(count('board.pages.publish'),beforeRecovery+1);assert.equal(calls.filter(c=>c.name==='board.pages.publish').at(-1).input.eventId,legacy.eventId);
   check('An authorized unknown result keeps tracking background recovery to a verified URL with no second click, and publishing an existing live snapshot reuses its original event');
   await command('Emulation.setDeviceMetricsOverride',{width:420,height:860,deviceScaleFactor:1,mobile:false});
-  await click(button('下载 ZIP'));await screenshot('release-compact');
+  const compactDownloadStart=downloadEvents.length;
+  await click(button('下载 ZIP'));await completedDownload(compactDownloadStart,secondRelease.manifest.releaseId+'.zip');await screenshot('release-compact');
   assert.ok(await evaluate("(()=>{const p=document.querySelector('[role=dialog]').getBoundingClientRect();return p.width>0&&p.left>=0&&p.right<=innerWidth})()"));
   check('The publication panel and download action remain reachable at a compact desktop viewport');
   }
   console.log(`Release host integration: ${passed} checks passed (actual static/copy core; adapted GitHub and Paseo transport, no external publication).`);
-} catch(error){console.error('Release host failed:',error);console.error('Browser exceptions:',JSON.stringify(logs).slice(-4000));console.error('RPC calls:',JSON.stringify(calls.map(c=>({name:c.name,input:c.input}))).slice(-7000));process.exitCode=1}
+} catch(error){console.error('Release host failed:',error);console.error('Browser exceptions:',JSON.stringify(logs).slice(-4000));console.error('Download events:',JSON.stringify(downloadEvents));console.error('RPC calls:',JSON.stringify(calls.map(c=>({name:c.name,input:c.input}))).slice(-7000));process.exitCode=1}
 finally{
   for(const timer of publicationTimers)clearTimeout(timer);
   try{process.kill(-chrome.pid,'SIGKILL')}catch{}

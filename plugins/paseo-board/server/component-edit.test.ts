@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DOMParser } from "linkedom";
@@ -7,6 +7,7 @@ import { BoardStore } from "./store";
 import { describeAuthoring } from "./authored-source";
 import { componentIdentityFor } from "../shared/component-identity";
 import { EditInputSchema, type Board, type EditInput } from "../shared/contracts";
+import { serialized } from "./store-format";
 
 const base = (board: Board) => ({ revision: board.canvas.revision, documentVersion: board.canvas.documentVersion });
 const documentFor = (board: Board) => {
@@ -76,6 +77,30 @@ describe("durable user component edits", () => {
     await expect(store.edit({ ...request(moved, "text", "#heading"), patch: { ...request(moved, "text", "#heading").patch, id: move.patch.id } })).rejects.toMatchObject({ code: "idempotency_conflict" });
     const envelope = JSON.parse(await readFile(join(root, "boards", "fixture.json"), "utf8"));
     expect(envelope.history.filter((entry: { operation: string }) => entry.operation === "edit")).toHaveLength(1);
+  });
+
+  it("rejects an old queued edit under the lock even when replacement canvas versions and source identity match", async () => {
+    const initial = await create(), input = { ...request(initial, "text", "#heading"), expectedCreatedAt: initial.createdAt };
+    const path = join(root, "boards", `${initial.id}.json`);
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; }), released = new Promise<void>(resolve => { release = resolve; });
+    let replacementBytes = "";
+    const replacing = serialized(path, async () => {
+      enter(); await released;
+      const envelope = JSON.parse(await readFile(path, "utf8"));
+      envelope.board.createdAt = new Date(Date.parse(initial.createdAt) + 1000).toISOString();
+      replacementBytes = JSON.stringify(envelope); await writeFile(path, replacementBytes);
+    });
+    await entered;
+    const rejected = expect(store.edit(input)).rejects.toMatchObject({ code: "board_identity_changed" });
+    release(); await replacing; await rejected;
+    expect(await readFile(path, "utf8")).toBe(replacementBytes);
+    const current = (await store.read(initial.id))!;
+    const valid = { ...input, expectedCreatedAt: current.createdAt };
+    expect(documentFor(await store.edit(valid)).querySelector("#heading")!.textContent).toBe("Changed");
+    expect(await store.edit(valid)).toEqual(await store.read(initial.id));
+    // The precondition also runs before returning a successful historical receipt.
+    await expect(store.edit(input)).rejects.toMatchObject({ code: "board_identity_changed" });
   });
 
   it("lets only one concurrent change from the same source canvas commit", async () => {
@@ -159,6 +184,29 @@ describe("durable user component edits", () => {
     expect(await new BoardStore(root).edit(copy)).toEqual(copied);
     const collision = request(copied, "copy", "#a");
     await expect(store.edit(collision)).rejects.toMatchObject({ code: "edit_conflict" });
+  });
+
+  it("copies managed Board declarations with unique stable slots and preserves their source references across cold replay", async () => {
+    const initial = await create('<main><section id="a"><paseo-board slot-id="original" host-id="remote" board-id="source"></paseo-board><paseo-board id="fallback" board-id="local"></paseo-board><paseo-board board-id="anonymous"></paseo-board></section><section id="right"></section></main>');
+    const copy = request(initial, "copy", "#a");
+    const copied = await store.edit(copy);
+    const document = documentFor((await new BoardStore(root).read(initial.id))!);
+    const cloned = Array.from(document.querySelectorAll("#right paseo-board")) as Array<{ getAttribute(name: string): string | null }>;
+    expect(cloned.map(node => node.getAttribute("slot-id"))).toEqual(["copied-slot-0", "copied-slot-1", "copied-slot-2"]);
+    expect(cloned.map(node => [node.getAttribute("host-id"), node.getAttribute("board-id")])).toEqual([["remote", "source"], [null, "local"], [null, "anonymous"]]);
+    expect(document.querySelector('#a [slot-id="original"]')).not.toBeNull();
+    expect(document.querySelector("#a #fallback")!.hasAttribute("slot-id")).toBe(false);
+    expect(copied.canvas.patches[0].html).toContain('slot-id="copied-slot-2"');
+    expect(await new BoardStore(root).edit(copy)).toEqual(copied);
+    const next = await store.edit(request(copied, "copy", "#a", { copyIdPrefix: "second" }));
+    expect((Array.from(documentFor(next).querySelectorAll("#right paseo-board")) as Array<{ getAttribute(name: string): string | null }>).map(node => node.getAttribute("slot-id")))
+      .toEqual(["copied-slot-0", "copied-slot-1", "copied-slot-2", "second-slot-0", "second-slot-1", "second-slot-2"]);
+  });
+
+  it.each(["slot-id", "id"])("rejects managed copy slot collisions with existing %s without persisting an edit", async attribute => {
+    const initial = await create(`<main><section id="a"><paseo-board slot-id="source-slot" board-id="source"></paseo-board></section><paseo-board ${attribute}="copied-slot-0" board-id="another"></paseo-board><section id="right"></section></main>`);
+    await expect(store.edit(request(initial, "copy", "#a"))).rejects.toMatchObject({ code: "edit_conflict" });
+    expect(await store.read(initial.id)).toEqual(initial);
   });
 
   it("permits safe anonymous authored targets without introducing IDs or a component registry", async () => {

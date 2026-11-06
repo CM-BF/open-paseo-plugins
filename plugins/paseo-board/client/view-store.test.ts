@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CanvasViewState } from "../shared/frame-contract";
 import type { DraftStorage } from "./draft-store";
-import { BOARD_VIEW_MAX_BYTES, BOARD_VIEW_MAX_RECORDS, BOARD_VIEW_STORAGE_KEY, createBoardViewStore, type BoardEntryScope, type BoardViewTab } from "./view-store";
+import { BOARD_VIEW_MAX_BYTES, BOARD_VIEW_MAX_RECORDS, BOARD_VIEW_MAX_INSTANCE_LENGTH, BOARD_VIEW_STORAGE_KEY, createBoardViewStore, type BoardEntryScope, type BoardViewTab } from "./view-store";
 
 function storage() {
   const values = new Map<string, string>();
@@ -95,6 +95,99 @@ describe("local Board navigation hints", () => {
     store.writeBoardView("host", "board", { ...view(), documentVersion: 3 }, true);
     expect(fresh.readBoardView("host", "board", 2)).toBeUndefined();
     expect(fresh.readBoardView("host", "board", 3)?.follow).toBe(true);
+  });
+
+  it("preserves legacy ordinary visits and independently restores each embedded instance after reload", () => {
+    const { db, values } = storage();
+    const legacy = { kind: "view", hostId: "host", boardId: "board", view: view(10), follow: true };
+    values.set(BOARD_VIEW_STORAGE_KEY, JSON.stringify({ version: 1, records: [legacy] }));
+    const first = createBoardViewStore(db);
+    const left = JSON.stringify(["parent-host", "parent-board", "left-slot"]);
+    const right = JSON.stringify(["parent-host", "another-parent", "left-slot"]);
+    expect(first.readBoardView("host", "board", 2, left)).toBeUndefined();
+    first.writeBoardView("host", "board", view(230), false, left);
+    first.writeBoardView("host", "board", view(610), true, right);
+    const fresh = createBoardViewStore(db);
+    expect(fresh.readBoardView("host", "board", 2)).toEqual({ view: view(10), follow: true });
+    expect(fresh.readBoardView("host", "board", 2, left)).toEqual({ view: view(230), follow: false });
+    expect(fresh.readBoardView("host", "board", 2, right)).toEqual({ view: view(610), follow: true });
+    expect(fresh.readBoardView("other-host", "board", 2, left)).toBeUndefined();
+    expect(fresh.readBoardView("host", "other-board", 2, left)).toBeUndefined();
+    const detached = fresh.readBoardView("host", "board", 2, left)!;
+    detached.view.scrolls[0].y = 999;
+    expect(fresh.readBoardView("host", "board", 2, left)?.view.scrolls[0].y).toBe(90);
+    first.writeBoardView("host", "board", { ...view(20), documentVersion: 3 }, true, left);
+    expect(fresh.readBoardView("host", "board", 2, left)).toBeUndefined();
+    expect(fresh.readBoardView("host", "board", 3, left)?.view.y).toBe(20);
+    expect(fresh.readBoardView("host", "board", 2, right)?.view.y).toBe(610);
+    expect(fresh.readBoardView("host", "board", 2)?.view.y).toBe(10);
+    const saved = JSON.parse(values.get(BOARD_VIEW_STORAGE_KEY)!);
+    expect(saved.version).toBe(1);
+    // Previous clients recognize only kind=view and therefore cannot mistake
+    // either embedded position for the source Board's normal reading position.
+    expect(saved.records.filter((record: { kind: string }) => record.kind === "view")).toEqual([legacy]);
+    expect(saved.records.filter((record: { kind: string }) => record.kind === "instance-view")).toHaveLength(2);
+  });
+
+  it("merges independent instance writes and preserves their own latest positions across storage refusal", () => {
+    const { db } = storage(), first = createBoardViewStore(db), second = createBoardViewStore(db);
+    first.writeBoardView("host", "board", view(10), true);
+    first.writeBoardView("host", "board", view(100), true, "parent-a:slot");
+    second.writeBoardView("host", "board", view(200), false, "parent-b:slot");
+    const save = db.setItem;
+    db.setItem = () => { throw Error("QuotaExceededError"); };
+    first.writeBoardView("host", "board", view(125), false, "parent-a:slot");
+    expect(first.readBoardView("host", "board", 2, "parent-a:slot")?.view.y).toBe(125);
+    expect(second.readBoardView("host", "board", 2, "parent-a:slot")?.view.y).toBe(100);
+    expect(first.readBoardView("host", "board", 2, "parent-b:slot")?.view.y).toBe(200);
+    db.setItem = save; first.flush();
+    const fresh = createBoardViewStore(db);
+    expect(fresh.readBoardView("host", "board", 2)).toEqual({ view: view(10), follow: true });
+    expect(fresh.readBoardView("host", "board", 2, "parent-a:slot")).toEqual({ view: view(125), follow: false });
+    expect(fresh.readBoardView("host", "board", 2, "parent-b:slot")).toEqual({ view: view(200), follow: false });
+  });
+
+  it("rejects malformed instance keys instead of falling back to the ordinary Board position", () => {
+    const { db, values } = storage(), store = createBoardViewStore(db);
+    store.writeBoardView("host", "board", view(44), false);
+    const original = values.get(BOARD_VIEW_STORAGE_KEY);
+    for (const instance of ["", "x".repeat(BOARD_VIEW_MAX_INSTANCE_LENGTH + 1), null, 1, {}]) {
+      store.writeBoardView("host", "board", view(999), true, instance as string);
+      expect(store.readBoardView("host", "board", 2, instance as string)).toBeUndefined();
+      expect(values.get(BOARD_VIEW_STORAGE_KEY)).toBe(original);
+    }
+    const records = JSON.parse(original!).records;
+    values.set(BOARD_VIEW_STORAGE_KEY, JSON.stringify({ version: 1, records: [
+      ...records, { kind: "instance-view", hostId: "host", boardId: "board", view: view(999), follow: true },
+      { kind: "instance-view", hostId: "host", boardId: "board", instance: "", view: view(998), follow: true },
+    ] }));
+    const fresh = createBoardViewStore(db);
+    expect(fresh.readBoardView("host", "board", 2)).toEqual({ view: view(44), follow: false });
+    expect(fresh.readBoardView("host", "board", 2, "missing")).toBeUndefined();
+    const longest = "x".repeat(BOARD_VIEW_MAX_INSTANCE_LENGTH);
+    fresh.writeBoardView("host", "board", view(6), true, longest);
+    expect(createBoardViewStore(db).readBoardView("host", "board", 2, longest)?.view.y).toBe(6);
+  });
+
+  it("shares the existing record and byte budget across instances and replaces only the matching slot", () => {
+    const { db, values } = storage(), store = createBoardViewStore(db);
+    values.set("unrelated-drafts", "preserved");
+    for (let n = 0; n <= BOARD_VIEW_MAX_RECORDS; n++) store.writeBoardView("host", "board", view(n), true, `slot-${n}`);
+    expect(JSON.parse(values.get(BOARD_VIEW_STORAGE_KEY)!).records).toHaveLength(BOARD_VIEW_MAX_RECORDS);
+    expect(store.readBoardView("host", "board", 2, "slot-0")).toBeUndefined();
+    expect(store.readBoardView("host", "board", 2, "slot-64")?.view.y).toBe(64);
+    const large = { ...view(), scrolls: Array.from({ length: 24 }, (_, n) => ({ selector: "#" + "a".repeat(400) + n, x: 0, y: 20 })) };
+    for (let n = 0; n < BOARD_VIEW_MAX_RECORDS; n++) store.writeBoardView("host", "board", large, false, `slot-${n}`);
+    for (let n = 0; n < 20; n++) store.writeBoardView("host", "board", view(n), false, "slot-63");
+    store.writeBoardView("host", "board", view(77), true); store.flush();
+    const encoded = values.get(BOARD_VIEW_STORAGE_KEY)!, saved = JSON.parse(encoded).records;
+    expect(encoded.length * 2).toBeLessThanOrEqual(BOARD_VIEW_MAX_BYTES);
+    expect(saved.length).toBeLessThanOrEqual(BOARD_VIEW_MAX_RECORDS);
+    expect(saved.filter((item: { kind: string; instance?: string }) => item.kind === "instance-view" && item.instance === "slot-63")).toHaveLength(1);
+    const fresh = createBoardViewStore(db);
+    expect(fresh.readBoardView("host", "board", 2, "slot-63")?.view.y).toBe(19);
+    expect(fresh.readBoardView("host", "board", 2)?.view.y).toBe(77);
+    expect(values.get("unrelated-drafts")).toBe("preserved");
   });
 
   it("rejects corrupt, oversized, mismatched and invalid geometry without touching drafts or throwing", () => {

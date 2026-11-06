@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
-import { usePaseo, useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { useBoardPaseo, useBoardRpc, useBoardServices } from "./transport";
 import { Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
 import { createBoardRpc } from "../shared/contracts";
 import { Action, ColorContext, Copy, Notice, errorMessage, localId, timeLabel, useColors } from "./ui";
@@ -45,8 +46,9 @@ function RememberedBoardHome(props: Props & { entryScope: BoardEntryScope }) {
 
 function BoardIndex({ host, workspaceId, agentId, onSelect }: Props & { onSelect(id: string): void }) {
   const c = useColors();
-  const create = useRpc(createBoardRpc);
-  const paseo = usePaseo();
+  const create = useBoardRpc(createBoardRpc, host.id);
+  const paseo = useBoardPaseo(host.id);
+  const services = useBoardServices(host.id);
   const boards = useBoardList(host.id, workspaceId);
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState("");
@@ -54,7 +56,12 @@ function BoardIndex({ host, workspaceId, agentId, onSelect }: Props & { onSelect
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [draftId, setDraftId] = useState(() => localId("board"));
-  const agents = useQuery({ queryKey: ["paseo-board-owners", host.id], queryFn: () => paseo.agents.list(), enabled: creating });
+  const agents = useQuery({ queryKey: ["paseo-board-owners", host.id, services?.generation ?? null], queryFn: async () => {
+    if (services && !services.isCurrent()) throw new Error("Board host connection changed");
+    const result = await paseo.agents.list();
+    if (services && !services.isCurrent()) throw new Error("Board host connection changed");
+    return result;
+  }, enabled: creating });
   const newBoard = async () => {
     if (pending || !title.trim() || !owner) return;
     setPending(true); setFailure(null);

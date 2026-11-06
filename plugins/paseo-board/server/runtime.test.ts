@@ -3,10 +3,15 @@ import { mkdtemp, readFile, rm, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { z } from "zod";
+import { FeedInputSchema } from "../shared/contracts";
 import { BoardStore } from "./store";
 import { ServiceJournal } from "./journal";
 import { BoardService } from "./service";
 import { BoardBridge } from "./bridge";
+import { CompositionSources } from "./composition";
 import { runtimePaths, writeRuntime } from "./runtime";
 import { boardInstructions, replaceInstructions } from "./prompts";
 
@@ -43,13 +48,26 @@ function toolValue(reply: Record<string, unknown>) {
   return JSON.parse(result.content.find(item => item.type === "text")!.text);
 }
 
+async function sdkMcpClient(executable: string, binding: string) {
+  const client = new Client({ name: "paseo-board-runtime-test", version: "1.0.0" });
+  const transport = new StdioClientTransport({ command: executable, env: { PASEO_BOARD_BINDING: binding }, stderr: "pipe" });
+  try {
+    await client.connect(transport, { timeout: 3000 });
+    return client;
+  } catch (error) {
+    await transport.close();
+    throw error;
+  }
+}
+
 describe("installed CLI and stdio MCP transport", () => {
-  let dir: string; let service: BoardService; let bridge: BoardBridge;
+  let dir: string; let service: BoardService; let bridge: BoardBridge; let composition: CompositionSources;
   beforeEach(async () => {
     dir = await mkdtemp("/tmp/pb-");
     const store = new BoardStore(join(dir, "data")); await store.init();
     const journal = new ServiceJournal(join(dir, "data", "service.json")); await journal.init();
     service = new BoardService(store, journal, () => undefined); bridge = new BoardBridge(service);
+    composition = new CompositionSources(join(dir, "composition"), store, async () => "local"); service.useComposition(composition);
     await writeRuntime(runtimePaths(dir)); await bridge.start(runtimePaths(dir).socket);
   });
   afterEach(async () => { await bridge.close(); await service.dispose(); await rm(dir, { recursive: true, force: true }); });
@@ -80,6 +98,29 @@ describe("installed CLI and stdio MCP transport", () => {
     const answered = await invoke("respond", { boardId: "cli-board", interactionId: "visual-question", expectedResponseRevision: 0, eventId: "visual-answer", response: "Interactive reply", htmlFile: html });
     expect(answered).toMatchObject({ id: "visual-question", status: "answered", responseRevision: 1, responseCanvas: { html: expect.stringContaining("globalThis.count=0") } });
     expect((await stat(paths.socket)).mode & 0o777).toBe(0o600);
+  });
+
+  it("reads user-approved composition sources through real CLI and bound stdio MCP without exposing grants", async () => {
+    const paths = runtimePaths(dir);
+    await service.store.create({ id: "monitor", title: "Monitor", ownerAgentId: "owner" });
+    await service.store.create({ id: "source", title: "Source", ownerAgentId: "other", html: "<p>Live stored result</p>" });
+    await service.journal.bind("composition-owner", { agentId: "owner", cwd: dir });
+    const env = { ...process.env, PASEO_BOARD_BINDING: "composition-owner" };
+    const input = JSON.stringify({ boardId: "monitor", source: { hostId: "local", boardId: "source" } });
+    await expect(exec(paths.cli, ["source", "read", "--json", input], { env, timeout: 5000 })).rejects.toMatchObject({ stderr: expect.stringContaining("source_not_authorized") });
+    await composition.set({ boardId: "monitor", expectedRevision: 0, sources: [{ hostId: "local", boardId: "source", sourceCreatedAt: (await service.store.read("source"))!.createdAt }] });
+    const cli = await exec(paths.cli, ["source", "read", "--json", input], { env, timeout: 5000 });
+    expect(JSON.parse(cli.stdout)).toMatchObject({ freshness: "read-now", snapshot: { text: "Live stored result" } });
+    const client = await sdkMcpClient(paths.mcp, "composition-owner");
+    try {
+      const tools = await client.listTools();
+      expect(tools.tools.map(tool => tool.name)).toEqual(expect.arrayContaining(["board_sources", "board_read_source"]));
+      const listed = toolValue({ result: await client.callTool({ name: "board_sources", arguments: { boardId: "monitor" } }) });
+      expect(listed).toMatchObject({ revision: 1, sources: [{ ref: { hostId: "local", boardId: "source" } }] });
+      expect(toolValue({ result: await client.callTool({ name: "board_read_source", arguments: JSON.parse(input) }) })).toMatchObject({ provenance: "local-store" });
+      expect(await client.callTool({ name: "board_set_sources", arguments: { boardId: "monitor", sources: [] } })).toHaveProperty("isError", true);
+      expect(await client.callTool({ name: "board_read", arguments: { boardId: "source" } })).toHaveProperty("isError", true);
+    } finally { await client.close(); }
   });
 
   it("recovers fragment root additions through the real CLI/MCP read path and rejects root removal before committing", async () => {
@@ -182,14 +223,19 @@ describe("installed CLI and stdio MCP transport", () => {
 
   it("serves standard stdio MCP messages and binds mutations to the launch identity", async () => {
     const paths = runtimePaths(dir); await service.journal.bind("token-owner", { agentId: "owner", cwd: dir });
-    const { call, close } = mcpClient(paths.mcp, "token-owner");
+    const client = await sdkMcpClient(paths.mcp, "token-owner");
+    const call = async (_method: "tools/call", input: { name: string; arguments: Record<string, unknown> }) => ({ result: await client.callTool(input) });
     try {
-      expect(await call("initialize", { protocolVersion: "2024-11-05" })).toHaveProperty("result.serverInfo.name", "paseo-board");
-      const list = await call("tools/list");
-      expect((list.result as { tools: Array<{ name: string }> }).tools.map(tool => tool.name).sort()).toEqual([
-        "board_create", "board_decision", "board_emit", "board_feed", "board_list", "board_publish", "board_read", "board_respond",
+      expect(client.getServerVersion()?.name).toBe("paseo-board");
+      const list = await client.listTools();
+      expect(list.tools.map(tool => tool.name).sort()).toEqual([
+        "board_create", "board_decision", "board_emit", "board_feed", "board_list", "board_publish", "board_read", "board_read_source", "board_respond", "board_sources",
       ]);
-      const respond = (list.result as { tools: Array<{ name: string; description: string }> }).tools.find(tool => tool.name === "board_respond")!;
+      expect(list.tools.every(tool => tool.inputSchema.type === "object")).toBe(true);
+      const { type, ...feedSchema } = list.tools.find(tool => tool.name === "board_feed")!.inputSchema;
+      expect(type).toBe("object");
+      expect(feedSchema).toEqual(z.toJSONSchema(FeedInputSchema, { io: "input" }));
+      const respond = list.tools.find(tool => tool.name === "board_respond")!;
       expect(respond.description).toContain("shared main canvas");
       expect(respond.description).toContain("explicitly requests a separate answer visual");
       const created = await call("tools/call", { name: "board_create", arguments: { id: "bound-board", title: "bound" } }); expect(created).not.toHaveProperty("result.isError", true);
@@ -200,12 +246,15 @@ describe("installed CLI and stdio MCP transport", () => {
       expect(toolValue(await call("tools/call", { name: "board_feed", arguments: { action: "open", boardId: "bound-board", sourceId: "mcp-records", path: "/records", mode: "records", capacity: { maxRecords: 5 }, requestId: "mcp-records-open", expectedGeneration: 0 } }))).toMatchObject({ source: { mode: "records", capacity: { maxRecords: 5 } } });
       expect(toolValue(await call("tools/call", { name: "board_feed", arguments: { action: "append", boardId: "bound-board", sourceId: "mcp-records", generation: 1, seq: 1, records: [{ arbitrary: true }, null] } }))).toMatchObject({ ack: { seq: 1, recordCount: 2 } });
       expect((await service.store.read("bound-board"))!.canvas.data.records).toEqual([{ arbitrary: true }, null]);
+      expect(toolValue(await call("tools/call", { name: "board_feed", arguments: { action: "status", boardId: "bound-board", sourceId: "mcp-source" } }))).toMatchObject({ source: { closed: false, lastAck: { seq: 1 } } });
+      expect(toolValue(await call("tools/call", { name: "board_feed", arguments: { action: "close", boardId: "bound-board", sourceId: "mcp-source", generation: 1 } }))).toMatchObject({ source: { closed: true } });
+      expect(await call("tools/call", { name: "board_feed", arguments: { action: "set", boardId: "bound-board", sourceId: "mcp-source", generation: 1, seq: 2, value: "after close" } })).toHaveProperty("result.isError", true);
       await service.store.addInteraction({ boardId: "bound-board", intentId: "owner-question", kind: "question", text: "Explain" }, "owner");
       const answered = await call("tools/call", { name: "board_respond", arguments: { boardId: "bound-board", interactionId: "owner-question", eventId: "response", expectedResponseRevision: 0, response: "Explicit answer", html: "<canvas></canvas>" } });
       expect(answered).not.toHaveProperty("result.isError", true);
       expect((await service.store.read("bound-board"))!.interactions[0]).toMatchObject({ responseSource: "explicit", response: "Explicit answer" });
       const forbidden = await call("tools/call", { name: "board_create", arguments: { id: "foreign", title: "foreign", ownerAgentId: "someone-else" } }); expect(forbidden).toHaveProperty("result.isError", true);
-    } finally { close(); }
+    } finally { await client.close(); }
   });
 
   it("enforces the same shared-canvas and per-leaf guards through two bound stdio MCP clients", async () => {

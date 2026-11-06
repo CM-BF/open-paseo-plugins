@@ -1,7 +1,8 @@
-function (initial, createFrameReceiver, createComponentLayoutTools, installComponentLayoutState) {
+function (initial, createFrameReceiver, createComponentLayoutTools, installComponentLayoutState, installCompositionRuntime) {
   "use strict";
   const root = document.documentElement;
   const scope = { channel: initial.channel, boardId: initial.boardId, sessionId: initial.sessionId };
+  const composition = installCompositionRuntime(initial);
   let snapshot = initial;
   let state = initial.userState;
   let localStateDirty = false;
@@ -29,12 +30,12 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
   const pendingAsks = new Map();
   const revealListeners = new Set();
   let markerReveal = null;
-  const post = (message) => window.parent.postMessage({ ...message, ...scope }, "*");
+  const post = (message) => composition.post({ ...message, ...scope });
   const copy = (value) => value === undefined ? undefined : structuredClone(value);
   const error = (code, message, patchId) => post({ type: "error", error: { code, message: String(message).slice(0, 4000), ...(patchId ? { patchId } : {}) } });
   const emitListeners = (listeners, value) => { for (const listener of listeners) { try { listener(copy(value)); } catch (e) { error("listener-error", e.message); } } };
   const currentAnchor = () => ({ kind: "board", boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision });
-  const acting = () => !markerReveal && performance.now() - lastGesture < 1800 && navigator.userActivation && navigator.userActivation.isActive;
+  const acting = () => !markerReveal && composition.acting() && performance.now() - lastGesture < 1800 && navigator.userActivation && navigator.userActivation.isActive;
   const cancelAsk = { status: "cancelled", outcome: null };
   const ask = (input) => {
     const request = typeof input === "string" ? { prompt: input } : input;
@@ -425,12 +426,18 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
       const value = JSON.stringify(view); lastCapture = performance.now();
       if (value !== lastValue) {
         lastValue = value;
-        if (viewPort) viewPort.postMessage({ ...scope, type: "view-state", view });
-        else post({ type: "view-state", view });
+        const capturedAt = performance.timeOrigin + performance.now();
+        if (viewPort) viewPort.postMessage({ ...scope, type: "view-state", view, capturedAt });
+        else post({ type: "view-state", view, capturedAt });
       }
     };
     const scheduleCapture = () => {
       if (captureTimer !== null || pending) return;
+      // Embedded contexts can be destroyed by their parent's next click. Sample
+      // each actual scroll before teardown; host persistence remains debounced.
+      // The timestamp lets the host retain queued real samples while rejecting
+      // a navigation-induced zero from the document being retired.
+      if (initial.compositionSecret) { capture(); return; }
       const delay = Math.max(0, 120 - (performance.now() - lastCapture));
       // Capture a new burst in this task; a zero-delay timer can otherwise run
       // after the host has already switched agents and removed the document.
@@ -1163,7 +1170,7 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
   const inComponentText = event => componentText?.host && event.composedPath().includes(componentText.host);
   const inComponents = (event) => componentHost && event.composedPath().includes(componentHost);
   const componentLabel = (node) => (node.getAttribute("data-board-component") || node.getAttribute("aria-label") || (node.id ? "#" + node.id : node.localName)).slice(0, 100);
-  const componentBoundary = (node) => authorElement(node) && node.matches('[data-board-component],[id],section,article,main,aside,nav,header,footer,form,fieldset,details,summary,button,input,textarea,select,canvas,svg,table,ul,ol,li,p,h1,h2,h3,h4,h5,h6,[role]');
+  const componentBoundary = (node) => authorElement(node) && node.matches('[data-board-component],[id],paseo-board,section,article,main,aside,nav,header,footer,form,fieldset,details,summary,button,input,textarea,select,canvas,svg,table,ul,ol,li,p,h1,h2,h3,h4,h5,h6,[role]');
   const componentAt = (target) => {
     for (let node = target; authorElement(node); node = node.parentElement) if (componentBoundary(node)) return node;
     return authorElement(target) ? target : null;
@@ -1370,6 +1377,17 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
       if (computed) {
         const style = getComputedStyle(node); for (const name of style) clone.style.setProperty(name, consumeBytes(style.getPropertyValue(name)), "important");
       }
+      if (tag === "paseo-board") {
+        // A parent cannot read another Board's pixels. Preserve the actual slot
+        // geometry in inert move/layout previews, with an honest placeholder.
+        const box = node.getBoundingClientRect();
+        clone.style.setProperty("box-sizing", "border-box", "important");
+        clone.style.setProperty("width", box.width + "px", "important");
+        clone.style.setProperty("height", box.height + "px", "important");
+        clone.textContent = "嵌入画板 · " + consumeBytes(node.getAttribute("board-id") || "Board");
+        clone.setAttribute("data-board-preview-embed", "");
+        return clone;
+      }
       clone.style.setProperty("animation", "none", "important"); clone.style.setProperty("transition", "none", "important");
       if (node instanceof HTMLInputElement) { clone.setAttribute("value", consumeBytes(node.value)); if (node.checked) clone.setAttribute("checked", ""); else clone.removeAttribute("checked"); }
       if (node instanceof HTMLTextAreaElement) { clone.textContent = consumeBytes(node.value); return clone; }
@@ -1575,9 +1593,15 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
       const button = componentHost.shadowRoot.querySelector('[data-component-action="preview-toggle"]'); button.hidden=false;button.textContent="看原版";
     } catch (failure) { componentNotice = failure.message || "未生成完整布局预览；原组件尚未修改"; if (componentPending) componentPending.message = componentNotice; }
   };
+  const componentAuthoredHtml = (node) => {
+    if (!node.querySelector("[data-board-overlay]")) return node.outerHTML;
+    const clone = document.implementation.createHTMLDocument("").importNode(node, true);
+    for (const runtime of clone.querySelectorAll("[data-board-overlay]")) runtime.remove();
+    return clone.outerHTML;
+  };
   const componentIdentity = (node) => {
     if (!authorElement(node)) return null;
-    const elements = [node, ...node.querySelectorAll("*")];
+    const elements = [node, ...node.querySelectorAll("*")].filter(element => !element.closest("[data-board-overlay]"));
     if (elements.length > 2000) throw new Error("组件包含超过 2000 个元素，请选择更小的组件");
     const indices = new Map(elements.map((element, index) => [element, index]));
     const input = JSON.stringify(elements.map(element => {
@@ -1588,9 +1612,10 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
       if (layout.some(value => value !== null)) identity.push(layout.map(value => value ?? ""));
       return identity;
     }));
-    if (!node.id && node.outerHTML.length > 240000) throw new Error("没有固定 ID 的组件过大，请选择更小的组件");
+    const authoredHtml = node.id ? undefined : componentAuthoredHtml(node);
+    if (authoredHtml && authoredHtml.length > 240000) throw new Error("没有固定 ID 的组件过大，请选择更小的组件");
     let hash = 2166136261; for (let i = 0; i < input.length; i++) hash = Math.imul(hash ^ input.charCodeAt(i), 16777619);
-    return { tag: node.localName.toLowerCase(), ...(node.id ? { id: node.id } : { authoredHtml: node.outerHTML }), fingerprint: (hash >>> 0).toString(16).padStart(8, "0") };
+    return { tag: node.localName.toLowerCase(), ...(node.id ? { id: node.id } : { authoredHtml }), fingerprint: (hash >>> 0).toString(16).padStart(8, "0") };
   };
   // Keep this anonymous-source comparison in parity with server/authored-source.ts:
   // an ID-anchored dynamic leaf may repaint its content, while anonymous surroundings
@@ -1600,7 +1625,7 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     const current = componentIdentity(target);
     if (current.tag !== expected.tag || current.id !== expected.id || current.fingerprint !== expected.fingerprint) return false;
     if (target.id) return Array.from(document.querySelectorAll("[id]")).filter(node=>node.id===target.id).length === 1;
-    const html = expected.authoredHtml; if (html === undefined) return false; if (html === target.outerHTML) return true;
+    const html = expected.authoredHtml; if (html === undefined) return false; if (html === componentAuthoredHtml(target)) return true;
     const template = document.createElement("template"); template.innerHTML = html;
     const roots = Array.from(template.content.childNodes); if (roots.length !== 1 || roots[0].nodeType !== Node.ELEMENT_NODE) return false;
     const captured = roots[0], authoredIds = new Map(), capturedIds = new Map();
@@ -1617,7 +1642,8 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
         const a=componentIdentity(node),b=componentIdentity(reference); return a.tag===b.tag && a.id===b.id && a.fingerprint===b.fingerprint;
       }
       if (attrs(node)!==attrs(reference)) return false;
-      const children=Array.from(node.childNodes), others=Array.from(reference.childNodes);
+      const authoredChildren = parent => Array.from(parent.childNodes).filter(child => !(child instanceof Element && child.hasAttribute("data-board-overlay")));
+      const children=authoredChildren(node), others=authoredChildren(reference);
       return children.length===others.length && children.every((child,index)=>matches(child,others[index]));
     };
     return matches(target,captured);
@@ -2413,6 +2439,7 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
   };
   const captureFrozenRegion = async (region, signal, planReady) => {
     signal.throwIfAborted();
+    if (composition.intersects(region)) throw new Error("Embedded Board content cannot be captured accurately in its parent; capture inside the embedded Board instead. The geometric anchor is still saved");
     const width = Math.max(root.scrollWidth, innerWidth);
     const height = Math.max(root.scrollHeight, innerHeight);
     const ratio = Math.min(devicePixelRatio || 1, 2, 16384 / region.width, 16384 / region.height, Math.sqrt(16777216 / (region.width * region.height)));
@@ -3066,10 +3093,18 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
     if (componentDrag) return;
     if (!componentShortcut) clearComponentHover(); else updateComponentHover();
   }, true);
-  window.addEventListener("message", (event) => {
+  composition.listen((event) => {
     const message = event.data;
-    if (!event.isTrusted || event.source !== window.parent || !message || message.channel !== scope.channel || message.boardId !== scope.boardId || message.sessionId !== scope.sessionId) return;
-    if (message.type === "restore-view") readingView.request(message);
+    if (!event.isTrusted || !message || message.channel !== scope.channel || message.boardId !== scope.boardId || message.sessionId !== scope.sessionId) return;
+    if (message.type === "composition-layout" && initial.compositionSecret) {
+      // A state-preserving iframe move does not resize its child viewport. Refresh
+      // runtime overlays after the parent move, before the next user scroll: in
+      // Chromium, postponing this first child layout until that scroll can restore
+      // the pre-move compositor offset. Do not fake an authored resize event or
+      // compensate by writing a saved scroll position over the user's gesture.
+      positionMarkers(); positionComponent(); markerHost?.getBoundingClientRect();
+    }
+    else if (message.type === "restore-view") readingView.request(message);
     else if (message.type === "view-port" && event.ports?.length === 1) readingView.connect(event.ports[0]);
     else if (message.type === "flush-view") readingView.capture();
     else if (message.type === "snapshot") receiveSnapshot(message.snapshot, message.version);

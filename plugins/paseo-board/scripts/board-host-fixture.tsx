@@ -193,6 +193,9 @@ const fixture: any = global.hostFixture = {
   pending: () => [...pending.keys()],
   accept: (id = [...pending.keys()][0], status: Interaction["status"] = "delivered", settle = true) => {
     const item = pending.get(id); if (!item) throw new Error(`No pending ${id}`);
+    if (item.input.boardId !== persisted.id || item.input.expectedCreatedAt !== undefined && item.input.expectedCreatedAt !== persisted.createdAt) {
+      pending.delete(id); item.reject(new Error("Fixture interaction Board incarnation changed")); return;
+    }
     const destination = item.input.destination;
     let kind = item.input.kind;
     let agentId = "owner-fixture";
@@ -288,9 +291,10 @@ const fixture: any = global.hostFixture = {
       });
     }
     if (name === "board.interact") {
+      if (input.boardId !== persisted.id || input.expectedCreatedAt !== undefined && input.expectedCreatedAt !== persisted.createdAt) throw new Error("Fixture interaction Board incarnation changed");
       const existing = persisted.interactions.find(item => item.id === input.intentId);
       if (existing) {
-        for (const key of ["text", "anchor", "comments", "destination", "sourceInteractionId"]) if (JSON.stringify((existing as any)[key]) !== JSON.stringify(input[key])) throw new Error("Fixture interaction idempotency conflict");
+        for (const key of ["expectedCreatedAt", "text", "anchor", "comments", "destination", "sourceInteractionId"]) if (JSON.stringify((existing as any)[key]) !== JSON.stringify(input[key])) throw new Error("Fixture interaction idempotency conflict");
         return copy(existing);
       }
       if (input.sourceInteractionId && !persisted.interactions.some(item => item.id === input.sourceInteractionId)) throw new Error("Fixture source interaction does not exist");

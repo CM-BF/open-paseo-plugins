@@ -16,6 +16,8 @@ import { BoardCopies } from "./board-copy";
 import { ReleaseRepository } from "./static-release";
 import { GitHubPagesManager } from "./github-pages";
 import { registerPublicationRpc } from "./publication-rpc";
+import { CompositionSources } from "./composition";
+import { compositionSourcesRpc, setCompositionSourcesRpc, inspectCompositionSourceRpc, syncCompositionSourceRpc, readCompositionSourceRpc } from "../shared/composition";
 
 export interface ContributeOptions { rootDir?: string; runtimeDir?: string; home?: string; linkSkills?: boolean; eventTransport?: { publish(change: BoardChange): void }; onService?: (service: BoardService) => void }
 
@@ -27,6 +29,8 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   const journal = new ServiceJournal(join(root, "service.json"));
   const log = (message: string) => console.warn(`[paseo-board] ${message}`);
   const service = new BoardService(store, journal, log);
+  const composition = new CompositionSources(join(root, "composition"), store, () => service.localHostId());
+  service.useComposition(composition);
   const copies = new BoardCopies(join(root, "copies"), store, board => store.materializeAuthoredHtml(board.id, board.canvas));
   const releases = new ReleaseRepository(join(root, "releases"), store);
   const pages = new GitHubPagesManager(join(root, "pages"), releases);
@@ -59,6 +63,12 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   };
   const checkReady = async () => { await ready; if (stopped) throw new Error("Board service stopped"); };
   registerPublicationRpc(server, { ready: checkReady, requireBoard: id => service.requireBoard(id), releases, pages });
+
+  server.handle(compositionSourcesRpc, async ({ boardId }, { paseo }) => { capture(paseo); await checkReady(); return composition.list(boardId); });
+  server.handle(setCompositionSourcesRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return composition.set(input); });
+  server.handle(inspectCompositionSourceRpc, async ({ boardId }, { paseo }) => { capture(paseo); await checkReady(); return composition.inspect(boardId); });
+  server.handle(syncCompositionSourceRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return composition.sync(input); });
+  server.handle(readCompositionSourceRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return composition.read(input); });
 
   server.handle(listBoardsRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.summarySnapshot(input); });
   server.handle(boardChangesRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return store.changesSince(input.cursor, input.compact); });

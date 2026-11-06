@@ -15,6 +15,19 @@ function draft(id: string, queuedAt = 1): StoredDraft {
   return { id, revision: `${id}-revision`, updatedAt: 3, open: false, queuedAt, position: { x: 1, y: 2 }, compose: { kind: "question", text: `Comment ${id}`, anchor: { kind: "element", boardRevision: 3, canvasRevision: 2, selector: `#${id}`, image: { mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" } } } };
 }
 describe("durable comment batch", () => {
+  it("retains the source entity in an immutable outbox and refuses mixed replacement comments", () => {
+    const { storage } = memory(), store = createBatchStore(scope, storage);
+    const original = { ...draft("original"), compose: { ...draft("original").compose, expectedCreatedAt: "entity-one" } };
+    const batch = createCommentBatch([original], "entity-intent", "main", "entity-one");
+    expect(store.put(batch)).toEqual({ ok: true });
+    const restored = createBatchStore(scope, storage).list().batches[0];
+    expect(restored.expectedCreatedAt).toBe("entity-one");
+    expect(store.put({ ...restored, expectedCreatedAt: "entity-two" })).toMatchObject({ ok: false });
+    expect(() => createCommentBatch([original], "replacement-intent", "main", "entity-two")).toThrow("画板已被替换");
+    const receipt: Interaction = { id: batch.intentId, expectedCreatedAt: "entity-two", kind: "change", destination: "main", text: batch.text, comments: batch.comments, status: "saved", resultReferences: [], createdAt: "now", updatedAt: "now" };
+    expect(acceptedBatchInteraction(batch, [receipt])).toBeUndefined();
+    expect(acceptedBatchInteraction(batch, [{ ...receipt, expectedCreatedAt: "entity-one" }])).toBeDefined();
+  });
   it("reads after acquiring the browser lock so competing preparations cannot claim the same source revisions", async () => {
     const { storage } = memory(), drafts = createDraftStore(scope, storage), batches = createBatchStore(scope, storage);
     const saved = drafts.put(draft("one")); if (!saved.ok) throw new Error("fixture");

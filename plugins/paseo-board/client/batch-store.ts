@@ -8,6 +8,7 @@ const PREFIX = "@paseo:board-comment-batches:v1:";
 const BATCH_READ_LIMIT = 12000000;
 const BatchSchema = z.object({
   intentId: IdSchema, destination: z.enum(["main", "side", "new-side"]),
+  expectedCreatedAt: z.string().min(1).max(100).optional(),
   text: z.string().min(1).max(24000), comments: CommentsSchema,
   drafts: z.array(z.object({ id: IdSchema, revision: IdSchema })).min(1).max(COMMENT_LIMIT),
   createdAt: z.number().finite().nonnegative(),
@@ -23,18 +24,22 @@ export function queuedDrafts(drafts: StoredDraft[], batches: CommentBatch[]): St
   return drafts.filter(draft => draft.queuedAt !== undefined && draft.compose.text.trim() && !draft.conflicted && !draft.compose.intentId && !draft.compose.sourceInteractionId && !batches.some(batch => batchContainsDraft(batch, draft)))
     .sort((a, b) => a.queuedAt! - b.queuedAt! || a.id.localeCompare(b.id));
 }
-export function createCommentBatch(drafts: StoredDraft[], intentId: string, destination: CommentBatch["destination"]): CommentBatch {
+export function createCommentBatch(drafts: StoredDraft[], intentId: string, destination: CommentBatch["destination"], expectedCreatedAt?: string): CommentBatch {
   const ordered = queuedDrafts(drafts, []);
   if (!ordered.length || ordered.length !== drafts.length) throw new Error("请先检查待发送评论；空白、冲突或结果未知的草稿不能合并发送。");
+  const identities = new Set(ordered.map(draft => draft.compose.expectedCreatedAt).filter((value): value is string => value !== undefined));
+  if (expectedCreatedAt) identities.add(expectedCreatedAt);
+  if (identities.size > 1) throw new Error("画板已被替换；原评论已保留，请重新核对来源后评论。");
+  const identity = identities.values().next().value;
   const comments: BoardComment[] = ordered.map(draft => ({ id: draft.id, text: draft.compose.text.trim(), ...(draft.compose.anchor ? { anchor: draft.compose.anchor } : {}) }));
   const parsed = CommentsSchema.safeParse(comments);
   if (!parsed.success) throw new Error(`这组评论超过限制或引用无效；最多 ${COMMENT_LIMIT} 条，请减少文字或截图后重试。`);
-  return BatchSchema.parse({ intentId, destination, text: `请将以下 ${comments.length} 条评论作为一组修改要求一起处理。`, comments: parsed.data, drafts: ordered.map(draft => ({ id: draft.id, revision: draft.revision })), createdAt: Date.now() });
+  return BatchSchema.parse({ intentId, destination, ...(identity ? { expectedCreatedAt: identity } : {}), text: `请将以下 ${comments.length} 条评论作为一组修改要求一起处理。`, comments: parsed.data, drafts: ordered.map(draft => ({ id: draft.id, revision: draft.revision })), createdAt: Date.now() });
 }
 export function acceptedBatchInteraction(batch: CommentBatch, interactions: Interaction[]): Interaction | undefined {
   const item = interactions.find(item => item.id === batch.intentId);
   const kinds = batch.destination === "main" ? ["change"] : batch.destination === "new-side" ? ["fork"] : ["fork", "reply"];
-  if (!item || item.destination !== batch.destination || item.text !== batch.text || item.anchor || item.sourceInteractionId || !kinds.includes(item.kind)) return undefined;
+  if (!item || item.expectedCreatedAt !== batch.expectedCreatedAt || item.destination !== batch.destination || item.text !== batch.text || item.anchor || item.sourceInteractionId || !kinds.includes(item.kind)) return undefined;
   const comments = CommentsSchema.safeParse(item.comments);
   return comments.success && sameData(comments.data, batch.comments) ? item : undefined;
 }
@@ -120,7 +125,7 @@ export function createBatchStore(scope: { hostId: string; boardId: string }, sto
 }
 
 /** Revalidate exactly the ordered revisions visible at the user's Send click. */
-export function prepareCommentBatch(scope: { hostId: string; boardId: string }, drafts: DraftStore, batches: ReturnType<typeof createBatchStore>, destination: CommentBatch["destination"], intentId: string, reviewed: ReadonlyArray<Pick<StoredDraft, "id" | "revision">>, locks?: BatchLockManager): Promise<CommentBatch> {
+export function prepareCommentBatch(scope: { hostId: string; boardId: string; expectedCreatedAt?: string }, drafts: DraftStore, batches: ReturnType<typeof createBatchStore>, destination: CommentBatch["destination"], intentId: string, reviewed: ReadonlyArray<Pick<StoredDraft, "id" | "revision">>, locks?: BatchLockManager): Promise<CommentBatch> {
   const expected = reviewed.map(({ id, revision }) => ({ id, revision }));
   return withBatchPreparationLock(scope, () => {
     const queued = drafts.list(), outbox = batches.list();
@@ -128,7 +133,7 @@ export function prepareCommentBatch(scope: { hostId: string; boardId: string }, 
     if (outbox.batches.some(batch => expected.some(draft => batchContainsDraft(batch, draft)))) throw new Error("这些评论已在另一窗口发送；请核对原发送。");
     const current = queuedDrafts(queued.drafts, outbox.batches);
     if (current.length !== expected.length || current.some((draft, index) => draft.id !== expected[index].id || draft.revision !== expected[index].revision)) throw new Error("待发送评论已在另一窗口更新，请重新核对后再统一发送。");
-    const batch = createCommentBatch(current, intentId, destination);
+    const batch = createCommentBatch(current, intentId, destination, scope.expectedCreatedAt);
     const result = batches.put(batch);
     if (!result.ok) throw new Error(result.message);
     return batch;
