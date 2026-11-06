@@ -42,7 +42,10 @@ sizes work without registering a component schema. For a manual resize handle,
 an author may use `resize:both; overflow:auto` on a surrounding container and
 persist its dimensions through the existing Board state API. Layout changes
 belong to the parent. A source reference change opens a different canvas;
-resizing and reordering the existing slot retain its canvas instance.
+resizing the existing slot retains its canvas instance. For custom reordering,
+use native `Element.moveBefore()` to move the existing slot without resetting
+its iframe. Moving even the same node with `appendChild()` or `insertBefore()`
+can reload its embedded canvas and discard unsaved runtime state.
 
 The source retains its original authored design. Its controls and comments belong
 to its own Board and agent; comments on the surrounding parent belong to the
