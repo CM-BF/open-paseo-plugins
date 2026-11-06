@@ -166,3 +166,77 @@ describe("Board cache epoch authority", () => {
     } finally { dispose(); cache.clear(); }
   });
 });
+
+describe("Board cache entity authority", () => {
+  const entity = (createdAt: string, revision: number, seen: string[] = []): Board => ({ ...board(revision, seen), createdAt });
+  it("replaces a same-ID old high revision without transferring its seen receipts", () => {
+    const authority = new BoardCacheAuthority();
+    authority.observeIndex("stable", [{ id: "board", createdAt: "old" }]);
+    const old = authority.merge(undefined, { ...authority.capture("board"), board: entity("old", 90, ["a"]) });
+    authority.observeSummary("stable", { id: "board", createdAt: "new" });
+    const current = authority.merge(old, { ...authority.capture("board"), board: entity("new", 1) });
+    expect(current.board).toMatchObject({ createdAt: "new", revision: 1, seenUpdateIds: [] });
+    expect(mergeBoardSnapshot(old.board, entity("new", 1)).seenUpdateIds).toEqual([]);
+  });
+
+  it("rejects delayed old snapshots, nulls and mutation acknowledgements in the same epoch", () => {
+    const authority = new BoardCacheAuthority();
+    authority.observeIndex("stable", [{ id: "board", createdAt: "old" }]);
+    const started = authority.capture("board");
+    authority.observeSummary("stable", { id: "board", createdAt: "new" });
+    const current = authority.merge(undefined, { ...authority.capture("board"), board: entity("new", 1) });
+    for (const late of [entity("old", 99), null, entity("old", 100, ["a"])]) {
+      expect(authority.merge(current, { ...started, board: late })).toBe(current);
+    }
+    // Even a read started after the new index cannot return the old entity.
+    expect(authority.merge(current, { ...authority.capture("board"), board: entity("old", 101) })).toBe(current);
+  });
+
+  it("treats authoritative absence and delete/recreate with the same timestamp as separate visits", () => {
+    const authority = new BoardCacheAuthority();
+    authority.observeIndex("stable", [{ id: "board", createdAt: "same-time" }]);
+    const started = authority.capture("board");
+    expect(authority.observeIndex("stable", [])).toEqual(["board"]);
+    const absent = authority.merge(undefined, { ...authority.capture("board"), board: null });
+    expect(authority.merge(absent, { ...started, board: entity("same-time", 90) })).toBe(absent);
+    authority.observeSummary("stable", { id: "board", createdAt: "same-time" });
+    const current = authority.merge(absent, { ...authority.capture("board"), board: entity("same-time", 1) });
+    expect(current.board?.revision).toBe(1);
+    expect(authority.merge(current, { ...started, board: entity("same-time", 99) })).toBe(current);
+  });
+
+  it("keeps unrelated reads valid and does not promote a mismatching response into metadata authority", () => {
+    const authority = new BoardCacheAuthority();
+    authority.observeIndex("stable", [{ id: "board", createdAt: "old" }, { id: "other", createdAt: "other-time" }]);
+    const unrelated = authority.capture("other");
+    authority.observeSummary("stable", { id: "board", createdAt: "new" });
+    expect(authority.capture("other").entity).toBe(unrelated.entity);
+    expect(authority.merge(undefined, { ...unrelated, board: { ...entity("other-time", 3), id: "other" } }).board?.revision).toBe(3);
+    const captured = authority.capture("board");
+    expect(authority.merge(undefined, { ...captured, board: entity("unobserved", 100) }).board).toBeUndefined();
+    expect(authority.capture("board").entity).toBe(captured.entity);
+  });
+
+  it("fences a prepared old result at the real QueryObserver commit after same-epoch recreation", () => {
+    const authority = new BoardCacheAuthority(), cache = new QueryClient(), key = ["entity-board"];
+    authority.observeIndex("stable", [{ id: "board", createdAt: "old" }]);
+    const captured = authority.capture("board");
+    const observer = new QueryObserver<BoardCacheEntry, Error, Board | null | undefined>(cache, {
+      queryKey: key, enabled: false, select: boardFromCache,
+      structuralSharing: (previous, incoming) => isBoardCacheEntry(incoming)
+        ? authority.merge(previous as BoardCacheEntry | Board | null | undefined, incoming)
+        : replaceEqualDeep(previous, incoming),
+    });
+    const dispose = observer.subscribe(() => {});
+    try {
+      cache.setQueryData(key, { ...captured, board: entity("old", 90, ["a"]) });
+      const latePrepared = { ...captured, board: entity("old", 100, ["b"]) };
+      authority.observeSummary("stable", { id: "board", createdAt: "new" });
+      cache.setQueryData(key, { ...authority.capture("board"), board: entity("new", 1) });
+      cache.setQueryData(key, latePrepared);
+      cache.setQueryData(key, { ...captured, board: null });
+      expect(observer.getCurrentResult().data).toMatchObject({ createdAt: "new", revision: 1, seenUpdateIds: [] });
+      expect(observer.getCurrentResult().data).not.toHaveProperty("entity");
+    } finally { dispose(); cache.clear(); }
+  });
+});

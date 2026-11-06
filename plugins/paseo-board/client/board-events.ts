@@ -1,4 +1,5 @@
 import { BoardChangeSchema, BoardChangesSchema, type BoardChange, type BoardChanges, type BoardEventCursor, type BoardSummary } from "../shared/contracts";
+import { getBoardServices, unsupportedBoardEvents } from "./transport-registry";
 
 export type BoardLiveStatus = "connecting" | "connected" | "checking" | "recovering" | "disconnected" | "unsupported";
 
@@ -15,8 +16,10 @@ export function installBoardEventTransport(next: BoardEventTransport): () => voi
   return () => { if (transport === next) transport = undefined; };
 }
 export function connectBoardEvents(hostId: string, listener: BoardEventListener): () => void {
+  const services = getBoardServices(hostId);
+  if (services) return services.subscribeEvents(listener);
   if (!transport) {
-    listener.error(Object.assign(new Error("此 Paseo 版本尚未提供 Board 事件订阅；需要配套宿主更新才能实时同步。"), { code: "plugin_events_unsupported" }));
+    listener.error(unsupportedBoardEvents());
     return () => undefined;
   }
   return transport(hostId, listener);

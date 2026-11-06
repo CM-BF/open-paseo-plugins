@@ -6,7 +6,7 @@ import {
   CreateInputSchema, DecisionUpdateInputSchema, EmitInputSchema, FeedInputSchema, IdSchema, InteractInputSchema,
   PublishInputSchema, ReadInputSchema, RespondInputSchema, SelectSideAgentInputSchema, type Anchor, type Board, type BoardComment, type Interaction, type InteractInput, type SelectSideAgentInput,
 } from "../shared/contracts";
-import { BoardStore, BoardStoreError } from "./store";
+import { BoardStore, BoardStoreError, type InteractionUpdate } from "./store";
 import { canonicalJson, parseInput } from "./store-format";
 import { ServiceJournal, deliveryKey, type Binding, type Delivery } from "./journal";
 import { discussionConfig, isBusy, type Agent, type Paseo, type TimelinePage } from "./sdk";
@@ -14,8 +14,10 @@ import { extractCandidates } from "./extraction";
 import { describeAuthoring } from "./authored-source";
 import { inspectBoard } from "./inspection";
 import { BOARD_REPLY_ROUTING } from "./prompts";
+import { ReadSourceInputSchema, SourcesInputSchema } from "../shared/composition";
+import type { CompositionSources } from "./composition";
 
-export type Operation = "list" | "read" | "create" | "publish" | "decision" | "emit" | "respond" | "feed";
+export type Operation = "sources" | "read_source" | "list" | "read" | "create" | "publish" | "decision" | "emit" | "respond" | "feed";
 const terminal = new Set<Interaction["status"]>(["applied", "rejected", "answered"]);
 const alreadyHandled = (interaction: Interaction) => terminal.has(interaction.status) || (interaction.status === "processing" && interaction.responseSource === "explicit");
 const describe = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -82,6 +84,15 @@ export class BoardService {
   readonly store: Pick<BoardStore, keyof BoardStore>;
   readonly journal: ServiceJournal;
   private paseo?: Paseo;
+  private composition?: CompositionSources;
+  private knownHostId?: string;
+  useComposition(sources: CompositionSources): void { this.composition = sources; }
+  async localHostId(): Promise<string | undefined> {
+    if (this.knownHostId) return this.knownHostId;
+    const hosts = (this.paseo as unknown as { hosts?: { list(): Promise<{ self?: { serverId?: string } }> } } | undefined)?.hosts;
+    if (!hosts?.list) return undefined;
+    try { const id = (await hosts.list()).self?.serverId; if (IdSchema.safeParse(id).success) this.knownHostId = id; return this.knownHostId; } catch { return undefined; }
+  }
   private stopped = false;
   private flights = new Map<string, Promise<void>>();
   private preparations = new Map<string, Promise<unknown>>();
@@ -138,6 +149,12 @@ export class BoardService {
     // each realtime sample just to repeat that same authorization check.
     if (operation === "feed") return this.store.feed(parseInput(FeedInputSchema, input), actor?.agentId);
     const board = await this.requireBoard(z.string().parse(input.boardId));
+    if (operation === "sources" || operation === "read_source") {
+      // Ordinary discussion participation does not inherit all source grants.
+      if (actor && !this.canWrite(board, actor)) throw new BoardStoreError("source_access_denied", "Only the parent Board owner or its fork may read composition sources");
+      if (!this.composition) throw new BoardStoreError("composition_unavailable", "Composition sources are unavailable");
+      return operation === "sources" ? this.composition.list(SourcesInputSchema.parse(input).boardId) : this.composition.read(ReadSourceInputSchema.parse(input));
+    }
     if (operation === "respond") {
       const parsed = RespondInputSchema.parse(await this.withHtmlFile(input));
       const assigned = board.interactions.find(item => item.id === parsed.interactionId);
@@ -188,19 +205,39 @@ export class BoardService {
     const input = InteractInputSchema.parse(raw);
     return this.serializeBoard(input.boardId, () => this.prepareInteraction(input));
   }
-  private async projectSideAgent(boardId: string): Promise<Board> {
+  private expectCreatedAt(board: Board, expected?: string): void {
+    if (expected !== undefined && expected !== board.createdAt) throw new BoardStoreError("board_identity_changed", "This Board was replaced; reopen it before applying this request");
+  }
+  private deliveryCreatedAt(delivery: Delivery): string | undefined {
+    return delivery.input?.expectedCreatedAt ?? delivery.request?.expectedCreatedAt;
+  }
+  /** A retired delivery may change its own journal, never the replacement Board. */
+  private async retireReplacedDelivery(delivery: Delivery, board: Board): Promise<boolean> {
+    const expected = this.deliveryCreatedAt(delivery);
+    if (expected === undefined || expected === board.createdAt) return false;
+    await this.journal.patch(deliveryKey(delivery.boardId, delivery.interactionId), { state: "failed", awaitingTurn: false, needsRecovery: false, error: "原 Board 已被替换；旧请求未投递到新画板或负责人。" });
+    return true;
+  }
+  private updateDeliveryInteraction(delivery: Delivery, update: InteractionUpdate): Promise<Interaction> {
+    return this.store.updateInteraction(delivery.boardId, delivery.interactionId, update, this.deliveryCreatedAt(delivery));
+  }
+  private async projectSideAgent(boardId: string, expectedCreatedAt?: string): Promise<Board> {
+    const board = await this.requireBoard(boardId);
+    this.expectCreatedAt(board, expectedCreatedAt);
     const route = this.journal.sideRoute(boardId);
+    const pendingOrigin = route?.pendingInteractionId ? this.journal.get(deliveryKey(boardId, route.pendingInteractionId)) : undefined;
+    const origin = route?.agentId ? this.journal.all().find(item => item.boardId === boardId && item.kind === "fork" && item.targetAgentId === route.agentId) : undefined;
+    for (const candidate of [origin, pendingOrigin]) if (candidate && await this.retireReplacedDelivery(candidate, board)) return board;
     // Repair a crash between native creation assignment and its Board projection before
     // exposing the selected side or checking association on a subsequent user request.
     if (route?.agentId) {
-      const origin = this.journal.all().find(item => item.boardId === boardId && item.kind === "fork" && item.targetAgentId === route.agentId);
       if (origin?.input) {
-        const current = (await this.requireBoard(boardId)).interactions.find(item => item.id === origin.interactionId);
+        const current = board.interactions.find(item => item.id === origin.interactionId);
         if (!current) await this.store.addInteraction(origin.input, route.agentId, origin.sourceSnapshot);
-        else if (current.agentId !== route.agentId) await this.store.updateInteraction(boardId, current.id, { agentId: route.agentId });
+        else if (current.agentId !== route.agentId) await this.updateDeliveryInteraction(origin, { agentId: route.agentId });
       }
     }
-    return route ? this.store.projectSideAgent(boardId, route) : this.requireBoard(boardId);
+    return route ? this.store.projectSideAgent(boardId, route, board.createdAt) : board;
   }
   async selectSideAgent(raw: SelectSideAgentInput): Promise<Board> {
     const input = SelectSideAgentInputSchema.parse(raw);
@@ -217,9 +254,13 @@ export class BoardService {
   }
   private async prepareInteraction(request: InteractInput): Promise<Interaction> {
     if (this.stopped) throw new Error("Board service stopped");
+    // Validate before route projection, native target lookup or durable preparation.
+    const current = await this.requireBoard(request.boardId);
+    this.expectCreatedAt(current, request.expectedCreatedAt);
     const key = deliveryKey(request.boardId, request.intentId);
     const existing = this.journal.get(key);
-    const board = await this.projectSideAgent(request.boardId);
+    if (existing) this.expectCreatedAt(current, this.deliveryCreatedAt(existing));
+    const board = await this.projectSideAgent(request.boardId, request.expectedCreatedAt);
     if (existing) {
       let retry = request;
       // Old versions stored the inherited anchor in input without a separate original request.
@@ -247,6 +288,7 @@ export class BoardService {
         if (input.destination === "side" && route?.pendingInteractionId) {
           const pending = this.journal.get(deliveryKey(board.id, route.pendingInteractionId));
           if (!pending || pending.ownerAgentId !== board.ownerAgentId) throw new Error("待创建的 side 已失效，请选择已有分支或新建 side。");
+          this.expectCreatedAt(board, this.deliveryCreatedAt(pending));
           input.kind = "reply"; waitForSideInteractionId = pending.interactionId; targetAgentId = pending.targetAgentId;
         } else if (input.destination === "side" && route?.agentId) {
           if (!board.interactions.some(item => item.kind === "fork" && item.agentId === route.agentId)) throw new Error("当前 side 不属于这张 Board，请重新选择。");
@@ -282,7 +324,7 @@ export class BoardService {
     };
     await this.journal.prepare(delivery, reserveSide);
     const interaction = await this.store.addInteraction(input, targetAgentId, sourceSnapshot);
-    await this.projectSideAgent(board.id);
+    await this.projectSideAgent(board.id, input.expectedCreatedAt);
     this.kick(key);
     return interaction;
   }
@@ -308,6 +350,7 @@ export class BoardService {
     if (!paseo || !saved || this.stopped || !["saved", "creating"].includes(saved.state)) return;
     let delivery: Delivery = saved;
     let board = await this.requireBoard(delivery.boardId);
+    if (await this.retireReplacedDelivery(delivery, board)) return;
     const interaction = board.interactions.find((item) => item.id === delivery.interactionId);
     if (!interaction) return;
     if (await this.settleHandled(key, board.id, interaction)) return;
@@ -317,12 +360,13 @@ export class BoardService {
       if (delivery.waitForSideInteractionId && !delivery.targetAgentId) {
         const origin = this.journal.get(deliveryKey(board.id, delivery.waitForSideInteractionId));
         if (!origin || origin.kind !== "fork" || origin.ownerAgentId !== delivery.ownerAgentId) throw new Error("关联 side 创建请求已失效；此消息没有改投其他 agent。");
+        this.expectCreatedAt(board, this.deliveryCreatedAt(origin));
         if (!origin.targetAgentId) {
           if (["failed", "settled"].includes(origin.state)) throw new Error("关联 side 没有创建成功；此消息没有改投其他 agent。");
           this.kick(deliveryKey(origin.boardId, origin.interactionId)); return;
         }
         delivery = await this.journal.patch(key, { targetAgentId: origin.targetAgentId });
-        await this.store.updateInteraction(board.id, interaction.id, { agentId: origin.targetAgentId });
+        await this.updateDeliveryInteraction(delivery, { agentId: origin.targetAgentId });
       }
       if (delivery.kind === "fork" && !delivery.targetAgentId) {
         if (!delivery.creationSpec) {
@@ -340,16 +384,18 @@ export class BoardService {
         // Persist the complete native creation payload before calling the SDK. A restart or
         // lost response reuses the same payload even if owner settings or title later change.
         await this.journal.put(delivery);
-        await this.store.updateInteraction(board.id, interaction.id, { status: "sending" });
+        await this.updateDeliveryInteraction(delivery, { status: "sending" });
         if (this.stopped) return;
+        if (await this.retireReplacedDelivery(delivery, await this.requireBoard(board.id))) return;
         const { workspaceId, cwd, ...options } = delivery.creationSpec;
         // A source link is sufficient; actual parent relationships cause cascade archival.
         const fork = workspaceId
           ? await paseo.workspaces.ref(workspaceId).agents.create(options)
           : await paseo.agents.create({ ...options, cwd });
+        if (await this.retireReplacedDelivery(delivery, await this.requireBoard(board.id))) return;
         delivery = await this.journal.assignFork(key, fork.id);
-        await this.store.updateInteraction(board.id, interaction.id, { agentId: fork.id });
-        await this.projectSideAgent(board.id);
+        await this.updateDeliveryInteraction(delivery, { agentId: fork.id });
+        await this.projectSideAgent(board.id, this.deliveryCreatedAt(delivery));
       }
       if (!delivery.targetAgentId) throw new Error("No agent is assigned to this interaction");
       // Object insertion order is the persisted journal order (keys are board/id, never numeric).
@@ -368,22 +414,26 @@ export class BoardService {
       if (isBusy(fresh.agent)) return; // Durable queue; lifecycle or bounded timer retries when idle.
       await this.watch(delivery.targetAgentId);
       board = await this.requireBoard(delivery.boardId);
+      if (await this.retireReplacedDelivery(delivery, board)) return;
       if (this.stopped || board.ownerAgentId !== delivery.ownerAgentId) return;
       if (await this.settleHandled(key, board.id, board.interactions.find(item => item.id === interaction.id))) return;
       delivery.state = "sending";
       delivery.awaitingTurn = true;
       await this.journal.put(delivery);
       try {
-        await this.store.updateInteraction(board.id, interaction.id, { status: "sending", agentId: delivery.targetAgentId });
+        await this.updateDeliveryInteraction(delivery, { status: "sending", agentId: delivery.targetAgentId });
       } catch (error) {
         // A current turn can acknowledge this request while the sending journal write is
         // in flight. Its explicit progress is stronger than our obsolete status claim.
-        const acknowledged = (await this.requireBoard(board.id)).interactions.find(item => item.id === interaction.id);
+        const currentBoard = await this.requireBoard(board.id);
+        if (await this.retireReplacedDelivery(delivery, currentBoard)) return;
+        const acknowledged = currentBoard.interactions.find(item => item.id === interaction.id);
         if (await this.settleHandled(key, board.id, acknowledged, true)) return;
         throw error;
       }
       const finalBoard = await this.requireBoard(board.id);
       if (this.stopped) return;
+      if (await this.retireReplacedDelivery(delivery, finalBoard)) return;
       if (finalBoard.ownerAgentId !== delivery.ownerAgentId) { await this.fail(delivery, "发送前负责人已变更；旧请求未投递。"); return; }
       if (await this.settleHandled(key, board.id, finalBoard.interactions.find(item => item.id === interaction.id), true)) return;
       try {
@@ -394,7 +444,7 @@ export class BoardService {
         delivery.state = "unknown";
         delivery.error = `送达结果未知：${describe(error)}。请核对原会话；系统不会自动重发。`;
         await this.journal.patch(key, { state: delivery.state, error: delivery.error });
-        await this.store.updateInteraction(board.id, interaction.id, { status: "failed", error: delivery.error });
+        await this.updateDeliveryInteraction(delivery, { status: "failed", error: delivery.error });
         return;
       }
       delivery.state = "delivered";
@@ -402,14 +452,15 @@ export class BoardService {
       // acceptance, preserving any response fragments, turn ID and completion already observed.
       await this.journal.patch(key, { state: "delivered" });
       const current = (await this.requireBoard(board.id)).interactions.find((item) => item.id === interaction.id);
-      if (current && (current.status === "sending" || current.status === "saved")) await this.store.updateInteraction(board.id, interaction.id, { status: "delivered", error: undefined });
+      if (current && (current.status === "sending" || current.status === "saved")) await this.updateDeliveryInteraction(delivery, { status: "delivered", error: undefined });
       this.scheduleHistory(delivery.targetAgentId);
     } catch (error) {
+      if (await this.retireReplacedDelivery(delivery, await this.requireBoard(delivery.boardId))) return;
       if (delivery.state === "creating") {
         // A create response can be lost after the native resource exists. Preserve its key for reconciliation.
         delivery.error = `讨论分支创建结果待核对：${describe(error)}`;
         await this.journal.put(delivery);
-        await this.store.updateInteraction(delivery.boardId, delivery.interactionId, { status: "failed", error: delivery.error });
+        await this.updateDeliveryInteraction(delivery, { status: "failed", error: delivery.error });
       } else await this.fail(delivery, describe(error));
     } finally { if (claimedAgent) this.agentClaims.delete(claimedAgent); }
   }
@@ -418,13 +469,14 @@ export class BoardService {
     // Explicit processing means the assigned agent took over through the Board during an
     // existing turn. Settle only message delivery; its background work remains processing.
     await this.journal.settleUnsent(key, beforeNativeSend);
-    if (interaction.status === "processing" && interaction.error) await this.store.updateInteraction(boardId, interaction.id, { error: undefined });
+    if (interaction.status === "processing" && interaction.error) await this.store.updateInteraction(boardId, interaction.id, { error: undefined }, this.journal.get(key)?.input?.expectedCreatedAt);
     return true;
   }
   private async fail(delivery: Delivery, error: string): Promise<void> {
+    if (await this.retireReplacedDelivery(delivery, await this.requireBoard(delivery.boardId))) return;
     delivery.state = "failed"; delivery.error = error;
     await this.journal.put(delivery);
-    await this.store.updateInteraction(delivery.boardId, delivery.interactionId, { status: "failed", error });
+    await this.updateDeliveryInteraction(delivery, { status: "failed", error });
   }
 
   private scheduleHistory(agentId: string): void {
@@ -510,8 +562,9 @@ export class BoardService {
             if (page.reset || page.staleCursor) delivery.responseChunks = {};
             await this.journal.put(delivery);
             const board = await this.requireBoard(delivery.boardId);
+            if (await this.retireReplacedDelivery(delivery, board)) { active = undefined; continue; }
             const current = board.interactions.find((item) => item.id === delivery.interactionId);
-            if (current && current.responseSource !== "explicit" && !terminal.has(current.status) && !delivery.outcome && current.status !== "processing") await this.store.updateInteraction(board.id, current.id, { status: "processing", error: undefined });
+            if (current && current.responseSource !== "explicit" && !terminal.has(current.status) && !delivery.outcome && current.status !== "processing") await this.updateDeliveryInteraction(delivery, { status: "processing", error: undefined });
           }
           continue;
         }
@@ -520,6 +573,7 @@ export class BoardService {
           const delivery = this.journal.get(active);
           if (delivery) {
             const board = await this.requireBoard(delivery.boardId);
+            if (await this.retireReplacedDelivery(delivery, board)) { active = undefined; continue; }
             const current = board.interactions.find((item) => item.id === delivery.interactionId);
             if (current && board.ownerAgentId === delivery.ownerAgentId && (!terminal.has(current.status) || (current.status === "answered" && delivery.outcome === "completed")) && (!delivery.outcome || delivery.outcome === "completed") && current.responseSource !== "explicit") {
               // Journal each externally visible fragment before projecting a complete reply.
@@ -537,7 +591,7 @@ export class BoardService {
               await this.journal.put(delivery);
               const response = Object.values(delivery.responseChunks).sort((a, b) => a.seq - b.seq).map((chunk) => chunk.text).join("").slice(-64000);
               const status = current.status === "answered" ? "answered" : "processing";
-              if (response !== current.response || current.status !== status) await this.store.updateInteraction(board.id, current.id, { status, response, responseSource: "timeline" });
+              if (response !== current.response || current.status !== status) await this.updateDeliveryInteraction(delivery, { status, response, responseSource: "timeline" });
             }
           }
         }
@@ -547,11 +601,18 @@ export class BoardService {
           if (entry.timestamp < summary.createdAt || budget <= 0) continue;
           for (const candidate of extractCandidates(agentId, page.epoch, entry)) {
             let board = await this.requireBoard(summary.id);
+            if (board.createdAt !== summary.createdAt) break;
             if (board.decisions.some((item) => item.id === candidate.id || item.choice === candidate.choice)) continue;
-            // One retry for a concurrent canvas update; never overwrite it.
+            // Keep the entity captured before the history fetch. A revision retry
+            // may follow a canvas update, never a same-ID Board replacement.
             for (let attempt = 0; attempt < 2; attempt++) {
-              try { await this.store.recordDecision({ boardId: board.id, expectedRevision: board.revision, eventId: `extract-${candidate.id}`, decision: candidate }); budget--; break; }
-              catch (error) { if ((error as { code?: string }).code !== "revision_conflict" || attempt > 0) throw error; board = await this.requireBoard(board.id); }
+              try { await this.store.recordDecision({ boardId: board.id, expectedRevision: board.revision, eventId: `extract-${candidate.id}`, decision: candidate }, summary.createdAt); budget--; break; }
+              catch (error) {
+                if ((error as { code?: string }).code === "board_identity_changed") break;
+                if ((error as { code?: string }).code !== "revision_conflict" || attempt > 0) throw error;
+                board = await this.requireBoard(board.id);
+                if (board.createdAt !== summary.createdAt) break;
+              }
             }
           }
         }
@@ -559,8 +620,10 @@ export class BoardService {
       cursor = page.endCursor ?? cursor;
       await this.journal.progress(agentId, cursor, active);
       for (const summary of summaries) {
-        await this.store.updateExtraction(summary.id, { agentId, lastCheckedAt: new Date().toISOString(), cursor: cursor ? JSON.stringify(cursor) : undefined,
-          note: budget <= 0 ? "本次候选达到 8 条上限，可能存在未提取的选择；不代表完整覆盖。" : page.hasOlder && round === 0 && initialRead ? "仅检查最近 200 条可见消息；更早记录未覆盖。" : "仅检查外显 assistant 文字；推断是候选，非完整决策记录。未扫描用户消息、隐藏思考或任意工具参数。" });
+        try {
+          await this.store.updateExtraction(summary.id, { agentId, lastCheckedAt: new Date().toISOString(), cursor: cursor ? JSON.stringify(cursor) : undefined,
+            note: budget <= 0 ? "本次候选达到 8 条上限，可能存在未提取的选择；不代表完整覆盖。" : page.hasOlder && round === 0 && initialRead ? "仅检查最近 200 条可见消息；更早记录未覆盖。" : "仅检查外显 assistant 文字；推断是候选，非完整决策记录。未扫描用户消息、隐藏思考或任意工具参数。" }, summary.createdAt);
+        } catch (error) { if ((error as { code?: string }).code !== "board_identity_changed") throw error; }
       }
       if (!page.hasNewer || !page.endCursor) break;
     }
@@ -573,19 +636,20 @@ export class BoardService {
   private async applyOutcome(delivery: Delivery): Promise<void> {
     if (!delivery.outcome) return;
     const board = await this.requireBoard(delivery.boardId);
+    if (await this.retireReplacedDelivery(delivery, board)) return;
     const interaction = board.interactions.find((item) => item.id === delivery.interactionId);
     if (!interaction || terminal.has(interaction.status)) return;
     if (delivery.outcome === "completed" && interaction.responseSource !== "explicit" && ["question", "fork", "reply"].includes(delivery.kind) && interaction.response?.trim()) {
-      if (interaction.status === "failed") await this.store.updateInteraction(board.id, interaction.id, { status: "processing", error: undefined });
-      await this.store.updateInteraction(board.id, interaction.id, { status: "answered", error: undefined });
+      if (interaction.status === "failed") await this.updateDeliveryInteraction(delivery, { status: "processing", error: undefined });
+      await this.updateDeliveryInteraction(delivery, { status: "answered", error: undefined });
     } else if (delivery.outcome === "completed" && interaction.responseSource === "explicit" && interaction.status === "processing") {
       // An explicit progress receipt can outlive this model turn (for example async-shell).
       // Turn completion neither completes nor fails the user's longer-running request.
       return;
     } else if (delivery.outcome === "completed" && ["question", "fork", "reply"].includes(delivery.kind) && !interaction.response?.trim() && interaction.status !== "failed") {
-      await this.store.updateInteraction(board.id, interaction.id, { status: "failed", error: "对应回合已结束，但没有收到可显示的回答。可以在这个位置继续提问。" });
+      await this.updateDeliveryInteraction(delivery, { status: "failed", error: "对应回合已结束，但没有收到可显示的回答。可以在这个位置继续提问。" });
     } else if (delivery.outcome !== "completed" && interaction.status !== "failed") {
-      await this.store.updateInteraction(board.id, interaction.id, { status: "failed", error: delivery.outcome === "canceled" ? "对应的 agent 回合已取消；已保留收到的部分回复。" : "对应的 agent 回合失败；已保留收到的部分回复。" });
+      await this.updateDeliveryInteraction(delivery, { status: "failed", error: delivery.outcome === "canceled" ? "对应的 agent 回合已取消；已保留收到的部分回复。" : "对应的 agent 回合失败；已保留收到的部分回复。" });
     }
   }
   private async recoverMissedTurn(agentId: string): Promise<void> {
@@ -598,8 +662,9 @@ export class BoardService {
       delivery.error = "服务恢复时 agent 已空闲，但对应回合的结束事件未收到；已保存回复，完成结果未知。可以继续提问。";
       await this.journal.patch(deliveryKey(delivery.boardId, delivery.interactionId), { awaitingTurn: false, needsRecovery: false, error: delivery.error });
       const board = await this.requireBoard(delivery.boardId);
+      if (await this.retireReplacedDelivery(delivery, board)) continue;
       const interaction = board.interactions.find((item) => item.id === delivery.interactionId);
-      if (interaction && !terminal.has(interaction.status)) await this.store.updateInteraction(board.id, interaction.id, { status: "failed", error: delivery.error });
+      if (interaction && !terminal.has(interaction.status)) await this.updateDeliveryInteraction(delivery, { status: "failed", error: delivery.error });
     }
     for (const delivery of this.journal.all()) if (delivery.targetAgentId === agentId && delivery.state === "saved") this.kick(deliveryKey(delivery.boardId, delivery.interactionId));
   }
@@ -637,8 +702,8 @@ export class BoardService {
       const board = await this.requireBoard(summary.id);
       for (const interaction of board.interactions) {
         if (interaction.status !== "saved" || this.journal.get(deliveryKey(board.id, interaction.id))) continue;
-        const input = { boardId: board.id, intentId: interaction.id, kind: interaction.kind, text: interaction.text, anchor: interaction.anchor, comments: interaction.comments, sourceInteractionId: interaction.sourceInteractionId, destination: interaction.destination };
-        if (!board.ownerAgentId) { await this.store.updateInteraction(board.id, interaction.id, { status: "failed", error: "请求已保存，但未绑定负责人。" }); continue; }
+        const input = { boardId: board.id, ...(interaction.expectedCreatedAt === undefined ? {} : { expectedCreatedAt: interaction.expectedCreatedAt }), intentId: interaction.id, kind: interaction.kind, text: interaction.text, anchor: interaction.anchor, comments: interaction.comments, sourceInteractionId: interaction.sourceInteractionId, destination: interaction.destination };
+        if (!board.ownerAgentId) { await this.store.updateInteraction(board.id, interaction.id, { status: "failed", error: "请求已保存，但未绑定负责人。" }, interaction.expectedCreatedAt); continue; }
         const ownerAgentId = ["question", "change", "return"].includes(interaction.kind) ? interaction.agentId ?? board.ownerAgentId : board.ownerAgentId;
         const targetAgentId = interaction.agentId ?? (!interaction.comments && ["question", "change", "return"].includes(interaction.kind) ? ownerAgentId : undefined);
         // New grouped clients always submit change plus a destination. Preserve that
@@ -648,17 +713,18 @@ export class BoardService {
           ? "评论组的原发送目标记录不完整；未猜测当前 Side 或创建新会话，请核对原发送。" : undefined;
         const { images } = interactionReferences(input, board.canvas.revision, interaction.sourceSnapshot?.comments);
         await this.journal.put({ boardId: board.id, interactionId: interaction.id, kind: interaction.kind, ownerAgentId, targetAgentId, input, request, sourceSnapshot: interaction.sourceSnapshot, prompt: interactionPrompt(board, input, interaction.sourceSnapshot), state: recoveryError ? "failed" : "saved", ...(recoveryError ? { error: recoveryError } : {}), ...(images.length ? { images } : {}) });
-        if (recoveryError) await this.store.updateInteraction(board.id, interaction.id, { status: "failed", error: recoveryError });
+        if (recoveryError) await this.store.updateInteraction(board.id, interaction.id, { status: "failed", error: recoveryError }, interaction.expectedCreatedAt);
       }
     }
     for (const delivery of this.journal.all()) {
       let board = await this.requireBoard(delivery.boardId);
+      if (await this.retireReplacedDelivery(delivery, board)) continue;
       let interaction = board.interactions.find((item) => item.id === delivery.interactionId);
       if (!interaction && delivery.input) {
         interaction = await this.store.addInteraction(delivery.input, delivery.targetAgentId, delivery.sourceSnapshot);
         board = await this.requireBoard(delivery.boardId);
       }
-      if (interaction && delivery.targetAgentId && interaction.agentId !== delivery.targetAgentId) interaction = await this.store.updateInteraction(board.id, interaction.id, { agentId: delivery.targetAgentId });
+      if (interaction && delivery.targetAgentId && interaction.agentId !== delivery.targetAgentId) interaction = await this.updateDeliveryInteraction(delivery, { agentId: delivery.targetAgentId });
       if (interaction && alreadyHandled(interaction) && ["saved", "creating"].includes(delivery.state)) {
         await this.settleHandled(deliveryKey(delivery.boardId, delivery.interactionId), board.id, interaction);
         continue;
@@ -669,7 +735,7 @@ export class BoardService {
       if (delivery.state === "unknown") {
         const board = await this.requireBoard(delivery.boardId);
         const current = board.interactions.find((item) => item.id === delivery.interactionId);
-        if (current && !terminal.has(current.status)) await this.store.updateInteraction(board.id, current.id, { status: "failed", error: delivery.error ?? "送达结果未知，请核对原会话。" });
+        if (current && !terminal.has(current.status)) await this.updateDeliveryInteraction(delivery, { status: "failed", error: delivery.error ?? "送达结果未知，请核对原会话。" });
       }
       if (delivery.state === "saved" || delivery.state === "creating") this.kick(deliveryKey(delivery.boardId, delivery.interactionId));
     }

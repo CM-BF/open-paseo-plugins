@@ -206,6 +206,7 @@ export const SourceSnapshotSchema = z.object({
 });
 export const InteractionSchema = z.object({
   id: IdSchema,
+  expectedCreatedAt: z.string().min(1).max(100).optional(),
   kind: z.enum(["question", "change", "fork", "return", "reply"]),
   destination: DestinationSchema.optional(),
   text: z.string().min(1).max(24000),
@@ -274,15 +275,15 @@ export const RespondInputSchema = z.object({
   resultReferences: z.array(z.string().max(4000)).max(100).optional(),
 });
 export const EmitInputSchema = z.object({ boardId: IdSchema, eventId: IdSchema, source: z.string().min(1).max(200), kind: z.string().max(200).default("update"), summary: z.string().max(4000), canvasBase: CanvasBaseSchema.optional(), data: JsonDataSchema.optional(), dataPatch: DataPatchesSchema.optional(), focusSelectors: FocusSelectorsSchema.optional(), observation: z.object({ id: IdSchema, name: z.string().max(200), value: z.unknown(), evidence: EvidenceSchema }).optional() });
-export const InteractInputSchema = z.object({ boardId: IdSchema, intentId: IdSchema, kind: z.enum(["question", "change", "fork", "return", "reply"]), destination: DestinationSchema.optional(), text: z.string().min(1).max(24000), anchor: AnchorSchema.optional(), comments: CommentsSchema.optional(), sourceInteractionId: IdSchema.optional() }).superRefine(validateCommentContext);
+export const InteractInputSchema = z.object({ boardId: IdSchema, expectedCreatedAt: z.string().min(1).max(100).optional(), intentId: IdSchema, kind: z.enum(["question", "change", "fork", "return", "reply"]), destination: DestinationSchema.optional(), text: z.string().min(1).max(24000), anchor: AnchorSchema.optional(), comments: CommentsSchema.optional(), sourceInteractionId: IdSchema.optional() }).superRefine(validateCommentContext);
 export const SelectSideAgentInputSchema = z.object({ boardId: IdSchema, agentId: z.string().min(1).max(160), expectedRevision: z.number().int().nonnegative(), eventId: IdSchema });
 export const RenameInputSchema = z.object({ boardId: IdSchema, expectedTitle: z.string(), title: z.string().trim().min(1).max(200), eventId: IdSchema });
 export const EditInputSchema = z.object({
-  boardId: IdSchema, canvasBase: CanvasBaseSchema, eventId: IdSchema,
+  boardId: IdSchema, expectedCreatedAt: z.string().min(1).max(100).optional(), canvasBase: CanvasBaseSchema, eventId: IdSchema,
   patch: CanvasPatchSchema.refine(patch => ["move", "copy", "text", "layout"].includes(patch.operation) && patch.html === "", "User edits support move, copy, text and layout operations without caller-supplied HTML"),
 });
 export const DecisionUpdateInputSchema = z.object({ boardId: IdSchema, expectedRevision: z.number().int().nonnegative(), eventId: IdSchema, decision: DecisionInputSchema });
-export const StateInputSchema = z.object({ boardId: IdSchema, state: JsonDataSchema });
+export const StateInputSchema = z.object({ boardId: IdSchema, expectedCreatedAt: z.string().min(1).max(100).optional(), state: JsonDataSchema });
 export const MarkUpdatesSeenInputSchema = z.object({ boardId: IdSchema, updateIds: z.array(IdSchema).max(80) });
 export type Board = z.infer<typeof BoardSchema>;
 export type BoardSummary = z.infer<typeof BoardSummarySchema>;
@@ -304,7 +305,7 @@ export type InteractInput = z.input<typeof InteractInputSchema>;
 export type SelectSideAgentInput = z.input<typeof SelectSideAgentInputSchema>;
 export type RenameInput = z.input<typeof RenameInputSchema>;
 export type EditInput = z.input<typeof EditInputSchema>;
-export const EditRefusalCodeSchema = z.enum(["invalid_input", "revision_conflict", "edit_conflict", "idempotency_conflict", "unauthorized", "forbidden", "board_not_found", "not_found", "size_limit"]);
+export const EditRefusalCodeSchema = z.enum(["board_identity_changed", "invalid_input", "revision_conflict", "edit_conflict", "idempotency_conflict", "unauthorized", "forbidden", "board_not_found", "not_found", "size_limit"]);
 export const EditResultSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("applied"), eventId: IdSchema, board: BoardSchema }),
   z.object({ status: z.literal("rejected"), eventId: IdSchema, code: EditRefusalCodeSchema, componentTarget: z.enum(["source", "destination"]).optional() }),

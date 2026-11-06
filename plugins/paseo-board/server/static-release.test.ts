@@ -32,6 +32,23 @@ describe("fixed public releases", () => {
     board.canvas.patches.push({ id: "invalid", selector: "#absent", operation: "remove", html: "" });
     expect(() => buildRelease(options())).toThrow("Cannot export current authored source");
   });
+  it("refuses managed Board embeds after authored replay rather than exporting empty child content", async () => {
+    const repository = new ReleaseRepository(join(root, "releases"));
+    for (const html of ['<paseo-board board-id="child"></paseo-board>', '<paseo-board host-id="other-host" board-id="child" view="preview"></paseo-board>']) {
+      board.canvas.html = html;
+      await expect(repository.create(options())).rejects.toThrow("独立导出源 Board");
+    }
+    expect(await repository.list(board.id)).toEqual([]);
+    board.canvas.html = '<main id="target">Parent</main>';
+    board.canvas.patches = [{ id: "embed", selector: "#target", operation: "append", html: '<paseo-board id="child-slot" board-id="child"></paseo-board>' }];
+    expect(() => buildRelease(options())).toThrow("无法固定这些来源画板的内容");
+    board.canvas.patches.push({ id: "remove-embed", selector: "#child-slot", operation: "remove", html: "" });
+    expect(() => buildRelease(options())).not.toThrow();
+  });
+  it("keeps ordinary iframe and textual or invalid managed-element examples outside the embed refusal", () => {
+    board.canvas.html = '<iframe srcdoc="&lt;p&gt;Ordinary frame&lt;/p&gt;"></iframe><pre>&lt;paseo-board board-id="child"&gt;&lt;/paseo-board&gt;</pre><!-- <paseo-board board-id="child"></paseo-board> --><script>const example = \'<paseo-board board-id="child"></paseo-board>\';</script><paseo-board></paseo-board><paseo-board board-id="bad/id"></paseo-board>';
+    expect(() => buildRelease(options())).not.toThrow();
+  });
   it("requires actual finite bounded JSON rather than silently dropping private or unsupported values", () => {
     expect(() => buildRelease({ ...options(), publicData: { bad: undefined } })).toThrow("finite JSON");
     expect(() => buildRelease({ ...options(), publicData: { bad: Infinity } })).toThrow("finite JSON");

@@ -19,6 +19,9 @@ describe("frame bridge validation", () => {
       anchor: { selector: "#section", offsetX: 10, offsetY: -50 }, scrolls: [{ selector: "#log", x: 20, y: 300 }] };
     expect(isCanvasViewState(view)).toBe(true);
     expect(readFrameMessage(message({ type: "view-state", view }), scope)).not.toBeNull();
+    expect(readFrameMessage(message({ type: "view-state", view, capturedAt: 1793940000123.5 }), scope)).not.toBeNull();
+    for (const capturedAt of [-1, Infinity, NaN, "1793940000123"]) expect(readFrameMessage(message({ type: "view-state", view, capturedAt }), scope)).toBeNull();
+    expect(isCanvasViewState({ ...view, capturedAt: 1793940000123.5 })).toBe(false);
     for (const change of [{ documentVersion: -1 }, { canvasRevision: 1.5 }, { y: Infinity }, { x: 10000001 },
       { scrolls: Array.from({ length: 33 }, (_, i) => ({ selector: `#log-${i}`, x: 0, y: 0 })) },
       { scrolls: [...view.scrolls, ...view.scrolls] }, { scrolls: [{ selector: "", x: 0, y: 0 }] },

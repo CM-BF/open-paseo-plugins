@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { useRpc } from "@getpaseo/plugin/client";
+import { useBoardRpc } from "./transport";
 import { Icon } from "@getpaseo/plugin/client/ui";
 import { renameBoardRpc, type Board, type RenameInput } from "../shared/contracts";
 import { Action, Copy, errorMessage, localId, useColors } from "./ui";
@@ -12,7 +12,7 @@ interface Props { board: Board; onAccepted(board: Board): void; onRefresh(): Pro
 
 export function BoardTitle({ board, onAccepted, onRefresh, compact, menuWidth, menuOffset, onEditStart }: Props) {
   const c = useColors();
-  const rename = useRpc(renameBoardRpc);
+  const rename = useBoardRpc(renameBoardRpc);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
   const pending = useRef(false);

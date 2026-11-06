@@ -13,14 +13,16 @@ export type SavedBoardView = { view: CanvasViewState; follow: boolean };
 export const BOARD_VIEW_STORAGE_KEY = "@paseo:board-view:v1";
 export const BOARD_VIEW_MAX_RECORDS = 64;
 export const BOARD_VIEW_MAX_BYTES = 512 * 1024;
+export const BOARD_VIEW_MAX_INSTANCE_LENGTH = 2048;
 const MAX_RECORD_BYTES = 64 * 1024;
 const TAB_KEY = "paseoBoardEntry";
 type EntryRecord = { kind: "entry"; scope: BoardEntryScope; selection: LastBoardSelection };
-type ViewRecord = { kind: "view"; hostId: string; boardId: string } & SavedBoardView;
+type ViewRecord = ({ kind: "view" } | { kind: "instance-view"; instance: string }) & { hostId: string; boardId: string } & SavedBoardView;
 type StoredRecord = EntryRecord | ViewRecord;
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const id = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 256;
 const optionalId = (value: unknown) => value === undefined || id(value);
+const validInstance = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= BOARD_VIEW_MAX_INSTANCE_LENGTH;
 
 function cleanScope(value: unknown): BoardEntryScope | undefined {
   if (!object(value) || !id(value.hostId) || !["agent", "workspace", "screen"].includes(String(value.surface)) || !optionalId(value.workspaceId) || !optionalId(value.agentId)) return;
@@ -46,13 +48,19 @@ function cleanRecord(value: unknown): StoredRecord | undefined {
     const scope = cleanScope(value.scope), selection = cleanSelection(value.selection);
     if (scope && selection) return { kind: "entry", scope, selection };
   }
-  if (value.kind === "view" && id(value.hostId) && id(value.boardId) && typeof value.follow === "boolean") {
+  if ((value.kind === "view" || value.kind === "instance-view" && validInstance(value.instance)) && id(value.hostId) && id(value.boardId) && typeof value.follow === "boolean") {
     const view = cleanView(value.view);
-    if (view) return { kind: "view", hostId: value.hostId, boardId: value.boardId, view, follow: value.follow };
+    if (view) return { ...(value.kind === "instance-view" ? { kind: "instance-view", instance: value.instance as string } as const : { kind: "view" } as const), hostId: value.hostId, boardId: value.boardId, view, follow: value.follow };
   }
 }
 const scopeKey = (scope: BoardEntryScope) => JSON.stringify([scope.hostId, scope.surface, scope.workspaceId ?? null, scope.agentId ?? null]);
-const recordKey = (value: StoredRecord) => value.kind === "entry" ? "entry:" + scopeKey(value.scope) : "view:" + JSON.stringify([value.hostId, value.boardId]);
+// Preserve the original key and record kind for ordinary visits. A distinct
+// kind also makes older clients ignore embedded hints instead of folding them
+// into the source Board's ordinary reading position.
+const viewKey = (hostId: string, boardId: string, instance?: string) => instance === undefined
+  ? "view:" + JSON.stringify([hostId, boardId]) : "instance-view:" + JSON.stringify([hostId, boardId, instance]);
+const recordKey = (value: StoredRecord) => value.kind === "entry" ? "entry:" + scopeKey(value.scope) : viewKey(value.hostId, value.boardId, value.kind === "instance-view" ? value.instance : undefined);
+const isViewRecord = (value?: StoredRecord): value is ViewRecord => value?.kind === "view" || value?.kind === "instance-view";
 const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const samePageChanges = new Set<() => void>();
 const WRITE_INTERVAL_MS = 500;
@@ -189,17 +197,18 @@ export function createBoardViewStore(storage: DraftStorage | null | (() => Draft
       }
       try { tab?.setState({ ...(object(tab.state) ? tab.state : {}), [TAB_KEY]: value }); } catch { /* Local hints still remember this choice when the host refuses tab state. */ }
     },
-    readBoardView(hostId: string, boardId: string, documentVersion: number): SavedBoardView | undefined {
-      if (!id(hostId) || !id(boardId) || !Number.isSafeInteger(documentVersion) || documentVersion < 0) return;
+    readBoardView(hostId: string, boardId: string, documentVersion: number, instance?: string): SavedBoardView | undefined {
+      if (!id(hostId) || !id(boardId) || !Number.isSafeInteger(documentVersion) || documentVersion < 0 || instance !== undefined && !validInstance(instance)) return;
       synchronize(!owners);
-      const saved = memory.get("view:" + JSON.stringify([hostId, boardId]))?.value;
-      if (saved?.kind === "view" && saved.view.documentVersion === documentVersion) return copy({ view: saved.view, follow: saved.follow });
+      const saved = memory.get(viewKey(hostId, boardId, instance))?.value;
+      if (isViewRecord(saved) && saved.view.documentVersion === documentVersion) return copy({ view: saved.view, follow: saved.follow });
     },
-    writeBoardView(hostId: string, boardId: string, rawView: CanvasViewState, follow: boolean): void {
+    writeBoardView(hostId: string, boardId: string, rawView: CanvasViewState, follow: boolean, instance?: string): void {
       const view = cleanView(rawView);
-      if (!id(hostId) || !id(boardId) || !view || typeof follow !== "boolean") return;
-      const previous = memory.get("view:" + JSON.stringify([hostId, boardId]))?.value;
-      put({ kind: "view", hostId, boardId, view, follow }, previous?.kind !== "view" || previous.view.documentVersion !== view.documentVersion || previous.follow !== follow);
+      if (!id(hostId) || !id(boardId) || !view || typeof follow !== "boolean" || instance !== undefined && !validInstance(instance)) return;
+      const previous = memory.get(viewKey(hostId, boardId, instance))?.value;
+      const value: ViewRecord = { ...(instance === undefined ? { kind: "view" } as const : { kind: "instance-view", instance } as const), hostId, boardId, view, follow };
+      put(value, !isViewRecord(previous) || previous.view.documentVersion !== view.documentVersion || previous.follow !== follow);
     },
   };
 }

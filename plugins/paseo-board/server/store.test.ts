@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BoardStore } from "./store";
 import type { Board } from "../shared/contracts";
-import { fingerprint } from "./store-format";
+import { fingerprint, serialized } from "./store-format";
 
 const canvasBase = (board: Board) => ({ revision: board.canvas.revision, documentVersion: board.canvas.documentVersion });
 
@@ -477,6 +477,100 @@ describe("BoardStore", () => {
     await expect(store.recordDecision({ boardId: current.id, expectedRevision: current.revision, eventId: "cycle", decision: { id: "a", basis: "explicit", choice: "A again", supersedes: "b" } })).rejects.toMatchObject({ code: "invalid_input" });
     current = await store.recordDecision({ boardId: current.id, expectedRevision: current.revision, eventId: "revise", decision: { id: "a", basis: "observed", choice: "A was observed" } });
     expect(current.decisions.find(item => item.id === "a")?.rationale).toBeUndefined();
+  });
+
+  it("saves interaction state for the expected Board incarnation and retains old-client compatibility", async () => {
+    const initial = await board();
+    const saved = await store.saveState({ boardId: initial.id, expectedCreatedAt: initial.createdAt, state: { draft: "current" } });
+    expect(saved.userState).toEqual({ draft: "current" });
+    const compatible = await store.saveState({ boardId: initial.id, state: { tab: 2 } });
+    expect(compatible.userState).toEqual({ draft: "current", tab: 2 });
+    expect(compatible.canvas).toEqual(initial.canvas);
+    expect((await new BoardStore(root).read(initial.id))!.userState).toEqual(compatible.userState);
+  });
+
+  it("rejects a queued old state write after same-ID replacement inside the storage lock", async () => {
+    const initial = await board();
+    const path = join(root, "boards", `${initial.id}.json`);
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let replacementBytes = "";
+    const replacing = serialized(path, async () => {
+      enter(); await released;
+      const envelope = JSON.parse(await readFile(path, "utf8"));
+      // Simulate the authoritative replacement while retaining equal revision
+      // and document numbers: only creation identity distinguishes the entity.
+      envelope.board.createdAt = new Date(Date.parse(initial.createdAt) + 1000).toISOString();
+      envelope.board.userState = { draft: "replacement" };
+      replacementBytes = JSON.stringify(envelope);
+      await writeFile(path, replacementBytes);
+    });
+    await entered;
+    const rejected = expect(store.saveState({ boardId: initial.id, expectedCreatedAt: initial.createdAt, state: { draft: "old queued draft" } }))
+      .rejects.toMatchObject({ code: "board_identity_changed" });
+    release(); await replacing; await rejected;
+    expect(await readFile(path, "utf8")).toBe(replacementBytes);
+    const current = (await store.read(initial.id))!;
+    expect(current.canvas).toEqual(initial.canvas);
+    expect(current.revision).toBe(initial.revision);
+    expect(current.userState).toEqual({ draft: "replacement" });
+    expect((await store.saveState({ boardId: initial.id, expectedCreatedAt: current.createdAt, state: { tab: "new" } })).userState)
+      .toEqual({ draft: "replacement", tab: "new" });
+  });
+
+  it("rejects an old queued comment before mutation and persists current identity for delivery recovery", async () => {
+    const initial = await board(), path = join(root, "boards", `${initial.id}.json`);
+    const input = { boardId: initial.id, expectedCreatedAt: initial.createdAt, intentId: "queued-comment", kind: "question" as const, text: "Old pending question" };
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; }), released = new Promise<void>(resolve => { release = resolve; });
+    let replacementBytes = "";
+    const replacing = serialized(path, async () => {
+      enter(); await released;
+      const envelope = JSON.parse(await readFile(path, "utf8"));
+      envelope.board.createdAt = new Date(Date.parse(initial.createdAt) + 1000).toISOString();
+      replacementBytes = JSON.stringify(envelope); await writeFile(path, replacementBytes);
+    });
+    await entered;
+    const rejected = expect(store.addInteraction(input, "owner")).rejects.toMatchObject({ code: "board_identity_changed" });
+    release(); await replacing; await rejected;
+    expect(await readFile(path, "utf8")).toBe(replacementBytes);
+    const current = (await store.read(initial.id))!;
+    const valid = { ...input, expectedCreatedAt: current.createdAt };
+    expect(await store.addInteraction(valid, "owner")).toMatchObject({ expectedCreatedAt: current.createdAt, status: "saved" });
+    expect(await new BoardStore(root).addInteraction(valid, "owner")).toEqual((await store.read(initial.id))!.interactions[0]);
+    await expect(store.addInteraction(input, "owner")).rejects.toMatchObject({ code: "board_identity_changed" });
+    expect(await store.addInteraction({ boardId: initial.id, intentId: "legacy-comment", kind: "question", text: "Legacy still works" })).not.toHaveProperty("expectedCreatedAt");
+  });
+
+  it.each(["decision", "extraction"] as const)("checks the captured entity for a queued %s projection inside the storage lock", async operation => {
+    const initial = await board(), path = join(root, "boards", `${initial.id}.json`);
+    const decision = { boardId: initial.id, expectedRevision: initial.revision, eventId: "queued-decision", decision: { id: "old-choice", choice: "Old history choice", basis: "inferred" as const } };
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; }), released = new Promise<void>(resolve => { release = resolve; });
+    let replacementBytes = "";
+    const replacing = serialized(path, async () => {
+      enter(); await released;
+      const envelope = JSON.parse(await readFile(path, "utf8"));
+      envelope.board.createdAt = new Date(Date.parse(initial.createdAt) + 1000).toISOString();
+      replacementBytes = JSON.stringify(envelope); await writeFile(path, replacementBytes);
+    });
+    await entered;
+    const work = operation === "decision" ? store.recordDecision(decision, initial.createdAt)
+      : store.updateExtraction(initial.id, { cursor: "old-cursor", note: "Old history" }, initial.createdAt);
+    const rejected = expect(work).rejects.toMatchObject({ code: "board_identity_changed" });
+    release(); await replacing; await rejected;
+    expect(await readFile(path, "utf8")).toBe(replacementBytes);
+    const current = (await store.read(initial.id))!;
+    if (operation === "decision") {
+      expect((await store.recordDecision(decision, current.createdAt)).decisions).toHaveLength(1);
+      // A successful receipt cannot make the original identity valid again.
+      await expect(store.recordDecision(decision, initial.createdAt)).rejects.toMatchObject({ code: "board_identity_changed" });
+      expect((await store.recordDecision(decision)).decisions).toHaveLength(1);
+    } else {
+      expect((await store.updateExtraction(initial.id, { cursor: "new-cursor" }, current.createdAt)).extraction.cursor).toBe("new-cursor");
+      expect((await store.updateExtraction(initial.id, { note: "Legacy metadata update" })).extraction.note).toBe("Legacy metadata update");
+    }
   });
 
   it("persists extraction cursors without affecting canvas or user state", async () => {

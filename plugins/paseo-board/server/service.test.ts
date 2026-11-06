@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { BoardStore } from "./store";
@@ -68,6 +68,74 @@ describe("BoardService SDK adapter", () => {
     await store.create({ id: "board", title: "自由画布", ownerAgentId: "owner", workspaceId: "wks_0123456789abcdef", html: '<main id="target">Existing visualization</main>', data: { temperature: 10 } });
   });
   afterEach(async () => { await service.dispose(); await rm(dir, { recursive: true, force: true }); });
+
+  async function replaceEntity(ownerAgentId = "owner", keepInteractions = false) {
+    const path = join(dir, "boards", "board.json"), envelope = JSON.parse(await readFile(path, "utf8"));
+    envelope.board.createdAt = new Date(Date.parse(envelope.board.createdAt) + 1000).toISOString();
+    envelope.board.ownerAgentId = ownerAgentId;
+    if (!keepInteractions) { envelope.board.interactions = []; envelope.board.events = []; envelope.board.revision = 1; envelope.receipts = envelope.receipts.filter((item: { revision: number }) => item.revision === 1); envelope.history = envelope.history.slice(0, 1); }
+    const bytes = JSON.stringify(envelope); await writeFile(path, bytes);
+    return { path, bytes, createdAt: envelope.board.createdAt as string };
+  }
+
+  it("rejects stale comments before route projection or durable preparation and accepts the current entity", async () => {
+    const old = (await store.read("board"))!, replacement = await replaceEntity();
+    const projection = vi.spyOn(store, "projectSideAgent");
+    const input: InteractInput = { boardId: "board", intentId: "entity-check", expectedCreatedAt: old.createdAt, kind: "fork", text: "Discuss this location" };
+    await expect(service.interact(input)).rejects.toMatchObject({ code: "board_identity_changed" });
+    expect(projection).not.toHaveBeenCalled(); expect(journal.all()).toEqual([]);
+    expect(sdk.create).not.toHaveBeenCalled(); expect(sdk.sends).toEqual([]);
+    expect(await readFile(replacement.path, "utf8")).toBe(replacement.bytes);
+    const current = { ...input, expectedCreatedAt: replacement.createdAt };
+    expect(await service.interact(current)).toMatchObject({ expectedCreatedAt: replacement.createdAt });
+    await service.drain(); await service.interact(current); await service.drain();
+    expect(sdk.create).toHaveBeenCalledTimes(1); expect(sdk.sends).toHaveLength(1);
+    expect(journal.get("board/entity-check")).toMatchObject({ request: current, input: { expectedCreatedAt: replacement.createdAt } });
+    // Both new and legacy retry payloads remain exact; never upgrade identity on retry.
+    await expect(service.interact({ ...current, expectedCreatedAt: undefined })).rejects.toMatchObject({ code: "idempotency_conflict" });
+  });
+
+  it.each(["owner", "replacement-owner"])("retires a durable old delivery before recovery against a replacement owned by %s", async (owner) => {
+    const board = (await store.read("board"))!;
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status: "running" });
+    const input: InteractInput = { ...commentGroup("old-saved"), expectedCreatedAt: board.createdAt };
+    await service.interact(input); await service.drain();
+    expect(journal.get("board/old-saved")).toMatchObject({ state: "saved", input: { expectedCreatedAt: board.createdAt } });
+    await service.dispose(); const replacement = await replaceEntity(owner);
+    journal = new ServiceJournal(join(dir, "service.json")); await journal.init();
+    service = new BoardService(store, journal, () => undefined); service.capture(sdk.api);
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status: "idle" });
+    await service.reconcile(); await service.drain();
+    expect(journal.get("board/old-saved")).toMatchObject({ state: "failed", awaitingTurn: false, input: { expectedCreatedAt: board.createdAt } });
+    expect(await readFile(replacement.path, "utf8")).toBe(replacement.bytes);
+    expect(sdk.sends).toEqual([]); expect(sdk.create).not.toHaveBeenCalled();
+    await expect(service.interact(input)).rejects.toMatchObject({ code: "board_identity_changed" });
+    await expect(service.interact({ ...input, expectedCreatedAt: replacement.createdAt })).rejects.toMatchObject({ code: "board_identity_changed" });
+  });
+
+  it("does not project or send a prepared old delivery when the entity changes while its sending journal write waits", async () => {
+    const board = (await store.read("board"))!, input: InteractInput = { boardId: "board", expectedCreatedAt: board.createdAt, intentId: "entity-send-race", kind: "question", text: "Pending old question" };
+    const put = journal.put.bind(journal); let entered!: () => void, release!: () => void;
+    const held = new Promise<void>(resolve => { entered = resolve; }), resumed = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(journal, "put").mockImplementation(async delivery => {
+      if (delivery.interactionId === input.intentId && delivery.state === "sending") { entered(); await resumed; }
+      return put(delivery);
+    });
+    await service.interact(input); await held;
+    // Equal intent/canvas/owner still cannot make the replacement the old entity.
+    const replacement = await replaceEntity("owner", true); release(); await service.drain();
+    expect(await readFile(replacement.path, "utf8")).toBe(replacement.bytes);
+    expect(journal.get("board/entity-send-race")).toMatchObject({ state: "failed", awaitingTurn: false });
+    expect(sdk.sends).toEqual([]);
+  });
+
+  it("recovers the exact interaction identity from the Board when its delivery journal is missing", async () => {
+    const board = (await store.read("board"))!, input = { ...commentGroup("identity-orphan"), expectedCreatedAt: board.createdAt };
+    await store.addInteraction(input, "owner");
+    await service.reconcile(); await service.drain();
+    expect(journal.get("board/identity-orphan")).toMatchObject({ request: input, input: { expectedCreatedAt: board.createdAt } });
+    await service.interact(input); await service.drain(); expect(sdk.sends).toHaveLength(1);
+  });
 
   it("delivers a comment group once with ordered image mappings and each captured revision", async () => {
     const initial = (await store.read("board"))!;
@@ -929,6 +997,40 @@ describe("BoardService SDK adapter", () => {
     const restored = new ServiceJournal(join(dir, "service.json")); await restored.init(); service = new BoardService(store, restored, () => undefined); service.capture(sdk.api);
     sdk.append("owner", { type: "assistant_message", text: "我决定只采样一部分数据，以限制预算。" }); await service.syncHistory("owner");
     board = (await store.read("board"))!; expect(board.decisions).toHaveLength(2); expect(board.extraction.cursor).toContain('"seq":4');
+  });
+
+  it.each(["owner", "replacement-owner"])("does not project a held old history page into a replacement owned by %s", async owner => {
+    sdk.append("owner", { type: "assistant_message", text: "I decided to only support new clients to limit compatibility scope." });
+    const timeline = sdk.api.agents.ref("owner").timeline, refetch = timeline.refetch.bind(timeline);
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; }), released = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(timeline.refetch).mockImplementationOnce(async options => {
+      const page = await refetch(options); enter(); await released; return page;
+    });
+    const history = service.syncHistory("owner");
+    await entered;
+    const replacement = await replaceEntity(owner);
+    release(); await history;
+    expect(await readFile(replacement.path, "utf8")).toBe(replacement.bytes);
+    expect(journal.cursor("owner")).toMatchObject({ seq: 1 });
+    expect(sdk.sends).toEqual([]);
+  });
+
+  it("does not retry an extracted decision against a replacement after preparing its write", async () => {
+    sdk.append("owner", { type: "assistant_message", text: "I decided to only support new clients to limit compatibility scope." });
+    const record = store.recordDecision.bind(store);
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; }), released = new Promise<void>(resolve => { release = resolve; });
+    const write = vi.spyOn(store, "recordDecision").mockImplementationOnce(async (...args) => {
+      enter(); await released; return record(...args);
+    });
+    const history = service.syncHistory("owner");
+    await entered;
+    const replacement = await replaceEntity();
+    release(); await history;
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(await readFile(replacement.path, "utf8")).toBe(replacement.bytes);
+    expect(sdk.sends).toEqual([]);
   });
 
   it("does not capture an unrelated subsequent chat reply as a board answer", async () => {

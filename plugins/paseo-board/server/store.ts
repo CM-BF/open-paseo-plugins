@@ -140,7 +140,7 @@ export class BoardStore {
       const selector = patch.operation === "copy" ? `#${patch.copyIdPrefix}-0` : patch.operation === "move" ? patch.destination! : patch.selector;
       this.canvasUpdate(board, input.eventId, at, "patch", [{ selector, operation: patch.operation, patchId: patch.id }]);
       this.event(board, input.eventId, "user", "component-edit", `Component ${patch.operation}`, at);
-    }, input.eventId);
+    }, input.eventId, board => this.expectCreatedAt(board, input.expectedCreatedAt));
   }
 
   private prepareEdit(canvas: Board["canvas"], patch: CanvasPatch): CanvasPatch {
@@ -309,19 +309,20 @@ export class BoardStore {
     } finally { this.feedPending--; }
   }
 
-  async recordDecision(raw: DecisionUpdateInput): Promise<Board> {
+  async recordDecision(raw: DecisionUpdateInput, expectedCreatedAt?: string): Promise<Board> {
     const input = parseInput(DecisionUpdateInputSchema, raw);
     return this.mutate(input.boardId, "decision", input, (board, at) => {
       this.expectRevision(board, input.expectedRevision);
       this.putDecision(board, input.decision, at);
       this.event(board, input.eventId, "agent", "decision", input.decision.choice, at);
-    }, input.eventId);
+    }, input.eventId, board => this.expectCreatedAt(board, expectedCreatedAt));
   }
 
   async saveState(raw: StateInput): Promise<Board> {
     const input = parseInput(StateInputSchema, raw);
     assertJson(input.state, "User state");
     return this.mutate(input.boardId, "state", input, board => {
+      if (input.expectedCreatedAt !== undefined && board.createdAt !== input.expectedCreatedAt) throw new BoardStoreError("board_identity_changed", "This Board was replaced; reopen it before saving interaction state");
       board.userState = { ...board.userState, ...input.state };
       assertJson(board.userState, "User state");
     });
@@ -355,35 +356,36 @@ export class BoardStore {
       if (input.sourceInteractionId && !board.interactions.some(item => item.id === input.sourceInteractionId)) throw new BoardStoreError("not_found", "Source interaction does not exist");
       board.interactions.push(InteractionSchema.parse({ ...payload, id: input.intentId, agentId, status: "saved", createdAt: at, updatedAt: at }));
       this.event(board, input.intentId, "user", input.kind, input.text.slice(0, 4000), at);
-    }, input.intentId);
+    }, input.intentId, board => this.expectCreatedAt(board, input.expectedCreatedAt));
     return board.interactions.find(item => item.id === input.intentId)!;
   }
 
-  async updateInteraction(boardId: string, id: string, raw: InteractionUpdate): Promise<Interaction> {
+  async updateInteraction(boardId: string, id: string, raw: InteractionUpdate, expectedCreatedAt?: string): Promise<Interaction> {
     assertId(id);
     const update = parseInput(InteractionUpdateSchema, raw);
-    const board = await this.mutate(boardId, "interaction-update", { id, ...update }, (board, at) => this.changeInteraction(board, id, update, at));
+    const board = await this.mutate(boardId, "interaction-update", { id, ...update }, (board, at) => this.changeInteraction(board, id, update, at), undefined, board => this.expectCreatedAt(board, expectedCreatedAt));
     return board.interactions.find(item => item.id === id)!;
   }
 
   /** Side routing is owned by the service journal; this is its versioned UI projection. */
-  async projectSideAgent(boardId: string, route: { agentId?: string; pendingInteractionId?: string; version: number }): Promise<Board> {
+  async projectSideAgent(boardId: string, route: { agentId?: string; pendingInteractionId?: string; version: number }, expectedCreatedAt?: string): Promise<Board> {
     return this.mutate(boardId, "side-agent", route, (board, at) => {
       if ((board.sideAgentRevision ?? 0) >= route.version) return;
       board.sideAgentId = route.agentId;
       board.pendingSideInteractionId = route.pendingInteractionId;
       board.sideAgentRevision = route.version;
       this.event(board, `side-agent:${route.version}`, "user", "side-agent", route.pendingInteractionId ? "Creating a side conversation" : "Side conversation selected", at);
-    });
+    }, undefined, board => this.expectCreatedAt(board, expectedCreatedAt));
   }
 
-  async updateExtraction(boardId: string, raw: Partial<Board["extraction"]>): Promise<Board> {
+  async updateExtraction(boardId: string, raw: Partial<Board["extraction"]>, expectedCreatedAt?: string): Promise<Board> {
     const update = parseInput(BoardSchema.shape.extraction, raw);
     const path = this.path(boardId);
     await this.init();
     return serialized(path, async () => {
       const envelope = await readEnvelope(path, boardId);
       if (!envelope) throw new BoardStoreError("not_found", `Board ${boardId} does not exist`);
+      this.expectCreatedAt(envelope.board, expectedCreatedAt);
       const next = { ...envelope.board.extraction, ...update };
       if (canonicalJson(next) === canonicalJson(envelope.board.extraction)) return envelope.board;
       // Scan checkpoints are operational metadata. Persist them atomically with current
@@ -434,6 +436,10 @@ export class BoardStore {
     if (!receipt) return false;
     if (receipt.fingerprint !== digest) throw new BoardStoreError("idempotency_conflict", `Event ID ${key} was already used with a different payload`, { eventId: key, appliedRevision: receipt.revision });
     return true;
+  }
+
+  private expectCreatedAt(board: Board, expected?: string): void {
+    if (expected !== undefined && expected !== board.createdAt) throw new BoardStoreError("board_identity_changed", "This Board was replaced; reopen it before applying this request");
   }
 
   private expectRevision(board: Board, expected: number): void {

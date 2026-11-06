@@ -1,0 +1,168 @@
+function (initial) {
+  "use strict";
+  const scope = { channel: initial.channel, boardId: initial.boardId, sessionId: initial.sessionId };
+  const embedded = initial.compositionSecret;
+  const add = Function.prototype.call.bind(EventTarget.prototype.addEventListener);
+  const remove = Function.prototype.call.bind(EventTarget.prototype.removeEventListener);
+  const sendPort = Function.prototype.call.bind(MessagePort.prototype.postMessage);
+  const startPort = Function.prototype.call.bind(MessagePort.prototype.start);
+  const stopEvent = Function.prototype.call.bind(Event.prototype.stopImmediatePropagation);
+  const dataOf = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(MessageEvent.prototype, "data").get);
+  const sourceOf = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(MessageEvent.prototype, "source").get);
+  const portsOf = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(MessageEvent.prototype, "ports").get);
+  const hasFocus = document.hasFocus.bind(document);
+  const host = embedded ? window.top : window.parent;
+  const postWindow = host.postMessage.bind(host);
+  let port = null, controlPort = null, listener = null;
+  const pending = [], controlPending = [];
+  const deliver = event => {
+    if (!event.isTrusted) return;
+    const data = dataOf(event);
+    if (!data || data.channel !== scope.channel || data.boardId !== scope.boardId || data.sessionId !== scope.sessionId) return;
+    if (handleSlots(data)) return;
+    listener?.({ data, ports: portsOf(event), isTrusted: true });
+  };
+  const connect = event => {
+    if (!event.isTrusted || sourceOf(event) !== host) return;
+    const data = dataOf(event), ports = portsOf(event);
+    if (!data || data.type !== "composition-connect" || data.secret !== embedded || data.boardId !== scope.boardId || data.sessionId !== scope.sessionId || ports.length !== 1 || port) return;
+    // The bootstrap listener runs before authored scripts. Its private port is not
+    // observable through author message listeners or patched prototype methods.
+    stopEvent(event);
+    port = ports[0]; add(port, "message", deliver); startPort(port);
+    for (const message of pending.splice(0)) sendPort(port, message);
+    remove(window, "message", connect, true);
+  };
+  if (!embedded && initial.compositionHostId) add(window, "message", event => {
+    if (!event.isTrusted || sourceOf(event) !== host) return;
+    const data = dataOf(event), ports = portsOf(event);
+    if (!data || data.type !== "composition-control-connect" || data.boardId !== scope.boardId || data.sessionId !== scope.sessionId || ports.length !== 1) return;
+    stopEvent(event);
+    if (controlPort) return;
+    controlPort = ports[0];
+    for (const message of controlPending.splice(0)) sendPort(controlPort, message);
+  }, true);
+  if (embedded) {
+    add(window, "message", connect, true);
+    postWindow({ ...scope, type: "composition-ready", secret: embedded }, "*");
+  } else add(window, "message", event => {
+    if (sourceOf(event) === host) deliver(event);
+  }, true);
+  function post(message) {
+    if (!embedded && initial.compositionHostId && ["composition-slots", "composition-open", "composition-drafts"].includes(message.type)) {
+      if (controlPort) sendPort(controlPort, message);
+      else if (controlPending.length < 32) controlPending.push(message);
+      return;
+    }
+    if (!embedded) { postWindow(message, "*"); return; }
+    if (port) sendPort(port, message);
+    else if (pending.length < 128) pending.push(message);
+  }
+
+  const slots = new Map();
+  const states = new WeakMap();
+  const unavailable = new WeakSet();
+  let scheduled = false, previous = "", sequence = 0;
+  const defaultHost = initial.compositionHostId;
+  function prepareFrame(item) {
+    // This tiny locator contains no source document or authority. Its native
+    // MessageEvent gives the host a stable WindowProxy even during DOM reorder.
+    const value = JSON.stringify({ ...scope, type: "composition-slot-ready", frameToken: item.frameToken }).replace(/</g, "\\u003c");
+    item.frame.srcdoc = "<script>const value=" + value + ";const send=top.postMessage.bind(top);addEventListener('message',event=>{if(event.isTrusted&&event.source===parent&&event.data?.type==='composition-slot-discover'&&event.data.frameToken===value.frameToken)send(value,'*')});send(value,'*');<" + "/script>";
+  }
+  function notify() {
+    scheduled = false;
+    if (!defaultHost || embedded) return;
+    const next = [], seen = new Set();
+    for (const element of document.querySelectorAll("paseo-board")) {
+      if (next.length >= 16) break;
+      if (unavailable.has(element)) continue;
+      let item = states.get(element);
+      if (!item) {
+        let shadow;
+        try { shadow = element.attachShadow({ mode: "closed" }); } catch { unavailable.add(element); continue; }
+        const style = document.createElement("style");
+        style.textContent = ":host{display:block;position:relative;min-height:108px}header{box-sizing:border-box;height:28px;display:flex;gap:8px;align-items:center;padding:0 8px;border-bottom:1px solid var(--host-border,#ddd);background:var(--host-sheet,#fff);color:var(--host-text,#333);font:12px system-ui}span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}button{border:0;background:transparent;color:inherit;cursor:pointer;font:inherit}::slotted(iframe){display:block;border:0;width:100%;height:calc(100% - 28px);min-height:80px}div{position:absolute;inset:28px 0 0;display:grid;place-items:center;padding:12px;background:var(--host-sheet,#fff);color:var(--host-text,#333);font:13px system-ui;pointer-events:none}[hidden]{display:none!important}";
+        const header = document.createElement("header"), title = document.createElement("span"), open = document.createElement("button"), drafts = document.createElement("button");
+        title.textContent = element.getAttribute("board-id") || "Board"; open.textContent = "打开"; open.hidden = true;
+        drafts.hidden = true; drafts.textContent = "待发送";
+        header.append(title, drafts, open);
+        const frame = document.createElement("iframe"); frame.sandbox = "allow-scripts"; frame.referrerPolicy = "no-referrer"; frame.title = "Embedded Board"; frame.slot = "canvas"; frame.setAttribute("data-board-embedded-frame", ""); frame.setAttribute("data-board-overlay", "");
+        const status = document.createElement("div"); status.textContent = "连接画板…";
+        const outlet = document.createElement("slot"); outlet.name = "canvas";
+        item = { element, frame, window: null, frameReady: false, status, title, open, drafts, frameToken: String(++sequence), fallbackId: "slot-" + sequence }; states.set(element, item);
+        // A newly appended opaque iframe can be present in this renderer's frames
+        // list before the top renderer can resolve its WindowProxy. Publish only
+        // after its native initial load has completed.
+        add(frame, "load", () => { item.frameReady = true; schedule(); });
+        prepareFrame(item); shadow.append(style, header, outlet, status); element.append(frame); item.window = frame.contentWindow;
+        add(open, "click", event => { if (event.isTrusted) post({ ...scope, type: "composition-open", id: element.getAttribute("slot-id") || element.id || item.fallbackId }); });
+        add(drafts, "click", event => { if (event.isTrusted) post({ ...scope, type: "composition-drafts", id: element.getAttribute("slot-id") || element.id || item.fallbackId }); });
+        resize?.observe(element);
+      }
+      if (item.frame.parentElement !== element) element.append(item.frame);
+      if (item.window !== item.frame.contentWindow) { item.window = item.frame.contentWindow; item.frameReady = false; item.frameToken = String(++sequence); prepareFrame(item); }
+      const id = element.getAttribute("slot-id") || element.id || item.fallbackId;
+      const hostId = element.getAttribute("host-id") || defaultHost, boardId = element.getAttribute("board-id") || "";
+      const snapshotId = element.getAttribute("snapshot-id");
+      if (!id || id.length > 160 || !hostId || hostId.length > 256 || !boardId || boardId.length > 160 || snapshotId && snapshotId.length > 200) { item.status.hidden = false; item.status.textContent = "画板引用缺少有效的 host-id、board-id 或 snapshot-id"; continue; }
+      if (seen.has(id)) { item.status.hidden = false; item.status.textContent = "画板引用 ID 重复"; continue; }
+      seen.add(id); slots.set(id, item);
+      const preview = element.getAttribute("view") === "preview";
+      if (item.frame.inert !== preview) item.frame.inert = preview;
+      const tabIndex = preview ? -1 : 0, pointerEvents = preview ? "none" : "auto";
+      if (item.frame.tabIndex !== tabIndex) item.frame.tabIndex = tabIndex;
+      // A redundant style assignment still emits a MutationRecord. Avoid
+      // feeding our own style observer an endless requestAnimationFrame loop.
+      if (item.frame.style.pointerEvents !== pointerEvents) item.frame.style.pointerEvents = pointerEvents;
+      const rect = item.frame.getBoundingClientRect();
+      let index = -1;
+      for (let i = 0; i < window.frames.length; i++) if (window.frames[i] === item.frame.contentWindow) { index = i; break; }
+      const style = getComputedStyle(element);
+      if (index < 0 || !item.frameReady) continue;
+      next.push({ id, hostId, boardId, view: preview ? "preview" : "interactive", ...(snapshotId ? { snapshotId } : {}), frameIndex: index, frameToken: item.frameToken, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, visible: !document.hidden && rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden" && rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight });
+    }
+    for (const [id, item] of slots) if (!seen.has(id)) { slots.delete(id); if (!item.element.isConnected) resize?.unobserve(item.element); }
+    const serialized = JSON.stringify(next);
+    if (serialized !== previous) { previous = serialized; post({ ...scope, type: "composition-slots", slots: next }); }
+  }
+  function schedule() { if (!scheduled) { scheduled = true; requestAnimationFrame(notify); } }
+  function handleSlots(message) {
+    if (message.type === "composition-discover") {
+      const item = slots.get(message.id);
+      if (item?.frameToken === message.frameToken) item.frame.contentWindow?.postMessage({ type: "composition-slot-discover", frameToken: item.frameToken }, "*");
+      return true;
+    }
+    if (message.type === "composition-presentation") {
+      const item = slots.get(message.id);
+      if (item && typeof message.title === "string" && typeof message.hostLabel === "string") {
+        item.title.textContent = message.title.slice(0, 200) + " · " + message.hostLabel.slice(0, 200) + (message.unread > 0 ? " · " + Math.min(9999, message.unread) + " 条更新" : "");
+        item.open.hidden = !message.canOpen;
+        item.drafts.hidden = !message.canDrafts || !(message.queued > 0);
+        item.drafts.textContent = "待发送 " + Math.min(9999, message.queued || 0);
+      }
+      return true;
+    }
+    if (message.type !== "composition-status") return false;
+    const item = slots.get(message.id);
+    if (item && typeof message.text === "string") { item.status.textContent = message.text.slice(0, 300); item.status.hidden = message.text === ""; }
+    return true;
+  }
+  const resize = typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
+  if (defaultHost && !embedded) {
+    new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["host-id", "board-id", "view", "snapshot-id", "slot-id", "id", "class", "style", "hidden"] });
+    add(window, "scroll", schedule, true); add(window, "resize", schedule); add(document, "visibilitychange", schedule); schedule();
+  }
+  return {
+    post,
+    listen(fn) { listener = fn; },
+    acting() { return !embedded || hasFocus(); },
+    intersects(region) {
+      for (const item of slots.values()) {
+        const r = item.element.getBoundingClientRect(), x = r.x + scrollX, y = r.y + scrollY;
+        if (r.width > 0 && r.height > 0 && x < region.x + region.width && x + r.width > region.x && y < region.y + region.height && y + r.height > region.y) return true;
+      }
+      return false;
+    },
+  };
+}

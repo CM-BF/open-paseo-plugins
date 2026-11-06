@@ -1,0 +1,27 @@
+# Composable Board verification — candidate stage
+
+The feature is developed on `sw/board-composition` from main `7058d4b`. It has not been installed or merged. No live Board, test agent or message has been created for this feature. The implementation and examples are plugin-only.
+
+## Evidence completed
+
+The fixed source snapshot `candidate-1793942448523469000` passed TypeScript, 516 source tests in 38 files, 8 opaque-frame mechanism checks, 19 production CanvasFrame checks and 11 production BoardView checks. Private receipts and logs reside under `~/.paseo/verification/paseo-board/composition-20261105/`.
+
+The host checks use the production source selector, BoardView, cache and CanvasFrame against two adapted public host-service installations. Native input verifies distinct equal-ID sources, parent/source comment routing, shared source queues, source-owned edit review, preserved controls through resize/reorder, independent reading positions, same-slot replacement, source recreation/reselection, read-only previews and host retirement without fallback. They do not use two real daemons or deliver messages to live agents.
+
+The immediate single-comment acknowledgement path now compares the frozen intent, source identity, route, payload and anchor before clearing a draft or resolving an authored request as submitted. `single-receipt-guard-host-v2.log` passes 12 BoardView checks: missing identity, different identity and changed text all retain the original durable draft and unresolved authored request; native retries use the identical original payload, and only the exact final receipt clears it. The first new test run remains failed because it looked for the initial Send label after the UI correctly switched to Retry; no product assertion was relaxed.
+
+Independent frame probing (`final-frame-isolation-review.json`) intentionally lets a sibling under the same authored parent race the public locator. Winning placement is possible; source authority is not acquired. Host navigation destroys the old attacker script and creates an opaque source document. Source DOM, location, secret and private ports remain unavailable; forged source calls fail even with the exact session and after replacing the same WindowProxy. A genuine source Comment still routes to the correct source. This is bounded mechanism evidence, not protection against a parent changing its own layout or removing children.
+
+## Failures retained and corrections
+
+`task-5da391b51f19` reached its preparation deadline without snapshotting, testing, committing or installing. It is not a failed product test. The later candidate waited only for completed handoffs and then tested one fixed snapshot.
+
+`host-final-1793941040808188000` failed after nine checks because the third display's saved position became zero. One genuine teardown sample was corrected with a disposal timestamp cutoff on the bounded final view handoff. A second reset still occurred before remount, without changed geometry or JavaScript scrolling. Native wheel input reproduced it. An independent opaque-parent/blob-child probe reproduced it without Board, React or cache: after a state-preserving iframe move, the next child layout update following user scrolling restored the move-time offset. Refreshing marker/component layout after parent movement and before user scrolling prevented that reset. Production tests retain exact independent positions and observe stability after the native scroll; there is no compensating scroll timer. A redundant pointer-events write was also guarded to avoid a self-triggering observer loop.
+
+A same-slot DOM replacement now receives a new controller/session, while its durable position key remains stable. Delayed state, edit and comment writes carry source creation identity into the store lock. Drafts, batches and delivery recovery preserve that identity rather than adopting a replacement Board. Final independent review also reproduced three historical-extraction races before fixing them: a held history page for the same or a different owner, and a prepared decision waiting across Board recreation. Decisions and extraction checkpoints now check the originally captured identity inside the store lock, before receipt replay. The related 122 store/service tests and typecheck passed; the final committed suite must include these corrections and the immediate acknowledgement guard.
+
+## Limits and next stages
+
+The complete clean committed-source regression, both generated artifact identities, Hermes and real Helper packaging have not yet been recorded for the final candidate. Installation and actual primary-daemon Web acceptance remain pending. Only the local MacBook host has been observed; no real two-host or physical mobile acceptance is claimed.
+
+Composition requires compatible connected Board installations in the current app realm. There are at most eight active managed embeds and one level. Preview is current persisted content rendered read-only, not historical captured pixels. Unsupported historical snapshot IDs, parent screenshots intersecting an embed and static exports of managed embeds fail explicitly. Source observations disclose bounded history and cached timing. All-clients-closed federation and screen-owning-host-offline persistence are outside this version.

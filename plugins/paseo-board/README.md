@@ -1,5 +1,7 @@
 # Paseo Board
 
+Board composition adds user-selected cross-host sources and isolated `<paseo-board>` embeds to ordinary authored canvases. Monitors and briefings remain free-form Boards; no Paseo client changes or fixed dashboard layout are required. See [composition authoring](docs/composition-authoring.md) and [source reads and provenance](docs/composition-sources.md).
+
 A persistent, fully interactive visualize with contextual human–agent conversations. The agent owns the HTML/CSS/JS canvas. The plugin owns identity, updates, selection, discussion receipts and evidence for the agent's default decisions. There is no task schema, prescribed workflow or component catalog.
 
 ## Use

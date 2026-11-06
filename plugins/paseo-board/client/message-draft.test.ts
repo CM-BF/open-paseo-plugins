@@ -10,6 +10,13 @@ function receipt(overrides: Partial<Interaction> = {}): Interaction {
     status: "delivered", resultReferences: [], createdAt: "now", updatedAt: "now", ...overrides };
 }
 describe("durable message acknowledgement", () => {
+  it("keeps a frozen draft when an equal intent is reported for a different source entity", () => {
+    const frozen = { ...draft, expectedCreatedAt: "entity-one" };
+    expect(acceptedDraftInteraction(frozen, [receipt()])).toBeUndefined();
+    expect(acceptedDraftInteraction(frozen, [receipt({ expectedCreatedAt: "entity-two" })])).toBeUndefined();
+    const original = receipt({ expectedCreatedAt: "entity-one" });
+    expect(acceptedDraftInteraction(frozen, [original])).toBe(original);
+  });
   it("matches a frozen reference despite transport key ordering", () => {
     const item = receipt({ anchor: { canvasRevision: 3, boardRevision: 5, selector: "#original", kind: "element", image: { data: "original-pixels", mimeType: "image/png" }, rect: { height: 40, width: 30, y: 20, x: 10 } } });
     expect(acceptedDraftInteraction(draft, [item])).toBe(item);

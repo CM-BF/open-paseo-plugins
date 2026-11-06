@@ -10,6 +10,8 @@ export interface DraftCompose {
   anchor?: Anchor;
   sourceInteractionId?: string;
   intentId?: string;
+  /** Captured source entity; retained across uncertain-send retries. */
+  expectedCreatedAt?: string;
   destination?: "main" | "side" | "new-side";
   captureStatus?: "ready" | "failed" | "omitted";
   captureFailureReason?: CaptureFailureReason;
@@ -54,6 +56,7 @@ const ComposeSchema = z.object({
   // Keep an overlong unsent draft recoverable even if sending needs it shortened.
   text: z.string().max(240000),
   sourceInteractionId: IdSchema.optional(), intentId: IdSchema.optional(),
+  expectedCreatedAt: z.string().min(1).max(100).optional(),
   destination: z.enum(["main", "side", "new-side"]).optional(),
   captureStatus: z.enum(["ready", "failed", "omitted"]).optional(),
   captureFailureReason: z.enum(["content-changed", "too-complex", "unsupported-layout", "too-large", "timeout", "generation-failed"]).optional(),

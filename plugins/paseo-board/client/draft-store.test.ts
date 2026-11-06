@@ -33,13 +33,13 @@ describe("durable contextual message drafts", () => {
   });
   it("survives a fresh store with the exact frozen component, image, route and coordinates, excluding executable callbacks and capture leases", () => {
     const { storage } = memory(), store = createDraftStore(scope, storage), draft = input();
-    Object.assign(draft.compose, { intentId: "intent-frozen", destination: "side", captureStatus: "pending", selectionId: "expired-lease", resolve: vi.fn() });
+    Object.assign(draft.compose, { intentId: "intent-frozen", expectedCreatedAt: "source-entity-one", destination: "side", captureStatus: "pending", selectionId: "expired-lease", resolve: vi.fn() });
     const first = saved(store.put(draft));
     draft.compose.text = "changed after saving"; draft.compose.anchor!.selector = "#another";
     const restored = createDraftStore(scope, storage).list();
     expect(restored.issues).toEqual([]); expect(restored.drafts).toHaveLength(1);
     expect(restored.drafts[0]).toMatchObject({ id: draft.id, revision: first.revision, position: { x: 80, y: 40 }, compose: {
-      text: "Words not sent", intentId: "intent-frozen", destination: "side", captureStatus: "omitted", anchor: anchor(),
+      text: "Words not sent", intentId: "intent-frozen", expectedCreatedAt: "source-entity-one", destination: "side", captureStatus: "omitted", anchor: anchor(),
     } });
     expect(restored.drafts[0].compose).not.toHaveProperty("selectionId"); expect(restored.drafts[0].compose).not.toHaveProperty("resolve");
     expect(Object.isFrozen(restored.drafts[0].compose.anchor!.binding!.target)).toBe(true);

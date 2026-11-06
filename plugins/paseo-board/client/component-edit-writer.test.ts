@@ -7,6 +7,17 @@ const board = (revision = 5) => ({ id: "a", canvas: { revision } }) as Board;
 const applied = (revision = 5, eventId = "host-event"): EditResult => ({ status: "applied", eventId, board: board(revision) });
 const refresh = vi.fn(async () => undefined);
 describe("host-owned component saves", () => {
+  it("keeps source identity through an unknown save and treats replacement as a confirmed refusal", async () => {
+    const writer = new ComponentEditWriter(), outcome = writer.propose("a", proposal(), "entity-event", "original-entity");
+    const first = vi.fn(async (_request: EditInput): Promise<EditResult> => { throw new Error("lost reply"); });
+    await writer.save(first, vi.fn(), refresh);
+    const accept = vi.fn(), retry = vi.fn(async (_request: EditInput): Promise<EditResult> => ({ status: "rejected", eventId: "entity-event", code: "board_identity_changed" }));
+    await writer.save(retry, accept, refresh);
+    expect(retry.mock.calls[0][0]).toBe(first.mock.calls[0][0]);
+    expect(retry.mock.calls[0][0].expectedCreatedAt).toBe("original-entity");
+    expect(await outcome).toMatchObject({ status: "rejected" }); expect(accept).not.toHaveBeenCalled();
+    writer.cancel(); expect(writer.snapshot()).toBeNull();
+  });
   it("stages without saving, snapshots caller input and cancels without a mutation", async () => {
     const writer = new ComponentEditWriter(), input = proposal();
     const result = writer.propose("a", input, "host-event");
