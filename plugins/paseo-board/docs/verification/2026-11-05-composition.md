@@ -12,6 +12,12 @@ The immediate single-comment acknowledgement path now compares the frozen intent
 
 Independent frame probing (`final-frame-isolation-review.json`) intentionally lets a sibling under the same authored parent race the public locator. Winning placement is possible; source authority is not acquired. Host navigation destroys the old attacker script and creates an opaque source document. Source DOM, location, secret and private ports remain unavailable; forged source calls fail even with the exact session and after replacing the same WindowProxy. A genuine source Comment still routes to the correct source. This is bounded mechanism evidence, not protection against a parent changing its own layout or removing children.
 
+## First clean committed run
+
+Commit `7dd32535` includes rebuilt worker/client assets. `combined-1793943018205633000` passed 25 steps: TypeScript, 521 source tests in 38 files, 8/19/12 composition checks, existing host/reopening/drafts/queue/authored-comment paths and static release browser checks. It stopped at the release-host ZIP assertion, which waited a fixed 150ms after the native click and saw no completed ZIP despite a recorded download RPC. The original receipt remains failed.
+
+The separate `release-download-diagnosis` probe uses the real ReleasePanel, ZIP core and browser download implementation with a deliberate 400ms loopback response delay. The old 150ms check observed an empty directory; later native download events completed the same GUID and the resulting 55,612-byte ZIP matched every frozen file. This proves the fixed delay can misclassify successful asynchronous downloads, not which stage delayed the uninstrumented original run. The test-only correction waits for the matching browser completion event and retains cancellation/timeout failures and exact byte assertions. All 12 default release-host checks passed with this correction; product blobs remain unchanged. Passed evidence may be carried forward only after confirming unchanged product and test inputs; execution provenance remains explicit. The pending clean-archive continuation will inherit 19 unchanged checks and execute 18 steps afresh, including release-host, the remaining browser regressions, artifact identity and real Helper packaging.
+
 ## Failures retained and corrections
 
 `task-5da391b51f19` reached its preparation deadline without snapshotting, testing, committing or installing. It is not a failed product test. The later candidate waited only for completed handoffs and then tested one fixed snapshot.
