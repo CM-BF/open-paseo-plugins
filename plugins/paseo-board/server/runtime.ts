@@ -30,7 +30,7 @@ export function toolDefinitions() {
     ["feed", "Manage an arbitrary-JSON source. Open once with sourceId/path/requestId/expectedGeneration:0. Default latest mode uses set; explicit mode:records with optional capacity uses append and preserves every accepted record in order. Use the next seq in that generation; identical retries retain exact payload and attention. Capacity overflow rejects the whole batch without eviction. Quiet updates persist and reach the canvas without unread/highlight noise. Milestones may name focusSelectors. Existing source generations change only through explicit open with their current expectedGeneration; closed/old writers cannot overwrite newer ones. Prefer the generated createFeed SDK for durable sequence/retry handling. Optional createLatestWriter coalesces latest state only, never records or milestones.", FeedInputSchema],
     ["emit", "Save an external fact or conditional shared-data update without waking agents. Traditional data REQUIRES its original canvasBase; prefer dataPatch JSON Pointer operations with expected old values for concurrent producers. Never reread just to bump a version on an old payload. Pure events/observations need no canvasBase. Keep eventId stable for an identical retry; focusSelectors may locate changed data.", EmitInputSchema],
   ] as const;
-  return entries.map(([name, description, schema]) => ({ name: `board_${name}`, description, inputSchema: z.toJSONSchema(schema, { io: "input" }) }));
+  return entries.map(([name, description, schema]) => ({ name: `board_${name}`, description, inputSchema: { type: "object", ...z.toJSONSchema(schema, { io: "input" }) } }));
 }
 
 function launcher(paths: RuntimePaths, mode: "cli" | "mcp"): string {
