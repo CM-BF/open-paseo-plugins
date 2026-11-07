@@ -2,6 +2,8 @@
 
 ### 2026-11-06 — composer Board shortcut installed and desktop entry verified
 
+- Published as draft [PR #12](https://github.com/CM-BF/open-paseo-plugins/pull/12), stacked on PR #11. The installed runtime remains `8d76e1f`; only acceptance documentation follows it. No merge to main was performed.
+
 - User requested an easier Board entry using a pill. A single native **Board** action beside each eligible agent's composer opens the existing `agent-board` panel with that exact workspace and agent; the installed plugin's host supplies the navigation scope. No new Board RPC, source grant, data mutation, or client-core change is needed.
 - Reuses existing per-host/per-entry selection and reading-position memory. First use opens that workspace's Board list; selecting a Board there remembers it for this agent entry. The global Boards screen keeps its independent selection.
 - Runtime `8d76e1f4d670a05061df9f8a8cfeb429e6b1a010`, on `sw/board-composer-pill` from composition delivery `129c672`, passed a fresh locked install, TypeScript, **530 source tests in 39 files** (including nine pill lifecycle/navigation tests), **38 existing-host checks**, **9 resume-core checks**, byte-identical clean client rebuilding and the Hermes compatibility check launched through the real Paseo Helper. Independent source review found no required changes. The initial shared dependency directory lacked the locked MCP SDK; the clean install resolved that environment limitation. Browser checks use adapted host services and are not primary-daemon UI evidence.
