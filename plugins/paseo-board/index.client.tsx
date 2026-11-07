@@ -2,6 +2,7 @@ import type { PluginClientContext, PluginScreenProps, PluginSidebarItemProps, Pl
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { BoardHome } from "./client/home";
 import { BoardInstallationProvider, createBoardInstallation } from "./client/transport";
+import { contributeBoardPill } from "./client/composer-pill";
 
 function Screen(props: PluginScreenProps) { return <BoardHome {...props} initialBoardId={props.params.boardId} entryScope={{ hostId: props.host.id, surface: "screen" }} />; }
 function AgentPanel(props: PluginAgentPanelProps) {
@@ -20,6 +21,7 @@ export default function contribute(client: PluginClientContext) {
     client.addWorkspacePanel({ id: "workspace-boards", title: "Boards", icon: "PanelsTopLeft", locations: ["workspace", "explorer"], Component: props => <BoardInstallationProvider installation={installation} host={props.host}><WorkspacePanel {...props} /></BoardInstallationProvider> }),
     client.addCommandCenterItem({ id: "open-boards", title: "Open Boards", icon: "PanelsTopLeft", context: "global", keywords: ["board", "canvas", "decisions"], onSelect: context => context.openScreen({ screenId: "boards" }) }),
     client.addSlashCommand({ name: "board", description: "Open this workspace’s live Boards", argumentHint: "", context: "agent", onSubmit: context => context.openPanel("agent-board") }),
+    contributeBoardPill(client),
   ];
   return async () => { installation.dispose(); for (const remove of removers.reverse()) await remove(); };
 }
