@@ -11891,6 +11891,120 @@ function BoardIndex({
   });
 }
 
+// client/composer-pill.ts
+function contributeBoardPill(client) {
+  if (typeof client.addComposerPill !== "function") return () => void 0;
+  var lifetime = new AbortController();
+  var pills = /* @__PURE__ */new Map();
+  var unsubscribe;
+  var release;
+  function remove(agentId) {
+    var pill = pills.get(agentId);
+    if (!pill) return;
+    pills.delete(agentId);
+    pill.registration.remove();
+  }
+  function stop() {
+    if (lifetime.signal.aborted) return;
+    lifetime.abort();
+    unsubscribe?.();
+    release?.();
+    for (var agentId of pills.keys()) remove(agentId);
+  }
+  function observe(agent) {
+    if (lifetime.signal.aborted) return;
+    var existing = pills.get(agent.id);
+    if (!agent.workspaceId || agent.archivedAt) {
+      remove(agent.id);
+      return;
+    }
+    if (existing?.workspaceId === agent.workspaceId) return;
+    remove(agent.id);
+    var agentId = agent.id;
+    var workspaceId = agent.workspaceId;
+    var pill;
+    var registration = client.addComposerPill({
+      id: "board",
+      workspaceId,
+      agentId,
+      button: {
+        title: "\u6253\u5F00 Board",
+        icon: "PanelsTopLeft",
+        label: "Board",
+        behavior: {
+          kind: "action",
+          onPress() {
+            if (lifetime.signal.aborted || !pill || pills.get(agentId) !== pill) return;
+            client.openPanel("agent-board", {
+              workspaceId,
+              agentId
+            });
+          }
+        }
+      }
+    });
+    if (lifetime.signal.aborted) {
+      registration.remove();
+      return;
+    }
+    pill = {
+      workspaceId,
+      registration
+    };
+    pills.set(agentId, pill);
+  }
+  void client.paseo.agents.list({
+    subscribe: {},
+    signal: lifetime.signal
+  }).then(({
+    subscription
+  }) => {
+    var released = false;
+    release = () => {
+      if (released) return;
+      released = true;
+      void subscription.release().catch(error => {
+        console.error("[paseo-board] agent subscription release failed", error);
+      });
+    };
+    if (lifetime.signal.aborted) {
+      release();
+      return;
+    }
+    var detach = subscription.subscribe({
+      snapshot: ({
+        entries
+      }) => {
+        if (lifetime.signal.aborted) return;
+        var present = /* @__PURE__ */new Set();
+        for (var {
+          agent
+        } of entries) {
+          present.add(agent.id);
+          observe(agent);
+        }
+        for (var agentId of pills.keys()) if (!present.has(agentId)) remove(agentId);
+      },
+      update: message => {
+        if (lifetime.signal.aborted || message.type !== "agent_update") return;
+        var update = message.payload;
+        if (update.kind === "remove") remove(update.agentId);else observe(update.agent);
+      },
+      error: error => {
+        if (lifetime.signal.aborted) return;
+        console.error("[paseo-board] agent observation failed", error);
+        stop();
+      }
+    });
+    if (lifetime.signal.aborted) detach();else unsubscribe = detach;
+  }).catch(error => {
+    if (lifetime.signal.aborted) return;
+    console.error("[paseo-board] agent observation failed", error);
+    stop();
+  });
+  return stop;
+}
+
 // index.client.tsx
 import { jsx as jsx17 } from "react/jsx-runtime";
 function Screen(props) {
@@ -11997,7 +12111,7 @@ function contribute(client) {
     argumentHint: "",
     context: "agent",
     onSubmit: context => context.openPanel("agent-board")
-  })];
+  }), contributeBoardPill(client)];
   return () => __async(null, null, function* () {
     installation.dispose();
     for (var remove of removers.reverse()) yield remove();
