@@ -9,8 +9,8 @@ import {
 import type { ReleaseRepository } from "./static-release";
 
 export interface PagesGateway {
-  accounts(): Promise<GitHubAccount[]>;
-  repositories(account: string): Promise<GitHubRepository[]>;
+  accounts(githubHost?: string): Promise<GitHubAccount[]>;
+  repositories(account: string, githubHost?: string): Promise<GitHubRepository[]>;
   prepare(input: PagesPrepareInput): Promise<PagesJob>;
   publish(input: PagesPrepareInput): Promise<PagesJob>;
   merge(input: { jobId: string; expectedHead: string }): Promise<PagesJob>;
@@ -40,8 +40,8 @@ export function registerPublicationRpc(server: PluginServerContext, options: {
   });
   server.handle(previewReleaseRpc, async input => { await release(input.releaseId); return releases.preview(input.releaseId); });
   server.handle(downloadReleaseRpc, async input => { await release(input.releaseId); return releases.download(input.releaseId); });
-  server.handle(githubAccountsRpc, async () => { await options.ready(); return pages.accounts(); });
-  server.handle(githubRepositoriesRpc, async input => { await options.ready(); return pages.repositories(input.account); });
+  server.handle(githubAccountsRpc, async input => { await options.ready(); return pages.accounts(input.githubHost); });
+  server.handle(githubRepositoriesRpc, async input => { await options.ready(); return pages.repositories(input.account, input.githubHost); });
   server.handle(preparePagesRpc, async input => { await release(input.releaseId); return pages.prepare(input); });
   server.handle(publishPagesRpc, async input => { await release(input.releaseId); return pages.publish(input); });
   server.handle(mergePagesRpc, async input => {

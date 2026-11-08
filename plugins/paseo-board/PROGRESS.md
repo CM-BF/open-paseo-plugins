@@ -1,5 +1,13 @@
 # Paseo Board publication and verification
 
+### 2026-11-08 — Enterprise publishing correction (candidate, clean verification pending)
+
+- The requirement is publishing to the company's GitHub, without a github.com login. The earlier public-only diagnostic repair below is insufficient for that requirement. Extend host-qualified identity through account discovery, repository selection, immutable client requests, CLI and the server publication journal; old hostless requests retain github.com semantics.
+- Implemented host-qualified discovery, repositories, UI/outbox, CLI and publication journals; GHES REST paths and branch-based Pages deployment avoid the unsupported official Pages deployment action. Custom/internal Pages URLs come from the selected authenticated GitHub API; website verification never receives the API credential. Existing site configuration and unrelated files remain protected. Completed SSO-protected deployments offer a clearly unverified link while exact-byte verification remains required for `live`.
+- Independent review identified and corrected missing-mode legacy journal handling, path traversal in repository input, and silently ignored CLI host flags. Targeted checks passed: 74 server account/publication cases and 13 RPC/CLI/outbox cases, plus TypeScript; client and worker were rebuilt. The complete clean-source and publication browser suites have not run for the frozen candidate yet. No real company GitHub publication is claimed.
+- Dynamic backend work is currently a design proposal: agent-owned ordinary application code, arbitrary data models and migration logic, reusable SSH deployment/data-lifecycle scaffolding, plus an optional native external-comment inbox. Receiving comments, agent triage, and executing changes/public replies are separate permissions. No backend service or external-comment feature has been installed.
+- The working computer is not being accessed. This candidate is not yet installed or fully verified; local installation must preserve the newer composition/pill baseline and rebuild its client rather than replacing it with this main-based tree. Main and draft PR publication remain separate from implementation.
+
 ### 2026-11-08 — GitHub account discovery repair
 
 - On `sw/board-gh-account-diagnostics`, based directly on main, repair the exit-zero/empty-account result from recent GitHub CLI versions. Discovery clears inherited host/token overrides, checks github.com first and reports an actionable error when no usable account exists. Optional other-host diagnostics have a three-second bound; successful public accounts never wait for Enterprise hosts.

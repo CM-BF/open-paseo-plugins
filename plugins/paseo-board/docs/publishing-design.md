@@ -1,6 +1,6 @@
 # Board 固定版本发布设计研究
 
-初版日期：2026-10-31；一键发布修订：2026-11-01。用户先选择固定版本，随后要求通用导出、GitHub Pages，以及一次点击自动完成发布。以下描述实现契约；真实远程验收结果另见验证记录，不以本地适配测试代替。
+初版日期：2026-10-31；一键发布修订：2026-11-01；Enterprise 修订：2026-11-08。用户先选择固定版本，随后要求通用导出、GitHub Pages，以及一次点击自动完成发布。以下描述实现契约；真实远程验收结果另见验证记录，不以本地适配测试代替。
 
 ## 本次实现与使用
 
@@ -15,6 +15,8 @@
 ```sh
 node scripts/board-release.mjs export --board /path/board-read.json --public-data /path/public.json --out /path/new-public-directory --zip /path/new-public.zip --store /path/private-releases
 node scripts/board-release.mjs serve --store /path/private-releases --release release-<sha256>
+node scripts/board-release.mjs accounts --github-host github.enterprise.example
+node scripts/board-release.mjs repositories --github-host github.enterprise.example --account employee
 node scripts/board-release.mjs --help
 ```
 
@@ -22,18 +24,20 @@ node scripts/board-release.mjs --help
 
 `server/github-pages.ts` 通过本机 `gh` 已登录身份取得选定账号凭据，不切换全局活跃账号，凭据不进入浏览器、文件包或 job。选择已有仓库，或显式选择创建 public/private 新仓库；公开分支从 PR 阶段起就会暴露提交文件。私有仓库不保证 Pages 私密，Pages 套餐/权限仍由 GitHub 执行。
 
-准备阶段固定 artifactHash、账号、仓库、eventId 和 PR head；同事件重试复用远程分支/PR。独立站点继续使用 `paseo-board-publication/site` 与受验证的 Pages workflow。已有分支式 Pages 则沿用原 source branch 和 `/` 或 `/docs`，在专属版本目录加入公开文件，不替换首页、其他页面或 Pages 配置。合并前检查真实 Git tree、完整文件差异和固定 head；workflow 模式还要求对应提交的发布检查成功。两种模式均保留仓库原有检查与分支保护。部署成功后逐文件读取标准 `https://<owner>.github.io` 站点，manifest、HTML 与所有署名许可文件字节都符合该版本才返回 `live`。
+准备阶段固定 artifactHash、GitHub 主机、账号、仓库、eventId 和 PR head；同事件重试复用远程分支/PR，不允许把同一请求切换到另一台 GitHub。旧记录未含主机时继续按 github.com 解释。公共 GitHub 独立站点继续使用 `paseo-board-publication/site` 与受验证的 Pages workflow。GHES 新站点使用专用仓库的 `/docs` 分支发布：检查该目录原先为空，合并后核对完整待公开文件再启用 Pages，不引入外部 Actions。已有分支式 Pages 沿用原 source branch 和 `/` 或 `/docs`，在专属版本目录加入文件，不替换首页、其他页面或 Pages 配置。合并前检查真实 Git tree、完整文件差异和固定 head；workflow 模式还要求对应提交的发布检查成功。所有模式保留仓库原有检查与分支保护。
 
-明确的第一期限制：自定义域名尚不自动核验（任务保留部署中状态）；Pages 初次配置请求若结果不明且远程已出现站点，本地“曾发过请求”不作为归属证据，禁止盲目接管，需要核对当前站点后恢复；现有空仓库需要先初始化，显式新建仓库会初始化；额外托管适配器、SSH 自动上传、远程库 vendoring、公开实时后端不在本次实现内。所有 GitHub 状态机测试使用明确的本地 transport，不能替代真实账户/远程 Pages 验收。
+部署地址使用已认证 GitHub API 返回的 `html_url`，支持内部 Pages 与自定义 HTTPS 域名。核对网站时不发送 GitHub token、不跟随登录重定向。对应合并提交的构建成功后提供部署链接；需要公司登录的站点会显示“内容待核验”。只有逐文件读取到 manifest、HTML、署名及许可文件的精确字节才返回 `live`，部署成功本身不能代替内容核验。
+
+明确的限制：Pages 初次配置请求若结果不明且远程已出现站点，本地“曾发过请求”不作为归属证据，禁止盲目接管，需要核对当前站点后恢复；现有空仓库需要先初始化，显式新建仓库会初始化。GHES 已有其他发布方式不会被自动切换；企业禁止 Pages、缺少权限或站点需登录时显示实际状态。额外托管适配器、SSH 自动上传、远程库 vendoring、共享应用后端仍属于后续设计。所有 GitHub 状态机测试使用明确的本地 transport，不能替代真实公司服务器发布验收。
 
 
 ## 编辑副本、发布版本、部署记录
 
 - **编辑副本**仍是普通 Board：从精确 canvasBase 物化当前源码，复制 data，生成独立 Board ID；保留 owner/project/workspace 关联，便于继续和 agent 交流和手动修改。副本清空讨论、决策、事件、历史补丁和作者 userState。相同 copy event 重试取回已有副本，不能覆盖用户后来修改的副本。来源关系保存在本机私有复制回执。
 - **发布版本**是不可变的网页、公共数据和 viewer 配置。可以从工作 Board 直接生成，也可以先复制再编辑。生成时要求源画布版本匹配；生成后不再跟随源 Board，也不因源 Board 删除而失去导出能力。发布 ID 对来源身份、canvasBase、内容和 viewer 代码取 hash，公开产物不包含原始 Board ID。
-- **部署记录**保存 releaseId、artifactHash、账号、仓库、immutable eventId、冻结分支/head、PR、merge 和部署核验状态。当前没有独立 PublishTarget 管理或专门回退按钮；可选旧快照创建新的发布请求，重新发布旧内容。凭证不会持久化到部署记录。
+- **部署记录**保存 releaseId、artifactHash、GitHub 主机、账号、仓库、immutable eventId、冻结分支/head、PR、merge 和部署核验状态。当前没有独立 PublishTarget 管理或专门回退按钮；可选旧快照创建新的发布请求，重新发布旧内容。凭证不会持久化到部署记录。
 
-页面入口为「更多 → 导出与发布」：按需复制编辑，生成固定版本并查看预览；选择 GitHub 账号和仓库后点击「一键发布」。这一次操作授权服务器完成 PR、验证、固定提交合并、部署与公网核对，无需另点合并。面板显示进度和最终链接，关闭面板或刷新不终止已经授权的任务。选择历史任务会填回其固定账号和仓库；明确重试沿用同一请求。创建 PR 已是远程上传，不能把“还没合并”当作内容仍然私密。此功能的发布动作不涉及插件自身 PR #4，也不授权合并插件 main。
+页面入口为「更多 → 导出与发布」：按需复制编辑，生成固定版本并查看预览；选择 GitHub 主机、账号和仓库后点击「一键发布」。这一次操作授权服务器完成 PR、验证、固定提交合并、部署与站点核对，无需另点合并。面板显示进度和链接，关闭面板或刷新不终止已经授权的任务。选择历史任务会填回其固定主机、账号和仓库；明确重试沿用同一请求。创建 PR 已是远程上传，不能把“还没合并”当作内容仍然私密。此功能的发布动作不授权合并插件自身的 PR 或 main。
 
 ## Viewer 兼容范围
 
@@ -60,7 +64,7 @@ node scripts/board-release.mjs --help
 
 一键发布先持久化该请求的自动推进授权，再由服务器执行。自动推进有 30 分钟窗口；超时或明确失败后可点击继续，沿用原请求而非另建 PR。启动时恢复尚有效的任务；没有活动任务时不持续轮询。旧的 prepare-only 记录不会因重开界面升级授权。
 
-准备时先存本机 job 再发远程请求；分支和 PR 返回丢失后按原 eventId 查找，不创建重复 PR。不同内容、账号或仓库不能重用原 eventId。PR head/base 一旦变化就拒绝代为合并。PR 自带校验仅读取公开产物并核对 hash，不运行网页脚本；同一 head 的校验完成且成功后才能调用 merge，仓库额外 required checks/保护仍由 GitHub 执行。
+准备时先存本机 job 再发远程请求；分支和 PR 返回丢失后按原 eventId 查找，不创建重复 PR。不同内容、GitHub 主机、账号或仓库不能重用原 eventId。PR head/base 一旦变化就拒绝代为合并。PR 自带校验仅读取公开产物并核对 hash，不运行网页脚本；同一 head 的校验完成且成功后才能调用 merge，仓库额外 required checks/保护仍由 GitHub 执行。
 
 已有分支式 Pages 允许在未占用的版本子目录发布，原 source 和配置需保持一致；它不需要把整个站点改成本工具的工作流。已有不受本工具管理的 Actions Pages、占用发布目录、被改动的本工具 workflow 或冲突工作流仍拒绝接管。归属文件的 hash 必须同时符合当前生成的已知 workflow，不能只信文件自报的 hash。首次配置 Pages 响应丢失后，即使远程出现站点也不能推定归属；保留待核对状态，避免把并发创建的别人的站点覆盖掉。已确认配置后的 merge 返回丢失，可以查询同一 PR 的真实 merged SHA 继续核对。
 
@@ -73,11 +77,13 @@ node scripts/board-release.mjs --help
 | 方式 | 当前能力 | 边界 |
 | --- | --- | --- |
 | 自有公网/内网服务器 | 下载 ZIP/目录，自行交给 Caddy/Nginx；无需 Paseo 后台 | TLS、认证、IP 可达性由现有服务器负责；没有 SSH 自动上传 |
-| GitHub Pages | 选择账号/仓库后一次点击，自动 PR、固定提交合并、部署与 URL 产物核验；已有分支站点使用版本子目录 | 常规网站公网；私有仓库不等于私有网站；自定义域名核验待做 |
+| GitHub Pages（公共与企业） | 选择主机/账号/仓库后一次点击，自动 PR、固定提交合并、部署与 URL 产物核验；已有分支站点使用版本子目录 | 网站访问权限由目标 GitHub 配置；需登录的站点提供待核验链接，不冒充字节已核验 |
 | Cloudflare 等 | 通用静态包可手工上传 | 后续可增加 adapter；当前没有账户绑定、自动部署或 Access 配置 |
 
 GitHub Pages 是静态托管：不会运行服务器 PHP/Python/Ruby。Free 支持公开仓库，私有仓库按 Pro/Team/Enterprise 权限决定；普通 Pages 即使源仓库私有也可能公开。[GitHub 建站说明](https://docs.github.com/en/pages/getting-started-with-github-pages/creating-a-github-pages-site)。私有 Pages 访问控制有 Enterprise Cloud 组织条件。[访问控制](https://docs.github.com/en/enterprise-cloud@latest/pages/getting-started-with-github-pages/changing-the-visibility-of-your-github-pages-site)。
 
 工作流使用 GitHub 官方 Pages Actions 与最低部署权限；创建 Pages 设置另需对应管理权限。[自定义工作流](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages)、[Pages API](https://docs.github.com/en/rest/pages/pages)。本站导出限额 8 MiB 与 GitHub 平台自己的容量/频率/用途限制是不同的限制。[GitHub Pages 限制](https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits)。
+
+GitHub Enterprise Server 使用 `https://<host>/api/v3`；GitHub Enterprise Cloud 的 `*.ghe.com` 使用对应 `api.<host>`。所选主机和用户均传给 `gh auth token`，不借用公共 GitHub token。[GHES REST 文档](https://docs.github.com/en/enterprise-server@latest/rest/using-the-rest-api/getting-started-with-the-rest-api)。GHES 不支持当前 `deploy-pages@v4`，因此新站点走分支发布，不自动上传不兼容的 Actions 工作流。[官方兼容表](https://github.com/actions/deploy-pages#compatibility)。
 
 自有服务可用 [Caddy 静态目录](https://caddyserver.com/docs/quick-starts/static-files)。后续托管优先考虑 [Cloudflare Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/)；若用 Pages Direct Upload，创建后不能直接转换为 Git integration 项目。[Direct Upload](https://developers.cloudflare.com/pages/get-started/direct-upload/)。任何未来的私密分享都需覆盖所有生产/预览域名的真实访问控制，不能以难猜 URL 代替认证。

@@ -2,6 +2,15 @@ import { PagesPrepareSchema, type PagesPrepareInput } from "../shared/release-co
 import { browserDraftStorage } from "./draft-storage-web";
 import type { DraftStorage } from "./draft-store";
 
+/** Missing hosts belong to the original github.com-only publication format. */
+export const pagesGitHubHost = (request: { githubHost?: string }) => request.githubHost ?? "github.com";
+export const samePagesTarget = (left: PagesPrepareInput, right: Omit<PagesPrepareInput, "eventId">) =>
+  left.releaseId === right.releaseId && left.artifactHash === right.artifactHash &&
+  pagesGitHubHost(left) === pagesGitHubHost(right) && left.account === right.account &&
+  left.repository === right.repository && left.createRepository === right.createRepository;
+export const samePagesRequest = (left: PagesPrepareInput, right: PagesPrepareInput) =>
+  left.eventId === right.eventId && samePagesTarget(left, right);
+
 /** Small immutable request journal. Credentials and public page contents never enter it. */
 export function createPagesOutbox(hostId: string, boardId: string, storage: DraftStorage | null = browserDraftStorage()) {
   const prefix = `@paseo:board-pages:v1:${encodeURIComponent(JSON.stringify([hostId, boardId]))}:`;
@@ -26,9 +35,16 @@ export function createPagesOutbox(hostId: string, boardId: string, storage: Draf
       return result;
     },
     save(raw: PagesPrepareInput): PagesPrepareInput {
-      const db = requireStorage(), request = PagesPrepareSchema.parse(raw), key = prefix + request.eventId;
+      const db = requireStorage();
+      let request = PagesPrepareSchema.parse(raw);
+      const key = prefix + request.eventId;
       const existing = db.getItem(key);
-      if (existing && JSON.stringify(read(existing)) !== JSON.stringify(request)) throw new Error("同一次发布请求的版本或目标已改变。");
+      if (existing) {
+        const original = read(existing);
+        if (!samePagesRequest(original, request)) throw new Error("同一次发布请求的版本或目标已改变。");
+        // Do not rewrite an old wire request just to spell out its default host.
+        request = original;
+      }
       db.setItem(key, JSON.stringify({ action: "publish", request }));
       return request;
     },

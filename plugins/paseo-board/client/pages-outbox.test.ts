@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createPagesOutbox } from "./pages-outbox";
+import { createPagesOutbox, samePagesRequest, samePagesTarget } from "./pages-outbox";
 import type { DraftStorage } from "./draft-store";
 function storage(): DraftStorage {
   const map = new Map<string, string>();
@@ -32,4 +32,25 @@ it("reads legacy preparation records unchanged and persists automatic publicatio
   outbox.save(request);
   expect(JSON.parse(db.getItem(key)!)).toEqual({ action: "publish", request });
   expect(createPagesOutbox("host", "board", db).list()).toEqual([request]);
+});
+it("keeps the same account and repository on different GitHub hosts as distinct immutable targets", () => {
+  const db = storage(), outbox = createPagesOutbox("paseo-host", "board", db);
+  const enterprise = { ...request, githubHost: "github.enterprise.example" };
+  outbox.save(enterprise);
+  expect(createPagesOutbox("paseo-host", "board", db).list()).toEqual([enterprise]);
+  expect(samePagesTarget(enterprise, request)).toBe(false);
+  expect(samePagesRequest(enterprise, request)).toBe(false);
+  expect(() => outbox.save(request)).toThrow("同一次发布请求");
+  expect(() => outbox.save({ ...enterprise, githubHost: "another.enterprise.example" })).toThrow("同一次发布请求");
+  outbox.save({ ...request, eventId: "publish-public" });
+  expect(outbox.list()).toEqual([enterprise, { ...request, eventId: "publish-public" }]);
+});
+it("treats a missing GitHub host as public without changing an original legacy retry", () => {
+  const db = storage(), outbox = createPagesOutbox("paseo-host", "board", db);
+  const explicitPublic = { ...request, githubHost: "github.com" };
+  outbox.save(request);
+  expect(samePagesRequest(request, explicitPublic)).toBe(true);
+  expect(outbox.save(explicitPublic)).toEqual(request);
+  expect(outbox.list()).toEqual([request]);
+  expect(() => outbox.save({ ...request, githubHost: "github.enterprise.example" })).toThrow("同一次发布请求");
 });

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ReleaseManifest, PagesJob } from "../shared/release-contracts";
+import { GitHubHostSchema, GitHubRepositoryNameSchema, PagesPrepareSchema } from "../shared/release-contracts";
 import { BoardStore } from "./store";
 import { ReleaseRepository } from "./static-release";
 import { registerPublicationRpc, type PagesGateway } from "./publication-rpc";
@@ -70,4 +71,29 @@ it("rejects missing release evidence before any GitHub operation, including reco
   await expect(f.invoke("board.pages.merge", { jobId: "job", expectedHead: "a".repeat(40) })).rejects.toThrow();
   await expect(f.invoke("board.pages.refresh", { jobId: "job" })).rejects.toThrow();
   expect(f.pages.prepare).not.toHaveBeenCalled(); expect(f.pages.publish).not.toHaveBeenCalled(); expect(f.pages.merge).not.toHaveBeenCalled(); expect(f.pages.refresh).not.toHaveBeenCalled();
+});
+
+it("routes Enterprise account discovery, repositories and immutable publication to the selected GitHub host", async () => {
+  const f = await fixture(), manifest = await f.create(), githubHost = "github.enterprise.example";
+  await f.invoke("board.pages.accounts", { githubHost });
+  await f.invoke("board.pages.repositories", { account: "employee_org", githubHost });
+  expect(f.pages.accounts).toHaveBeenCalledExactlyOnceWith(githubHost);
+  expect(f.pages.repositories).toHaveBeenCalledExactlyOnceWith("employee_org", githubHost);
+  const request = PagesPrepareSchema.parse({ eventId: "enterprise-publish", releaseId: manifest.releaseId,
+    artifactHash: manifest.artifactHash, account: "employee_org", githubHost, repository: "team/internal-site" });
+  const prepared = await f.invoke("board.pages.prepare", request) as PagesJob;
+  const published = await f.invoke("board.pages.publish", request) as PagesJob;
+  expect(prepared.githubHost).toBe(githubHost); expect(published.githubHost).toBe(githubHost);
+  expect(f.pages.prepare).toHaveBeenCalledExactlyOnceWith(request);
+  expect(f.pages.publish).toHaveBeenCalledExactlyOnceWith(request);
+});
+
+it("normalizes hostname case while rejecting URL, port and credential injection at the RPC contract", () => {
+  expect(GitHubHostSchema.parse("GitHub.Enterprise.Example")).toBe("github.enterprise.example");
+  for (const host of ["", " github.com", "https://github.com", "github.com:443", "user@github.com", "github.com/path", "github.com?x=1", "github.com#x", "github.com\\evil", "github.com\n", ".github.com", "github..com", "-github.com"]) {
+    expect(GitHubHostSchema.safeParse(host).success, host).toBe(false);
+  }
+  for (const repository of ["../..", "team/..", "./site", "team/../site", "team/%2e%2e", "team/site\n", "team/site?path=evil"]) {
+    expect(GitHubRepositoryNameSchema.safeParse(repository).success, repository).toBe(false);
+  }
 });

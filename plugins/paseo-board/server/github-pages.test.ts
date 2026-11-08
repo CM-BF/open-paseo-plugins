@@ -10,7 +10,7 @@ import type { PagesPrepareInput } from "../shared/release-contracts";
 
 type Pr = { number: number; html_url: string; state: string; merged: boolean; merge_commit_sha: string | null; head: { sha: string; ref: string }; base: { ref: string } };
 class FakeGitHub implements GitHubTransport {
-  calls: Array<{ account: string; method: string; path: string; body?: unknown }> = [];
+  calls: Array<{ account: string; method: string; path: string; body?: unknown; githubHost?: string }> = [];
   base = "a".repeat(40); exists = true; private = false;
   branches = new Map([["main", this.base]]); trees = new Map<string, Record<string, string>>([["base-tree", { "README.md": "Unrelated repository file" }]]);
   commits = new Map([[this.base, "base-tree"]]); parents = new Map<string, string[]>([[this.base, []]]); prs: Pr[] = [];
@@ -24,8 +24,8 @@ class FakeGitHub implements GitHubTransport {
   failAfter(path: string) { this.lost.add(path); }
   after(path: string) { if (this.lost.delete(path)) throw new GitHubApiError(503); }
   files(ref: string) { return this.trees.get(this.commits.get(this.branches.get(ref) ?? ref) ?? "") ?? {}; }
-  async request<T>(account: string, method: string, path: string, body?: unknown): Promise<T> {
-    this.calls.push({ account, method, path, body }); const url = new URL(path, "https://api.github.com"), p = url.pathname;
+  async request<T>(account: string, method: string, path: string, body?: unknown, githubHost?: string): Promise<T> {
+    this.calls.push({ account, method, path, body, githubHost }); const url = new URL(path, "https://api.github.com"), p = url.pathname;
     const payload = body as Record<string, unknown>;
     const output = (value: unknown) => structuredClone(value) as T;
     if (p === "/user/repos" && method === "GET") return output([{ full_name: "writer/site", private: this.private, html_url: "https://github.com/writer/site", permissions: { push: true } }, { full_name: "reader/readonly", private: false, html_url: "https://github.com/reader/readonly", permissions: { push: false } }]);
@@ -68,7 +68,7 @@ class FakeGitHub implements GitHubTransport {
     if (/^\/commits\/.+\/check-runs$/.test(part)) return output({total_count: this.legacyChecks.length, check_runs: this.legacyChecks});
     if (/^\/commits\/.+\/status$/.test(part)) return output(this.legacyStatus);
     if (part === "/pages") {
-      if (method === "POST") { this.pages = { html_url: "https://writer.github.io/site/", build_type: "workflow" }; this.after(part); }
+      if (method === "POST") { this.pages = { html_url: githubHost && githubHost !== "github.com" ? `https://pages.${githubHost}/writer/site/` : "https://writer.github.io/site/", build_type: String(payload.build_type), ...(payload.source ? {source:payload.source as {branch:string;path:string}} : {}) }; this.after(part); }
       if (!this.pages) throw new GitHubApiError(404); return output(this.pages);
     }
     if (part === "/actions/workflows/paseo-board-pages.yml/runs") return output({ workflow_runs: this.runs.filter(run => run.head_sha === url.searchParams.get("head_sha")).map(run => ({ event: "push", head_branch: "main", ...run })) });
@@ -201,12 +201,97 @@ describe("resumable GitHub Pages publication", () => {
     github.publication = { ...release.files, "NOTICE": "Changed attribution" }; expect((await manager.refresh(job.jobId)).status).not.toBe("live");
     github.publication = { ...release.files, "index.html": "Changed again" }; expect((await manager.refresh(job.jobId)).status).not.toBe("live");
   });
-  it("never fetches an untrusted Pages URL or silently declares a custom domain verified", async () => {
+  it("refuses untrusted or changed Pages configurations before fetching bytes", async () => {
     const job = await manager.prepare(input), merged = await manager.merge({ jobId: job.jobId, expectedHead: job.headSha! }); github.runs = [{ id: 1, head_sha: merged.mergedSha!, status: "completed", conclusion: "success" }];
     github.pages = { html_url: "http://127.0.0.1:6767/", build_type: "workflow" };
     expect((await manager.refresh(job.jobId)).status).toBe("failed"); expect(github.publicRequests).toHaveLength(0);
     github.pages = { html_url: "https://custom.example", build_type: "workflow", cname: "custom.example" };
-    expect((await manager.refresh(job.jobId)).status).toBe("deploying"); expect(github.publicRequests).toHaveLength(0);
+    expect((await manager.refresh(job.jobId)).status).toBe("failed"); expect(github.publicRequests).toHaveLength(0);
+  });
+  it("qualifies repository discovery and every mutation with the selected Enterprise host", async () => {
+    input.githubHost = "github.enterprise.example";
+    await manager.repositories("writer", input.githubHost);
+    const job = await manager.prepare(input); expect(job.status, job.error).toBe("pr-open"); expect(job.publicationMode).toBe("legacy-branch");
+    const files = github.files(job.headSha!);
+    expect(files[`docs/boards/${release.manifest.releaseId.slice(8)}/index.html`]).toBe(release.files["index.html"]);
+    expect(files["docs/.nojekyll"]).toBe(""); expect(files["README.md"]).toBe("Unrelated repository file");
+    expect(Object.keys(files).some(name => name.startsWith(".github/"))).toBe(false);
+    expect((await manager.merge({ jobId: job.jobId, expectedHead: job.headSha! })).status).toBe("merged");
+    expect(github.pages).toBeUndefined(); // /docs must exist on the source before configuration.
+    const pending = await manager.refresh(job.jobId); expect(pending.status, pending.error).toBe("deploying");
+    expect(github.pages).toMatchObject({build_type:"legacy",source:{branch:"main",path:"/docs"}});
+    github.builds = [{url:"https://github.enterprise.example/api/v3/builds/1",commit:github.prs[0].merge_commit_sha!,status:"built"}]; github.publication = release.files;
+    const live = await manager.refresh(job.jobId); expect(live.status,live.error).toBe("live");
+    expect(live.url).toBe(`https://pages.github.enterprise.example/writer/site/boards/${release.manifest.releaseId.slice(8)}/`);
+    expect(github.calls.every(call => call.githubHost === input.githubHost)).toBe(true);
+    expect(github.calls.some(call => call.path.includes("/actions/"))).toBe(false);
+  });
+  it("retains workflow behavior for old journal records without publicationMode", async () => {
+    const job = await manager.prepare(input); delete job.publicationMode;
+    await writeFile(join(root,"jobs",`${job.jobId}.json`),JSON.stringify(job));
+    const restarted = new GitHubPagesManager(join(root,"jobs"),releases,github);
+    expect((await restarted.prepare(input)).status).toBe("pr-open");
+    const merged = await restarted.merge({jobId:job.jobId,expectedHead:job.headSha!}); expect(merged.status,merged.error).toBe("merged");
+    github.runs = [{id:1,head_sha:merged.mergedSha!,status:"completed",conclusion:"success"}]; github.publication=release.files;
+    const live = await restarted.refresh(job.jobId); expect(live.status,live.error).toBe("live"); expect(live.url).toBe("https://writer.github.io/site/");
+    expect(github.calls.some(call=>call.path.includes("/pages/builds"))).toBe(false);
+  });
+  it("rejects reusing an event for another GitHub host before any remote call", async () => {
+    const job = await manager.prepare(input), count = github.calls.length;
+    await expect(manager.prepare({...input,githubHost:"github.enterprise.example"})).rejects.toThrow("different artifact");
+    expect(github.calls).toHaveLength(count);
+    expect((await manager.prepare({...input,githubHost:"github.com"})).jobId).toBe(job.jobId);
+  });
+  it("preserves old unqualified journals as github.com through restart and merge", async () => {
+    const job = await manager.prepare(input); expect(job.githubHost).toBeUndefined();
+    const restarted = new GitHubPagesManager(join(root,"jobs"),releases,github);
+    expect((await restarted.prepare({...input,githubHost:"github.com"})).jobId).toBe(job.jobId);
+    expect((await restarted.merge({jobId:job.jobId,expectedHead:job.headSha!})).status).toBe("merged");
+    expect(github.calls.every(call=>call.githubHost === "github.com")).toBe(true);
+  });
+  it("refuses to expose existing /docs files when enabling a new Enterprise Pages site", async () => {
+    input.githubHost = "github.enterprise.example"; github.trees.get("base-tree")!["docs/internal.md"] = "Private documentation";
+    const job = await manager.prepare(input); expect(job.status).toBe("failed"); expect(job.error).toContain("existing files");
+    expect(github.calls.some(call=>call.method !== "GET")).toBe(false);
+  });
+  it("does not add a branch site beside an existing competing Pages deployment workflow", async () => {
+    input.githubHost = "github.enterprise.example"; github.trees.get("base-tree")![".github/workflows/custom.yml"] = "uses: actions/deploy-pages@v3";
+    const job = await manager.prepare(input); expect(job.status).toBe("failed"); expect(job.error).toContain("Another Pages workflow"); expect(github.calls.some(call=>call.method!=="GET")).toBe(false);
+  });
+  it("rechecks new source contents after review and refuses branch advancement after merge", async () => {
+    input.githubHost = "github.enterprise.example"; const job = await manager.prepare(input);
+    github.files("main")["docs/new-private.md"] = "New private file";
+    expect((await manager.merge({jobId:job.jobId,expectedHead:job.headSha!})).status).toBe("failed"); expect(github.pages).toBeUndefined();
+    delete github.files("main")["docs/new-private.md"];
+    const merged = await manager.merge({jobId:job.jobId,expectedHead:job.headSha!}); expect(merged.status,merged.error).toBe("merged");
+    github.branches.set("main","b".repeat(40));
+    const stopped = await manager.refresh(job.jobId); expect(stopped.status).toBe("failed"); expect(stopped.error).toContain("changed after merge"); expect(github.pages).toBeUndefined();
+  });
+  it("does not infer ownership after losing the new Enterprise Pages configuration response", async () => {
+    input.githubHost = "github.enterprise.example"; const job = await manager.prepare(input);
+    await manager.merge({jobId:job.jobId,expectedHead:job.headSha!}); github.failAfter("/pages");
+    expect((await manager.refresh(job.jobId)).status).toBe("unknown"); expect(github.pages).toBeTruthy();
+    const resumed = await manager.refresh(job.jobId); expect(resumed.status).toBe("failed"); expect(resumed.error).toContain("归属尚未确认");
+    expect(github.calls.filter(call=>call.path.endsWith("/pages")&&call.method==="POST")).toHaveLength(1);
+  });
+  it("does not replace an Enterprise repository's pre-existing workflow publishing source", async () => {
+    input.githubHost = "github.enterprise.example"; github.pages = {html_url:"https://pages.github.enterprise.example/writer/site",build_type:"workflow"};
+    const job = await manager.prepare(input); expect(job.status).toBe("failed"); expect(job.error).toContain("不会替换"); expect(github.calls.some(call=>call.method!=="GET")).toBe(false);
+  });
+  it("supports an existing Enterprise custom-domain site and leaves its source unchanged", async () => {
+    input.githubHost = "github.enterprise.example"; github.pages = {html_url:"https://boards.internal.example/project/",build_type:"legacy",cname:"boards.internal.example",source:{branch:"main",path:"/"}};
+    const before = structuredClone(github.pages), job = await manager.prepare(input), merged = await manager.merge({jobId:job.jobId,expectedHead:job.headSha!});
+    github.builds = [{url:"https://github.enterprise.example/api/v3/builds/1",commit:merged.mergedSha!,status:"built"}]; github.publication = release.files;
+    const live = await manager.refresh(job.jobId); expect(live.status,live.error).toBe("live"); expect(live.url).toContain("https://boards.internal.example/project/boards/"); expect(github.pages).toEqual(before);
+    expect(github.calls.filter(call=>call.path.endsWith("/pages")&&call.method!=="GET")).toHaveLength(0);
+  });
+  it("keeps an SSO/private Pages deployment unverified instead of sending tokens or claiming live", async () => {
+    input.githubHost = "github.enterprise.example"; const job = await manager.prepare(input), merged = await manager.merge({jobId:job.jobId,expectedHead:job.headSha!});
+    github.builds = [{url:"https://github.enterprise.example/api/v3/builds/1",commit:merged.mergedSha!,status:"built"}];
+    vi.spyOn(github,"publicFile").mockRejectedValue(new GitHubApiError(401));
+    const pending = await manager.refresh(job.jobId); expect(pending.status,pending.error).toBe("deploying"); expect(pending.error).toContain("需要公司网络或登录"); expect(pending.url).toBeUndefined(); expect(pending.verifiedAt).toBeUndefined(); expect(pending.deployedUrl).toBe(`https://pages.github.enterprise.example/writer/site/boards/${release.manifest.releaseId.slice(8)}/`);
+    github.pages!.source!.branch = "changed"; const changed = await manager.refresh(job.jobId);
+    expect(changed.status).toBe("failed"); expect(changed.deployedUrl).toBeUndefined(); expect(changed.url).toBeUndefined();
   });
   it("generates a Pages workflow with read-only PR validation and no authored-code build step", () => {
     const workflow = pagesWorkflow("main"); expect(workflow).toContain("if: github.event_name != 'pull_request'"); expect(workflow).toContain("pages: write"); expect(workflow).toContain("id-token: write"); expect(workflow).toContain("${{ steps.deployment.outputs.page_url }}"); expect(workflow).not.toContain("npm install"); expect(workflow).toContain("Artifact mismatch");
