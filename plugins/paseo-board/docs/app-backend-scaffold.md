@@ -145,6 +145,40 @@ receives its matching receipt. An explicit retry reuses that key, including afte
 reload when session storage is available. It never automatically retries, shares
 the export token with visitors or treats a self-reported name as verified identity.
 
+The optional `request(url, options)` adapter defaults to `fetch` and accepts a
+response with `ok`, `status` and async `json()`. A published Board can pass
+`request: (url, options) => board.request(url, options)` so the approved published
+page performs the HTTP request. The optional synchronous `storage` adapter has
+`getItem`, `setItem` and `removeItem`, defaulting to session storage; `null` disables
+persistence. An opaque published canvas can preserve its pending comment in
+visitor-local Board state without reading iframe session storage:
+
+```js
+const storage = {
+  getItem(key) { return board.getState().commentIntents?.[key] ?? null; },
+  setItem(key, value) {
+    const state = board.getState();
+    board.saveState({...state, commentIntents: {...state.commentIntents, [key]: value}});
+  },
+  removeItem(key) {
+    const state = board.getState(), intents = {...state.commentIntents};
+    delete intents[key];
+    board.saveState({...state, commentIntents: intents});
+  }
+};
+mountComments(document.querySelector('#comments'), {
+  apiBase: 'https://api.example.internal',
+  request: (url, options) => board.request(url, options),
+  storage
+});
+```
+
+The published Board must include the form source in its authored script; adding
+an API origin does not allow loading an external module. See
+[published frontend setup](published-apps.md) for API origins and CORS. State
+adapters must preserve unrelated visitor state. They do not store comments in the
+shared application database; the HTTP endpoint does that.
+
 Export additionally requires a private `BOARD_INBOX_EXPORT_TOKEN` of at least 32
 characters. `GET /_board/comments?cursor=0&limit=50` uses
 `Authorization: Bearer TOKEN`. With no token, export is disabled. Responses are:
@@ -197,3 +231,12 @@ current-release pointer, new schema, safety backup and failed release for an
 explicit recovery decision. A later durability-only change to JSON/identity
 fsync passed the two affected backup/comment checks. No live plugin installation
 or remote server deployment was performed by this test suite.
+
+A separate isolated real SSH acceptance subsequently passed six checks: public
+key handshake, reviewed deployment and health, live backup, management after local
+source edits, redeployment preserving data/identity, and logs/final stop. It used
+an owned loopback sshd and the account's Fish login shell. Its final receipt
+confirmed the app stopped, sshd stopped and temporary private keys removed. The
+original raw-source shell parsing failure and its cleanup reconciliation remain
+recorded separately; no work computer, real remote network, system SSH settings
+or primary Paseo daemon was involved.

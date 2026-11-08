@@ -1,8 +1,12 @@
 // Optional visitor UI. Import into an authored page; customize its markup/classes or replace it freely.
-export function mountComments(element, { apiBase = '', pageUrl, anchor } = {}) {
+export function mountComments(element, { apiBase = '', pageUrl, anchor, request = (...args) => globalThis.fetch(...args), storage } = {}) {
   const document = element.ownerDocument, browser = document.defaultView || globalThis;
   const endpoint = new URL(`${apiBase.replace(/\/$/, '')}/_board/comments`, document.baseURI || globalThis.location?.href);
   if (!['https:', 'http:'].includes(endpoint.protocol)) throw new Error('Comment API must use HTTP(S)');
+  if (typeof request !== 'function') throw new TypeError('Comment request must be a function');
+  let store = storage;
+  if (store === undefined) { try { store = browser.sessionStorage; } catch {} }
+  if (store && ['getItem', 'setItem', 'removeItem'].some(name => typeof store[name] !== 'function')) throw new TypeError('Comment storage must provide getItem, setItem and removeItem');
   const form = document.createElement('form'); form.className = 'board-comments';
   const note = document.createElement('p'); note.textContent = '评论进入此 Board 的内部收件箱。姓名为自报；提交不会自动获得公开回复。';
   const author = document.createElement('input'); author.name = 'authorName'; author.maxLength = 160; author.setAttribute('aria-label', '你的称呼（可选，自报）'); author.placeholder = '你的称呼（可选，自报）';
@@ -12,9 +16,9 @@ export function mountComments(element, { apiBase = '', pageUrl, anchor } = {}) {
   form.append(note, author, text, send, status); element.append(form);
   const storageKey = `board-comment-intent:${endpoint.href}:${pageUrl || ''}:${JSON.stringify(anchor || {})}`;
   let pending, busy = false, destroyed = false;
-  const persist = () => { try { if (pending) browser.sessionStorage?.setItem(storageKey, JSON.stringify(pending)); else browser.sessionStorage?.removeItem(storageKey); } catch {} };
+  const persist = () => { try { if (pending) store?.setItem(storageKey, JSON.stringify(pending)); else store?.removeItem(storageKey); } catch {} };
   try {
-    const stored = JSON.parse(browser.sessionStorage?.getItem(storageKey) || 'null');
+    const stored = JSON.parse(store?.getItem(storageKey) || 'null');
     if (stored && /^[\da-f-]{36}$/.test(stored.key) && typeof stored.payload?.text === 'string' && stored.payload.text.length <= 8000) pending = stored;
   } catch {}
   function refresh() {
@@ -32,7 +36,7 @@ export function mountComments(element, { apiBase = '', pageUrl, anchor } = {}) {
     }
     busy = true; refresh(); status.textContent = '正在提交到内部收件箱…';
     try {
-      const response = await fetch(endpoint.href, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': pending.key }, body: JSON.stringify(pending.payload) });
+      const response = await request(endpoint.href, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': pending.key }, body: JSON.stringify(pending.payload) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
       if (typeof result.comment?.externalId !== 'string' || result.comment.text !== pending.payload.text) throw new Error('未取得匹配的提交回执');

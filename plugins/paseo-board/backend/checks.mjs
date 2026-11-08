@@ -172,6 +172,44 @@ test('optional visitor form retries one frozen intent after lost acknowledgement
   widget.destroy(); assert.equal(target.children.length, 0);
 });
 
+test('visitor request and storage adapters retain one intent through a published-style bridge and state remount', async t => {
+  const { parseHTML } = await import('linkedom');
+  const { app } = await fixture(t, { comments: { enabled: true } });
+  const server = await startTracked(app);
+  const { document, window } = parseHTML('<html><body><main id="comments"></main></body></html>');
+  let state = { unrelated: 'keep this visitor setting' }, nativeStorageCalls = 0;
+  window.sessionStorage = { getItem() { nativeStorageCalls++; throw new Error('Opaque iframe storage unavailable'); } };
+  const board = { getState: () => structuredClone(state), saveState: value => { state = structuredClone(value); } };
+  const storage = {
+    getItem(key) { return board.getState().commentIntents?.[key] ?? null; },
+    setItem(key, value) { const current = board.getState(); board.saveState({ ...current, commentIntents: { ...current.commentIntents, [key]: value } }); },
+    removeItem(key) { const current = board.getState(), intents = { ...current.commentIntents }; delete intents[key]; board.saveState({ ...current, commentIntents: intents }); },
+  };
+  const calls = [], fetchHttp = globalThis.fetch; let loseAcknowledgement = true;
+  globalThis.fetch = () => { throw new Error('Direct fetch must not be used by this bridge-backed form'); };
+  t.after(() => { globalThis.fetch = fetchHttp; });
+  const request = async (url, options) => {
+    calls.push({ url, ...structuredClone(options) }); const response = await fetchHttp(url, options), result = await response.json();
+    if (loseAcknowledgement) { loseAcknowledgement = false; throw new Error('Bridge acknowledgement lost'); }
+    return { status: response.status, ok: response.ok, json: async () => result };
+  };
+  const settings = { apiBase: `http://127.0.0.1:${server.port}`, pageUrl: 'https://pages.example/published', storage, request };
+  const target = document.querySelector('#comments'); let widget = mountComments(target, settings);
+  widget.form.querySelector('textarea').value = 'From a published Board';
+  const settled = async predicate => { const deadline = Date.now() + 2000; while (!predicate()) { if (Date.now() > deadline) throw new Error('Visitor bridge did not settle'); await new Promise(resolve => setTimeout(resolve, 10)); } };
+  widget.form.dispatchEvent(new window.Event('submit', { cancelable: true }));
+  await settled(() => widget.form.querySelector('[role=status]').textContent.includes('尚未确认送达'));
+  const frozen = structuredClone(state.commentIntents); assert.equal(Object.keys(frozen).length, 1);
+  widget.destroy(); widget = mountComments(target, settings);
+  assert.equal(widget.form.querySelector('textarea').value, 'From a published Board');
+  widget.form.dispatchEvent(new window.Event('submit', { cancelable: true }));
+  await settled(() => widget.form.querySelector('[role=status]').textContent.includes('已进入内部收件箱'));
+  assert.equal(calls.length, 2); assert.deepEqual(calls[0], calls[1]);
+  assert.deepEqual(state, { unrelated: 'keep this visitor setting', commentIntents: {} });
+  assert.equal(nativeStorageCalls, 0); assert.equal(server.db.prepare('SELECT count(*) AS n FROM _board_comments').get().n, 1);
+  widget.destroy();
+});
+
 test('SSH execution requires review confirmation and passes strict flags and verified files without a real remote connection', async t => {
   const { root, directory } = await fixture(t);
   const bin = path.join(directory, 'bin'), capture = path.join(directory, 'ssh.json'); await fs.mkdir(bin);
