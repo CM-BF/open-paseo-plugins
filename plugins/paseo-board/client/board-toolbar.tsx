@@ -17,6 +17,7 @@ export interface BoardToolbarProps {
   onOpenDrawer(drawer: "decisions" | "threads" | "history"): void; onCompose(): void;
   draftCount?: number; draftIssue?: boolean; onOpenDrafts?(): void;
   onPublish?(): void;
+  onInbox?(): void;
   onSources?(): void; sourceCount?: number;
 }
 const modes = [["off", "交互", "MousePointer2"], ["component", "选组件", "Component"], ["text", "选文字", "TextSelect"], ["region", "框选", "Scan"], ["point", "指定位置", "MapPin"]] as const;
@@ -86,6 +87,7 @@ export function BoardToolbar(props: BoardToolbarProps) {
         <MenuAction label={`决策 ${props.board.decisions.filter(item => !["dismissed", "superseded"].includes(item.status)).length}`} icon="ListChecks" onPress={() => run(() => props.onOpenDrawer("decisions"))} />
         <MenuAction label="讨论" icon="MessagesSquare" onPress={() => run(() => props.onOpenDrawer("threads"))} />
         <MenuAction label="变化" icon="History" onPress={() => run(() => props.onOpenDrawer("history"))} />
+        {props.onInbox ? <MenuAction testID="board-inbox-open" label="评论收件箱" icon="Inbox" detail="查看访客评论，控制 agent 读取与内部处理权限" onPress={() => run(() => props.onInbox?.())} /> : null}
         {props.onSources ? <MenuAction testID="board-composition-open" label={`组合来源${props.sourceCount ? ` ${props.sourceCount}` : ""}`} icon="PanelsTopLeft" detail="让 agent 引用、读取并组合其他 Board" onPress={() => run(() => props.onSources?.())} /> : null}
         {props.onPublish ? <MenuAction label="导出与发布" icon="Upload" onPress={() => run(() => props.onPublish?.())} /> : null}
       </> : null}

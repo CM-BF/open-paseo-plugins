@@ -14,6 +14,7 @@ import { useBoard } from "./data";
 import { ComponentEditPanel, useComponentEditor } from "./component-editor";
 import { BoardToolbar } from "./board-toolbar";
 import { ReleasePanel } from "./release-panel";
+import { BoardInbox } from "./inbox";
 import { BoardConnectionStatus } from "./connection-status";
 import { createStateWriter } from "./state-writer";
 import { createDraftStore, type StoredDraft } from "./draft-store";
@@ -83,6 +84,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
   const [selectionCaptureCancelId, setSelectionCaptureCancelId] = useState<string>();
   const [drawer, setDrawer] = useState<"decisions" | "threads" | "history" | "drafts" | null>(null);
   const [releaseOpen, setReleaseOpen] = useState(false);
+  const [inboxOpen, setInboxOpen] = useState(false);
   const draftStore = useMemo(() => createDraftStore({ hostId: host.id, boardId }), [host.id, boardId]);
   const [draftSnapshot, setDraftSnapshot] = useState(() => draftStore.list());
   const batchStore = useMemo(() => createBatchStore({ hostId: host.id, boardId }), [host.id, boardId]);
@@ -501,6 +503,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
       updateNavigation={updateNavigation} onOpenDrawer={setDrawer} onCompose={() => openCompose("question")}
       draftCount={availableDrafts.length + batchSnapshot.batches.length} draftIssue={draftSnapshot.issues.length > 0 || batchSnapshot.issues.length > 0 || Boolean(draftError || batchError)}
       onPublish={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current && !pending.current) { setDrawer(null); setReleaseOpen(true); } }}
+      onInbox={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current && !pending.current) { setDrawer(null); setInboxOpen(true); } }}
       onOpenDrafts={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current) setDrawer("drafts"); }}
       sourceCount={sources.data?.sources.length} onSources={sources.enabled ? () => setSourcesOpen(true) : undefined} /> : null}
     <View testID="board-stage" style={embedded ? { width: 0, height: 0 } : { flex: 1, minHeight: 180, flexDirection: "row" }} onLayout={event => setStageWidth(event.nativeEvent.layout.width)}>
@@ -557,6 +560,9 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
         <ColorContext.Provider value={c}>{sourcesOpen ? <CompositionSourcesPanel parent={sourceRef} controller={sources} /> : null}</ColorContext.Provider>
       </BoardServicesBoundary></Modal.Content></Modal>
     </> : null}
+    <Modal title="评论收件箱" open={inboxOpen} onOpenChange={setInboxOpen}><Modal.Content><BoardServicesBoundary services={services}>
+      <ColorContext.Provider value={c}>{inboxOpen ? <BoardInbox key={JSON.stringify([host.id, board.id, board.createdAt])} hostId={host.id} scope={{ boardId: board.id, expectedCreatedAt: board.createdAt }} /> : null}</ColorContext.Provider>
+    </BoardServicesBoundary></Modal.Content></Modal>
     <Modal title="导出与发布" open={releaseOpen} onOpenChange={setReleaseOpen}><Modal.Content><BoardServicesBoundary services={services}>
       <ColorContext.Provider value={c}>
       {releaseOpen ? <ReleasePanel board={board} hostId={host.id} onOpenBoard={id => leaveBoard(() => { setReleaseOpen(false); if (onOpenBoard) onOpenBoard(id); else onBack(); })} /> : null}

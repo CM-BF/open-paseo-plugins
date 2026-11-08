@@ -10,6 +10,8 @@
     "test:browser": "node scripts/browser-test.mjs",
     "build:client": "node scripts/build-client.mjs .",
     "build:worker": "node scripts/build-store-worker.mjs .",
+    "build:app": "node scripts/build-app-runtime.mjs .",
+    "app:cli": "node scripts/board-app.mjs",
     "test:host": "node scripts/board-host-test.mjs",
     "test:release": "node scripts/release-browser-test.mjs",
     "test:release-host": "node scripts/release-host-test.mjs",

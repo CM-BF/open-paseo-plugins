@@ -1,3 +1,11 @@
+# 2026-11-08 — 自由后端与原生评论收件箱（实现中）
+
+用户已授权开始实现。新分支 sw/board-app-backends 基于已安装 31c4a271，保留所有新版 Board 能力。新开发 Board 为 board-capabilities-roadmap-20261108。设计见 docs/app-backends-design.md。
+
+- 进行中：可编辑 Node/SQLite 脚手架、本机生命周期与 SSH 部署；原生评论账本、权限、连接器、UI、agent 只读/triage 工具。
+- 并行进行中：评论快捷键 sw/board-comment-shortcuts，独立验收后整合。
+- 尚未完成：集成验证、真实 UI、安装、PR。未访问工作电脑、未连接真实远端服务器、未改 main。
+
 # Paseo Board publication and verification
 
 ### 2026-11-08 — Enterprise GitHub publishing integration in progress

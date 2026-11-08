@@ -18,6 +18,10 @@ import { GitHubPagesManager } from "./github-pages";
 import { registerPublicationRpc } from "./publication-rpc";
 import { CompositionSources } from "./composition";
 import { compositionSourcesRpc, setCompositionSourcesRpc, inspectCompositionSourceRpc, syncCompositionSourceRpc, readCompositionSourceRpc } from "../shared/composition";
+import { InboxStore } from "./inbox-store";
+import { InboxConnections } from "./inbox-sync";
+import { inboxListRpc, inboxReadRpc, inboxPolicyRpc, inboxTriageRpc } from "../shared/inbox";
+import { inboxConnectRpc, inboxConnectionsRpc, inboxSyncRpc, inboxReconcileRpc } from "../shared/inbox-connection";
 
 export interface ContributeOptions { rootDir?: string; runtimeDir?: string; home?: string; linkSkills?: boolean; eventTransport?: { publish(change: BoardChange): void }; onService?: (service: BoardService) => void }
 
@@ -31,6 +35,12 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   const service = new BoardService(store, journal, log);
   const composition = new CompositionSources(join(root, "composition"), store, () => service.localHostId());
   service.useComposition(composition);
+  const inbox = new InboxStore(root, { resolveBoard: id => store.read(id), authorizeAgent: async (id, agentId) => {
+    const board = await store.read(id);
+    return Boolean(board?.interactions.some(item => item.kind === "fork" && item.agentId === agentId));
+  } });
+  service.useInbox(inbox);
+  const inboxConnections = new InboxConnections(root, inbox);
   const copies = new BoardCopies(join(root, "copies"), store, board => store.materializeAuthoredHtml(board.id, board.canvas));
   const releases = new ReleaseRepository(join(root, "releases"), store);
   const pages = new GitHubPagesManager(join(root, "pages"), releases);
@@ -63,6 +73,16 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   };
   const checkReady = async () => { await ready; if (stopped) throw new Error("Board service stopped"); };
   registerPublicationRpc(server, { ready: checkReady, requireBoard: id => service.requireBoard(id), releases, pages });
+  // Human UI RPCs alone can configure access. CLI/MCP expose only bound, policy-checked reads and triage.
+  const inboxUser = { kind: "user" as const, id: "paseo-client" };
+  server.handle(inboxListRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inbox.list(input, inboxUser); });
+  server.handle(inboxReadRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inbox.read(input, inboxUser); });
+  server.handle(inboxPolicyRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inbox.setPolicy(input, inboxUser); });
+  server.handle(inboxTriageRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inbox.triage(input, inboxUser); });
+  server.handle(inboxConnectRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxConnections.connect(input); });
+  server.handle(inboxConnectionsRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxConnections.list(input); });
+  server.handle(inboxSyncRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxConnections.sync(input); });
+  server.handle(inboxReconcileRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxConnections.reconcile(input); });
 
   server.handle(compositionSourcesRpc, async ({ boardId }, { paseo }) => { capture(paseo); await checkReady(); return composition.list(boardId); });
   server.handle(setCompositionSourcesRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return composition.set(input); });

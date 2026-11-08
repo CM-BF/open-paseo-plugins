@@ -16,8 +16,10 @@ import { inspectBoard } from "./inspection";
 import { BOARD_REPLY_ROUTING } from "./prompts";
 import { ReadSourceInputSchema, SourcesInputSchema } from "../shared/composition";
 import type { CompositionSources } from "./composition";
+import type { InboxStore } from "./inbox-store";
+import { InboxListInputSchema, InboxReadInputSchema, InboxTriageInputSchema } from "../shared/inbox";
 
-export type Operation = "sources" | "read_source" | "list" | "read" | "create" | "publish" | "decision" | "emit" | "respond" | "feed";
+export type Operation = "inbox_list" | "inbox_read" | "inbox_triage" | "sources" | "read_source" | "list" | "read" | "create" | "publish" | "decision" | "emit" | "respond" | "feed";
 const terminal = new Set<Interaction["status"]>(["applied", "rejected", "answered"]);
 const alreadyHandled = (interaction: Interaction) => terminal.has(interaction.status) || (interaction.status === "processing" && interaction.responseSource === "explicit");
 const describe = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -85,6 +87,8 @@ export class BoardService {
   readonly journal: ServiceJournal;
   private paseo?: Paseo;
   private composition?: CompositionSources;
+  private inbox?: InboxStore;
+  useInbox(inbox: InboxStore): void { this.inbox = inbox; }
   private knownHostId?: string;
   useComposition(sources: CompositionSources): void { this.composition = sources; }
   async localHostId(): Promise<string | undefined> {
@@ -149,6 +153,14 @@ export class BoardService {
     // each realtime sample just to repeat that same authorization check.
     if (operation === "feed") return this.store.feed(parseInput(FeedInputSchema, input), actor?.agentId);
     const board = await this.requireBoard(z.string().parse(input.boardId));
+    if (operation === "inbox_list" || operation === "inbox_read" || operation === "inbox_triage") {
+      if (!actor || !this.canWrite(board, actor)) throw new BoardStoreError("forbidden", "Inbox tools require the bound Board owner or its fork");
+      if (!this.inbox) throw new BoardStoreError("unavailable", "Board inbox is unavailable");
+      const identity = { kind: "agent" as const, agentId: actor.agentId };
+      if (operation === "inbox_list") return this.inbox.list(InboxListInputSchema.parse(input), identity);
+      if (operation === "inbox_read") return this.inbox.read(InboxReadInputSchema.parse(input), identity);
+      return this.inbox.triage(InboxTriageInputSchema.parse(input), identity);
+    }
     if (operation === "sources" || operation === "read_source") {
       // Ordinary discussion participation does not inherit all source grants.
       if (actor && !this.canWrite(board, actor)) throw new BoardStoreError("source_access_denied", "Only the parent Board owner or its fork may read composition sources");
