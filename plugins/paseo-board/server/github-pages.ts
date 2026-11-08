@@ -20,34 +20,87 @@ export interface GitHubTransport {
   publicFile(url: string): Promise<string>;
 }
 
-/** Older gh versions have no --json on auth status. Never return the raw credential summary. */
-export function parseGitHubAccounts(status: string): GitHubAccount[] {
-  const accounts: GitHubAccount[] = [];
-  for (const line of status.split("\n")) {
-    const match = /Logged in to github\.com (?:account|as) ([a-zA-Z0-9-]+)(?:\s|$)/.exec(line);
-    if (match) accounts.push({ login: match[1], host: "github.com", active: false });
-    else if (accounts.length && /Active account:\s*true/.test(line)) accounts[accounts.length - 1].active = true;
+type AccountDiscovery = { accounts: GitHubAccount[]; otherHosts: string[] };
+const validLogin = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9-]+$/.test(value);
+const validHost = (value: string) => value.length <= 253 && value.split(".").every(part => /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/.test(part));
+
+/** Project only successful identities; gh JSON can exit zero for failed or timed-out accounts. */
+function parseAccountDiscovery(value: unknown): AccountDiscovery {
+  if (!value || typeof value !== "object" || !("hosts" in value) || !value.hosts || typeof value.hosts !== "object" || Array.isArray(value.hosts)) throw new Error("Unsupported GitHub CLI status format");
+  const accounts: GitHubAccount[] = [], otherHosts = new Set<string>();
+  for (const [host, entries] of Object.entries(value.hosts)) {
+    if (!validHost(host) || !Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object" || entry.state !== "success" || (entry.host !== undefined && entry.host !== host) || entry.error) continue;
+      if (host === "github.com" && validLogin(entry.login)) accounts.push({ login: entry.login, host, active: entry.active === true });
+      else if (host !== "github.com" && typeof entry.login === "string" && entry.login.trim()) otherHosts.add(host.toLowerCase());
+    }
   }
-  if (accounts.length === 1 && !/Active account:/.test(status)) accounts[0].active = true;
-  return accounts;
+  return { accounts, otherHosts: [...otherHosts].sort() };
 }
+
+/** Older gh versions have no --json on auth status. Never return the raw credential summary. */
+function parseTextAccountDiscovery(status: string): AccountDiscovery {
+  const accounts: GitHubAccount[] = [], otherHosts = new Set<string>(), activeSpecified = new Set<GitHubAccount>();
+  let current: GitHubAccount | undefined;
+  for (const line of status.split("\n")) {
+    const match = /Logged in to ([a-zA-Z0-9.-]+) (?:account|as) (\S+)(?:\s|$)/.exec(line);
+    if (match && validHost(match[1])) {
+      current = undefined;
+      if (match[1] === "github.com" && validLogin(match[2])) { current = { login: match[2], host: "github.com", active: false }; accounts.push(current); }
+      else if (match[1] !== "github.com") otherHosts.add(match[1].toLowerCase());
+    } else if (/Failed to log in|Timeout trying to log in/.test(line) || validHost(line.trim())) current = undefined;
+    else if (current) {
+      const active = /Active account:\s*(true|false)/.exec(line);
+      if (active) { current.active = active[1] === "true"; activeSpecified.add(current); }
+    }
+  }
+  if (accounts.length === 1 && !activeSpecified.has(accounts[0])) accounts[0].active = true;
+  return { accounts, otherHosts: [...otherHosts].sort() };
+}
+export function parseGitHubAccounts(status: string): GitHubAccount[] {
+  return parseTextAccountDiscovery(status).accounts;
+}
+function noGitHubAccount(otherHosts: string[]): Error {
+  const hosts = otherHosts.slice(0, 8).join("、");
+  return new Error(`未找到可用的 github.com 登录账号。Board 发布目前仅支持 github.com Pages。${hosts ? `当前可用的其他登录主机：${hosts}。` : ""}请在运行此 Board 的主机上执行 gh auth login --hostname github.com，然后重新读取账号。`);
+}
+class GitHubCliExecutionError extends Error {}
 
 /** Never switches the global gh account; credentials are used only inside this process. */
 export class GhCliTransport implements GitHubTransport {
-  private command(args: string[], statusOutput = false): Promise<string> {
-    const env = { ...process.env, GH_PROMPT_DISABLED: "1", GH_HOST: "github.com" };
-    for (const key of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"]) delete (env as Record<string, string | undefined>)[key];
-    return new Promise((resolve, reject) => execFile("gh", args, { env, timeout: 15_000, maxBuffer: 2 * 1024 * 1024, encoding: "utf8" }, (error, stdout, stderr) => error && !statusOutput ? reject(new Error("GitHub CLI authentication is unavailable. Sign in to the selected account using gh auth login.")) : resolve(stdout + (statusOutput ? stderr : ""))));
+  private command(args: string[], statusOutput = false, timeout = 15_000): Promise<string> {
+    const env = { ...process.env, GH_PROMPT_DISABLED: "1" };
+    // An inherited GH_HOST also creates a synthetic account in recent gh versions.
+    // Discovery must see configured hosts; token retrieval pins host and user explicitly.
+    for (const key of ["GH_HOST", "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"]) delete (env as Record<string, string | undefined>)[key];
+    return new Promise((resolve, reject) => execFile("gh", args, { env, timeout, maxBuffer: 2 * 1024 * 1024, encoding: "utf8" }, (error, stdout, stderr) => {
+      const message = "GitHub CLI authentication is unavailable. Sign in to the selected account using gh auth login --hostname github.com.";
+      // Do not retry a missing/killed process as an older output format, or parse partial output.
+      if (error && (typeof error.code !== "number" || error.killed || error.signal)) reject(new GitHubCliExecutionError(message));
+      else if (error && !statusOutput) reject(new Error(message));
+      else resolve(stdout + (statusOutput ? stderr : ""));
+    }));
   }
   async accounts(): Promise<GitHubAccount[]> {
+    let discovery: AccountDiscovery, legacy = false;
     try {
-      const result = JSON.parse(await this.command(["auth", "status", "--hostname", "github.com", "--json", "hosts"])) as { hosts?: Record<string, Array<{ login?: string; active?: boolean; state?: string }>> };
-      return (result.hosts?.["github.com"] ?? []).filter(entry => entry.state !== "error" && /^[a-zA-Z0-9-]+$/.test(entry.login ?? "")).map(entry => ({ login: entry.login!, host: "github.com", active: entry.active === true }));
-    } catch {
-      const accounts = parseGitHubAccounts(await this.command(["auth", "status", "--hostname", "github.com"], true));
-      if (!accounts.length) throw new Error("未找到可用的 GitHub 登录账号，请先运行 gh auth login。");
-      return accounts;
+      discovery = parseAccountDiscovery(JSON.parse(await this.command(["auth", "status", "--hostname", "github.com", "--json", "hosts"])));
+    } catch (error) {
+      if (error instanceof GitHubCliExecutionError) throw error;
+      legacy = true;
+      discovery = parseTextAccountDiscovery(await this.command(["auth", "status", "--hostname", "github.com"], true));
     }
+    // A healthy public account must not wait for an unrelated enterprise host's authentication.
+    if (discovery.accounts.length) return discovery.accounts;
+    // The public result is authoritative. Other hosts add context only, under a shorter bound.
+    let otherHosts: string[] = [];
+    try {
+      otherHosts = legacy
+        ? parseTextAccountDiscovery(await this.command(["auth", "status"], true, 3_000)).otherHosts
+        : parseAccountDiscovery(JSON.parse(await this.command(["auth", "status", "--json", "hosts"], false, 3_000))).otherHosts;
+    } catch { /* Optional diagnostics cannot hide the actionable public-account error. */ }
+    throw noGitHubAccount(otherHosts);
   }
   async request<T>(account: string, method: string, path: string, body?: unknown): Promise<T> {
     if (!/^[a-zA-Z0-9-]+$/.test(account) || !path.startsWith("/") || path.startsWith("//")) throw new Error("Invalid GitHub request scope");

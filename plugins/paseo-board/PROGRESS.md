@@ -1,5 +1,11 @@
 # Paseo Board publication and verification
 
+### 2026-11-08 — GitHub account discovery repair
+
+- On `sw/board-gh-account-diagnostics`, based directly on main, repair the exit-zero/empty-account result from recent GitHub CLI versions. Discovery clears inherited host/token overrides, checks github.com first and reports an actionable error when no usable account exists. Optional other-host diagnostics have a three-second bound; successful public accounts never wait for Enterprise hosts.
+- Retain legacy gh text support and explicit hostname/user token selection. New transport-boundary tests cover empty/error/timeout identities, Enterprise-only accounts, malformed output, environment isolation and slow diagnostic hosts. Independent source review, TypeScript, 484 source tests in 36 files, 12 publication-host checks and real gh baseline/fixed comparison passed. Native desktop acceptance displayed the existing account after a genuine button click without creating a release or publishing.
+- A real gh 2.92.0 probe with a fresh configuration directory reproduced exit-zero empty-login output. The macOS keyring is shared despite the isolated configuration; no login or credential change was made. The work computer has not been accessed. Backup installation preserved the newer composition/pill tree and all 14 Boards, overlaying only `server/github-pages.ts`; the other 212 tracked files and main remain unchanged, and the daemon was not restarted. See [scope and verification](docs/verification/2026-11-08-github-accounts.md).
+
 ### 2026-11-04 — grouped comments installed, actual Web result verified and fixture cleanup reconciled
 
 - Added an explicit pending-comment list: stage comments at several positions, edit/delete/reload, then send the reviewed ordered group to one destination. One delivery and shared result retain individual locations/screenshots. Immutable retries, exact revision reconciliation, local-storage failure handling and cross-tab locks protect the queue; immediate single sends remain available.
