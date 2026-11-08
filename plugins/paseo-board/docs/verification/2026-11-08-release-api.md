@@ -15,3 +15,13 @@ The added checks establish:
 Receipt: `/Users/citrine/.paseo/verification/paseo-board/release-api-20261108/run-1794179730104515000/receipt.json`. Log SHA-256: `39253bcf16f5c81459d0107c3f4b6c4b432adbc7dabd804b349af25670339842`.
 
 The receipt records exact hashes for both test files and all exercised viewer, release-contract, exporter and preview source files. These hashes matched the working files at handoff. No product code was modified by this browser-test change.
+
+## Publication panel and old manifest compatibility
+
+`node scripts/release-host-test.mjs` passed all 17 checks, retaining its 15 prior publication/recovery checks and adding two API-origin checks. The actual publication panel receives trusted Chromium input and uses the real release repository, snapshot builder and ZIP implementation. GitHub and Paseo transport remain explicit adapters; no external publication occurred.
+
+The API editor rejects an address containing a path before any create RPC. A valid multiline HTTPS/loopback list is trimmed and stored in the exact immutable manifest. Editing the input afterwards does not alter the selected artifact's displayed API authority. A full page reload can select that artifact and displays its original origins, while a fresh editor stays empty. At 420 px the input and generation action remain reachable.
+
+A valid stored manifest with the optional `apiOrigins` field omitted still passes real repository read/list/preview. It neither displays API authority nor creates a replacement release. The test changes only the owned fixture manifest and its canonical public manifest serialization; its hashed content inventory and viewer files stay intact.
+
+Receipt: `/Users/citrine/.paseo/verification/paseo-board/release-api-20261108/host-run-1794179801530784000/receipt.json`. Log SHA-256: `96c478df00738a3d00bc2ac9c86a85f6a59f02a05b1085062564c233ae09f099`. Recorded source hashes still matched at handoff, and `screenshots/release-api-origins.png` was visually reviewed.

@@ -14,9 +14,9 @@ import { build } from 'esbuild';
 const directory=dirname(fileURLToPath(import.meta.url)), root=dirname(directory);
 const temporary=await mkdtemp(join(tmpdir(),'paseo-release-host-'));
 const downloads=join(temporary,'downloads'); await mkdir(downloads);
-const core=await build({stdin:{contents:`export {BoardStore} from './server/store';export {BoardCopies} from './server/board-copy';export {ReleaseRepository} from './server/static-release';`,resolveDir:root,loader:'ts'},bundle:true,platform:'node',format:'cjs',write:false,loader:{'.txt':'text'}});
+const core=await build({stdin:{contents:`export {BoardStore} from './server/store';export {BoardCopies} from './server/board-copy';export {ReleaseRepository} from './server/static-release';export {canonicalJson} from './server/store-format';`,resolveDir:root,loader:'ts'},bundle:true,platform:'node',format:'cjs',write:false,loader:{'.txt':'text'}});
 const coreFile=join(temporary,'core.cjs'); await writeFile(coreFile,core.outputFiles[0].text);
-const {BoardStore,BoardCopies,ReleaseRepository}=createRequire(import.meta.url)(coreFile);
+const {BoardStore,BoardCopies,ReleaseRepository,canonicalJson}=createRequire(import.meta.url)(coreFile);
 const boardStore=new BoardStore(join(temporary,'boards')), repository=new ReleaseRepository(join(temporary,'releases'));
 let sourceBoard, publishMode='accept', jobSequence=0, holdRefresh=false, failPreviewReleaseId;
 const publicationTimers=new Set();
@@ -189,7 +189,7 @@ try {
   await until("document.body.textContent.includes('公开数据须为 JSON 对象')");assert.equal(count('board.release.create'),0);
   await replace('[data-testid="board-release-data"]','{}');await click(button('生成固定版本并预览'));
   await until("document.querySelector('[data-testid=board-release-preview]')");await until(`!document.querySelector(${JSON.stringify(button('下载 ZIP'))})?.disabled`);
-  const first=calls.find(c=>c.name==='board.release.create');assert.deepEqual(first.input.publicData,{});
+  const first=calls.find(c=>c.name==='board.release.create');assert.deepEqual(first.input.publicData,{});assert.deepEqual(first.input.apiOrigins,[]);
   const releases=await repository.list('host-fixture');assert.equal(releases.length,1);const frozen=releases[0];
   assert.ok(!frozen.files['index.html'].includes('Isolated test fixture'),'Private Board data is not implicitly included');
   const sandbox=await evaluate("document.querySelector('[data-testid=board-release-preview]').getAttribute('sandbox')");assert.equal(sandbox,'allow-scripts allow-forms');
@@ -353,6 +353,46 @@ try {
   assert.ok(await evaluate("(()=>{const p=document.querySelector('[role=dialog]').getBoundingClientRect();return p.width>0&&p.left>=0&&p.right<=innerWidth})()"));
   check('The publication panel and download action remain reachable at a compact desktop viewport');
   }
+  // API destinations are explicit per-release inputs, not implicit live Board data.
+  const apiInput='textarea[aria-label="后端 API 来源"]', beforeApi=count('board.release.create');
+  await replace(apiInput,'https://api.example.internal/private-path');
+  await click(button('生成固定版本并预览'));
+  await until("document.body.textContent.includes('API 地址应为 HTTPS 来源')");
+  assert.equal(count('board.release.create'),beforeApi,'Invalid API URLs must be rejected before the create RPC');
+  const apiOrigins=['https://api.example.internal','http://127.0.0.1:58123'];
+  await replace(apiInput,'  '+apiOrigins[0]+'  \n\n '+apiOrigins[1]+'\n');
+  await replace('input[aria-label="发布名称"]','Backend API publication');
+  await click(button('生成固定版本并预览'));
+  await until("document.body.textContent.includes('Backend API publication · 固定版本')&&document.querySelector('[data-testid=board-release-preview]')");
+  assert.deepEqual(calls.filter(c=>c.name==='board.release.create').at(-1).input.apiOrigins,apiOrigins);
+  const apiRelease=(await repository.list('host-fixture')).find(r=>r.manifest.title==='Backend API publication');assert.ok(apiRelease);
+  assert.deepEqual(apiRelease.manifest.apiOrigins,apiOrigins);
+  const fixedApiText='已固定的后端来源：'+apiOrigins.join('、');
+  assert.ok(await evaluate(`document.body.textContent.includes(${JSON.stringify(fixedApiText)})`));
+  await replace(apiInput,'https://not-yet-exported.example.internal');
+  assert.equal(count('board.release.create'),beforeApi+1,'Editing API input must not silently create or modify a release');
+  assert.ok(await evaluate(`document.body.textContent.includes(${JSON.stringify(fixedApiText)})`));
+  assert.deepEqual((await repository.read(apiRelease.manifest.releaseId)).manifest.apiOrigins,apiOrigins);
+  await screenshot('release-api-origins');
+  await reload();await click(button(apiRelease.manifest.title+' · '+apiRelease.manifest.artifactHash.slice(0,10)));
+  await until(`document.body.textContent.includes(${JSON.stringify(fixedApiText)})&&document.querySelector('[data-testid=board-release-preview]')`);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(apiInput)}).value`),'','A fresh editor must not silently inherit API authority from a selected release');
+  assert.equal(count('board.release.create'),beforeApi+1);
+  check('The API origin field rejects paths before RPC, freezes trimmed explicit origins into the real artifact and displays that immutable authority across input edits and reload');
+
+  // Retain a valid old manifest shape: the API field did not exist in old releases.
+  // Public manifest serialization is updated, while the hashed content inventory
+  // and exact viewer files remain unchanged; read/list/preview use the real core.
+  const legacyRelease=structuredClone(frozen);delete legacyRelease.manifest.apiOrigins;
+  legacyRelease.files['release.json']=canonicalJson(legacyRelease.manifest)+'\n';
+  await writeFile(join(repository.root,legacyRelease.manifest.releaseId+'.json'),JSON.stringify(legacyRelease));
+  assert.equal((await repository.read(legacyRelease.manifest.releaseId)).manifest.apiOrigins,undefined);
+  await reload();await click(button(legacyRelease.manifest.title+' · '+legacyRelease.manifest.artifactHash.slice(0,10)));
+  await until(`document.body.textContent.includes(${JSON.stringify(legacyRelease.manifest.title+' · 固定版本')})&&document.querySelector('[data-testid=board-release-preview]')`);
+  assert.equal(await evaluate("document.body.textContent.includes('已固定的后端来源：')"),false);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(apiInput)}).value`),'');
+  assert.equal(count('board.release.create'),beforeApi+1);
+  check('A stored manifest without apiOrigins still lists and previews through the real repository without granting backend access or creating a replacement release');
   console.log(`Release host integration: ${passed} checks passed (actual static/copy core; adapted GitHub and Paseo transport, no external publication).`);
 } catch(error){console.error('Release host failed:',error);console.error('Browser exceptions:',JSON.stringify(logs).slice(-4000));console.error('Download events:',JSON.stringify(downloadEvents));console.error('RPC calls:',JSON.stringify(calls.map(c=>({name:c.name,input:c.input}))).slice(-7000));process.exitCode=1}
 finally{
