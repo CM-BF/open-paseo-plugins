@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { noSymlinks, ownerFile, writeJson } from './files.mjs';
 
-const runtimeFiles = ['cli.mjs', 'files.mjs', 'storage.mjs', 'comments.mjs', 'server.mjs', 'scaffold.mjs', 'ssh.mjs', 'remote.mjs'];
+const runtimeFiles = ['cli.mjs', 'files.mjs', 'storage.mjs', 'comments.mjs', 'server.mjs', 'scaffold.mjs', 'ssh.mjs', 'remote.mjs', 'visitor.mjs'];
 
 export async function initializeApp(directory, id) {
   if (!/^[a-z][a-z0-9-]{0,62}$/.test(id || '')) throw new Error('App id must be a lowercase slug of at most 63 characters');
@@ -22,6 +22,7 @@ export async function initializeApp(directory, id) {
   const source = path.dirname(fileURLToPath(import.meta.url));
   for (const name of runtimeFiles) await fs.copyFile(path.join(source, name), path.join(root, '.board/runtime', name));
   await fs.mkdir(path.join(root, 'migrations')); await fs.mkdir(path.join(root, 'public'));
+  await fs.copyFile(path.join(source, 'visitor.mjs'), path.join(root, 'public/board-comments.js'));
   const files = {
     'board-app.mjs': "import { main } from './.board/runtime/cli.mjs';\nawait main(process.argv.slice(2));\n",
     'routes.mjs': `// Your application logic lives here. Add any routes and use your own storage module.\nexport async function route({ request, url, storage, readJson, json }) {\n  if (url.pathname !== '/api/records') return false;\n  if (request.method === 'GET') { json(200, { records: storage.list() }); return true; }\n  if (request.method === 'POST') {\n    const value = await readJson();\n    if (typeof value.title !== 'string' || !value.title.trim() || value.title.length > 200) { json(400, { error: 'A title of 1–200 characters is required' }); return true; }\n    json(201, storage.create(value.title.trim())); return true;\n  }\n  json(405, { error: 'Use GET or POST' }); return true;\n}\n`,

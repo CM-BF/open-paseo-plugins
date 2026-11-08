@@ -129,6 +129,20 @@ characters. Anchor label and selector are limited to 200 and 500 characters.
 Names are visitor-supplied labels, not authenticated identity. The scaffold
 records these comments; it does not send agent messages or publish replies.
 
+The optional `public/board-comments.js` module supplies a native form with freely
+editable CSS classes. It is not automatically displayed. After enabling comments
+and configuring the API origin, an agent can wire it into any authored page:
+
+```js
+import { mountComments } from './board-comments.js';
+mountComments(document.querySelector('#comments'), { apiBase: 'https://api.example.internal', pageUrl: location.href, anchor: { selector: '#chart' } });
+```
+
+The form uses a stable idempotency key and freezes a submitted payload until it
+receives its matching receipt. An explicit retry reuses that key, including after
+reload when session storage is available. It never automatically retries, shares
+the export token with visitors or treats a self-reported name as verified identity.
+
 Export additionally requires a private `BOARD_INBOX_EXPORT_TOKEN` of at least 32
 characters. `GET /_board/comments?cursor=0&limit=50` uses
 `Authorization: Bearer TOKEN`. With no token, export is disabled. Responses are:

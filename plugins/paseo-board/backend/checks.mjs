@@ -10,6 +10,7 @@ import { loadApp, readJson, digest, exists } from './files.mjs';
 import { migrate, openDatabase, backup, restore } from './storage.mjs';
 import { startApp } from './server.mjs';
 import { createSshPlan, validatedPlan, shellQuote, runSsh } from './ssh.mjs';
+import { mountComments } from './visitor.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 async function fixture(t, change = {}) {
@@ -143,6 +144,32 @@ test('SSH plan binds exact source and target, excludes private files and quotes 
   await assert.rejects(validatedPlan(file), /Source files changed/);
   const config = await readJson(path.join(root, 'board-app.json')); config.deployFiles.push('.env'); await fs.writeFile(path.join(root, '.env'), 'SECRET=private'); await fs.writeFile(path.join(root, 'board-app.json'), JSON.stringify(config));
   await assert.rejects(createSshPlan({ dir: root, host: 'example', root: '/srv/apps/example', out: path.join(directory, 'private-plan.json') }), /Private\/runtime file/);
+});
+
+test('optional visitor form retries one frozen intent after lost acknowledgement and DOM remount, creating one real comment', async t => {
+  const { parseHTML } = await import('linkedom');
+  const { app, root } = await fixture(t, { comments: { enabled: true } });
+  assert.ok(await exists(path.join(root, 'public/board-comments.js')));
+  const server = await startTracked(app);
+  const { window, document } = parseHTML('<html><body><main id="comments"></main></body></html>');
+  const storage = new Map(); window.sessionStorage = { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) };
+  const originalFetch = globalThis.fetch; let loseAcknowledgement = true;
+  globalThis.fetch = async (...args) => { const response = await originalFetch(...args); if (loseAcknowledgement) { loseAcknowledgement = false; await response.text(); throw new Error('simulated lost acknowledgement'); } return response; };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const target = document.querySelector('#comments'), settings = { apiBase: `http://127.0.0.1:${server.port}`, pageUrl: 'https://pages.example/app', anchor: { selector: '#chart' } };
+  let widget = mountComments(target, settings);
+  widget.form.querySelector('textarea').value = 'A visitor requests a chart change'; widget.form.querySelector('input').value = 'A self-reported visitor';
+  const settled = async predicate => { const deadline = Date.now() + 2000; while (!predicate()) { if (Date.now() > deadline) throw new Error('Visitor form did not settle'); await new Promise(resolve => setTimeout(resolve, 10)); } };
+  widget.form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await settled(() => widget.form.querySelector('[role=status]').textContent.includes('尚未确认送达'));
+  const stored = [...storage.values()][0]; assert.ok(stored); assert.equal(widget.form.querySelector('textarea').readOnly, true);
+  widget.destroy(); widget = mountComments(target, settings);
+  assert.equal(widget.form.querySelector('button').textContent, '重试这条评论');
+  widget.form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await settled(() => widget.form.querySelector('[role=status]').textContent.includes('已进入内部收件箱'));
+  assert.equal(storage.size, 0); assert.equal(server.db.prepare('SELECT count(*) AS n FROM _board_comments').get().n, 1);
+  assert.equal(server.db.prepare('SELECT text FROM _board_comments').get().text, 'A visitor requests a chart change');
+  widget.destroy(); assert.equal(target.children.length, 0);
 });
 
 test('SSH execution requires review confirmation and passes strict flags and verified files without a real remote connection', async t => {
