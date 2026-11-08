@@ -9,7 +9,7 @@ import { initializeApp } from './scaffold.mjs';
 import { loadApp, readJson, digest, exists } from './files.mjs';
 import { migrate, openDatabase, backup, restore } from './storage.mjs';
 import { startApp } from './server.mjs';
-import { createSshPlan, validatedPlan, shellQuote, runSsh } from './ssh.mjs';
+import { createSshPlan, validatedPlan, shellQuote, runSsh, controllerCommand } from './ssh.mjs';
 import { mountComments } from './visitor.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -186,6 +186,7 @@ test('SSH execution requires review confirmation and passes strict flags and ver
     await assert.rejects(runSsh('deploy', { plan: planFile }, { executable: fake }), /Mutation requires/); assert.equal(await exists(capture), false);
     await runSsh('deploy', { plan: planFile, confirm: plan.sha256 }, { executable: fake });
     const sent = await readJson(capture); assert.deepEqual(sent.argv.slice(0, 8), ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=10', '--', 'internal-alias']);
+    assert.equal(sent.argv[8], controllerCommand('node', await fs.readFile(path.join(here, 'remote.mjs'), 'utf8')));
     assert.ok(sent.payload.files.length); assert.ok(sent.payload.files.every(row => digest(Buffer.from(row.content, 'base64')) === row.sha256));
     assert.equal(sent.payload.files.some(row => row.path.startsWith('.env')), false);
     await fs.appendFile(path.join(root, 'routes.mjs'), '\n// work continues after deployment');
@@ -194,6 +195,29 @@ test('SSH execution requires review confirmation and passes strict flags and ver
     assert.equal((await readJson(capture)).payload.operation, 'stop');
     await assert.rejects(runSsh('deploy', { plan: planFile, confirm: plan.sha256 }, { executable: fake }), /Source files changed/);
   } finally { process.env.PATH = previousPath; if (previousCapture === undefined) delete process.env.BOARD_TEST_CAPTURE; else process.env.BOARD_TEST_CAPTURE = previousCapture; }
+});
+
+test('the actual generated SSH command preserves controller source and stdin through POSIX, Zsh and Fish login shells', async t => {
+  const run = (shell, flags, source, input) => new Promise((resolve, reject) => {
+    const child = spawn(shell, [...flags, '-c', controllerCommand(process.execPath, source)], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '', stderr = ''; child.stdout.on('data', chunk => stdout += chunk); child.stderr.on('data', chunk => stderr += chunk);
+    child.once('error', reject); child.once('close', code => resolve({ code, stdout, stderr })); child.stdin.end(input);
+  });
+  const difficultText = 'single\' double" backslash\\ dollar$(echo MUST_NOT_EXECUTE) `echo MUST_NOT_EXECUTE`\n中文';
+  const source = `import { createHash } from 'node:crypto';\nlet input = ''; for await (const chunk of process.stdin) input += chunk;\nconst value = ${JSON.stringify(difficultText)};\nconsole.log(JSON.stringify({value, input:JSON.parse(input), hash:createHash('sha256').update(value).digest('hex')}));\n`;
+  const actualController = await fs.readFile(path.join(here, 'remote.mjs'), 'utf8');
+  const shells = [['/bin/sh', []], ['/bin/zsh', ['-f']], ['/opt/homebrew/bin/fish', ['--no-config']], ['/usr/bin/fish', ['--no-config']]];
+  for (const [shell, flags] of shells) {
+    if (!(await exists(shell))) continue;
+    await t.test(shell, async () => {
+      const result = await run(shell, flags, source, JSON.stringify({ transport: 'stdin remains separate', quote: difficultText }));
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), { value: difficultText, input: { transport: 'stdin remains separate', quote: difficultText }, hash: digest(difficultText) });
+      const actual = await run(shell, flags, actualController, '{}');
+      assert.equal(actual.code, 1); assert.equal(actual.stdout, '');
+      assert.deepEqual(JSON.parse(actual.stderr), { status: 'failed-reconcile-before-retry', error: 'Invalid deployment request' });
+    });
+  }
 });
 
 function control(payload) {

@@ -5,6 +5,13 @@ import { spawn } from 'node:child_process';
 import { digest, loadApp, noSymlinks, readJson, relativeFile, writeJson } from './files.mjs';
 
 export const shellQuote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
+export function controllerCommand(node, source) {
+  // SSH uses the account's login shell. Fish unescapes \\ inside single quotes,
+  // so quoting raw JavaScript as a POSIX shell argument can corrupt the program.
+  // The fixed loader contains no escapes; its data URL carries exact UTF-8 bytes.
+  const moduleUrl = `data:text/javascript;base64,${Buffer.from(source, 'utf8').toString('base64')}`;
+  return `${shellQuote(node)} --input-type=module -e ${shellQuote(`await import("${moduleUrl}")`)}`;
+}
 const deniedName = name => /^(\.env(?:\..*)?|\.ssh|\.git|node_modules|.*\.(?:pem|key|p12|pfx|sqlite(?:-wal|-shm)?))$/i.test(name) || /^(?:id_rsa|id_ed25519|credentials|secrets?)(?:\.|$)/i.test(name);
 
 export async function deploymentFiles(root, entries) {
@@ -69,7 +76,7 @@ export async function runSsh(operation, opts, { executable = 'ssh' } = {}) {
     return { ...file, content: bytes.toString('base64') };
   })) : [];
   const payload = { operation, root: plan.remoteRoot, appId: plan.appId, owner: plan.owner, release: plan.sha256, node: plan.node, files };
-  const args = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=10', '--', plan.host, `${shellQuote(plan.node)} --input-type=module -e ${shellQuote(plan.controller)}`];
+  const args = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=10', '--', plan.host, controllerCommand(plan.node, plan.controller)];
   const output = await new Promise((resolve, reject) => {
     const child = spawn(executable, args, { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '', stderr = '', total = 0;

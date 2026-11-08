@@ -87,8 +87,10 @@ using the deployed release's plan even when local source edits continue; they
 validate the remote owner/current release and do not require the old source tree.
 They execute the installed controller, never code supplied inside a plan. The user's existing SSH config and
 agent provide authentication. Host-key verification stays strict and SSH is
-noninteractive. Arguments are individually shell-quoted. No SSH secrets are
-stored in the plan or sent to a browser.
+noninteractive. The reviewed controller travels as a base64 module behind a fixed
+loader, preserving JavaScript escapes under POSIX, Zsh and Fish login shells;
+request JSON travels separately over stdin. No SSH secrets are stored in the plan
+or sent to a browser.
 
 Only `deployFiles` are uploaded, with hard rejection of `.env`, keys, SQLite files
 and symlinks. Do not put secrets into ordinary source files. An empty remote root
@@ -177,6 +179,14 @@ WAL backup/restore and the remote controller in a temporary local directory.
 They do not connect to a remote SSH server or claim a deployment on the work
 computer. Live remote network, proxy/SSO and reboot behavior require a separately
 authorized target.
+
+The generated SSH command also runs through available local `sh`, `zsh` and
+`fish` shells, exercising the actual controller plus quotes, backslashes, Unicode,
+newlines and separate request input. Direct Node execution and captured SSH argv
+alone do not cover a remote account's shell parsing. The opt-in
+`node backend/ssh-protocol-check.mjs /absolute/new/evidence-directory` additionally
+starts an isolated loopback sshd with temporary keys/config, deploys only its own
+app and stops its processes afterward; it does not change the user's SSH config.
 
 The implementation was checked on 2026-11-08 with Node 23.11 and the installed
 Paseo Helper's Node runtime: ten backend checks passed on each. The checks also

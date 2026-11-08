@@ -76,7 +76,15 @@ try {
 } catch (error) { receipt.status = 'failed-preserved-for-reconciliation'; receipt.error = error.message; process.exitCode = 1; }
 finally {
   if (deployedPlan && sshd && !sshdExited) {
-    try { const result = await runSsh('stop', { plan: deployedPlan.file, confirm: deployedPlan.sha256 }, { executable: path.join(root, 'owned-ssh') }); receipt.appCleanup = parsed(result); }
+    try {
+      // This acceptance owns a local remote root. A parsing/transport failure can
+      // happen before any deployment exists; do not report a fictitious app leak.
+      const remoteExists = await fs.lstat(path.join(root, 'remote')).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
+      if (!remoteExists) receipt.appCleanup = { status: 'not-created', remoteRootAbsent: true };
+      else {
+        const result = await runSsh('stop', { plan: deployedPlan.file, confirm: deployedPlan.sha256 }, { executable: path.join(root, 'owned-ssh') }); receipt.appCleanup = parsed(result);
+      }
+    }
     catch (error) { receipt.appCleanup = { error: error.message }; receipt.status = 'failed-cleanup-reconciliation-required'; process.exitCode = 1; }
   }
   if (sshd && !sshdExited) { const exit = once(sshd, 'exit'); sshd.kill('SIGTERM'); await exit; }
