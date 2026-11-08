@@ -187,6 +187,7 @@ try {
     await verifyFailedPreviewSwitch(recovery.manifest,frozen.manifest);
   }else{
   await click(button('读取 GitHub 账号'));
+  await until(`document.querySelector(${JSON.stringify(button('fixture-alice · github.com'))})&&document.querySelector(${JSON.stringify(button('fixture-alice · '+enterpriseHost))})&&!document.querySelector(${JSON.stringify(button('读取 GitHub 账号'))}).disabled`);
   assert.ok(await evaluate(`document.querySelector(${JSON.stringify(button('fixture-alice · github.com'))})&&document.querySelector(${JSON.stringify(button('fixture-alice · '+enterpriseHost))})`));
   await click(button('fixture-alice · github.com'));await click(button('fixture-alice/site'));
   assert.deepEqual(calls.find(c=>c.name==='board.pages.repositories').input,{account:'fixture-alice',githubHost:'github.com'});
@@ -280,7 +281,9 @@ try {
   // An Enterprise-only login remains usable without any public GitHub account.
   configuredAccounts=configuredAccounts.filter(account=>account.host===enterpriseHost);
   await click(button(frozen.manifest.title+' · '+frozen.manifest.artifactHash.slice(0,10)));
+  await until(`document.body.textContent.includes(${JSON.stringify(frozen.manifest.title+' · 固定版本')})&&!document.querySelector(${JSON.stringify(button('读取 GitHub 账号'))}).disabled`);
   await click(button('读取 GitHub 账号'));
+  await until(`document.querySelector(${JSON.stringify(button('fixture-alice · '+enterpriseHost))})&&!document.querySelector(${JSON.stringify(button('fixture-alice · github.com'))})&&!document.querySelector(${JSON.stringify(button('读取 GitHub 账号'))}).disabled`);
   assert.deepEqual(calls.filter(call=>call.name==='board.pages.accounts').at(-1).input,{});
   assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(button('fixture-alice · github.com'))})`),false);
   await click(button('fixture-alice · '+enterpriseHost));await click(button('fixture-alice/site'));
@@ -291,7 +294,7 @@ try {
   assert.equal(enterpriseRequest.githubHost,enterpriseHost);assert.equal(enterpriseRequest.account,prepared.account);assert.equal(enterpriseRequest.repository,prepared.repository);assert.notEqual(enterpriseRequest.eventId,prepared.eventId);
   const beforeEnterpriseReload=count('board.pages.publish');
   await reload();await click(button('恢复发布 · '+enterpriseHost+' · fixture-alice/site'));
-  await until("document.querySelector('[data-testid=board-release-preview]')");
+  await until(`document.querySelector('[data-testid=board-release-preview]')&&document.body.textContent.includes(${JSON.stringify('发布账号：fixture-alice · '+enterpriseHost)})&&!document.querySelector(${JSON.stringify(button('读取 GitHub 账号'))}).disabled`);
   assert.equal(count('board.pages.publish'),beforeEnterpriseReload);
   assert.ok(await evaluate(`document.body.textContent.includes(${JSON.stringify('发布账号：fixture-alice · '+enterpriseHost)})`));
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(button('一键发布'))}).disabled`),true);
@@ -301,8 +304,10 @@ try {
   assert.equal([...jobs.values()].filter(item=>item.releaseId===prepared.releaseId&&item.repository===prepared.repository).length,2);
   check('Enterprise-only discovery works without a public login; identical account/repository names on different GitHub hosts get distinct requests, and reload recovers only the exact Enterprise target');
   await replace('input[aria-label="GitHub 主机（可选）"]',enterpriseHost);
+  await until(`document.querySelector(${JSON.stringify(button('一键发布'))}).disabled&&!document.body.textContent.includes(${JSON.stringify('发布账号：fixture-alice · '+enterpriseHost)})`);
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(button('一键发布'))}).disabled`),true);
   await click(button('读取 GitHub 账号'));await click(button('fixture-alice · '+enterpriseHost));
+  await until(`document.querySelector(${JSON.stringify(button('fixture-alice/site'))})&&!document.querySelector(${JSON.stringify(button('读取 GitHub 账号'))}).disabled`);
   assert.deepEqual(calls.filter(call=>call.name==='board.pages.accounts').at(-1).input,{githubHost:enterpriseHost});
   assert.deepEqual(calls.filter(call=>call.name==='board.pages.repositories').at(-1).input,{account:'fixture-alice',githubHost:enterpriseHost});
   assert.equal(await evaluate('document.querySelector(\'input[aria-label="GitHub 仓库 owner/repo"]\').value'),'');
@@ -312,6 +317,7 @@ try {
   assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(button('打开已发布网页'))})`),false);
   assert.equal(await evaluate("document.querySelector('[data-testid=board-pages-job]').textContent.includes('已核实上线')"),false);
   const beforePrivateOpen=count('board.pages.publish');await click(button('打开网页（内容待核验）'));
+  await until(`hostFixture.links.at(-1)===${JSON.stringify('https://pages.enterprise.example/fixture-alice/site/boards/'+frozen.manifest.releaseId.slice(8,24)+'/')}`);
   assert.equal(await evaluate('hostFixture.links.at(-1)'),'https://pages.enterprise.example/fixture-alice/site/boards/'+frozen.manifest.releaseId.slice(8,24)+'/');
   assert.equal(count('board.pages.publish'),beforePrivateOpen);
   check('An Enterprise site with a successful build but login-protected contents exposes an explicitly unverified link without claiming live verification or starting another publication');

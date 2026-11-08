@@ -1,5 +1,7 @@
 # GitHub account discovery: 2026-11-08
 
+Historical public-only repair. The user subsequently clarified that company GitHub publishing is required; the public-only restriction described below is superseded by the Enterprise publishing candidate. These earlier results remain evidence only for the exact single-file repair, not for the newer host-qualified publishing implementation.
+
 ## Problem and change
 
 GitHub CLI JSON authentication status may exit successfully without a usable github.com account. The previous implementation filtered such entries and returned an empty list, leaving **读取 GitHub 账号** without an explanation. An Enterprise-only login is not a github.com Pages publishing account.
