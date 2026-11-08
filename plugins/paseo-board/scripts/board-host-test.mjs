@@ -15,6 +15,7 @@ const draftScope = process.env.BOARD_HOST_TEST_SCOPE === 'drafts';
 const batchScope = process.env.BOARD_HOST_TEST_SCOPE === 'batch';
 const toolbarScope = process.env.BOARD_HOST_TEST_SCOPE === 'toolbar';
 const modalScope = process.env.BOARD_HOST_TEST_SCOPE === 'modal';
+const inboxScope = process.env.BOARD_HOST_TEST_SCOPE === 'inbox';
 const resumeScopeName = process.env.BOARD_HOST_TEST_SCOPE;
 const resumeScope = ['resume','resume-core','resume-reconnect','resume-retirement'].includes(resumeScopeName);
 const bundle = await build({ entryPoints: [join(directory, 'board-host-fixture.tsx')], bundle: true, format: 'iife', platform: 'browser', write: false, loader: { '.txt': 'text' }, define: { 'process.env.NODE_ENV': '"test"' }, plugins: [{ name: 'host-adapters', setup(build) { build.onResolve({ filter: /^(react-native|@getpaseo\/plugin(?:\/client(?:\/ui)?)?)$/ }, () => ({ path: join(directory, 'board-host-adapter.tsx') })); } }] });
@@ -273,6 +274,9 @@ try {
     check('New Board modal receives the explicit theme, accepts native text input and cancels without a create RPC');
   } else if (toolbarScope) {
     await runToolbarChecks();
+  } else if (inboxScope) {
+    const { runInboxHostChecks } = await import('./inbox-host-checks.mjs');
+    await runInboxHostChecks({ assert, command, evaluate, until, frame, untilFrame, key, click, hostClick, hostLocation, sendText, submitCount, canvasRect, check });
   } else if (batchScope) {
     const { runBatchCommentChecks } = await import('./batch-comment-checks.mjs');
     await runBatchCommentChecks({ assert, send, command, evaluate, until, frame, untilFrame, key, click, clickPoint, rightClickPoint, location, hostClick, hostLocation, openAt, openAuthoredReference, sendText, submitCount, noPopover, closePopover, canvasRect, input, popover, railClick, check, origin: `http://127.0.0.1:${server.address().port}` });
