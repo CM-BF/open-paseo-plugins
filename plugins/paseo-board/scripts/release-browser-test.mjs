@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { build } from 'esbuild';
 import { componentLayoutHtml } from './component-layout-fixture.mjs';
+import { createReleaseApiFixture, runReleaseApiChecks } from './release-api-checks.mjs';
 
 const directory = dirname(fileURLToPath(import.meta.url)), root = dirname(directory);
 const temporary = await mkdtemp(join(tmpdir(), 'paseo-release-browser-'));
@@ -70,11 +71,13 @@ assert.equal(JSON.stringify(layoutRelease.files).includes('PRIVATE_LAYOUT_VIEW')
 const previewBundle = await build({ stdin: { contents: `import React from 'react';import {createRoot} from 'react-dom/client';import {ReleasePreview} from './client/release-web';createRoot(document.getElementById('app')).render(React.createElement(ReleasePreview,{html:window.releaseHtml}));`, resolveDir: root, loader: 'tsx' }, bundle: true, platform: 'browser', format: 'iife', write: false, define: { 'process.env.NODE_ENV': '"test"' } });
 const files = new Map([['/', release.files['index.html']], ['/publication/nested/', release.files['index.html']], ['/second/', second.files['index.html']], ['/full/', fullDocument.files['index.html']], ['/copy/', copyRelease.files['index.html']], ['/layout/', layoutRelease.files['index.html']]]);
 const requests = [];
+let apiFixture;
 const server = createServer((request, response) => {
   requests.push({ method: request.method, url: request.url });
   if (request.url === '/preview.js') { response.setHeader('Content-Type', 'text/javascript'); response.end(previewBundle.outputFiles[0].text); return; }
   response.setHeader('Content-Type', 'text/html; charset=utf-8');
   if (request.url === '/preview') { response.end(`<!doctype html><div id="app"></div><script>window.releaseHtml=${JSON.stringify(release.files['index.html']).replace(/</g, '\\u003c')}</script><script src="/preview.js"></script>`); return; }
+  if (request.url === '/api-preview') { response.end(`<!doctype html><div id="app"></div><script>window.releaseHtml=${JSON.stringify(apiFixture.release.files['index.html']).replace(/</g, '\\u003c')}</script><script src="/preview.js"></script>`); return; }
   if (!files.has(request.url)) { response.writeHead(404).end(); return; }
   response.end(files.get(request.url));
 });
@@ -83,6 +86,8 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 const rejectedRequests = [], rejectedServer = createServer((request, response) => { rejectedRequests.push(request.url); response.end('This endpoint must never receive a publication request.'); });
 await new Promise(resolve => rejectedServer.listen(0, '127.0.0.1', resolve));
 const rejectedUrl = `http://127.0.0.1:${rejectedServer.address().port}/release-navigation`;
+apiFixture = await createReleaseApiFixture({ buildRelease, options, origin, temporary, rejectedUrl });
+files.set('/api/', apiFixture.release.files['index.html']);
 const chrome = spawn(process.env.BROWSER_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', ['--headless=new', '--remote-debugging-pipe', `--user-data-dir=${join(temporary, 'profile')}`, '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-extensions', '--use-mock-keychain', '--window-size=1000,800', 'about:blank'], { detached: true, stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] });
 let sequence = 0, buffer = '', passed = 0, contextEpoch = 0;
 const commands = new Map(), contexts = new Map(), errors = [], networkRequests = new Map(), blockedRequests = [];
@@ -229,6 +234,7 @@ try {
   await frame("document.querySelector('#increment').click()"); assert.equal(await frame('window.count'), 1);
   assert.equal(await frame('window.parentReadable'), false);
   check('the actual host ReleasePreview renders the nested opaque exported viewer and keeps local interaction available without private Board access');
+  await runReleaseApiChecks({ assert, command, evaluate, frame, open, click, ready, api: apiFixture, rejectedUrl, rejectedRequests, check });
   assert.deepEqual(errors, [], 'Unexpected browser runtime exception');
   console.log(`Static release browser integration: ${passed} checks passed.`);
 } catch (error) { console.error('Release browser check failed:', error); console.error('Browser exceptions:', errors); process.exitCode = 1; }
@@ -236,5 +242,5 @@ finally {
   try { await send('Browser.close'); } catch { try { process.kill(-chrome.pid, 'SIGTERM'); } catch {} }
   if (chrome.exitCode === null) await new Promise(resolve => { const timer = setTimeout(() => { try { process.kill(-chrome.pid, 'SIGKILL'); } catch {} resolve(); }, 3000); chrome.once('exit', () => { clearTimeout(timer); resolve(); }); });
   for (const entry of commands.values()) { clearTimeout(entry.timer); entry.reject(new Error('Browser closed')); } commands.clear();
-  await Promise.all([new Promise(resolve => server.close(resolve)), new Promise(resolve => rejectedServer.close(resolve))]); await rm(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  await Promise.all([new Promise(resolve => server.close(resolve)), new Promise(resolve => rejectedServer.close(resolve)), apiFixture.close()]); await rm(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
