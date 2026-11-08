@@ -120,4 +120,45 @@ describe("human-configured inbox pull", () => {
     await sync(2);
     expect(requests[0]).toEqual({ url: "/_board/comments/new?cursor=0&limit=100", token: "Bearer new-private-token-0123456789abcdef01234567" });
   });
+
+  it("preserves all 32 maximum UTF-8 endpoints through pending replacement, disable and reload", async () => {
+    const prefix = "https://example.test/", endpoint = prefix + "中".repeat(2_000 - prefix.length);
+    const configured = Array.from({ length: 32 }, (_, index) => ({ ...input(), expectedRevision: index, eventId: `connect-${index}`, sourceId: `source-${index}`, endpoint, label: "源".repeat(200) }));
+    for (const source of configured) await connections.connect(source);
+    const file = join(root, "inbox-connections", (await readdir(join(root, "inbox-connections")))[0]);
+    expect((await stat(file)).size).toBeGreaterThan(256_000);
+
+    // Unknown outcomes retain both versions of every source. The complete
+    // recovery state must remain readable, even at maximum field lengths.
+    const original = inbox.setSource.bind(inbox);
+    vi.spyOn(inbox, "setSource").mockRejectedValue(new Error("interrupted before source commit"));
+    for (const source of configured) await expect(connections.connect({ ...source, expectedRevision: 32, expectedConnectionEventId: source.eventId, eventId: `replace-${source.sourceId}`, enabled: false })).rejects.toThrow("interrupted");
+    expect((await new InboxConnections(root, inbox).list(scope)).every(source => source.state === "pending")).toBe(true);
+    vi.mocked(inbox.setSource).mockImplementation(original);
+
+    const recovered = new InboxConnections(root, inbox);
+    expect(await recovered.reconcile({ ...scope, sourceId: configured[0].sourceId, eventId: "replace-source-0" })).toEqual({ state: "ready" });
+    for (const source of configured.slice(1)) expect(await recovered.reconcile({ ...scope, sourceId: source.sourceId, eventId: `replace-${source.sourceId}` })).toEqual({ state: "cancelled" });
+    const restored = await new InboxConnections(root, inbox).list(scope);
+    expect(restored).toHaveLength(32);
+    expect(restored.every(source => source.state === "ready")).toBe(true);
+    expect(restored.find(source => source.sourceId === "source-0")).toMatchObject({ enabled: false, endpoint });
+    expect(restored.filter(source => source.enabled)).toHaveLength(31);
+    expect((await state()).revision).toBe(33);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("rejects an oversized private write before changing the existing connection file", async () => {
+    await connections.connect(input());
+    const file = join(root, "inbox-connections", (await readdir(join(root, "inbox-connections")))[0]);
+    const before = await readFile(file, "utf8"), records = JSON.parse(before);
+    records[0].token = "x".repeat(2 * 1024 * 1024);
+    // Exercise the persistence boundary directly; public input is already
+    // bounded, but future schema changes must not produce an unreadable file.
+    const writer = connections as unknown as { save(path: string, records: unknown[]): Promise<void> };
+    await expect(writer.save(file, records)).rejects.toHaveProperty("code", "size_limit");
+    expect(await readFile(file, "utf8")).toBe(before);
+    expect(await connections.list(scope)).toEqual([expect.objectContaining({ state: "ready", enabled: true })]);
+    expect(await readdir(join(root, "inbox-connections"))).toHaveLength(1);
+  });
 });

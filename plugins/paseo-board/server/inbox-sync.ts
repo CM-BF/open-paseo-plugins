@@ -14,6 +14,10 @@ const PrivateConnectionSchema = StoredConnectionSchema.extend({ previous: Stored
 type PrivateConnection = z.infer<typeof PrivateConnectionSchema>;
 const PageSchema = z.object({ deploymentId: IdSchema, cursor: z.string().min(1).max(500), nextCursor: z.string().min(1).max(500), comments: z.array(InboxExternalCommentSchema).max(INBOX_LIMITS.importPage) }).strict();
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+// Accommodates all 32 sources at their UTF-8 field limits, including a pending
+// replacement and its previous settings. Read and write must use the same cap.
+const CONNECTION_FILE_BYTES = 2 * 1024 * 1024;
+const ConnectionFileSchema = z.array(PrivateConnectionSchema).max(INBOX_LIMITS.sources);
 
 /** Human-configured pull boundary. Secrets never enter Board data, agent results or exported HTML. */
 export class InboxConnections {
@@ -25,15 +29,17 @@ export class InboxConnections {
     await ensureDirectory(this.directory);
     try {
       const stat = await lstat(path);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 256_000) throw new Error("Unsafe inbox connection file");
-      return z.array(PrivateConnectionSchema).max(INBOX_LIMITS.sources).parse(JSON.parse(await readFile(path, "utf8")));
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > CONNECTION_FILE_BYTES) throw new Error("Unsafe inbox connection file");
+      return ConnectionFileSchema.parse(JSON.parse(await readFile(path, "utf8")));
     } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
   }
   private async save(path: string, records: PrivateConnection[]) {
+    const encoded = JSON.stringify(ConnectionFileSchema.parse(records));
+    if (Buffer.byteLength(encoded, "utf8") > CONNECTION_FILE_BYTES) throw new BoardStoreError("size_limit", "Inbox connection settings exceed the storage limit");
     await ensureDirectory(this.directory);
     const temp = `${path}.${randomUUID()}.tmp`;
     const file = await open(temp, "wx", 0o600);
-    try { await file.writeFile(JSON.stringify(records)); await file.sync(); } finally { await file.close(); }
+    try { await file.writeFile(encoded); await file.sync(); } finally { await file.close(); }
     try { await rename(temp, path); } finally { await unlink(temp).catch(() => undefined); }
   }
   async list(scope: InboxScope) {
