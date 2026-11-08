@@ -1725,6 +1725,15 @@ function relativeLuminance(color) {
 import { createElement, useEffect as useEffect2, useLayoutEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 
+// client/message-shortcuts.ts
+function messageShortcut(event) {
+  if (event.key !== "Enter") return null;
+  var command = event.ctrlKey || event.metaKey;
+  if (command) return !event.altKey && !event.shiftKey ? "main" : null;
+  if (event.altKey) return event.shiftKey ? "new-side" : "side";
+  return event.shiftKey ? null : "stage";
+}
+
 // client/composition-web.ts
 var browser = globalThis;
 function secret() {
@@ -4154,12 +4163,14 @@ function WebMessageInput(props) {
         event.preventDefault();
         event.stopPropagation();
         props.onClose();
-      } else if (event.key === "Enter" && !event.shiftKey) {
-        var side = event.ctrlKey || event.metaKey;
-        if (event.altKey && !side) return;
+      } else {
+        var action = messageShortcut(event);
+        if (!action) return;
         event.preventDefault();
         event.stopPropagation();
-        if (!props.disabled) props.onSubmit(side ? event.altKey ? "new-side" : "side" : "main");
+        if (!props.disabled && !event.repeat) {
+          if (action === "stage") props.onStage();else props.onSubmit(action);
+        }
       }
     },
     style: {
@@ -6346,10 +6357,13 @@ function BoardToolbar(props) {
           children: "\u6846\u9009\u533A\u57DF\u5F15\u7528\u3002Esc \u9000\u51FA\u9009\u62E9\u6216\u53D6\u6D88\u5F53\u524D\u62D6\u52A8\u3002"
         }), /* @__PURE__ */jsx8(Shortcut, {
           keys: "\u6D88\u606F\uFF1AEnter / Shift + Enter",
-          children: "\u53D1\u9001\u7ED9\u4E3B\u4F1A\u8BDD / \u6362\u884C\u3002"
+          children: "\u52A0\u5165\u5F85\u53D1\u9001 / \u6362\u884C\u3002\u8BA8\u8BBA\u8FFD\u95EE\u4FDD\u5B58\u4E3A\u8349\u7A3F\u3002"
         }), /* @__PURE__ */jsx8(Shortcut, {
           keys: "\u6D88\u606F\uFF1A\u2318 / Ctrl + Enter",
-          children: "\u53D1\u9001\u5230\u6240\u9009 Side\uFF1B\u518D\u52A0 Option / Alt \u5219\u65B0\u5F00 Side\u3002"
+          children: "\u5F53\u524D\u8BC4\u8BBA\u548C\u5F85\u53D1\u9001\u8BC4\u8BBA\u4E00\u8D77\u53D1\u4E3B\u4F1A\u8BDD\uFF1B\u8FFD\u95EE\u4FDD\u7559\u539F\u8BA8\u8BBA\uFF0C\u9700\u5148\u5904\u7406\u5F85\u53D1\u9001\u8BC4\u8BBA\u3002"
+        }), /* @__PURE__ */jsx8(Shortcut, {
+          keys: "\u6D88\u606F\uFF1AOption / Alt + Enter",
+          children: "\u5F53\u524D\u8BC4\u8BBA\u53D1\u6240\u9009 Side\uFF1B\u518D\u52A0 Shift \u5219\u65B0\u5F00 Side\uFF0C\u4E0D\u5E26\u4E0A\u5F85\u53D1\u9001\u8BC4\u8BBA\u3002"
         }), /* @__PURE__ */jsx8(Shortcut, {
           keys: "\u6D88\u606F\uFF1AEsc",
           children: "\u6536\u8D77\u8F93\u5165\u5E76\u4FDD\u7559\u8349\u7A3F\uFF0C\u53EF\u4ECE\u5DE5\u5177\u6761\u7684\u8349\u7A3F\u5165\u53E3\u7EE7\u7EED\u3002"
@@ -10069,7 +10083,9 @@ function BoardContent({
     try {
       var pendingBatches = batchStore.list();
       if (pendingBatches.issues.length) throw new Error(pendingBatches.issues[0]);
-      var other = queuedDrafts(draftStore.list().drafts, pendingBatches.batches).filter(item => item.id !== next.draftId);
+      var drafts = draftStore.list();
+      if (drafts.issues.length) throw new Error(drafts.issues[0].message);
+      var other = queuedDrafts(drafts.drafts, pendingBatches.batches).filter(item => item.id !== next.draftId);
       createCommentBatch([...other, {
         id: next.draftId ?? "preview",
         revision: next.draftRevision ?? "preview",
@@ -10101,6 +10117,22 @@ function BoardContent({
         outcome: "\u5DF2\u52A0\u5165\u5F85\u53D1\u9001\u5217\u8868\uFF0C\u5C1A\u672A\u53D1\u9001\u7ED9 agent"
       });
     } catch {}
+    return queuedDrafts(draftStore.list().drafts, batchStore.list().batches);
+  };
+  var stageMessage = () => {
+    var current = composeRef.current;
+    if (!current?.text.trim() || pending.current) return;
+    if (current.intentId) {
+      setMessage("\u8FD9\u6761\u53D1\u9001\u7684\u7ED3\u679C\u5C1A\u5F85\u6838\u5BF9\uFF1B\u8BF7\u91CD\u8BD5\u539F\u53D1\u9001\uFF0C\u4E0D\u80FD\u91CD\u65B0\u52A0\u5165\u5F85\u53D1\u9001\u3002");
+      return;
+    }
+    if (current.sourceInteractionId) {
+      closePopover();
+      if (composeRef.current) return;
+      setMessage("\u8FFD\u95EE\u8349\u7A3F\u5DF2\u4FDD\u5B58\uFF0C\u5C1A\u672A\u53D1\u9001\uFF1B\u4ECE\u8349\u7A3F\u7EE7\u7EED\u53EF\u4FDD\u7559\u539F\u8BA8\u8BBA\u3002\u8FFD\u95EE\u4E0D\u5E76\u5165\u5F85\u53D1\u9001\u8BC4\u8BBA\u3002");
+      return;
+    }
+    stageCompose();
   };
   var openCompose = (kind, source, text, resolve) => {
     if (pending.current || composeRef.current) {
@@ -10226,7 +10258,13 @@ function BoardContent({
       setSending(false);
     }
   });
-  var submitBatch = (destination = "main", retry) => __async(null, null, function* () {
+  var submitBatch = (..._0) => __async(null, [..._0], function* (destination = "main", retry, reviewed = staged.map(({
+    id: id2,
+    revision
+  }) => ({
+    id: id2,
+    revision
+  }))) {
     if (pending.current || composeRef.current || sideChoicePending.current || !board?.ownerAgentId) return;
     pending.current = true;
     setSending(true);
@@ -10237,13 +10275,7 @@ function BoardContent({
         hostId: host.id,
         boardId,
         expectedCreatedAt: board.createdAt
-      }, draftStore, batchStore, destination, localId("batch"), staged.map(({
-        id: id2,
-        revision
-      }) => ({
-        id: id2,
-        revision
-      }))));
+      }, draftStore, batchStore, destination, localId("batch"), reviewed));
       if (batch.expectedCreatedAt && batch.expectedCreatedAt !== board.createdAt) throw new Error("\u753B\u677F\u5DF2\u88AB\u66FF\u6362\uFF1B\u539F\u53D1\u9001\u8BB0\u5F55\u5DF2\u4FDD\u7559\uFF0C\u4E0D\u80FD\u53D1\u9001\u7ED9\u65B0\u753B\u677F\u3002");
       if (acceptedBatchInteraction(batch, board.interactions)) {
         var cleaned = reconcileBatchDrafts(batch, draftStore),
@@ -10312,6 +10344,39 @@ function BoardContent({
       pending.current = false;
       setSending(false);
     }
+  });
+  var submitMain = () => __async(null, null, function* () {
+    var current = composeRef.current;
+    if (!current?.text.trim() || pending.current || sideChoicePending.current || !board?.ownerAgentId) return;
+    if (current.intentId) {
+      yield submit("main");
+      return;
+    }
+    var drafts = draftStore.list(),
+      outbox = batchStore.list();
+    if (drafts.issues.length || outbox.issues.length) {
+      setMessage(outbox.issues[0] ?? drafts.issues[0].message);
+      return;
+    }
+    var other = queuedDrafts(drafts.drafts, outbox.batches).filter(item => item.id !== current.draftId);
+    if (!other.length) {
+      yield submit("main");
+      return;
+    }
+    if (current.sourceInteractionId) {
+      setMessage("\u8FD9\u6761\u8FFD\u95EE\u9700\u8981\u4FDD\u7559\u539F\u8BA8\u8BBA\uFF0C\u4E0D\u80FD\u4E0E\u5176\u4ED6\u4F4D\u7F6E\u7684\u8BC4\u8BBA\u5408\u5E76\u3002\u8BF7\u5148\u6536\u8D77\u8FFD\u95EE\u5E76\u5904\u7406\u5F85\u53D1\u9001\u8BC4\u8BBA\uFF0C\u518D\u53D1\u9001\u8FFD\u95EE\u3002");
+      return;
+    }
+    var reviewed = stageCompose();
+    if (!reviewed) return;
+    setDrawer("drafts");
+    yield submitBatch("main", void 0, reviewed.map(({
+      id: id2,
+      revision
+    }) => ({
+      id: id2,
+      revision
+    })));
   });
   var releaseSideChoice = () => {
     sideChoicePending.current = false;
@@ -10452,6 +10517,7 @@ function BoardContent({
         value: compose.text,
         disabled: false,
         onChange: changeDraftText,
+        onStage: stageMessage,
         onSubmit: () => {
           setMessage("\u8FDE\u63A5\u6062\u590D\u540E\u624D\u80FD\u53D1\u9001\uFF1B\u8349\u7A3F\u5DF2\u4FDD\u7559\u3002");
         },
@@ -10809,8 +10875,9 @@ function BoardContent({
                 focusToken: inputFocusToken,
                 disabled: sending || sideTargetBlocked,
                 onChange: changeDraftText,
+                onStage: stageMessage,
                 onSubmit: destination => {
-                  void submit(destination);
+                  void (destination === "main" ? submitMain() : submit(destination));
                 },
                 onClose: closePopover,
                 placeholder: "\u60F3\u4E86\u89E3\u4EC0\u4E48\uFF1F\u6216\u5E0C\u671B\u8FD9\u91CC\u53D1\u751F\u4EC0\u4E48\u53D8\u5316\uFF1F",
@@ -10898,26 +10965,26 @@ function BoardContent({
                       void submit("side");
                     }
                   }), /* @__PURE__ */jsx15(Action, {
-                    label: "\u4E3B\u4F1A\u8BDD\u53D1\u9001",
+                    label: staged.some(item => item.id !== compose.draftId) ? "\u4E3B\u4F1A\u8BDD\u7EDF\u4E00\u53D1\u9001" : "\u4E3B\u4F1A\u8BDD\u53D1\u9001",
                     disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                     primary: true,
                     onPress: () => {
-                      void submit("main");
+                      void submitMain();
                     }
                   })]
                 })]
               }), compose.intentId ? /* @__PURE__ */jsx15(Copy, {
                 small: true,
                 muted: true,
-                children: "\u91CD\u8BD5\u6CBF\u539F\u76EE\u6807\u7EE7\u7EED\uFF1B\u4FEE\u6539\u6587\u5B57\u4F1A\u53E6\u5B58\u65B0\u8349\u7A3F\uFF0C\u539F\u53D1\u9001\u4ECD\u4FDD\u7559\u5F85\u6838\u5BF9\u3002"
+                children: "\u91CD\u8BD5\u53EA\u6CBF\u539F\u76EE\u6807\u7EE7\u7EED\uFF0C\u4E0D\u5408\u5E76\u5F85\u53D1\u9001\u8BC4\u8BBA\uFF1BEnter \u4E0D\u4F1A\u91CD\u65B0\u6682\u5B58\u3002\u4FEE\u6539\u6587\u5B57\u4F1A\u53E6\u5B58\u65B0\u8349\u7A3F\uFF0C\u539F\u53D1\u9001\u4ECD\u4FDD\u7559\u5F85\u6838\u5BF9\u3002"
               }) : null, !compose.intentId && !compose.sourceInteractionId ? /* @__PURE__ */jsxs12(Copy, {
                 small: true,
                 muted: true,
                 children: ["\u52A0\u5165\u5F85\u53D1\u9001\u540E\u53EF\u7EE7\u7EED\u8BC4\u8BBA\u5176\u4ED6\u4F4D\u7F6E\uFF0C\u518D\u4ECE\u5F85\u53D1\u9001\u6E05\u5355\u4E00\u8D77\u53D1\u9001\u3002", compose.captureStatus === "pending" ? "\u73B0\u5728\u52A0\u5165\u4F1A\u4FDD\u7559\u6587\u5B57\u548C\u4F4D\u7F6E\uFF0C\u4E0D\u9644\u56FE\u7247\u3002" : ""]
-              }) : null, /* @__PURE__ */jsx15(Copy, {
+              }) : null, /* @__PURE__ */jsxs12(Copy, {
                 small: true,
                 muted: true,
-                children: "Enter \u4E3B\u4F1A\u8BDD \xB7 \u2318 / Ctrl + Enter \u5F53\u524D Side \u2318 / Ctrl + Option / Alt + Enter \u65B0 Side \xB7 Shift+Enter \u6362\u884C"
+                children: [compose.sourceInteractionId ? "Enter \u4FDD\u5B58\u8FFD\u95EE\u8349\u7A3F \xB7 \u2318 / Ctrl + Enter \u53D1\u9001\u8FFD\u95EE\uFF08\u987B\u5148\u5904\u7406\u5F85\u53D1\u9001\u8BC4\u8BBA\uFF09" : "Enter \u52A0\u5165\u5F85\u53D1\u9001 \xB7 \u2318 / Ctrl + Enter \u5F53\u524D\u8BC4\u8BBA\u548C\u5F85\u53D1\u9001\u8BC4\u8BBA\u4E00\u8D77\u53D1\u4E3B\u4F1A\u8BDD", "Option / Alt + Enter \u5F53\u524D\u8BC4\u8BBA\u53D1 Side \xB7 Option / Alt + Shift + Enter \u65B0 Side \xB7 Shift+Enter \u6362\u884C"]
               })]
             }) : null]
           })]

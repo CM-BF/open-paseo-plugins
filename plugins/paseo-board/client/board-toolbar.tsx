@@ -75,8 +75,9 @@ export function BoardToolbar(props: BoardToolbarProps) {
         <Shortcut keys="⌘ / Ctrl + C、X、V">复制、剪切组件；选中目标后粘贴。输入框内仍是普通文字快捷键。</Shortcut>
         <Shortcut keys="原位改字：⌘ / Ctrl + Enter">完成编辑并查看保存操作；普通 Enter 换行，Esc 取消。</Shortcut>
         <Shortcut keys="Option / Alt + 拖动">框选区域引用。Esc 退出选择或取消当前拖动。</Shortcut>
-        <Shortcut keys="消息：Enter / Shift + Enter">发送给主会话 / 换行。</Shortcut>
-        <Shortcut keys="消息：⌘ / Ctrl + Enter">发送到所选 Side；再加 Option / Alt 则新开 Side。</Shortcut>
+        <Shortcut keys="消息：Enter / Shift + Enter">加入待发送 / 换行。讨论追问保存为草稿。</Shortcut>
+        <Shortcut keys="消息：⌘ / Ctrl + Enter">当前评论和待发送评论一起发主会话；追问保留原讨论，需先处理待发送评论。</Shortcut>
+        <Shortcut keys="消息：Option / Alt + Enter">当前评论发所选 Side；再加 Shift 则新开 Side，不带上待发送评论。</Shortcut>
         <Shortcut keys="消息：Esc">收起输入并保留草稿，可从工具条的草稿入口继续。</Shortcut>
         <Copy small muted>拖动、剪切、粘贴和改字均先预览，再保存。中文输入法确认候选时不会触发发送。</Copy>
       </> : null}

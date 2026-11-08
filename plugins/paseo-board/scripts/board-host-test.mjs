@@ -810,15 +810,16 @@ try {
   await evaluate(`document.querySelector(${JSON.stringify(input)}).dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true,data:'中'}))`);
   await key('Enter');
   await key('Enter', 'Enter', 4);
-  await key('Enter', 'Enter', 2);
-  await key('Enter', 'Enter', 5);
-  await key('Enter', 'Enter', 3);
+  await key('Enter', 'Enter', 1);
+  await key('Enter', 'Enter', 1);
+  await key('Enter', 'Enter', 9);
+  await key('Enter', 'Enter', 9);
   assert.equal(await submitCount(), 0);
   await evaluate(`document.querySelector(${JSON.stringify(input)}).dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'中文'}))`);
-  await key('Enter');
+  await key('Enter', 'Enter', 4);
   assert.equal(await submitCount(), 0);
   await evaluate('new Promise(resolve=>setTimeout(resolve,80))');
-  await key('Enter');
+  await key('Enter', 'Enter', 4);
   await until("hostFixture.pending().length===1");
   const id = await evaluate('hostFixture.pending()[0]');
   const sentBeforePixels = await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input");
@@ -839,10 +840,10 @@ try {
   await clickPoint(original.x + original.width - 40, original.y + original.height - 40);
   assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(popover)})`), true);
   assert.deepEqual(await evaluate('hostFixture.pending()'), [id]);
-  await key('Enter');
+  await key('Enter', 'Enter', 4);
   assert.equal(await submitCount(), 1);
   assert.deepEqual(await canvasRect(), original);
-  check('Shift+Enter inserts a newline, IME protects both send shortcuts, Enter submits once, and outside clicks cannot dismiss an in-flight send');
+  check('Shift+Enter inserts a newline, IME protects staging and all send shortcuts, Cmd+Enter submits once, and outside clicks cannot dismiss an in-flight send');
 
   await evaluate('hostFixture.accept()');
   await untilMarker(id, 'delivered');
@@ -878,7 +879,7 @@ try {
   await until(`document.querySelector(${JSON.stringify(input)})?.value.includes('Explain the selected figure')`);
   assert.equal(await submitCount(), beforeGeneratedAsk);
   assert.equal(await evaluate('hostFixture.responseResults.length'), 0);
-  await key('Enter');
+  await key('Enter', 'Enter', 4);
   await until('hostFixture.pending().length===1');
   const visualFollowup = await evaluate('hostFixture.pending()[0]');
   const visualCall = await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input");
@@ -925,7 +926,7 @@ try {
 
   await closePopover();
   await openAt(280, 190);
-  await sendText('Discuss this choice'); await key('Enter', 'Enter', 4);
+  await sendText('Discuss this choice'); await key('Enter', 'Enter', 1);
   await until('hostFixture.pending().length===1');
   const fork = await evaluate('hostFixture.pending()[0]');
   assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input.kind"), 'question');
@@ -941,7 +942,7 @@ try {
   await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('Fork answer attached')`);
   await hostClick(`${popover} button[aria-label="继续交流"]`);
   await until(`document.querySelector(${JSON.stringify(input)})`);
-  await sendText('A follow-up at this point'); await key('Enter');
+  await sendText('A follow-up at this point'); await key('Enter', 'Enter', 4);
   await until('hostFixture.pending().length===1');
   const reply = await evaluate('hostFixture.pending()[0]');
   const replyCall = await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input");
@@ -957,12 +958,12 @@ try {
   await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('A follow-up at this point')`);
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover + ' button[aria-label="带回主线"]')})!==null`), false);
   assert.equal(await evaluate(`hostFixture.board().interactions.find(item=>item.id===${JSON.stringify(reply)}).agentId`), 'owner-fixture');
-  check('Cmd+Enter creates the first Side; plain Enter from that thread returns to the main agent while keeping its original marker and source context');
+  check('Alt+Enter creates the first Side; Cmd+Enter from that thread returns to the main agent while keeping its original marker and source context');
 
   await closePopover();
   await openAt(680, 190);
   await sendText('Control shortcut keeps this exact draft');
-  await key('Enter', 'Enter', 2);
+  await key('Enter', 'Enter', 1);
   await until('hostFixture.pending().length===1');
   const controlFork = await evaluate('hostFixture.pending()[0]');
   const controlCall = await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input");
@@ -988,7 +989,7 @@ try {
   assert.equal(await evaluate(`hostFixture.board().interactions.find(item=>item.id===${JSON.stringify(buttonFork)}).agentId`), firstSide);
   await until(`!document.querySelector(${JSON.stringify(input)})`);
   await closePopover();
-  check('Ctrl+Enter and Side Send both reuse the chosen Side with the exact draft instead of creating another agent');
+  check('Alt+Enter and Side Send both reuse the chosen Side with the exact draft instead of creating another agent');
 
   await frame('pauseNextCapture()');
   await openAt(480, 190); await untilFrame('captureGate?.held===true');
@@ -1005,7 +1006,7 @@ try {
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover + ' button[aria-label$="Side 发送"]')})!==null`), false);
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover + ' button[aria-label="重试原发送"]')})!==null`), true);
   const attemptsAfterFailure = await submitCount();
-  await hostClick(input); await key('Enter', 'Enter', 4);
+  await hostClick(input); await key('Enter', 'Enter', 1);
   assert.equal(await submitCount(), attemptsAfterFailure);
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)}).value`), 'A message that fails');
   check('the Send button targets the current chat; a failed send preserves its draft and immutable route without shifting the canvas');
@@ -1020,7 +1021,7 @@ try {
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(popover + ' button[aria-label="继续交流"]')})!==null`), false);
   await hostClick(`${popover} button[aria-label="重试发送"]`);
   await until(`document.querySelector(${JSON.stringify(input)})?.value==='A message that fails'`);
-  await key('Enter');
+  await key('Enter', 'Enter', 4);
   await until('hostFixture.pending().length===1');
   assert.equal(await evaluate('hostFixture.pending()[0]'), failed);
   const retried = await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input");
@@ -1035,7 +1036,7 @@ try {
   await closePopover();
   await openAt(360, 220);
   await sendText('A fresh Side with an uncertain first send');
-  await key('Enter', 'Enter', 5);
+  await key('Enter', 'Enter', 9);
   await until('hostFixture.pending().length===1');
   const newSideIntent = await evaluate('hostFixture.pending()[0]');
   const newSideCall = await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input");
@@ -1044,7 +1045,7 @@ try {
   await evaluate('hostFixture.reject()');
   await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('Fixture delivery unavailable')`);
   const uncertainAttempts = await submitCount();
-  await hostClick(input); await key('Enter'); await key('Enter', 'Enter', 4);
+  await hostClick(input); await key('Enter', 'Enter', 4); await key('Enter', 'Enter', 1);
   assert.equal(await submitCount(), uncertainAttempts);
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify('[data-testid="board-side-agent-picker"] button')}).disabled`), true);
   await hostClick(`${popover} button[aria-label="重试原发送"]`);
@@ -1057,7 +1058,7 @@ try {
   await until(`!document.querySelector(${JSON.stringify(input)})`);
   await closePopover();
   await openAt(420, 220); await sendText('Another fresh Side with Control Alt');
-  await key('Enter', 'Enter', 3); await until('hostFixture.pending().length===1');
+  await key('Enter', 'Enter', 9); await until('hostFixture.pending().length===1');
   const thirdSideIntent = await evaluate('hostFixture.pending()[0]');
   assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input.destination"), 'new-side');
   await evaluate('hostFixture.accept()'); await untilMarker(thirdSideIntent, 'delivered');
@@ -1065,7 +1066,7 @@ try {
   assert.notEqual(thirdSide, secondSide); assert.notEqual(thirdSide, firstSide);
   await until(`!document.querySelector(${JSON.stringify(input)})`);
   await closePopover();
-  check('Command Option Enter and Control Alt Enter force a new selected Side; uncertain sends retry the exact ID and route while other shortcuts and target changes are blocked');
+  check('Option Shift Enter and Alt Shift Enter force a new selected Side; uncertain sends retry the exact ID and route while other shortcuts and target changes are blocked');
 
   await openAt(460, 230); await sendText('Keep this draft while selecting an earlier Side');
   const beforePickerReady = await evaluate('hostFixture.ready');
@@ -1086,14 +1087,14 @@ try {
   await until('!!hostFixture.pendingChoice()');
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)}).disabled`), true);
   assert.equal(await evaluate('hostFixture.board().sideAgentId'), thirdSide);
-  await key('Enter'); await key('Enter', 'Enter', 4);
+  await key('Enter', 'Enter', 4); await key('Enter', 'Enter', 1);
   assert.equal(await submitCount(), beforeChooseSends);
   assert.deepEqual(await canvasRect(), original);
   await evaluate('hostFixture.acceptChoice()');
   await until(`!document.querySelector(${JSON.stringify(options)}) && document.activeElement===document.querySelector(${JSON.stringify(input)})`);
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)}).value`), 'Keep this draft while selecting an earlier Side');
   assert.equal(await evaluate('hostFixture.board().sideAgentId'), firstSide);
-  await key('Enter', 'Enter', 4); await until('hostFixture.pending().length===1');
+  await key('Enter', 'Enter', 1); await until('hostFixture.pending().length===1');
   const selectedSideIntent = await evaluate('hostFixture.pending()[0]');
   assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input.destination"), 'side');
   await evaluate('hostFixture.accept()'); await untilMarker(selectedSideIntent, 'delivered');
@@ -1112,7 +1113,7 @@ try {
   await hostClick(`[data-testid="board-side-agent-${secondSide}"]`);
   await until(`!document.querySelector(${JSON.stringify(options)}) && document.activeElement===document.querySelector(${JSON.stringify(input)})`);
   assert.equal(await evaluate('hostFixture.board().sideAgentId'), secondSide);
-  await key('Enter'); await until('hostFixture.pending().length===1');
+  await key('Enter', 'Enter', 4); await until('hostFixture.pending().length===1');
   const pickedMainIntent = await evaluate('hostFixture.pending()[0]');
   assert.equal(await evaluate("hostFixture.calls.filter(item=>item.name==='board.interact').at(-1).input.destination"), 'main');
   await evaluate('hostFixture.accept()'); await untilMarker(pickedMainIntent, 'delivered');
@@ -1139,7 +1140,7 @@ try {
   await openAuthoredReference('#side-remount-reference');
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(picker)})?.textContent.includes('旁支 2')`), true);
   await key('Escape'); await noPopover();
-  check('a failed Side selection preserves the original target and draft; retry selects it, Enter still sends to main, and the selected Side survives a Board remount');
+  check('a failed Side selection preserves the original target and draft; retry selects it, Cmd+Enter still sends to main, and the selected Side survives a Board remount');
 
   await openAuthoredReference('#side-remount-reference'); await sendText('Keep this draft while choosing away from a pending Side');
   await evaluate("hostFixture.setPendingSide('pending-side-fixture');hostFixture.refetch()");
@@ -1167,14 +1168,14 @@ try {
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(picker)})?.textContent.includes('旁支 2')`), true);
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)}).disabled`), true);
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(picker + ' button')}).disabled`), true);
-  await key('Enter'); await key('Enter', 'Enter', 4); await key('Enter', 'Enter', 5);
+  await key('Enter', 'Enter', 4); await key('Enter', 'Enter', 1); await key('Enter', 'Enter', 9);
   assert.equal(await submitCount(), beforeUnknownChoiceSends);
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(input)}).value`), 'Keep the draft until the side target is authoritative');
   await evaluate("hostFixture.readFails(false);hostFixture.choiceMode('accept')");
   await hostClick(`${popover} button[aria-label="核对 Side 目标"]`);
   await until(`!document.querySelector(${JSON.stringify(input)}).disabled && document.activeElement===document.querySelector(${JSON.stringify(input)})`);
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(picker)})?.textContent.includes('旁支 1')`), true);
-  await key('Enter', 'Enter', 4); await until('hostFixture.pending().length===1');
+  await key('Enter', 'Enter', 1); await until('hostFixture.pending().length===1');
   const verifiedSideIntent = await evaluate('hostFixture.pending()[0]');
   await evaluate('hostFixture.accept()'); await untilMarker(verifiedSideIntent, 'delivered');
   assert.equal(await evaluate(`hostFixture.board().interactions.find(item=>item.id===${JSON.stringify(verifiedSideIntent)}).agentId`), firstSide);

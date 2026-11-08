@@ -610,7 +610,7 @@ try {
   await evaluate("(()=>{const input=document.querySelector('[data-testid=board-message-input]');input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true,data:'中'}));input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'Enter',code:'Enter',keyCode:229,isComposing:true}));input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'中文'}));input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'Enter',code:'Enter',keyCode:13}));window.compositionTestEnded=Date.now()})()");
   assert.equal(await evaluate('results.inputSubmits.length'), 0);
   await until('Date.now()-window.compositionTestEnded>60');
-  await key('Enter');
+  await key('Enter', 'Enter', 4);
   await until('results.inputSubmits.length===1');
   await key('Escape');
   await until('results.inputCloses===1');

@@ -1,6 +1,7 @@
 // Browser DOM access lives only in this module. Native callers use their compatibility view.
 import { createElement, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
 import { Platform } from "react-native";
+import { messageShortcut } from "./message-shortcuts";
 import type { BoardSyncVisibility } from "./compact-sync";
 import type { CanvasComposition, CompositionAttachment, CompositionMessageEvent, CompositionMount, CompositionPort } from "./composition-mount";
 import { createCompositionController, type CompositionController } from "./composition-web";
@@ -595,6 +596,7 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
 export interface WebMessageInputProps {
   value: string;
   onChange(value: string): void;
+  onStage(): void;
   onSubmit(destination: "main" | "side" | "new-side"): void;
   onClose(): void;
   disabled?: boolean;
@@ -637,14 +639,17 @@ export function WebMessageInput(props: WebMessageInputProps): ReactElement | nul
     onChange: (event: { target: { value: string } }) => props.onChange(event.target.value),
     onCompositionStart: () => { composing.current = true; },
     onCompositionEnd: () => { composing.current = false; compositionEnded.current = Date.now(); },
-    onKeyDown: (event: { key: string; keyCode: number; nativeEvent?: { isComposing?: boolean; keyCode?: number }; shiftKey: boolean; altKey: boolean; ctrlKey: boolean; metaKey: boolean; preventDefault(): void; stopPropagation(): void }) => {
+    onKeyDown: (event: { key: string; keyCode: number; repeat?: boolean; nativeEvent?: { isComposing?: boolean; keyCode?: number }; shiftKey: boolean; altKey: boolean; ctrlKey: boolean; metaKey: boolean; preventDefault(): void; stopPropagation(): void }) => {
       if (composing.current || event.nativeEvent?.isComposing || event.keyCode === 229 || event.nativeEvent?.keyCode === 229 || Date.now() - compositionEnded.current < 50) return;
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); props.onClose(); }
-      else if (event.key === "Enter" && !event.shiftKey) {
-        const side = event.ctrlKey || event.metaKey;
-        if (event.altKey && !side) return;
+      else {
+        const action = messageShortcut(event);
+        if (!action) return;
         event.preventDefault(); event.stopPropagation();
-        if (!props.disabled) props.onSubmit(side ? event.altKey ? "new-side" : "side" : "main");
+        if (!props.disabled && !event.repeat) {
+          if (action === "stage") props.onStage();
+          else props.onSubmit(action);
+        }
       }
     },
     style: { boxSizing: "border-box", width: "100%", minHeight: 88, maxHeight: 220, resize: "vertical", font: "inherit", lineHeight: 1.5, padding: 10, borderRadius: 8, ...props.style },

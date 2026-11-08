@@ -159,7 +159,7 @@ commentDiagnostic('fixture-installed',{context:board.getContext(),readyState:doc
   };
   const finish = async (action, expected) => {
     const signalCount = await evaluate('authoredCommentSignals.length');
-    await key(action);
+    await key(action, action, action === 'Enter' && expected.status === 'submitted' ? 4 : 0);
     await until(`authoredCommentSignals.length===${signalCount + 1}&&!document.querySelector('#authored-comment-composer')`);
     assert.deepEqual((await latestSignal()).result, expected);
   };
@@ -179,7 +179,7 @@ commentDiagnostic('fixture-installed',{context:board.getContext(),readyState:doc
   assert.equal(wrapped.anchor.binding.target.id, 'comment-second');
   assert.equal(wrapped.anchor.text, 'Second location');
   await finish('Enter', { status: 'submitted', outcome: 'saved' });
-  check('the authored follow-up alias accepts an explicit target wrapper and returns a submitted result after native Enter');
+  check('the authored follow-up alias accepts an explicit target wrapper and returns a submitted result after native Cmd+Enter');
 
   await configure("window.commentUseAlias=false;window.commentInput=()=>({prompt:'Retain old reference',anchor:{kind:'point',boardRevision:0,canvasRevision:0,selector:'#comment-target',rect:{x:11,y:12,width:0,height:0,element:document.querySelector('#comment-target')},viewport:{width:800,height:600,scrollX:4,scrollY:6,target:document.body},target:document.body,metadata:document.querySelector('#comment-target')}})");
   const old = await open();

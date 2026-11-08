@@ -8,6 +8,13 @@
 
 # Paseo Board publication and verification
 
+### 2026-11-08 — comment shortcut update in progress
+
+- Requested mapping: Enter stages the current comment; Alt/Option+Enter sends only the current comment to the selected Side; Alt/Option+Shift+Enter starts a new Side; Cmd/Ctrl+Enter sends the current comment and existing queue together to main. Shift+Enter and IME confirmation retain native text entry. Held keys must not repeat an action.
+- Combined main submission persists the current comment and captures the fresh ordered queue before acquiring the existing cross-window outbox lock; storage failures retain all comments and uncertain sends retain their original immutable route.
+- Existing-discussion follow-ups cannot enter the grouped-comment protocol without losing their thread: Enter saves a follow-up draft, Cmd/Ctrl+Enter sends that follow-up only when the queue is empty, otherwise an explicit notice asks the user to handle the queue first. No protocol/server extension is introduced.
+- Isolated branch `sw/board-comment-shortcuts` starts at installed Enterprise/composition/pill delivery `31c4a27`. First validation passed TypeScript, the full source suite, existing/durable-draft host checks, authored comments, complete canvas checks and the client build. The expanded batch test stopped after its full reload because the fixture intentionally resets its transport to held; the test had configured accept only before reload. The native Alt+Enter correctly issued one Side RPC and stayed pending. The correction restores the fixture accept mode after reload; original failure evidence remains in `comment-shortcuts-20261108/run-1794178667951152000`. The unchanged product then passed all **13 batch checks**, including native Alt/Alt+Shift routing, Cmd/Ctrl main delivery, repeat suppression, complete reload, quota refusal and preserved follow-up threads. Full results: **584 source tests in 42 files**, 38 existing-host checks, durable-draft checks, 7 authored-comment checks and 118 complete canvas checks; client build and Hermes under the real Paseo Helper also passed. Final receipt: `comment-shortcuts-20261108/final-verification.json`. These browser suites use adapted transport and are not actual primary-daemon delivery/UI evidence. No installation, publishing or main mutation has occurred.
+
 ### 2026-11-08 — Enterprise GitHub publishing integration in progress
 
 - The required target is company GitHub, with no public github.com account prerequisite. This delivery branch applies the host-qualified publishing changes from `3b54f481c71b4b1fddd3b89a98d5535d9e210bb4` onto the newer installed composition/pill baseline `2c48ceabf46b271859156eb116c77b338c3a83be`.

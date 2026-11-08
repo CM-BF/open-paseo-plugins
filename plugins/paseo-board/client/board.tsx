@@ -307,7 +307,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
     draft.resolve?.({ status: "cancelled" }); composeRef.current = null; setCompose(null);
     setMessage(null); setDraftError(null); setAnchor(undefined); setSelectionClearToken(value => value + 1);
   };
-  const stageCompose = () => {
+  const stageCompose = (): StoredDraft[] | undefined => {
     const current = composeRef.current;
     if (!current?.text.trim() || pending.current || current.intentId || current.sourceInteractionId) return;
     const next: Compose = { ...current, queuedAt: current.queuedAt ?? Date.now() };
@@ -318,7 +318,9 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
     try {
       const pendingBatches = batchStore.list();
       if (pendingBatches.issues.length) throw new Error(pendingBatches.issues[0]);
-      const other = queuedDrafts(draftStore.list().drafts, pendingBatches.batches).filter(item => item.id !== next.draftId);
+      const drafts = draftStore.list();
+      if (drafts.issues.length) throw new Error(drafts.issues[0].message);
+      const other = queuedDrafts(drafts.drafts, pendingBatches.batches).filter(item => item.id !== next.draftId);
       createCommentBatch([...other, { id: next.draftId ?? "preview", revision: next.draftRevision ?? "preview", compose: { ...next, captureStatus: next.captureStatus }, open: false, queuedAt: next.queuedAt, updatedAt: Date.now(), position: popoverPointRef.current }], "preview", "main");
     } catch (error) { setMessage(errorMessage(error)); return; }
     if (!persistCompose(next, false)) return;
@@ -326,6 +328,19 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
     composeRef.current = null; setCompose(null); setAnchor(undefined); setSelectedInteractionId(undefined);
     setSelectionClearToken(value => value + 1); setMessage(null); setBatchError(null);
     try { next.resolve?.({ status: "queued", outcome: "已加入待发送列表，尚未发送给 agent" }); } catch { /* authored callbacks cannot roll back durable comments */ }
+    return queuedDrafts(draftStore.list().drafts, batchStore.list().batches);
+  };
+  const stageMessage = () => {
+    const current = composeRef.current;
+    if (!current?.text.trim() || pending.current) return;
+    if (current.intentId) { setMessage("这条发送的结果尚待核对；请重试原发送，不能重新加入待发送。"); return; }
+    if (current.sourceInteractionId) {
+      closePopover();
+      if (composeRef.current) return;
+      setMessage("追问草稿已保存，尚未发送；从草稿继续可保留原讨论。追问不并入待发送评论。");
+      return;
+    }
+    stageCompose();
   };
   const openCompose = (kind: Compose["kind"], source?: Interaction, text?: string, resolve?: Compose["resolve"]) => {
     if (pending.current || composeRef.current) { resolve?.({ status: "cancelled", outcome: "另一条输入尚未关闭" }); return; }
@@ -380,12 +395,12 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
     }
     finally { pending.current = false; setSending(false); }
   };
-  const submitBatch = async (destination: Destination = "main", retry?: CommentBatch) => {
+  const submitBatch = async (destination: Destination = "main", retry?: CommentBatch, reviewed = staged.map(({ id, revision }) => ({ id, revision }))) => {
     if (pending.current || composeRef.current || sideChoicePending.current || !board?.ownerAgentId) return;
     pending.current = true; setSending(true); setBatchError(null);
     let batch: CommentBatch;
     try {
-      batch = retry ?? await prepareCommentBatch({ hostId: host.id, boardId, expectedCreatedAt: board.createdAt }, draftStore, batchStore, destination, localId("batch"), staged.map(({ id, revision }) => ({ id, revision })));
+      batch = retry ?? await prepareCommentBatch({ hostId: host.id, boardId, expectedCreatedAt: board.createdAt }, draftStore, batchStore, destination, localId("batch"), reviewed);
       if (batch.expectedCreatedAt && batch.expectedCreatedAt !== board.createdAt) throw new Error("画板已被替换；原发送记录已保留，不能发送给新画板。");
       if (acceptedBatchInteraction(batch, board.interactions)) {
         const cleaned = reconcileBatchDrafts(batch, draftStore), removed = cleaned.ok ? batchStore.remove(batch) : cleaned;
@@ -410,6 +425,23 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
       const message = errorMessage(error); setBatchError(message);
       setOptimistic(items => items.map(item => item.id === local.id ? { ...item, status: "failed", error: message } : item));
     } finally { pending.current = false; setSending(false); }
+  };
+  const submitMain = async () => {
+    const current = composeRef.current;
+    if (!current?.text.trim() || pending.current || sideChoicePending.current || !board?.ownerAgentId) return;
+    // Unknown sends keep their original ID, payload and route; a shortcut never drains new comments into a retry.
+    if (current.intentId) { await submit("main"); return; }
+    const drafts = draftStore.list(), outbox = batchStore.list();
+    if (drafts.issues.length || outbox.issues.length) { setMessage(outbox.issues[0] ?? drafts.issues[0].message); return; }
+    const other = queuedDrafts(drafts.drafts, outbox.batches).filter(item => item.id !== current.draftId);
+    if (!other.length) { await submit("main"); return; }
+    if (current.sourceInteractionId) { setMessage("这条追问需要保留原讨论，不能与其他位置的评论合并。请先收起追问并处理待发送评论，再发送追问。"); return; }
+    // Persistence and the reviewed queue snapshot happen synchronously before the cross-window lock.
+    // Do not read React's previous render of `staged` after adding this current comment.
+    const reviewed = stageCompose();
+    if (!reviewed) return;
+    setDrawer("drafts");
+    await submitBatch("main", undefined, reviewed.map(({ id, revision }) => ({ id, revision })));
   };
   const releaseSideChoice = () => {
     sideChoicePending.current = false; setChoosingSide(false); setSideChoiceUncertain(false);
@@ -478,7 +510,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
     {query.error ? <Action label="重试连接" onPress={() => { void query.refetch(); }} /> : null}
     {compose ? <View testID="board-offline-draft" style={{ gap: 12 }}>
       <AnchorPreview anchor={compose.anchor} compact captureStatus={compose.captureStatus} />
-      {canRenderFrames ? <WebMessageInput value={compose.text} disabled={false} onChange={changeDraftText} onSubmit={() => { setMessage("连接恢复后才能发送；草稿已保留。"); }} onClose={closePopover} placeholder="继续编辑草稿…" style={{ color: c.foreground, background: c.surface1, border: `1px solid ${c.border}`, padding: 10, minHeight: 120 }} /> : <TextInput accessibilityLabel="发给 agent 的消息" multiline value={compose.text} onChangeText={changeDraftText} />}
+      {canRenderFrames ? <WebMessageInput value={compose.text} disabled={false} onChange={changeDraftText} onStage={stageMessage} onSubmit={() => { setMessage("连接恢复后才能发送；草稿已保留。"); }} onClose={closePopover} placeholder="继续编辑草稿…" style={{ color: c.foreground, background: c.surface1, border: `1px solid ${c.border}`, padding: 10, minHeight: 120 }} /> : <TextInput accessibilityLabel="发给 agent 的消息" multiline value={compose.text} onChangeText={changeDraftText} />}
       {draftError || message ? <Notice error text={draftError ?? message ?? ""} /> : null}
       <View style={{ flexDirection: "row", gap: 8 }}><Action label="收起" testID="board-draft-dismiss" onPress={closePopover} /><Action label="丢弃草稿" testID="board-draft-discard" onPress={discardCompose} /></View>
     </View> : <View testID="board-offline-drafts" style={{ gap: 16 }}>
@@ -526,7 +558,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
             {compose.captureStatus ? <View style={{ minHeight: 36 }}><Copy small muted>{compose.captureStatus === "pending" ? "截图准备中；现在发送会保留文字和位置，不附图片。" : compose.captureStatus === "failed" ? `截图失败：${captureFailureNames[compose.captureFailureReason ?? "generation-failed"]}文字和位置已保留。` : compose.captureStatus === "omitted" ? "此次发送不附图片，保留原来的文字和位置。" : "已附选区截图。"}</Copy></View> : null}
             {compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? <Copy small muted>引用来自旧画布版本；agent 会对照原来的位置和快照。</Copy> : null}
             <SideAgentPicker interactions={board.interactions} selectedId={board.sideAgentId} pending={Boolean(board.pendingSideInteractionId)} disabled={sending || sideTargetBlocked || Boolean(compose.intentId)} onSelect={chooseSideAgent} />
-            {canRenderFrames ? <WebMessageInput value={compose.text} focusToken={inputFocusToken} disabled={sending || sideTargetBlocked} onChange={changeDraftText} onSubmit={destination => { void submit(destination); }} onClose={closePopover} placeholder="想了解什么？或希望这里发生什么变化？" style={{ color: c.foreground, background: c.surface1, border: `1px solid ${c.border}`, borderRadius: 8, padding: 10, minHeight: 80, fontSize: 14 }} /> : <TextInput autoFocus accessibilityLabel="发给 agent 的消息" value={compose.text} editable={!sending && !sideTargetBlocked} multiline maxLength={24000} onChangeText={changeDraftText} placeholder="想了解什么？或希望这里发生什么变化？" placeholderTextColor={c.foregroundMuted} style={{ color: c.foreground, backgroundColor: c.surface1, borderColor: c.border, borderWidth: 1, borderRadius: 8, padding: 10, minHeight: 80, textAlignVertical: "top" }} />}
+            {canRenderFrames ? <WebMessageInput value={compose.text} focusToken={inputFocusToken} disabled={sending || sideTargetBlocked} onChange={changeDraftText} onStage={stageMessage} onSubmit={destination => { void (destination === "main" ? submitMain() : submit(destination)); }} onClose={closePopover} placeholder="想了解什么？或希望这里发生什么变化？" style={{ color: c.foreground, background: c.surface1, border: `1px solid ${c.border}`, borderRadius: 8, padding: 10, minHeight: 80, fontSize: 14 }} /> : <TextInput autoFocus accessibilityLabel="发给 agent 的消息" value={compose.text} editable={!sending && !sideTargetBlocked} multiline maxLength={24000} onChangeText={changeDraftText} placeholder="想了解什么？或希望这里发生什么变化？" placeholderTextColor={c.foregroundMuted} style={{ color: c.foreground, backgroundColor: c.surface1, borderColor: c.border, borderWidth: 1, borderRadius: 8, padding: 10, minHeight: 80, textAlignVertical: "top" }} />}
             {draftError ? <Notice error text={`草稿未能保存在本机：${draftError} 当前输入仍保留，请先复制文字。`} /> : <Copy small muted>草稿保存在本机；收起或断线后可继续编辑。</Copy>}
             {!board.ownerAgentId ? <Notice error text="这块 Board 尚未关联负责的 agent。请让 agent 接管后再发送。" /> : null}
             {message ? <Notice error text={message} /> : null}
@@ -536,13 +568,13 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
               {!compose.intentId && !compose.sourceInteractionId ? <Action testID="board-comment-stage" label={compose.queuedAt !== undefined ? "保存到待发送" : "加入待发送"} disabled={sending || !compose.text.trim()} onPress={stageCompose} /> : null}
               {compose.intentId ? <Action label={sending ? "发送中…" : "重试原发送"} disabled={sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId} primary onPress={() => { void submit(compose.destination ?? "main"); }} /> : <>
                 <Action label={board.sideAgentId || board.pendingSideInteractionId ? "Side 发送" : "新建 Side 并发送"} icon="GitBranch" disabled={sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId} onPress={() => { void submit("side"); }} />
-                <Action label="主会话发送" disabled={sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId} primary onPress={() => { void submit("main"); }} />
+                <Action label={staged.some(item => item.id !== compose.draftId) ? "主会话统一发送" : "主会话发送"} disabled={sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId} primary onPress={() => { void submitMain(); }} />
               </>}
             </View>
-            {compose.intentId ? <Copy small muted>重试沿原目标继续；修改文字会另存新草稿，原发送仍保留待核对。</Copy> : null}
+            {compose.intentId ? <Copy small muted>重试只沿原目标继续，不合并待发送评论；Enter 不会重新暂存。修改文字会另存新草稿，原发送仍保留待核对。</Copy> : null}
             {!compose.intentId && !compose.sourceInteractionId ? <Copy small muted>加入待发送后可继续评论其他位置，再从待发送清单一起发送。{compose.captureStatus === "pending" ? "现在加入会保留文字和位置，不附图片。" : ""}</Copy> : null}
-            <Copy small muted>Enter 主会话 · ⌘ / Ctrl + Enter 当前 Side
-⌘ / Ctrl + Option / Alt + Enter 新 Side · Shift+Enter 换行</Copy>
+            <Copy small muted>{compose.sourceInteractionId ? "Enter 保存追问草稿 · ⌘ / Ctrl + Enter 发送追问（须先处理待发送评论）" : "Enter 加入待发送 · ⌘ / Ctrl + Enter 当前评论和待发送评论一起发主会话"}
+Option / Alt + Enter 当前评论发 Side · Option / Alt + Shift + Enter 新 Side · Shift+Enter 换行</Copy>
           </View> : null}
         </ScrollView>
       </BoardComposerSurface> : null}

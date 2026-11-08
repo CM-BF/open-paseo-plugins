@@ -136,7 +136,7 @@ export async function runDurableDraftChecks(t) {
   const retryText = '原讨论的 Side 草稿与未知发送';
   await sendText(retryText);
   await evaluate("hostFixture.mode('held')");
-  await key('Enter', 'Enter', 7);
+  await key('Enter', 'Enter', 9);
   await until('hostFixture.pending().length===1');
   const uncertain = await latestRequest(), sendsBeforeReload = await submitCount();
   assert.equal(uncertain.destination, 'new-side');
@@ -254,7 +254,7 @@ export async function runDurableDraftChecks(t) {
 
   await openAt(); await sendText('原始未知请求，保持不可变');
   await evaluate('hostFixture.mode("held")');
-  await key('Enter', 'Enter', 7);
+  await key('Enter', 'Enter', 9);
   await until('hostFixture.pending().length===1');
   const originalUnknown = await latestRequest();
   await evaluate('hostFixture.reject()');
@@ -288,7 +288,7 @@ export async function runDurableDraftChecks(t) {
   assert.equal(await value(), '完整离线刷新也能继续编辑');
   assert.equal(await evaluate("document.querySelector('[data-testid=board-offline-draft] img')?.src"), offlineImage);
   await replaceInput('完全离线仍可写入的新文字');
-  await key('Enter');
+  await key('Enter', 'Enter', 4);
   assert.equal(await submitCount(), sendsBeforeOffline);
   await reload(false);
   assert.equal(await value(), '完全离线仍可写入的新文字');
