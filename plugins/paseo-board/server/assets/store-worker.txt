@@ -37621,6 +37621,16 @@ var import_node_crypto3 = require("node:crypto");
 
 // shared/release-contracts.ts
 var ReleaseIdSchema = external_exports.string().regex(/^release-[a-f0-9]{64}$/);
+var PublicApiOriginSchema = external_exports.string().max(2048).refine((value) => {
+  try {
+    const url2 = new URL(value);
+    const validHost = /^\[[a-f0-9:]+\]$/i.test(url2.hostname) || url2.hostname.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label));
+    return validHost && url2.origin === value && !url2.username && !url2.password && (url2.protocol === "https:" || url2.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url2.hostname));
+  } catch {
+    return false;
+  }
+}, "API \u5730\u5740\u5E94\u4E3A HTTPS \u6765\u6E90\uFF08\u4F8B\u5982 https://api.example.com\uFF09\uFF0C\u672C\u673A\u6D4B\u8BD5\u53EF\u7528 HTTP loopback\uFF1B\u4E0D\u542B\u8DEF\u5F84\u6216\u51ED\u636E");
+var PublicApiOriginsSchema = external_exports.array(PublicApiOriginSchema).max(8).refine((values) => new Set(values).size === values.length, "API \u6765\u6E90\u4E0D\u80FD\u91CD\u590D");
 var ReleaseManifestSchema = external_exports.object({
   formatVersion: external_exports.literal(1),
   releaseId: ReleaseIdSchema,
@@ -37628,6 +37638,7 @@ var ReleaseManifestSchema = external_exports.object({
   title: external_exports.string(),
   viewerVersion: external_exports.number().int(),
   network: external_exports.enum(["offline", "cdn"]),
+  apiOrigins: PublicApiOriginsSchema.optional(),
   dependencies: external_exports.array(external_exports.string()),
   warnings: external_exports.array(external_exports.string()),
   files: external_exports.array(external_exports.object({ path: external_exports.string(), sha256: external_exports.string(), bytes: external_exports.number().int().nonnegative() }))
@@ -37638,7 +37649,8 @@ var ReleaseCreateSchema = external_exports.object({
   publicData: JsonDataSchema,
   title: external_exports.string().min(1).max(200).optional(),
   network: external_exports.enum(["offline", "cdn"]).default("offline"),
-  theme: external_exports.enum(["light", "dark"]).default("light")
+  theme: external_exports.enum(["light", "dark"]).default("light"),
+  apiOrigins: PublicApiOriginsSchema.default([])
 });
 var GitHubHostSchema = external_exports.string().min(1).max(253).transform((value) => value.toLowerCase()).refine((value) => !/[^a-z0-9.-]/.test(value) && value.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)), "Invalid GitHub hostname");
 var GitHubLoginSchema = external_exports.string().min(1).max(100).regex(/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/).refine((value) => !/[^a-zA-Z0-9_.-]/.test(value), "Invalid GitHub login");
@@ -37753,13 +37765,62 @@ var component_layout_state_default = `function (api, documentVersion) {
 }
 `;
 
+// shared/public-api.ts
+var PUBLIC_API_CLIENT = String.raw`function(send, initial) {
+  const pending=new Map();let sequence=0;
+  window.addEventListener('message',event=>{
+    const m=event.data;
+    if(event.source!==parent||!m||m.channel!=='paseo-board-release-v1'||m.releaseId!==initial.releaseId||m.sessionId!==initial.sessionId||m.type!=='api-result')return;
+    const item=pending.get(m.id);if(!item)return;pending.delete(m.id);clearTimeout(item.timer);
+    if(m.error)item.reject(new Error(m.error));
+    else {const r=m.response;item.resolve(Object.freeze({status:r.status,ok:r.status>=200&&r.status<300,headers:Object.freeze(r.headers),text:async()=>r.body,json:async()=>JSON.parse(r.body)}))}
+  });
+  return (url,options={})=>new Promise((resolve,reject)=>{
+    if(pending.size>=16)return reject(new Error('Too many pending API requests'));
+    const id=++sequence,timer=setTimeout(()=>{pending.delete(id);reject(new Error('API outcome unknown; inspect before an explicit idempotent retry'))},17000);
+    pending.set(id,{resolve,reject,timer});
+    try{send({type:'api-request',id,url,options})}catch(error){clearTimeout(timer);pending.delete(id);reject(error)}
+  });
+}`;
+var PUBLIC_API_HOST = String.raw`function(origins, reply) {
+  const allowed=new Set(origins||[]);let active=0,lastId=0;
+  return async m=>{
+    if(!Number.isSafeInteger(m.id)||m.id<=lastId)return;
+    lastId=m.id;
+    let controller,timer,counted=false;
+    try{
+      if(active>=16)throw new Error('Too many pending API requests');
+      if(location.origin==='null')throw new Error('API requests require a hosted HTTP(S) page; the isolated preview cannot contact a backend');
+      if(typeof m.url!=='string'||m.url.length>8000)throw new Error('Expected an absolute API URL');
+      const url=new URL(m.url);
+      if(!allowed.has(url.origin)||url.username||url.password||url.hash)throw new Error('API origin is not approved for this release');
+      const o=m.options;
+      if(!o||typeof o!=='object'||Array.isArray(o)||Object.keys(o).some(k=>!['method','headers','body'].includes(k)))throw new Error('Supported API options: method, headers, body');
+      const method=o.method===undefined?'GET':o.method;
+      if(!['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS'].includes(method))throw new Error('Unsupported API method');
+      if(o.body!==undefined&&(typeof o.body!=='string'||new TextEncoder().encode(o.body).length>262144||['GET','HEAD'].includes(method)))throw new Error('API body must be text, at most 256 KiB, and is not allowed on GET/HEAD');
+      const headers=o.headers||{};
+      if(typeof headers!=='object'||Array.isArray(headers)||Object.keys(headers).length>32)throw new Error('Invalid API headers');
+      for(const [key,value]of Object.entries(headers))if(!/^[a-zA-Z0-9-]{1,80}$/.test(key)||/^(?:cookie|host|origin|referer|connection|content-length|proxy-|sec-)/i.test(key)||typeof value!=='string'||value.length>8192||/[\r\n]/.test(value))throw new Error('Invalid API header');
+      active++;counted=true;controller=new AbortController();timer=setTimeout(()=>controller.abort(),15000);
+      const response=await fetch(url.href,{method,headers,body:o.body,mode:'cors',credentials:'omit',redirect:'error',cache:'no-store',referrerPolicy:'no-referrer',signal:controller.signal});
+      const chunks=[];let bytes=0;
+      if(response.body){const reader=response.body.getReader();for(;;){const {done,value}=await reader.read();if(done)break;bytes+=value.byteLength;if(bytes>1048576){await reader.cancel();throw new Error('API response exceeds 1 MiB')}chunks.push(value)}}
+      const buffer=new Uint8Array(bytes);let offset=0;for(const chunk of chunks){buffer.set(chunk,offset);offset+=chunk.byteLength}
+      reply({type:'api-result',id:m.id,response:{status:response.status,headers:Object.fromEntries(response.headers.entries()),body:new TextDecoder().decode(buffer)}});
+    }catch(error){reply({type:'api-result',id:m.id,error:error instanceof Error?error.message:'API request failed; outcome may be unknown'})}
+    finally{clearTimeout(timer);if(counted)active--;}
+  };
+}`;
+
 // shared/static-viewer.ts
-var STATIC_VIEWER_VERSION = 1;
+var STATIC_VIEWER_VERSION = 2;
 var STATIC_VIEWER_RUNTIME = String.raw`function(initial) {
   'use strict';
   const clone=value=>structuredClone(value), listeners=new Set();
   let state=clone(initial.state||{});
   const send=message=>parent.postMessage({...message,channel:'paseo-board-release-v1',releaseId:initial.releaseId,sessionId:initial.sessionId},'*');
+  const request=(${PUBLIC_API_CLIENT})(send,initial);
   const subscribe=(set,fn)=>{if(typeof fn!=='function')throw new TypeError('Listener must be a function');set.add(fn);return()=>set.delete(fn)};
   const emptySubscription=fn=>{if(typeof fn!=='function')throw new TypeError('Listener must be a function');return()=>{}};
   const context=Object.freeze({boardId:initial.releaseId,releaseId:initial.releaseId,documentVersion:1,boardRevision:1,canvasRevision:1,published:true});
@@ -37790,7 +37851,7 @@ var STATIC_VIEWER_RUNTIME = String.raw`function(initial) {
   };
   Object.defineProperty(window,'board',{configurable:false,writable:false,value:Object.freeze({
     getData:()=>clone(initial.data),onData:emptySubscription,watch,getState:()=>clone(state),restoreState:()=>clone(state),
-    saveState,onState:fn=>subscribe(listeners,fn),ask,onReveal:emptySubscription,getContext:()=>({...context})
+    saveState,onState:fn=>subscribe(listeners,fn),ask,request,onReveal:emptySubscription,getContext:()=>({...context})
   })});
   window.openai=Object.freeze({sendFollowUpMessage:ask});
   (${component_layout_state_default})({getState:()=>clone(state),saveState:writeState,onState:fn=>subscribe(listeners,fn)},1);
@@ -37806,10 +37867,12 @@ var STATIC_VIEWER_SHELL = String.raw`function(config) {
   try{const raw=localStorage.getItem(key);if(raw&&raw.length<=524288){const parsed=JSON.parse(raw);if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))state=parsed}}catch{announce('浏览器无法保存本地浏览状态；页面仍可使用。')}
   const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);const sessionId=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
   const initial={releaseId:config.releaseId,sessionId,data:config.data,state,siteUrl:location.href};
+  const api=(${PUBLIC_API_HOST})(config.apiOrigins,message=>frame.contentWindow.postMessage({...message,channel:'paseo-board-release-v1',releaseId:config.releaseId,sessionId},'*'));
   const json=value=>JSON.stringify(value).replace(/</g,'\\u003c').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');
   window.addEventListener('message',event=>{
     const m=event.data;if(event.source!==frame.contentWindow||!m||m.channel!=='paseo-board-release-v1'||m.releaseId!==config.releaseId||m.sessionId!==sessionId)return;
-    if(m.type==='state'){try{if(!m.state||typeof m.state!=='object'||Array.isArray(m.state))return;const raw=JSON.stringify(m.state);if(raw.length>524288)return;localStorage.setItem(key,raw)}catch{announce('浏览器未能保存本地浏览状态；当前页面仍保留输入。')}}
+    if(m.type==='api-request'){void api(m)}
+    else if(m.type==='state'){try{if(!m.state||typeof m.state!=='object'||Array.isArray(m.state))return;const raw=JSON.stringify(m.state);if(raw.length>524288)return;localStorage.setItem(key,raw)}catch{announce('浏览器未能保存本地浏览状态；当前页面仍保留输入。')}}
     else if(m.type==='unavailable')announce('此发布版本保留页面交互，不连接 agent。');
     else if(m.type==='link'&&navigator.userActivation?.isActive&&typeof m.url==='string'&&m.url.length<8000){try{const url=new URL(m.url);if(['https:','http:'].includes(url.protocol))window.open(url.href,'_blank','noopener,noreferrer')}catch{}}
   });
@@ -39153,7 +39216,8 @@ function buildRelease(input2) {
   const tokens = Object.entries(theme.tokens).map(([key2, value]) => `--${key2}:${value}`).join(";");
   const network = options.network === "cdn" ? CDNS.join(" ") : "";
   const csp = ["default-src 'none'", `script-src 'unsafe-inline' 'unsafe-eval' blob: ${network}`, `style-src 'unsafe-inline' ${network}`, `font-src data: ${network}`, `img-src data: blob: ${network}`, "media-src data: blob:", `connect-src ${network || "'none'"}`, "worker-src blob:", "form-action 'none'", "base-uri 'none'", "frame-src 'none'", "object-src 'none'"].join("; ");
-  const outerCsp = csp.replace("frame-src 'none'", "frame-src blob:");
+  const outerConnections = [...options.network === "cdn" ? CDNS : [], ...options.apiOrigins].join(" ") || "'none'";
+  const outerCsp = csp.replace("frame-src 'none'", "frame-src blob:").replace(`connect-src ${network || "'none'"}`, `connect-src ${outerConnections}`);
   const title = options.title ?? board.title;
   const metadata = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(csp)}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>@layer paseo-board-defaults {${visualize_css_default}
 }</style>`;
@@ -39172,13 +39236,14 @@ function buildRelease(input2) {
   const warnings = ["\u53D1\u5E03\u9875\u4ECE\u6700\u7EC8\u6E90\u7801\u91CD\u65B0\u6253\u5F00\uFF1B\u4E0D\u4F1A\u5E26\u51FA\u5F53\u524D\u6D4F\u89C8\u5668\u4E34\u65F6\u751F\u6210\u7684\u5185\u5BB9\u3001\u8FD0\u884C\u8FDB\u5EA6\u6216\u5386\u53F2\u811A\u672C\u6267\u884C\u72B6\u6001\u3002", "\u53EA\u5E26\u51FA\u8FD9\u91CC\u9009\u5B9A\u7684\u7F51\u9875\u548C\u516C\u5171\u6570\u636E\uFF1B\u4E0A\u4F20\u524D\u8BF7\u68C0\u67E5\u5176\u4E2D\u662F\u5426\u8FD8\u6709\u4E0D\u60F3\u516C\u5F00\u7684\u5185\u5BB9\u3002", "\u52A8\u6001\u751F\u6210\u7684\u8D44\u6E90\u5730\u5740\u4E0D\u4E00\u5B9A\u80FD\u5B8C\u6574\u5217\u51FA\uFF1B\u8D85\u51FA\u6240\u9009\u8054\u7F51\u8303\u56F4\u7684\u8BF7\u6C42\u4F1A\u88AB\u6D4F\u89C8\u5668\u963B\u6B62\u3002"];
   if (/\b(?:board\s*\.\s*ask|sendFollowUpMessage)\s*\(/.test(html)) warnings.push("\u7F51\u9875\u91CC\u6709\u8BF7\u6C42 agent \u7684\u6309\u94AE\u6216\u4EE3\u7801\uFF1B\u53D1\u5E03\u7248\u4E0D\u4F1A\u8054\u7CFB agent\uFF0C\u8BE5\u8BF7\u6C42\u4F1A\u7ACB\u5373\u53D6\u6D88\u3002");
   if (resources.dependencies.length) warnings.push("\u6E90\u7801\u542B\u5916\u90E8\u5730\u5740\uFF1BCDN \u8D44\u6E90\u9700\u8981\u8054\u7F51\uFF0C\u5176\u4ED6\u5730\u5740\u53EF\u80FD\u662F\u666E\u901A\u94FE\u63A5\u6216\u4F1A\u88AB\u963B\u6B62\u7684\u8BF7\u6C42\u3002");
-  const content = { viewerVersion: STATIC_VIEWER_VERSION, title, network: options.network, data: options.publicData, html, prefix, suffix, runtime: STATIC_VIEWER_RUNTIME, shell: STATIC_VIEWER_SHELL, notice: NOTICE, license: publication_license_default };
+  if (options.apiOrigins.length) warnings.push(`\u6B64\u7248\u672C\u53EF\u901A\u8FC7 board.request \u8FDE\u63A5\u4EE5\u4E0B\u540E\u7AEF\uFF1A${options.apiOrigins.join("\u3001")}\u3002\u8BF7\u6C42\u4E0D\u9644\u5E26\u6D4F\u89C8\u5668 Cookie\uFF1B\u5E94\u7528\u8EAB\u4EFD\u9A8C\u8BC1\u7531\u540E\u7AEF\u5B9E\u73B0\uFF0C\u9884\u89C8\u9875\u4E0D\u53D1\u8D77\u8FD9\u4E9B\u8BF7\u6C42\u3002`);
+  const content = { viewerVersion: STATIC_VIEWER_VERSION, title, network: options.network, apiOrigins: options.apiOrigins, data: options.publicData, html, prefix, suffix, runtime: STATIC_VIEWER_RUNTIME, shell: STATIC_VIEWER_SHELL, notice: NOTICE, license: publication_license_default };
   const releaseId = `release-${sha256(canonicalJson({ content, source: { boardId: board.id, canvasBase: authored.canvasBase } }))}`;
-  const config2 = { releaseId, data: options.publicData, html, prefix, suffix, runtime: STATIC_VIEWER_RUNTIME };
+  const config2 = { releaseId, data: options.publicData, apiOrigins: options.apiOrigins, html, prefix, suffix, runtime: STATIC_VIEWER_RUNTIME };
   const index = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(outerCsp)}"><title>${escapeHtml(title)}</title><style>html,body{margin:0;height:100%;background:${theme.tokens["host-sheet"]}}iframe{width:100%;height:100%;border:0;display:block}aside{position:fixed;left:8px;bottom:8px;max-width:calc(100% - 32px);font:13px/1.4 system-ui;padding:8px 12px;color:#fff;background:#252525;border-radius:6px}aside[hidden]{display:none}</style></head><body><iframe title="${escapeHtml(title)}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe><aside role="status" hidden></aside><script>(${STATIC_VIEWER_SHELL})(${scriptJson(config2)});</script></body></html>`;
   const files = { "index.html": index, "NOTICE": NOTICE, "LICENSE-APACHE-2.0": publication_license_default };
   const inventory = fileInventory(files), artifactHash = sha256(canonicalJson(inventory));
-  const manifest = ReleaseManifestSchema.parse({ formatVersion: 1, releaseId, artifactHash, title, viewerVersion: STATIC_VIEWER_VERSION, network: options.network, dependencies: resources.dependencies, warnings, files: inventory });
+  const manifest = ReleaseManifestSchema.parse({ formatVersion: 1, releaseId, artifactHash, title, viewerVersion: STATIC_VIEWER_VERSION, network: options.network, apiOrigins: options.apiOrigins, dependencies: resources.dependencies, warnings, files: inventory });
   files["release.json"] = canonicalJson(manifest) + "\n";
   if (Object.values(files).reduce((sum, value) => sum + Buffer.byteLength(value), 0) > MAX_RELEASE_BYTES) throw new Error("Public release exceeds the 8 MiB export limit");
   return { manifest, files, provenance: { boardId: board.id, boardRevision: board.revision, canvasBase: authored.canvasBase } };
