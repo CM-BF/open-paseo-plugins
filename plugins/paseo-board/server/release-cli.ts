@@ -10,7 +10,7 @@ const HELP = `Board static release CLI (run after npm ci)
 
 export --board <board-read.json> --public-data <public.json> --out <new-directory>
        [--zip <new.zip>] [--store <private-release-directory>] [--network offline|cdn]
-       [--theme light|dark] [--title <title>] [--serve]
+       [--theme light|dark] [--title <title>] [--api-origins <json-array-file>] [--serve]
 serve  --store <private-release-directory> --release <release-id>
 accounts [--github-host <hostname>]
 repositories --account <login> [--github-host <hostname>]
@@ -42,7 +42,7 @@ export async function releaseMain(argv: string[]): Promise<void> {
   }
   const publicationFlags = ["--store", "--jobs", "--release", "--hash", "--account", "--repo", "--event", "--github-host", "--create-repository"];
   const allowed: Record<string, string[]> = {
-    export: ["--board", "--public-data", "--out", "--zip", "--store", "--network", "--theme", "--title", "--serve"],
+    export: ["--board", "--public-data", "--out", "--zip", "--store", "--network", "--theme", "--title", "--api-origins", "--serve"],
     serve: ["--store", "--release"], accounts: ["--github-host"], repositories: ["--account", "--github-host"],
     prepare: publicationFlags, publish: publicationFlags,
     merge: ["--store", "--jobs", "--job", "--head"], refresh: ["--store", "--jobs", "--job"],
@@ -59,10 +59,11 @@ export async function releaseMain(argv: string[]): Promise<void> {
   if (command === "export") {
     const raw = JSON.parse(await readFile(required("--board"), "utf8")), board = BoardSchema.parse(raw.board ?? raw);
     const publicData = JSON.parse(await readFile(required("--public-data"), "utf8"));
+    const apiOrigins = flags["--api-origins"] ? JSON.parse(await readFile(flags["--api-origins"], "utf8")) : [];
     const temporary = flags["--store"] ? undefined : await mkdtemp(join(tmpdir(), "board-release-export-"));
     const repository = new ReleaseRepository(flags["--store"] ?? temporary!);
     try {
-      const release = await repository.create({ board, boardId: board.id, expectedCanvasBase: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion }, publicData, network: flags["--network"] as "offline" | "cdn" | undefined, theme: flags["--theme"] as "light" | "dark" | undefined, title: flags["--title"] });
+      const release = await repository.create({ board, boardId: board.id, expectedCanvasBase: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion }, publicData, apiOrigins, network: flags["--network"] as "offline" | "cdn" | undefined, theme: flags["--theme"] as "light" | "dark" | undefined, title: flags["--title"] });
       await repository.export(release.manifest.releaseId, { directory: required("--out"), zipPath: flags["--zip"] });
       output({ status: "exported", manifest: release.manifest, directory: flags["--out"], zip: flags["--zip"] });
       if (flags["--serve"]) await serve(repository, release.manifest.releaseId);

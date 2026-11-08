@@ -1,12 +1,14 @@
 import layoutState from "./assets/component-layout-state.txt";
+import { PUBLIC_API_CLIENT, PUBLIC_API_HOST } from "./public-api";
 
 /** Standalone publication runtime. It has no Paseo RPC, editing or discussion code. */
-export const STATIC_VIEWER_VERSION = 1;
+export const STATIC_VIEWER_VERSION = 2;
 export const STATIC_VIEWER_RUNTIME = String.raw`function(initial) {
   'use strict';
   const clone=value=>structuredClone(value), listeners=new Set();
   let state=clone(initial.state||{});
   const send=message=>parent.postMessage({...message,channel:'paseo-board-release-v1',releaseId:initial.releaseId,sessionId:initial.sessionId},'*');
+  const request=(${PUBLIC_API_CLIENT})(send,initial);
   const subscribe=(set,fn)=>{if(typeof fn!=='function')throw new TypeError('Listener must be a function');set.add(fn);return()=>set.delete(fn)};
   const emptySubscription=fn=>{if(typeof fn!=='function')throw new TypeError('Listener must be a function');return()=>{}};
   const context=Object.freeze({boardId:initial.releaseId,releaseId:initial.releaseId,documentVersion:1,boardRevision:1,canvasRevision:1,published:true});
@@ -37,7 +39,7 @@ export const STATIC_VIEWER_RUNTIME = String.raw`function(initial) {
   };
   Object.defineProperty(window,'board',{configurable:false,writable:false,value:Object.freeze({
     getData:()=>clone(initial.data),onData:emptySubscription,watch,getState:()=>clone(state),restoreState:()=>clone(state),
-    saveState,onState:fn=>subscribe(listeners,fn),ask,onReveal:emptySubscription,getContext:()=>({...context})
+    saveState,onState:fn=>subscribe(listeners,fn),ask,request,onReveal:emptySubscription,getContext:()=>({...context})
   })});
   window.openai=Object.freeze({sendFollowUpMessage:ask});
   (${layoutState})({getState:()=>clone(state),saveState:writeState,onState:fn=>subscribe(listeners,fn)},1);
@@ -55,10 +57,12 @@ export const STATIC_VIEWER_SHELL = String.raw`function(config) {
   try{const raw=localStorage.getItem(key);if(raw&&raw.length<=524288){const parsed=JSON.parse(raw);if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))state=parsed}}catch{announce('浏览器无法保存本地浏览状态；页面仍可使用。')}
   const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);const sessionId=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
   const initial={releaseId:config.releaseId,sessionId,data:config.data,state,siteUrl:location.href};
+  const api=(${PUBLIC_API_HOST})(config.apiOrigins,message=>frame.contentWindow.postMessage({...message,channel:'paseo-board-release-v1',releaseId:config.releaseId,sessionId},'*'));
   const json=value=>JSON.stringify(value).replace(/</g,'\\u003c').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');
   window.addEventListener('message',event=>{
     const m=event.data;if(event.source!==frame.contentWindow||!m||m.channel!=='paseo-board-release-v1'||m.releaseId!==config.releaseId||m.sessionId!==sessionId)return;
-    if(m.type==='state'){try{if(!m.state||typeof m.state!=='object'||Array.isArray(m.state))return;const raw=JSON.stringify(m.state);if(raw.length>524288)return;localStorage.setItem(key,raw)}catch{announce('浏览器未能保存本地浏览状态；当前页面仍保留输入。')}}
+    if(m.type==='api-request'){void api(m)}
+    else if(m.type==='state'){try{if(!m.state||typeof m.state!=='object'||Array.isArray(m.state))return;const raw=JSON.stringify(m.state);if(raw.length>524288)return;localStorage.setItem(key,raw)}catch{announce('浏览器未能保存本地浏览状态；当前页面仍保留输入。')}}
     else if(m.type==='unavailable')announce('此发布版本保留页面交互，不连接 agent。');
     else if(m.type==='link'&&navigator.userActivation?.isActive&&typeof m.url==='string'&&m.url.length<8000){try{const url=new URL(m.url);if(['https:','http:'].includes(url.protocol))window.open(url.href,'_blank','noopener,noreferrer')}catch{}}
   });

@@ -3,9 +3,19 @@ import { defineRpc } from "@getpaseo/plugin";
 import { CanvasBaseSchema, IdSchema, JsonDataSchema } from "./contracts";
 
 export const ReleaseIdSchema = z.string().regex(/^release-[a-f0-9]{64}$/);
+export const PublicApiOriginSchema = z.string().max(2048).refine(value => {
+  try {
+    const url = new URL(value);
+    const validHost = /^\[[a-f0-9:]+\]$/i.test(url.hostname) || url.hostname.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label));
+    return validHost && url.origin === value && !url.username && !url.password &&
+      (url.protocol === "https:" || url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname));
+  } catch { return false; }
+}, "API 地址应为 HTTPS 来源（例如 https://api.example.com），本机测试可用 HTTP loopback；不含路径或凭据");
+export const PublicApiOriginsSchema = z.array(PublicApiOriginSchema).max(8).refine(values => new Set(values).size === values.length, "API 来源不能重复");
 export const ReleaseManifestSchema = z.object({
   formatVersion: z.literal(1), releaseId: ReleaseIdSchema, artifactHash: z.string().regex(/^[a-f0-9]{64}$/),
   title: z.string(), viewerVersion: z.number().int(), network: z.enum(["offline", "cdn"]),
+  apiOrigins: PublicApiOriginsSchema.optional(),
   dependencies: z.array(z.string()), warnings: z.array(z.string()),
   files: z.array(z.object({ path: z.string(), sha256: z.string(), bytes: z.number().int().nonnegative() })),
 });
@@ -13,6 +23,7 @@ export const ReleaseCreateSchema = z.object({
   boardId: IdSchema, expectedCanvasBase: CanvasBaseSchema, publicData: JsonDataSchema,
   title: z.string().min(1).max(200).optional(), network: z.enum(["offline", "cdn"]).default("offline"),
   theme: z.enum(["light", "dark"]).default("light"),
+  apiOrigins: PublicApiOriginsSchema.default([]),
 });
 // A GitHub host is an authority, never a URL or an arbitrary API path.
 export const GitHubHostSchema = z.string().min(1).max(253).transform(value => value.toLowerCase()).refine(value =>

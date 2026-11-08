@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import { BoardStore } from "./store";
 import { buildRelease, ReleaseRepository, releaseZip, serveRelease, validateRelease } from "./static-release";
 import type { Board } from "../shared/contracts";
+import { ReleaseManifestSchema } from "../shared/release-contracts";
 
 describe("fixed public releases", () => {
   let root: string, board: Board;
@@ -67,6 +68,22 @@ describe("fixed public releases", () => {
     board.canvas.html = '<img src="private.png">'; expect(() => buildRelease(options())).toThrow("unpackaged");
     board.canvas.html = '<img src="https://private.example/image">'; expect(() => buildRelease({ ...options(), network: "cdn" })).toThrow("outside");
     board.canvas.html = '<a href="https://example.com">Link</a><img src="data:image/png;base64,YQ==">'; expect(() => buildRelease(options())).not.toThrow();
+  });
+  it("freezes explicit API origins without granting the authored iframe network or loading privileges", () => {
+    const base = buildRelease(options()), allowed = buildRelease({ ...options(), apiOrigins: ["https://api.example.internal", "http://127.0.0.1:8787"] });
+    expect(allowed.manifest.apiOrigins).toEqual(["https://api.example.internal", "http://127.0.0.1:8787"]);
+    expect(allowed.manifest.releaseId).not.toBe(base.manifest.releaseId);
+    expect(allowed.files["index.html"]).toContain("connect-src https://api.example.internal http://127.0.0.1:8787");
+    expect(allowed.files["index.html"]).toContain("connect-src 'none'");
+    expect(allowed.files["index.html"]).not.toContain("allow-same-origin");
+    for (const origin of ["https://api.example/a", "https://user:pass@api.example", "http://internal.example", "https://*.example", "https://api.example#hash", "null"]) {
+      expect(() => buildRelease({ ...options(), apiOrigins: [origin] }), origin).toThrow();
+    }
+    expect(() => buildRelease({ ...options(), apiOrigins: ["https://api.example", "https://api.example"] })).toThrow();
+    board.canvas.html = '<script src="https://api.example/runtime.js"></script>';
+    expect(() => buildRelease({ ...options(), apiOrigins: ["https://api.example"] })).toThrow("outside");
+    const { apiOrigins: _, ...oldManifest } = base.manifest;
+    expect(ReleaseManifestSchema.parse(oldManifest)).toEqual(oldManifest);
   });
   it("writes immutable snapshots, exports real deterministic ZIPs and never overwrites a destination", async () => {
     const repository = new ReleaseRepository(join(root, "releases")), first = await repository.create(options());

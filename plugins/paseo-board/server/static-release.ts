@@ -74,7 +74,8 @@ export function buildRelease(input: ReleaseCreateInput & { board: Board }): Stat
   const csp = ["default-src 'none'", `script-src 'unsafe-inline' 'unsafe-eval' blob: ${network}`, `style-src 'unsafe-inline' ${network}`, `font-src data: ${network}`, `img-src data: blob: ${network}`, "media-src data: blob:", `connect-src ${network || "'none'"}`, "worker-src blob:", "form-action 'none'", "base-uri 'none'", "frame-src 'none'", "object-src 'none'"].join("; ");
   // srcdoc does not require network-frame permission. Excluding 'self' also
   // prevents authored location changes from issuing same-site HTTP requests.
-  const outerCsp = csp.replace("frame-src 'none'", "frame-src blob:");
+  const outerConnections = [...(options.network === "cdn" ? CDNS : []), ...options.apiOrigins].join(" ") || "'none'";
+  const outerCsp = csp.replace("frame-src 'none'", "frame-src blob:").replace(`connect-src ${network || "'none'"}`, `connect-src ${outerConnections}`);
   const title = options.title ?? board.title;
   const metadata = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(csp)}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>@layer paseo-board-defaults {${stylesheet}\n}</style>`;
   let prefix = `<!doctype html><html lang="en" data-surface="page" data-palette="custom" data-theme="${theme.scheme}" style="${escapeHtml(tokens)}"><head>${metadata}</head><body>`;
@@ -94,14 +95,15 @@ export function buildRelease(input: ReleaseCreateInput & { board: Board }): Stat
   const warnings = ["发布页从最终源码重新打开；不会带出当前浏览器临时生成的内容、运行进度或历史脚本执行状态。", "只带出这里选定的网页和公共数据；上传前请检查其中是否还有不想公开的内容。", "动态生成的资源地址不一定能完整列出；超出所选联网范围的请求会被浏览器阻止。"];
   if (/\b(?:board\s*\.\s*ask|sendFollowUpMessage)\s*\(/.test(html)) warnings.push("网页里有请求 agent 的按钮或代码；发布版不会联系 agent，该请求会立即取消。");
   if (resources.dependencies.length) warnings.push("源码含外部地址；CDN 资源需要联网，其他地址可能是普通链接或会被阻止的请求。");
-  const content = { viewerVersion: STATIC_VIEWER_VERSION, title, network: options.network, data: options.publicData, html, prefix, suffix, runtime: STATIC_VIEWER_RUNTIME, shell: STATIC_VIEWER_SHELL, notice: NOTICE, license };
+  if (options.apiOrigins.length) warnings.push(`此版本可通过 board.request 连接以下后端：${options.apiOrigins.join("、")}。请求不附带浏览器 Cookie；应用身份验证由后端实现，预览页不发起这些请求。`);
+  const content = { viewerVersion: STATIC_VIEWER_VERSION, title, network: options.network, apiOrigins: options.apiOrigins, data: options.publicData, html, prefix, suffix, runtime: STATIC_VIEWER_RUNTIME, shell: STATIC_VIEWER_SHELL, notice: NOTICE, license };
   // The opaque digest scopes the private provenance to one source, without exposing its ID.
   const releaseId = `release-${sha256(canonicalJson({ content, source: { boardId: board.id, canvasBase: authored.canvasBase } }))}`;
-  const config = { releaseId, data: options.publicData, html, prefix, suffix, runtime: STATIC_VIEWER_RUNTIME };
+  const config = { releaseId, data: options.publicData, apiOrigins: options.apiOrigins, html, prefix, suffix, runtime: STATIC_VIEWER_RUNTIME };
   const index = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(outerCsp)}"><title>${escapeHtml(title)}</title><style>html,body{margin:0;height:100%;background:${theme.tokens["host-sheet"]}}iframe{width:100%;height:100%;border:0;display:block}aside{position:fixed;left:8px;bottom:8px;max-width:calc(100% - 32px);font:13px/1.4 system-ui;padding:8px 12px;color:#fff;background:#252525;border-radius:6px}aside[hidden]{display:none}</style></head><body><iframe title="${escapeHtml(title)}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe><aside role="status" hidden></aside><script>(${STATIC_VIEWER_SHELL})(${scriptJson(config)});</script></body></html>`;
   const files: Record<string, string> = { "index.html": index, "NOTICE": NOTICE, "LICENSE-APACHE-2.0": license };
   const inventory = fileInventory(files), artifactHash = sha256(canonicalJson(inventory));
-  const manifest = ReleaseManifestSchema.parse({ formatVersion: 1, releaseId, artifactHash, title, viewerVersion: STATIC_VIEWER_VERSION, network: options.network, dependencies: resources.dependencies, warnings, files: inventory });
+  const manifest = ReleaseManifestSchema.parse({ formatVersion: 1, releaseId, artifactHash, title, viewerVersion: STATIC_VIEWER_VERSION, network: options.network, apiOrigins: options.apiOrigins, dependencies: resources.dependencies, warnings, files: inventory });
   files["release.json"] = canonicalJson(manifest) + "\n";
   if (Object.values(files).reduce((sum, value) => sum + Buffer.byteLength(value), 0) > MAX_RELEASE_BYTES) throw new Error("Public release exceeds the 8 MiB export limit");
   return { manifest, files, provenance: { boardId: board.id, boardRevision: board.revision, canvasBase: authored.canvasBase } };

@@ -9,6 +9,7 @@ import {
   createReleaseRpc, listReleasesRpc, previewReleaseRpc, downloadReleaseRpc,
   githubAccountsRpc, githubRepositoriesRpc, publishPagesRpc,
   refreshPagesRpc, listPagesJobsRpc, type ReleaseManifest, type PagesJob,
+  PublicApiOriginsSchema,
   type PagesPrepareInput, type GitHubAccount, type GitHubRepository,
 } from "../shared/release-contracts";
 import { Action, Copy, Notice, errorMessage, localId, useColors } from "./ui";
@@ -37,6 +38,7 @@ export function ReleasePanel({ board, hostId, onOpenBoard }: { board: Board; hos
   const [title, setTitle] = useState(`${board.title} · 发布版`);
   const [publicData, setPublicData] = useState("{}");
   const [network, setNetwork] = useState<"offline" | "cdn">("offline");
+  const [apiOriginsText, setApiOriginsText] = useState("");
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [releases, setReleases] = useState<ReleaseManifest[]>([]);
   const [selected, setSelected] = useState<ReleaseManifest>();
@@ -150,15 +152,19 @@ export function ReleasePanel({ board, hostId, onOpenBoard }: { board: Board; hos
       <Action label="载入当前画布数据" disabled={busy} onPress={() => setPublicData(JSON.stringify(board.canvas.data, null, 2))} />
       <TextInput testID="board-release-data" accessibilityLabel="公开数据 JSON" multiline value={publicData} onChangeText={setPublicData} editable={!busy} style={{ ...field, minHeight: 100, maxHeight: 220 }} />
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        <Action label="离线网页" active={network === "offline"} disabled={busy} onPress={() => setNetwork("offline")} />
+        <Action label="仅内置资源" active={network === "offline"} disabled={busy} onPress={() => setNetwork("offline")} />
         <Action label="允许 CDN 库" active={network === "cdn"} disabled={busy} onPress={() => setNetwork("cdn")} />
         <Action label="浅色" active={theme === "light"} disabled={busy} onPress={() => setTheme("light")} />
         <Action label="深色" active={theme === "dark"} disabled={busy} onPress={() => setTheme("dark")} />
       </View>
+      <Copy>后端 API 来源（可选，每行一个）</Copy>
+      <TextInput accessibilityLabel="后端 API 来源" placeholder="https://api.example.internal" multiline autoCapitalize="none" value={apiOriginsText} onChangeText={setApiOriginsText} editable={!busy} style={{ ...field, minHeight: 60, maxHeight: 140 }} />
+      <Copy small muted>留空则不连接应用后端。填写后，发布页可向这些地址读写数据；这里不填写路径、密码或收件箱令牌。后端需允许发布网站的来源，预览不会调用后端。</Copy>
       <Action label={busy ? "处理中…" : "生成固定版本并预览"} primary disabled={busy || !title.trim()} onPress={() => { void run(async () => {
         const parsed: unknown = JSON.parse(publicData);
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("公开数据须为 JSON 对象。");
-        const result = await create({ boardId: board.id, expectedCanvasBase: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion }, title: title.trim(), publicData: parsed as Board["canvas"]["data"], network, theme });
+        const apiOrigins = PublicApiOriginsSchema.parse(apiOriginsText.split(/\r?\n/).map(value => value.trim()).filter(Boolean));
+        const result = await create({ boardId: board.id, expectedCanvasBase: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion }, title: title.trim(), publicData: parsed as Board["canvas"]["data"], apiOrigins, network, theme });
         if (!mounted.current) return;
         setReleases(values => [result, ...values.filter(item => item.releaseId !== result.releaseId)]);
         await showRelease(result);
@@ -174,6 +180,7 @@ export function ReleasePanel({ board, hostId, onOpenBoard }: { board: Board; hos
     {releases.length ? <View style={{ gap: 6 }}><Copy>本机发布版本</Copy><ScrollView style={{ maxHeight: 160 }} contentContainerStyle={{ gap: 4 }}>{releases.map(release => <Action key={release.releaseId} label={`${release.title} · ${release.artifactHash.slice(0, 10)}`} active={release.releaseId === selected?.releaseId} disabled={busy} onPress={() => { void run(() => showRelease(release)); }} />)}</ScrollView></View> : null}
     {selected ? <View style={{ gap: 12 }}>
       <Copy>{selected.title} · 固定版本 {selected.artifactHash.slice(0, 12)}</Copy>
+      {selected.apiOrigins?.length ? <Copy small muted>已固定的后端来源：{selected.apiOrigins.join("、")}</Copy> : null}
       {html ? <ReleasePreview html={html} /> : null}
       {selected.warnings.map((warning, index) => <Notice key={index} text={warning} />)}
       <Copy small muted>文件：{selected.files.map(file => file.path).join("、")}{selected.dependencies.length ? `\n外部依赖：${selected.dependencies.join("、")}` : "\n无需外部依赖。"}</Copy>
