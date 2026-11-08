@@ -1,6 +1,6 @@
 # GitHub account discovery: 2026-11-08
 
-Historical public-only repair. The user subsequently clarified that company GitHub publishing is required; the public-only restriction described below is superseded by the Enterprise publishing candidate. These earlier results remain evidence only for the exact single-file repair, not for the newer host-qualified publishing implementation.
+Historical public-only repair. The user subsequently clarified that company GitHub publishing is required; the public-only restriction described below is superseded by the [verified Enterprise publishing implementation](2026-11-08-enterprise-publishing.md). These earlier results remain evidence only for the exact single-file repair, not for the newer host-qualified publishing implementation.
 
 ## Problem and change
 
@@ -24,6 +24,8 @@ The repair clears inherited `GH_HOST` and token overrides, queries github.com fi
 - In the actual desktop app, an existing test Board's existing release was opened, **读取 GitHub 账号** was clicked and the authenticated local account became visibly selectable. The coordinator inspected the screenshot, closed the panel and returned to the previously selected Demo. No release, repository, public site, agent message or credential was created or changed. This local success path does not claim to reproduce the reporter's Enterprise-only environment in the actual UI.
 - Before publication, test fixture hostnames were changed to a reserved example domain. The runtime file is byte-identical to the fully tested and installed source; the focused account/publishing suite is checked again for that fixture-only edit. Private execution receipts retain the original fixed-source identity rather than relabeling historical runs with the final documentation commit.
 
-## Delivery scope
+## Historical delivery scope
+
+This describes the earlier single-file installation, replaced by exact Enterprise delivery `31c4a271fafdb830a9281c8e7faf78537b6e900b`. It is not the current installation procedure or supported-host limit.
 
 Only the server account transport and its tests change. Dependency tracing confirms that this module is absent from both checked-in worker and client bundle inputs, so those artifacts do not need rebuilding. The primary local installation already contains newer composition/pill work: delivery must preserve that tree and overlay only the repaired server file. A mixed installation is described as baseline-plus-one-file, not as identical to the main-based fix branch. No main merge, public site publication or work-computer installation is implied.
