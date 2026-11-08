@@ -13,15 +13,17 @@ import {
 } from "../shared/release-contracts";
 import { Action, Copy, Notice, errorMessage, localId, useColors } from "./ui";
 import { downloadReleaseZip, ReleasePreview } from "./release-web";
-import { createPagesOutbox } from "./pages-outbox";
+import { createPagesOutbox, pagesGitHubHost, samePagesRequest, samePagesTarget } from "./pages-outbox";
 
 const statusNames: Record<PagesJob["status"], string> = {
   prepared: "准备发布文件", "pr-open": "PR 已创建，等待自动合并", merged: "已合并，等待部署", deploying: "部署并核对网页中",
   live: "已核实上线", failed: "发布失败", unknown: "结果待核对",
 };
-const requestMatches = (left: PagesPrepareInput, right: PagesPrepareInput) =>
-  left.eventId === right.eventId && left.releaseId === right.releaseId && left.artifactHash === right.artifactHash &&
-  left.account === right.account && left.repository === right.repository && left.createRepository === right.createRepository;
+const publicationRequest = (value: PagesPrepareInput): PagesPrepareInput => ({
+  eventId: value.eventId, releaseId: value.releaseId, artifactHash: value.artifactHash,
+  ...(value.githubHost ? { githubHost: value.githubHost } : {}),
+  account: value.account, repository: value.repository, createRepository: value.createRepository,
+});
 const automaticallyPublishing = (value: PagesJob) => value.autoPublish === true &&
   !["live", "failed"].includes(value.status) && Boolean(value.autoPublishUntil && Date.parse(value.autoPublishUntil) > Date.now());
 const jobStatusName = (value: PagesJob) => value.status === "pr-open" && !automaticallyPublishing(value) ? "PR 已创建，等待继续发布" : statusNames[value.status];
@@ -41,6 +43,8 @@ export function ReleasePanel({ board, hostId, onOpenBoard }: { board: Board; hos
   const [html, setHtml] = useState<string>();
   const [reviewed, setReviewed] = useState<string>();
   const [accountList, setAccountList] = useState<GitHubAccount[]>([]), [account, setAccount] = useState("");
+  const [githubHostFilter, setGitHubHostFilter] = useState("");
+  const [githubHost, setGitHubHost] = useState("github.com");
   const [repoList, setRepoList] = useState<GitHubRepository[]>([]), [repository, setRepository] = useState("");
   const [createRepository, setCreateRepository] = useState<"public" | "private">();
   const [jobs, setJobs] = useState<PagesJob[]>([]), [job, setJob] = useState<PagesJob>();
@@ -101,8 +105,8 @@ export function ReleasePanel({ board, hostId, onOpenBoard }: { board: Board; hos
     setJobs(history);
     const latest = history.find(item => automaticallyPublishing(item)) ?? history.find(item => item.status === "live") ?? history[0];
     currentJob.current = latest; setJob(latest);
-    if (latest) { setAccount(latest.account); setRepository(latest.repository); setCreateRepository(latest.createRepository); }
-    for (const request of outbox.list()) if (history.some(item => item.autoPublish && requestMatches(item, request))) outbox.remove(request.eventId);
+    if (latest) { setGitHubHost(pagesGitHubHost(latest)); setAccount(latest.account); setRepository(latest.repository); setCreateRepository(latest.createRepository); }
+    for (const request of outbox.list()) if (history.some(item => item.autoPublish && samePagesRequest(item, request))) outbox.remove(request.eventId);
     setPendingPages(outbox.list());
   };
   const rememberJob = (value: PagesJob) => {
@@ -120,11 +124,12 @@ export function ReleasePanel({ board, hostId, onOpenBoard }: { board: Board; hos
   };
   const requestPages = () => run(async () => {
     if (!selected || reviewed !== selected.artifactHash) return;
-    const target = { releaseId: selected.releaseId, artifactHash: selected.artifactHash, account, repository: repository.trim(), createRepository };
+    const target = { releaseId: selected.releaseId, artifactHash: selected.artifactHash, githubHost, account, repository: repository.trim(), createRepository };
     const previous = pageRequest.current;
-    const matchesTarget = (item: PagesPrepareInput) => item.releaseId === target.releaseId && item.artifactHash === target.artifactHash && item.account === target.account && item.repository === target.repository && item.createRepository === target.createRepository;
+    const matchesTarget = (item: PagesPrepareInput) => samePagesTarget(item, target);
     const known = jobs.find(item => item.status === "live" && matchesTarget(item)) ?? outbox.list().find(matchesTarget) ?? jobs.find(matchesTarget);
-    if (!previous || JSON.stringify({ ...previous, eventId: undefined }) !== JSON.stringify(target)) pageRequest.current = { ...target, eventId: known?.eventId ?? localId("pages") };
+    if (!previous || !samePagesTarget(previous, target)) pageRequest.current = known
+      ? publicationRequest(known) : { ...target, eventId: localId("pages") };
     await sendPagesRequest(pageRequest.current!);
   });
   return <View testID="board-release-panel" style={{ gap: 18 }}>
@@ -160,11 +165,11 @@ export function ReleasePanel({ board, hostId, onOpenBoard }: { board: Board; hos
       }); }} />
     </View>
     {failure ? <Notice error text={failure} /> : null}
-    {pendingPages.length ? <View style={{ gap: 6 }}><Copy>待核对的发布请求</Copy><Copy small muted>上次关闭或断线前的版本和目标已保留。已受理的发布会在后台继续；没有受理回执时可重试同一次请求。</Copy>{pendingPages.map(request => <Action key={request.eventId} label={`恢复发布 · ${request.repository}`} disabled={busy} onPress={() => { void run(async () => {
+    {pendingPages.length ? <View style={{ gap: 6 }}><Copy>待核对的发布请求</Copy><Copy small muted>上次关闭或断线前的版本和目标已保留。已受理的发布会在后台继续；没有受理回执时可重试同一次请求。</Copy>{pendingPages.map(request => <Action key={request.eventId} label={`恢复发布 · ${pagesGitHubHost(request)} · ${request.repository}`} disabled={busy} onPress={() => { void run(async () => {
       const saved = await preview({ releaseId: request.releaseId });
       if (saved.manifest.artifactHash !== request.artifactHash) throw new Error("发布版本与原请求不一致。");
       await showRelease(saved.manifest);
-      pageRequest.current = request; setAccount(request.account); setRepository(request.repository); setCreateRepository(request.createRepository);
+      pageRequest.current = request; setGitHubHost(pagesGitHubHost(request)); setAccount(request.account); setRepository(request.repository); setCreateRepository(request.createRepository);
     }); }} />)}</View> : null}
     {releases.length ? <View style={{ gap: 6 }}><Copy>本机发布版本</Copy><ScrollView style={{ maxHeight: 160 }} contentContainerStyle={{ gap: 4 }}>{releases.map(release => <Action key={release.releaseId} label={`${release.title} · ${release.artifactHash.slice(0, 10)}`} active={release.releaseId === selected?.releaseId} disabled={busy} onPress={() => { void run(() => showRelease(release)); }} />)}</ScrollView></View> : null}
     {selected ? <View style={{ gap: 12 }}>
@@ -174,11 +179,13 @@ export function ReleasePanel({ board, hostId, onOpenBoard }: { board: Board; hos
       <Copy small muted>文件：{selected.files.map(file => file.path).join("、")}{selected.dependencies.length ? `\n外部依赖：${selected.dependencies.join("、")}` : "\n无需外部依赖。"}</Copy>
       <Action label="下载 ZIP" disabled={busy} onPress={() => { void run(async () => { const bundle = await download({ releaseId: selected.releaseId }); downloadReleaseZip(bundle.zipBase64, bundle.fileName); }); }} />
       <Copy small muted>自有服务器：解压后把目录交给 Nginx、Caddy 或现有静态站点服务。网站无需运行 Paseo。</Copy>
-      <Action label={reviewed === selected.artifactHash ? "已确认此版本可公开" : "确认预览和数据，可发布此版本"} active={reviewed === selected.artifactHash} disabled={busy} onPress={() => setReviewed(selected.artifactHash)} />
+      <Action label={reviewed === selected.artifactHash ? "已确认此版本可发布" : "确认预览和数据，可发布此版本"} active={reviewed === selected.artifactHash} disabled={busy} onPress={() => setReviewed(selected.artifactHash)} />
       <View style={{ gap: 8, borderTopWidth: 1, borderColor: c.border, paddingTop: 14 }}>
-        <Copy>GitHub Pages</Copy><Copy small muted>点击发布后自动创建 PR、合并、部署并核对网页。关闭面板后仍会继续。已有站点会使用独立目录，保留原来的页面。</Copy><Copy small muted>Pages 网站通常公开，即使源码仓库为私有。选择具体账号和仓库后才会上传。</Copy>
-        <Action label="读取 GitHub 账号" disabled={busy} onPress={() => { void run(async () => { setAccountList(await accounts({})); }); }} />
-        {accountList.map(item => <Action key={item.login} label={item.login} active={account === item.login} disabled={busy} onPress={() => { setAccount(item.login); setRepoList([]); pageRequest.current = undefined; void run(async () => setRepoList(await repositories({ account: item.login }))); }} />)}
+        <Copy>GitHub Pages</Copy><Copy small muted>点击发布后自动创建 PR、合并、部署并核对网页。关闭面板后仍会继续。已有站点会使用独立目录，保留原来的页面。</Copy><Copy small muted>支持 github.com 和公司内部 GitHub。网站访问权限由所选 GitHub 的 Pages 设置决定；私有仓库不代表网站也私有。</Copy>
+        <TextInput accessibilityLabel="GitHub 主机（可选）" placeholder="留空读取已登录主机，或填写公司 GitHub 域名" placeholderTextColor={c.foregroundMuted} value={githubHostFilter} onChangeText={value => { setGitHubHostFilter(value); setAccountList([]); setAccount(""); setRepoList([]); setRepository(""); setCreateRepository(undefined); pageRequest.current = undefined; }} editable={!busy} autoCapitalize="none" style={field} />
+        <Action label="读取 GitHub 账号" disabled={busy} onPress={() => { void run(async () => { const filter = githubHostFilter.trim(); setAccountList(await accounts(filter ? { githubHost: filter } : {})); }); }} />
+        {accountList.map(item => <Action key={`${item.host}/${item.login}`} label={`${item.login} · ${item.host}`} active={account === item.login && githubHost === item.host} disabled={busy} onPress={() => { setGitHubHost(item.host); setAccount(item.login); setRepoList([]); setRepository(""); setCreateRepository(undefined); pageRequest.current = undefined; void run(async () => setRepoList(await repositories({ account: item.login, githubHost: item.host }))); }} />)}
+        {account ? <Copy small muted>发布账号：{account} · {githubHost}</Copy> : null}
         <TextInput accessibilityLabel="GitHub 仓库 owner/repo" placeholder="owner/repository" placeholderTextColor={c.foregroundMuted} value={repository} onChangeText={value => { setRepository(value); pageRequest.current = undefined; }} editable={!busy} style={field} />
         {repoList.length ? <ScrollView style={{ maxHeight: 180 }} contentContainerStyle={{ gap: 4 }}>{repoList.map(item => <Action key={item.name} label={`${item.name}${item.private ? " · 私有仓库" : ""}`} active={repository === item.name} disabled={busy} onPress={() => { setRepository(item.name); setCreateRepository(undefined); pageRequest.current = undefined; }} />)}</ScrollView> : null}
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
@@ -186,16 +193,17 @@ export function ReleasePanel({ board, hostId, onOpenBoard }: { board: Board; hos
           <Action label="新建公开仓库" active={createRepository === "public"} disabled={busy} onPress={() => { setCreateRepository("public"); pageRequest.current = undefined; }} />
           <Action label="新建私有仓库" active={createRepository === "private"} disabled={busy} onPress={() => { setCreateRepository("private"); pageRequest.current = undefined; }} />
         </View>
-        <Action label={createRepository ? "创建仓库并一键发布" : "一键发布"} disabled={busy || !account || !repository.trim() || reviewed !== selected.artifactHash || jobs.some(item => item.releaseId === selected.releaseId && item.account === account && item.repository === repository.trim() && automaticallyPublishing(item))} primary onPress={() => { void requestPages(); }} />
-        {jobs.map(item => <Action key={item.jobId} label={`${item.repository} · ${jobStatusName(item)}`} active={item.jobId === job?.jobId} disabled={busy} onPress={() => { currentJob.current = item; setJob(item); setAccount(item.account); setRepository(item.repository); setCreateRepository(item.createRepository); }} />)}
+        <Action label={createRepository ? "创建仓库并一键发布" : "一键发布"} disabled={busy || !account || !repository.trim() || reviewed !== selected.artifactHash || jobs.some(item => item.releaseId === selected.releaseId && pagesGitHubHost(item) === githubHost && item.account === account && item.repository === repository.trim() && automaticallyPublishing(item))} primary onPress={() => { void requestPages(); }} />
+        {jobs.map(item => <Action key={item.jobId} label={`${pagesGitHubHost(item)} · ${item.repository} · ${jobStatusName(item)}`} active={item.jobId === job?.jobId} disabled={busy} onPress={() => { currentJob.current = item; setJob(item); setGitHubHost(pagesGitHubHost(item)); setAccount(item.account); setRepository(item.repository); setCreateRepository(item.createRepository); pageRequest.current = undefined; }} />)}
         {job ? <View testID="board-pages-job" style={{ gap: 8 }}>
-          <Copy>{job.repository} · {jobStatusName(job)}</Copy>
+          <Copy>{pagesGitHubHost(job)} · {job.repository} · {jobStatusName(job)}</Copy>
           {job.sitePath ? <Copy small muted>发布目录：{job.sitePath}</Copy> : null}
           {automaticallyPublishing(job) ? <Copy small muted>发布已交给后台，正在自动完成后续步骤。</Copy> : null}
           {job.error ? <Notice error text={job.error} /> : null}
           {job.prUrl ? <Action label="查看 PR" onPress={() => openUrl(job.prUrl!)} /> : null}
-          {job.status !== "live" && !automaticallyPublishing(job) ? <Action label="一键继续发布" disabled={busy || reviewed !== job.artifactHash} onPress={() => { void run(() => sendPagesRequest({ eventId: job.eventId, releaseId: job.releaseId, artifactHash: job.artifactHash, account: job.account, repository: job.repository, createRepository: job.createRepository })); }} /> : null}
+          {job.status !== "live" && !automaticallyPublishing(job) ? <Action label="一键继续发布" disabled={busy || reviewed !== job.artifactHash} onPress={() => { void run(() => sendPagesRequest(publicationRequest(job))); }} /> : null}
           <Action label="核对部署状态" disabled={busy} onPress={() => { void run(async () => rememberJob(await refresh({ jobId: job.jobId }))); }} />
+          {job.status !== "live" && job.deployedUrl ? <Action label="打开网页（内容待核验）" onPress={() => openUrl(job.deployedUrl!)} /> : null}
           {job.status === "live" && job.url ? <Action label="打开已发布网页" onPress={() => openUrl(job.url!)} /> : null}
         </View> : null}
       </View>

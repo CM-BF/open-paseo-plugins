@@ -23,6 +23,8 @@ const publicationTimers=new Set();
 const later=(callback,ms)=>{const timer=setTimeout(()=>{publicationTimers.delete(timer);callback()},ms);publicationTimers.add(timer)};
 const heldRefresh=[];
 const calls=[], jobs=new Map(), prepareReceipts=new Map(), copiedBoards=[];
+const enterpriseHost='github.enterprise.example';
+let configuredAccounts=[{login:'fixture-alice',host:'github.com',active:true},{login:'fixture-bob',host:'github.com',active:false},{login:'fixture-alice',host:enterpriseHost,active:true}];
 const copies=new BoardCopies(join(temporary,'copies'),{read:async id=>sourceBoard?.id===id?sourceBoard:boardStore.read(id),create:input=>boardStore.create(input)});
 const rpc=async(name,input,board)=>{
   calls.push({name,input:structuredClone(input)});sourceBoard=board;
@@ -31,8 +33,8 @@ const rpc=async(name,input,board)=>{
   if(name==='board.release.list')return (await repository.list(input.boardId)).map(r=>r.manifest);
   if(name==='board.release.preview'){if(input.releaseId===failPreviewReleaseId){failPreviewReleaseId=undefined;throw new Error('Fixture selected preview unavailable')}return repository.preview(input.releaseId)}
   if(name==='board.release.download')return repository.download(input.releaseId);
-  if(name==='board.pages.accounts')return [{login:'fixture-alice',host:'github.com',active:true},{login:'fixture-bob',host:'github.com',active:false}];
-  if(name==='board.pages.repositories')return [{name:input.account+'/site',private:false,url:'https://github.com/'+input.account+'/site'},{name:input.account+'/private-site',private:true,url:'https://github.com/'+input.account+'/private-site'}];
+  if(name==='board.pages.accounts')return configuredAccounts.filter(account=>!input.githubHost||account.host===input.githubHost);
+  if(name==='board.pages.repositories')return [{name:input.account+'/site',private:false,url:'https://'+(input.githubHost??'github.com')+'/'+input.account+'/site'},{name:input.account+'/private-site',private:true,url:'https://'+(input.githubHost??'github.com')+'/'+input.account+'/private-site'}];
   if(name==='board.pages.list')return [...jobs.values()].filter(j=>!input.releaseId||j.releaseId===input.releaseId);
   if(name==='board.pages.publish'){
     if(publishMode==='lost-before-job'){publishMode='accept';throw new Error('Fixture connection lost before any readable job')}
@@ -44,11 +46,15 @@ const rpc=async(name,input,board)=>{
     job.autoPublish=true;job.autoPublishUntil=new Date(Date.now()+30*60*1000).toISOString();job.publicationMode='legacy-subdirectory';job.sitePath='boards/'+input.releaseId.slice(8,24);
     if(publishMode==='lost-response'){publishMode='accept';job.status='unknown';job.autoPublishUntil=new Date(Date.now()-1).toISOString();job.error='Fixture response lost after automatic retry window expired';throw new Error('Fixture response lost; outcome unknown')}
     const recovering=publishMode==='recovering';publishMode='accept';
-    job.status=recovering?'unknown':'pr-open';job.prNumber=jobSequence;job.prUrl='https://github.com/'+input.repository+'/pull/'+job.prNumber;delete job.error;
+    job.status=recovering?'unknown':'pr-open';job.prNumber=jobSequence;job.prUrl='https://'+(input.githubHost??'github.com')+'/'+input.repository+'/pull/'+job.prNumber;delete job.error;
     // Explicit adapter: independent server progression, including while the UI
     // is closed. The separate manager tests cover real GitHub head validation.
     later(()=>{job.status='deploying';job.mergedSha='c'.repeat(40)},100);
-    later(()=>{job.status='live';job.url='https://'+input.account+'.github.io/'+input.repository.split('/')[1]+'/'+job.sitePath+'/';job.verifiedAt=new Date().toISOString()},350);
+    later(()=>{
+      const url=(input.githubHost===enterpriseHost?'https://pages.enterprise.example/'+input.account+'/':'https://'+input.account+'.github.io/')+input.repository.split('/')[1]+'/'+job.sitePath+'/';
+      if(input.githubHost===enterpriseHost){job.status='deploying';job.deployedUrl=url;job.error='部署已完成，但站点需要公司登录，页面内容待核验。'}
+      else{job.status='live';job.url=url;job.verifiedAt=new Date().toISOString()}
+    },350);
     return structuredClone(job);
   }
   if(name==='board.pages.merge'||name==='board.pages.prepare')throw new Error('The one-click UI must never invoke separate preparation or merge');
@@ -204,13 +210,16 @@ try {
     const recovery=(await repository.list('host-fixture')).find(item=>item.manifest.title==='Preview recovery fixture');assert.ok(recovery);
     await verifyFailedPreviewSwitch(recovery.manifest,frozen.manifest);
   }else{
-  await click(button('读取 GitHub 账号'));await click(button('fixture-alice'));await click(button('fixture-alice/site'));
-  assert.deepEqual(calls.find(c=>c.name==='board.pages.repositories').input,{account:'fixture-alice'});
+  await click(button('读取 GitHub 账号'));
+  await until(`document.querySelector(${JSON.stringify(button('fixture-alice · github.com'))})&&document.querySelector(${JSON.stringify(button('fixture-alice · '+enterpriseHost))})&&!document.querySelector(${JSON.stringify(button('读取 GitHub 账号'))}).disabled`);
+  assert.equal(await evaluate(`Boolean(document.querySelector(${JSON.stringify(button('fixture-alice · github.com'))})&&document.querySelector(${JSON.stringify(button('fixture-alice · '+enterpriseHost))}))`),true);
+  await click(button('fixture-alice · github.com'));await click(button('fixture-alice/site'));
+  assert.deepEqual(calls.find(c=>c.name==='board.pages.repositories').input,{account:'fixture-alice',githubHost:'github.com'});
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(button('一键发布'))}).disabled`),true);
   await click(button('一键发布'));assert.equal(count('board.pages.publish'),0);
   await click(button('确认预览和数据，可发布此版本'));await click(button('一键发布'));
   await until("document.querySelector('[data-testid=board-pages-job]')?.textContent.includes('PR 已创建')");
-  const prepared=calls.find(c=>c.name==='board.pages.publish').input;assert.equal(prepared.artifactHash,frozen.manifest.artifactHash);assert.equal(prepared.repository,'fixture-alice/site');assert.equal(prepared.account,'fixture-alice');
+  const prepared=calls.find(c=>c.name==='board.pages.publish').input;assert.equal(prepared.artifactHash,frozen.manifest.artifactHash);assert.equal(prepared.repository,'fixture-alice/site');assert.equal(prepared.account,'fixture-alice');assert.equal(prepared.githubHost,'github.com');
   assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(button('合并此 PR 并发布'))})`),false);
   assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(button('打开已发布网页'))})`),false,'No link is offered before verification');
   await reload();
@@ -223,7 +232,7 @@ try {
   await screenshot('release-desktop-live');
   check('One explicit publish click starts the exact snapshot and repository; the server completes PR, merge and verified deployment across full page loss without another publish or merge click (GitHub adapter)');
   // A different target creates a new explicit request; response loss must persist it.
-  await click(button('读取 GitHub 账号'));await click(button('fixture-bob'));await click(button('fixture-bob/site'));publishMode='lost-response';
+  await click(button('读取 GitHub 账号'));await click(button('fixture-bob · github.com'));await click(button('fixture-bob/site'));publishMode='lost-response';
   await click(button('确认预览和数据，可发布此版本'));
   await click(button('一键发布'));await until("document.body.textContent.includes('Fixture response lost')");
   const unknown=calls.filter(c=>c.name==='board.pages.publish').at(-1).input;
@@ -231,17 +240,17 @@ try {
   await click(button(frozen.manifest.title+' · '+frozen.manifest.artifactHash.slice(0,10)));
   await until("document.querySelector('[data-testid=board-release-preview]')");
   assert.equal(count('board.pages.publish'),2,'Full reload must not automatically prepare/upload');
-  await click(button('fixture-bob/site · 结果待核对'));
+  await click(button('github.com · fixture-bob/site · 结果待核对'));
   await click(button('确认预览和数据，可发布此版本'));
   await click(button('一键继续发布'));
   await until("document.querySelector('[data-testid=board-pages-job]')?.textContent.includes('PR 已创建')");
   assert.equal(count('board.pages.publish'),3);assert.deepEqual(calls.filter(c=>c.name==='board.pages.publish').at(-1).input,unknown);
   assert.equal(jobs.size,2);
   check('An uncertain publish with an expired automatic window survives a complete page reload and retries only its original immutable request without creating a duplicate job');
-  await click(button('读取 GitHub 账号'));await click(button('fixture-bob'));await click(button('fixture-bob/private-site · 私有仓库'));publishMode='lost-before-job';
+  await click(button('读取 GitHub 账号'));await click(button('fixture-bob · github.com'));await click(button('fixture-bob/private-site · 私有仓库'));publishMode='lost-before-job';
   await click(button('一键发布'));await until("document.body.textContent.includes('Fixture connection lost before any readable job')");
   const unseen=calls.filter(c=>c.name==='board.pages.publish').at(-1).input;
-  await reload();await click(button('恢复发布 · fixture-bob/private-site'));
+  await reload();await click(button('恢复发布 · github.com · fixture-bob/private-site'));
   await until("document.querySelector('[data-testid=board-release-preview]')");
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(button('一键发布'))}).disabled`),true);
   assert.equal(count('board.pages.publish'),4);
@@ -249,7 +258,7 @@ try {
   await until("document.querySelector('[data-testid=board-pages-job]')?.textContent.includes('PR 已创建')");
   assert.deepEqual(calls.filter(c=>c.name==='board.pages.publish').at(-1).input,unseen);assert.equal(jobs.size,3);
   check('Even without a readable server job, full reload recovers the local publish request, requires preview confirmation again and reuses its exact event and target');
-  await click(button('读取 GitHub 账号'));await click(button('fixture-alice'));await click(button('fixture-alice/private-site · 私有仓库'));
+  await click(button('读取 GitHub 账号'));await click(button('fixture-alice · github.com'));await click(button('fixture-alice/private-site · 私有仓库'));
   await evaluate("window.restorePublicationStorage=Storage.prototype.setItem;Storage.prototype.setItem=function(key,value){if(key.startsWith('@paseo:board-pages:'))throw new DOMException('Fixture full storage','QuotaExceededError');return window.restorePublicationStorage.call(this,key,value)};true");
   const beforeQuota=count('board.pages.publish');await click(button('一键发布'));
   await until("document.body.textContent.includes('Fixture full storage')");assert.equal(count('board.pages.publish'),beforeQuota);
@@ -292,9 +301,55 @@ try {
   await until("document.querySelector('[data-testid=board-pages-job]')?.textContent.includes('已核实上线')",9000);
   assert.equal(count('board.pages.publish'),beforeRecovery+1);assert.equal(calls.filter(c=>c.name==='board.pages.publish').at(-1).input.eventId,legacy.eventId);
   check('An authorized unknown result keeps tracking background recovery to a verified URL with no second click, and publishing an existing live snapshot reuses its original event');
+  // The same login/repository on an Enterprise host is a new publication target.
+  // An Enterprise-only login remains usable without any public GitHub account.
+  configuredAccounts=configuredAccounts.filter(account=>account.host===enterpriseHost);
+  await click(button(frozen.manifest.title+' · '+frozen.manifest.artifactHash.slice(0,10)));
+  await until(`document.body.textContent.includes(${JSON.stringify(frozen.manifest.title+' · 固定版本')})&&!document.querySelector(${JSON.stringify(button('读取 GitHub 账号'))}).disabled`);
+  await click(button('读取 GitHub 账号'));
+  await until(`document.querySelector(${JSON.stringify(button('fixture-alice · '+enterpriseHost))})&&!document.querySelector(${JSON.stringify(button('fixture-alice · github.com'))})&&!document.querySelector(${JSON.stringify(button('读取 GitHub 账号'))}).disabled`);
+  assert.deepEqual(calls.filter(call=>call.name==='board.pages.accounts').at(-1).input,{});
+  assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(button('fixture-alice · github.com'))})`),false);
+  await click(button('fixture-alice · '+enterpriseHost));await click(button('fixture-alice/site'));
+  assert.deepEqual(calls.filter(call=>call.name==='board.pages.repositories').at(-1).input,{account:'fixture-alice',githubHost:enterpriseHost});
+  await click(button('确认预览和数据，可发布此版本'));publishMode='lost-before-job';
+  await click(button('一键发布'));await until("document.body.textContent.includes('Fixture connection lost before any readable job')");
+  const enterpriseRequest=calls.filter(call=>call.name==='board.pages.publish').at(-1).input;
+  assert.equal(enterpriseRequest.githubHost,enterpriseHost);assert.equal(enterpriseRequest.account,prepared.account);assert.equal(enterpriseRequest.repository,prepared.repository);assert.notEqual(enterpriseRequest.eventId,prepared.eventId);
+  const beforeEnterpriseReload=count('board.pages.publish');
+  await reload();await click(button('恢复发布 · '+enterpriseHost+' · fixture-alice/site'));
+  await until(`document.querySelector('[data-testid=board-release-preview]')&&document.body.textContent.includes(${JSON.stringify('发布账号：fixture-alice · '+enterpriseHost)})&&!document.querySelector(${JSON.stringify(button('读取 GitHub 账号'))}).disabled`);
+  assert.equal(count('board.pages.publish'),beforeEnterpriseReload);
+  assert.ok(await evaluate(`document.body.textContent.includes(${JSON.stringify('发布账号：fixture-alice · '+enterpriseHost)})`));
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(button('一键发布'))}).disabled`),true);
+  await click(button('确认预览和数据，可发布此版本'));await click(button('一键发布'));
+  await until("document.querySelector('[data-testid=board-pages-job]')?.textContent.includes('PR 已创建')");
+  assert.deepEqual(calls.filter(call=>call.name==='board.pages.publish').at(-1).input,enterpriseRequest);
+  assert.equal([...jobs.values()].filter(item=>item.releaseId===prepared.releaseId&&item.repository===prepared.repository).length,2);
+  check('Enterprise-only discovery works without a public login; identical account/repository names on different GitHub hosts get distinct requests, and reload recovers only the exact Enterprise target');
+  await replace('input[aria-label="GitHub 主机（可选）"]',enterpriseHost);
+  await until(`document.querySelector(${JSON.stringify(button('一键发布'))}).disabled&&!document.body.textContent.includes(${JSON.stringify('发布账号：fixture-alice · '+enterpriseHost)})`);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(button('一键发布'))}).disabled`),true);
+  await click(button('读取 GitHub 账号'));
+  await until(`document.querySelector(${JSON.stringify(button('fixture-alice · '+enterpriseHost))})&&!document.querySelector(${JSON.stringify(button('fixture-alice · '+enterpriseHost))}).disabled&&!document.querySelector(${JSON.stringify(button('读取 GitHub 账号'))}).disabled`);
+  await click(button('fixture-alice · '+enterpriseHost));
+  await until(`document.querySelector(${JSON.stringify(button('fixture-alice/site'))})&&!document.querySelector(${JSON.stringify(button('读取 GitHub 账号'))}).disabled`);
+  assert.deepEqual(calls.filter(call=>call.name==='board.pages.accounts').at(-1).input,{githubHost:enterpriseHost});
+  assert.deepEqual(calls.filter(call=>call.name==='board.pages.repositories').at(-1).input,{account:'fixture-alice',githubHost:enterpriseHost});
+  assert.equal(await evaluate('document.querySelector(\'input[aria-label="GitHub 仓库 owner/repo"]\').value'),'');
+  assert.equal(count('board.pages.publish'),beforeEnterpriseReload+1);
+  check('The optional GitHub hostname scopes discovery and repository reads, clears the old target and never publishes by itself');
+  await until(`document.querySelector(${JSON.stringify(button('打开网页（内容待核验）'))})`,9000);
+  assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(button('打开已发布网页'))})`),false);
+  assert.equal(await evaluate("document.querySelector('[data-testid=board-pages-job]').textContent.includes('已核实上线')"),false);
+  const beforePrivateOpen=count('board.pages.publish');await click(button('打开网页（内容待核验）'));
+  await until(`hostFixture.links.at(-1)===${JSON.stringify('https://pages.enterprise.example/fixture-alice/site/boards/'+frozen.manifest.releaseId.slice(8,24)+'/')}`);
+  assert.equal(await evaluate('hostFixture.links.at(-1)'),'https://pages.enterprise.example/fixture-alice/site/boards/'+frozen.manifest.releaseId.slice(8,24)+'/');
+  assert.equal(count('board.pages.publish'),beforePrivateOpen);
+  check('An Enterprise site with a successful build but login-protected contents exposes an explicitly unverified link without claiming live verification or starting another publication');
   await command('Emulation.setDeviceMetricsOverride',{width:420,height:860,deviceScaleFactor:1,mobile:false});
   const compactDownloadStart=downloadEvents.length;
-  await click(button('下载 ZIP'));await completedDownload(compactDownloadStart,secondRelease.manifest.releaseId+'.zip');await screenshot('release-compact');
+  await click(button('下载 ZIP'));await completedDownload(compactDownloadStart,frozen.manifest.releaseId+'.zip');await screenshot('release-compact');
   assert.ok(await evaluate("(()=>{const p=document.querySelector('[role=dialog]').getBoundingClientRect();return p.width>0&&p.left>=0&&p.right<=innerWidth})()"));
   check('The publication panel and download action remain reachable at a compact desktop viewport');
   }

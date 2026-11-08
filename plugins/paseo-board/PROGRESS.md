@@ -1,5 +1,12 @@
 # Paseo Board publication and verification
 
+### 2026-11-08 — Enterprise GitHub publishing integration in progress
+
+- The required target is company GitHub, with no public github.com account prerequisite. This delivery branch applies the host-qualified publishing changes from `3b54f481c71b4b1fddd3b89a98d5535d9e210bb4` onto the newer installed composition/pill baseline `2c48ceabf46b271859156eb116c77b338c3a83be`.
+- The main-based candidate passed 515 source tests, 15 release-host checks, 8 standalone release-browser checks, exact clean client/worker rebuilds, Hermes through the actual Helper and a real gh 2.92 empty-configuration check. Two earlier harness failures (render readiness and returning a React DOM node by value) remain recorded. These results do not yet validate this integrated delivery tree or a real company GitHub server.
+- Preserve `useBoardRpc` host routing, native ZIP download GUID/completion checks, composition/static-export boundaries, MCP SDK and locked dependencies. Rebuild both client and worker from this integrated tree; never copy the main-based binary over the newer plugin.
+- Integration verification and local installation are pending. The work computer has not been accessed; main remains unchanged. A dynamic backend and native external-comment intake are design proposals only: agent-owned application/storage logic, optional SSH deployment scaffolding, and separate permissions for comment intake, agent triage and external replies.
+
 ### 2026-11-06 — composer Board shortcut installed and desktop entry verified
 
 - Published as draft [PR #12](https://github.com/CM-BF/open-paseo-plugins/pull/12), stacked on PR #11. The installed runtime remains `8d76e1f`; only acceptance documentation follows it. No merge to main was performed.

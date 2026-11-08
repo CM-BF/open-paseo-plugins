@@ -37640,14 +37640,21 @@ var ReleaseCreateSchema = external_exports.object({
   network: external_exports.enum(["offline", "cdn"]).default("offline"),
   theme: external_exports.enum(["light", "dark"]).default("light")
 });
-var GitHubAccountSchema = external_exports.object({ login: external_exports.string(), host: external_exports.literal("github.com"), active: external_exports.boolean() });
+var GitHubHostSchema = external_exports.string().min(1).max(253).transform((value) => value.toLowerCase()).refine((value) => !/[^a-z0-9.-]/.test(value) && value.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)), "Invalid GitHub hostname");
+var GitHubLoginSchema = external_exports.string().min(1).max(100).regex(/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/).refine((value) => !/[^a-zA-Z0-9_.-]/.test(value), "Invalid GitHub login");
+var GitHubRepositoryNameSchema = external_exports.string().max(300).refine((value) => {
+  const parts = value.split("/");
+  return parts.length === 2 && parts.every((part) => part.length > 0 && part !== "." && part !== ".." && !/[^a-zA-Z0-9_.-]/.test(part));
+}, "Expected owner/repository without path traversal");
+var GitHubAccountSchema = external_exports.object({ login: GitHubLoginSchema, host: GitHubHostSchema, active: external_exports.boolean() });
 var GitHubRepositorySchema = external_exports.object({ name: external_exports.string(), private: external_exports.boolean(), url: external_exports.string() });
 var PagesPrepareSchema = external_exports.object({
   eventId: IdSchema,
   releaseId: ReleaseIdSchema,
   artifactHash: external_exports.string().regex(/^[a-f0-9]{64}$/),
-  account: external_exports.string().regex(/^[a-zA-Z0-9-]+$/),
-  repository: external_exports.string().regex(/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/),
+  githubHost: GitHubHostSchema.optional(),
+  account: GitHubLoginSchema,
+  repository: GitHubRepositoryNameSchema,
   createRepository: external_exports.enum(["public", "private"]).optional()
 });
 var PagesJobSchema = PagesPrepareSchema.extend({
@@ -37662,6 +37669,7 @@ var PagesJobSchema = PagesPrepareSchema.extend({
   mergedSha: external_exports.string().optional(),
   deploymentId: external_exports.string().optional(),
   url: external_exports.string().optional(),
+  deployedUrl: external_exports.string().optional(),
   verifiedAt: external_exports.string().optional(),
   error: external_exports.string().optional(),
   treeSha: external_exports.string().optional(),
@@ -37669,7 +37677,7 @@ var PagesJobSchema = PagesPrepareSchema.extend({
   pagesConfigured: external_exports.boolean().optional(),
   pagesConfigurationRequested: external_exports.boolean().optional(),
   pagesConfigurationHash: external_exports.string().optional(),
-  publicationMode: external_exports.enum(["workflow", "legacy-subdirectory"]).optional(),
+  publicationMode: external_exports.enum(["workflow", "legacy-subdirectory", "legacy-branch"]).optional(),
   sitePath: external_exports.string().regex(/^boards\/[a-f0-9]{64}$/).optional(),
   sourcePath: external_exports.enum(["/", "/docs"]).optional(),
   autoPublish: external_exports.boolean().optional(),
@@ -37680,8 +37688,8 @@ var createReleaseRpc = defineRpc({ name: "board.release.create", input: ReleaseC
 var listReleasesRpc = defineRpc({ name: "board.release.list", input: external_exports.object({ boardId: IdSchema }), output: external_exports.array(ReleaseManifestSchema) });
 var previewReleaseRpc = defineRpc({ name: "board.release.preview", input: releaseInput, output: external_exports.object({ manifest: ReleaseManifestSchema, html: external_exports.string() }) });
 var downloadReleaseRpc = defineRpc({ name: "board.release.download", input: releaseInput, output: external_exports.object({ manifest: ReleaseManifestSchema, fileName: external_exports.string(), zipBase64: external_exports.string() }) });
-var githubAccountsRpc = defineRpc({ name: "board.pages.accounts", input: external_exports.object({}), output: external_exports.array(GitHubAccountSchema) });
-var githubRepositoriesRpc = defineRpc({ name: "board.pages.repositories", input: external_exports.object({ account: external_exports.string() }), output: external_exports.array(GitHubRepositorySchema) });
+var githubAccountsRpc = defineRpc({ name: "board.pages.accounts", input: external_exports.object({ githubHost: GitHubHostSchema.optional() }), output: external_exports.array(GitHubAccountSchema) });
+var githubRepositoriesRpc = defineRpc({ name: "board.pages.repositories", input: external_exports.object({ account: GitHubLoginSchema, githubHost: GitHubHostSchema.optional() }), output: external_exports.array(GitHubRepositorySchema) });
 var preparePagesRpc = defineRpc({ name: "board.pages.prepare", input: PagesPrepareSchema, output: PagesJobSchema });
 var publishPagesRpc = defineRpc({ name: "board.pages.publish", input: PagesPrepareSchema, output: PagesJobSchema });
 var mergePagesRpc = defineRpc({ name: "board.pages.merge", input: external_exports.object({ jobId: IdSchema, expectedHead: external_exports.string().regex(/^[a-f0-9]{40}$/) }), output: PagesJobSchema });

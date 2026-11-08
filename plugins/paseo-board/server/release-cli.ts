@@ -12,14 +12,14 @@ export --board <board-read.json> --public-data <public.json> --out <new-director
        [--zip <new.zip>] [--store <private-release-directory>] [--network offline|cdn]
        [--theme light|dark] [--title <title>] [--serve]
 serve  --store <private-release-directory> --release <release-id>
-accounts
-repositories --account <login>
+accounts [--github-host <hostname>]
+repositories --account <login> [--github-host <hostname>]
 prepare --store <private-release-directory> --jobs <private-job-directory>
         --release <id> --hash <artifact-sha256> --account <login> --repo <owner/repo>
-        --event <immutable-id> [--create-repository public|private]
+        --event <immutable-id> [--github-host <hostname>] [--create-repository public|private]
 publish --store <private-release-directory> --jobs <private-job-directory>
         --release <id> --hash <artifact-sha256> --account <login> --repo <owner/repo>
-        --event <immutable-id> [--create-repository public|private]
+        --event <immutable-id> [--github-host <hostname>] [--create-repository public|private]
 merge   --store <directory> --jobs <directory> --job <id> --head <exact-pr-sha>
 refresh --store <directory> --jobs <directory> --job <id>
 jobs    --store <directory> --jobs <directory> [--release <id>]
@@ -28,6 +28,8 @@ export/serve operate locally. prepare uploads the reviewed public artifact and c
 merge requires successful exact-head validation before merging and enabling Pages.
 publish authorizes and automatically completes PR, merge and deployment verification.
 No command switches the active gh account. Do not publish private content without review.
+Repository and publication commands default to github.com for old requests.
+Account discovery lists configured GitHub hosts unless --github-host selects one.
 `;
 
 export async function releaseMain(argv: string[]): Promise<void> {
@@ -38,6 +40,16 @@ export async function releaseMain(argv: string[]): Promise<void> {
     if (key === "--serve") flags[key] = "true";
     else { const value = rest[++index]; if (!value || value.startsWith("--")) throw new Error(`Missing value for ${key}`); flags[key] = value; }
   }
+  const publicationFlags = ["--store", "--jobs", "--release", "--hash", "--account", "--repo", "--event", "--github-host", "--create-repository"];
+  const allowed: Record<string, string[]> = {
+    export: ["--board", "--public-data", "--out", "--zip", "--store", "--network", "--theme", "--title", "--serve"],
+    serve: ["--store", "--release"], accounts: ["--github-host"], repositories: ["--account", "--github-host"],
+    prepare: publicationFlags, publish: publicationFlags,
+    merge: ["--store", "--jobs", "--job", "--head"], refresh: ["--store", "--jobs", "--job"],
+    jobs: ["--store", "--jobs", "--release"],
+  };
+  if (!Object.hasOwn(allowed, command)) throw new Error(`Unknown command ${command}`);
+  for (const key of Object.keys(flags)) if (!allowed[command].includes(key)) throw new Error(`Unsupported argument ${key} for ${command}`);
   const required = (key: string) => { const value = flags[key]; if (!value) throw new Error(`Missing ${key}`); return value; };
   const output = (value: unknown) => process.stdout.write(JSON.stringify(value, null, 2) + "\n");
   const serve = async (repository: ReleaseRepository, releaseId: string) => {
@@ -60,11 +72,11 @@ export async function releaseMain(argv: string[]): Promise<void> {
   if (command === "serve") { await serve(new ReleaseRepository(required("--store")), required("--release")); return; }
   // Account discovery does not need or create local stores.
   const manager = new GitHubPagesManager(flags["--jobs"] ?? "", new ReleaseRepository(flags["--store"] ?? ""));
-  if (command === "accounts") { output(await manager.accounts()); return; }
-  if (command === "repositories") { output(await manager.repositories(required("--account"))); return; }
+  if (command === "accounts") { output(await manager.accounts(flags["--github-host"])); return; }
+  if (command === "repositories") { output(await manager.repositories(required("--account"), flags["--github-host"])); return; }
   required("--jobs"); required("--store");
   if (command === "prepare" || command === "publish") {
-    const request = { eventId: required("--event"), releaseId: required("--release"), artifactHash: required("--hash"), account: required("--account"), repository: required("--repo"), createRepository: flags["--create-repository"] as "public" | "private" | undefined };
+    const request = { eventId: required("--event"), releaseId: required("--release"), artifactHash: required("--hash"), githubHost: flags["--github-host"], account: required("--account"), repository: required("--repo"), createRepository: flags["--create-repository"] as "public" | "private" | undefined };
     if (command === "prepare") output(await manager.prepare(request));
     else {
       try {

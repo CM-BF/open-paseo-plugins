@@ -6453,9 +6453,15 @@ var ReleaseCreateSchema = z3.object({
   network: z3.enum(["offline", "cdn"]).default("offline"),
   theme: z3.enum(["light", "dark"]).default("light")
 });
+var GitHubHostSchema = z3.string().min(1).max(253).transform(value => value.toLowerCase()).refine(value => !/[^a-z0-9.-]/.test(value) && value.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)), "Invalid GitHub hostname");
+var GitHubLoginSchema = z3.string().min(1).max(100).regex(/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/).refine(value => !/[^a-zA-Z0-9_.-]/.test(value), "Invalid GitHub login");
+var GitHubRepositoryNameSchema = z3.string().max(300).refine(value => {
+  var parts = value.split("/");
+  return parts.length === 2 && parts.every(part => part.length > 0 && part !== "." && part !== ".." && !/[^a-zA-Z0-9_.-]/.test(part));
+}, "Expected owner/repository without path traversal");
 var GitHubAccountSchema = z3.object({
-  login: z3.string(),
-  host: z3.literal("github.com"),
+  login: GitHubLoginSchema,
+  host: GitHubHostSchema,
   active: z3.boolean()
 });
 var GitHubRepositorySchema = z3.object({
@@ -6467,8 +6473,9 @@ var PagesPrepareSchema = z3.object({
   eventId: IdSchema,
   releaseId: ReleaseIdSchema,
   artifactHash: z3.string().regex(/^[a-f0-9]{64}$/),
-  account: z3.string().regex(/^[a-zA-Z0-9-]+$/),
-  repository: z3.string().regex(/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/),
+  githubHost: GitHubHostSchema.optional(),
+  account: GitHubLoginSchema,
+  repository: GitHubRepositoryNameSchema,
   createRepository: z3.enum(["public", "private"]).optional()
 });
 var PagesJobSchema = PagesPrepareSchema.extend({
@@ -6483,6 +6490,7 @@ var PagesJobSchema = PagesPrepareSchema.extend({
   mergedSha: z3.string().optional(),
   deploymentId: z3.string().optional(),
   url: z3.string().optional(),
+  deployedUrl: z3.string().optional(),
   verifiedAt: z3.string().optional(),
   error: z3.string().optional(),
   treeSha: z3.string().optional(),
@@ -6490,7 +6498,7 @@ var PagesJobSchema = PagesPrepareSchema.extend({
   pagesConfigured: z3.boolean().optional(),
   pagesConfigurationRequested: z3.boolean().optional(),
   pagesConfigurationHash: z3.string().optional(),
-  publicationMode: z3.enum(["workflow", "legacy-subdirectory"]).optional(),
+  publicationMode: z3.enum(["workflow", "legacy-subdirectory", "legacy-branch"]).optional(),
   sitePath: z3.string().regex(/^boards\/[a-f0-9]{64}$/).optional(),
   sourcePath: z3.enum(["/", "/docs"]).optional(),
   autoPublish: z3.boolean().optional(),
@@ -6530,13 +6538,16 @@ var downloadReleaseRpc = defineRpc3({
 });
 var githubAccountsRpc = defineRpc3({
   name: "board.pages.accounts",
-  input: z3.object({}),
+  input: z3.object({
+    githubHost: GitHubHostSchema.optional()
+  }),
   output: z3.array(GitHubAccountSchema)
 });
 var githubRepositoriesRpc = defineRpc3({
   name: "board.pages.repositories",
   input: z3.object({
-    account: z3.string()
+    account: GitHubLoginSchema,
+    githubHost: GitHubHostSchema.optional()
   }),
   output: z3.array(GitHubRepositorySchema)
 });
@@ -6643,6 +6654,9 @@ function browserDraftStorage() {
 }
 
 // client/pages-outbox.ts
+var pagesGitHubHost = request => request.githubHost ?? "github.com";
+var samePagesTarget = (left, right) => left.releaseId === right.releaseId && left.artifactHash === right.artifactHash && pagesGitHubHost(left) === pagesGitHubHost(right) && left.account === right.account && left.repository === right.repository && left.createRepository === right.createRepository;
+var samePagesRequest = (left, right) => left.eventId === right.eventId && samePagesTarget(left, right);
 function createPagesOutbox(hostId, boardId, storage = browserDraftStorage()) {
   var prefix = `@paseo:board-pages:v1:${encodeURIComponent(JSON.stringify([hostId, boardId]))}:`;
   var requireStorage = () => {
@@ -6670,11 +6684,15 @@ function createPagesOutbox(hostId, boardId, storage = browserDraftStorage()) {
       return result;
     },
     save(raw) {
-      var db = requireStorage(),
-        request = PagesPrepareSchema.parse(raw),
-        key = prefix + request.eventId;
+      var db = requireStorage();
+      var request = PagesPrepareSchema.parse(raw);
+      var key = prefix + request.eventId;
       var existing = db.getItem(key);
-      if (existing && JSON.stringify(read(existing)) !== JSON.stringify(request)) throw new Error("\u540C\u4E00\u6B21\u53D1\u5E03\u8BF7\u6C42\u7684\u7248\u672C\u6216\u76EE\u6807\u5DF2\u6539\u53D8\u3002");
+      if (existing) {
+        var original = read(existing);
+        if (!samePagesRequest(original, request)) throw new Error("\u540C\u4E00\u6B21\u53D1\u5E03\u8BF7\u6C42\u7684\u7248\u672C\u6216\u76EE\u6807\u5DF2\u6539\u53D8\u3002");
+        request = original;
+      }
       db.setItem(key, JSON.stringify({
         action: "publish",
         request
@@ -6698,7 +6716,17 @@ var statusNames = {
   failed: "\u53D1\u5E03\u5931\u8D25",
   unknown: "\u7ED3\u679C\u5F85\u6838\u5BF9"
 };
-var requestMatches = (left, right) => left.eventId === right.eventId && left.releaseId === right.releaseId && left.artifactHash === right.artifactHash && left.account === right.account && left.repository === right.repository && left.createRepository === right.createRepository;
+var publicationRequest = value => ({
+  eventId: value.eventId,
+  releaseId: value.releaseId,
+  artifactHash: value.artifactHash,
+  ...(value.githubHost ? {
+    githubHost: value.githubHost
+  } : {}),
+  account: value.account,
+  repository: value.repository,
+  createRepository: value.createRepository
+});
 var automaticallyPublishing = value => value.autoPublish === true && !["live", "failed"].includes(value.status) && Boolean(value.autoPublishUntil && Date.parse(value.autoPublishUntil) > Date.now());
 var jobStatusName = value => value.status === "pr-open" && !automaticallyPublishing(value) ? "PR \u5DF2\u521B\u5EFA\uFF0C\u7B49\u5F85\u7EE7\u7EED\u53D1\u5E03" : statusNames[value.status];
 function ReleasePanel({
@@ -6727,6 +6755,8 @@ function ReleasePanel({
   var [reviewed, setReviewed] = useState8();
   var [accountList, setAccountList] = useState8([]),
     [account, setAccount] = useState8("");
+  var [githubHostFilter, setGitHubHostFilter] = useState8("");
+  var [githubHost, setGitHubHost] = useState8("github.com");
   var [repoList, setRepoList] = useState8([]),
     [repository, setRepository] = useState8("");
   var [createRepository, setCreateRepository] = useState8();
@@ -6852,12 +6882,13 @@ function ReleasePanel({
     currentJob.current = latest;
     setJob(latest);
     if (latest) {
+      setGitHubHost(pagesGitHubHost(latest));
       setAccount(latest.account);
       setRepository(latest.repository);
       setCreateRepository(latest.createRepository);
     }
     var _loop3 = function* (request) {
-      if (history.some(item => item.autoPublish && requestMatches(item, request))) outbox.remove(request.eventId);
+      if (history.some(item => item.autoPublish && samePagesRequest(item, request))) outbox.remove(request.eventId);
     };
     for (var request of outbox.list()) {
       yield* _loop3(request);
@@ -6885,19 +6916,17 @@ function ReleasePanel({
     var target = {
       releaseId: selected.releaseId,
       artifactHash: selected.artifactHash,
+      githubHost,
       account,
       repository: repository.trim(),
       createRepository
     };
     var previous = pageRequest.current;
-    var matchesTarget = item => item.releaseId === target.releaseId && item.artifactHash === target.artifactHash && item.account === target.account && item.repository === target.repository && item.createRepository === target.createRepository;
+    var matchesTarget = item => samePagesTarget(item, target);
     var known = jobs.find(item => item.status === "live" && matchesTarget(item)) ?? outbox.list().find(matchesTarget) ?? jobs.find(matchesTarget);
-    if (!previous || JSON.stringify({
-      ...previous,
-      eventId: void 0
-    }) !== JSON.stringify(target)) pageRequest.current = {
+    if (!previous || !samePagesTarget(previous, target)) pageRequest.current = known ? publicationRequest(known) : {
       ...target,
-      eventId: known?.eventId ?? localId("pages")
+      eventId: localId("pages")
     };
     yield sendPagesRequest(pageRequest.current);
   }));
@@ -7038,7 +7067,7 @@ function ReleasePanel({
         muted: true,
         children: "\u4E0A\u6B21\u5173\u95ED\u6216\u65AD\u7EBF\u524D\u7684\u7248\u672C\u548C\u76EE\u6807\u5DF2\u4FDD\u7559\u3002\u5DF2\u53D7\u7406\u7684\u53D1\u5E03\u4F1A\u5728\u540E\u53F0\u7EE7\u7EED\uFF1B\u6CA1\u6709\u53D7\u7406\u56DE\u6267\u65F6\u53EF\u91CD\u8BD5\u540C\u4E00\u6B21\u8BF7\u6C42\u3002"
       }), pendingPages.map(request => /* @__PURE__ */jsx9(Action, {
-        label: `\u6062\u590D\u53D1\u5E03 \xB7 ${request.repository}`,
+        label: `\u6062\u590D\u53D1\u5E03 \xB7 ${pagesGitHubHost(request)} \xB7 ${request.repository}`,
         disabled: busy,
         onPress: () => {
           void run(() => __async(null, null, function* () {
@@ -7048,6 +7077,7 @@ function ReleasePanel({
             if (saved.manifest.artifactHash !== request.artifactHash) throw new Error("\u53D1\u5E03\u7248\u672C\u4E0E\u539F\u8BF7\u6C42\u4E0D\u4E00\u81F4\u3002");
             yield showRelease(saved.manifest);
             pageRequest.current = request;
+            setGitHubHost(pagesGitHubHost(request));
             setAccount(request.account);
             setRepository(request.repository);
             setCreateRepository(request.createRepository);
@@ -7107,7 +7137,7 @@ function ReleasePanel({
         muted: true,
         children: "\u81EA\u6709\u670D\u52A1\u5668\uFF1A\u89E3\u538B\u540E\u628A\u76EE\u5F55\u4EA4\u7ED9 Nginx\u3001Caddy \u6216\u73B0\u6709\u9759\u6001\u7AD9\u70B9\u670D\u52A1\u3002\u7F51\u7AD9\u65E0\u9700\u8FD0\u884C Paseo\u3002"
       }), /* @__PURE__ */jsx9(Action, {
-        label: reviewed === selected.artifactHash ? "\u5DF2\u786E\u8BA4\u6B64\u7248\u672C\u53EF\u516C\u5F00" : "\u786E\u8BA4\u9884\u89C8\u548C\u6570\u636E\uFF0C\u53EF\u53D1\u5E03\u6B64\u7248\u672C",
+        label: reviewed === selected.artifactHash ? "\u5DF2\u786E\u8BA4\u6B64\u7248\u672C\u53EF\u53D1\u5E03" : "\u786E\u8BA4\u9884\u89C8\u548C\u6570\u636E\uFF0C\u53EF\u53D1\u5E03\u6B64\u7248\u672C",
         active: reviewed === selected.artifactHash,
         disabled: busy,
         onPress: () => setReviewed(selected.artifactHash)
@@ -7127,30 +7157,58 @@ function ReleasePanel({
         }), /* @__PURE__ */jsx9(Copy, {
           small: true,
           muted: true,
-          children: "Pages \u7F51\u7AD9\u901A\u5E38\u516C\u5F00\uFF0C\u5373\u4F7F\u6E90\u7801\u4ED3\u5E93\u4E3A\u79C1\u6709\u3002\u9009\u62E9\u5177\u4F53\u8D26\u53F7\u548C\u4ED3\u5E93\u540E\u624D\u4F1A\u4E0A\u4F20\u3002"
+          children: "\u652F\u6301 github.com \u548C\u516C\u53F8\u5185\u90E8 GitHub\u3002\u7F51\u7AD9\u8BBF\u95EE\u6743\u9650\u7531\u6240\u9009 GitHub \u7684 Pages \u8BBE\u7F6E\u51B3\u5B9A\uFF1B\u79C1\u6709\u4ED3\u5E93\u4E0D\u4EE3\u8868\u7F51\u7AD9\u4E5F\u79C1\u6709\u3002"
+        }), /* @__PURE__ */jsx9(TextInput3, {
+          accessibilityLabel: "GitHub \u4E3B\u673A\uFF08\u53EF\u9009\uFF09",
+          placeholder: "\u7559\u7A7A\u8BFB\u53D6\u5DF2\u767B\u5F55\u4E3B\u673A\uFF0C\u6216\u586B\u5199\u516C\u53F8 GitHub \u57DF\u540D",
+          placeholderTextColor: c.foregroundMuted,
+          value: githubHostFilter,
+          onChangeText: value => {
+            setGitHubHostFilter(value);
+            setAccountList([]);
+            setAccount("");
+            setRepoList([]);
+            setRepository("");
+            setCreateRepository(void 0);
+            pageRequest.current = void 0;
+          },
+          editable: !busy,
+          autoCapitalize: "none",
+          style: field
         }), /* @__PURE__ */jsx9(Action, {
           label: "\u8BFB\u53D6 GitHub \u8D26\u53F7",
           disabled: busy,
           onPress: () => {
             void run(() => __async(null, null, function* () {
-              setAccountList(yield accounts({}));
+              var filter = githubHostFilter.trim();
+              setAccountList(yield accounts(filter ? {
+                githubHost: filter
+              } : {}));
             }));
           }
         }), accountList.map(item => /* @__PURE__ */jsx9(Action, {
-          label: item.login,
-          active: account === item.login,
+          label: `${item.login} \xB7 ${item.host}`,
+          active: account === item.login && githubHost === item.host,
           disabled: busy,
           onPress: () => {
+            setGitHubHost(item.host);
             setAccount(item.login);
             setRepoList([]);
+            setRepository("");
+            setCreateRepository(void 0);
             pageRequest.current = void 0;
             void run(() => __async(null, null, function* () {
               return setRepoList(yield repositories({
-                account: item.login
+                account: item.login,
+                githubHost: item.host
               }));
             }));
           }
-        }, item.login)), /* @__PURE__ */jsx9(TextInput3, {
+        }, `${item.host}/${item.login}`)), account ? /* @__PURE__ */jsxs7(Copy, {
+          small: true,
+          muted: true,
+          children: ["\u53D1\u5E03\u8D26\u53F7\uFF1A", account, " \xB7 ", githubHost]
+        }) : null, /* @__PURE__ */jsx9(TextInput3, {
           accessibilityLabel: "GitHub \u4ED3\u5E93 owner/repo",
           placeholder: "owner/repository",
           placeholderTextColor: c.foregroundMuted,
@@ -7211,21 +7269,23 @@ function ReleasePanel({
           })]
         }), /* @__PURE__ */jsx9(Action, {
           label: createRepository ? "\u521B\u5EFA\u4ED3\u5E93\u5E76\u4E00\u952E\u53D1\u5E03" : "\u4E00\u952E\u53D1\u5E03",
-          disabled: busy || !account || !repository.trim() || reviewed !== selected.artifactHash || jobs.some(item => item.releaseId === selected.releaseId && item.account === account && item.repository === repository.trim() && automaticallyPublishing(item)),
+          disabled: busy || !account || !repository.trim() || reviewed !== selected.artifactHash || jobs.some(item => item.releaseId === selected.releaseId && pagesGitHubHost(item) === githubHost && item.account === account && item.repository === repository.trim() && automaticallyPublishing(item)),
           primary: true,
           onPress: () => {
             void requestPages();
           }
         }), jobs.map(item => /* @__PURE__ */jsx9(Action, {
-          label: `${item.repository} \xB7 ${jobStatusName(item)}`,
+          label: `${pagesGitHubHost(item)} \xB7 ${item.repository} \xB7 ${jobStatusName(item)}`,
           active: item.jobId === job?.jobId,
           disabled: busy,
           onPress: () => {
             currentJob.current = item;
             setJob(item);
+            setGitHubHost(pagesGitHubHost(item));
             setAccount(item.account);
             setRepository(item.repository);
             setCreateRepository(item.createRepository);
+            pageRequest.current = void 0;
           }
         }, item.jobId)), job ? /* @__PURE__ */jsxs7(View7, {
           testID: "board-pages-job",
@@ -7233,7 +7293,7 @@ function ReleasePanel({
             gap: 8
           },
           children: [/* @__PURE__ */jsxs7(Copy, {
-            children: [job.repository, " \xB7 ", jobStatusName(job)]
+            children: [pagesGitHubHost(job), " \xB7 ", job.repository, " \xB7 ", jobStatusName(job)]
           }), job.sitePath ? /* @__PURE__ */jsxs7(Copy, {
             small: true,
             muted: true,
@@ -7252,14 +7312,7 @@ function ReleasePanel({
             label: "\u4E00\u952E\u7EE7\u7EED\u53D1\u5E03",
             disabled: busy || reviewed !== job.artifactHash,
             onPress: () => {
-              void run(() => sendPagesRequest({
-                eventId: job.eventId,
-                releaseId: job.releaseId,
-                artifactHash: job.artifactHash,
-                account: job.account,
-                repository: job.repository,
-                createRepository: job.createRepository
-              }));
+              void run(() => sendPagesRequest(publicationRequest(job)));
             }
           }) : null, /* @__PURE__ */jsx9(Action, {
             label: "\u6838\u5BF9\u90E8\u7F72\u72B6\u6001",
@@ -7271,7 +7324,10 @@ function ReleasePanel({
                 }));
               }));
             }
-          }), job.status === "live" && job.url ? /* @__PURE__ */jsx9(Action, {
+          }), job.status !== "live" && job.deployedUrl ? /* @__PURE__ */jsx9(Action, {
+            label: "\u6253\u5F00\u7F51\u9875\uFF08\u5185\u5BB9\u5F85\u6838\u9A8C\uFF09",
+            onPress: () => openUrl(job.deployedUrl)
+          }) : null, job.status === "live" && job.url ? /* @__PURE__ */jsx9(Action, {
             label: "\u6253\u5F00\u5DF2\u53D1\u5E03\u7F51\u9875",
             onPress: () => openUrl(job.url)
           }) : null]
