@@ -188,7 +188,7 @@ try {
   }else{
   await click(button('读取 GitHub 账号'));
   await until(`document.querySelector(${JSON.stringify(button('fixture-alice · github.com'))})&&document.querySelector(${JSON.stringify(button('fixture-alice · '+enterpriseHost))})&&!document.querySelector(${JSON.stringify(button('读取 GitHub 账号'))}).disabled`);
-  assert.ok(await evaluate(`document.querySelector(${JSON.stringify(button('fixture-alice · github.com'))})&&document.querySelector(${JSON.stringify(button('fixture-alice · '+enterpriseHost))})`));
+  assert.equal(await evaluate(`Boolean(document.querySelector(${JSON.stringify(button('fixture-alice · github.com'))})&&document.querySelector(${JSON.stringify(button('fixture-alice · '+enterpriseHost))}))`),true);
   await click(button('fixture-alice · github.com'));await click(button('fixture-alice/site'));
   assert.deepEqual(calls.find(c=>c.name==='board.pages.repositories').input,{account:'fixture-alice',githubHost:'github.com'});
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(button('一键发布'))}).disabled`),true);
@@ -306,7 +306,9 @@ try {
   await replace('input[aria-label="GitHub 主机（可选）"]',enterpriseHost);
   await until(`document.querySelector(${JSON.stringify(button('一键发布'))}).disabled&&!document.body.textContent.includes(${JSON.stringify('发布账号：fixture-alice · '+enterpriseHost)})`);
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(button('一键发布'))}).disabled`),true);
-  await click(button('读取 GitHub 账号'));await click(button('fixture-alice · '+enterpriseHost));
+  await click(button('读取 GitHub 账号'));
+  await until(`document.querySelector(${JSON.stringify(button('fixture-alice · '+enterpriseHost))})&&!document.querySelector(${JSON.stringify(button('fixture-alice · '+enterpriseHost))}).disabled&&!document.querySelector(${JSON.stringify(button('读取 GitHub 账号'))}).disabled`);
+  await click(button('fixture-alice · '+enterpriseHost));
   await until(`document.querySelector(${JSON.stringify(button('fixture-alice/site'))})&&!document.querySelector(${JSON.stringify(button('读取 GitHub 账号'))}).disabled`);
   assert.deepEqual(calls.filter(call=>call.name==='board.pages.accounts').at(-1).input,{githubHost:enterpriseHost});
   assert.deepEqual(calls.filter(call=>call.name==='board.pages.repositories').at(-1).input,{account:'fixture-alice',githubHost:enterpriseHost});
