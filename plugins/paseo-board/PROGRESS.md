@@ -1,18 +1,20 @@
-# 2026-11-08 — 自由后端与原生评论收件箱（实现中）
+# 2026-11-08 — 自由后端与原生评论收件箱已安装，native 功能通过，真实 UI 待验
 
-用户已授权开始实现。新分支 sw/board-app-backends 基于已安装 31c4a271，保留所有新版 Board 能力。新开发 Board 为 board-capabilities-roadmap-20261108。设计见 docs/app-backends-design.md。
+分支 `sw/board-app-backends` 基于已安装 `31c4a271`，运行验收及安装基线为 `4b5d226808d5eff6f33a7538753821cbe0ed51fd`，保留现有嵌套画板、pill 和公司 GitHub 发布。实现与交付状态见 [完整验收记录](docs/verification/2026-11-08-app-backends.md)，设计见 [自由后端与收件箱](docs/app-backends-design.md)。新开发 Board 为 `board-capabilities-roadmap-20261108`。
 
-- 已实现、待整合验收：可编辑 Node/SQLite 脚手架、本机生命周期与 SSH 部署计划；原生评论账本、权限、连接器、UI、agent 只读/triage 工具。核心 14 项、HTTP 连接器 8 项、真实 MCP/稳定 CLI 12 项及生成应用到收件箱的端到端检查已分别通过。新增资产 `server/assets/app-runtime.txt` 由 `build:app` 生成并展开为稳定 `paseo-board-app` 入口。
-- 评论快捷键 58d4d7a 已整合为 68801e2；原独立验收证据保留，完整整合树尚需回归与重建。
-- 独立审查修正了来源配置的 pending 竞态/不确定提交恢复、旧窗口来源设置覆盖、迁移账本保护、恢复后评论游标倒退、IPv6 健康检查和部署后编辑源码导致旧版本无法管理的问题。保持失败证据，不将 fake SSH 参数检查称为真实 SSH 验收。
-- 收件箱宿主界面 7 项和静态发布浏览器 13 项通过，后者包含真实跨来源 API POST、持久读取、Cookie 隔离、请求边界与预览零网络。它们是实际组件加隔离传输检查，不是主 daemon 安装后的验收。
-- 隔离真实 SSH 六项通过：公钥握手、部署健康检查、备份、编辑本机源码后管理旧服务、再次部署保留数据与身份、日志及停服；自有 sshd/应用和临时私钥已清理。首轮 Fish 单引号损坏远端程序的失败保留，传输已改为固定加载器与 base64 源码。来源配置读写也统一为 2 MiB UTF-8 上限，最大来源与超限无损回归通过。
-- 补齐发布网页的后端能力：发布时固定 API origin，`board.request` 使用发布网站真实 CORS 来源；不放宽作者 iframe、不带主机凭据、不跟随重定向。后端路由与存储仍由 agent 自由编写。无 API 配置的旧版本保持静态行为，旧 manifest 可读取。
-- 尚未完成：集成验证、真实 UI、安装、PR。未访问工作电脑、未连接真实远端服务器、未改 main。
+- 已实现：可编辑 Node/SQLite 后端与本机/SSH 生命周期、迁移和备份恢复；原生评论账本、私有来源连接器、人工同步、默认关闭的 agent 读取/内部 triage 授权；发布页固定 API origin 与 `board.request`。应用逻辑由 agent 编写，内部 triage 不授权修改应用或公开回复。
+- 用户要求的评论快捷键已整合和安装：Enter 暂存，Option/Alt+Enter 发当前 Side，Option/Alt+Shift+Enter 新 Side，Cmd/Ctrl+Enter 将当前评论和队列统一发主会话。已有追问线程、IME、重复按键和未知结果重试保留原语义。
+- 同一固定源码完成 TypeScript、612 项源码测试、开发 Node/真实 Helper 各 16 项后端检查、7 项收件箱/13 项快捷键/17 项发布宿主/13 项发布浏览器/118 项完整画布及既有宿主、恢复、组合回归；三产物重新构建、Hermes 与真实 Helper 生产双 worker/导出/稳定 launcher 通过。浏览器宿主传输为 fixture 适配，不能代替真实主 daemon 页面。
+- 保留两次源码性能超时和非验收单项诊断。最终将 inbox-sync 的 10 项单独单 worker 执行，其余 602 项最多 4 workers，在原 5 秒单项上限及原断言下全部通过，产品源码未为此改变。
+- 隔离真实 SSH 六项通过：公钥握手、部署健康检查、备份、编辑本机源码后管理部署版本、再部署保留数据/身份、日志及停止。其自有 sshd/应用已停止、临时私钥移除。首轮 Fish 源码传输失败保留，固定加载器/base64 修复经实际 shell 验证；不宣称工作电脑或远程公司网络验收。
+- 已在 Paseo 0.14.0 主 daemon 备份安装 251 个精确跟踪文件，保留原 16 张 Board，仅重载 Board 一次。旧池退出、新池两个 worker；主 daemon 和 daemon worker 身份不变，main 未改。首次安装被静止旧发布 unknown 误阻塞，零修改/零重载退出；核查仅该精确无自动发布授权记录后安装成功，旧记录内容和 unknown 状态未修改。
+- 安装后新建 native agent 三轮功能已由完整 timeline 和数据读回证实：默认拒绝读取、开放读取但拒绝 triage、单独授权 triage 后成功并读回。正好 3 条测试消息、没有其他工具调用；后端导出、fixture 画布与原 16 张 Board 未变。没有应用文件的事前 hash 基线，不声称应用文件逐字节未变。
+- **待完成：真实主 daemon UI 与 fixture 清理。** 本分支以草稿 PR 交付，草稿不代表真实页面已通过验收。 CUA 三应用均 `cgWindowNotFound`，用户解锁问题待答；宽窄页面、刷新和原生工具详情截图尚未取得。专属 fixture 的后端已备份停服，读取/triage 权限关闭、来源停用；评论和三轮历史保留供 UI 接续，尚未删除或归档；不要重复创建或重发三轮消息。
+- 私有证据前缀为 `$PASEO_HOME/verification/paseo-board/app-backends-20261108/`：`integrated-1794180355669670000/receipt.json`、`install-app-backends-1794182861263-87e758.json`、`actual-20261109T001023602Z-664a5e4b9e/functional-root-review.json`。完整文档列出失败来源、范围与接续项。未访问工作电脑、未修改 Paseo 客户端或 main。
 
 # Paseo Board publication and verification
 
-### 2026-11-08 — comment shortcut update in progress
+### 2026-11-08 — comment shortcut isolated verification (subsequently integrated above)
 
 - Requested mapping: Enter stages the current comment; Alt/Option+Enter sends only the current comment to the selected Side; Alt/Option+Shift+Enter starts a new Side; Cmd/Ctrl+Enter sends the current comment and existing queue together to main. Shift+Enter and IME confirmation retain native text entry. Held keys must not repeat an action.
 - Combined main submission persists the current comment and captures the fresh ordered queue before acquiring the existing cross-window outbox lock; storage failures retain all comments and uncertain sends retain their original immutable route.

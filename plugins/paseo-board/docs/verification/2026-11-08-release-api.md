@@ -12,7 +12,7 @@ The added checks establish:
 - Unapproved origins, credential-option overrides, forbidden headers, oversized UTF-8 request bodies and direct authored `fetch` fail without reaching the backend. Redirects do not reach their destination. A response over 1 MiB is rejected; an exact 256 KiB request succeeds.
 - The actual opaque host preview rejects API-enabled startup reads and explicit writes with zero backend traffic.
 
-Receipt: `/Users/citrine/.paseo/verification/paseo-board/release-api-20261108/run-1794179730104515000/receipt.json`. Log SHA-256: `39253bcf16f5c81459d0107c3f4b6c4b432adbc7dabd804b349af25670339842`.
+Receipt: `$PASEO_HOME/verification/paseo-board/release-api-20261108/run-1794179730104515000/receipt.json` (`PASEO_HOME` defaults to `~/.paseo`). Log SHA-256: `39253bcf16f5c81459d0107c3f4b6c4b432adbc7dabd804b349af25670339842`.
 
 The receipt records exact hashes for both test files and all exercised viewer, release-contract, exporter and preview source files. These hashes matched the working files at handoff. No product code was modified by this browser-test change.
 
@@ -24,4 +24,4 @@ The API editor rejects an address containing a path before any create RPC. A val
 
 A valid stored manifest with the optional `apiOrigins` field omitted still passes real repository read/list/preview. It neither displays API authority nor creates a replacement release. The test changes only the owned fixture manifest and its canonical public manifest serialization; its hashed content inventory and viewer files stay intact.
 
-Receipt: `/Users/citrine/.paseo/verification/paseo-board/release-api-20261108/host-run-1794179801530784000/receipt.json`. Log SHA-256: `96c478df00738a3d00bc2ac9c86a85f6a59f02a05b1085062564c233ae09f099`. Recorded source hashes still matched at handoff, and `screenshots/release-api-origins.png` was visually reviewed.
+Receipt: `$PASEO_HOME/verification/paseo-board/release-api-20261108/host-run-1794179801530784000/receipt.json`. Log SHA-256: `96c478df00738a3d00bc2ac9c86a85f6a59f02a05b1085062564c233ae09f099`. Recorded source hashes still matched at handoff, and `screenshots/release-api-origins.png` was visually reviewed.
