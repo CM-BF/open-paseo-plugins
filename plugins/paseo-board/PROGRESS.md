@@ -1,6 +1,6 @@
-# 2026-11-08 — 自由后端与原生评论收件箱已安装，native 功能通过，真实 UI 待验
+# 2026-11-08 — 自由后端与原生评论收件箱已安装，native 功能及真实 UI 通过，专属 fixture 已清理
 
-草稿 PR：[14](https://github.com/CM-BF/open-paseo-plugins/pull/14)；首次远端交付提交 `11689d454c3037c45ba3d303329054dd4d5bc2ea`，运行验收基线 `4b5d226808d5eff6f33a7538753821cbe0ed51fd`。真实 UI 与 fixture 清理仍待完成，未合并 main。
+草稿 PR：[14](https://github.com/CM-BF/open-paseo-plugins/pull/14)；运行验收基线 `4b5d226808d5eff6f33a7538753821cbe0ed51fd`，本轮实际界面与只读收口时安装的 252 个跟踪文件精确匹配文档交付提交 `2063ca524cbb5a2914395de689a715b082cbc490`。真实 UI 已通过，专属 fixture 已于 2026-11-09 按精确账本清理；未合并 main。
 
 分支 `sw/board-app-backends` 基于已安装 `31c4a271`，运行验收及安装基线为 `4b5d226808d5eff6f33a7538753821cbe0ed51fd`，保留现有嵌套画板、pill 和公司 GitHub 发布。实现与交付状态见 [完整验收记录](docs/verification/2026-11-08-app-backends.md)，设计见 [自由后端与收件箱](docs/app-backends-design.md)。新开发 Board 为 `board-capabilities-roadmap-20261108`。
 
@@ -11,8 +11,12 @@
 - 隔离真实 SSH 六项通过：公钥握手、部署健康检查、备份、编辑本机源码后管理部署版本、再部署保留数据/身份、日志及停止。其自有 sshd/应用已停止、临时私钥移除。首轮 Fish 源码传输失败保留，固定加载器/base64 修复经实际 shell 验证；不宣称工作电脑或远程公司网络验收。
 - 已在 Paseo 0.14.0 主 daemon 备份安装 251 个精确跟踪文件，保留原 16 张 Board，仅重载 Board 一次。旧池退出、新池两个 worker；主 daemon 和 daemon worker 身份不变，main 未改。首次安装被静止旧发布 unknown 误阻塞，零修改/零重载退出；核查仅该精确无自动发布授权记录后安装成功，旧记录内容和 unknown 状态未修改。
 - 安装后新建 native agent 三轮功能已由完整 timeline 和数据读回证实：默认拒绝读取、开放读取但拒绝 triage、单独授权 triage 后成功并读回。正好 3 条测试消息、没有其他工具调用；后端导出、fixture 画布与原 16 张 Board 未变。没有应用文件的事前 hash 基线，不声称应用文件逐字节未变。
-- **待完成：真实主 daemon UI 与 fixture 清理。** 本分支以草稿 PR 交付，草稿不代表真实页面已通过验收。 CUA 三应用均 `cgWindowNotFound`，用户解锁问题待答；宽窄页面、刷新和原生工具详情截图尚未取得。专属 fixture 的后端已备份停服，读取/triage 权限关闭、来源停用；评论和三轮历史保留供 UI 接续，尚未删除或归档；不要重复创建或重发三轮消息。
-- 私有证据前缀为 `$PASEO_HOME/verification/paseo-board/app-backends-20261108/`：`integrated-1794180355669670000/receipt.json`、`install-app-backends-1794182861263-87e758.json`、`actual-20261109T001023602Z-664a5e4b9e/functional-root-review.json`。完整文档列出失败来源、范围与接续项。未访问工作电脑、未修改 Paseo 客户端或 main。
+- 实际界面已通过：解锁后由 CUA 操作 Chrome 的真实访客表单，只新增一条评论；已连接主 daemon 的原生 Paseo 界面启用来源并同步一条、将外部标记显示为普通文字、分别开启读取和 triage，关闭收件箱后原画布输入保留。真实 Comment 按钮和普通 Enter 暂存同一条评论，完整客户端刷新后原文仍在、讨论为零，随后通过 UI 删除。420×860 下键盘聚焦可到达第二条评论的内部处理编辑器、状态和取消控件；取消没有修改 triage。原生工具详情和两阶段最终回复均已截图复核。
+- 只读最终收口确认：恰好原 3 条 agent 消息及完整 timeline 未变；后端恰好 2 条评论，旧评论和原 triage 完整对象未变；原画布 HTML、数据、版本及零 interactions 保持不变。UI 已撤回读取/triage 并停用来源，最新收件箱 revision 为 13。只读收口没有业务写入、权限变更或发送。随后的清理见下一条。
+- 专属 fixture 已清理（状态 `fixture-cleaned-ui-absence-unverified`）：后端一致性备份后停服；测试 agent、workspace 归档，侧边栏中只含该 workspace 的项目记录移除（daemon 只删记录，不删文件）；Board 在三次空闲采样后仅停用、启用各一次（约 10 秒），停用期间完整备份 plugin data，只把该 Board、inbox、connector 三个精确文件移入私有 `moved/`。原 16 张 Board 全部保留且内容未变，新 worker 池运行，daemon 未重启，main 未改，未发送任何 agent 消息。应用源码、SQLite 数据和三轮原生历史保留为私有证据。清理后未再做 UI 目视确认，Board 消失由 `board.list` 与磁盘核对证明。
+- 清理分三次运行，前两次各停在一处过严的检查，均在停用 Board 之前，失败回执保留：归档 agent 后其 canonical timeline 改由持久历史重建，32 条条目逐项相同但 seq/messageId/时间戳/分组变化，原脚本按原始 hash 拦截；移除项目记录后 `fetchAgentHistory` 不再列出该已归档 agent（`fetchAgent` 仍返回原身份），原检查要求它仍在列表中。接续脚本不重做已确认步骤，改以逐项内容相等和“列表中不再有 fixture agent”作为门槛。另有一条 10 月 30 日的历史失败投递（交互已 applied、`awaitingTurn=false`）仅按其精确字节放行空闲门控，插件启动逻辑不会处理该记录。
+- 独立 `app.paseo.sh` v0.15.3 的 direct TCP 连接仍以 1006 失败；成功证据来自已连接本机主 daemon 的原生 Paseo WebView，未修改客户端或浏览器安全设置。真实界面本轮只补 Enter 暂存/刷新路径，Side/Cmd 发送组合仍引用组件测试；不新增实际 agent 投递。工作电脑、公司网络、物理手机、TLS/SSO、自动唤醒和公开回复不在本轮通过范围。
+- 私有证据前缀为 `$PASEO_HOME/verification/paseo-board/app-backends-20261108/`：`integrated-1794180355669670000/receipt.json`、`install-app-backends-1794182861263-87e758.json`；实际验收目录 `actual-20261109T001023602Z-664a5e4b9e/` 中保留 `functional-root-review.json`、`ui-unlocked/root-ui-review.json`、18 张截图、`readonly-final-1794207715566-a1ae2c.json`、`readonly-final-invariants-1794207715566-a1ae2c.json`，以及清理回执 `final-cleanup-1794207872449-20d5a1/`、`final-cleanup-continue-1794264374120-16ee6b/`、`final-cleanup-continue-1794264454781-fd1853/`。完整文档列出原失败、范围与清理结果。未访问工作电脑、未修改 Paseo 客户端或 main。
 
 # Paseo Board publication and verification
 
