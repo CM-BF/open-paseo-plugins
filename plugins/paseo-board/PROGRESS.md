@@ -1,5 +1,7 @@
 # 2026-11-08 — 自由后端与原生评论收件箱已安装，native 功能通过，真实 UI 待验
 
+草稿 PR：[14](https://github.com/CM-BF/open-paseo-plugins/pull/14)；首次远端交付提交 `11689d454c3037c45ba3d303329054dd4d5bc2ea`，运行验收基线 `4b5d226808d5eff6f33a7538753821cbe0ed51fd`。真实 UI 与 fixture 清理仍待完成，未合并 main。
+
 分支 `sw/board-app-backends` 基于已安装 `31c4a271`，运行验收及安装基线为 `4b5d226808d5eff6f33a7538753821cbe0ed51fd`，保留现有嵌套画板、pill 和公司 GitHub 发布。实现与交付状态见 [完整验收记录](docs/verification/2026-11-08-app-backends.md)，设计见 [自由后端与收件箱](docs/app-backends-design.md)。新开发 Board 为 `board-capabilities-roadmap-20261108`。
 
 - 已实现：可编辑 Node/SQLite 后端与本机/SSH 生命周期、迁移和备份恢复；原生评论账本、私有来源连接器、人工同步、默认关闭的 agent 读取/内部 triage 授权；发布页固定 API origin 与 `board.request`。应用逻辑由 agent 编写，内部 triage 不授权修改应用或公开回复。
