@@ -117,6 +117,15 @@ describe("resumable GitHub Pages publication", () => {
   });
   afterEach(async () => { await manager.close(); await rm(root, { recursive: true, force: true }); });
 
+  it("refuses a loopback live release on a public host, whichever command asks", async () => {
+    const board = await new BoardStore(join(root, "boards")).create({ id: "LOOPBACK_BOARD", title: "Local", html: "<p>Local</p>", data: {} });
+    const origin = "http://127.0.0.1:8787", local = await releases.create({ board, boardId: board.id, expectedCanvasBase: { revision: 1, documentVersion: 1 }, publicData: {}, apiOrigins: [origin], live: { origin, channelId: `c${"a".repeat(32)}`, paths: ["/live/a"] } });
+    const request = { ...input, eventId: "loopback-fixture", releaseId: local.manifest.releaseId, artifactHash: local.manifest.artifactHash };
+    await expect(manager.prepare(request)).rejects.toThrow("本机测试用的实时数据不能发布到公开站点");
+    await expect(manager.publish({ ...request, githubHost: "github.enterprise.example" })).rejects.toThrow("本机测试用的实时数据不能发布到公开站点");
+    expect(github.calls).toHaveLength(0);
+    await expect(manager.list(local.manifest.releaseId)).resolves.toEqual([]);
+  });
   it("lists selected identities and writable repositories without switching accounts", async () => {
     expect(await manager.accounts()).toEqual([{ login: "writer", host: "github.com", active: true }]);
     expect(await manager.repositories("writer")).toEqual([{ name: "writer/site", private: false, url: "https://github.com/writer/site" }]);

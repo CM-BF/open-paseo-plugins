@@ -365,6 +365,11 @@ describe("share status and one-click share update", () => {
       expect(result.request).toMatchObject({ shareKey: key, repository: "fixture/site" });
       noPagesWrites(f);
     });
+    it("reports no drift for a non-live share once the channel has been stopped", async () => {
+      const { f } = await liveFixture(channelFor({ channelState: "revoked", state: "revoked" })), manifest = await f.create();
+      vi.mocked(f.pages.list).mockResolvedValue([job(manifest, { shareKey: key, shareUrl: `https://fixture.github.io/site/boards/${key}/` })]);
+      expect(await liveUpdate(f, (await status(f)).shares[0].seriesId, "keep")).toEqual({ upToDate: true });
+    });
     it("gives a non-live share live data through one current update, and reports it as drift first", async () => {
       const { f } = await liveFixture(channelFor()), manifest = await f.create();
       vi.mocked(f.pages.list).mockResolvedValue([job(manifest, { shareKey: key, shareUrl: `https://fixture.github.io/site/boards/${key}/` })]);

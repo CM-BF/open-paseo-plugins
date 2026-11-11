@@ -6496,6 +6496,11 @@ var isLoopbackOrigin = origin => {
   } = new URL(origin);
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
 };
+var LOOPBACK_LIVE_REFUSAL = "\u672C\u673A\u6D4B\u8BD5\u7528\u7684\u5B9E\u65F6\u6570\u636E\u4E0D\u80FD\u53D1\u5E03\u5230\u516C\u5F00\u7AD9\u70B9\uFF1B\u8BF7\u5148\u8FDE\u63A5\u8BBF\u5BA2\u80FD\u8BBF\u95EE\u7684\u540E\u7AEF";
+var loopbackLiveRefused = (live, githubHost) => {
+  var host = githubHost ?? "github.com";
+  return !!live && isLoopbackOrigin(live.origin) && host !== "localhost" && host !== "127.0.0.1";
+};
 var LIVE_LIMITS = {
   paths: 32,
   documentBytes: 6e4
@@ -7006,6 +7011,7 @@ function inheritedSettingsText(share) {
 }
 function shareLiveDrift(share, channel) {
   if (!share.settings) return void 0;
+  if (!share.settings.live && channel?.state === "revoked") return void 0;
   var stored = share.settings.live,
     had = new Set(stored?.paths ?? []),
     now = new Set(channel?.marks.map(mark => mark.path) ?? []);
@@ -7244,13 +7250,19 @@ var LiveGetInputSchema = InboxScopeSchema.extend({
   probeOrigin: PublicApiOriginSchema.optional(),
   pageOrigins: z5.array(PublicApiOriginSchema).max(8).optional()
 }).strict();
+var LiveOrphanSchema = z5.object({
+  expectedCreatedAt: z5.string(),
+  channel: LiveChannelSchema,
+  status: LiveStatusSchema
+}).strict();
 var LiveGetOutputSchema = z5.object({
   channel: LiveChannelSchema.nullable(),
   status: LiveStatusSchema,
   preview: LivePreviewSchema.nullable(),
   backend: LiveBackendSchema.nullable(),
   originProblems: z5.array(z5.string()),
-  consentDigest: LiveDigestSchema.nullable()
+  consentDigest: LiveDigestSchema.nullable(),
+  orphans: z5.array(LiveOrphanSchema).optional()
 }).strict();
 var setBase = {
   ...InboxScopeSchema.shape,
@@ -7700,6 +7712,7 @@ function ReleasePanel({
     void openExternalUrl(url).catch(error => setFailure(errorMessage(error)));
   };
   var sendPagesRequest = request => __async(null, null, function* () {
+    if (selected?.releaseId === request.releaseId && loopbackLiveRefused(selected.live, request.githubHost)) throw new Error(LOOPBACK_LIVE_REFUSAL);
     var frozen = outbox.save(request);
     setPendingPages(outbox.list());
     rememberJob(yield publish(frozen));
@@ -8427,9 +8440,12 @@ ${share.link}${share.verified ? "" : "\uFF08\u5185\u5BB9\u5F85\u6838\u9A8C\uFF09
             pageRequest.current = void 0;
           }
         })]
-      }), /* @__PURE__ */jsx9(Action, {
+      }), loopbackLiveRefused(selected.live, githubHost) ? /* @__PURE__ */jsx9(Notice, {
+        error: true,
+        text: LOOPBACK_LIVE_REFUSAL
+      }) : null, /* @__PURE__ */jsx9(Action, {
         label: createRepository ? "\u521B\u5EFA\u4ED3\u5E93\u5E76\u4E00\u952E\u53D1\u5E03" : "\u4E00\u952E\u53D1\u5E03",
-        disabled: busy || !account || !repository.trim() || reviewed !== selected.artifactHash || jobs.some(item => item.releaseId === selected.releaseId && pagesGitHubHost(item) === githubHost && item.account === account && item.repository === repository.trim() && automaticallyPublishing(item)),
+        disabled: busy || !account || !repository.trim() || reviewed !== selected.artifactHash || loopbackLiveRefused(selected.live, githubHost) || jobs.some(item => item.releaseId === selected.releaseId && pagesGitHubHost(item) === githubHost && item.account === account && item.repository === repository.trim() && automaticallyPublishing(item)),
         primary: true,
         onPress: () => {
           void requestPages();
@@ -8735,6 +8751,7 @@ function LiveDataPanel({
   var [review, setReview] = useState11();
   var [acknowledged, setAcknowledged] = useState11();
   var [narrowed, setNarrowed] = useState11(false);
+  var [orphans, setOrphans] = useState11([]);
   var [busy, setBusy] = useState11(false),
     [failure, setFailure] = useState11();
   var mounted = useRef10(true),
@@ -8762,13 +8779,17 @@ function LiveDataPanel({
     backend = reviewed?.backend ?? null;
   var digest = reviewed?.consentDigest ?? null;
   var adopt = (value, epoch) => {
-    if (epoch === writeEpoch.current) setCurrent(value);
+    if (epoch === writeEpoch.current) {
+      setCurrent(value);
+      setOrphans(value.orphans ?? []);
+    }
   };
   useEffect11(() => {
     mounted.current = true;
     void read(scope).then(value => {
       if (!mounted.current) return;
       setCurrent(value);
+      setOrphans(value.orphans ?? []);
       if (value.channel) {
         setOrigin(value.channel.origin);
         setProbe(value.channel.origin);
@@ -8843,7 +8864,7 @@ function LiveDataPanel({
   }, [revision]);
   var state = status?.state;
   useEffect11(() => {
-    if (!channel) return;
+    if (!channel && !orphans.length) return;
     var active = true;
     var epoch = writeEpoch.current;
     var timer = setTimeout(() => {
@@ -8915,6 +8936,7 @@ function LiveDataPanel({
   var settled = !!channel && (channel.state === "ready" || channel.state === "pending" || channel.state === "paused") && liveMarksKey(channel.marks) === marksKey && !tokenTyped && !deploymentMoved;
   var ready = origin.trim() === probe && !!digest && !!deploymentId && !!preview && !preview.overLimit && marks.length > 0 && !subtreeMissing && backendUsable && tokenValid && (tokenTyped || !tokenNeeded) && channel?.state !== "revoking" && (!deploymentMoved || deploymentMoveAllowed);
   var ticked = !!digest && acknowledged === digest;
+  var confirmHint = !digest ? "\u5148\u68C0\u67E5\u540E\u7AEF\u5E76\u9009\u62E9\u5B57\u6BB5\uFF0C\u624D\u80FD\u786E\u8BA4\u516C\u5F00\u3002" : origin.trim() !== probe ? "\u540E\u7AEF\u6765\u6E90\u5DF2\u4FEE\u6539\uFF0C\u8BF7\u91CD\u65B0\u68C0\u67E5\u540E\u7AEF\u3002" : tokenNeeded && !tokenTyped ? "\u8BF7\u586B\u5199\u5199\u5165\u4EE4\u724C\u3002" : void 0;
   useEffect11(() => {
     if (acknowledged && acknowledged !== digest) setAcknowledged(void 0);
   }, [acknowledged, digest]);
@@ -8962,6 +8984,22 @@ function LiveDataPanel({
     if (mounted.current) {
       setCurrent(result);
       setNarrowed(false);
+      live.refresh();
+    }
+  }));
+  var stopOrphan = (orphan, action) => run(() => __async(null, null, function* () {
+    writeEpoch.current++;
+    yield write({
+      boardId: board.id,
+      expectedCreatedAt: orphan.expectedCreatedAt,
+      action,
+      eventId: localId("live"),
+      expectedEventId: orphan.channel.eventId
+    });
+    var epoch = writeEpoch.current,
+      value = yield read(scope);
+    if (mounted.current) {
+      adopt(value, epoch);
       live.refresh();
     }
   }));
@@ -9041,7 +9079,7 @@ function LiveDataPanel({
         text: "\u8FD9\u4E2A\u540E\u7AEF\u8FD8\u6CA1\u6709\u542F\u7528\u5B9E\u65F6\u6570\u636E\u3002\u8BBE\u7F6E\u4EE4\u724C\u5E76\u91CD\u542F\u540E\u7AEF\u540E\uFF0C\u518D\u68C0\u67E5\u4E00\u6B21\u3002"
       }) : null, deploymentMoved ? /* @__PURE__ */jsx10(Notice, {
         error: true,
-        text: deploymentMoveAllowed ? "\u540E\u7AEF\u90E8\u7F72\u5DF2\u53D8\u66F4\uFF0C\u65E7\u526F\u672C\u5DF2\u4E0D\u5728\u8FD9\u4E2A\u540E\u7AEF\u3002\u786E\u8BA4\u540E\u4F1A\u8FDE\u63A5\u65B0\u7684\u90E8\u7F72\u3002" : "\u540E\u7AEF\u7684\u90E8\u7F72 ID \u4E0E\u6B64\u524D\u4E0D\u540C\u3002\u8BF7\u5148\u505C\u6B62\u516C\u5F00\u5E76\u6E05\u9664\u65E7\u540E\u7AEF\u7684\u526F\u672C\u3002"
+        text: deploymentMoveAllowed ? "\u540E\u7AEF\u90E8\u7F72\u5DF2\u53D8\u66F4\uFF0C\u65E7\u526F\u672C\u5DF2\u4E0D\u5728\u8FD9\u4E2A\u540E\u7AEF\u3002\u786E\u8BA4\u540E\u4F1A\u8FDE\u63A5\u65B0\u7684\u90E8\u7F72\uFF0C\u9700\u8981\u91CD\u65B0\u586B\u5199\u5199\u5165\u4EE4\u724C\u3002" : "\u540E\u7AEF\u7684\u90E8\u7F72 ID \u4E0E\u6B64\u524D\u4E0D\u540C\u3002\u8BF7\u5148\u505C\u6B62\u516C\u5F00\u5E76\u6E05\u9664\u65E7\u540E\u7AEF\u7684\u526F\u672C\u3002"
       }) : null, /* @__PURE__ */jsx10(TextInput4, {
         testID: "board-live-token",
         accessibilityLabel: "\u5199\u5165\u4EE4\u724C",
@@ -9226,10 +9264,14 @@ ${path}\uFF1A${byteText(bytes)}`).join("")]
         onPress: () => {
           void confirm();
         }
-      }), !digest ? /* @__PURE__ */jsx10(Copy, {
+      }), confirmHint ? /* @__PURE__ */jsx10(Copy, {
         small: true,
         muted: true,
-        children: "\u5148\u68C0\u67E5\u540E\u7AEF\u5E76\u9009\u62E9\u5B57\u6BB5\uFF0C\u624D\u80FD\u786E\u8BA4\u516C\u5F00\u3002"
+        children: confirmHint
+      }) : null, channel?.state === "paused" ? /* @__PURE__ */jsx10(Copy, {
+        small: true,
+        muted: true,
+        children: "\u786E\u8BA4\u53EA\u66F4\u65B0\u8BBE\u7F6E\uFF0C\u63A8\u9001\u4ECD\u4FDD\u6301\u6682\u505C\uFF0C\u76F4\u5230\u4F60\u9009\u62E9\u300C\u6062\u590D\u63A8\u9001\u300D\u3002"
       }) : null]
     }), channel && status ? /* @__PURE__ */jsx10(Section, {
       title: "5. \u72B6\u6001",
@@ -9264,6 +9306,8 @@ ${path}\uFF1A${byteText(bytes)}`).join("")]
           text: `\u8BBF\u5BA2\u6D4F\u89C8\u5668\u53EF\u80FD\u88AB\u540E\u7AEF\u62D2\u7EDD\uFF1A${problem}`
         }, problem)), narrowed && (status.state === "retrying" || status.state === "blocked") ? /* @__PURE__ */jsx10(Notice, {
           text: "\u5DF2\u5728\u672C\u673A\u505C\u6B62\uFF0C\u540E\u7AEF\u4ECD\u4FDD\u7559\u65E7\u5185\u5BB9\uFF0C\u8FDE\u63A5\u6062\u590D\u540E\u8986\u76D6"
+        }) : null, narrowed && status.state === "paused" ? /* @__PURE__ */jsx10(Notice, {
+          text: "\u63A8\u9001\u5DF2\u6682\u505C\uFF0C\u540E\u7AEF\u4ECD\u4FDD\u7559\u65E7\u5185\u5BB9\uFF1B\u6062\u590D\u63A8\u9001\u540E\u624D\u4F1A\u6309\u65B0\u7684\u5B57\u6BB5\u8986\u76D6\uFF0C\u8981\u7ACB\u5373\u6E05\u9664\u8BF7\u505C\u6B62\u516C\u5F00\u3002"
         }) : null]
       })
     }) : null, channel && channel.state !== "revoked" ? /* @__PURE__ */jsxs8(Section, {
@@ -9315,6 +9359,40 @@ ${path}\uFF1A${byteText(bytes)}`).join("")]
           children: "\u540E\u7AEF\u65E0\u6CD5\u5B8C\u6210\u6E05\u9664\u65F6\u4F7F\u7528\uFF1A\u672C\u673A\u5220\u9664\u4EE4\u724C\u5E76\u7ED3\u675F\u91CD\u8BD5\uFF0C\u540E\u7AEF\u526F\u672C\u53EF\u80FD\u4ECD\u53EF\u88AB\u8BFB\u53D6\u3002"
         })]
       }) : null]
+    }) : null, orphans.length ? /* @__PURE__ */jsxs8(Section, {
+      title: "\u65E7 Board \u7559\u4E0B\u7684\u8FDE\u63A5",
+      children: [/* @__PURE__ */jsx10(Copy, {
+        small: true,
+        muted: true,
+        children: "\u8FD9\u5F20 Board \u7684\u5185\u5BB9\u5DF2\u88AB\u66FF\u6362\u3002\u4E0B\u9762\u7684\u8FDE\u63A5\u4E0D\u4F1A\u518D\u63A8\u9001\uFF0C\u4F46\u540E\u7AEF\u526F\u672C\u4ECD\u53EF\u88AB\u8BFB\u53D6\uFF0C\u4EE4\u724C\u4E5F\u8FD8\u4FDD\u5B58\u5728\u672C\u673A\u3002"
+      }), orphans.map(orphan => /* @__PURE__ */jsxs8(View8, {
+        testID: "board-live-orphan",
+        style: {
+          gap: 4
+        },
+        children: [/* @__PURE__ */jsxs8(Copy, {
+          small: true,
+          muted: true,
+          children: [orphan.channel.origin, " \xB7 ", liveStateNames[orphan.status.state]]
+        }), orphan.status.lastError ? /* @__PURE__ */jsx10(Notice, {
+          error: true,
+          text: `\u6700\u540E\u9519\u8BEF\uFF1A${orphan.status.lastError.message}`
+        }) : null, /* @__PURE__ */jsx10(Action, {
+          testID: "board-live-orphan-revoke",
+          label: `\u6E05\u9664 ${orphan.channel.origin} \u4E0A\u7684\u65E7\u526F\u672C`,
+          disabled: busy || orphan.channel.state === "revoking",
+          onPress: () => {
+            void stopOrphan(orphan, "revoke");
+          }
+        }), orphan.channel.state === "revoking" && orphan.status.lastError ? /* @__PURE__ */jsx10(Action, {
+          testID: "board-live-orphan-stop-local",
+          label: `${LOCAL_STOP_LABEL}\uFF1A${orphan.channel.origin}`,
+          disabled: busy,
+          onPress: () => {
+            void stopOrphan(orphan, "stop-local");
+          }
+        }) : null]
+      }, orphan.channel.channelId))]
     }) : null]
   });
 }

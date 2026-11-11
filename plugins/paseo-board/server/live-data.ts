@@ -6,7 +6,7 @@ import type { BoardChange } from "../shared/contracts";
 import { IdSchema } from "../shared/contracts";
 import {
   LiveChannelSchema, LiveChannelStateSchema, LiveErrorSchema, LiveGetInputSchema, LiveGetOutputSchema, LiveMarksSchema, LiveSetInputSchema, LiveSetOutputSchema,
-  LiveTokenSchema, LiveWithheldSchema, LIVE_LIMITS, LIVE_RUNTIME_OUTDATED, type LiveChannel, type LiveGetOutput, type LiveMark, type LivePreview, type LiveSetInput, type LiveSetOutput, type LiveStatus,
+  LiveTokenSchema, LiveWithheldSchema, LIVE_LIMITS, LIVE_RUNTIME_OUTDATED, type LiveChannel, type LiveGetOutput, type LiveMark, type LiveOrphan, type LivePreview, type LiveSetInput, type LiveSetOutput, type LiveStatus,
 } from "../shared/live-data";
 import { LiveChannelIdSchema, PublicApiOriginSchema, type LiveState } from "../shared/release-contracts";
 import { sortLiveMarks, type LiveBoardProjection } from "./live-projection";
@@ -18,6 +18,7 @@ const BACKOFF_MS = [1_000, 2_000, 5_000, 15_000, 30_000, 60_000];
 const STORED_BYTES = 256 * 1024, RESPONSE_BYTES = 8_192;
 const ACTIVE = new Set(["ready", "pending"]);
 const CONSENT_CHANGED = "公开设置已变化，请重新确认";
+const NO_CHANNEL = "这张 Board 还没有实时公开连接", BOARD_REPLACED = "这张 Board 已被替换；请重新打开后再修改实时数据";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 /** Consent binds to what is public and where, never to values, so later values can flow. */
@@ -61,7 +62,7 @@ export interface LiveReleaseChannel { origin: string; channelId: string; paths: 
 
 interface Runtime {
   file: string; boardId: string; createdAt: string; active: boolean;
-  dirty: boolean; force: boolean; busy: boolean; queued: boolean; heartbeatQueued: boolean;
+  dirty: boolean; force: boolean; busy: boolean; queued: boolean; heartbeatQueued: boolean; heartbeatDue: boolean;
   timer?: unknown; dirtySince?: number; notBefore: number; lastCanvasRevision?: number;
   abort?: AbortController; superseded: boolean;
 }
@@ -91,7 +92,7 @@ function retryAfterMs(header: string | null): number | undefined {
 function classify(sent: Sent, heartbeat?: { seq: number; journalSeq: number }): Verdict {
   const { status, reply } = sent, conflict = reply.error;
   if (status >= 200 && status < 300) return { kind: "ok" };
-  if (status === 401) return { kind: "block", code: "token_rejected", message: "后端拒绝了写入令牌；请在连接设置中重新填写。" };
+  if (status === 401) return { kind: "block", code: "token_rejected", message: "后端拒绝了写入令牌；请在「1. 后端」中重新填写。" };
   if (status === 404) return { kind: "block", code: "backend_disabled_or_missing", message: "后端没有启用实时数据或通道不存在；请检查 BOARD_LIVE_WRITE_TOKEN 与部署。" };
   if (status === 410) return { kind: "block", code: "backend_cleared", message: "后端副本已被清除；要恢复需要重新确认公开。", currentSeq: reply.currentSeq };
   if (status === 413) return { kind: "block", code: "document_rejected", message: "后端拒绝了过大的公开数据。" };
@@ -164,7 +165,7 @@ export class LiveDataPublisher {
     const file = this.fileFor(boardId, createdAt);
     let c = this.runtimes.get(file);
     if (!c) {
-      c = { file, boardId, createdAt, active: false, dirty: false, force: false, busy: false, queued: false, heartbeatQueued: false, notBefore: 0, superseded: false };
+      c = { file, boardId, createdAt, active: false, dirty: false, force: false, busy: false, queued: false, heartbeatQueued: false, heartbeatDue: false, notBefore: 0, superseded: false };
       this.runtimes.set(file, c);
       const peers = this.byBoard.get(boardId) ?? new Set();
       peers.add(c); this.byBoard.set(boardId, peers);
@@ -289,16 +290,18 @@ export class LiveDataPublisher {
 
   private async flush(c: Runtime): Promise<void> {
     if (this.stopped) return;
+    // A timer that fired during a slow request queues this flush; the floor or backoff that request set still holds.
+    if (c.dirty && c.notBefore > this.clock.now()) { this.arm(c, c.notBefore); return; }
     const record = await this.readRecord(c.file);
     if (!record) { c.dirty = false; return; }
     if (record.state === "revoking") return this.clearBackend(c, record);
     if (!c.dirty || !ACTIVE.has(record.state)) { c.dirty = false; return; }
-    const force = c.force;
-    c.dirty = false; c.force = false; c.busy = true;
-    try { await this.push(c, record, force); } finally { c.busy = false; }
+    const force = c.force, heartbeatDue = c.heartbeatDue;
+    c.dirty = false; c.force = false; c.heartbeatDue = false; c.busy = true;
+    try { await this.push(c, record, force, heartbeatDue); } finally { c.busy = false; }
   }
 
-  private async push(c: Runtime, record: ChannelFile, force: boolean): Promise<void> {
+  private async push(c: Runtime, record: ChannelFile, force: boolean, heartbeatDue: boolean): Promise<void> {
     let journal = await this.readJournal(c.file), p: LiveBoardProjection | null;
     try { p = await this.store.projectPublic(record.boardId, record.expectedCreatedAt, record.marks); }
     catch { return this.backoff(c, journal, { code: "board_unavailable", message: "暂时读不到 Board 数据，正在重试。" }, force); }
@@ -310,10 +313,11 @@ export class LiveDataPublisher {
     if (p.overLimit || !p.body || !p.digest) return; // The backend keeps its last good copy; no heartbeat will attest it.
     const { body, digest, bytes, canvasRevision } = p;
     if (record.state === "ready" && !force && !journal.sending && digest === journal.acked?.digest) {
-      if (journal.attempts || journal.lastError) await this.writeJournal(c, { ...journal, attempts: 0, nextAttemptAt: undefined, lastError: undefined });
+      if (journal.attempts || journal.lastError) journal = await this.writeJournal(c, { ...journal, attempts: 0, nextAttemptAt: undefined, lastError: undefined });
+      if (heartbeatDue) await this.attest(c, record, journal);
       return;
     }
-    if (!record.token) return this.block(c, record, journal, { code: "token_rejected", message: "缺少写入令牌；请在连接设置中重新填写。" });
+    if (!record.token) return this.block(c, record, journal, { code: "token_rejected", message: "缺少写入令牌；请在「1. 后端」中重新填写。" });
     // A repeat reuses its version; a forced repush repeats the acknowledged one. Anything else is new.
     const repeated = journal.sending?.digest === digest ? journal.sending.seq : force && !journal.sending && journal.acked?.digest === digest ? journal.acked.seq : undefined;
     const seq = repeated ?? journal.seq + 1, sending = { seq, digest, canvasRevision, at: this.iso() };
@@ -352,7 +356,9 @@ export class LiveDataPublisher {
     this.heartbeatTimer = this.clock.setTimer(() => {
       this.armHeartbeat();
       for (const c of this.runtimes.values()) {
-        if (!c.active || c.dirty || c.heartbeatQueued) continue;
+        if (!c.active || c.heartbeatQueued) continue;
+        // A dirty channel attests from its flush, once the projection confirms the acknowledged copy is current.
+        if (c.dirty) { c.heartbeatDue = true; continue; }
         c.heartbeatQueued = true;
         void this.track(serialized(c.file, async () => { c.heartbeatQueued = false; await this.heartbeat(c); }).catch(() => this.log("live data: heartbeat failed")));
       }
@@ -361,11 +367,15 @@ export class LiveDataPublisher {
 
   /** Runs in the channel queue, so it is the one in-flight request and cannot race a push. */
   private async heartbeat(c: Runtime): Promise<void> {
-    if (this.stopped || c.dirty) return;
+    if (this.stopped) return;
+    if (c.dirty) { c.heartbeatDue = true; return; }
     const record = await this.readRecord(c.file);
-    if (record?.state !== "ready" || !record.token) return;
-    const journal = await this.readJournal(c.file), acked = journal.acked;
-    if (journal.overLimit || journal.attempts !== 0 || journal.sending || !acked) return;
+    if (record?.state !== "ready") return;
+    return this.attest(c, record, await this.readJournal(c.file));
+  }
+  private async attest(c: Runtime, record: ChannelFile, journal: Journal): Promise<void> {
+    const acked = journal.acked;
+    if (!record.token || journal.overLimit || journal.attempts !== 0 || journal.sending || !acked) return;
     const body = JSON.stringify({ deploymentId: record.deploymentId, seq: acked.seq, digest: acked.digest });
     const sent = await this.send(c, record, "", { method: "PUT", headers: { "Content-Type": "application/json" }, body });
     if (sent === "superseded") return;
@@ -392,13 +402,13 @@ export class LiveDataPublisher {
   }
   private async result(c: Runtime): Promise<LiveSetOutput> {
     const record = await this.readRecord(c.file);
-    if (!record) throw new BoardStoreError("not_found", "This Board has no live channel");
+    if (!record) throw new BoardStoreError("not_found", NO_CHANNEL);
     return LiveSetOutputSchema.parse({ channel: this.public(record), status: this.status(record, await this.readJournal(c.file), c) });
   }
 
   private async requireBoard(boardId: string, expectedCreatedAt: string): Promise<LiveBoardProjection> {
     const current = await this.store.projectPublic(boardId, expectedCreatedAt, []);
-    if (!current || current.createdAt !== expectedCreatedAt) throw new BoardStoreError("board_identity_changed", "This Board was replaced; reopen it before changing live data");
+    if (!current || current.createdAt !== expectedCreatedAt) throw new BoardStoreError("board_identity_changed", BOARD_REPLACED);
     return current;
   }
 
@@ -436,9 +446,22 @@ export class LiveDataPublisher {
   }
   private async preview(boardId: string, createdAt: string, marks: readonly LiveMark[]): Promise<LivePreview> {
     const projection = await this.store.projectPublic(boardId, createdAt, marks);
-    if (!projection || projection.createdAt !== createdAt) throw new BoardStoreError("board_identity_changed", "This Board was replaced; reopen it before changing live data");
+    if (!projection || projection.createdAt !== createdAt) throw new BoardStoreError("board_identity_changed", BOARD_REPLACED);
     const { body, bytes, overLimit, withheld, pathBytes } = projection;
     return { ...(body ? { values: JSON.parse(body) as Record<string, unknown> } : {}), bytes, overLimit, withheld, pathBytes };
+  }
+
+  /** Channels of this Board id that a replaced Board left behind: only the owner can still clear them. */
+  private async orphans(boardId: string, createdAt: string): Promise<LiveOrphan[]> {
+    const found: LiveOrphan[] = [];
+    for (const c of this.byBoard.get(boardId) ?? []) {
+      if (c.createdAt === createdAt) continue;
+      try {
+        const record = await this.readRecord(c.file);
+        if (record && record.state !== "revoked") found.push({ expectedCreatedAt: c.createdAt, channel: this.public(record), status: this.status(record, await this.readJournal(c.file), c) });
+      } catch { this.log("live data: skipped an unreadable channel file"); }
+    }
+    return found;
   }
 
   async get(raw: unknown): Promise<LiveGetOutput> {
@@ -452,12 +475,14 @@ export class LiveDataPublisher {
     const origin = input.probeOrigin ?? record?.origin;
     const deploymentId = backend?.deploymentId ?? (origin === record?.origin ? record?.deploymentId : undefined);
     const consentDigest = marks?.length && origin && deploymentId ? liveConsentDigest(origin, deploymentId, marks) : null;
-    return LiveGetOutputSchema.parse({ channel: record ? this.public(record) : null, status, preview, backend, originProblems, consentDigest });
+    const orphans = await this.orphans(input.boardId, input.expectedCreatedAt);
+    return LiveGetOutputSchema.parse({ channel: record ? this.public(record) : null, status, preview, backend, originProblems, consentDigest, ...(orphans.length ? { orphans } : {}) });
   }
 
   async set(raw: unknown): Promise<LiveSetOutput> {
     const input = LiveSetInputSchema.parse(raw);
-    await this.requireBoard(input.boardId, input.expectedCreatedAt);
+    // Stopping reads no Board data and must stay possible after the Board's identity is lost.
+    if (input.action !== "revoke" && input.action !== "stop-local") await this.requireBoard(input.boardId, input.expectedCreatedAt);
     const c = this.runtime(input.boardId, input.expectedCreatedAt);
     // Interrupt any request in flight: a pause or narrowing must not wait for its timeout.
     c.superseded = true;
@@ -475,10 +500,10 @@ export class LiveDataPublisher {
       if (previous.requestDigest !== requestDigest) throw new Error("Live data event ID reused with different settings");
       return this.result(c);
     }
-    if ((previous?.eventId ?? null) !== input.expectedEventId) throw new BoardStoreError("revision_conflict", "Live data settings changed; refresh and review them before saving");
+    if ((previous?.eventId ?? null) !== input.expectedEventId) throw new BoardStoreError("revision_conflict", "公开设置已变化，请刷新后重新确认");
     if (input.action === "upsert") await this.upsert(c, previous, input, requestDigest);
     else {
-      if (!previous) throw new BoardStoreError("not_found", "This Board has no live channel");
+      if (!previous) throw new BoardStoreError("not_found", NO_CHANNEL);
       const update = { eventId: input.eventId, requestDigest };
       if (input.action === "pause") await this.pause(c, previous, update);
       else if (input.action === "resume") await this.resume(c, previous, update, input.consentDigest);
@@ -504,16 +529,21 @@ export class LiveDataPublisher {
     if (!previous || previous.state === "revoked" || previous.state === "blocked" || targetChanged) {
       await this.writeJournal(c, { ...journal, seq: Math.max(journal.seq, previous?.blocked?.currentSeq ?? 0), sending: undefined, acked: undefined, attempts: 0, nextAttemptAt: undefined, lastError: undefined });
     }
+    // Pausing is the owner's own decision, so only 恢复推送 ends it; a settings change never restarts the flow.
+    const kept = !targetChanged && (previous?.state === "ready" || previous?.state === "paused") ? previous.state : "pending";
     await this.writeRecord(c, {
       version: 1, boardId: input.boardId, expectedCreatedAt: input.expectedCreatedAt, channelId: previous?.channelId ?? `c${randomBytes(16).toString("hex")}`,
-      origin: input.origin, deploymentId: input.deploymentId, marks, state: previous?.state === "ready" && !targetChanged ? "ready" : "pending",
+      origin: input.origin, deploymentId: input.deploymentId, marks, state: kept,
       eventId: input.eventId, requestDigest, consentDigest: input.consentDigest, consentAt: this.iso(), token,
     });
-    c.dirty = true; c.notBefore = 0; c.lastCanvasRevision = undefined;
+    c.dirty = kept !== "paused"; c.notBefore = 0; c.lastCanvasRevision = undefined;
   }
 
   private async pause(c: Runtime, previous: ChannelFile, update: Pick<ChannelFile, "eventId" | "requestDigest">): Promise<void> {
     if (!ACTIVE.has(previous.state)) throw new BoardStoreError("invalid_transition", "当前状态不能暂停");
+    // No retry is coming, so none is reported. An unacknowledged version stays: the next value must still get a new number.
+    const journal = await this.readJournal(c.file);
+    if (journal.attempts || journal.lastError || journal.nextAttemptAt) await this.writeJournal(c, { ...journal, attempts: 0, nextAttemptAt: undefined, lastError: undefined });
     await this.writeRecord(c, { ...previous, ...update, state: "paused" });
     c.dirty = false; c.force = false; this.disarm(c);
   }

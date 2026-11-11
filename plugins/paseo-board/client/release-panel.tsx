@@ -11,6 +11,7 @@ import {
   refreshPagesRpc, listPagesJobsRpc, shareUpdateRpc, type ReleaseManifest, type PagesJob,
   PublicApiOriginsSchema,
   type PagesPrepareInput, type GitHubAccount, type GitHubRepository,
+  LOOPBACK_LIVE_REFUSAL, loopbackLiveRefused,
 } from "../shared/release-contracts";
 import { Action, Copy, Notice, errorMessage, localId, useColors } from "./ui";
 import { canPreviewRelease, copyText, downloadReleaseZip, ReleasePreview } from "./release-web";
@@ -152,6 +153,8 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
   };
   const openUrl = (url: string) => { void openExternalUrl(url).catch(error => setFailure(errorMessage(error))); };
   const sendPagesRequest = async (request: PagesPrepareInput) => {
+    // Refused for good and never journaled, so a retry record could only ever be abandoned by hand.
+    if (selected?.releaseId === request.releaseId && loopbackLiveRefused(selected.live, request.githubHost)) throw new Error(LOOPBACK_LIVE_REFUSAL);
     const frozen = outbox.save(request);
     setPendingPages(outbox.list());
     rememberJob(await publish(frozen));
@@ -355,7 +358,8 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
           <Action label="新建公开仓库" active={createRepository === "public"} disabled={busy} onPress={() => { setCreateRepository("public"); pageRequest.current = undefined; }} />
           <Action label="新建私有仓库" active={createRepository === "private"} disabled={busy} onPress={() => { setCreateRepository("private"); pageRequest.current = undefined; }} />
         </View>
-        <Action label={createRepository ? "创建仓库并一键发布" : "一键发布"} disabled={busy || !account || !repository.trim() || reviewed !== selected.artifactHash || jobs.some(item => item.releaseId === selected.releaseId && pagesGitHubHost(item) === githubHost && item.account === account && item.repository === repository.trim() && automaticallyPublishing(item))} primary onPress={() => { void requestPages(); }} />
+        {loopbackLiveRefused(selected.live, githubHost) ? <Notice error text={LOOPBACK_LIVE_REFUSAL} /> : null}
+        <Action label={createRepository ? "创建仓库并一键发布" : "一键发布"} disabled={busy || !account || !repository.trim() || reviewed !== selected.artifactHash || loopbackLiveRefused(selected.live, githubHost) || jobs.some(item => item.releaseId === selected.releaseId && pagesGitHubHost(item) === githubHost && item.account === account && item.repository === repository.trim() && automaticallyPublishing(item))} primary onPress={() => { void requestPages(); }} />
         {jobs.map(item => <Action key={item.jobId} label={`${pagesGitHubHost(item)} · ${item.repository} · ${jobStatusName(item)}`} active={item.jobId === job?.jobId} disabled={busy} onPress={() => { currentJob.current = item; setJob(item); setGitHubHost(pagesGitHubHost(item)); setAccount(item.account); setRepository(item.repository); setCreateRepository(item.createRepository); pageRequest.current = undefined; }} />)}
         {job ? <View testID="board-pages-job" style={{ gap: 8 }}>
           <Copy>{pagesGitHubHost(job)} · {job.repository} · {jobStatusName(job)}</Copy>

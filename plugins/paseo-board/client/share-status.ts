@@ -78,6 +78,8 @@ export type ShareLiveDrift = { addedPaths: string[]; removedPaths: string[]; ori
 /** How the Board's current channel differs from what the share was built with; the server reports the same on update. */
 export function shareLiveDrift(share: Share, channel: LiveChannel | null | undefined): ShareLiveDrift | undefined {
   if (!share.settings) return undefined;
+  // A stopped channel has nothing to offer a share that never had live data.
+  if (!share.settings.live && channel?.state === "revoked") return undefined;
   const stored = share.settings.live, had = new Set(stored?.paths ?? []), now = new Set(channel?.marks.map(mark => mark.path) ?? []);
   const addedPaths = [...now].filter(path => !had.has(path)), removedPaths = [...had].filter(path => !now.has(path));
   const originChanged = !!stored && !!channel && stored.origin !== channel.origin;

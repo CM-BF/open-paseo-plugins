@@ -95,7 +95,7 @@ describe("live data publisher", () => {
 
   /** Connects and acknowledges the first push, leaving a ready channel at seq 1. */
   const connect = async (marks: LiveMark[] = baseMarks) => {
-    h.publisher.start(); await h.publisher.idle(); await upsert({}, marks); await step(0);
+    await h.publisher.start(); await upsert({}, marks); await step(0);
     expect((await status()).state).toBe("live");
   };
 
@@ -365,6 +365,131 @@ describe("live data publisher", () => {
     await step(0);
     expect(pushes(h).at(-1)!.body).toMatchObject({ seq: 2, value: { "/live/value": 2 } });
     expect((await status()).state).toBe("live");
+  });
+
+  it("stays paused across a token-only or marks-only upsert until the owner resumes", async () => {
+    const wide: LiveMark[] = [{ path: "/live/value", subtree: false }, { path: "/live/other", subtree: false }];
+    h.state.data = { live: { value: 1, other: "OLD" } };
+    await connect(wide);
+    await step(2000);
+    await act("pause");
+    const count = h.requests.length;
+    h.state.data = { live: { value: 2, other: "NEW" } }; h.state.canvasRevision++; h.emit();
+    expect((await upsert({ token: `${secret}-rotated` }, wide)).status.state).toBe("paused");
+    await step(0); await step(30_000);
+    expect(h.requests).toHaveLength(count);
+    const narrowed = await upsert({}, baseMarks);
+    expect(narrowed.channel).toMatchObject({ state: "paused", marks: baseMarks });
+    await step(0); await step(30_000);
+    expect(h.requests).toHaveLength(count);
+    await act("resume", { consentDigest: liveConsentDigest(origin, deploymentId, baseMarks) });
+    await step(0);
+    expect(pushes(h).at(-1)!.body).toMatchObject({ seq: 2, value: { "/live/value": 2 } });
+    expect((await status()).state).toBe("live");
+  });
+
+  it("forgets the retry details when paused but keeps the unacknowledged version", async () => {
+    await connect();
+    await step(2000);
+    h.setRespond(() => failure(503));
+    write(2); await step(500);
+    expect(await status()).toMatchObject({ state: "retrying", attempts: 1, lastError: { code: "server_error" } });
+    const { sending } = await journal();
+    await act("pause");
+    const paused = await status();
+    expect(paused).toMatchObject({ state: "paused", attempts: 0 });
+    expect(paused.nextAttemptAt).toBeUndefined(); expect(paused.lastError).toBeUndefined();
+    expect((await journal()).sending).toEqual(sending);
+  });
+
+  it("waits out the push floor when a change arrives during a slow push", async () => {
+    await connect();
+    await step(2000);
+    let finish!: (response: Response) => void;
+    h.setRespond(() => new Promise<Response>(resolve => { finish = resolve; }));
+    write(2); h.clock.advance(500);
+    await vi.waitFor(() => expect(pushes(h)).toHaveLength(2));
+    write(3); h.clock.advance(600);
+    h.setRespond(() => ok());
+    finish(ok());
+    await h.publisher.idle();
+    expect(pushes(h)).toHaveLength(2);
+    await step(999);
+    expect(pushes(h)).toHaveLength(2);
+    await step(1);
+    expect(pushes(h)).toHaveLength(3); expect(pushes(h)[2].body.value).toEqual({ "/live/value": 3 });
+  });
+
+  it("honours Retry-After when a change arrives during a push that is rate limited", async () => {
+    await connect();
+    await step(2000);
+    let finish!: (response: Response) => void;
+    h.setRespond(() => new Promise<Response>(resolve => { finish = resolve; }));
+    write(2); h.clock.advance(500);
+    await vi.waitFor(() => expect(pushes(h)).toHaveLength(2));
+    write(3); h.clock.advance(600);
+    h.setRespond(() => ok());
+    finish(failure(429, { error: "rate_limited" }, { "Retry-After": "120" }));
+    await h.publisher.idle();
+    expect(pushes(h)).toHaveLength(2);
+    expect(await status()).toMatchObject({ state: "retrying", attempts: 1 });
+    await step(119_000);
+    expect(pushes(h)).toHaveLength(2);
+    await step(1_000);
+    expect(pushes(h)).toHaveLength(3);
+  });
+
+  it("keeps attesting while unrelated writes arrive faster than the debounce", async () => {
+    await connect();
+    await step(2000);
+    const before = heartbeats(h).length;
+    for (let index = 0; index < 400; index++) { h.state.canvasRevision++; h.state.data = { ...h.state.data, PRIVATE_DATA: `changed-${index}` }; h.emit(); await step(200); }
+    expect(heartbeats(h).length - before).toBeGreaterThanOrEqual(2);
+    expect(heartbeats(h).at(-1)!.body).toEqual({ deploymentId, seq: 1, digest: pushes(h)[0].body.digest });
+    expect(pushes(h)).toHaveLength(1);
+    expect(JSON.stringify(h.requests.map(request => request.body))).not.toContain("changed-");
+  });
+
+  it("lists a channel left behind by a Board replacement and can still clear it", async () => {
+    await connect();
+    await step(2000);
+    const replaced = "2027-01-01T00:00:00.000Z";
+    h.state.createdAt = replaced; h.state.canvasRevision = 1; h.emit();
+    await step(500);
+    const listed = (await h.publisher.get({ boardId, expectedCreatedAt: replaced })).orphans!;
+    expect(listed).toMatchObject([{ expectedCreatedAt: createdAt, channel: { state: "blocked", origin }, status: { state: "blocked", lastError: { code: "board_replaced" } } }]);
+    expect(JSON.stringify(listed)).not.toContain(secret);
+    const expectedEventId = listed[0].channel.eventId;
+    await expect(h.publisher.set({ ...scope, action: "pause", eventId: "orphan-pause", expectedEventId })).rejects.toMatchObject({ code: "board_identity_changed" });
+    expect((await h.publisher.set({ ...scope, action: "revoke", eventId: "orphan-clear", expectedEventId })).channel.state).toBe("revoking");
+    h.setRespond(() => ok({ deploymentId, seq: 2, cleared: true }));
+    await step(0);
+    expect(h.requests.filter(request => request.method === "DELETE")).toHaveLength(1);
+    expect(await readFile(await channelFile(), "utf8")).not.toContain(secret);
+    expect((await h.publisher.get({ boardId, expectedCreatedAt: replaced })).orphans).toBeUndefined();
+  });
+
+  it("wipes the token of a channel left behind by a Board replacement without reaching the backend", async () => {
+    await connect();
+    await step(2000);
+    const replaced = "2027-01-01T00:00:00.000Z";
+    h.state.createdAt = replaced; h.state.canvasRevision = 1; h.emit();
+    await step(500);
+    const count = h.requests.length, [orphan] = (await h.publisher.get({ boardId, expectedCreatedAt: replaced })).orphans!;
+    expect((await h.publisher.set({ ...scope, action: "stop-local", eventId: "orphan-stop", expectedEventId: orphan.channel.eventId })).status.lastError?.code).toBe("backend_copy_not_cleared");
+    await step(0);
+    expect(h.requests).toHaveLength(count);
+    expect(await readFile(await channelFile(), "utf8")).not.toContain(secret);
+  });
+
+  it("names the panel section an owner can act in, in Chinese", async () => {
+    await connect();
+    await step(2000);
+    h.setRespond(() => failure(401));
+    write(2); await step(500);
+    expect((await status()).lastError?.message).toContain("「1. 后端」");
+    lastEvent = "stale";
+    await expect(act("revoke")).rejects.toThrow("公开设置已变化");
   });
 
   it("revokes with a tombstone above every issued version, retries it, wipes the token and re-enables", async () => {

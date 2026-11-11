@@ -88,6 +88,11 @@ describe("share live drift", () => {
     expect(shareLiveDrift(share({ settings }), null)).toBeUndefined();
     expect(shareLiveDrift(share(), channel(["/a"]))).toBeUndefined();
   });
+  it("reports nothing for a non-live share once the channel has been stopped", () => {
+    const stopped = { ...channel(["/a"]) as object, state: "revoked" } as never;
+    expect(shareLiveDrift(share({ settings }), stopped)).toBeUndefined();
+    expect(shareLiveDrift(share({ settings: { ...settings, live: { origin: "https://api.example.com", paths: ["/b"] } } }), stopped)).toEqual({ addedPaths: ["/a"], removedPaths: ["/b"], originChanged: false });
+  });
   it("states an inherited live block in the update summary only when present", () => {
     expect(inheritedSettingsText(share({ settings: { ...settings, live: { origin: "https://api.example.com", paths: ["/a"] } } }))).toContain("实时数据 1 个路径（https://api.example.com）");
     expect(inheritedSettingsText(share({ settings }))).not.toContain("实时数据");

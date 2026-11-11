@@ -3,7 +3,7 @@ import type { Board } from "../shared/contracts";
 import {
   createReleaseRpc, listReleasesRpc, previewReleaseRpc, downloadReleaseRpc,
   githubAccountsRpc, githubRepositoriesRpc, preparePagesRpc, publishPagesRpc, mergePagesRpc,
-  refreshPagesRpc, listPagesJobsRpc, shareStatusRpc, shareUpdateRpc, isLoopbackOrigin, type PagesJob, type PagesPrepareInput,
+  refreshPagesRpc, listPagesJobsRpc, shareStatusRpc, shareUpdateRpc, LOOPBACK_LIVE_REFUSAL, loopbackLiveRefused, type PagesJob, type PagesPrepareInput,
   type GitHubAccount, type GitHubRepository, type LiveDrift, type LiveRelease, type ReleaseMeta, type ReleaseSettings, type Share, type ShareStatus, type ShareUpdateResult,
 } from "../shared/release-contracts";
 import type { LiveReleaseChannel } from "./live-data";
@@ -23,12 +23,8 @@ export interface PagesGateway {
 
 /** The Board's live channel as release building sees it; absent when the plugin has no publisher. */
 export interface LiveReleaseSource { releaseChannel(board: Board): Promise<LiveReleaseChannel | null> }
-const LOOPBACK_LIVE_REFUSAL = "本机测试用的实时数据不能发布到公开站点；请先连接访客能访问的后端";
 const NO_LIVE_CHANNEL = "这张 Board 还没有可用的实时公开连接；请先在「实时公开数据」里确认后端和公开字段";
-const isLoopbackHost = (host: string) => host === "localhost" || host === "127.0.0.1";
-const refuseLoopbackLive = (live: LiveRelease | undefined, githubHost: string | undefined) => {
-  if (live && isLoopbackOrigin(live.origin) && !isLoopbackHost(githubHost ?? "github.com")) throw new Error(LOOPBACK_LIVE_REFUSAL);
-};
+const refuseLoopbackLive = (live: LiveRelease | undefined, githubHost: string | undefined) => { if (loopbackLiveRefused(live, githubHost)) throw new Error(LOOPBACK_LIVE_REFUSAL); };
 /** Only a channel the human has confirmed and that holds a public copy can back a release. */
 const releaseBlock = (channel: LiveReleaseChannel | null): LiveRelease => {
   if (!channel || (channel.channelState !== "ready" && channel.channelState !== "paused")) throw new Error(NO_LIVE_CHANNEL);
@@ -40,6 +36,8 @@ const withLiveOrigin = (apiOrigins: readonly string[], origin: string) => {
   return [...apiOrigins, origin];
 };
 const liveDrift = (stored: LiveRelease | undefined, channel: LiveReleaseChannel | null): LiveDrift | undefined => {
+  // A stopped channel has nothing to offer a share that never had live data.
+  if (!stored && channel?.channelState === "revoked") return undefined;
   const had = new Set(stored?.paths ?? []), now = new Set(channel?.paths ?? []);
   const addedPaths = [...now].filter(path => !had.has(path)), removedPaths = [...had].filter(path => !now.has(path));
   const originChanged = !!stored && !!channel && stored.origin !== channel.origin;

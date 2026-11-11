@@ -3,7 +3,7 @@ import { readFile, readdir, rename, lstat, open, unlink } from "node:fs/promises
 import { join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { IdSchema } from "../shared/contracts";
-import { GitHubHostSchema, GitHubLoginSchema, PagesJobSchema, PagesPrepareSchema, type GitHubAccount, type GitHubRepository, type PagesJob, type PagesPrepareInput, type ReleaseMeta } from "../shared/release-contracts";
+import { GitHubHostSchema, GitHubLoginSchema, LOOPBACK_LIVE_REFUSAL, PagesJobSchema, PagesPrepareSchema, loopbackLiveRefused, type GitHubAccount, type GitHubRepository, type PagesJob, type PagesPrepareInput, type ReleaseMeta } from "../shared/release-contracts";
 import { canonicalJson, ensureDirectory } from "./store-format";
 import { ReleaseRepository, sha256, type StaticRelease } from "./static-release";
 
@@ -294,6 +294,7 @@ export class GitHubPagesManager {
     const options = PagesPrepareSchema.parse(input), jobId = `pages-${sha256(options.eventId).slice(0, 40)}`;
     const release = await this.releases.read(options.releaseId);
     if (release.manifest.artifactHash !== options.artifactHash) throw new PublicationValidationError("Publication artifact hash changed");
+    if (loopbackLiveRefused(release.manifest.live, options.githubHost)) throw new Error(LOOPBACK_LIVE_REFUSAL);
     // Lock order everywhere: series, then job. The busy check and the authorization are one step.
     const authorize = () => this.exclusive(jobId, async () => {
       const previous = await this.loadRequest(options);
@@ -607,6 +608,8 @@ export class GitHubPagesManager {
   }
   async prepare(input: PagesPrepareInput): Promise<PagesJob> {
     const options = PagesPrepareSchema.parse(input), jobId = `pages-${sha256(options.eventId).slice(0, 40)}`;
+    // Before the job exists: this request can never succeed, so it leaves nothing to resume.
+    if (loopbackLiveRefused((await this.releases.read(options.releaseId)).manifest.live, options.githubHost)) throw new Error(LOOPBACK_LIVE_REFUSAL);
     const run = () => this.exclusive(jobId, async () => {
       let job = await this.loadRequest(options);
       const release = await this.releases.read(job.releaseId);

@@ -14,6 +14,11 @@ export const PublicApiOriginSchema = z.string().max(2048).refine(value => {
 export const PublicApiOriginsSchema = z.array(PublicApiOriginSchema).max(8).refine(values => new Set(values).size === values.length, "API 来源不能重复");
 /** A loopback origin resolves to each visitor's own machine, so it only makes sense for local testing. */
 export const isLoopbackOrigin = (origin: string) => { const { hostname } = new URL(origin); return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]"; };
+export const LOOPBACK_LIVE_REFUSAL = "本机测试用的实时数据不能发布到公开站点；请先连接访客能访问的后端";
+export const loopbackLiveRefused = (live: { origin: string } | undefined, githubHost: string | undefined) => {
+  const host = githubHost ?? "github.com";
+  return !!live && isLoopbackOrigin(live.origin) && host !== "localhost" && host !== "127.0.0.1";
+};
 export const LIVE_LIMITS = { paths: 32, documentBytes: 60_000 } as const;
 export const LiveChannelIdSchema = z.string().regex(/^c[a-f0-9]{32}$/);
 const unsafeLiveSegments = new Set(["__proto__", "prototype", "constructor"]);

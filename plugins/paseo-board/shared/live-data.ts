@@ -38,9 +38,12 @@ export const LiveGetInputSchema = InboxScopeSchema.extend({
   marks: LiveMarkListSchema.optional(), probeOrigin: PublicApiOriginSchema.optional(),
   pageOrigins: z.array(PublicApiOriginSchema).max(8).optional(),
 }).strict();
+/** A channel whose Board was replaced; it can only be stopped, under the creation time it was connected with. */
+export const LiveOrphanSchema = z.object({ expectedCreatedAt: z.string(), channel: LiveChannelSchema, status: LiveStatusSchema }).strict();
 export const LiveGetOutputSchema = z.object({
   channel: LiveChannelSchema.nullable(), status: LiveStatusSchema, preview: LivePreviewSchema.nullable(),
   backend: LiveBackendSchema.nullable(), originProblems: z.array(z.string()), consentDigest: LiveDigestSchema.nullable(),
+  orphans: z.array(LiveOrphanSchema).optional(),
 }).strict();
 
 const setBase = { ...InboxScopeSchema.shape, eventId: IdSchema, expectedEventId: IdSchema.nullable() };
@@ -62,6 +65,7 @@ export type LiveMark = z.infer<typeof LiveMarkSchema>;
 export type LiveChannel = z.infer<typeof LiveChannelSchema>;
 export type LiveChannelState = z.infer<typeof LiveChannelStateSchema>;
 export type LiveStatus = z.infer<typeof LiveStatusSchema>;
+export type LiveOrphan = z.infer<typeof LiveOrphanSchema>;
 export type LiveWithheld = z.infer<typeof LiveWithheldSchema>;
 export type LivePreview = z.infer<typeof LivePreviewSchema>;
 export type LiveGetInput = z.infer<typeof LiveGetInputSchema>;

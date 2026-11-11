@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
 import type { Board } from "../shared/contracts";
-import { LIVE_LIMITS, LiveTokenSchema, liveGetRpc, liveSetRpc, type LiveGetOutput, type LiveMark, type LiveSetInput } from "../shared/live-data";
+import { LIVE_LIMITS, LiveTokenSchema, liveGetRpc, liveSetRpc, type LiveGetOutput, type LiveMark, type LiveOrphan, type LiveSetInput } from "../shared/live-data";
 import { PublicApiOriginSchema } from "../shared/release-contracts";
 import { LIVE_RUNTIME_OUTDATED, addLiveMark, liveFields, liveIsArray, liveIsLoopback, liveMarksKey, liveMarksNarrowed, liveMayGrowKeys, liveNeedsSubtree, liveStateNames, liveWithheldText, overlappingLiveMark, removeLiveMark, setLiveMarkSubtree, sharePageOrigins } from "./live-status";
 import { useBoardRpc } from "./transport";
@@ -44,6 +44,7 @@ export function LiveDataPanel({ board, hostId, live, shares }: { board: Board; h
   const [review, setReview] = useState<Review>();
   const [acknowledged, setAcknowledged] = useState<string>();
   const [narrowed, setNarrowed] = useState(false);
+  const [orphans, setOrphans] = useState<LiveOrphan[]>([]);
   const [busy, setBusy] = useState(false), [failure, setFailure] = useState<string>();
   const mounted = useRef(true), flight = useRef(false), reviewGeneration = useRef(0), writeEpoch = useRef(0);
   const pending = useRef<{ key: string; input: Upsert } | undefined>(undefined);
@@ -58,12 +59,12 @@ export function LiveDataPanel({ board, hostId, live, shares }: { board: Board; h
   const digest = reviewed?.consentDigest ?? null;
 
   /** A read that started before a later write must not repaint the older channel state. */
-  const adopt = (value: LiveGetOutput, epoch: number) => { if (epoch === writeEpoch.current) setCurrent(value); };
+  const adopt = (value: LiveGetOutput, epoch: number) => { if (epoch === writeEpoch.current) { setCurrent(value); setOrphans(value.orphans ?? []); } };
   useEffect(() => {
     mounted.current = true;
     void read(scope).then(value => {
       if (!mounted.current) return;
-      setCurrent(value);
+      setCurrent(value); setOrphans(value.orphans ?? []);
       if (value.channel) { setOrigin(value.channel.origin); setProbe(value.channel.origin); setMarks(value.channel.marks); }
       setLoaded(true);
     }, error => { if (mounted.current) { setFailure(errorMessage(error)); setLoaded(true); } });
@@ -96,7 +97,7 @@ export function LiveDataPanel({ board, hostId, live, shares }: { board: Board; h
   const state = status?.state;
   // Status stays current while the panel is open; a state in motion is checked more often.
   useEffect(() => {
-    if (!channel) return;
+    if (!channel && !orphans.length) return;
     let active = true;
     const epoch = writeEpoch.current;
     const timer = setTimeout(() => { void read(scope).then(value => { if (active && mounted.current) { adopt(value, epoch); live.refresh(); } }, () => {}); }, state === "retrying" ? RETRY_POLL_MS : state === "pending" || state === "syncing" || state === "revoking" ? TRANSIENT_POLL_MS : IDLE_POLL_MS);
@@ -142,6 +143,8 @@ export function LiveDataPanel({ board, hostId, live, shares }: { board: Board; h
   const settled = !!channel && (channel.state === "ready" || channel.state === "pending" || channel.state === "paused") && liveMarksKey(channel.marks) === marksKey && !tokenTyped && !deploymentMoved;
   const ready = origin.trim() === probe && !!digest && !!deploymentId && !!preview && !preview.overLimit && marks.length > 0 && !subtreeMissing && backendUsable && tokenValid && (tokenTyped || !tokenNeeded) && channel?.state !== "revoking" && (!deploymentMoved || deploymentMoveAllowed);
   const ticked = !!digest && acknowledged === digest;
+  // The other reasons the button can be disabled already have their own notice above it.
+  const confirmHint = !digest ? "先检查后端并选择字段，才能确认公开。" : origin.trim() !== probe ? "后端来源已修改，请重新检查后端。" : tokenNeeded && !tokenTyped ? "请填写写入令牌。" : undefined;
   // Consent covers one exact set: any change withdraws it, even a change back to a set ticked before.
   useEffect(() => { if (acknowledged && acknowledged !== digest) setAcknowledged(undefined); }, [acknowledged, digest]);
 
@@ -164,6 +167,12 @@ export function LiveDataPanel({ board, hostId, live, shares }: { board: Board; h
     writeEpoch.current++;
     const result = await write({ ...scope, action, eventId: localId("live"), expectedEventId: channel.eventId });
     if (mounted.current) { setCurrent(result); setNarrowed(false); live.refresh(); }
+  });
+  const stopOrphan = (orphan: LiveOrphan, action: "revoke" | "stop-local") => run(async () => {
+    writeEpoch.current++;
+    await write({ boardId: board.id, expectedCreatedAt: orphan.expectedCreatedAt, action, eventId: localId("live"), expectedEventId: orphan.channel.eventId });
+    const epoch = writeEpoch.current, value = await read(scope);
+    if (mounted.current) { adopt(value, epoch); live.refresh(); }
   });
   const resume = () => run(async () => {
     if (!channel) return;
@@ -189,7 +198,7 @@ export function LiveDataPanel({ board, hostId, live, shares }: { board: Board; h
       {backend?.live === LIVE_RUNTIME_OUTDATED ? <Notice error text="这个后端的运行时版本过旧，请运行 paseo-board-app update-runtime --dir <应用目录>，再走一次部署。" /> : null}
       {showEnvHelp ? <Copy small muted>在服务器 .env 设置 BOARD_LIVE_WRITE_TOKEN（至少 32 位随机字符），只在这里填写一次；不要让 agent 代填。</Copy> : null}
       {backend?.live === 0 ? <Notice error text="这个后端还没有启用实时数据。设置令牌并重启后端后，再检查一次。" /> : null}
-      {deploymentMoved ? <Notice error text={deploymentMoveAllowed ? "后端部署已变更，旧副本已不在这个后端。确认后会连接新的部署。" : "后端的部署 ID 与此前不同。请先停止公开并清除旧后端的副本。"} /> : null}
+      {deploymentMoved ? <Notice error text={deploymentMoveAllowed ? "后端部署已变更，旧副本已不在这个后端。确认后会连接新的部署，需要重新填写写入令牌。" : "后端的部署 ID 与此前不同。请先停止公开并清除旧后端的副本。"} /> : null}
       <TextInput testID="board-live-token" accessibilityLabel="写入令牌" value={token} onChangeText={setToken} editable={!busy} secureTextEntry autoCapitalize="none" autoCorrect={false} placeholder={tokenNeeded ? "BOARD_LIVE_WRITE_TOKEN" : "留空则继续使用已保存的令牌"} placeholderTextColor={c.foregroundMuted} style={field} />
       {tokenTyped && !tokenValid ? <Copy small muted>令牌需为 32–512 位可见 ASCII 字符。</Copy> : null}
     </Section>
@@ -230,7 +239,8 @@ export function LiveDataPanel({ board, hostId, live, shares }: { board: Board; h
       {subtreeMissing ? <Notice text="有对象或含对象的数组还没有勾选「包含以后新增的字段」。" /> : null}
       <Check testID="board-live-ack" label="确认公开范围" text={CONSENT_TEXT} checked={ticked} disabled={busy || !digest} onPress={() => setAcknowledged(ticked ? undefined : digest ?? undefined)} />
       <Action testID="board-live-confirm" label="确认公开这些数据" primary disabled={busy || !ready || !ticked} onPress={() => { void confirm(); }} />
-      {!digest ? <Copy small muted>先检查后端并选择字段，才能确认公开。</Copy> : null}
+      {confirmHint ? <Copy small muted>{confirmHint}</Copy> : null}
+      {channel?.state === "paused" ? <Copy small muted>确认只更新设置，推送仍保持暂停，直到你选择「恢复推送」。</Copy> : null}
     </Section>}
     {channel && status ? <Section title="5. 状态">
       <View testID="board-live-status" style={{ gap: 4 }}>
@@ -242,6 +252,7 @@ export function LiveDataPanel({ board, hostId, live, shares }: { board: Board; h
         {status.withheld.map(item => <Copy key={item.path} small muted>未公开 · {liveWithheldText(item)}</Copy>)}
         {reviewed?.originProblems.map(problem => <Notice key={problem} error text={`访客浏览器可能被后端拒绝：${problem}`} />)}
         {narrowed && (status.state === "retrying" || status.state === "blocked") ? <Notice text="已在本机停止，后端仍保留旧内容，连接恢复后覆盖" /> : null}
+        {narrowed && status.state === "paused" ? <Notice text="推送已暂停，后端仍保留旧内容；恢复推送后才会按新的字段覆盖，要立即清除请停止公开。" /> : null}
       </View>
     </Section> : null}
     {channel && channel.state !== "revoked" ? <Section title="6. 操作">
@@ -254,6 +265,15 @@ export function LiveDataPanel({ board, hostId, live, shares }: { board: Board; h
         <Action testID="board-live-stop-local" label={LOCAL_STOP_LABEL} disabled={busy} onPress={() => { void act("stop-local"); }} />
         <Copy small muted>后端无法完成清除时使用：本机删除令牌并结束重试，后端副本可能仍可被读取。</Copy>
       </> : null}
+    </Section> : null}
+    {orphans.length ? <Section title="旧 Board 留下的连接">
+      <Copy small muted>这张 Board 的内容已被替换。下面的连接不会再推送，但后端副本仍可被读取，令牌也还保存在本机。</Copy>
+      {orphans.map(orphan => <View key={orphan.channel.channelId} testID="board-live-orphan" style={{ gap: 4 }}>
+        <Copy small muted>{orphan.channel.origin} · {liveStateNames[orphan.status.state]}</Copy>
+        {orphan.status.lastError ? <Notice error text={`最后错误：${orphan.status.lastError.message}`} /> : null}
+        <Action testID="board-live-orphan-revoke" label={`清除 ${orphan.channel.origin} 上的旧副本`} disabled={busy || orphan.channel.state === "revoking"} onPress={() => { void stopOrphan(orphan, "revoke"); }} />
+        {orphan.channel.state === "revoking" && orphan.status.lastError ? <Action testID="board-live-orphan-stop-local" label={`${LOCAL_STOP_LABEL}：${orphan.channel.origin}`} disabled={busy} onPress={() => { void stopOrphan(orphan, "stop-local"); }} /> : null}
+      </View>)}
     </Section> : null}
   </ScrollView>;
 }

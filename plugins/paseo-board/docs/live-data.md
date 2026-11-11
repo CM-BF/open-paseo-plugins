@@ -43,12 +43,17 @@ A `blocked` or `retrying` channel raises the dot on the **更多** toolbar butto
 | Action | Effect |
 |---|---|
 | 暂停推送 | Stops pushing and attesting. The backend keeps its last copy, and visitors see that updates have paused |
-| 恢复推送 | Continues on the same consent; valid only from paused |
+| 恢复推送 | Continues on the current consent; valid only from paused. Nothing else ends a pause: rotating the token or changing paths while paused only updates the settings |
 | 停止公开并清除后端副本 | Deletes the backend copy and fences late writes. The token is wiped once the backend confirms. Re-enabling needs the token and fresh consent |
 | 仅本机停止（后端副本未清除） | Offered while a clear cannot complete. Wipes the token and ends retries; the backend copy may remain readable |
 
 Narrowing takes effect at the next push. If the backend is unreachable, the
-narrowed data stays on the backend until the connection returns.
+narrowed data stays on the backend until the connection returns. While paused,
+the old copy stays until you resume or stop.
+
+If a Board's data is replaced on disk, its old channel stops publishing but its
+backend copy and token remain. The new Board's panel lists it under
+**旧 Board 留下的连接**, where it can still be cleared or stopped locally.
 
 ## Limits
 
