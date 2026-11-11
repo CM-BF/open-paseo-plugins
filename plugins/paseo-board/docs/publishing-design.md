@@ -35,7 +35,7 @@ node scripts/board-release.mjs --help
 
 - **编辑副本**仍是普通 Board：从精确 canvasBase 物化当前源码，复制 data，生成独立 Board ID；保留 owner/project/workspace 关联，便于继续和 agent 交流和手动修改。副本清空讨论、决策、事件、历史补丁和作者 userState。相同 copy event 重试取回已有副本，不能覆盖用户后来修改的副本。来源关系保存在本机私有复制回执。
 - **发布版本**是不可变的网页、公共数据和 viewer 配置。可以从工作 Board 直接生成，也可以先复制再编辑。生成时要求源画布版本匹配；生成后不再跟随源 Board，也不因源 Board 删除而失去导出能力。发布 ID 对来源身份、canvasBase、内容和 viewer 代码取 hash，公开产物不包含原始 Board ID。
-- **部署记录**保存 releaseId、artifactHash、GitHub 主机、账号、仓库、immutable eventId、冻结分支/head、PR、merge 和部署核验状态。当前没有独立 PublishTarget 管理或专门回退按钮；可选旧快照创建新的发布请求，重新发布旧内容。凭证不会持久化到部署记录。
+- **部署记录**保存 releaseId、artifactHash、GitHub 主机、账号、仓库、immutable eventId、冻结分支/head、PR、merge 和部署核验状态。分享链接按 Board、主机、仓库和 key 成组，后续版本更新同一链接，见[分享页更新验收](verification/2026-11-10-share-updates.md)；没有专门回退按钮，分享链接只向前更新。凭证不会持久化到部署记录。
 
 页面入口为「更多 → 导出与发布」：按需复制编辑，生成固定版本并查看预览；选择 GitHub 主机、账号和仓库后点击「一键发布」。这一次操作授权服务器完成 PR、验证、固定提交合并、部署与站点核对，无需另点合并。面板显示进度和链接，关闭面板或刷新不终止已经授权的任务。选择历史任务会填回其固定主机、账号和仓库；明确重试沿用同一请求。创建 PR 已是远程上传，不能把“还没合并”当作内容仍然私密。此功能的发布动作不授权合并插件自身的 PR 或 main。
 
