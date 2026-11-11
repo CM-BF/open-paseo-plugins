@@ -20,6 +20,8 @@ class FakeGitHub implements GitHubTransport {
   legacyChecks: Array<{ status: string; conclusion: string | null }> = []; legacyStatus = { total_count: 0, state: "pending" };
   checkStatus = "completed"; checkConclusion: string | null = "success";
   lost = new Set<string>(); failBefore = new Set<string>(); publication: Record<string, string> = {}; publicRequests: string[] = [];
+  /** Full URL pathname -> bytes served by Pages; when set, publicFile is path-aware. */
+  served?: Map<string, string>;
   async accounts() { return [{ login: "writer", host: "github.com" as const, active: true }]; }
   failAfter(path: string) { this.lost.add(path); }
   after(path: string) { if (this.lost.delete(path)) throw new GitHubApiError(503); }
@@ -36,8 +38,10 @@ class FakeGitHub implements GitHubTransport {
     if (part.startsWith("/contents/")) {
       const key = decodeURIComponent(part.slice(10)), files = this.files(url.searchParams.get("ref") ?? "main");
       if (Object.hasOwn(files, key)) return output({ type: "file", encoding: "base64", content: Buffer.from(files[key]).toString("base64") });
-      const children = Object.keys(files).filter(name => name.startsWith(key + "/"));
-      if (children.length) return output(children.map(path => ({ path, type: "file" })));
+      // Directory listings hold direct children only, with dir entries for nested directories.
+      const children = new Map<string, string>();
+      for (const name of Object.keys(files)) if (name.startsWith(key + "/")) { const rest = name.slice(key.length + 1); children.set(rest.split("/")[0], rest.includes("/") ? "dir" : "file"); }
+      if (children.size) return output([...children].map(([name, type]) => ({ name, path: `${key}/${name}`, type, ...(type === "file" ? { sha: blob(files[`${key}/${name}`]) } : {}) })));
       throw new GitHubApiError(404);
     }
     if (part.startsWith("/git/ref/heads/")) { const sha = this.branches.get(decodeURIComponent(part.slice(15))); if (!sha) throw new GitHubApiError(404); return output({ object: { sha } }); }
@@ -45,7 +49,7 @@ class FakeGitHub implements GitHubTransport {
     if (part.startsWith("/git/commits/") && method === "GET") { const tree = this.commits.get(part.slice(13)); if (!tree) throw new GitHubApiError(404); return output({ tree: { sha: tree }, parents: (this.parents.get(part.slice(13)) ?? []).map(sha => ({sha})) }); }
     if (part.startsWith("/git/trees/")) {
       const ref = part.slice(11), files = this.trees.get(ref) ?? this.files(ref);
-      return output({ sha: ref, truncated: false, tree: Object.entries(files).map(([path, text]) => ({ path, mode: "100644", type: "blob", sha: createHash("sha1").update(`blob ${Buffer.byteLength(text)}\0`).update(text).digest("hex") })) });
+      return output({ sha: ref, truncated: false, tree: Object.entries(files).map(([path, text]) => ({ path, mode: "100644", type: "blob", sha: blob(text) })) });
     }
     if (part === "/git/trees") {
       const files = { ...(this.trees.get(String(payload.base_tree)) ?? {}) };
@@ -72,11 +76,35 @@ class FakeGitHub implements GitHubTransport {
       if (!this.pages) throw new GitHubApiError(404); return output(this.pages);
     }
     if (part === "/actions/workflows/paseo-board-pages.yml/runs") return output({ workflow_runs: this.runs.filter(run => run.head_sha === url.searchParams.get("head_sha")).map(run => ({ event: "push", head_branch: "main", ...run })) });
-    if (part === "/actions/runs") return output({ workflow_runs: [{ id: 10, path: ".github/workflows/paseo-board-pages.yml", head_sha: url.searchParams.get("head_sha"), status: this.checkStatus, conclusion: this.checkConclusion }] });
+    if (part === "/actions/runs") {
+      // The workflow's pull_request path filter: no run when the PR changes nothing it watches.
+      const head = url.searchParams.get("head_sha")!, parent = this.parents.get(head)?.[0], after = this.files(head), before = parent ? this.files(parent) : {};
+      const watched = (name: string) => name.startsWith("paseo-board-publication/") || name === ".github/workflows/paseo-board-pages.yml";
+      const changed = !parent || [...new Set([...Object.keys(after), ...Object.keys(before)])].some(name => watched(name) && after[name] !== before[name]);
+      return output({ workflow_runs: changed ? [{ id: 10, path: ".github/workflows/paseo-board-pages.yml", head_sha: head, status: this.checkStatus, conclusion: this.checkConclusion }] : [] });
+    }
     throw new Error(`Unhandled fake GitHub request: ${method} ${path}`);
   }
-  async publicFile(url: string) { this.publicRequests.push(url); const file = new URL(url).pathname.split("/").at(-1)!; if (!Object.hasOwn(this.publication, file)) throw new GitHubApiError(404); return this.publication[file]; }
+  async publicFile(url: string) {
+    this.publicRequests.push(url);
+    if (this.served) { const text = this.served.get(new URL(url).pathname); if (text === undefined) throw new GitHubApiError(404); return text; }
+    const file = new URL(url).pathname.split("/").at(-1)!; if (!Object.hasOwn(this.publication, file)) throw new GitHubApiError(404); return this.publication[file];
+  }
+  /** Deploys the Pages source as it is now: every merged commit built, served by full path. */
+  deploy() {
+    const merged = this.prs.filter(pr => pr.merged).map(pr => pr.merge_commit_sha!);
+    this.builds = merged.map((commit, index) => ({ url: `https://api.github.com/build/${index}`, commit, status: "built" }));
+    this.runs = merged.map((head_sha, index) => ({ id: index + 1, head_sha, status: "completed", conclusion: "success" }));
+    const pages = this.pages!, prefix = new URL(pages.html_url.endsWith("/") ? pages.html_url : pages.html_url + "/").pathname;
+    this.served = new Map();
+    for (const [path, text] of Object.entries(this.files(pages.source?.branch ?? "main"))) {
+      const relative = pages.build_type === "workflow" ? path.startsWith("paseo-board-publication/site/") ? path.slice(29) : undefined
+        : pages.source?.path === "/docs" ? path.startsWith("docs/") ? path.slice(5) : undefined : path;
+      if (relative !== undefined) this.served.set(prefix + relative, text);
+    }
+  }
 }
+const blob = (text: string) => createHash("sha1").update(`blob ${Buffer.byteLength(text)}\0`).update(text).digest("hex");
 
 describe("resumable GitHub Pages publication", () => {
   let root: string, releases: ReleaseRepository, release: StaticRelease, github: FakeGitHub, manager: GitHubPagesManager, input: PagesPrepareInput;
@@ -401,5 +429,200 @@ describe("resumable GitHub Pages publication", () => {
       manager = new GitHubPagesManager(join(root, "jobs"), releases, github);
       await manager.advanceAutomatic(); expect((await manager.read(queued.jobId)).status).toBe("deploying");
     } finally { vi.useRealTimers(); }
+  });
+});
+
+describe("share series: one stable link per Board, versions archived", () => {
+  const key = "s" + "1".repeat(20), host = "github.enterprise.example";
+  let root: string, releases: ReleaseRepository, store: BoardStore, github: FakeGitHub, manager: GitHubPagesManager;
+  const open = () => { const next = new GitHubPagesManager(join(root, "jobs"), releases, github); vi.spyOn(next, "start").mockImplementation(() => {}); return next; };
+  beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.parse("2026-11-10T00:00:00.000Z") });
+    root = await mkdtemp(join(tmpdir(), "board-share-series-")); releases = new ReleaseRepository(join(root, "releases"));
+    store = new BoardStore(join(root, "boards"));
+    await store.create({ id: "SHARED_BOARD", title: "Shared", html: "<p>Shared page</p>", data: { secret: "PRIVATE_SECRET" } });
+    github = new FakeGitHub(); manager = open();
+  });
+  afterEach(async () => { await manager.close(); vi.useRealTimers(); await rm(root, { recursive: true, force: true }); });
+  const tick = () => vi.setSystemTime(Date.now() + 60_000);
+  /** A release of the Board's current source; `text` first appends an authored patch. */
+  async function version(text?: string, boardId = "SHARED_BOARD"): Promise<StaticRelease> {
+    let board = (await store.read(boardId))!;
+    if (text) board = await store.publish({ boardId, expectedRevision: board.revision, eventId: "patch-" + text, canvasBase: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion }, patch: { id: text, selector: "p", operation: "append", html: `<b>${text}</b>` } });
+    return releases.create({ board, boardId, expectedCanvasBase: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion }, publicData: {} });
+  }
+  const request = (release: StaticRelease, eventId: string, extra: Partial<PagesPrepareInput> = {}): PagesPrepareInput =>
+    ({ eventId, releaseId: release.manifest.releaseId, artifactHash: release.manifest.artifactHash, account: "writer", repository: "writer/site", shareKey: key, ...extra });
+  /** One click: authorize, then one automatic pass (prepare, merge, first refresh). */
+  async function publish(input: PagesPrepareInput) { tick(); const job = await manager.publish(input); await manager.advanceAutomatic(); return manager.read(job.jobId); }
+  async function deployed(jobId: string) { github.deploy(); await manager.advanceAutomatic(); return manager.read(jobId); }
+  function legacy(sourcePath: "/" | "/docs" = "/", branch = "main") {
+    github.pages = { html_url: "https://writer.github.io/site/", build_type: "legacy", source: { branch, path: sourcePath } };
+    github.branches.set(branch, github.base);
+    Object.assign(github.trees.get("base-tree")!, { "index.html": "Existing home", "pages/trip/index.html": "Existing trip" });
+  }
+  const hex = (release: StaticRelease) => release.manifest.releaseId.slice(8);
+  const filesAt = (directory: string, ref = "main") => Object.fromEntries(Object.entries(github.files(ref)).filter(([path]) => path.startsWith(directory + "/") && !path.slice(directory.length + 1).includes("/")).map(([path, text]) => [path.slice(directory.length + 1), text]));
+
+  it.each([
+    ["existing branch site at /", "/", ""],
+    ["existing branch site at /docs", "/docs", "docs/"],
+    ["new Enterprise branch site", "ghes", "docs/"],
+  ] as const)("publishes a new series to a stable directory plus a version archive (%s)", async (_, source, prefix) => {
+    if (source !== "ghes") legacy(source, source === "/docs" ? "site" : "main");
+    const extra = source === "ghes" ? { githubHost: host } : {}, branch = source === "/docs" ? "site" : "main";
+    const release = await version(), job = await publish(request(release, "first", extra));
+    expect(job.status, job.error).toBe("deploying"); expect(job.publicationMode).toBe(source === "ghes" ? "legacy-branch" : "legacy-subdirectory");
+    expect(job).toMatchObject({ sharePath: `boards/${key}`, sitePath: `boards/${key}/v/${hex(release)}` });
+    expect(filesAt(`${prefix}boards/${key}`, branch)).toEqual(release.files);
+    expect(filesAt(`${prefix}boards/${key}/v/${hex(release)}`, branch)).toEqual(release.files);
+    if (source === "ghes") expect(github.files("main")["docs/.nojekyll"]).toBe(""); else expect(github.files(branch)["index.html"]).toBe("Existing home");
+    const live = await deployed(job.jobId), site = source === "ghes" ? `https://pages.${host}/writer/site/` : "https://writer.github.io/site/";
+    expect(live.status, live.error).toBe("live");
+    expect(live).toMatchObject({ url: `${site}boards/${key}/v/${hex(release)}/`, deployedUrl: `${site}boards/${key}/v/${hex(release)}/`, shareUrl: `${site}boards/${key}/`, shareDeployedUrl: `${site}boards/${key}/` });
+    expect(JSON.stringify(github.files(branch))).not.toContain("PRIVATE_SECRET");
+  });
+
+  it("updates the same share link and keeps every version archived and verified", async () => {
+    legacy(); const first = await version(), one = await deployed((await publish(request(first, "first"))).jobId);
+    const second = await version("two"), two = await deployed((await publish(request(second, "second"))).jobId);
+    expect(two.status, two.error).toBe("live"); expect(two.shareUrl).toBe(one.shareUrl);
+    expect(two.url).toBe(`https://writer.github.io/site/boards/${key}/v/${hex(second)}/`);
+    expect(filesAt(`boards/${key}`)).toEqual(second.files);
+    expect(filesAt(`boards/${key}/v/${hex(first)}`)).toEqual(first.files); expect(filesAt(`boards/${key}/v/${hex(second)}`)).toEqual(second.files);
+    expect(github.served!.get(`/site/boards/${key}/index.html`)).toBe(second.files["index.html"]);
+    // The older version is never demoted because the share link moved on.
+    const older = await manager.refresh(one.jobId); expect(older.status, older.error).toBe("live"); expect(older.url).toBe(one.url); expect(older.shareUrl).toBe(one.shareUrl);
+    expect(github.prs).toHaveLength(2); expect(github.files("main")["index.html"]).toBe("Existing home");
+  });
+
+  it("adopts a pre-feature directory as the share link and archives the original release in the same PR", async () => {
+    legacy(); const original = await version();
+    const before = await deployed((await publish(request(original, "pre-feature", { shareKey: undefined }))).jobId);
+    expect(before.url).toBe(`https://writer.github.io/site/boards/${hex(original)}/`); expect(before.sharePath).toBeUndefined();
+    const next = await version("two"), adoptedKey = hex(original);
+    const job = await publish(request(next, "adopt", { shareKey: adoptedKey }));
+    expect(job.status, job.error).toBe("deploying"); expect(job.adoptedFrom).toBe(before.jobId); expect(job.sharePath).toBe(`boards/${adoptedKey}`);
+    const pr = github.prs.at(-1)!, head = github.files(pr.head.sha), parent = github.files(github.parents.get(pr.head.sha)![0]);
+    const added = Object.keys(head).filter(path => !Object.hasOwn(parent, path)).sort();
+    expect(added).toEqual([...Object.keys(next.files).map(name => `boards/${adoptedKey}/v/${hex(next)}/${name}`), ...Object.keys(original.files).map(name => `boards/${adoptedKey}/v/${adoptedKey}/${name}`)].sort());
+    expect(Object.keys(head).filter(path => Object.hasOwn(parent, path) && head[path] !== parent[path]).every(path => path.startsWith(`boards/${adoptedKey}/`) && !path.includes("/v/"))).toBe(true);
+    expect(filesAt(`boards/${adoptedKey}`)).toEqual(next.files); expect(filesAt(`boards/${adoptedKey}/v/${adoptedKey}`)).toEqual(original.files);
+    const live = await deployed(job.jobId); expect(live.status, live.error).toBe("live");
+    expect(live.shareUrl).toBe(before.url); expect(live.url).toBe(`${before.url}v/${hex(next)}/`);
+    // The adopted job now verifies its original release at the archive instead of being demoted.
+    const old = await manager.refresh(before.jobId); expect(old.status, old.error).toBe("live"); expect(old.url).toBe(`${before.url}v/${adoptedKey}/`);
+  });
+
+  it("never lets an older failed or expired request overwrite a newer share", async () => {
+    legacy(); const first = await version();
+    github.exists = false; const failed = await publish(request(first, "failed-first")); github.exists = true;
+    expect(failed.status).toBe("failed"); expect(failed.baseSha).toBeUndefined();
+    const expired = await manager.publish(request(first, "expired-first")); await manager.close(); manager = open();
+    await writeFile(join(root, "jobs", `${expired.jobId}.json`), JSON.stringify({ ...expired, autoPublishUntil: "2000-01-01T00:00:00.000Z" }));
+    await manager.advanceAutomatic(); expect((await manager.read(expired.jobId)).autoPublish).toBe(false);
+    const second = await version("two"), newer = await deployed((await publish(request(second, "second"))).jobId);
+    expect(newer.status, newer.error).toBe("live");
+    for (const input of [request(first, "failed-first"), request(first, "expired-first")]) {
+      const resumed = await publish(input);
+      expect(resumed.status).toBe("failed"); expect(resumed.refusal).toEqual({ code: "newer-on-share", message: expect.stringContaining("已有更新的版本") });
+    }
+    expect(filesAt(`boards/${key}`)).toEqual(second.files); expect(github.prs).toHaveLength(1);
+  });
+
+  it("refuses a stale outbox request created after a newer version went live", async () => {
+    legacy(); const first = await version(), second = await version("two");
+    expect((await deployed((await publish(request(second, "second"))).jobId)).status).toBe("live");
+    // The older request reaches the server only now, so it is the newest job by createdAt.
+    const stale = await publish(request(first, "lost-response"));
+    expect(stale.refusal?.code).toBe("newer-on-share"); expect(stale.status).toBe("failed"); expect(stale.autoPublish).toBe(false);
+    expect(filesAt(`boards/${key}`)).toEqual(second.files); expect(github.prs).toHaveLength(1);
+  });
+
+  it("refuses a share directory or archive holding foreign content, and a key of another Board", async () => {
+    legacy(); const release = await version(), base = github.trees.get("base-tree")!;
+    base[`boards/${key}/index.html`] = "Someone else's page";
+    const foreign = await publish(request(release, "foreign"));
+    expect(foreign.refusal).toEqual({ code: "share-foreign", message: "分享页目录已被其他内容改动，未覆盖。" }); expect(github.prs).toHaveLength(0);
+    delete base[`boards/${key}/index.html`]; base[`boards/${key}/v/${hex(release)}/index.html`] = "Occupied archive";
+    expect((await publish(request(release, "archive"))).refusal?.message).toContain("版本目录");
+    delete base[`boards/${key}/v/${hex(release)}/index.html`];
+    expect((await deployed((await publish(request(release, "own"))).jobId)).status).toBe("live");
+    await store.create({ id: "OTHER_BOARD", title: "Other", html: "<p>Other</p>", data: {} });
+    const other = await publish(request(await version(undefined, "OTHER_BOARD"), "other-board"));
+    expect(other.refusal?.code).toBe("share-foreign"); expect(github.prs).toHaveLength(1); expect(filesAt(`boards/${key}`)).toEqual(release.files);
+  });
+
+  it("blocks a second update only while another is before merge; login-protected deployments never block", async () => {
+    const enterprise = { githubHost: host };
+    const sso = vi.spyOn(github, "publicFile").mockRejectedValue(new GitHubApiError(401));
+    const first = await publish(request(await version(), "first", enterprise)); github.deploy(); await manager.advanceAutomatic();
+    const deploying = await manager.read(first.jobId);
+    expect(deploying.status).toBe("deploying"); expect(deploying.autoPublish).toBe(true); expect(deploying.error).toContain("需要公司网络或登录");
+    expect(deploying.shareDeployedUrl).toBe(`https://pages.${host}/writer/site/boards/${key}/`);
+    github.legacyChecks = [{ status: "in_progress", conclusion: null }];
+    const second = await publish(request(await version("two"), "second", enterprise));
+    expect(second.status, second.error).toBe("pr-open"); expect(second.refusal).toBeUndefined();
+    const third = await publish(request(await version("three"), "third", enterprise));
+    expect(third).toMatchObject({ status: "failed", autoPublish: false, refusal: { code: "series-busy" } }); expect(github.prs).toHaveLength(2);
+    // Window expiry keeps the sign-in verification notice of the deployed version.
+    await writeFile(join(root, "jobs", `${first.jobId}.json`), JSON.stringify({ ...(await manager.read(first.jobId)), autoPublishUntil: "2000-01-01T00:00:00.000Z" }));
+    await manager.advanceAutomatic(); const expired = await manager.read(first.jobId);
+    expect(expired.autoPublish).toBe(false); expect(expired.error).toContain("需要公司网络或登录"); expect(expired.shareDeployedUrl).toBe(deploying.shareDeployedUrl);
+    sso.mockRestore();
+  });
+
+  it("updates after a lost merge response without refusing the share's own bytes", async () => {
+    legacy(); const first = await publish({ ...request(await version(), "first") }); expect(first.status).toBe("deploying");
+    const lostFirst = await version("lost");
+    github.failAfter("/pulls/2/merge"); const lost = await publish(request(lostFirst, "lost"));
+    expect(lost.status).toBe("unknown"); expect(lost.mergedSha).toBeUndefined(); expect(github.prs[1].merged).toBe(true);
+    await writeFile(join(root, "jobs", `${lost.jobId}.json`), JSON.stringify({ ...lost, autoPublishUntil: "2000-01-01T00:00:00.000Z" }));
+    await manager.advanceAutomatic();
+    const third = await version("three"), next = await deployed((await publish(request(third, "next"))).jobId);
+    expect(next.status, next.error).toBe("live"); expect(filesAt(`boards/${key}`)).toEqual(third.files);
+    expect(filesAt(`boards/${key}/v/${hex(lostFirst)}`)).toEqual(lostFirst.files);
+    // Resuming the lost request only picks up its merge; it never rolls the share back.
+    const resumed = await publish(request(lostFirst, "lost")); expect(resumed.mergedSha).toBe(github.prs[1].merge_commit_sha);
+    expect(filesAt(`boards/${key}`)).toEqual(third.files); expect(github.calls.filter(call => call.method === "PUT")).toHaveLength(3);
+  });
+
+  it("finishes an unchanged update without a branch or PR", async () => {
+    legacy(); const release = await version(), first = await deployed((await publish(request(release, "first"))).jobId);
+    const calls = github.calls.length, again = await publish(request(release, "again"));
+    expect(again.refusal?.code).toBe("up-to-date"); expect(again.prNumber).toBeUndefined(); expect(again.branch).toBeTruthy();
+    expect(github.prs).toHaveLength(1); expect(github.calls.slice(calls).some(call => call.method !== "GET")).toBe(false);
+    expect(again.status, again.error).toBe("live"); expect(again.shareUrl).toBe(first.shareUrl); expect(again.url).toBe(first.url);
+  });
+
+  it("owns the workflow-mode root per Board, keeps the v1 workflow text and leaves old requests unchanged", async () => {
+    const first = await version(), one = await publish(request(first, "first"));
+    expect(one.publicationMode).toBe("workflow"); expect(one.sharePath).toBeUndefined(); expect(one.sitePath).toBeUndefined();
+    expect(github.files("main")[".github/workflows/paseo-board-pages.yml"]).toBe(pagesWorkflow("main"));
+    const live = await deployed(one.jobId); expect(live.status, live.error).toBe("live");
+    expect(live).toMatchObject({ url: "https://writer.github.io/site/", shareUrl: "https://writer.github.io/site/" });
+    const second = await version("two"), two = await deployed((await publish(request(second, "second"))).jobId);
+    expect(two.status, two.error).toBe("live"); expect(filesAt("paseo-board-publication/site")).toEqual(second.files);
+    expect(github.files("main")[".github/workflows/paseo-board-pages.yml"]).toBe(pagesWorkflow("main"));
+    const older = await manager.refresh(one.jobId); expect(older.status).toBe("live"); expect(older.url).toBe(live.url);
+    // Another Board cannot take over this Board's root as a series...
+    await store.create({ id: "OTHER_BOARD", title: "Other", html: "<p>Other</p>", data: {} });
+    const otherRelease = await version(undefined, "OTHER_BOARD");
+    const other = await publish(request(otherRelease, "other", { shareKey: "s" + "2".repeat(20) }));
+    expect(other.refusal).toEqual({ code: "share-foreign", message: "此仓库首页属于另一张 Board，请选择其他仓库。" }); expect(github.prs).toHaveLength(2);
+    // ...while a request without a share key keeps today's behaviour.
+    const old = await publish(request(otherRelease, "old", { shareKey: undefined })); expect(old.status, old.error).toBe("deploying"); expect(old.refusal).toBeUndefined();
+  });
+
+  it("keeps old journals and non-series requests on the per-release layout beside a series", async () => {
+    legacy(); const release = await version();
+    expect((await deployed((await publish(request(release, "series"))).jobId)).status).toBe("live");
+    const second = await version("two"), plain = await publish(request(second, "plain", { shareKey: undefined }));
+    expect(plain.sitePath).toBe(`boards/${hex(second)}`); expect(plain.sharePath).toBeUndefined(); expect(plain.adoptedFrom).toBeUndefined();
+    expect(filesAt(`boards/${hex(second)}`)).toEqual(second.files); expect(filesAt(`boards/${key}`)).toEqual(release.files);
+    const live = await deployed(plain.jobId); expect(live.url).toBe(`https://writer.github.io/site/boards/${hex(second)}/`); expect(live.shareUrl).toBeUndefined();
+    const { shareKey: _, sharePath: __, ...oldShape } = plain;
+    await writeFile(join(root, "jobs", `${plain.jobId}.json`), JSON.stringify(oldShape));
+    expect(await open().read(plain.jobId)).toEqual(oldShape);
   });
 });

@@ -3,9 +3,9 @@ import { readFile, readdir, rename, lstat, open, unlink } from "node:fs/promises
 import { join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { IdSchema } from "../shared/contracts";
-import { GitHubHostSchema, GitHubLoginSchema, PagesJobSchema, PagesPrepareSchema, type GitHubAccount, type GitHubRepository, type PagesJob, type PagesPrepareInput } from "../shared/release-contracts";
+import { GitHubHostSchema, GitHubLoginSchema, PagesJobSchema, PagesPrepareSchema, type GitHubAccount, type GitHubRepository, type PagesJob, type PagesPrepareInput, type ReleaseMeta } from "../shared/release-contracts";
 import { canonicalJson, ensureDirectory } from "./store-format";
-import { ReleaseRepository, sha256 } from "./static-release";
+import { ReleaseRepository, sha256, type StaticRelease } from "./static-release";
 
 const DIRECTORY = "paseo-board-publication";
 const WORKFLOW = ".github/workflows/paseo-board-pages.yml";
@@ -212,9 +212,50 @@ type GitTree = { sha: string; truncated?: boolean; tree: Array<{ path: string; m
 const pagesConfigurationHash = (pages: PagesInfo) => sha256(canonicalJson({ url: pages.html_url, buildType: pages.build_type ?? (pages.source ? "legacy" : "workflow"), cname: pages.cname ?? null, ...(isLegacyPages(pages) ? { source: pages.source ?? null } : {}) }));
 const gitBlobHash = (text: string) => createHash("sha1").update(`blob ${Buffer.byteLength(text)}\0`).update(text).digest("hex");
 class PublicationValidationError extends Error {}
+type RefusalCode = NonNullable<PagesJob["refusal"]>["code"];
+/** Typed, non-retryable refusal; recorded on the job so the client can drop its stale request. */
+class PublicationRefusal extends PublicationValidationError {
+  constructor(readonly code: RefusalCode, message: string) { super(message); }
+}
 const failureStatus = (error: unknown) => error instanceof PublicationValidationError || error instanceof GitHubApiError && error.status < 500 && error.status !== 429 ? "failed" as const : "unknown" as const;
 const safeError = (error: unknown) => error instanceof Error ? error.message.slice(0, 800) : "Publication operation failed";
+function withFailure(job: PagesJob, error: unknown): PagesJob {
+  job.status = failureStatus(error); job.error = safeError(error);
+  if (error instanceof PublicationRefusal) job.refusal = { code: error.code, message: error.message };
+  else if (job.refusal?.code !== "up-to-date") delete job.refusal;
+  return job;
+}
 const pending = new Map<string, Promise<unknown>>();
+
+// Share series: jobs with a shareKey on one host+repository whose releases belong to one Board.
+const hostOf = (job: PagesJob) => job.githubHost ?? "github.com";
+const sameTarget = (a: PagesJob, b: PagesJob) => hostOf(a) === hostOf(b) && a.repository.toLowerCase() === b.repository.toLowerCase();
+const seriesLock = (job: { githubHost?: string; repository: string }) => `series:${job.githubHost ?? "github.com"}:${job.repository.toLowerCase()}`;
+const createdTime = (job: PagesJob) => { const time = job.createdAt ? Date.parse(job.createdAt) : NaN; return Number.isFinite(time) ? time : undefined; };
+// Series order: missing createdAt is oldest; ties fall back to jobId.
+const createdAfter = (a: PagesJob, b: PagesJob) => { const x = createdTime(a) ?? -Infinity, y = createdTime(b) ?? -Infinity; return x !== y ? x > y : a.jobId > b.jobId; };
+// A no-op job found its release already on the share link; it counts as published.
+const onShare = (job: PagesJob) => !!job.mergedSha || job.refusal?.code === "up-to-date";
+const reachedHead = (job: PagesJob) => !!(job.headSha || job.mergedSha);
+const blobIdentity = (text: string) => `100644:blob:${gitBlobHash(text)}`;
+const entriesUnder = (tree: Map<string, string>, directory: string, skip?: string) => new Map([...tree]
+  .filter(([path]) => path.startsWith(directory + "/")).map(([path, identity]) => [path.slice(directory.length + 1), identity] as const)
+  .filter(([path]) => !skip || !path.startsWith(skip)));
+const identicalFiles = (entries: Map<string, string>, files: Record<string, string>) =>
+  entries.size === Object.keys(files).length && Object.entries(files).every(([name, text]) => entries.get(name) === blobIdentity(text));
+type Owner = { release: StaticRelease; meta?: ReleaseMeta; boardId: string; boardCreatedAt?: string };
+type OwnerCache = (releaseId: string) => Promise<Owner | undefined>;
+const sameBoard = (a: Owner, b: Owner) => a.boardId === b.boardId && (a.boardCreatedAt === undefined || b.boardCreatedAt === undefined || a.boardCreatedAt === b.boardCreatedAt);
+const sourceOf = ({ release, meta }: Owner) => ({ documentVersion: release.provenance.canvasBase.documentVersion, patchCount: release.provenance.patchCount ?? meta?.source.patchCount, revision: release.provenance.canvasBase.revision });
+/** documentVersion, then patchCount, then canvas revision (also when patchCount is unknown). */
+function newerSource(a: Owner, b: Owner): boolean {
+  const x = sourceOf(a), y = sourceOf(b);
+  if (x.documentVersion !== y.documentVersion) return x.documentVersion > y.documentVersion;
+  if (x.patchCount !== undefined && y.patchCount !== undefined && x.patchCount !== y.patchCount) return x.patchCount > y.patchCount;
+  return x.revision > y.revision;
+}
+const NEWER_ON_SHARE = "分享页上已有更新的版本，此请求不会覆盖。";
+const SSO_NOTICE = "部署已完成，但尚未核验此版本的页面内容；站点可能仍在更新、需要公司网络或登录。不会向 Pages 站点发送 GitHub 凭据。";
 
 /** Local durable journal. Every mutation binds one artifact + selected account/repository. */
 export class GitHubPagesManager {
@@ -253,21 +294,33 @@ export class GitHubPagesManager {
     const options = PagesPrepareSchema.parse(input), jobId = `pages-${sha256(options.eventId).slice(0, 40)}`;
     const release = await this.releases.read(options.releaseId);
     if (release.manifest.artifactHash !== options.artifactHash) throw new PublicationValidationError("Publication artifact hash changed");
-    const job = await this.exclusive(jobId, async () => {
+    // Lock order everywhere: series, then job. The busy check and the authorization are one step.
+    const authorize = () => this.exclusive(jobId, async () => {
       const previous = await this.loadRequest(options);
-      return this.save({ ...previous, status: previous.status === "failed" ? "unknown" : previous.status, autoPublish: true, autoPublishUntil: new Date(Date.now() + 30 * 60_000).toISOString() });
+      if (previous.shareKey && !onShare(previous) && await this.seriesBusy(previous)) {
+        const message = "这个分享页还有一次更新在进行中；完成后再更新。";
+        return this.save({ ...previous, status: "failed", autoPublish: false, error: message, refusal: { code: "series-busy", message } });
+      }
+      const next: PagesJob = { ...previous, status: previous.status === "failed" ? "unknown" : previous.status, autoPublish: true, autoPublishUntil: new Date(Date.now() + 30 * 60_000).toISOString() };
+      if (previous.status === "failed" && previous.refusal?.code !== "up-to-date") delete next.refusal;
+      return this.save(next);
     });
+    const job = options.shareKey ? await this.exclusive(seriesLock(options), authorize) : await authorize();
     this.start(); return job;
   }
   /** One bounded pass, also usable by the CLI and deterministic recovery tests. */
   async advanceAutomatic(): Promise<void> {
-    const jobs = await this.list();
+    // Oldest request first (missing createdAt last), so a newer share update never runs ahead of an older one.
+    const order = (job: PagesJob) => createdTime(job) ?? Infinity;
+    const jobs = (await this.list()).sort((a, b) => order(a) - order(b) || (a.jobId < b.jobId ? -1 : a.jobId > b.jobId ? 1 : 0));
     for (const saved of jobs) {
       if (this.stopped || !saved.autoPublish || ["live", "failed"].includes(saved.status)) continue;
       if (!saved.autoPublishUntil || Date.parse(saved.autoPublishUntil) <= Date.now()) {
         await this.exclusive(saved.jobId, async () => {
           const current = await this.read(saved.jobId);
-          if (current.autoPublishUntil === saved.autoPublishUntil && !["live", "failed"].includes(current.status)) await this.save({ ...current, autoPublish: false, error: "发布等待超过 30 分钟；点击继续发布可使用同一次请求恢复。" });
+          // A deployed but login-protected page keeps its sign-in verification notice.
+          const unverified = current.status === "deploying" && !!current.deployedUrl;
+          if (current.autoPublishUntil === saved.autoPublishUntil && !["live", "failed"].includes(current.status)) await this.save({ ...current, autoPublish: false, ...(unverified ? {} : { error: "发布等待超过 30 分钟；点击继续发布可使用同一次请求恢复。" }) });
         });
         continue;
       }
@@ -277,7 +330,7 @@ export class GitHubPagesManager {
         if (job.status === "pr-open" && job.headSha) job = await this.merge({ jobId: job.jobId, expectedHead: job.headSha });
         if (!this.stopped && ["merged", "deploying"].includes(job.status)) await this.refresh(job.jobId);
       } catch (error) {
-        await this.exclusive(saved.jobId, async () => { const current = await this.read(saved.jobId); await this.save({ ...current, status: failureStatus(error), error: safeError(error) }); });
+        await this.exclusive(saved.jobId, async () => { const current = await this.read(saved.jobId); await this.save(withFailure(current, error)); });
       }
     }
   }
@@ -348,18 +401,140 @@ export class GitHubPagesManager {
     if (content.type !== "file" || content.encoding !== "base64" || typeof content.content !== "string") throw new PublicationValidationError("Repository publication path is not a regular file");
     return Buffer.from(content.content, "base64").toString("utf8");
   }
+  /** Version directory: legacy jobs boards/<releaseHex>; legacy series jobs the archive boards/<key>/v/<releaseHex>. */
   private siteDirectory(job: PagesJob): string {
     if (!isLegacyJob(job)) return `${DIRECTORY}/site`;
-    if (!job.sitePath || !job.sourcePath || job.sitePath !== `boards/${job.releaseId.slice(8)}`) throw new PublicationValidationError("The frozen publication directory is invalid");
+    const hex = job.releaseId.slice(8), expected = job.shareKey ? `boards/${job.shareKey}/v/${hex}` : `boards/${hex}`;
+    if (!job.sitePath || !job.sourcePath || job.sitePath !== expected || job.shareKey && job.sharePath !== `boards/${job.shareKey}`) throw new PublicationValidationError("The frozen publication directory is invalid");
     return `${job.sourcePath === "/docs" ? "docs/" : ""}${job.sitePath}`;
+  }
+  /** Stable share directory; workflow mode shares the Pages root. */
+  private shareDirectory(job: PagesJob): string {
+    if (!isLegacyJob(job)) return `${DIRECTORY}/site`;
+    this.siteDirectory(job);
+    return `${job.sourcePath === "/docs" ? "docs/" : ""}${job.sharePath}`;
   }
   private async publicFiles(job: PagesJob): Promise<Record<string, string>> {
     const release = await this.releases.read(job.releaseId);
     if (release.manifest.artifactHash !== job.artifactHash) throw new PublicationValidationError("Publication artifact hash changed");
-    const files = Object.fromEntries(Object.entries(release.files).map(([name, content]) => [`${this.siteDirectory(job)}/${name}`, content]));
-    if (isLegacyJob(job)) return { ...files, ...(job.publicationMode === "legacy-branch" ? { "docs/.nojekyll": "" } : {}) };
+    const place = (directory: string, source: Record<string, string>) => Object.fromEntries(Object.entries(source).map(([name, content]) => [`${directory}/${name}`, content]));
+    const files = place(this.siteDirectory(job), release.files);
+    if (isLegacyJob(job)) {
+      if (job.shareKey) {
+        Object.assign(files, place(this.shareDirectory(job), release.files));
+        // Adoption keeps the originally shared release R0 viewable under the share's version archive.
+        if (job.adoptedFrom) Object.assign(files, place(`${this.shareDirectory(job)}/v/${job.shareKey}`, (await this.releases.read(`release-${job.shareKey}`)).files));
+      }
+      return { ...files, ...(job.publicationMode === "legacy-branch" ? { "docs/.nojekyll": "" } : {}) };
+    }
     const workflow = pagesWorkflow(job.baseBranch!);
     return { ...files, [WORKFLOW]: workflow, [OWNER_FILE]: canonicalJson({ publisher: "paseo-board", formatVersion: 1, repository: job.repository, workflowHash: sha256(workflow) }) + "\n" };
+  }
+  private ownerCache(): OwnerCache {
+    const cache = new Map<string, Promise<Owner | undefined>>();
+    return id => {
+      let entry = cache.get(id);
+      if (!entry) {
+        entry = (async () => {
+          try {
+            const release = await this.releases.read(id), stored = await this.releases.meta(id);
+            const meta = stored?.source.boardId === release.provenance.boardId ? stored : undefined;
+            return { release, meta, boardId: release.provenance.boardId, boardCreatedAt: meta?.source.boardCreatedAt ?? release.provenance.boardCreatedAt };
+          } catch { return undefined; }
+        })();
+        cache.set(id, entry);
+      }
+      return entry;
+    };
+  }
+  /** Jobs of the requesting Board on this host+repository (including `job` itself), and whether another Board uses its key. */
+  private async boardJobs(job: PagesJob, owners: OwnerCache): Promise<{ self: Owner; owned: PagesJob[]; foreign: boolean }> {
+    const self = await owners(job.releaseId);
+    if (!self) throw new PublicationValidationError("The publication release is unreadable");
+    const owned: PagesJob[] = []; let foreign = false;
+    for (const other of await this.list(undefined, { skipInvalid: true })) {
+      if (other.jobId === job.jobId || !sameTarget(other, job)) continue;
+      const owner = await owners(other.releaseId);
+      if (owner && sameBoard(owner, self)) owned.push(other);
+      else if (other.shareKey && other.shareKey === job.shareKey) foreign = true;
+    }
+    return { self, owned: [...owned, job], foreign };
+  }
+  /** Same Board is checked by the caller. Workflow mode: one root per repository, any key. */
+  private isSeriesMember(job: PagesJob, other: PagesJob): boolean {
+    return other.jobId !== job.jobId && !!other.shareKey && (other.shareKey === job.shareKey || job.publicationMode === "workflow" && other.publicationMode === "workflow");
+  }
+  private async seriesBusy(job: PagesJob): Promise<boolean> {
+    const { owned } = await this.boardJobs(job, this.ownerCache()), now = Date.now();
+    // Only before merge: deploying or login-protected (unverified) merged jobs never block.
+    return owned.some(other => this.isSeriesMember(job, other) && !onShare(other) && other.status !== "failed" && !!other.autoPublish && !!other.autoPublishUntil && Date.parse(other.autoPublishUntil) > now);
+  }
+  /** Mode family stays fixed per series; a legacy series adopts a pre-feature boards/<key> publication. Returns its jobId. */
+  private async seriesMode(job: PagesJob, legacy: boolean, owners: OwnerCache): Promise<string | undefined> {
+    const { owned, foreign } = await this.boardJobs(job, owners);
+    if (foreign) throw new PublicationRefusal("share-foreign", "这个分享链接已属于另一张 Board，未覆盖。");
+    const prior = owned.filter(other => other.jobId !== job.jobId && other.publicationMode && reachedHead(other) &&
+      (other.shareKey === job.shareKey || !other.shareKey && isLegacyJob(other) && other.sitePath === `boards/${job.shareKey}`));
+    if (prior.some(other => isLegacyJob(other) !== legacy)) throw new PublicationValidationError("这个分享页的 Pages 发布方式已改变（分支目录 / 工作流），不会切换；请选择其他仓库。");
+    return legacy ? prior.filter(other => !other.shareKey).sort((a, b) => createdAfter(a, b) ? 1 : -1).at(-1)?.jobId : undefined;
+  }
+  /**
+   * Series write rules at `ref`: the stable directory is vacant or holds a release of this Board (forward-only),
+   * version archives are vacant or byte-identical. Returns the tree at `ref`.
+   */
+  private async assertSeries(job: PagesJob, ref: string, owners: OwnerCache = this.ownerCache()): Promise<Map<string, string>> {
+    let context = await this.boardJobs(job, owners);
+    if (context.foreign) throw new PublicationRefusal("share-foreign", "这个分享链接已属于另一张 Board，未覆盖。");
+    const assertNoNewerJob = () => {
+      if (context.owned.some(other => this.isSeriesMember(job, other) && createdAfter(other, job) && reachedHead(other))) throw new PublicationRefusal("newer-on-share", NEWER_ON_SHARE);
+    };
+    assertNoNewerJob();
+    const legacy = isLegacyJob(job), stable = this.shareDirectory(job), tree = await this.tree(job, ref);
+    const archives: Array<[string, Record<string, string>]> = [];
+    if (legacy) {
+      archives.push([this.siteDirectory(job), context.self.release.files]);
+      if (job.adoptedFrom) {
+        const original = await owners(`release-${job.shareKey}`);
+        if (!original) throw new PublicationValidationError("The adopted share release is unreadable");
+        archives.push([`${stable}/v/${job.shareKey}`, original.release.files]);
+      }
+    }
+    for (const directory of [stable, ...archives.map(([directory]) => directory)]) {
+      const parts = directory.split("/");
+      for (let index = 1; index <= parts.length; index++) if (tree.has(parts.slice(0, index).join("/"))) throw new PublicationValidationError("The publication directory already contains unrelated files or a non-directory parent");
+    }
+    // Only the direct-child release files are the share; its v/ archive subtree is checked per version.
+    const current = entriesUnder(tree, stable, legacy ? "v/" : undefined);
+    if (current.size) {
+      const holder = async () => {
+        for (const other of context.owned) if (reachedHead(other)) { const owner = await owners(other.releaseId); if (owner && identicalFiles(current, owner.release.files)) return owner; }
+        return undefined;
+      };
+      let found = await holder();
+      if (!found) {
+        // Pick up merges whose response was lost before refusing.
+        const unmerged = context.owned.filter(other => this.isSeriesMember(job, other) && other.prNumber && !other.mergedSha);
+        for (const other of unmerged) await this.refresh(other.jobId).catch(() => undefined);
+        if (unmerged.length) { context = await this.boardJobs(job, owners); assertNoNewerJob(); found = await holder(); }
+      }
+      if (!found) throw new PublicationRefusal("share-foreign", legacy ? "分享页目录已被其他内容改动，未覆盖。" : "此仓库首页属于另一张 Board，请选择其他仓库。");
+      if (found.release.manifest.releaseId !== context.self.release.manifest.releaseId && newerSource(found, context.self)) throw new PublicationRefusal("newer-on-share", NEWER_ON_SHARE);
+      const names = (files: Record<string, string>) => JSON.stringify(Object.keys(files).sort());
+      if (names(found.release.files) !== names(context.self.release.files)) throw new PublicationRefusal("share-files-mismatch", "分享页目录的文件与新版本不一致，未覆盖。");
+    }
+    for (const [directory, files] of archives) {
+      const existing = entriesUnder(tree, directory);
+      if (existing.size && !identicalFiles(existing, files)) throw new PublicationRefusal("share-foreign", "版本目录已有其他内容，未覆盖。");
+    }
+    return tree;
+  }
+  /** True unless a later job of this Board's series is already on the share link. */
+  private async latestOnShare(job: PagesJob): Promise<boolean> {
+    const later = (await this.list(undefined, { skipInvalid: true })).filter(other => sameTarget(other, job) && this.isSeriesMember(job, other) && onShare(other) && createdAfter(other, job));
+    if (!later.length) return true;
+    const owners = this.ownerCache(), self = await owners(job.releaseId);
+    for (const other of later) { const owner = await owners(other.releaseId); if (owner && self && sameBoard(owner, self)) return false; }
+    return true;
   }
   private async assertLegacySource(job: PagesJob): Promise<PagesInfo> {
     const pages = await this.request<PagesInfo>(job, "GET", `${this.prefix(job)}/pages`);
@@ -425,11 +600,14 @@ export class GitHubPagesManager {
   }
   async prepare(input: PagesPrepareInput): Promise<PagesJob> {
     const options = PagesPrepareSchema.parse(input), jobId = `pages-${sha256(options.eventId).slice(0, 40)}`;
-    return this.exclusive(jobId, async () => {
+    const run = () => this.exclusive(jobId, async () => {
       let job = await this.loadRequest(options);
       const release = await this.releases.read(job.releaseId);
       if (release.manifest.artifactHash !== job.artifactHash) throw new PublicationValidationError("Publication artifact hash changed");
       if (job.prNumber) return this.refreshInternal(job);
+      // Already on the share link without a PR; refresh verifies it.
+      if (job.refusal?.code === "up-to-date") return job;
+      const owners = this.ownerCache();
       try {
         const api = this.prefix(job);
         let repo = await this.optional<RepositoryInfo>(job, api);
@@ -442,23 +620,38 @@ export class GitHubPagesManager {
         if (job.createRepository && repo.private !== (job.createRepository === "private")) throw new PublicationValidationError("The existing repository visibility differs from the requested new repository");
         if (!job.publicationMode) {
           const pages = await this.optional<PagesInfo>(job, `${api}/pages`);
+          // Legacy series: archive boards/<key>/v/<releaseHex> plus the stable boards/<key>.
+          const sitePath = job.shareKey ? `boards/${job.shareKey}/v/${job.releaseId.slice(8)}` : `boards/${job.releaseId.slice(8)}`;
+          let mode: Partial<PagesJob>;
           if (!job.headSha && pages && isLegacyPages(pages) && pages.source?.branch && ["/", "/docs"].includes(pages.source.path)) {
-            job.publicationMode = "legacy-subdirectory"; job.baseBranch = pages.source.branch;
-            job.sourcePath = pages.source.path as "/" | "/docs"; job.sitePath = `boards/${job.releaseId.slice(8)}`;
-            job.pagesConfigurationHash = pagesConfigurationHash(pages);
+            mode = { publicationMode: "legacy-subdirectory", baseBranch: pages.source.branch, sourcePath: pages.source.path as "/" | "/docs", sitePath, pagesConfigurationHash: pagesConfigurationHash(pages) };
           } else if (isEnterpriseServer(job.githubHost)) {
             if (pages) throw new PublicationValidationError("此内部 GitHub 仓库已有其他 Pages 发布方式；不会替换现有设置。请选择已有分支发布站点或专用仓库。");
-            job.publicationMode = "legacy-branch"; job.baseBranch = repo.default_branch;
-            job.sourcePath = "/docs"; job.sitePath = `boards/${job.releaseId.slice(8)}`;
-          } else job.publicationMode = "workflow";
-          job = await this.save(job);
+            mode = { publicationMode: "legacy-branch", baseBranch: repo.default_branch, sourcePath: "/docs", sitePath };
+          } else mode = { publicationMode: "workflow" };
+          if (job.shareKey) {
+            const legacy = mode.publicationMode !== "workflow", adoptedFrom = await this.seriesMode(job, legacy, owners);
+            if (legacy) mode.sharePath = `boards/${job.shareKey}`;
+            if (adoptedFrom) mode.adoptedFrom = adoptedFrom;
+          }
+          job = await this.save({ ...job, ...mode });
         }
         if (!job.baseBranch) { job.baseBranch = repo.default_branch; job = await this.save(job); }
         const baseBranch = job.baseBranch!;
         const base = await this.request<{ object: { sha: string } }>(job, "GET", `${api}/git/ref/heads/${encodeURIComponent(baseBranch)}`);
-        if (job.publicationMode === "legacy-subdirectory") { await this.assertLegacySource(job); await this.assertVacantSite(job, base.object.sha); }
-        else if (job.publicationMode === "legacy-branch") await this.assertNewLegacySite(job, base.object.sha);
-        else await this.assertOwnership(job, base.object.sha);
+        let tree: Map<string, string> | undefined;
+        if (job.publicationMode === "legacy-subdirectory") { await this.assertLegacySource(job); if (job.shareKey) tree = await this.assertSeries(job, base.object.sha, owners); else await this.assertVacantSite(job, base.object.sha); }
+        else if (job.publicationMode === "legacy-branch") { await this.assertNewLegacySite(job, base.object.sha); if (job.shareKey) tree = await this.assertSeries(job, base.object.sha, owners); }
+        else { await this.assertOwnership(job, base.object.sha); if (job.shareKey) tree = await this.assertSeries(job, base.object.sha, owners); }
+        if (tree && !job.treeSha) {
+          // No-op: the share link and archive already hold exactly this release; never open an empty PR.
+          const reference = job.baseSha && job.baseSha !== base.object.sha ? await this.tree(job, job.baseSha) : tree;
+          if (Object.entries(await this.publicFiles(job)).every(([path, text]) => reference.get(path) === blobIdentity(text))) {
+            const message = "分享页已是这个版本；没有创建新的 PR。";
+            job.refusal = { code: "up-to-date", message }; job.status = "deploying"; delete job.error;
+            return this.save(job);
+          }
+        }
         if (!job.baseSha) { job.baseSha = base.object.sha; job = await this.save(job); }
         const publicFiles = await this.publicFiles(job);
         if (!job.treeSha) {
@@ -481,11 +674,12 @@ export class GitHubPagesManager {
         const existing = await this.findPullRequest(job);
         const pr = existing ?? await this.request<PullRequest>(job, "POST", `${api}/pulls`, { title: `Publish Board: ${release.manifest.title}`, head: job.branch, base: job.baseBranch, body: `Publishes the reviewed static artifact \`${job.artifactHash}\`.\n\nRelease: \`${job.releaseId}\`. Only the frozen public files are included; no Board discussions, author state or host credentials. Merge deploys this version through GitHub Pages.` });
         if (pr.head.sha !== job.headSha || pr.base.ref !== job.baseBranch) throw new PublicationValidationError("Existing PR does not match the frozen publication head");
-        job.prNumber = pr.number; job.prUrl = pr.html_url; job.status = "pr-open"; delete job.error;
+        job.prNumber = pr.number; job.prUrl = pr.html_url; job.status = "pr-open"; delete job.error; delete job.refusal;
         if (existing && pr.state !== "open") return this.refreshInternal(job);
         return this.save(job);
-      } catch (error) { job.status = failureStatus(error); job.error = safeError(error); return this.save(job); }
+      } catch (error) { return this.save(withFailure(job, error)); }
     });
+    return options.shareKey ? this.exclusive(seriesLock(options), run) : run();
   }
   private async findPullRequest(job: PagesJob): Promise<PullRequest | undefined> {
     const prs = await this.request<PullRequest[]>(job, "GET", `${this.prefix(job)}/pulls?state=all&head=${encodeURIComponent(job.repository.split("/")[0] + ":" + job.branch)}&per_page=100`);
@@ -505,7 +699,10 @@ export class GitHubPagesManager {
     return undefined;
   }
   async merge(input: { jobId: string; expectedHead: string }): Promise<PagesJob> {
-    return this.exclusive(input.jobId, async () => {
+    // The series identity is immutable request data, so reading it before the locks is safe.
+    let saved: PagesJob | undefined;
+    try { saved = await this.read(input.jobId); } catch { /* the locked read reports it */ }
+    const run = () => this.exclusive(input.jobId, async () => {
       let job = await this.read(input.jobId);
       if (!job.prNumber || !job.headSha || job.headSha !== input.expectedHead) throw new PublicationValidationError("Confirm the exact prepared publication commit before merging");
       try {
@@ -528,14 +725,17 @@ export class GitHubPagesManager {
         }
         const base = await this.request<{ object: { sha: string } }>(job, "GET", `${api}/git/ref/heads/${encodeURIComponent(job.baseBranch!)}`);
         if (job.publicationMode === "legacy-subdirectory") {
-          await this.assertLegacySource(job); await this.assertVacantSite(job, base.object.sha);
+          await this.assertLegacySource(job);
+          if (job.shareKey) await this.assertSeries(job, base.object.sha); else await this.assertVacantSite(job, base.object.sha);
           await this.assertPublicDiff(job, base.object.sha);
         } else if (job.publicationMode === "legacy-branch") {
           await this.assertNewLegacySite(job, base.object.sha);
+          if (job.shareKey) await this.assertSeries(job, base.object.sha);
           await this.assertPublicDiff(job, base.object.sha);
         } else {
           await this.assertOwnership(job, base.object.sha, job.pagesConfigured === true);
           await this.assertOwnership(job, job.headSha);
+          if (job.shareKey) await this.assertSeries(job, base.object.sha);
           await this.assertPublicDiff(job, base.object.sha);
           let pages = await this.optional<PagesInfo>(job, `${api}/pages`);
           if (pages && job.pagesConfigured && job.pagesConfigurationHash !== pagesConfigurationHash(pages)) throw new PublicationValidationError("Pages configuration changed after confirmation; review the current site before continuing");
@@ -550,11 +750,12 @@ export class GitHubPagesManager {
         if (!merged.merged) throw new PublicationValidationError("GitHub did not merge this PR; required checks or repository protection may still be pending");
         job.mergedSha = merged.sha; job.status = "merged"; delete job.error; return this.save(job);
       } catch (error) {
-        job.status = error instanceof GitHubApiError && [405, 409].includes(error.status) ? "pr-open" : failureStatus(error);
-        job.error = error instanceof GitHubApiError && [405, 409].includes(error.status) ? "仓库保护或 GitHub 合并条件仍未满足，正在等待；不会绕过保护。" : safeError(error);
+        if (!(error instanceof GitHubApiError && [405, 409].includes(error.status))) return this.save(withFailure(job, error));
+        job.status = "pr-open"; job.error = "仓库保护或 GitHub 合并条件仍未满足，正在等待；不会绕过保护。";
         return this.save(job);
       }
     });
+    return saved?.shareKey ? this.exclusive(seriesLock(saved), run) : run();
   }
   private async configureNewLegacySite(job: PagesJob): Promise<PagesJob> {
     if (job.pagesConfigured) { await this.assertLegacySource(job); return job; }
@@ -573,9 +774,12 @@ export class GitHubPagesManager {
   }
   refresh(jobId: string): Promise<PagesJob> { return this.exclusive(jobId, async () => this.refreshInternal(await this.read(jobId))); }
   private async refreshInternal(job: PagesJob): Promise<PagesJob> {
+    // Share fields survive transient errors; the version fields are re-derived on every refresh.
+    const previous = { status: job.status, url: job.url, verifiedAt: job.verifiedAt };
     delete job.deployedUrl; delete job.url; delete job.verifiedAt;
     try {
       if (job.publicationMode === "legacy-subdirectory" || job.publicationMode === "legacy-branch" && job.pagesConfigured) await this.assertLegacySource(job);
+      if (job.refusal?.code === "up-to-date" && !job.prNumber) { job.status = "deploying"; return await this.verifyDeployment(job, previous); }
       const api = this.prefix(job), pr = job.prNumber ? await this.request<PullRequest>(job, "GET", `${api}/pulls/${job.prNumber}`) : await this.findPullRequest(job);
       if (!pr) { job.status = "prepared"; job.error = "尚未找到发布 PR；可用同一次发布请求重试。"; return this.save(job); }
       if (!job.headSha || pr.head.sha !== job.headSha || pr.base.ref !== job.baseBranch) throw new PublicationValidationError("The PR head or base differs from the frozen publication commit");
@@ -606,20 +810,38 @@ export class GitHubPagesManager {
         if (!run || run.status !== "completed") { delete job.error; return this.save(job); }
         if (run.conclusion !== "success") { job.status = "failed"; job.error = `GitHub Pages workflow finished: ${run.conclusion ?? "unknown"}`; return this.save(job); }
       }
-      const pages = await this.request<PagesInfo>(job, "GET", `${api}/pages`);
-      if (job.pagesConfigurationHash && pagesConfigurationHash(pages) !== job.pagesConfigurationHash) throw new PublicationValidationError("Pages configuration changed before verification");
-      let url = pagesUrl(pages.html_url.endsWith("/") ? pages.html_url : pages.html_url + "/");
-      if (isLegacyJob(job)) url = new URL(`${job.sitePath}/`, url);
-      job.deployedUrl = url.href;
-      const release = await this.releases.read(job.releaseId), suffix = `?paseo_release=${job.artifactHash}`;
-      const results = await Promise.all(Object.entries(release.files).map(async ([path, expected]) => {
-        let actual: string | undefined;
-        try { actual = await this.transport.publicFile(new URL(path + suffix, url).href); }
-        catch { /* Deployment is known; inaccessible/SSO pages are not byte-verified. */ }
-        return { path, expected, actual };
-      }));
-      if (results.some(file => file.actual !== file.expected)) { job.error = "部署已完成，但尚未核验此版本的页面内容；站点可能仍在更新、需要公司网络或登录。不会向 Pages 站点发送 GitHub 凭据。"; return this.save(job); }
-      job.status = "live"; job.url = url.href; job.verifiedAt = new Date().toISOString(); delete job.error; return this.save(job);
-    } catch (error) { job.status = failureStatus(error); job.error = safeError(error); return this.save(job); }
+      return await this.verifyDeployment(job, previous);
+    } catch (error) { return this.save(withFailure(job, error)); }
+  }
+  /**
+   * url/deployedUrl name this version (the archive for legacy series jobs); shareDeployedUrl/shareUrl the stable link.
+   * The stable link is verified only by the latest job on it; older series jobs are never demoted.
+   */
+  private async verifyDeployment(job: PagesJob, previous: Pick<PagesJob, "status" | "url" | "verifiedAt">): Promise<PagesJob> {
+    const pages = await this.request<PagesInfo>(job, "GET", `${this.prefix(job)}/pages`);
+    if (job.pagesConfigurationHash && pagesConfigurationHash(pages) !== job.pagesConfigurationHash) throw new PublicationValidationError("Pages configuration changed before verification");
+    const root = pagesUrl(pages.html_url.endsWith("/") ? pages.html_url : pages.html_url + "/"), legacy = isLegacyJob(job);
+    // An adopted pre-feature directory became a share link; its original release lives on under v/<hex>.
+    const adopted = legacy && !job.shareKey && (await this.list(undefined, { skipInvalid: true })).some(other => other.adoptedFrom === job.jobId && sameTarget(other, job) && onShare(other));
+    const url = legacy ? new URL(`${job.sitePath}/${adopted ? `v/${job.releaseId.slice(8)}/` : ""}`, root) : root;
+    job.deployedUrl = url.href;
+    const share = !job.shareKey ? undefined : legacy ? new URL(`${job.sharePath}/`, root) : root;
+    if (share) job.shareDeployedUrl = share.href;
+    const latest = !share || await this.latestOnShare(job);
+    if (share && !legacy && !latest) {
+      // The root now serves a newer release of this series; this version stays as last verified.
+      if (previous.status === "live" && previous.url) { job.status = "live"; job.url = previous.url; if (previous.verifiedAt) job.verifiedAt = previous.verifiedAt; delete job.error; }
+      else job.error = "分享页已更新为更新的版本；此版本可在本地预览。";
+      return this.save(job);
+    }
+    const release = await this.releases.read(job.releaseId), suffix = `?paseo_release=${job.artifactHash}`;
+    const verify = async (base: URL) => (await Promise.all(Object.entries(release.files).map(async ([path, expected]) => {
+      try { return await this.transport.publicFile(new URL(path + suffix, base).href) === expected; }
+      catch { return false; /* Deployment is known; inaccessible/SSO pages are not byte-verified. */ }
+    }))).every(Boolean);
+    const version = await verify(url), shared = !share || !latest ? true : legacy ? await verify(share) : version;
+    if (share && latest) { if (shared) job.shareUrl = share.href; else delete job.shareUrl; }
+    if (!version || !shared) { job.error = SSO_NOTICE; return this.save(job); }
+    job.status = "live"; job.url = url.href; job.verifiedAt = new Date().toISOString(); delete job.error; return this.save(job);
   }
 }

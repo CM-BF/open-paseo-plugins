@@ -70,6 +70,19 @@ node scripts/board-release.mjs --help
 
 部署核对必须符合合并 SHA：workflow 模式检查目标分支的 push/workflow_dispatch run；分支式 Pages 检查对应 Pages build。成功后仍逐文件读取站点，完整 manifest、HTML、署名与许可均须匹配。URL 不匹配/旧缓存/文件改动不会标成 live。未启用 Pages、配额、权限、required checks 或平台失败会显示真实错误，不能用“PR 已创建”代替上线成功。
 
+### 固定分享链接（分享系列）
+
+带 `shareKey` 的请求属于一个分享系列：同一 GitHub 主机、仓库和 key，且发布版本的私有来源属于同一张 Board（boardId，有记录时再比 Board 创建时间）。没有 `shareKey` 的旧请求和旧记录行为不变。
+
+- 目录：分支式 Pages 的固定链接是 `boards/<key>/`，每个版本另存 `boards/<key>/v/<releaseHex>/`（`/docs` 源加 `docs/` 前缀）。`url/deployedUrl` 指此版本，`shareDeployedUrl/shareUrl` 指固定链接。workflow 模式固定链接就是 Pages 根目录，不在线存档旧版本，生成的 workflow 文本不变。
+- 接管旧链接：key 为旧发布的 64 位 hex 时，沿用该旧任务的 `boards/<hex>/` 作为固定目录（`adoptedFrom`），同一个 PR 把原版本另存到 `boards/<hex>/v/<hex>/`；旧任务之后在该存档地址核对，不会被降级。
+- 归属：固定目录只比直接文件（忽略 `v/`），须为空，或与本 Board 在该仓库任一已到 headSha 的任务的版本逐字节相同；拒绝前先刷新有 PR 但未记录合并的系列任务。workflow 根目录同理，须为空或属于本 Board 的版本。版本存档目录须为空或与该版本逐字节相同。文件集合不同时拒绝，不删文件。
+- 只前进：准备和合并时，若同系列有更晚创建且已到 headSha 的任务，或固定目录里已是来源更新的版本（documentVersion、patchCount、canvas revision 依次比较），拒绝覆盖。重新授权旧的失败或超时请求同样适用。
+- 进行中：同系列另一请求尚未合并且仍在自动推进窗口内时，`publish` 拒绝新建或重新授权（系列锁内检查；锁顺序始终先系列后任务；锁按主机+仓库）。已合并、部署中或需登录核验的不阻塞。窗口到期时保留“需要公司网络或登录”的核验提示。
+- 无改动：新版本文件与基线完全相同时不建分支和 PR，任务记为 `refusal: up-to-date`、状态 `deploying`，随后由 refresh 只做逐字节核对（通过后为 `live`）。这个状态与普通已合并任务的核对方式一致，且不会占用系列。
+- 发布方式不能在系列内切换（分支目录 / workflow）。拒绝写在任务的 `refusal {code, message}`（series-busy、newer-on-share、share-foreign、share-files-mismatch、up-to-date），客户端据此删除过时的待发请求。
+- 刷新：只由系列中最新上线的任务核对固定链接；更早的版本只核对自身存档，不因固定链接已更新而降级。暂时错误不会清掉已知的 `shareDeployedUrl`。
+
 本机 CLI 兼容旧版无 `gh auth status --json` 的 `gh`，只提取登录用户名和活跃状态；不显示完整 auth 输出，不输出 token。实际 API 取选定账号 token；不切换其他终端使用的全局账号。
 
 ## 自有服务器与后续托管

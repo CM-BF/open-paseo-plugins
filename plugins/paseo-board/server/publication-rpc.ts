@@ -26,6 +26,8 @@ type ShareView = Share & { key: string };
 const hostOf = (job: PagesJob) => job.githubHost ?? "github.com";
 const isLegacyMode = (job: PagesJob) => job.publicationMode === "legacy-subdirectory" || job.publicationMode === "legacy-branch";
 const isMerged = (job: PagesJob) => !!job.mergedSha || ["merged", "deploying", "live"].includes(job.status);
+// Refused requests never touched the share link, so they are not attempts on it.
+const isAttempt = (job: PagesJob) => job.refusal?.code !== "series-busy" && job.refusal?.code !== "newer-on-share";
 const isInFlight = (job: PagesJob, now: number) => !isMerged(job) && job.status !== "failed" && !!job.autoPublish && !!job.autoPublishUntil && Date.parse(job.autoPublishUntil) > now;
 const createdTime = (job: PagesJob) => { const time = job.createdAt ? Date.parse(job.createdAt) : NaN; return Number.isFinite(time) ? time : -Infinity; };
 // Missing createdAt (oldest journals) sorts first; NaN from -Infinity ties falls through to jobId.
@@ -82,7 +84,7 @@ async function boardShares(board: Board, releases: ReleaseRepository, pages: Pag
   const current = { canvasBase: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion }, documentVersion: board.canvas.documentVersion, patchCount: board.canvas.patches.length };
   const shares: Array<ShareView & { activity: Owned }> = [];
   for (const [seriesId, entry] of series) {
-    const { members } = entry, latest = members[members.length - 1];
+    const { members } = entry, latest = members.findLast(item => isAttempt(item.job)) ?? members[members.length - 1];
     const published = members.findLast(item => isMerged(item.job)) ?? latest, { job, release, meta } = published;
     const inFlight = members.findLast(item => isInFlight(item.job, now));
     const adoptable = !job.shareKey;
@@ -96,7 +98,9 @@ async function boardShares(board: Board, releases: ReleaseRepository, pages: Pag
       : !isMerged(job) || latest !== published && !isMerged(latest.job) ? "failed"
       : changed ? (meta && patchCount !== undefined ? "changed" : "legacy")
       : job.status !== "live" ? "merged-unverified" : "up-to-date";
-    const link = job.shareUrl ?? job.shareDeployedUrl ?? (adoptable ? job.url ?? job.deployedUrl : undefined);
+    // Every job of a series shares one stable link; keep the last known one until this job's refresh computes it.
+    const known = members.findLast(item => item.job.shareUrl || item.job.shareDeployedUrl)?.job;
+    const link = job.shareUrl ?? job.shareDeployedUrl ?? known?.shareUrl ?? known?.shareDeployedUrl ?? (adoptable ? job.url ?? job.deployedUrl : undefined);
     shares.push({
       seriesId, key: entry.key, githubHost: entry.githubHost, account: job.account, repository: entry.repository,
       ...(entry.keyed ? { shareKey: entry.key } : {}), adoptable, ...(link ? { link } : {}),

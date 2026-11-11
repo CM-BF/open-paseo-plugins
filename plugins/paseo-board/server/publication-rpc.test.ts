@@ -155,6 +155,19 @@ describe("share status and one-click share update", () => {
     expect((await status(f)).shares[0]).toMatchObject({ state: "failed" });
   });
 
+  it("ignores refused requests and keeps the series link while a merged update is not yet refreshed", async () => {
+    const f = await fixture(), { manifest, published } = await series(f);
+    const refused = (jobId: string, code: "series-busy" | "newer-on-share") => job(manifest, { jobId, shareKey: key, status: "failed", mergedSha: undefined, createdAt: "2026-11-10T02:00:00.000Z", refusal: { code, message: "refused" } });
+    vi.mocked(f.pages.list).mockResolvedValue([published, refused("busy", "series-busy"), refused("stale", "newer-on-share")]);
+    expect((await status(f)).shares[0]).toMatchObject({ state: "up-to-date", publishedJobId: "job" });
+    const foreign = job(manifest, { jobId: "foreign-dir", shareKey: key, status: "failed", mergedSha: undefined, createdAt: "2026-11-10T03:00:00.000Z", refusal: { code: "share-foreign", message: "changed" } });
+    vi.mocked(f.pages.list).mockResolvedValue([published, foreign]);
+    expect((await status(f)).shares[0].state).toBe("failed");
+    const merged = job(manifest, { jobId: "merged", shareKey: key, status: "merged", createdAt: "2026-11-10T04:00:00.000Z" });
+    vi.mocked(f.pages.list).mockResolvedValue([published, merged]);
+    expect((await status(f)).shares[0]).toMatchObject({ publishedJobId: "merged", link: published.shareUrl, verified: false, state: "merged-unverified" });
+  });
+
   it("offers pre-feature publications as adoptable legacy shares and flags them once the source moves", async () => {
     const f = await fixture(), manifest = await f.create(), hex = manifest.releaseId.slice(8);
     // A release built before this feature: no sidecar and no extended provenance.
