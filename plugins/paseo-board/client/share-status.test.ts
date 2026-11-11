@@ -33,6 +33,11 @@ describe("share state against the live canvas", () => {
     expect(shareSummary(liveShares([share()], canvas(3, 1, 2)))).toEqual({ attention: false, detail: "分享页已是最新" });
     expect(shareSummary(liveShares([share(), share({ seriesId: "share-2" })], canvas(3, 1, 3)))).toEqual({ attention: true, detail: "2 个分享页有改动还没发布" });
     expect(shareSummary(liveShares([share({ state: "updating" })], canvas(3, 1, 2)))).toMatchObject({ attention: false, detail: "分享页更新中" });
+    // A failed share outranks a healthy first one, and lights the dot once the Board has authored changes.
+    const mixed = [share(), share({ seriesId: "share-2", state: "failed" })];
+    expect(shareSummary(liveShares(mixed, canvas(3, 1, 2)))).toEqual({ attention: false, detail: "上次更新没有完成" });
+    expect(shareSummary(liveShares([share({ state: "merged-unverified", verified: false }), share({ seriesId: "share-2" })], canvas(3, 1, 2)))).toEqual({ attention: false, detail: "已合并，网页内容待核验" });
+    expect(shareSummary(liveShares([share({ state: "failed" })], canvas(4, 1, 3)))).toEqual({ attention: true, detail: "有改动还没发布" });
   });
 });
 
@@ -47,6 +52,9 @@ describe("share keys and stale requests", () => {
     expect(reusableShareKey({ repository: "fixture/site" }, { shares: [share({ shareKey: undefined, adoptable: true })], requests: [request] })).toBe(request.shareKey);
     expect(reusableShareKey({ githubHost: "github.enterprise.example", repository: "fixture/site" }, { shares: [share()], requests: [request] })).toBeUndefined();
     expect(reusableShareKey({ repository: "fixture/other" }, { jobs: [{ ...request, repository: "fixture/other", jobId: "j", status: "live", branch: "b" } as PagesJob] })).toBe(request.shareKey);
+    // With no key there yet, a pre-feature share on that repository is adopted so its link updates.
+    expect(reusableShareKey({ repository: "fixture/site" }, { shares: [share({ shareKey: undefined, adoptable: true })] })).toBe(hex);
+    expect(reusableShareKey({ repository: "fixture/other" }, { shares: [share({ shareKey: undefined, adoptable: true })] })).toBeUndefined();
   });
   it("keeps the published directory hex for an adoptable share", () => {
     expect(shareKeyOf(share({ shareKey: undefined, adoptable: true }))).toBe(hex);

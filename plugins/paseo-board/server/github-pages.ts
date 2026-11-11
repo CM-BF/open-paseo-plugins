@@ -466,8 +466,15 @@ export class GitHubPagesManager {
   }
   private async seriesBusy(job: PagesJob): Promise<boolean> {
     const { owned } = await this.boardJobs(job, this.ownerCache()), now = Date.now();
+    // A request not prepared yet has no mode; it shares the root with this Board's workflow-mode keyed jobs.
+    const sharesRoot = (a: PagesJob, b: PagesJob) => a.publicationMode === "workflow" && (b.publicationMode ?? "workflow") === "workflow";
+    const member = (other: PagesJob) => other.jobId !== job.jobId && !!other.shareKey && (other.shareKey === job.shareKey || sharesRoot(other, job) || sharesRoot(job, other));
     // Only before merge: deploying or login-protected (unverified) merged jobs never block.
-    return owned.some(other => this.isSeriesMember(job, other) && !onShare(other) && other.status !== "failed" && !!other.autoPublish && !!other.autoPublishUntil && Date.parse(other.autoPublishUntil) > now);
+    return owned.some(other => member(other) && !onShare(other) && other.status !== "failed" && !!other.autoPublish && !!other.autoPublishUntil && Date.parse(other.autoPublishUntil) > now);
+  }
+  /** Workflow mode: once any keyed job wrote the Pages root, requests without a key follow the series root rules too. */
+  private async rootIsShared(job: PagesJob): Promise<boolean> {
+    return (await this.list(undefined, { skipInvalid: true })).some(other => other.jobId !== job.jobId && sameTarget(other, job) && !!other.shareKey && other.publicationMode === "workflow" && reachedHead(other));
   }
   /** Mode family stays fixed per series; a legacy series adopts a pre-feature boards/<key> publication. Returns its jobId. */
   private async seriesMode(job: PagesJob, legacy: boolean, owners: OwnerCache): Promise<string | undefined> {
@@ -605,8 +612,8 @@ export class GitHubPagesManager {
       const release = await this.releases.read(job.releaseId);
       if (release.manifest.artifactHash !== job.artifactHash) throw new PublicationValidationError("Publication artifact hash changed");
       if (job.prNumber) return this.refreshInternal(job);
-      // Already on the share link without a PR; refresh verifies it.
-      if (job.refusal?.code === "up-to-date") return job;
+      // Already on the share link without a PR; every pass re-verifies it until live (transient errors retry).
+      if (job.refusal?.code === "up-to-date") return this.refreshInternal(job);
       const owners = this.ownerCache();
       try {
         const api = this.prefix(job);
@@ -642,7 +649,7 @@ export class GitHubPagesManager {
         let tree: Map<string, string> | undefined;
         if (job.publicationMode === "legacy-subdirectory") { await this.assertLegacySource(job); if (job.shareKey) tree = await this.assertSeries(job, base.object.sha, owners); else await this.assertVacantSite(job, base.object.sha); }
         else if (job.publicationMode === "legacy-branch") { await this.assertNewLegacySite(job, base.object.sha); if (job.shareKey) tree = await this.assertSeries(job, base.object.sha, owners); }
-        else { await this.assertOwnership(job, base.object.sha); if (job.shareKey) tree = await this.assertSeries(job, base.object.sha, owners); }
+        else { await this.assertOwnership(job, base.object.sha); if (job.shareKey || await this.rootIsShared(job)) tree = await this.assertSeries(job, base.object.sha, owners); }
         if (tree && !job.treeSha) {
           // No-op: the share link and archive already hold exactly this release; never open an empty PR.
           const reference = job.baseSha && job.baseSha !== base.object.sha ? await this.tree(job, job.baseSha) : tree;
@@ -679,7 +686,8 @@ export class GitHubPagesManager {
         return this.save(job);
       } catch (error) { return this.save(withFailure(job, error)); }
     });
-    return options.shareKey ? this.exclusive(seriesLock(options), run) : run();
+    // Every request takes the host+repository lock: a keyless workflow request may write a series root.
+    return this.exclusive(seriesLock(options), run);
   }
   private async findPullRequest(job: PagesJob): Promise<PullRequest | undefined> {
     const prs = await this.request<PullRequest[]>(job, "GET", `${this.prefix(job)}/pulls?state=all&head=${encodeURIComponent(job.repository.split("/")[0] + ":" + job.branch)}&per_page=100`);
@@ -699,7 +707,7 @@ export class GitHubPagesManager {
     return undefined;
   }
   async merge(input: { jobId: string; expectedHead: string }): Promise<PagesJob> {
-    // The series identity is immutable request data, so reading it before the locks is safe.
+    // The host+repository is immutable request data, so reading it before the locks is safe.
     let saved: PagesJob | undefined;
     try { saved = await this.read(input.jobId); } catch { /* the locked read reports it */ }
     const run = () => this.exclusive(input.jobId, async () => {
@@ -735,7 +743,7 @@ export class GitHubPagesManager {
         } else {
           await this.assertOwnership(job, base.object.sha, job.pagesConfigured === true);
           await this.assertOwnership(job, job.headSha);
-          if (job.shareKey) await this.assertSeries(job, base.object.sha);
+          if (job.shareKey || await this.rootIsShared(job)) await this.assertSeries(job, base.object.sha);
           await this.assertPublicDiff(job, base.object.sha);
           let pages = await this.optional<PagesInfo>(job, `${api}/pages`);
           if (pages && job.pagesConfigured && job.pagesConfigurationHash !== pagesConfigurationHash(pages)) throw new PublicationValidationError("Pages configuration changed after confirmation; review the current site before continuing");
@@ -755,7 +763,7 @@ export class GitHubPagesManager {
         return this.save(job);
       }
     });
-    return saved?.shareKey ? this.exclusive(seriesLock(saved), run) : run();
+    return saved ? this.exclusive(seriesLock(saved), run) : run();
   }
   private async configureNewLegacySite(job: PagesJob): Promise<PagesJob> {
     if (job.pagesConfigured) { await this.assertLegacySource(job); return job; }
@@ -842,6 +850,20 @@ export class GitHubPagesManager {
     const version = await verify(url), shared = !share || !latest ? true : legacy ? await verify(share) : version;
     if (share && latest) { if (shared) job.shareUrl = share.href; else delete job.shareUrl; }
     if (!version || !shared) { job.error = SSO_NOTICE; return this.save(job); }
-    job.status = "live"; job.url = url.href; job.verifiedAt = new Date().toISOString(); delete job.error; return this.save(job);
+    job.status = "live"; job.url = url.href; job.verifiedAt = new Date().toISOString(); delete job.error;
+    const saved = await this.save(job);
+    if (saved.adoptedFrom) await this.moveAdopted(saved);
+    return saved;
+  }
+  /**
+   * Once the adoption is live, the adopted pre-feature directory serves the series; re-verify that job at its
+   * v/<hex> archive so its card never opens the newer share content. Lock order: this job, then the adopted one
+   * (the adopted job's refresh never takes another job's lock).
+   */
+  private async moveAdopted(job: PagesJob): Promise<void> {
+    try {
+      const adopted = await this.read(job.adoptedFrom!), current = adopted.url ?? adopted.deployedUrl;
+      if (adopted.prNumber && adopted.mergedSha && current && !current.endsWith(`/v/${adopted.releaseId.slice(8)}/`)) await this.refresh(adopted.jobId);
+    } catch { /* the adopted job's own refresh reports its state */ }
   }
 }

@@ -251,6 +251,26 @@ describe("share status and one-click share update", () => {
     noPagesWrites(f);
   });
 
+  it("retries a never-merged share instead of calling it up to date", async () => {
+    const f = await fixture(), { manifest } = await series(f, { status: "failed", mergedSha: undefined, shareUrl: undefined });
+    const [share] = (await status(f)).shares;
+    expect(share).toMatchObject({ state: "failed", releaseId: manifest.releaseId }); expect(share.link).toBeUndefined();
+    const result = await update(f, share.seriesId, { documentVersion: 1, patchCount: 0 });
+    expect(result).toEqual({ manifest: expect.objectContaining({ releaseId: manifest.releaseId }), request: expect.objectContaining({ releaseId: manifest.releaseId, shareKey: key }) });
+    noPagesWrites(f);
+  });
+
+  it("says whether older versions stay online: branch directories archive them, the workflow root does not", async () => {
+    const f = await fixture(), manifest = await f.create(), hex = manifest.releaseId.slice(8);
+    vi.mocked(f.pages.list).mockResolvedValue([
+      job(manifest, { jobId: "branch", publicationMode: "legacy-subdirectory", sourcePath: "/", sitePath: `boards/${hex}`, url: `https://fixture.github.io/site/boards/${hex}/` }),
+      job(manifest, { jobId: "root", repository: "fixture/root", publicationMode: "workflow", url: "https://fixture.github.io/root/" }),
+    ]);
+    const shares = (await status(f)).shares;
+    expect(Object.fromEntries(shares.map(share => [share.publishedJobId, [share.adoptable, share.archivesOnline]]))).toEqual({ branch: [true, true], root: [true, false] });
+    expect(JSON.stringify(shares)).not.toContain("onLink");
+  });
+
   it("returns the adopted directory key for a pre-feature series with stored settings", async () => {
     const f = await fixture(), manifest = await f.create(), hex = manifest.releaseId.slice(8);
     vi.mocked(f.pages.list).mockResolvedValue([job(manifest, { publicationMode: "legacy-subdirectory", sourcePath: "/", sitePath: `boards/${hex}`, url: `https://fixture.github.io/site/boards/${hex}/` })]);

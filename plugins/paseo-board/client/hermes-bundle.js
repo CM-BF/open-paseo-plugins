@@ -6615,6 +6615,8 @@ var ShareSchema = z3.object({
   settingsAvailable: z3.boolean(),
   source: ShareSourceSchema,
   inFlightJobId: IdSchema.optional(),
+  // Branch-directory shares keep older versions online under <link>v/<hex>/; workflow (Pages root) shares do not.
+  archivesOnline: z3.boolean().optional(),
   // Summary of the stored settings an update inherits; public data is reported only by size.
   settings: z3.object({
     network: z3.enum(["offline", "cdn"]),
@@ -6887,31 +6889,30 @@ function liveShareState(share, canvas) {
 }
 var liveShares = (shares, canvas) => shares.map(share => ({
   ...share,
-  live: liveShareState(share, canvas)
+  live: liveShareState(share, canvas),
+  changed: shareChanged(share, canvas)
 }));
-var shareNeedsUpdate = share => share.live === "changed" || share.live === "legacy";
+var shareNeedsUpdate = share => share.live === "changed" || share.live === "legacy" || share.live === "failed" && share.changed;
 function shareSummary(shares) {
   var stale = shares.filter(shareNeedsUpdate).length;
   if (stale) return {
     attention: true,
     detail: stale > 1 ? `${stale} \u4E2A\u5206\u4EAB\u9875\u6709\u6539\u52A8\u8FD8\u6CA1\u53D1\u5E03` : shareStateNames.changed
   };
-  if (shares.some(share => share.live === "updating")) return {
-    attention: false,
-    detail: shareStateNames.updating
-  };
   if (!shares.length) return {
     attention: false
   };
+  var worst = ["updating", "failed", "merged-unverified"].find(state => shares.some(share => share.live === state));
   return {
     attention: false,
-    detail: shares.every(share => share.live === "up-to-date") ? shareStateNames["up-to-date"] : shareStateNames[shares[0].live]
+    detail: shareStateNames[worst ?? (shares.every(share => share.live === "up-to-date") ? "up-to-date" : shares[0].live)]
   };
 }
 var shareKeyOf = share => share.shareKey ?? share.releaseId.slice(8);
 var sameTarget = (item, target) => pagesGitHubHost(item) === pagesGitHubHost(target) && item.repository.toLowerCase() === target.repository.toLowerCase();
 function reusableShareKey(target, known) {
-  return known.shares?.find(share => share.shareKey && sameTarget(share, target))?.shareKey ?? known.requests?.find(item => item.shareKey && sameTarget(item, target))?.shareKey ?? known.jobs?.find(item => item.shareKey && sameTarget(item, target))?.shareKey;
+  var adoptable = known.shares?.find(share => share.adoptable && sameTarget(share, target));
+  return known.shares?.find(share => share.shareKey && sameTarget(share, target))?.shareKey ?? known.requests?.find(item => item.shareKey && sameTarget(item, target))?.shareKey ?? known.jobs?.find(item => item.shareKey && sameTarget(item, target))?.shareKey ?? (adoptable ? shareKeyOf(adoptable) : void 0);
 }
 function mintShareKey(random = randomBytes) {
   return "s" + Array.from(random(10), byte => byte.toString(16).padStart(2, "0")).join("");
@@ -7019,6 +7020,9 @@ function ReleasePanel({
   targetRef.current = target;
   var sessionKeys = useRef7(/* @__PURE__ */new Map()),
     autoUpdate = useRef7(false);
+  var [copied, setCopied] = useState8(),
+    copiedTimer = useRef7(void 0);
+  useEffect8(() => () => clearTimeout(copiedTimer.current), []);
   var desktop = useMemo2(() => canPreviewRelease() && browserDraftStorage() !== null, []);
   var shareList = shares?.shares ?? [];
   var field = {
@@ -7202,13 +7206,19 @@ function ReleasePanel({
       createRepository
     };
     var previous = pageRequest.current;
-    var matchesTarget = item => samePagesTarget(item, {
+    var pending = outbox.list(),
+      seriesKey = reusableShareKey(destination, {
+        shares: shares?.status?.shares,
+        requests: pending,
+        jobs
+      });
+    var sameTarget2 = item => samePagesTarget(item, {
       ...destination,
       shareKey: item.shareKey
     });
+    var matchesTarget = item => (!!item.shareKey || !seriesKey) && sameTarget2(item);
     if (!previous || !matchesTarget(previous)) {
-      var pending = outbox.list();
-      var known = jobs.find(item => item.status === "live" && matchesTarget(item)) ?? pending.find(matchesTarget) ?? jobs.find(matchesTarget);
+      var known = jobs.find(item => item.status === "live" && sameTarget2(item)) ?? pending.find(matchesTarget) ?? jobs.find(matchesTarget);
       pageRequest.current = known ? publicationRequest(known) : {
         ...destination,
         eventId: localId("pages"),
@@ -7310,7 +7320,14 @@ function ReleasePanel({
     void startUpdate(share);
   }, [intent, desktop, shareList]);
   var copyLink = url => {
-    void copyText(url).catch(error => {
+    void copyText(url).then(() => {
+      if (!mounted.current) return;
+      setCopied(url);
+      clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => {
+        if (mounted.current) setCopied(void 0);
+      }, 2e3);
+    }, error => {
       if (mounted.current) setFailure(errorMessage(error));
     });
   };
@@ -7369,7 +7386,11 @@ ${share.link}${share.verified ? "" : "\uFF08\u5185\u5BB9\u5F85\u6838\u9A8C\uFF09
               void recoverSettings(share);
             }
           }) : null]
-        }), active && target?.upToDate ? /* @__PURE__ */jsx9(Notice, {
+        }), share.link && copied === share.link ? /* @__PURE__ */jsx9(Copy, {
+          small: true,
+          muted: true,
+          children: "\u5DF2\u590D\u5236\u94FE\u63A5"
+        }) : null, active && target?.upToDate ? /* @__PURE__ */jsx9(Notice, {
           text: "\u5206\u4EAB\u9875\u5DF2\u662F\u5F53\u524D\u5185\u5BB9\uFF0C\u65E0\u9700\u66F4\u65B0\u3002"
         }) : null, active && target?.recovered ? /* @__PURE__ */jsxs7(Copy, {
           small: true,
@@ -7413,8 +7434,8 @@ ${share.link}${share.verified ? "" : "\uFF08\u5185\u5BB9\u5F85\u6838\u9A8C\uFF09
               eventId: localId("copy"),
               title: title.trim()
             });
-            var copied = yield copyBoard(copyRequest.current);
-            if (mounted.current) onOpenBoard?.(copied.id);
+            var copied2 = yield copyBoard(copyRequest.current);
+            if (mounted.current) onOpenBoard?.(copied2.id);
           }));
         }
       }), /* @__PURE__ */jsx9(Copy, {
@@ -7609,6 +7630,7 @@ ${share.link}${share.verified ? "" : "\uFF08\u5185\u5BB9\u5F85\u6838\u9A8C\uFF09
   }) : null;
   var confirming = selected && target?.releaseId === selected.releaseId ? target : void 0;
   var confirmedJob = confirming && selected ? jobs.find(item => item.releaseId === selected.releaseId && item.shareKey === confirming.shareKey && (item.status === "live" || automaticallyPublishing(item))) : void 0;
+  var refusedConfirm = confirming && selected && !confirmedJob ? jobs.find(item => item.releaseId === selected.releaseId && item.shareKey === confirming.shareKey && finalRefusal(item)) : void 0;
   var selectedSection = selected ? /* @__PURE__ */jsxs7(View7, {
     style: {
       gap: 12
@@ -7631,11 +7653,15 @@ ${share.link}${share.verified ? "" : "\uFF08\u5185\u5BB9\u5F85\u6838\u9A8C\uFF09
       },
       children: [/* @__PURE__ */jsxs7(Copy, {
         children: ["\u786E\u8BA4\u540E\u66F4\u65B0\u8FD9\u4E2A\u5206\u4EAB\u94FE\u63A5\uFF1A", confirming.share.link ?? `${pagesGitHubHost(confirming.share)} \xB7 ${confirming.share.repository}`]
-      }), confirming.share.adoptable ? /* @__PURE__ */jsx9(Copy, {
+      }), confirming.share.archivesOnline ? confirming.share.adoptable ? /* @__PURE__ */jsx9(Copy, {
         small: true,
         muted: true,
         children: "\u94FE\u63A5\u4FDD\u6301\u4E0D\u53D8\uFF1B\u4E4B\u524D\u7684\u7248\u672C\u53E6\u5B58\u5728\u8FD9\u4E2A\u94FE\u63A5\u4E0B\u7684 v/ \u76EE\u5F55\uFF0C\u4ECD\u53EF\u6253\u5F00\u3002"
-      }) : null, /* @__PURE__ */jsx9(Copy, {
+      }) : null : /* @__PURE__ */jsx9(Copy, {
+        small: true,
+        muted: true,
+        children: "\u94FE\u63A5\u4FDD\u6301\u4E0D\u53D8\uFF1B\u4E4B\u524D\u7684\u7248\u672C\u4E0D\u4F1A\u7559\u5728\u7F51\u4E0A\uFF0C\u53EF\u5728\u300C\u672C\u673A\u53D1\u5E03\u7248\u672C\u300D\u4E2D\u9884\u89C8\u6216\u4E0B\u8F7D ZIP\u3002"
+      }), /* @__PURE__ */jsx9(Copy, {
         small: true,
         muted: true,
         children: confirming.recovered ? `\u672C\u6B21\u4F7F\u7528\u9762\u677F\u4E2D\u7684\u8BBE\u7F6E\uFF1A\u540D\u79F0\u300C${selected.title}\u300D \xB7 ${selected.network === "cdn" ? "\u5141\u8BB8 CDN \u5E93" : "\u4EC5\u5185\u7F6E\u8D44\u6E90"} \xB7 ${selected.apiOrigins?.length ? `\u540E\u7AEF\u6765\u6E90\uFF1A${selected.apiOrigins.join("\u3001")}` : "\u4E0D\u8FDE\u63A5\u540E\u7AEF"}` : `\u6CBF\u7528\u8BBE\u7F6E\uFF1A${inheritedSettingsText(confirming.share)}`
@@ -7643,11 +7669,14 @@ ${share.link}${share.verified ? "" : "\uFF08\u5185\u5BB9\u5F85\u6838\u9A8C\uFF09
         small: true,
         muted: true,
         children: VISITOR_NOTICE
-      }), /* @__PURE__ */jsx9(Action, {
+      }), refusedConfirm ? /* @__PURE__ */jsx9(Notice, {
+        error: true,
+        text: refusedConfirm.refusal.message
+      }) : null, /* @__PURE__ */jsx9(Action, {
         testID: "board-share-confirm",
         label: confirmedJob ? "\u5DF2\u63D0\u4EA4\u66F4\u65B0" : "\u786E\u8BA4\u5E76\u66F4\u65B0\u5206\u4EAB\u9875",
         primary: true,
-        disabled: busy || !html || !!confirmedJob,
+        disabled: busy || !html || !!confirmedJob || !!refusedConfirm,
         onPress: () => {
           void confirmShare();
         }

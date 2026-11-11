@@ -510,7 +510,8 @@ describe("share series: one stable link per Board, versions archived", () => {
     expect(filesAt(`boards/${adoptedKey}`)).toEqual(next.files); expect(filesAt(`boards/${adoptedKey}/v/${adoptedKey}`)).toEqual(original.files);
     const live = await deployed(job.jobId); expect(live.status, live.error).toBe("live");
     expect(live.shareUrl).toBe(before.url); expect(live.url).toBe(`${before.url}v/${hex(next)}/`);
-    // The adopted job now verifies its original release at the archive instead of being demoted.
+    // Going live moved the adopted job to its original release's archive without a manual refresh.
+    const moved = await manager.read(before.jobId); expect(moved.status, moved.error).toBe("live"); expect(moved.url).toBe(`${before.url}v/${adoptedKey}/`);
     const old = await manager.refresh(before.jobId); expect(old.status, old.error).toBe("live"); expect(old.url).toBe(`${before.url}v/${adoptedKey}/`);
   });
 
@@ -595,7 +596,7 @@ describe("share series: one stable link per Board, versions archived", () => {
     expect(again.status, again.error).toBe("live"); expect(again.shareUrl).toBe(first.shareUrl); expect(again.url).toBe(first.url);
   });
 
-  it("owns the workflow-mode root per Board, keeps the v1 workflow text and leaves old requests unchanged", async () => {
+  it("owns the workflow-mode root per Board and keeps the v1 workflow text", async () => {
     const first = await version(), one = await publish(request(first, "first"));
     expect(one.publicationMode).toBe("workflow"); expect(one.sharePath).toBeUndefined(); expect(one.sitePath).toBeUndefined();
     expect(github.files("main")[".github/workflows/paseo-board-pages.yml"]).toBe(pagesWorkflow("main"));
@@ -610,8 +611,45 @@ describe("share series: one stable link per Board, versions archived", () => {
     const otherRelease = await version(undefined, "OTHER_BOARD");
     const other = await publish(request(otherRelease, "other", { shareKey: "s" + "2".repeat(20) }));
     expect(other.refusal).toEqual({ code: "share-foreign", message: "此仓库首页属于另一张 Board，请选择其他仓库。" }); expect(github.prs).toHaveLength(2);
-    // ...while a request without a share key keeps today's behaviour.
-    const old = await publish(request(otherRelease, "old", { shareKey: undefined })); expect(old.status, old.error).toBe("deploying"); expect(old.refusal).toBeUndefined();
+    // ...nor with a request without a share key once a series owns the root.
+    const old = await publish(request(otherRelease, "old", { shareKey: undefined }));
+    expect(old.refusal).toEqual({ code: "share-foreign", message: "此仓库首页属于另一张 Board，请选择其他仓库。" }); expect(github.prs).toHaveLength(2);
+    expect(filesAt("paseo-board-publication/site")).toEqual(second.files);
+  });
+
+  it("never lets a keyless workflow request of the same Board roll the series root back", async () => {
+    const first = await version();
+    github.exists = false; const failed = await publish(request(first, "pre-feature-failed", { shareKey: undefined })); github.exists = true;
+    expect(failed.status).toBe("failed"); expect(failed.baseSha).toBeUndefined();
+    expect((await deployed((await publish(request(first, "first"))).jobId)).status).toBe("live");
+    const second = await version("two"), two = await deployed((await publish(request(second, "second"))).jobId);
+    expect(two.status, two.error).toBe("live");
+    // A failed pre-feature job resumed, and a pre-feature outbox request reaching the server only now.
+    for (const input of [request(first, "pre-feature-failed", { shareKey: undefined }), request(first, "pre-feature-outbox", { shareKey: undefined })]) {
+      const resumed = await publish(input);
+      expect(resumed.status).toBe("failed"); expect(resumed.refusal).toEqual({ code: "newer-on-share", message: expect.stringContaining("已有更新的版本") });
+    }
+    expect(filesAt("paseo-board-publication/site")).toEqual(second.files); expect(github.prs).toHaveLength(2);
+    expect(await manager.refresh(two.jobId)).toMatchObject({ status: "live", shareUrl: two.shareUrl });
+  });
+
+  it("counts a new keyed request on a workflow root as busy while another update is before merge", async () => {
+    github.checkStatus = "in_progress";
+    const one = await publish(request(await version(), "a")); expect(one).toMatchObject({ status: "pr-open", publicationMode: "workflow" });
+    const two = await publish(request(await version("two"), "b", { shareKey: "s" + "9".repeat(20) }));
+    expect(two).toMatchObject({ status: "failed", autoPublish: false, refusal: { code: "series-busy" } }); expect(github.prs).toHaveLength(1);
+  });
+
+  it("re-verifies an unchanged update after a transient GitHub error", async () => {
+    legacy(); const release = await version(); await deployed((await publish(request(release, "first"))).jobId);
+    tick(); const job = await manager.publish(request(release, "again"));
+    expect((await manager.prepare(request(release, "again"))).refusal?.code).toBe("up-to-date");
+    const original = github.request.bind(github); let outage = true;
+    vi.spyOn(github, "request").mockImplementation((account, method, path, body, githubHost) =>
+      outage && method === "GET" && path.endsWith("/pages") ? Promise.reject(new GitHubApiError(503)) : original(account, method, path, body, githubHost));
+    await manager.advanceAutomatic(); expect(await manager.read(job.jobId)).toMatchObject({ status: "unknown", autoPublish: true, refusal: { code: "up-to-date" } });
+    outage = false; await manager.advanceAutomatic();
+    const live = await manager.read(job.jobId); expect(live.status, live.error).toBe("live"); expect(github.prs).toHaveLength(1);
   });
 
   it("keeps old journals and non-series requests on the per-release layout beside a series", async () => {

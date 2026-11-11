@@ -22,7 +22,8 @@ export interface PagesGateway {
 
 type Owned = { job: PagesJob; release: StaticRelease; meta?: ReleaseMeta };
 type Series = { githubHost: string; repository: string; key: string; keyed: boolean; members: Owned[] };
-type ShareView = Share & { key: string };
+// Server-only: the directory key, and whether the published job actually reached the share link.
+type ShareView = Share & { key: string; onLink: boolean };
 const hostOf = (job: PagesJob) => job.githubHost ?? "github.com";
 const isLegacyMode = (job: PagesJob) => job.publicationMode === "legacy-subdirectory" || job.publicationMode === "legacy-branch";
 const isMerged = (job: PagesJob) => !!job.mergedSha || ["merged", "deploying", "live"].includes(job.status);
@@ -102,7 +103,7 @@ async function boardShares(board: Board, releases: ReleaseRepository, pages: Pag
     const known = members.findLast(item => item.job.shareUrl || item.job.shareDeployedUrl)?.job;
     const link = job.shareUrl ?? job.shareDeployedUrl ?? known?.shareUrl ?? known?.shareDeployedUrl ?? (adoptable ? job.url ?? job.deployedUrl : undefined);
     shares.push({
-      seriesId, key: entry.key, githubHost: entry.githubHost, account: job.account, repository: entry.repository,
+      seriesId, key: entry.key, onLink: isMerged(job), archivesOnline: isLegacyMode(job), githubHost: entry.githubHost, account: job.account, repository: entry.repository,
       ...(entry.keyed ? { shareKey: entry.key } : {}), adoptable, ...(link ? { link } : {}),
       verified: !!job.shareUrl || adoptable && job.status === "live" && !!job.url, state,
       releaseId: release.manifest.releaseId, title: release.manifest.title, publishedJobId: job.jobId, settingsAvailable: !!meta,
@@ -150,7 +151,7 @@ export function registerPublicationRpc(server: PluginServerContext, options: {
   server.handle(shareStatusRpc, async input => {
     await options.ready();
     const { current, shares } = await boardShares(await options.requireBoard(input.boardId), releases, pages);
-    return { current, shares: shares.map(({ key: _, ...share }) => share) };
+    return { current, shares: shares.map(({ key: _, onLink: __, ...share }) => share) };
   });
   // Builds the update locally with the share's stored settings; publishing stays a separate reviewed request.
   server.handle(shareUpdateRpc, async (input): Promise<ShareUpdateResult> => {
@@ -164,7 +165,8 @@ export function registerPublicationRpc(server: PluginServerContext, options: {
     const { title, ...settings } = meta.settings;
     // Current revision: data-only writes since the review must not block the update.
     const release = await releases.create({ ...settings, title: title || undefined, board, boardId: board.id, expectedCanvasBase: current.canvasBase });
-    if (release.manifest.releaseId === share.releaseId) return { upToDate: true };
+    // Up to date only when that release is on the link; a never-merged attempt is retried with the same request.
+    if (share.onLink && release.manifest.releaseId === share.releaseId) return { upToDate: true };
     return { manifest: release.manifest, request: {
       releaseId: release.manifest.releaseId, artifactHash: release.manifest.artifactHash, githubHost: share.githubHost,
       account: share.account, repository: share.repository, shareKey: share.shareKey ?? share.key,

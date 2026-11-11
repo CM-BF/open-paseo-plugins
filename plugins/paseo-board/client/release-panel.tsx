@@ -71,6 +71,8 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
   const [target, setTarget] = useState<ShareTarget>();
   const targetRef = useRef(target); targetRef.current = target;
   const sessionKeys = useRef(new Map<string, string>()), autoUpdate = useRef(false);
+  const [copied, setCopied] = useState<string>(), copiedTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(copiedTimer.current), []);
   // Updating needs a visible preview and a durable retry record (absent on native/Hermes).
   const desktop = useMemo(() => canPreviewRelease() && browserDraftStorage() !== null, []);
   const shareList = shares?.shares ?? [];
@@ -163,11 +165,13 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
     if (!selected || reviewed !== selected.artifactHash) return;
     const destination = { releaseId: selected.releaseId, artifactHash: selected.artifactHash, githubHost, account, repository: repository.trim(), createRepository };
     const previous = pageRequest.current;
-    // A recorded request for this destination keeps its exact event, with or without a share key.
-    const matchesTarget = (item: PagesPrepareInput) => samePagesTarget(item, { ...destination, shareKey: item.shareKey });
+    const pending = outbox.list(), seriesKey = reusableShareKey(destination, { shares: shares?.status?.shares, requests: pending, jobs });
+    // A recorded request for this destination keeps its exact event (a live one always); an unfinished one without
+    // a share key only while no series exists there, else the new request joins the series.
+    const sameTarget = (item: PagesPrepareInput) => samePagesTarget(item, { ...destination, shareKey: item.shareKey });
+    const matchesTarget = (item: PagesPrepareInput) => (!!item.shareKey || !seriesKey) && sameTarget(item);
     if (!previous || !matchesTarget(previous)) {
-      const pending = outbox.list();
-      const known = jobs.find(item => item.status === "live" && matchesTarget(item)) ?? pending.find(matchesTarget) ?? jobs.find(matchesTarget);
+      const known = jobs.find(item => item.status === "live" && sameTarget(item)) ?? pending.find(matchesTarget) ?? jobs.find(matchesTarget);
       pageRequest.current = known ? publicationRequest(known) : { ...destination, eventId: localId("pages"), shareKey: shareKeyFor(destination, pending) };
     }
     await sendPagesRequest(pageRequest.current!);
@@ -214,7 +218,12 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
     if (!share) return;
     autoUpdate.current = true; void startUpdate(share);
   }, [intent, desktop, shareList]);
-  const copyLink = (url: string) => { void copyText(url).catch(error => { if (mounted.current) setFailure(errorMessage(error)); }); };
+  const copyLink = (url: string) => {
+    void copyText(url).then(() => {
+      if (!mounted.current) return;
+      setCopied(url); clearTimeout(copiedTimer.current); copiedTimer.current = setTimeout(() => { if (mounted.current) setCopied(undefined); }, 2_000);
+    }, error => { if (mounted.current) setFailure(errorMessage(error)); });
+  };
   const shareSection = shareList.length ? <View testID="board-share-status" style={{ gap: 10 }}>
     <Copy>分享页</Copy>
     {shareList.map(share => {
@@ -229,6 +238,7 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
           {desktop && stale && share.live !== "updating" && share.settingsAvailable ? <Action label="更新此分享页" primary={!active} disabled={busy} onPress={() => { void startUpdate(share); }} /> : null}
           {desktop && stale && share.live !== "updating" && !share.settingsAvailable ? <Action label="沿用上次分享页的设置" disabled={busy} onPress={() => { void recoverSettings(share); }} /> : null}
         </View>
+        {share.link && copied === share.link ? <Copy small muted>已复制链接</Copy> : null}
         {active && target?.upToDate ? <Notice text="分享页已是当前内容，无需更新。" /> : null}
         {active && target?.recovered ? <Copy small muted>已沿用上次分享页的设置：名称「{target.recovered.title}」 · {target.recovered.network === "cdn" ? "允许 CDN 库" : "仅内置资源"} · {target.recovered.apiOrigins?.length ? `后端来源：${target.recovered.apiOrigins.join("、")}` : "不连接后端"}。主题和公开数据没有保存，请在下方重新选择，再点「生成固定版本并预览」。</Copy> : null}
       </View>;
@@ -289,16 +299,20 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
   const releasesSection = releases.length ? <View style={{ gap: 6 }}><Copy>本机发布版本</Copy><ScrollView style={{ maxHeight: 160 }} contentContainerStyle={{ gap: 4 }}>{releases.map(release => <Action key={release.releaseId} label={`${release.title} · ${release.artifactHash.slice(0, 10)}`} active={release.releaseId === selected?.releaseId} disabled={busy} onPress={() => { void run(() => showRelease(release)); }} />)}</ScrollView></View> : null;
   const confirming = selected && target?.releaseId === selected.releaseId ? target : undefined;
   const confirmedJob = confirming && selected ? jobs.find(item => item.releaseId === selected.releaseId && item.shareKey === confirming.shareKey && (item.status === "live" || automaticallyPublishing(item))) : undefined;
+  // The server refused this exact request for good; resending it would only be refused again.
+  const refusedConfirm = confirming && selected && !confirmedJob ? jobs.find(item => item.releaseId === selected.releaseId && item.shareKey === confirming.shareKey && finalRefusal(item)) : undefined;
   const selectedSection = selected ? <View style={{ gap: 12 }}>
       <Copy>{selected.title} · 固定版本 {selected.artifactHash.slice(0, 12)}</Copy>
       {selected.apiOrigins?.length ? <Copy small muted>已固定的后端来源：{selected.apiOrigins.join("、")}</Copy> : null}
       {html ? <ReleasePreview html={html} /> : null}
       {confirming ? <View style={{ gap: 8, padding: 10, borderWidth: 1, borderRadius: 8, borderColor: c.accent }}>
         <Copy>确认后更新这个分享链接：{confirming.share.link ?? `${pagesGitHubHost(confirming.share)} · ${confirming.share.repository}`}</Copy>
-        {confirming.share.adoptable ? <Copy small muted>链接保持不变；之前的版本另存在这个链接下的 v/ 目录，仍可打开。</Copy> : null}
+        {confirming.share.archivesOnline ? confirming.share.adoptable ? <Copy small muted>链接保持不变；之前的版本另存在这个链接下的 v/ 目录，仍可打开。</Copy> : null
+          : <Copy small muted>链接保持不变；之前的版本不会留在网上，可在「本机发布版本」中预览或下载 ZIP。</Copy>}
         <Copy small muted>{confirming.recovered ? `本次使用面板中的设置：名称「${selected.title}」 · ${selected.network === "cdn" ? "允许 CDN 库" : "仅内置资源"} · ${selected.apiOrigins?.length ? `后端来源：${selected.apiOrigins.join("、")}` : "不连接后端"}` : `沿用设置：${inheritedSettingsText(confirming.share)}`}</Copy>
         <Copy small muted>{VISITOR_NOTICE}</Copy>
-        <Action testID="board-share-confirm" label={confirmedJob ? "已提交更新" : "确认并更新分享页"} primary disabled={busy || !html || !!confirmedJob} onPress={() => { void confirmShare(); }} />
+        {refusedConfirm ? <Notice error text={refusedConfirm.refusal!.message} /> : null}
+        <Action testID="board-share-confirm" label={confirmedJob ? "已提交更新" : "确认并更新分享页"} primary disabled={busy || !html || !!confirmedJob || !!refusedConfirm} onPress={() => { void confirmShare(); }} />
       </View> : null}
       {selected.warnings.map((warning, index) => <Notice key={index} text={warning} />)}
       <Copy small muted>文件：{selected.files.map(file => file.path).join("、")}{selected.dependencies.length ? `\n外部依赖：${selected.dependencies.join("、")}` : "\n无需外部依赖。"}</Copy>

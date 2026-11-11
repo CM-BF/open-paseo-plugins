@@ -3,7 +3,7 @@ import type { PagesJob, PagesPrepareInput, Share } from "../shared/release-contr
 import { pagesGitHubHost } from "./pages-outbox";
 
 export type ShareState = Share["state"];
-export type LiveShare = Share & { live: ShareState };
+export type LiveShare = Share & { live: ShareState; changed: boolean };
 type Canvas = Pick<Board["canvas"], "revision" | "documentVersion" | "patches">;
 
 export const shareStateNames: Record<ShareState, string> = {
@@ -25,26 +25,32 @@ export function liveShareState(share: Share, canvas: Canvas): ShareState {
   if (share.state === "changed" || share.state === "legacy") return share.verified ? "up-to-date" : "merged-unverified";
   return share.state;
 }
-export const liveShares = (shares: readonly Share[], canvas: Canvas): LiveShare[] => shares.map(share => ({ ...share, live: liveShareState(share, canvas) }));
-export const shareNeedsUpdate = (share: LiveShare) => share.live === "changed" || share.live === "legacy";
-/** One line for the More menu; attention drives the toolbar dot. */
+export const liveShares = (shares: readonly Share[], canvas: Canvas): LiveShare[] => shares.map(share => ({ ...share, live: liveShareState(share, canvas), changed: shareChanged(share, canvas) }));
+/** A failed last update still needs one once the Board has authored changes. */
+export const shareNeedsUpdate = (share: LiveShare) => share.live === "changed" || share.live === "legacy" || share.live === "failed" && share.changed;
+/** One line for the More menu; attention drives the toolbar dot. Problems outrank healthy shares. */
 export function shareSummary(shares: readonly LiveShare[]): { attention: boolean; detail?: string } {
   const stale = shares.filter(shareNeedsUpdate).length;
   if (stale) return { attention: true, detail: stale > 1 ? `${stale} 个分享页有改动还没发布` : shareStateNames.changed };
-  if (shares.some(share => share.live === "updating")) return { attention: false, detail: shareStateNames.updating };
   if (!shares.length) return { attention: false };
-  return { attention: false, detail: shares.every(share => share.live === "up-to-date") ? shareStateNames["up-to-date"] : shareStateNames[shares[0].live] };
+  const worst = (["updating", "failed", "merged-unverified"] as const).find(state => shares.some(share => share.live === state));
+  return { attention: false, detail: shareStateNames[worst ?? (shares.every(share => share.live === "up-to-date") ? "up-to-date" : shares[0].live)] };
 }
 /** The pre-feature directory key an adoptable share keeps (its published release hex). */
 export const shareKeyOf = (share: Share) => share.shareKey ?? share.releaseId.slice(8);
 
 const sameTarget = (item: { githubHost?: string; repository: string }, target: { githubHost?: string; repository: string }) =>
   pagesGitHubHost(item) === pagesGitHubHost(target) && item.repository.toLowerCase() === target.repository.toLowerCase();
-/** A new publication joins this Board's existing series on the same host+repository when one is known. */
+/**
+ * A new publication joins this Board's existing series on the same host+repository when one is known;
+ * otherwise it adopts a pre-feature share there (its directory hex), so the link already sent updates.
+ */
 export function reusableShareKey(target: { githubHost?: string; repository: string }, known: { shares?: readonly Share[]; requests?: readonly PagesPrepareInput[]; jobs?: readonly PagesJob[] }): string | undefined {
+  const adoptable = known.shares?.find(share => share.adoptable && sameTarget(share, target));
   return known.shares?.find(share => share.shareKey && sameTarget(share, target))?.shareKey
     ?? known.requests?.find(item => item.shareKey && sameTarget(item, target))?.shareKey
-    ?? known.jobs?.find(item => item.shareKey && sameTarget(item, target))?.shareKey;
+    ?? known.jobs?.find(item => item.shareKey && sameTarget(item, target))?.shareKey
+    ?? (adoptable ? shareKeyOf(adoptable) : undefined);
 }
 export function mintShareKey(random: (bytes: number) => Uint8Array = randomBytes): string {
   return "s" + Array.from(random(10), byte => byte.toString(16).padStart(2, "0")).join("");

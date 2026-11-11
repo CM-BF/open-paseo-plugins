@@ -37743,6 +37743,8 @@ var ShareSchema = external_exports.object({
   settingsAvailable: external_exports.boolean(),
   source: ShareSourceSchema,
   inFlightJobId: IdSchema.optional(),
+  // Branch-directory shares keep older versions online under <link>v/<hex>/; workflow (Pages root) shares do not.
+  archivesOnline: external_exports.boolean().optional(),
   // Summary of the stored settings an update inherits; public data is reported only by size.
   settings: external_exports.object({ network: external_exports.enum(["offline", "cdn"]), theme: external_exports.enum(["light", "dark"]), apiOrigins: PublicApiOriginsSchema, publicDataBytes: external_exports.number().int().nonnegative() }).optional()
 });
