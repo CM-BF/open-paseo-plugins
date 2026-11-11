@@ -188,6 +188,7 @@ export class BoardStorePool implements BoardStoreApi {
     slot.retryAt = now + delay;
     slot.recoveryTimer = setTimeout(() => {
       slot.recoveryTimer = undefined;
+      slot.retryAt = 0; // This is the scheduled attempt; a timer can fire just before Date.now() reaches retryAt.
       void this.start(slot).catch(() => { /* close triggers the next bounded attempt. */ });
     }, delay);
     (slot.recoveryTimer as unknown as { unref?: () => void }).unref?.();

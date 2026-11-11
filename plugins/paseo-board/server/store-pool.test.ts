@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -173,6 +173,19 @@ describe("bounded Board worker processes", () => {
     expect(store.diagnostics()[0].pid).not.toBe(oldPid);
     expect(await store.feed(append, "owner")).toEqual(ack);
     expect((await store.read("one"))?.canvas.data).toEqual({ records: [{ point: 1 }] });
+  });
+
+  it("restarts a crashed worker even when its recovery timer fires before the wall clock reaches the backoff", async () => {
+    const store = pool({ workers: 1 }); await create(store, "one");
+    const oldPid = store.diagnostics()[0].pid!;
+    const recovered = nextChange(store, event => event.summary.id === "one" && event.reason === "content");
+    // Timers run from the event loop's cached time, so one can fire just before Date.now() reaches retryAt.
+    const frozen = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    try {
+      process.kill(oldPid, "SIGKILL");
+      await recovered;
+    } finally { frozen.mockRestore(); }
+    expect(store.diagnostics()[0].pid).not.toBe(oldPid);
   });
 
   it("recovers a committed write whose event and result were lost without replaying it", async () => {
