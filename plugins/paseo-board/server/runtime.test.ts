@@ -353,6 +353,9 @@ describe("installed CLI and stdio MCP transport", () => {
   it("writes a discoverable skill and replaces only its own prompt block", async () => {
     const skill = await readFile(runtimePaths(dir).skill, "utf8");
     expect(skill).toContain("free canvas is the main product");
+    // Owner-history Sides are documented in the on-demand skill only; the injected block stays unchanged.
+    expect(skill).toContain("a frozen snapshot of the owner's visible conversation"); expect(skill).toContain("do not copy inherited history");
+    expect(boardInstructions("/cli", "/skill")).not.toContain("chat_history");
     const original = `User instructions\n${boardInstructions("/old/cli", "/old/skill")}\nOther plugin instructions\n`;
     const updated = replaceInstructions(original, boardInstructions("/new/cli", "/new/skill"));
     expect(updated).toContain("User instructions"); expect(updated).toContain("Other plugin instructions"); expect(updated).toContain("/new/cli"); expect(updated).not.toContain("/old/cli");
