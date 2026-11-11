@@ -25779,6 +25779,28 @@ var CanvasUpdateSchema = external_exports.object({
   actorAgentId: external_exports.string().optional()
 });
 var DestinationSchema = external_exports.enum(["main", "side", "new-side"]);
+var SideContextSchema = external_exports.enum(["blank", "owner-history"]);
+var InheritedHistorySchema = external_exports.object({
+  sourceAgentId: external_exports.string().min(1).max(160),
+  capturedAt: external_exports.string().min(1).max(100),
+  /** User and assistant messages actually included. */
+  messages: external_exports.number().int().nonnegative(),
+  /** All curated lines included, including tool summaries and Board answers. */
+  entries: external_exports.number().int().nonnegative(),
+  /** Older history existed but was not included. */
+  omitted: external_exports.boolean(),
+  /** The owner had an active turn or pending permission at capture. */
+  ownerBusy: external_exports.boolean(),
+  chars: external_exports.number().int().nonnegative(),
+  digest: external_exports.string().regex(/^[a-f0-9]{64}$/),
+  /** Derived from the first-send outcome: provenance never claims history the Side did not receive. */
+  state: external_exports.enum(["frozen", "sent", "uncertain", "not_sent"])
+});
+function validateSideContext(input2, context2) {
+  if (input2.sideContext === void 0) return;
+  if (input2.destination === "side" || input2.destination === "new-side" || !input2.destination && input2.kind === "fork") return;
+  context2.addIssue({ code: "custom", path: ["sideContext"], message: "sideContext applies only to a send that may create a Side" });
+}
 var SourceSnapshotSchema = external_exports.object({
   id: IdSchema,
   text: external_exports.string().max(24e3),
@@ -25809,6 +25831,8 @@ var InteractionSchema = external_exports.object({
   error: external_exports.string().optional(),
   sourceInteractionId: IdSchema.optional(),
   sourceSnapshot: SourceSnapshotSchema.optional(),
+  sideContext: SideContextSchema.optional(),
+  inheritedHistory: InheritedHistorySchema.optional(),
   createdAt: external_exports.string(),
   updatedAt: external_exports.string()
 }).superRefine(validateCommentContext);
@@ -25878,7 +25902,7 @@ var RespondInputSchema = external_exports.object({
   resultReferences: external_exports.array(external_exports.string().max(4e3)).max(100).optional()
 });
 var EmitInputSchema = external_exports.object({ boardId: IdSchema, eventId: IdSchema, source: external_exports.string().min(1).max(200), kind: external_exports.string().max(200).default("update"), summary: external_exports.string().max(4e3), canvasBase: CanvasBaseSchema.optional(), data: JsonDataSchema.optional(), dataPatch: DataPatchesSchema.optional(), focusSelectors: FocusSelectorsSchema.optional(), observation: external_exports.object({ id: IdSchema, name: external_exports.string().max(200), value: external_exports.unknown(), evidence: EvidenceSchema }).optional() });
-var InteractInputSchema = external_exports.object({ boardId: IdSchema, expectedCreatedAt: external_exports.string().min(1).max(100).optional(), intentId: IdSchema, kind: external_exports.enum(["question", "change", "fork", "return", "reply"]), destination: DestinationSchema.optional(), text: external_exports.string().min(1).max(24e3), anchor: AnchorSchema.optional(), comments: CommentsSchema.optional(), sourceInteractionId: IdSchema.optional() }).superRefine(validateCommentContext);
+var InteractInputSchema = external_exports.object({ boardId: IdSchema, expectedCreatedAt: external_exports.string().min(1).max(100).optional(), intentId: IdSchema, kind: external_exports.enum(["question", "change", "fork", "return", "reply"]), destination: DestinationSchema.optional(), text: external_exports.string().min(1).max(24e3), anchor: AnchorSchema.optional(), comments: CommentsSchema.optional(), sourceInteractionId: IdSchema.optional(), sideContext: SideContextSchema.optional() }).superRefine(validateCommentContext).superRefine(validateSideContext);
 var SelectSideAgentInputSchema = external_exports.object({ boardId: IdSchema, agentId: external_exports.string().min(1).max(160), expectedRevision: external_exports.number().int().nonnegative(), eventId: IdSchema });
 var RenameInputSchema = external_exports.object({ boardId: IdSchema, expectedTitle: external_exports.string(), title: external_exports.string().trim().min(1).max(200), eventId: IdSchema });
 var EditInputSchema = external_exports.object({
@@ -37341,7 +37365,7 @@ function describeSource(canvas, selector, inspect) {
 }
 
 // server/store.ts
-var InteractionUpdateSchema = external_exports.object(InteractionSchema.shape).pick({ status: true, agentId: true, response: true, responseRevision: true, responseSource: true, responseMethod: true, responseCanvas: true, resultReferences: true, error: true }).partial();
+var InteractionUpdateSchema = external_exports.object(InteractionSchema.shape).pick({ status: true, agentId: true, response: true, responseRevision: true, responseSource: true, responseMethod: true, responseCanvas: true, resultReferences: true, error: true, inheritedHistory: true }).partial();
 var transitions = {
   saved: ["sending", "delivered", "processing", "answered", "applied", "rejected", "failed"],
   sending: ["delivered", "processing", "answered", "applied", "rejected", "failed"],

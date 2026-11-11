@@ -38,7 +38,7 @@ import { SidebarRow } from "@getpaseo/plugin/client/ui";
 
 // client/home.tsx
 import { useEffect as useEffect17, useRef as useRef15, useState as useState18 } from "react";
-import { Pressable as Pressable9, Text as Text12, View as View16 } from "react-native";
+import { Pressable as Pressable10, Text as Text13, View as View17 } from "react-native";
 import { useQuery as useQuery3 } from "@tanstack/react-query";
 
 // client/transport.tsx
@@ -741,6 +741,32 @@ var CanvasUpdateSchema = z.object({
   actorAgentId: z.string().optional()
 });
 var DestinationSchema = z.enum(["main", "side", "new-side"]);
+var SideContextSchema = z.enum(["blank", "owner-history"]);
+var InheritedHistorySchema = z.object({
+  sourceAgentId: z.string().min(1).max(160),
+  capturedAt: z.string().min(1).max(100),
+  /** User and assistant messages actually included. */
+  messages: z.number().int().nonnegative(),
+  /** All curated lines included, including tool summaries and Board answers. */
+  entries: z.number().int().nonnegative(),
+  /** Older history existed but was not included. */
+  omitted: z.boolean(),
+  /** The owner had an active turn or pending permission at capture. */
+  ownerBusy: z.boolean(),
+  chars: z.number().int().nonnegative(),
+  digest: z.string().regex(/^[a-f0-9]{64}$/),
+  /** Derived from the first-send outcome: provenance never claims history the Side did not receive. */
+  state: z.enum(["frozen", "sent", "uncertain", "not_sent"])
+});
+function validateSideContext(input, context) {
+  if (input.sideContext === void 0) return;
+  if (input.destination === "side" || input.destination === "new-side" || !input.destination && input.kind === "fork") return;
+  context.addIssue({
+    code: "custom",
+    path: ["sideContext"],
+    message: "sideContext applies only to a send that may create a Side"
+  });
+}
 var SourceSnapshotSchema = z.object({
   id: IdSchema,
   text: z.string().max(24e3),
@@ -771,6 +797,8 @@ var InteractionSchema = z.object({
   error: z.string().optional(),
   sourceInteractionId: IdSchema.optional(),
   sourceSnapshot: SourceSnapshotSchema.optional(),
+  sideContext: SideContextSchema.optional(),
+  inheritedHistory: InheritedHistorySchema.optional(),
   createdAt: z.string(),
   updatedAt: z.string()
 }).superRefine(validateCommentContext);
@@ -934,8 +962,9 @@ var InteractInputSchema = z.object({
   text: z.string().min(1).max(24e3),
   anchor: AnchorSchema.optional(),
   comments: CommentsSchema.optional(),
-  sourceInteractionId: IdSchema.optional()
-}).superRefine(validateCommentContext);
+  sourceInteractionId: IdSchema.optional(),
+  sideContext: SideContextSchema.optional()
+}).superRefine(validateCommentContext).superRefine(validateSideContext);
 var SelectSideAgentInputSchema = z.object({
   boardId: IdSchema,
   agentId: z.string().min(1).max(160),
@@ -1397,7 +1426,7 @@ function timeLabel(at) {
 
 // client/board.tsx
 import { useCallback as useCallback9, useEffect as useEffect16, useMemo as useMemo8, useRef as useRef14, useState as useState17 } from "react";
-import { Image as Image2, Text as Text11, View as View15 } from "react-native";
+import { Image as Image2, Text as Text12, View as View16 } from "react-native";
 import { openExternalUrl as openExternalUrl2 } from "@getpaseo/plugin/client";
 import { Markdown, Modal as Modal2, ScrollView as ScrollView9, TextInput as TextInput8 } from "@getpaseo/plugin/client/ui";
 
@@ -6380,7 +6409,7 @@ function BoardToolbar(props) {
           children: "\u5F53\u524D\u8BC4\u8BBA\u548C\u5F85\u53D1\u9001\u8BC4\u8BBA\u4E00\u8D77\u53D1\u4E3B\u4F1A\u8BDD\uFF1B\u8FFD\u95EE\u4FDD\u7559\u539F\u8BA8\u8BBA\uFF0C\u9700\u5148\u5904\u7406\u5F85\u53D1\u9001\u8BC4\u8BBA\u3002"
         }), /* @__PURE__ */jsx8(Shortcut, {
           keys: "\u6D88\u606F\uFF1AOption / Alt + Enter",
-          children: "\u5F53\u524D\u8BC4\u8BBA\u53D1\u6240\u9009 Side\uFF1B\u518D\u52A0 Shift \u5219\u65B0\u5F00 Side\uFF0C\u4E0D\u5E26\u4E0A\u5F85\u53D1\u9001\u8BC4\u8BBA\u3002"
+          children: "\u5F53\u524D\u8BC4\u8BBA\u53D1\u6240\u9009 Side\uFF1B\u518D\u52A0 Shift \u5219\u65B0\u5F00 Side\uFF0C\u4E0D\u5E26\u4E0A\u5F85\u53D1\u9001\u8BC4\u8BBA\u3002\u65B0\u5EFA Side \u65F6\u6309\u8F93\u5165\u6846\u91CC\u7684\u300C\u7A7A\u767D Side / \u5E26\u4E3B agent \u8BB0\u5F55\u300D\u3002"
         }), /* @__PURE__ */jsx8(Shortcut, {
           keys: "\u6D88\u606F\uFF1AEsc",
           children: "\u6536\u8D77\u8F93\u5165\u5E76\u4FDD\u7559\u8349\u7A3F\uFF0C\u53EF\u4ECE\u5DE5\u5177\u6761\u7684\u8349\u7A3F\u5165\u53E3\u7EE7\u7EED\u3002"
@@ -10213,6 +10242,7 @@ var ComposeSchema = z7.object({
   intentId: IdSchema.optional(),
   expectedCreatedAt: z7.string().min(1).max(100).optional(),
   destination: z7.enum(["main", "side", "new-side"]).optional(),
+  sideContext: SideContextSchema.optional(),
   captureStatus: z7.enum(["ready", "failed", "omitted"]).optional(),
   captureFailureReason: z7.enum(["content-changed", "too-complex", "unsupported-layout", "too-large", "timeout", "generation-failed"]).optional()
 }).refine(value => !value.intentId || Boolean(value.destination), "An uncertain send needs its immutable destination");
@@ -10676,6 +10706,7 @@ function acceptedDraftInteraction(draft, interactions) {
   if (!item || item.expectedCreatedAt !== draft.expectedCreatedAt || item.comments || item.text !== draft.text.trim() || item.destination !== draft.destination || item.sourceInteractionId !== draft.sourceInteractionId) return void 0;
   var kinds = draft.destination === "main" ? [draft.kind === "change" ? "change" : "question"] : draft.destination === "new-side" ? ["fork"] : draft.destination === "side" ? ["fork", "reply"] : [draft.kind];
   if (!kinds.includes(item.kind)) return void 0;
+  if (item.kind === "fork" && item.sideContext !== draft.sideContext) return void 0;
   if (!item.anchor || !draft.anchor) return item.anchor === draft.anchor ? item : void 0;
   var received = AnchorSchema.safeParse(item.anchor),
     frozen = AnchorSchema.safeParse(draft.anchor);
@@ -10712,6 +10743,7 @@ var BATCH_READ_LIMIT = 12e6;
 var BatchSchema = z8.object({
   intentId: IdSchema,
   destination: z8.enum(["main", "side", "new-side"]),
+  sideContext: SideContextSchema.optional(),
   expectedCreatedAt: z8.string().min(1).max(100).optional(),
   text: z8.string().min(1).max(24e3),
   comments: CommentsSchema,
@@ -10728,7 +10760,7 @@ function batchContainsDraft(batch, draft) {
 function queuedDrafts(drafts, batches) {
   return drafts.filter(draft => draft.queuedAt !== void 0 && draft.compose.text.trim() && !draft.conflicted && !draft.compose.intentId && !draft.compose.sourceInteractionId && !batches.some(batch => batchContainsDraft(batch, draft))).sort((a, b) => a.queuedAt - b.queuedAt || a.id.localeCompare(b.id));
 }
-function createCommentBatch(drafts, intentId, destination, expectedCreatedAt) {
+function createCommentBatch(drafts, intentId, destination, expectedCreatedAt, sideContext) {
   var ordered = queuedDrafts(drafts, []);
   if (!ordered.length || ordered.length !== drafts.length) throw new Error("\u8BF7\u5148\u68C0\u67E5\u5F85\u53D1\u9001\u8BC4\u8BBA\uFF1B\u7A7A\u767D\u3001\u51B2\u7A81\u6216\u7ED3\u679C\u672A\u77E5\u7684\u8349\u7A3F\u4E0D\u80FD\u5408\u5E76\u53D1\u9001\u3002");
   var identities = new Set(ordered.map(draft => draft.compose.expectedCreatedAt).filter(value => value !== void 0));
@@ -10747,6 +10779,9 @@ function createCommentBatch(drafts, intentId, destination, expectedCreatedAt) {
   return BatchSchema.parse({
     intentId,
     destination,
+    ...(destination !== "main" && sideContext === "owner-history" ? {
+      sideContext
+    } : {}),
     ...(identity ? {
       expectedCreatedAt: identity
     } : {}),
@@ -10763,6 +10798,7 @@ function acceptedBatchInteraction(batch, interactions) {
   var item = interactions.find(item2 => item2.id === batch.intentId);
   var kinds = batch.destination === "main" ? ["change"] : batch.destination === "new-side" ? ["fork"] : ["fork", "reply"];
   if (!item || item.expectedCreatedAt !== batch.expectedCreatedAt || item.destination !== batch.destination || item.text !== batch.text || item.anchor || item.sourceInteractionId || !kinds.includes(item.kind)) return void 0;
+  if (item.kind === "fork" && item.sideContext !== batch.sideContext) return void 0;
   var comments = CommentsSchema.safeParse(item.comments);
   return comments.success && sameData(comments.data, batch.comments) ? item : void 0;
 }
@@ -10929,7 +10965,7 @@ function prepareCommentBatch(scope, drafts, batches, destination, intentId, revi
     if (outbox.batches.some(batch2 => expected.some(draft => batchContainsDraft(batch2, draft)))) throw new Error("\u8FD9\u4E9B\u8BC4\u8BBA\u5DF2\u5728\u53E6\u4E00\u7A97\u53E3\u53D1\u9001\uFF1B\u8BF7\u6838\u5BF9\u539F\u53D1\u9001\u3002");
     var current = queuedDrafts(queued.drafts, outbox.batches);
     if (current.length !== expected.length || current.some((draft, index) => draft.id !== expected[index].id || draft.revision !== expected[index].revision)) throw new Error("\u5F85\u53D1\u9001\u8BC4\u8BBA\u5DF2\u5728\u53E6\u4E00\u7A97\u53E3\u66F4\u65B0\uFF0C\u8BF7\u91CD\u65B0\u6838\u5BF9\u540E\u518D\u7EDF\u4E00\u53D1\u9001\u3002");
-    var batch = createCommentBatch(current, intentId, destination, scope.expectedCreatedAt);
+    var batch = createCommentBatch(current, intentId, destination, scope.expectedCreatedAt, scope.sideContext);
     var result = batches.put(batch);
     if (!result.ok) throw new Error(result.message);
     return batch;
@@ -11027,7 +11063,7 @@ var copy = value => JSON.parse(JSON.stringify(value));
 var samePageChanges = /* @__PURE__ */new Set();
 var WRITE_INTERVAL_MS = 500;
 function createBoardViewStore(storage = browserDraftStorage) {
-  var memory = /* @__PURE__ */new Map();
+  var memory2 = /* @__PURE__ */new Map();
   var unsaved = /* @__PURE__ */new Set();
   var pendingTabs = /* @__PURE__ */new WeakMap();
   var db = null,
@@ -11040,13 +11076,13 @@ function createBoardViewStore(storage = browserDraftStorage) {
   var changed2 = () => {
     externalChange = true;
   };
-  var encode = () => '{"version":1,"records":[' + [...memory.values()].map(item => item.json).join(",") + "]}";
+  var encode = () => '{"version":1,"records":[' + [...memory2.values()].map(item => item.json).join(",") + "]}";
   var trim = () => {
-    var bytes = 50 + [...memory.values()].reduce((total, item) => total + (item.json.length + 1) * 2, 0);
-    while (memory.size > BOARD_VIEW_MAX_RECORDS || memory.size > 0 && bytes > BOARD_VIEW_MAX_BYTES) {
-      var oldest = memory.keys().next().value;
-      bytes -= (memory.get(oldest).json.length + 1) * 2;
-      memory.delete(oldest);
+    var bytes = 50 + [...memory2.values()].reduce((total, item) => total + (item.json.length + 1) * 2, 0);
+    while (memory2.size > BOARD_VIEW_MAX_RECORDS || memory2.size > 0 && bytes > BOARD_VIEW_MAX_BYTES) {
+      var oldest = memory2.keys().next().value;
+      bytes -= (memory2.get(oldest).json.length + 1) * 2;
+      memory2.delete(oldest);
       unsaved.delete(oldest);
     }
   };
@@ -11078,13 +11114,13 @@ function createBoardViewStore(storage = browserDraftStorage) {
         }
       }
       for (var key of unsaved) {
-        var _value2 = memory.get(key);
+        var _value2 = memory2.get(key);
         if (_value2) {
           next.delete(key);
           next.set(key, _value2);
         }
       }
-      memory = next;
+      memory2 = next;
       trim();
       return db;
     } catch {
@@ -11113,13 +11149,13 @@ function createBoardViewStore(storage = browserDraftStorage) {
     if (json.length * 2 > MAX_RECORD_BYTES) return;
     synchronize();
     var key = recordKey(value),
-      previous = memory.get(key);
+      previous = memory2.get(key);
     if (previous?.json === json) {
       if (important && unsaved.size) flush();
       return;
     }
-    memory.delete(key);
-    memory.set(key, {
+    memory2.delete(key);
+    memory2.set(key, {
       value: copy(value),
       json
     });
@@ -11183,7 +11219,7 @@ function createBoardViewStore(storage = browserDraftStorage) {
       }
       if (savedTab?.kind === "entry" && scopeKey(savedTab.scope) === key) return copy(savedTab.selection);
       synchronize(!owners);
-      var saved = memory.get("entry:" + key)?.value;
+      var saved = memory2.get("entry:" + key)?.value;
       return saved?.kind === "entry" ? copy(saved.selection) : void 0;
     },
     writeLastBoard(scope, selection, tab) {
@@ -11214,7 +11250,7 @@ function createBoardViewStore(storage = browserDraftStorage) {
     readBoardView(hostId, boardId, documentVersion, instance) {
       if (!id(hostId) || !id(boardId) || !Number.isSafeInteger(documentVersion) || documentVersion < 0 || instance !== void 0 && !validInstance(instance)) return;
       synchronize(!owners);
-      var saved = memory.get(viewKey(hostId, boardId, instance))?.value;
+      var saved = memory2.get(viewKey(hostId, boardId, instance))?.value;
       if (isViewRecord(saved) && saved.view.documentVersion === documentVersion) return copy({
         view: saved.view,
         follow: saved.follow
@@ -11223,7 +11259,7 @@ function createBoardViewStore(storage = browserDraftStorage) {
     writeBoardView(hostId, boardId, rawView, follow, instance) {
       var view = cleanView(rawView);
       if (!id(hostId) || !id(boardId) || !view || typeof follow !== "boolean" || instance !== void 0 && !validInstance(instance)) return;
-      var previous = memory.get(viewKey(hostId, boardId, instance))?.value;
+      var previous = memory2.get(viewKey(hostId, boardId, instance))?.value;
       var value = {
         ...(instance === void 0 ? {
           kind: "view"
@@ -11481,6 +11517,61 @@ function DiscussionRail({
 import { useMemo as useMemo5, useState as useState14 } from "react";
 import { Pressable as Pressable8, Text as Text9, View as View13 } from "react-native";
 import { ScrollView as ScrollView7 } from "@getpaseo/plugin/client/ui";
+
+// client/side-context.ts
+var SIDE_CONTEXT_PREFIX = "@paseo:board-side-context:v1:";
+var SIDE_CONTEXT_LABELS = {
+  blank: "\u7A7A\u767D Side",
+  "owner-history": "\u5E26\u4E3B agent \u8BB0\u5F55"
+};
+var SIDE_CONTEXT_SCOPE = "\u51BB\u7ED3\u4E3B agent \u5F53\u524D\u5BF9\u8BDD\uFF08\u542B Board \u56DE\u590D\u548C\u5DE5\u5177\u540D\uFF0C\u4E0D\u542B\u5DE5\u5177\u8F93\u51FA\u548C\u601D\u8003\uFF09\uFF0C\u8FC7\u957F\u53EA\u5E26\u6700\u8FD1\u90E8\u5206\uFF1B\u4EC5\u4F5C\u80CC\u666F\u53C2\u8003\u3002";
+var sideContextExisting = (action = "Side \u53D1\u9001") => `\u300C${action}\u300D\u8FDB\u5165\u5DF2\u6709\u65C1\u652F\uFF0C\u4E0D\u53D7\u6B64\u9879\u5F71\u54CD\uFF1B\u65B0\u5EFA Side \u65F6\u624D\u6309\u6B64\u9879\u3002`;
+var memory = /* @__PURE__ */new Map();
+var sideContextKey = (hostId, boardId) => SIDE_CONTEXT_PREFIX + JSON.stringify([hostId, boardId]);
+function createSideContextStore(scope, storage = browserDraftStorage()) {
+  var key = sideContextKey(scope.hostId, scope.boardId);
+  return {
+    read() {
+      var local = memory.get(key);
+      if (local) return local;
+      try {
+        var raw = storage?.getItem(key);
+        if (!raw) return "blank";
+        var parsed = JSON.parse(raw);
+        return parsed?.v === 1 && parsed.choice === "owner-history" ? "owner-history" : "blank";
+      } catch {
+        return "blank";
+      }
+    },
+    write(value) {
+      try {
+        if (!storage) throw new Error("unavailable");
+        if (value === "owner-history") storage.setItem(key, JSON.stringify({
+          v: 1,
+          choice: value
+        }));else storage.removeItem(key);
+        memory.delete(key);
+      } catch {
+        memory.set(key, value);
+      }
+    }
+  };
+}
+var STATE_NOTES = {
+  frozen: " \xB7 \u5F85\u9001\u8FBE",
+  sent: "",
+  uncertain: " \xB7 \u672A\u786E\u8BA4\u9001\u8FBE\uFF08\u8FD9\u4E2A Side \u53EF\u80FD\u6CA1\u6709\u62FF\u5230\u8BB0\u5F55\uFF09",
+  not_sent: " \xB7 \u672A\u9001\u8FBE\uFF08\u8FD9\u4E2A Side \u6CA1\u6709\u62FF\u5230\u8BB0\u5F55\uFF09"
+};
+function sideProvenance(item) {
+  if (item.kind !== "fork" || item.sideContext !== "owner-history") return void 0;
+  var history = item.inheritedHistory;
+  if (!history) return item.status === "failed" ? "\u5E26\u4E3B agent \u8BB0\u5F55 \xB7 \u672A\u5EFA\u7ACB\uFF08\u6CA1\u6709\u521B\u5EFA Side\uFF09" : "\u5E26\u4E3B agent \u8BB0\u5F55 \xB7 \u8BFB\u53D6\u4E2D";
+  var amount = history.entries === 0 && !history.omitted ? "\u4E3B agent \u6682\u65E0\u53EF\u5E26\u7684\u8BB0\u5F55" : history.omitted ? `\u6700\u8FD1 ${history.messages} \u6761\u6D88\u606F \xB7 \u66F4\u65E9\u7684\u672A\u5E26\u4E0A` : `${history.messages} \u6761\u6D88\u606F`;
+  return `\u5E26\u4E3B agent \u8BB0\u5F55 \xB7 ${amount}${history.ownerBusy ? " \xB7 \u542B\u4E3B agent \u8FDB\u884C\u4E2D\u7684\u4E00\u8F6E" : ""}${STATE_NOTES[history.state]}`;
+}
+
+// client/side-agent-picker.tsx
 import { jsx as jsx15, jsxs as jsxs13 } from "react/jsx-runtime";
 function SideAgentPicker({
   interactions,
@@ -11496,7 +11587,8 @@ function SideAgentPicker({
     for (var item of interactions) if (item.kind === "fork" && item.agentId && !agents.has(item.agentId)) agents.set(item.agentId, {
       id: item.agentId,
       label: `\u65C1\u652F ${agents.size + 1}`,
-      text: item.text.replace(/\s+/g, " ").slice(0, 90)
+      text: item.text.replace(/\s+/g, " ").slice(0, 90),
+      provenance: sideProvenance(item)
     });
     return [...agents.values()];
   }, [interactions]);
@@ -11550,7 +11642,7 @@ function SideAgentPicker({
         }) : null, choices.map(item => /* @__PURE__ */jsxs13(Pressable8, {
           testID: `board-side-agent-${item.id}`,
           accessibilityRole: "button",
-          accessibilityLabel: `\u4F7F\u7528${item.label}\uFF1A${item.text}`,
+          accessibilityLabel: `\u4F7F\u7528${item.label}\uFF1A${item.text}${item.provenance ? `\uFF08${item.provenance}\uFF09` : ""}`,
           accessibilityState: {
             selected: !pending && selectedId === item.id,
             disabled
@@ -11584,16 +11676,99 @@ function SideAgentPicker({
               lineHeight: 17
             },
             children: item.text
-          })]
+          }), item.provenance ? /* @__PURE__ */jsx15(Text9, {
+            testID: `board-side-agent-provenance-${item.id}`,
+            numberOfLines: 2,
+            style: {
+              color: c.foregroundMuted,
+              fontSize: 11,
+              lineHeight: 15
+            },
+            children: item.provenance
+          }) : null]
         }, item.id))]
       })
     }) : null]
   });
 }
 
+// client/side-context-choice.tsx
+import { Pressable as Pressable9, Text as Text10, View as View14 } from "react-native";
+import { jsx as jsx16, jsxs as jsxs14 } from "react/jsx-runtime";
+var CHOICES = ["blank", "owner-history"];
+function SideContextChoice({
+  testID = "board-side-context",
+  value,
+  disabled,
+  notes,
+  onChange
+}) {
+  var c = useColors();
+  return /* @__PURE__ */jsxs14(View14, {
+    style: {
+      gap: 4
+    },
+    children: [/* @__PURE__ */jsxs14(View14, {
+      testID,
+      accessibilityRole: "radiogroup",
+      accessibilityLabel: "\u65B0\u5EFA Side \u65F6",
+      style: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        alignItems: "center",
+        gap: 6
+      },
+      children: [/* @__PURE__ */jsx16(Copy, {
+        small: true,
+        muted: true,
+        children: "\u65B0\u5EFA Side \u65F6"
+      }), CHOICES.map(choice => {
+        var checked = value === choice;
+        return /* @__PURE__ */jsx16(Pressable9, {
+          testID: `${testID}-${choice}`,
+          accessibilityRole: "radio",
+          accessibilityLabel: SIDE_CONTEXT_LABELS[choice],
+          accessibilityState: {
+            checked,
+            disabled
+          },
+          disabled,
+          onPress: () => {
+            if (!checked) onChange(choice);
+          },
+          style: ({
+            pressed
+          }) => ({
+            minHeight: 30,
+            justifyContent: "center",
+            paddingHorizontal: 9,
+            borderRadius: 7,
+            borderWidth: 1,
+            borderColor: checked ? c.accent : c.border,
+            backgroundColor: checked || pressed ? c.surface2 : c.surface0,
+            opacity: disabled ? 0.45 : 1
+          }),
+          children: /* @__PURE__ */jsxs14(Text10, {
+            style: {
+              color: c.foreground,
+              fontSize: 12,
+              fontWeight: checked ? "600" : "500"
+            },
+            children: [checked ? "\u25CF " : "\u25CB ", SIDE_CONTEXT_LABELS[choice]]
+          })
+        }, choice);
+      })]
+    }), notes.map(note => /* @__PURE__ */jsx16(Copy, {
+      small: true,
+      muted: true,
+      children: note
+    }, note))]
+  });
+}
+
 // client/composition-sources.tsx
 import { useCallback as useCallback7, useEffect as useEffect14, useMemo as useMemo6, useRef as useRef13, useState as useState15 } from "react";
-import { Text as Text10, View as View14 } from "react-native";
+import { Text as Text11, View as View15 } from "react-native";
 import { useQuery as useQuery2, useQueryClient as useQueryClient2 } from "@tanstack/react-query";
 import { ScrollView as ScrollView8, TextInput as TextInput7 } from "@getpaseo/plugin/client/ui";
 
@@ -11774,7 +11949,7 @@ function hasCompositionSource(state, revision, ref) {
 var compositionSourceSignal = summary => summary ? JSON.stringify(summary) : void 0;
 
 // client/composition-sources.tsx
-import { Fragment as Fragment8, jsx as jsx16, jsxs as jsxs14 } from "react/jsx-runtime";
+import { Fragment as Fragment8, jsx as jsx17, jsxs as jsxs15 } from "react/jsx-runtime";
 function useCompositionSources(parent, enabled = true) {
   var service = useBoardServices(parent.hostId);
   var read = useBoardRpc(compositionSourcesRpc, parent.hostId);
@@ -11873,15 +12048,15 @@ function CompositionSourceSync({
   controller
 }) {
   var services = useBoardTransports();
-  return /* @__PURE__ */jsx16(Fragment8, {
+  return /* @__PURE__ */jsx17(Fragment8, {
     children: controller.enabled ? controller.data?.sources.map(({
       ref
     }) => {
       if (ref.hostId === parent.hostId) return null;
       var service = services.find(item => item.hostId === ref.hostId);
-      return service ? /* @__PURE__ */jsx16(BoardServicesProvider, {
+      return service ? /* @__PURE__ */jsx17(BoardServicesProvider, {
         services: service,
-        children: /* @__PURE__ */jsx16(SourceObservation, {
+        children: /* @__PURE__ */jsx17(SourceObservation, {
           parent,
           source: ref,
           service,
@@ -12003,24 +12178,24 @@ function CompositionSourcesPanel({
       if (panelScope.current === scope) setPending(false);
     }
   });
-  return /* @__PURE__ */jsxs14(View14, {
+  return /* @__PURE__ */jsxs15(View15, {
     testID: "board-composition-sources",
     style: {
       gap: 14
     },
-    children: [/* @__PURE__ */jsx16(Copy, {
+    children: [/* @__PURE__ */jsx17(Copy, {
       children: "\u9009\u62E9\u8FD9\u5F20 Board \u7684 agent \u53EF\u4EE5\u8BFB\u53D6\u7684\u6765\u6E90\uFF0C\u7528\u4E8E\u6C47\u603B\u3001\u6BD4\u8F83\u6216\u751F\u6210\u7B80\u62A5\u3002\u6E90\u753B\u677F\u4ECD\u7531\u539F\u6765\u7684 agent \u8D1F\u8D23\u3002"
-    }), /* @__PURE__ */jsx16(Copy, {
+    }), /* @__PURE__ */jsx17(Copy, {
       small: true,
       muted: true,
       children: "\u4FDD\u5B58\u540E\uFF0C\u8BA9 agent \u4F7F\u7528\u8FD9\u4E9B\u6765\u6E90\u7EC4\u5408\u9875\u9762\u3002\u5B83\u53EF\u4EE5\u81EA\u7531\u5B89\u6392\u4EA4\u4E92\u753B\u677F\u548C\u7F29\u7565\u9884\u89C8\uFF1B\u6765\u6E90\u8BFB\u53D6\u4E0D\u4F1A\u53D1\u9001\u6D88\u606F\u3002"
-    }), controller.isPending ? /* @__PURE__ */jsx16(Copy, {
+    }), controller.isPending ? /* @__PURE__ */jsx17(Copy, {
       muted: true,
       children: "\u6B63\u5728\u8BFB\u53D6\u6765\u6E90\u2026"
-    }) : null, controller.error ? /* @__PURE__ */jsx16(Notice, {
+    }) : null, controller.error ? /* @__PURE__ */jsx17(Notice, {
       error: true,
       text: errorMessage(controller.error)
-    }) : null, /* @__PURE__ */jsx16(TextInput7, {
+    }) : null, /* @__PURE__ */jsx17(TextInput7, {
       accessibilityLabel: "\u67E5\u627E\u6765\u6E90 Board",
       value: filter,
       onChangeText: setFilter,
@@ -12033,16 +12208,16 @@ function CompositionSourcesPanel({
         borderRadius: 8,
         padding: 10
       }
-    }), /* @__PURE__ */jsxs14(ScrollView8, {
+    }), /* @__PURE__ */jsxs15(ScrollView8, {
       style: {
         maxHeight: 420
       },
       contentContainerStyle: {
         gap: 18
       },
-      children: [services.map(service => /* @__PURE__ */jsx16(BoardServicesProvider, {
+      children: [services.map(service => /* @__PURE__ */jsx17(BoardServicesProvider, {
         services: service,
-        children: /* @__PURE__ */jsx16(HostSourceChoices, {
+        children: /* @__PURE__ */jsx17(HostSourceChoices, {
           parent,
           service,
           filter,
@@ -12051,38 +12226,38 @@ function CompositionSourcesPanel({
           disabled: pending || !controller.data,
           toggle
         })
-      }, `${service.hostId}:${service.generation}`)), selected.filter(ref => !services.some(service => service.hostId === ref.hostId)).map(ref => /* @__PURE__ */jsxs14(View14, {
+      }, `${service.hostId}:${service.generation}`)), selected.filter(ref => !services.some(service => service.hostId === ref.hostId)).map(ref => /* @__PURE__ */jsxs15(View15, {
         style: {
           gap: 4
         },
-        children: [/* @__PURE__ */jsx16(Action, {
+        children: [/* @__PURE__ */jsx17(Action, {
           label: `${ref.boardId} \xB7 ${ref.hostId}`,
           active: true,
           disabled: pending,
           onPress: () => toggle(ref)
-        }), /* @__PURE__ */jsx16(Copy, {
+        }), /* @__PURE__ */jsx17(Copy, {
           small: true,
           muted: true,
           children: "\u8BE5 host \u5F53\u524D\u672A\u63D0\u4F9B\u517C\u5BB9\u7684 Board \u8FDE\u63A5\uFF0C\u5DF2\u4FDD\u5B58\u7684\u6765\u6E90\u4ECD\u4FDD\u7559\u3002"
         })]
-      }, boardRefKey(ref))), services.length === 0 ? /* @__PURE__ */jsx16(Copy, {
+      }, boardRefKey(ref))), services.length === 0 ? /* @__PURE__ */jsx17(Copy, {
         muted: true,
         children: "\u5C1A\u65E0\u53EF\u7528\u6765\u6E90\u3002\u8BF7\u5148\u8FDE\u63A5\u5B89\u88C5\u4E86\u517C\u5BB9 Board \u63D2\u4EF6\u7684 host\u3002"
       }) : null]
-    }), controller.data?.sources.map(source => controller.problems[boardRefKey(source.ref)] ? /* @__PURE__ */jsx16(Notice, {
+    }), controller.data?.sources.map(source => controller.problems[boardRefKey(source.ref)] ? /* @__PURE__ */jsx17(Notice, {
       error: true,
       text: `${source.ref.boardId}\uFF1A${controller.problems[boardRefKey(source.ref)]}`
-    }, boardRefKey(source.ref)) : null), controller.data?.sources.some(source => source.snapshot) ? /* @__PURE__ */jsx16(Copy, {
+    }, boardRefKey(source.ref)) : null), controller.data?.sources.some(source => source.snapshot) ? /* @__PURE__ */jsx17(Copy, {
       small: true,
       muted: true,
       children: "\u8FDC\u7AEF\u8D44\u6599\u4EE5\u5404\u6765\u6E90\u6700\u8FD1\u540C\u6B65\u7684\u7248\u672C\u63D0\u4F9B\uFF0Cagent \u4F1A\u770B\u5230\u91C7\u96C6\u65F6\u95F4\u548C\u8BB0\u5F55\u8303\u56F4\u3002"
-    }) : null, failure ? /* @__PURE__ */jsx16(Notice, {
+    }) : null, failure ? /* @__PURE__ */jsx17(Notice, {
       error: true,
       text: failure
-    }) : null, draft && controller.data && controller.data.revision !== baseRevision ? /* @__PURE__ */jsx16(Notice, {
+    }) : null, draft && controller.data && controller.data.revision !== baseRevision ? /* @__PURE__ */jsx17(Notice, {
       error: true,
       text: "\u6765\u6E90\u9009\u62E9\u5DF2\u5728\u522B\u5904\u4FEE\u6539\u3002\u8BF7\u91CD\u65B0\u8F7D\u5165\u540E\u518D\u9009\u62E9\uFF0C\u4EE5\u514D\u8986\u76D6\u53E6\u4E00\u5904\u4FEE\u6539\u3002"
-    }) : null, /* @__PURE__ */jsxs14(View14, {
+    }) : null, /* @__PURE__ */jsxs15(View15, {
       style: {
         flexDirection: "row",
         flexWrap: "wrap",
@@ -12090,11 +12265,11 @@ function CompositionSourcesPanel({
         alignItems: "center",
         justifyContent: "flex-end"
       },
-      children: [/* @__PURE__ */jsxs14(Copy, {
+      children: [/* @__PURE__ */jsxs15(Copy, {
         small: true,
         muted: true,
         children: ["\u5DF2\u9009 ", selected.length, " / ", COMPOSITION_SOURCE_LIMIT]
-      }), draft ? /* @__PURE__ */jsx16(Action, {
+      }), draft ? /* @__PURE__ */jsx17(Action, {
         label: "\u653E\u5F03\u8FD9\u6B21\u9009\u62E9",
         disabled: pending,
         onPress: () => {
@@ -12102,7 +12277,7 @@ function CompositionSourcesPanel({
           setBaseRevision(void 0);
           setFailure(void 0);
         }
-      }) : null, /* @__PURE__ */jsx16(Action, {
+      }) : null, /* @__PURE__ */jsx17(Action, {
         label: pending ? "\u4FDD\u5B58\u4E2D\u2026" : "\u4FDD\u5B58\u6765\u6E90",
         primary: true,
         disabled: pending || !draft || controller.data?.revision !== baseRevision,
@@ -12126,22 +12301,22 @@ function HostSourceChoices({
   var query = useBoardList(service.hostId);
   var text = filter.trim().toLocaleLowerCase();
   var boards = query.data?.boards.filter(board => !(parent.hostId === service.hostId && parent.boardId === board.id) && (!text || `${service.label} ${board.title} ${board.id}`.toLocaleLowerCase().includes(text))) ?? [];
-  return /* @__PURE__ */jsxs14(View14, {
+  return /* @__PURE__ */jsxs15(View15, {
     style: {
       gap: 7
     },
-    children: [/* @__PURE__ */jsx16(Text10, {
+    children: [/* @__PURE__ */jsx17(Text11, {
       style: {
         color: c.foreground,
         fontSize: 13,
         fontWeight: "600"
       },
       children: service.label
-    }), query.isPending ? /* @__PURE__ */jsx16(Copy, {
+    }), query.isPending ? /* @__PURE__ */jsx17(Copy, {
       small: true,
       muted: true,
       children: "\u6B63\u5728\u8BFB\u53D6\u2026"
-    }) : null, query.error ? /* @__PURE__ */jsx16(Notice, {
+    }) : null, query.error ? /* @__PURE__ */jsx17(Notice, {
       error: true,
       text: errorMessage(query.error)
     }) : null, boards.map(board => {
@@ -12150,38 +12325,38 @@ function HostSourceChoices({
         boardId: board.id,
         sourceCreatedAt: board.createdAt
       };
-      return /* @__PURE__ */jsxs14(View14, {
+      return /* @__PURE__ */jsxs15(View15, {
         style: {
           gap: 3
         },
-        children: [/* @__PURE__ */jsx16(Action, {
+        children: [/* @__PURE__ */jsx17(Action, {
           label: board.title,
           active: selected.has(boardRefKey(ref)),
           disabled,
           icon: selected.has(boardRefKey(ref)) ? "Check" : "Plus",
           onPress: () => toggle(ref)
-        }), /* @__PURE__ */jsxs14(Copy, {
+        }), /* @__PURE__ */jsxs15(Copy, {
           small: true,
           muted: true,
           children: [board.unreadUpdateCount ? `${board.unreadUpdateCount} \u5904\u672A\u770B\u66F4\u65B0 \xB7 ` : "", timeLabel(board.updatedAt)]
         })]
       }, board.id);
-    }), selectedRefs.filter(ref => ref.hostId === service.hostId && !query.data?.boards.some(board => board.id === ref.boardId)).map(ref => /* @__PURE__ */jsxs14(View14, {
+    }), selectedRefs.filter(ref => ref.hostId === service.hostId && !query.data?.boards.some(board => board.id === ref.boardId)).map(ref => /* @__PURE__ */jsxs15(View15, {
       style: {
         gap: 3
       },
-      children: [/* @__PURE__ */jsx16(Action, {
+      children: [/* @__PURE__ */jsx17(Action, {
         label: ref.boardId,
         active: true,
         disabled,
         icon: "Check",
         onPress: () => toggle(ref)
-      }), /* @__PURE__ */jsx16(Copy, {
+      }), /* @__PURE__ */jsx17(Copy, {
         small: true,
         muted: true,
         children: "\u8FD9\u4E2A\u5DF2\u9009\u6765\u6E90\u6682\u4E0D\u53EF\u8BFB\uFF0C\u4ECD\u53EF\u4ECE\u6765\u6E90\u4E2D\u79FB\u9664\u3002"
       })]
-    }, boardRefKey(ref))), !query.isPending && !query.error && !boards.length ? /* @__PURE__ */jsx16(Copy, {
+    }, boardRefKey(ref))), !query.isPending && !query.error && !boards.length ? /* @__PURE__ */jsx17(Copy, {
       small: true,
       muted: true,
       children: "\u6CA1\u6709\u7B26\u5408\u6761\u4EF6\u7684 Board\u3002"
@@ -12191,7 +12366,7 @@ function HostSourceChoices({
 
 // client/composition-view.tsx
 import { useCallback as useCallback8, useEffect as useEffect15, useMemo as useMemo7, useState as useState16, useSyncExternalStore as useSyncExternalStore2 } from "react";
-import { Fragment as Fragment9, jsx as jsx17 } from "react/jsx-runtime";
+import { Fragment as Fragment9, jsx as jsx18 } from "react/jsx-runtime";
 var MAX_EMBEDS = 8;
 var mountKeys = /* @__PURE__ */new WeakMap();
 var nextMountKey = 0;
@@ -12212,8 +12387,8 @@ function CompositionEmbeds({
 }) {
   var services = useBoardTransports();
   var grants = useMemo7(() => new Map(sources?.boardCreatedAt === parentCreatedAt ? sources.sources.map(source => [boardRefKey(source.ref), source]) : []), [sources, parentCreatedAt]);
-  return /* @__PURE__ */jsx17(Fragment9, {
-    children: mounts.map((mount, index) => /* @__PURE__ */jsx17(CompositionEmbed, {
+  return /* @__PURE__ */jsx18(Fragment9, {
+    children: mounts.map((mount, index) => /* @__PURE__ */jsx18(CompositionEmbed, {
       mount,
       parent,
       grants,
@@ -12264,21 +12439,21 @@ function CompositionEmbed({
     onOpen: open
   }), [mount, parent.hostId, parent.boardId, slot.id, grant?.sourceCreatedAt, open]);
   if (failure || !service || !grant?.sourceCreatedAt) return null;
-  return /* @__PURE__ */jsx17(BoardServicesProvider, {
+  return /* @__PURE__ */jsx18(BoardServicesProvider, {
     services: service,
-    children: /* @__PURE__ */jsx17(AuthorizedSource, {
+    children: /* @__PURE__ */jsx18(AuthorizedSource, {
       mount,
       service,
       source: ref,
       createdAt: grant.sourceCreatedAt,
       open,
-      children: slot.view === "preview" ? /* @__PURE__ */jsx17(BoardPreview, {
+      children: slot.view === "preview" ? /* @__PURE__ */jsx18(BoardPreview, {
         mount,
         service,
         refValue: ref,
         open,
         ...surface
-      }, grant.sourceCreatedAt) : /* @__PURE__ */jsx17(BoardView, {
+      }, grant.sourceCreatedAt) : /* @__PURE__ */jsx18(BoardView, {
         ...surface,
         host: {
           id: service.hostId,
@@ -12344,7 +12519,7 @@ function BoardPreview({
     mount.setStatus(failure ?? (!board ? query.isPending ? "\u6B63\u5728\u8BFB\u53D6\u9884\u89C8\u2026" : "\u9884\u89C8\u6682\u65F6\u65E0\u6CD5\u8FDE\u63A5" : query.error || query.liveError ? "\u8FDE\u63A5\u4E2D\u65AD \xB7 \u663E\u793A\u4E0A\u6B21\u6536\u5230\u7684\u9884\u89C8" : ""));
   }, [mount, board, service.label, refValue.boardId, query.isPending, query.error, query.liveError, failure, open]);
   if (!board) return null;
-  return /* @__PURE__ */jsx17(CanvasFrame, {
+  return /* @__PURE__ */jsx18(CanvasFrame, {
     embeddedMount: mount,
     boardId: board.id,
     title: board.title,
@@ -12367,7 +12542,7 @@ function BoardPreview({
 }
 
 // client/board.tsx
-import { Fragment as Fragment10, jsx as jsx18, jsxs as jsxs15 } from "react/jsx-runtime";
+import { Fragment as Fragment10, jsx as jsx19, jsxs as jsxs16 } from "react/jsx-runtime";
 var captureFailureNames = {
   "content-changed": "\u622A\u56FE\u8FC7\u7A0B\u4E2D\u753B\u5E03\u5185\u5BB9\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u6846\u9009\u3002",
   "too-complex": "\u9009\u533A\u5185\u5BB9\u8FC7\u4E8E\u590D\u6742\uFF0C\u8BF7\u7F29\u5C0F\u9009\u533A\u3002",
@@ -12394,9 +12569,9 @@ var kindNames = {
   reply: "Fork \u56DE\u590D"
 };
 function BoardView(props) {
-  return /* @__PURE__ */jsx18(ColorContext.Provider, {
+  return /* @__PURE__ */jsx19(ColorContext.Provider, {
     value: props.theme.colors,
-    children: /* @__PURE__ */jsx18(BoardContent, {
+    children: /* @__PURE__ */jsx19(BoardContent, {
       ...props
     }, JSON.stringify([props.host.id, props.boardId]))
   });
@@ -12493,6 +12668,15 @@ function BoardContent({
   var [sideChoiceUncertain, setSideChoiceUncertain] = useState17(false);
   var sideTargetBlocked = choosingSide || sideChoiceUncertain;
   var [inputFocusToken, setInputFocusToken] = useState17(0);
+  var sideContexts = useMemo8(() => createSideContextStore({
+    hostId: host.id,
+    boardId
+  }), [host.id, boardId]);
+  var [sideContext, setSideContext] = useState17(() => sideContexts.read());
+  var sideChoiceOpen = Boolean(compose) || drawer === "drafts";
+  useEffect16(() => {
+    if (sideChoiceOpen) setSideContext(sideContexts.read());
+  }, [sideChoiceOpen, sideContexts]);
   var [message, setMessage] = useState17(null);
   var [frameError, setFrameError] = useState17(null);
   var [height, setHeight] = useState17(500);
@@ -12593,6 +12777,7 @@ function BoardContent({
         intentId: draft.intentId,
         expectedCreatedAt: draft.expectedCreatedAt,
         destination: draft.destination,
+        sideContext: draft.sideContext,
         captureStatus: draft.captureStatus === "pending" ? "omitted" : draft.captureStatus,
         captureFailureReason: draft.captureFailureReason
       }
@@ -12656,7 +12841,8 @@ function BoardContent({
         draftId: void 0,
         draftRevision: void 0,
         intentId: void 0,
-        destination: void 0
+        destination: void 0,
+        sideContext: void 0
       });
     } else changeCompose({
       ...previous,
@@ -12927,6 +13113,7 @@ function BoardContent({
       intentId: item.id,
       expectedCreatedAt: item.expectedCreatedAt,
       destination: item.destination,
+      sideContext: item.sideContext,
       anchor: item.anchor,
       sourceInteractionId: item.sourceInteractionId
     };
@@ -12942,6 +13129,7 @@ function BoardContent({
     }
     if (draft.intentId && destination !== draft.destination) return;
     draft.queuedAt = void 0;
+    if (!draft.intentId) draft.sideContext = destination !== "main" && sideContext === "owner-history" ? "owner-history" : void 0;
     draft.destination = destination;
     pending.current = true;
     setSending(true);
@@ -12967,7 +13155,10 @@ function BoardContent({
       destination,
       text: draft.text.trim(),
       anchor: draft.anchor,
-      sourceInteractionId: draft.sourceInteractionId
+      sourceInteractionId: draft.sourceInteractionId,
+      ...(draft.sideContext ? {
+        sideContext: draft.sideContext
+      } : {})
     };
     var local = {
       id: submitted.intentId,
@@ -12977,6 +13168,9 @@ function BoardContent({
       text: submitted.text,
       anchor: submitted.anchor,
       sourceInteractionId: submitted.sourceInteractionId,
+      ...(draft.sideContext ? {
+        sideContext: draft.sideContext
+      } : {}),
       status: "sending",
       resultReferences: [],
       createdAt: now,
@@ -13030,7 +13224,8 @@ function BoardContent({
       batch = retry ?? (yield prepareCommentBatch({
         hostId: host.id,
         boardId,
-        expectedCreatedAt: board.createdAt
+        expectedCreatedAt: board.createdAt,
+        sideContext
       }, draftStore, batchStore, destination, localId("batch"), reviewed));
       if (batch.expectedCreatedAt && batch.expectedCreatedAt !== board.createdAt) throw new Error("\u753B\u677F\u5DF2\u88AB\u66FF\u6362\uFF1B\u539F\u53D1\u9001\u8BB0\u5F55\u5DF2\u4FDD\u7559\uFF0C\u4E0D\u80FD\u53D1\u9001\u7ED9\u65B0\u753B\u677F\u3002");
       if (acceptedBatchInteraction(batch, board.interactions)) {
@@ -13059,6 +13254,9 @@ function BoardContent({
       destination: batch.destination,
       text: batch.text,
       comments: batch.comments,
+      ...(batch.sideContext ? {
+        sideContext: batch.sideContext
+      } : {}),
       status: "sending",
       resultReferences: [],
       createdAt: now,
@@ -13073,7 +13271,10 @@ function BoardContent({
         kind: "change",
         destination: batch.destination,
         text: batch.text,
-        comments: batch.comments
+        comments: batch.comments,
+        ...(batch.sideContext ? {
+          sideContext: batch.sideContext
+        } : {})
       });
       if (!acceptedBatchInteraction(batch, [result])) throw new Error("\u8FD4\u56DE\u7684\u53D1\u9001\u8BB0\u5F55\u4E0E\u8FD9\u7EC4\u8BC4\u8BBA\u4E0D\u4E00\u81F4\uFF1B\u539F\u53D1\u9001\u5DF2\u4FDD\u7559\uFF0C\u8BF7\u7A0D\u540E\u6838\u5BF9\u3002");
       setOptimistic(items => items.map(item => item.id === result.id ? result : item));
@@ -13134,6 +13335,13 @@ function BoardContent({
       revision
     })));
   });
+  var chooseSideContext = value => {
+    setSideContext(value);
+    sideContexts.write(value);
+    if (composeRef.current) setInputFocusToken(next => next + 1);
+  };
+  var sideExists = Boolean(board?.sideAgentId || board?.pendingSideInteractionId);
+  var sideContextNotes = (value, frozen, existingAction) => frozen ? ["\u91CD\u8BD5\u6CBF\u7528\u539F\u53D1\u9001\u7684\u9009\u62E9\uFF0C\u4E0D\u4F1A\u6539\u53D8\u3002"] : [...(value === "owner-history" ? [SIDE_CONTEXT_SCOPE] : []), ...(sideExists ? [sideContextExisting(existingAction)] : [])];
   var releaseSideChoice = () => {
     sideChoicePending.current = false;
     setChoosingSide(false);
@@ -13243,33 +13451,33 @@ function BoardContent({
     text: "\u9009\u4E2D\u6587\u5B57"
   }[anchor.kind] : "\u6574\u4E2A\u753B\u5E03";
   if (!board && embedded) return null;
-  if (!board) return /* @__PURE__ */jsxs15(ScrollView9, {
+  if (!board) return /* @__PURE__ */jsxs16(ScrollView9, {
     contentContainerStyle: {
       padding: 24,
       gap: 16,
       backgroundColor: c.surface0
     },
-    children: [/* @__PURE__ */jsx18(Action, {
+    children: [/* @__PURE__ */jsx19(Action, {
       label: "\u6240\u6709 Boards",
       onPress: () => leaveBoard(onBack)
-    }), /* @__PURE__ */jsx18(Notice, {
+    }), /* @__PURE__ */jsx19(Notice, {
       text: query.isPending ? "\u6B63\u5728\u6253\u5F00\u2026" : query.error ? "\u6682\u65F6\u65E0\u6CD5\u8FDE\u63A5 Board\uFF1B\u672C\u673A\u8349\u7A3F\u4ECD\u53EF\u67E5\u770B\u548C\u7F16\u8F91\uFF0C\u6062\u590D\u8FDE\u63A5\u540E\u518D\u53D1\u9001\u3002" : "\u8FD9\u5757 Board \u4E0D\u5B58\u5728\uFF1B\u672C\u673A\u8349\u7A3F\u4ECD\u4FDD\u7559\u3002",
       error: !!query.error
-    }), query.error ? /* @__PURE__ */jsx18(Action, {
+    }), query.error ? /* @__PURE__ */jsx19(Action, {
       label: "\u91CD\u8BD5\u8FDE\u63A5",
       onPress: () => {
         void query.refetch();
       }
-    }) : null, compose ? /* @__PURE__ */jsxs15(View15, {
+    }) : null, compose ? /* @__PURE__ */jsxs16(View16, {
       testID: "board-offline-draft",
       style: {
         gap: 12
       },
-      children: [/* @__PURE__ */jsx18(AnchorPreview, {
+      children: [/* @__PURE__ */jsx19(AnchorPreview, {
         anchor: compose.anchor,
         compact: true,
         captureStatus: compose.captureStatus
-      }), canRenderFrames ? /* @__PURE__ */jsx18(WebMessageInput, {
+      }), canRenderFrames ? /* @__PURE__ */jsx19(WebMessageInput, {
         value: compose.text,
         disabled: false,
         onChange: changeDraftText,
@@ -13286,85 +13494,85 @@ function BoardContent({
           padding: 10,
           minHeight: 120
         }
-      }) : /* @__PURE__ */jsx18(TextInput8, {
+      }) : /* @__PURE__ */jsx19(TextInput8, {
         accessibilityLabel: "\u53D1\u7ED9 agent \u7684\u6D88\u606F",
         multiline: true,
         value: compose.text,
         onChangeText: changeDraftText
-      }), draftError || message ? /* @__PURE__ */jsx18(Notice, {
+      }), draftError || message ? /* @__PURE__ */jsx19(Notice, {
         error: true,
         text: draftError ?? message ?? ""
-      }) : null, /* @__PURE__ */jsxs15(View15, {
+      }) : null, /* @__PURE__ */jsxs16(View16, {
         style: {
           flexDirection: "row",
           gap: 8
         },
-        children: [/* @__PURE__ */jsx18(Action, {
+        children: [/* @__PURE__ */jsx19(Action, {
           label: "\u6536\u8D77",
           testID: "board-draft-dismiss",
           onPress: closePopover
-        }), /* @__PURE__ */jsx18(Action, {
+        }), /* @__PURE__ */jsx19(Action, {
           label: "\u4E22\u5F03\u8349\u7A3F",
           testID: "board-draft-discard",
           onPress: discardCompose
         })]
       })]
-    }) : /* @__PURE__ */jsxs15(View15, {
+    }) : /* @__PURE__ */jsxs16(View16, {
       testID: "board-offline-drafts",
       style: {
         gap: 16
       },
-      children: [availableDrafts.map(saved => /* @__PURE__ */jsxs15(View15, {
+      children: [availableDrafts.map(saved => /* @__PURE__ */jsxs16(View16, {
         testID: `board-draft-row-${saved.id}`,
         style: {
           gap: 6
         },
-        children: [/* @__PURE__ */jsx18(Copy, {
+        children: [/* @__PURE__ */jsx19(Copy, {
           children: saved.compose.text || "\u5C1A\u672A\u8F93\u5165\u6587\u5B57"
-        }), /* @__PURE__ */jsx18(Copy, {
+        }), /* @__PURE__ */jsx19(Copy, {
           small: true,
           muted: true,
           children: saved.compose.anchor?.selector ?? "\u6574\u4E2A\u753B\u5E03"
-        }), saved.queuedAt !== void 0 ? /* @__PURE__ */jsx18(Copy, {
+        }), saved.queuedAt !== void 0 ? /* @__PURE__ */jsx19(Copy, {
           small: true,
           muted: true,
           children: "\u5F85\u7EDF\u4E00\u53D1\u9001"
-        }) : null, /* @__PURE__ */jsx18(Action, {
+        }) : null, /* @__PURE__ */jsx19(Action, {
           label: "\u7EE7\u7EED\u7F16\u8F91",
           onPress: () => restoreDraft(saved)
         })]
-      }, saved.revision)), batchSnapshot.batches.map(batch => /* @__PURE__ */jsxs15(View15, {
+      }, saved.revision)), batchSnapshot.batches.map(batch => /* @__PURE__ */jsxs16(View16, {
         testID: `board-offline-batch-${batch.intentId}`,
         style: {
           gap: 8
         },
-        children: [/* @__PURE__ */jsxs15(Copy, {
+        children: [/* @__PURE__ */jsxs16(Copy, {
           children: ["\u53D1\u9001\u7ED3\u679C\u5F85\u6838\u5BF9 \xB7 ", batch.comments.length, " \u6761\u8BC4\u8BBA"]
-        }), batch.comments.map((comment, index) => /* @__PURE__ */jsxs15(View15, {
+        }), batch.comments.map((comment, index) => /* @__PURE__ */jsxs16(View16, {
           style: {
             gap: 4
           },
-          children: [/* @__PURE__ */jsxs15(Copy, {
+          children: [/* @__PURE__ */jsxs16(Copy, {
             children: [index + 1, ". ", comment.text]
-          }), /* @__PURE__ */jsx18(AnchorPreview, {
+          }), /* @__PURE__ */jsx19(AnchorPreview, {
             anchor: comment.anchor,
             compact: true
           })]
-        }, comment.id)), /* @__PURE__ */jsx18(Copy, {
+        }, comment.id)), /* @__PURE__ */jsx19(Copy, {
           small: true,
           muted: true,
           children: "\u6062\u590D\u8FDE\u63A5\u540E\u53EF\u6838\u5BF9\u6216\u91CD\u8BD5\u539F\u53D1\u9001\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u91CD\u53D1\u3002"
         })]
-      }, batch.intentId)), batchSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx18(Notice, {
+      }, batch.intentId)), batchSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx19(Notice, {
         error: true,
         text: issue2
-      }, `batch-${index}`)), draftSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx18(Notice, {
+      }, `batch-${index}`)), draftSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx19(Notice, {
         error: true,
         text: issue2.message
       }, index))]
     })]
   });
-  return /* @__PURE__ */jsxs15(View15, {
+  return /* @__PURE__ */jsxs16(View16, {
     style: embedded ? {
       width: 0,
       height: 0,
@@ -13374,7 +13582,7 @@ function BoardContent({
       minHeight: 0,
       backgroundColor: c.surface0
     },
-    children: [!embedded ? /* @__PURE__ */jsx18(BoardToolbar, {
+    children: [!embedded ? /* @__PURE__ */jsx19(BoardToolbar, {
       board,
       onAccepted: query.accept,
       onRefresh: query.refetch,
@@ -13434,7 +13642,7 @@ function BoardContent({
       },
       sourceCount: sources.data?.sources.length,
       onSources: sources.enabled ? () => setSourcesOpen(true) : void 0
-    }) : null, /* @__PURE__ */jsxs15(View15, {
+    }) : null, /* @__PURE__ */jsxs16(View16, {
       testID: "board-stage",
       style: embedded ? {
         width: 0,
@@ -13445,7 +13653,7 @@ function BoardContent({
         flexDirection: "row"
       },
       onLayout: event => setStageWidth(event.nativeEvent.layout.width),
-      children: [/* @__PURE__ */jsxs15(View15, {
+      children: [/* @__PURE__ */jsxs16(View16, {
         testID: "board-canvas-container",
         style: embedded ? {
           width: 0,
@@ -13462,7 +13670,7 @@ function BoardContent({
           setHeight(Math.max(180, event.nativeEvent.layout.height));
           setWidth(event.nativeEvent.layout.width);
         },
-        children: [canRenderFrames ? /* @__PURE__ */jsx18(CanvasFrame, {
+        children: [canRenderFrames ? /* @__PURE__ */jsx19(CanvasFrame, {
           composition,
           embeddedMount: embedded?.mount,
           viewScope: JSON.stringify([host.id, boardId, viewInstance]),
@@ -13523,53 +13731,53 @@ function BoardContent({
           onOpenLink: url => {
             void openExternalUrl2(url).catch(e => setMessage(errorMessage(e)));
           }
-        }, board.createdAt) : /* @__PURE__ */jsxs15(ScrollView9, {
+        }, board.createdAt) : /* @__PURE__ */jsxs16(ScrollView9, {
           contentContainerStyle: {
             padding: 24,
             gap: 16
           },
-          children: [/* @__PURE__ */jsx18(Notice, {
+          children: [/* @__PURE__ */jsx19(Notice, {
             text: "\u624B\u673A\u517C\u5BB9\u89C6\u56FE\u3002\u5B8C\u6574\u7684\u81EA\u7531\u753B\u5E03\u3001\u52A8\u753B\u548C\u9875\u9762\u4EA4\u4E92\u5728\u684C\u9762\u7248\u4F7F\u7528\uFF1B\u8FD9\u91CC\u53EF\u4EE5\u67E5\u770B\u6458\u8981\u3001\u51B3\u7B56\u5E76\u4E0E agent \u4EA4\u6D41\u3002"
-          }), /* @__PURE__ */jsx18(Markdown, {
+          }), /* @__PURE__ */jsx19(Markdown, {
             children: typeof board.canvas.data.summary === "string" ? board.canvas.data.summary : "Agent \u5C1A\u672A\u63D0\u4F9B\u6587\u5B57\u6458\u8981\u3002\u4F60\u53EF\u4EE5\u76F4\u63A5\u63D0\u95EE\uFF0C\u56DE\u590D\u4F1A\u51FA\u73B0\u5728\u8BA8\u8BBA\u91CC\u3002"
           })]
-        }), embedded ? /* @__PURE__ */jsx18(Modal2, {
+        }), embedded ? /* @__PURE__ */jsx19(Modal2, {
           title: `${board.title} \xB7 ${host.label} \xB7 \u7EC4\u4EF6\u4FEE\u6539`,
           open: Boolean(componentEditor.draft),
           onOpenChange: open => {
             if (!open) componentEditor.cancel();
           },
-          children: /* @__PURE__ */jsx18(Modal2.Content, {
-            children: /* @__PURE__ */jsx18(BoardServicesBoundary, {
+          children: /* @__PURE__ */jsx19(Modal2.Content, {
+            children: /* @__PURE__ */jsx19(BoardServicesBoundary, {
               services,
-              children: /* @__PURE__ */jsx18(ColorContext.Provider, {
+              children: /* @__PURE__ */jsx19(ColorContext.Provider, {
                 value: c,
-                children: /* @__PURE__ */jsx18(ComponentEditPanel, {
+                children: /* @__PURE__ */jsx19(ComponentEditPanel, {
                   editor: componentEditor,
                   inline: true
                 })
               })
             })
           })
-        }) : /* @__PURE__ */jsx18(ComponentEditPanel, {
+        }) : /* @__PURE__ */jsx19(ComponentEditPanel, {
           editor: componentEditor
-        }), !embedded && (query.error || query.liveError || frameError || message && !compose && !selectedInteractionId) ? /* @__PURE__ */jsx18(View15, {
+        }), !embedded && (query.error || query.liveError || frameError || message && !compose && !selectedInteractionId) ? /* @__PURE__ */jsx19(View16, {
           style: {
             position: "absolute",
             left: 8,
             right: 8,
             top: 8
           },
-          children: /* @__PURE__ */jsx18(Notice, {
+          children: /* @__PURE__ */jsx19(Notice, {
             error: true,
             text: query.error ? "\u8FDE\u63A5\u6682\u65F6\u4E2D\u65AD\u3002\u5F53\u524D\u662F\u4E0A\u6B21\u6536\u5230\u7684\u5185\u5BB9\uFF0C\u5C1A\u672A\u786E\u8BA4\u6700\u65B0\u72B6\u6001\u3002" : query.liveError ? errorMessage(query.liveError) : frameError || message || ""
           })
-        }) : null, compose || selectedInteractionId ? /* @__PURE__ */jsxs15(BoardComposerSurface, {
+        }) : null, compose || selectedInteractionId ? /* @__PURE__ */jsxs16(BoardComposerSurface, {
           embeddedTitle: embedded ? `${board.title} \xB7 ${host.label}` : void 0,
           onClose: closePopover,
           onHeight: setPopoverHeight,
           placement: popover,
-          children: [/* @__PURE__ */jsxs15(View15, {
+          children: [/* @__PURE__ */jsxs16(View16, {
             style: {
               flexDirection: "row",
               alignItems: "center",
@@ -13578,24 +13786,24 @@ function BoardContent({
               borderBottomWidth: 1,
               borderColor: c.border
             },
-            children: [/* @__PURE__ */jsx18(Text11, {
+            children: [/* @__PURE__ */jsx19(Text12, {
               style: {
                 color: c.foreground,
                 fontWeight: "600",
                 flex: 1
               },
               children: compose ? "\u53D1\u7ED9 agent" : "\u8FD9\u91CC\u7684\u8BA8\u8BBA"
-            }), compose ? /* @__PURE__ */jsx18(Action, {
+            }), compose ? /* @__PURE__ */jsx19(Action, {
               testID: "board-draft-dismiss",
               label: "\u6536\u8D77",
               disabled: sending,
               onPress: closePopover
-            }) : !canRenderFrames ? /* @__PURE__ */jsx18(Action, {
+            }) : !canRenderFrames ? /* @__PURE__ */jsx19(Action, {
               label: "\u5173\u95ED",
               disabled: sending,
               onPress: closePopover
             }) : null]
-          }), /* @__PURE__ */jsxs15(ScrollView9, {
+          }), /* @__PURE__ */jsxs16(ScrollView9, {
             style: {
               flexShrink: 1
             },
@@ -13604,7 +13812,7 @@ function BoardContent({
               gap: 16
             },
             keyboardShouldPersistTaps: "handled",
-            children: [interactionLocation && interactionLocation.id === selectedInteractionId && interactionLocation.location !== "component" ? /* @__PURE__ */jsx18(Copy, {
+            children: [interactionLocation && interactionLocation.id === selectedInteractionId && interactionLocation.location !== "component" ? /* @__PURE__ */jsx19(Copy, {
               small: true,
               muted: true,
               children: {
@@ -13613,7 +13821,7 @@ function BoardContent({
                 hidden: "\u7EC4\u4EF6\u5F53\u524D\u9690\u85CF \xB7 \u53EF\u4ECE\u4FA7\u680F\u8BF7\u6C42\u5B9A\u4F4D",
                 snapshot: "\u672A\u5B9A\u4F4D\u5230\u5F53\u524D\u7EC4\u4EF6 \xB7 \u53EF\u67E5\u770B\u539F\u59CB\u5F15\u7528"
               }[interactionLocation.location]
-            }) : null, thread.map(item => /* @__PURE__ */jsx18(InteractionContent, {
+            }) : null, thread.map(item => /* @__PURE__ */jsx19(InteractionContent, {
               item,
               board,
               frameTheme,
@@ -13627,34 +13835,39 @@ function BoardContent({
                   serverId: host.id
                 });
               }
-            }, item.id)), compose ? /* @__PURE__ */jsxs15(View15, {
+            }, item.id)), compose ? /* @__PURE__ */jsxs16(View16, {
               style: {
                 gap: 10
               },
-              children: [!thread.length ? /* @__PURE__ */jsx18(AnchorPreview, {
+              children: [!thread.length ? /* @__PURE__ */jsx19(AnchorPreview, {
                 anchor: compose.anchor,
                 compact: true,
                 captureStatus: compose.captureStatus
-              }) : null, compose.captureStatus ? /* @__PURE__ */jsx18(View15, {
+              }) : null, compose.captureStatus ? /* @__PURE__ */jsx19(View16, {
                 style: {
                   minHeight: 36
                 },
-                children: /* @__PURE__ */jsx18(Copy, {
+                children: /* @__PURE__ */jsx19(Copy, {
                   small: true,
                   muted: true,
                   children: compose.captureStatus === "pending" ? "\u622A\u56FE\u51C6\u5907\u4E2D\uFF1B\u73B0\u5728\u53D1\u9001\u4F1A\u4FDD\u7559\u6587\u5B57\u548C\u4F4D\u7F6E\uFF0C\u4E0D\u9644\u56FE\u7247\u3002" : compose.captureStatus === "failed" ? `\u622A\u56FE\u5931\u8D25\uFF1A${captureFailureNames[compose.captureFailureReason ?? "generation-failed"]}\u6587\u5B57\u548C\u4F4D\u7F6E\u5DF2\u4FDD\u7559\u3002` : compose.captureStatus === "omitted" ? "\u6B64\u6B21\u53D1\u9001\u4E0D\u9644\u56FE\u7247\uFF0C\u4FDD\u7559\u539F\u6765\u7684\u6587\u5B57\u548C\u4F4D\u7F6E\u3002" : "\u5DF2\u9644\u9009\u533A\u622A\u56FE\u3002"
                 })
-              }) : null, compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsx18(Copy, {
+              }) : null, compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsx19(Copy, {
                 small: true,
                 muted: true,
                 children: "\u5F15\u7528\u6765\u81EA\u65E7\u753B\u5E03\u7248\u672C\uFF1Bagent \u4F1A\u5BF9\u7167\u539F\u6765\u7684\u4F4D\u7F6E\u548C\u5FEB\u7167\u3002"
-              }) : null, /* @__PURE__ */jsx18(SideAgentPicker, {
+              }) : null, /* @__PURE__ */jsx19(SideAgentPicker, {
                 interactions: board.interactions,
                 selectedId: board.sideAgentId,
                 pending: Boolean(board.pendingSideInteractionId),
                 disabled: sending || sideTargetBlocked || Boolean(compose.intentId),
                 onSelect: chooseSideAgent
-              }), canRenderFrames ? /* @__PURE__ */jsx18(WebMessageInput, {
+              }), compose.intentId && compose.destination === "main" ? null : /* @__PURE__ */jsx19(SideContextChoice, {
+                value: compose.intentId ? compose.sideContext ?? "blank" : sideContext,
+                disabled: sending || sideTargetBlocked || Boolean(compose.intentId),
+                notes: sideContextNotes(compose.intentId ? compose.sideContext ?? "blank" : sideContext, Boolean(compose.intentId)),
+                onChange: chooseSideContext
+              }), canRenderFrames ? /* @__PURE__ */jsx19(WebMessageInput, {
                 value: compose.text,
                 focusToken: inputFocusToken,
                 disabled: sending || sideTargetBlocked,
@@ -13674,7 +13887,7 @@ function BoardContent({
                   minHeight: 80,
                   fontSize: 14
                 }
-              }) : /* @__PURE__ */jsx18(TextInput8, {
+              }) : /* @__PURE__ */jsx19(TextInput8, {
                 autoFocus: true,
                 accessibilityLabel: "\u53D1\u7ED9 agent \u7684\u6D88\u606F",
                 value: compose.text,
@@ -13694,20 +13907,20 @@ function BoardContent({
                   minHeight: 80,
                   textAlignVertical: "top"
                 }
-              }), draftError ? /* @__PURE__ */jsx18(Notice, {
+              }), draftError ? /* @__PURE__ */jsx19(Notice, {
                 error: true,
                 text: `\u8349\u7A3F\u672A\u80FD\u4FDD\u5B58\u5728\u672C\u673A\uFF1A${draftError} \u5F53\u524D\u8F93\u5165\u4ECD\u4FDD\u7559\uFF0C\u8BF7\u5148\u590D\u5236\u6587\u5B57\u3002`
-              }) : /* @__PURE__ */jsx18(Copy, {
+              }) : /* @__PURE__ */jsx19(Copy, {
                 small: true,
                 muted: true,
                 children: "\u8349\u7A3F\u4FDD\u5B58\u5728\u672C\u673A\uFF1B\u6536\u8D77\u6216\u65AD\u7EBF\u540E\u53EF\u7EE7\u7EED\u7F16\u8F91\u3002"
-              }), !board.ownerAgentId ? /* @__PURE__ */jsx18(Notice, {
+              }), !board.ownerAgentId ? /* @__PURE__ */jsx19(Notice, {
                 error: true,
                 text: "\u8FD9\u5757 Board \u5C1A\u672A\u5173\u8054\u8D1F\u8D23\u7684 agent\u3002\u8BF7\u8BA9 agent \u63A5\u7BA1\u540E\u518D\u53D1\u9001\u3002"
-              }) : null, message ? /* @__PURE__ */jsx18(Notice, {
+              }) : null, message ? /* @__PURE__ */jsx19(Notice, {
                 error: true,
                 text: message
-              }) : null, sideChoiceUncertain ? /* @__PURE__ */jsx18(Action, {
+              }) : null, sideChoiceUncertain ? /* @__PURE__ */jsx19(Action, {
                 label: choosingSide ? "\u6B63\u5728\u6838\u5BF9 Side \u76EE\u6807\u2026" : "\u6838\u5BF9 Side \u76EE\u6807",
                 disabled: choosingSide,
                 onPress: () => {
@@ -13715,7 +13928,7 @@ function BoardContent({
                     if (confirmed) setMessage(null);
                   });
                 }
-              }) : null, /* @__PURE__ */jsxs15(View15, {
+              }) : null, /* @__PURE__ */jsxs16(View16, {
                 style: {
                   flexDirection: "row",
                   alignItems: "center",
@@ -13723,32 +13936,39 @@ function BoardContent({
                   flexWrap: "wrap",
                   justifyContent: "flex-end"
                 },
-                children: [/* @__PURE__ */jsx18(Action, {
+                children: [/* @__PURE__ */jsx19(Action, {
                   testID: "board-draft-discard",
                   label: "\u4E22\u5F03\u8349\u7A3F",
                   disabled: sending,
                   onPress: discardCompose
-                }), !compose.intentId && !compose.sourceInteractionId ? /* @__PURE__ */jsx18(Action, {
+                }), !compose.intentId && !compose.sourceInteractionId ? /* @__PURE__ */jsx19(Action, {
                   testID: "board-comment-stage",
                   label: compose.queuedAt !== void 0 ? "\u4FDD\u5B58\u5230\u5F85\u53D1\u9001" : "\u52A0\u5165\u5F85\u53D1\u9001",
                   disabled: sending || !compose.text.trim(),
                   onPress: stageCompose
-                }) : null, compose.intentId ? /* @__PURE__ */jsx18(Action, {
+                }) : null, compose.intentId ? /* @__PURE__ */jsx19(Action, {
                   label: sending ? "\u53D1\u9001\u4E2D\u2026" : "\u91CD\u8BD5\u539F\u53D1\u9001",
                   disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                   primary: true,
                   onPress: () => {
                     void submit(compose.destination ?? "main");
                   }
-                }) : /* @__PURE__ */jsxs15(Fragment10, {
-                  children: [/* @__PURE__ */jsx18(Action, {
+                }) : /* @__PURE__ */jsxs16(Fragment10, {
+                  children: [/* @__PURE__ */jsx19(Action, {
                     label: board.sideAgentId || board.pendingSideInteractionId ? "Side \u53D1\u9001" : "\u65B0\u5EFA Side \u5E76\u53D1\u9001",
                     icon: "GitBranch",
                     disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                     onPress: () => {
                       void submit("side");
                     }
-                  }), /* @__PURE__ */jsx18(Action, {
+                  }), board.sideAgentId || board.pendingSideInteractionId ? /* @__PURE__ */jsx19(Action, {
+                    testID: "board-compose-new-side",
+                    label: "\u65B0\u5EFA Side \u5E76\u53D1\u9001",
+                    disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
+                    onPress: () => {
+                      void submit("new-side");
+                    }
+                  }) : null, /* @__PURE__ */jsx19(Action, {
                     label: staged.some(item => item.id !== compose.draftId) ? "\u4E3B\u4F1A\u8BDD\u7EDF\u4E00\u53D1\u9001" : "\u4E3B\u4F1A\u8BDD\u53D1\u9001",
                     disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                     primary: true,
@@ -13757,23 +13977,23 @@ function BoardContent({
                     }
                   })]
                 })]
-              }), compose.intentId ? /* @__PURE__ */jsx18(Copy, {
+              }), compose.intentId ? /* @__PURE__ */jsx19(Copy, {
                 small: true,
                 muted: true,
                 children: "\u91CD\u8BD5\u53EA\u6CBF\u539F\u76EE\u6807\u7EE7\u7EED\uFF0C\u4E0D\u5408\u5E76\u5F85\u53D1\u9001\u8BC4\u8BBA\uFF1BEnter \u4E0D\u4F1A\u91CD\u65B0\u6682\u5B58\u3002\u4FEE\u6539\u6587\u5B57\u4F1A\u53E6\u5B58\u65B0\u8349\u7A3F\uFF0C\u539F\u53D1\u9001\u4ECD\u4FDD\u7559\u5F85\u6838\u5BF9\u3002"
-              }) : null, !compose.intentId && !compose.sourceInteractionId ? /* @__PURE__ */jsxs15(Copy, {
+              }) : null, !compose.intentId && !compose.sourceInteractionId ? /* @__PURE__ */jsxs16(Copy, {
                 small: true,
                 muted: true,
                 children: ["\u52A0\u5165\u5F85\u53D1\u9001\u540E\u53EF\u7EE7\u7EED\u8BC4\u8BBA\u5176\u4ED6\u4F4D\u7F6E\uFF0C\u518D\u4ECE\u5F85\u53D1\u9001\u6E05\u5355\u4E00\u8D77\u53D1\u9001\u3002", compose.captureStatus === "pending" ? "\u73B0\u5728\u52A0\u5165\u4F1A\u4FDD\u7559\u6587\u5B57\u548C\u4F4D\u7F6E\uFF0C\u4E0D\u9644\u56FE\u7247\u3002" : ""]
-              }) : null, /* @__PURE__ */jsxs15(Copy, {
+              }) : null, /* @__PURE__ */jsxs16(Copy, {
                 small: true,
                 muted: true,
-                children: [compose.sourceInteractionId ? "Enter \u4FDD\u5B58\u8FFD\u95EE\u8349\u7A3F \xB7 \u2318 / Ctrl + Enter \u53D1\u9001\u8FFD\u95EE\uFF08\u987B\u5148\u5904\u7406\u5F85\u53D1\u9001\u8BC4\u8BBA\uFF09" : "Enter \u52A0\u5165\u5F85\u53D1\u9001 \xB7 \u2318 / Ctrl + Enter \u5F53\u524D\u8BC4\u8BBA\u548C\u5F85\u53D1\u9001\u8BC4\u8BBA\u4E00\u8D77\u53D1\u4E3B\u4F1A\u8BDD", "Option / Alt + Enter \u5F53\u524D\u8BC4\u8BBA\u53D1 Side \xB7 Option / Alt + Shift + Enter \u65B0 Side \xB7 Shift+Enter \u6362\u884C"]
+                children: [compose.sourceInteractionId ? "Enter \u4FDD\u5B58\u8FFD\u95EE\u8349\u7A3F \xB7 \u2318 / Ctrl + Enter \u53D1\u9001\u8FFD\u95EE\uFF08\u987B\u5148\u5904\u7406\u5F85\u53D1\u9001\u8BC4\u8BBA\uFF09" : "Enter \u52A0\u5165\u5F85\u53D1\u9001 \xB7 \u2318 / Ctrl + Enter \u5F53\u524D\u8BC4\u8BBA\u548C\u5F85\u53D1\u9001\u8BC4\u8BBA\u4E00\u8D77\u53D1\u4E3B\u4F1A\u8BDD", "Option / Alt + Enter \u5F53\u524D\u8BC4\u8BBA\u53D1 Side \xB7 Option / Alt + Shift + Enter \u65B0 Side\uFF08", sideContext === "owner-history" ? "\u5E26\u4E3B agent \u8BB0\u5F55" : "\u7A7A\u767D", "\uFF09\xB7 Shift+Enter \u6362\u884C"]
               })]
             }) : null]
           })]
         }) : null]
-      }), canRenderFrames && !embedded ? /* @__PURE__ */jsx18(DiscussionRail, {
+      }), canRenderFrames && !embedded ? /* @__PURE__ */jsx19(DiscussionRail, {
         markers,
         compact: stageWidth < 720,
         selectedId: selectedInteractionId,
@@ -13781,7 +14001,7 @@ function BoardContent({
         statusNames: statusNames2,
         onOpen: locateInteraction
       }) : null]
-    }), !embedded ? /* @__PURE__ */jsxs15(View15, {
+    }), !embedded ? /* @__PURE__ */jsxs16(View16, {
       style: {
         paddingHorizontal: 12,
         paddingVertical: 5,
@@ -13792,20 +14012,20 @@ function BoardContent({
         justifyContent: "space-between",
         gap: 8
       },
-      children: [/* @__PURE__ */jsxs15(View15, {
+      children: [/* @__PURE__ */jsxs16(View16, {
         style: {
           flexDirection: "row",
           alignItems: "center",
           gap: 12
         },
-        children: [/* @__PURE__ */jsx18(BoardConnectionStatus, {
+        children: [/* @__PURE__ */jsx19(BoardConnectionStatus, {
           status: query.error ? "disconnected" : query.liveStatus
-        }), /* @__PURE__ */jsxs15(Copy, {
+        }), /* @__PURE__ */jsxs16(Copy, {
           small: true,
           muted: true,
           children: ["r", board.revision, " \xB7 ", timeLabel(board.updatedAt)]
         })]
-      }), staged.length || batchSnapshot.batches.length || batchSnapshot.issues.length ? /* @__PURE__ */jsx18(Action, {
+      }), staged.length || batchSnapshot.batches.length || batchSnapshot.issues.length ? /* @__PURE__ */jsx19(Action, {
         testID: "board-comments-open",
         label: staged.length ? `\u5F85\u53D1\u9001 ${staged.length} \u6761` : "\u6838\u5BF9\u8BC4\u8BBA\u53D1\u9001",
         disabled: sending,
@@ -13814,11 +14034,11 @@ function BoardContent({
           if (!composeRef.current) setDrawer("drafts");
         }
       }) : null]
-    }) : null, !embedded ? /* @__PURE__ */jsxs15(Fragment10, {
-      children: [/* @__PURE__ */jsx18(CompositionSourceSync, {
+    }) : null, !embedded ? /* @__PURE__ */jsxs16(Fragment10, {
+      children: [/* @__PURE__ */jsx19(CompositionSourceSync, {
         parent: sourceRef,
         controller: sources
-      }), /* @__PURE__ */jsx18(CompositionEmbeds, {
+      }), /* @__PURE__ */jsx19(CompositionEmbeds, {
         parent: sourceRef,
         parentCreatedAt: board.createdAt,
         mounts: compositionMounts,
@@ -13826,16 +14046,16 @@ function BoardContent({
         theme,
         layout,
         navigation
-      }), /* @__PURE__ */jsx18(Modal2, {
+      }), /* @__PURE__ */jsx19(Modal2, {
         title: "\u7EC4\u5408\u6765\u6E90",
         open: sourcesOpen,
         onOpenChange: setSourcesOpen,
-        children: /* @__PURE__ */jsx18(Modal2.Content, {
-          children: /* @__PURE__ */jsx18(BoardServicesBoundary, {
+        children: /* @__PURE__ */jsx19(Modal2.Content, {
+          children: /* @__PURE__ */jsx19(BoardServicesBoundary, {
             services,
-            children: /* @__PURE__ */jsx18(ColorContext.Provider, {
+            children: /* @__PURE__ */jsx19(ColorContext.Provider, {
               value: c,
-              children: sourcesOpen ? /* @__PURE__ */jsx18(CompositionSourcesPanel, {
+              children: sourcesOpen ? /* @__PURE__ */jsx19(CompositionSourcesPanel, {
                 parent: sourceRef,
                 controller: sources
               }) : null
@@ -13843,16 +14063,16 @@ function BoardContent({
           })
         })
       })]
-    }) : null, /* @__PURE__ */jsx18(Modal2, {
+    }) : null, /* @__PURE__ */jsx19(Modal2, {
       title: "\u8BC4\u8BBA\u6536\u4EF6\u7BB1",
       open: inboxOpen,
       onOpenChange: setInboxOpen,
-      children: /* @__PURE__ */jsx18(Modal2.Content, {
-        children: /* @__PURE__ */jsx18(BoardServicesBoundary, {
+      children: /* @__PURE__ */jsx19(Modal2.Content, {
+        children: /* @__PURE__ */jsx19(BoardServicesBoundary, {
           services,
-          children: /* @__PURE__ */jsx18(ColorContext.Provider, {
+          children: /* @__PURE__ */jsx19(ColorContext.Provider, {
             value: c,
-            children: inboxOpen ? /* @__PURE__ */jsx18(BoardInbox, {
+            children: inboxOpen ? /* @__PURE__ */jsx19(BoardInbox, {
               hostId: host.id,
               scope: {
                 boardId: board.id,
@@ -13862,16 +14082,16 @@ function BoardContent({
           })
         })
       })
-    }), /* @__PURE__ */jsx18(Modal2, {
+    }), /* @__PURE__ */jsx19(Modal2, {
       title: "\u5B9E\u65F6\u516C\u5F00\u6570\u636E",
       open: liveOpen,
       onOpenChange: setLiveOpen,
-      children: /* @__PURE__ */jsx18(Modal2.Content, {
-        children: /* @__PURE__ */jsx18(BoardServicesBoundary, {
+      children: /* @__PURE__ */jsx19(Modal2.Content, {
+        children: /* @__PURE__ */jsx19(BoardServicesBoundary, {
           services,
-          children: /* @__PURE__ */jsx18(ColorContext.Provider, {
+          children: /* @__PURE__ */jsx19(ColorContext.Provider, {
             value: c,
-            children: liveOpen ? /* @__PURE__ */jsx18(LiveDataPanel, {
+            children: liveOpen ? /* @__PURE__ */jsx19(LiveDataPanel, {
               board,
               hostId: host.id,
               live: liveStatus,
@@ -13880,16 +14100,16 @@ function BoardContent({
           })
         })
       })
-    }), /* @__PURE__ */jsx18(Modal2, {
+    }), /* @__PURE__ */jsx19(Modal2, {
       title: "\u5BFC\u51FA\u4E0E\u53D1\u5E03",
       open: releaseOpen,
       onOpenChange: setReleaseOpen,
-      children: /* @__PURE__ */jsx18(Modal2.Content, {
-        children: /* @__PURE__ */jsx18(BoardServicesBoundary, {
+      children: /* @__PURE__ */jsx19(Modal2.Content, {
+        children: /* @__PURE__ */jsx19(BoardServicesBoundary, {
           services,
-          children: /* @__PURE__ */jsx18(ColorContext.Provider, {
+          children: /* @__PURE__ */jsx19(ColorContext.Provider, {
             value: c,
-            children: releaseOpen ? /* @__PURE__ */jsx18(ReleasePanel, {
+            children: releaseOpen ? /* @__PURE__ */jsx19(ReleasePanel, {
               board,
               hostId: host.id,
               intent: releaseIntent,
@@ -13903,18 +14123,18 @@ function BoardContent({
           })
         })
       })
-    }), /* @__PURE__ */jsx18(Modal2, {
+    }), /* @__PURE__ */jsx19(Modal2, {
       title: drawer === "decisions" ? "Agent \u505A\u8FC7\u7684\u9ED8\u8BA4\u51B3\u7B56" : drawer === "threads" ? "\u56F4\u7ED5\u753B\u5E03\u7684\u8BA8\u8BBA" : drawer === "drafts" ? "\u5F85\u53D1\u9001\u4E0E\u672C\u673A\u8349\u7A3F" : "\u53D1\u751F\u4E86\u4EC0\u4E48\u53D8\u5316",
       open: drawer !== null,
       onOpenChange: open => {
         if (!open) setDrawer(null);
       },
-      children: /* @__PURE__ */jsx18(Modal2.Content, {
-        children: /* @__PURE__ */jsx18(BoardServicesBoundary, {
+      children: /* @__PURE__ */jsx19(Modal2.Content, {
+        children: /* @__PURE__ */jsx19(BoardServicesBoundary, {
           services,
-          children: /* @__PURE__ */jsxs15(ColorContext.Provider, {
+          children: /* @__PURE__ */jsxs16(ColorContext.Provider, {
             value: c,
-            children: [drawer === "decisions" ? /* @__PURE__ */jsx18(DecisionList, {
+            children: [drawer === "decisions" ? /* @__PURE__ */jsx19(DecisionList, {
               board,
               onUpdate: updateDecision,
               onQuestion: decision => {
@@ -13938,37 +14158,37 @@ function BoardContent({
                 setPopoverPoint(anchorPoint(draft.anchor));
                 changeCompose(draft, anchorPoint(draft.anchor));
               }
-            }) : null, drawer === "drafts" ? /* @__PURE__ */jsxs15(View15, {
+            }) : null, drawer === "drafts" ? /* @__PURE__ */jsxs16(View16, {
               testID: "board-drafts",
               style: {
                 gap: 16
               },
-              children: [/* @__PURE__ */jsx18(Copy, {
+              children: [/* @__PURE__ */jsx19(Copy, {
                 small: true,
                 muted: true,
                 children: "\u53EA\u4FDD\u5B58\u5728\u5F53\u524D\u5BA2\u6237\u7AEF\uFF0C\u6309\u4E3B\u673A\u548C Board \u5206\u5F00\u3002\u7EE7\u7EED\u7F16\u8F91\u4F1A\u4FDD\u7559\u539F\u5F15\u7528\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u53D1\u9001\u3002"
-              }), batchSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx18(Notice, {
+              }), batchSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx19(Notice, {
                 error: true,
                 text: issue2
-              }, `batch-${index}`)), batchError ? /* @__PURE__ */jsx18(Notice, {
+              }, `batch-${index}`)), batchError ? /* @__PURE__ */jsx19(Notice, {
                 error: true,
                 text: batchError
-              }) : null, staged.length ? /* @__PURE__ */jsxs15(View15, {
+              }) : null, staged.length ? /* @__PURE__ */jsxs16(View16, {
                 testID: "board-comment-queue",
                 style: {
                   gap: 12
                 },
-                children: [/* @__PURE__ */jsxs15(Text11, {
+                children: [/* @__PURE__ */jsxs16(Text12, {
                   style: {
                     color: c.foreground,
                     fontWeight: "600"
                   },
                   children: ["\u5F85\u53D1\u9001 \xB7 ", staged.length, " \u6761\u8BC4\u8BBA"]
-                }), /* @__PURE__ */jsx18(Copy, {
+                }), /* @__PURE__ */jsx19(Copy, {
                   small: true,
                   muted: true,
                   children: "\u8FD9\u4E9B\u8BC4\u8BBA\u4F1A\u4F5C\u4E3A\u4E00\u7EC4\u4FEE\u6539\u8981\u6C42\u4E00\u8D77\u53D1\u9001\uFF0C\u4FDD\u7559\u5404\u81EA\u7684\u4F4D\u7F6E\u548C\u622A\u56FE\u3002"
-                }), staged.map((saved, index) => /* @__PURE__ */jsxs15(View15, {
+                }), staged.map((saved, index) => /* @__PURE__ */jsxs16(View16, {
                   testID: `board-queued-comment-${saved.id}`,
                   style: {
                     gap: 8,
@@ -13976,22 +14196,22 @@ function BoardContent({
                     borderBottomWidth: 1,
                     borderColor: c.border
                   },
-                  children: [/* @__PURE__ */jsxs15(Copy, {
+                  children: [/* @__PURE__ */jsxs16(Copy, {
                     children: [index + 1, ". ", saved.compose.text]
-                  }), /* @__PURE__ */jsx18(AnchorPreview, {
+                  }), /* @__PURE__ */jsx19(AnchorPreview, {
                     anchor: saved.compose.anchor,
                     compact: true,
                     captureStatus: saved.compose.captureStatus
-                  }), /* @__PURE__ */jsxs15(View15, {
+                  }), /* @__PURE__ */jsxs16(View16, {
                     style: {
                       flexDirection: "row",
                       gap: 8
                     },
-                    children: [/* @__PURE__ */jsx18(Action, {
+                    children: [/* @__PURE__ */jsx19(Action, {
                       label: "\u7F16\u8F91",
                       disabled: sending,
                       onPress: () => restoreDraft(saved)
-                    }), /* @__PURE__ */jsx18(Action, {
+                    }), /* @__PURE__ */jsx19(Action, {
                       label: "\u5220\u9664",
                       disabled: sending,
                       onPress: () => {
@@ -14000,25 +14220,31 @@ function BoardContent({
                       }
                     })]
                   })]
-                }, saved.revision)), /* @__PURE__ */jsx18(SideAgentPicker, {
+                }, saved.revision)), /* @__PURE__ */jsx19(SideAgentPicker, {
                   interactions: board.interactions,
                   selectedId: board.sideAgentId,
                   pending: Boolean(board.pendingSideInteractionId),
                   disabled: sending || sideTargetBlocked,
                   onSelect: chooseSideAgent
-                }), sideChoiceUncertain ? /* @__PURE__ */jsx18(Action, {
+                }), /* @__PURE__ */jsx19(SideContextChoice, {
+                  testID: "board-batch-side-context",
+                  value: sideContext,
+                  disabled: sending || sideTargetBlocked,
+                  notes: sideContextNotes(sideContext, false, "\u7EDF\u4E00\u53D1\u9001\u5230 Side"),
+                  onChange: chooseSideContext
+                }), sideChoiceUncertain ? /* @__PURE__ */jsx19(Action, {
                   label: choosingSide ? "\u6B63\u5728\u6838\u5BF9 Side \u76EE\u6807\u2026" : "\u6838\u5BF9 Side \u76EE\u6807",
                   disabled: choosingSide,
                   onPress: () => {
                     void verifySideChoice();
                   }
-                }) : null, /* @__PURE__ */jsxs15(View15, {
+                }) : null, /* @__PURE__ */jsxs16(View16, {
                   style: {
                     flexDirection: "row",
                     flexWrap: "wrap",
                     gap: 8
                   },
-                  children: [/* @__PURE__ */jsx18(Action, {
+                  children: [/* @__PURE__ */jsx19(Action, {
                     testID: "board-comments-send-main",
                     label: "\u7EDF\u4E00\u53D1\u9001\u5230\u4E3B\u4F1A\u8BDD",
                     primary: true,
@@ -14026,14 +14252,14 @@ function BoardContent({
                     onPress: () => {
                       void submitBatch("main");
                     }
-                  }), /* @__PURE__ */jsx18(Action, {
+                  }), /* @__PURE__ */jsx19(Action, {
                     testID: "board-comments-send-side",
                     label: board.sideAgentId || board.pendingSideInteractionId ? "\u7EDF\u4E00\u53D1\u9001\u5230 Side" : "\u65B0\u5EFA Side \u5E76\u7EDF\u4E00\u53D1\u9001",
                     disabled: sending || sideTargetBlocked || !board.ownerAgentId,
                     onPress: () => {
                       void submitBatch("side");
                     }
-                  }), board.sideAgentId || board.pendingSideInteractionId ? /* @__PURE__ */jsx18(Action, {
+                  }), board.sideAgentId || board.pendingSideInteractionId ? /* @__PURE__ */jsx19(Action, {
                     testID: "board-comments-send-new-side",
                     label: "\u65B0\u5EFA Side \u5E76\u7EDF\u4E00\u53D1\u9001",
                     disabled: sending || sideTargetBlocked || !board.ownerAgentId,
@@ -14042,7 +14268,7 @@ function BoardContent({
                     }
                   }) : null]
                 })]
-              }) : null, batchSnapshot.batches.map(batch => /* @__PURE__ */jsxs15(View15, {
+              }) : null, batchSnapshot.batches.map(batch => /* @__PURE__ */jsxs16(View16, {
                 testID: `board-comment-batch-${batch.intentId}`,
                 style: {
                   gap: 10,
@@ -14050,18 +14276,18 @@ function BoardContent({
                   borderBottomWidth: 1,
                   borderColor: c.border
                 },
-                children: [/* @__PURE__ */jsxs15(Copy, {
-                  children: [acceptedBatchIds.has(batch.intentId) ? "\u8BC4\u8BBA\u5DF2\u63A5\u6536\uFF0C\u6B63\u5728\u6E05\u7406\u672C\u673A\u8BB0\u5F55" : "\u53D1\u9001\u7ED3\u679C\u5F85\u6838\u5BF9", " \xB7 ", batch.comments.length, " \u6761 \xB7 ", batch.destination === "main" ? "\u4E3B\u4F1A\u8BDD" : batch.destination === "new-side" ? "\u65B0 Side" : "Side"]
-                }), batch.comments.map((comment, index) => /* @__PURE__ */jsxs15(View15, {
+                children: [/* @__PURE__ */jsxs16(Copy, {
+                  children: [acceptedBatchIds.has(batch.intentId) ? "\u8BC4\u8BBA\u5DF2\u63A5\u6536\uFF0C\u6B63\u5728\u6E05\u7406\u672C\u673A\u8BB0\u5F55" : "\u53D1\u9001\u7ED3\u679C\u5F85\u6838\u5BF9", " \xB7 ", batch.comments.length, " \u6761 \xB7 ", batch.destination === "main" ? "\u4E3B\u4F1A\u8BDD" : batch.destination === "new-side" ? "\u65B0 Side" : "Side", batch.sideContext ? ` \xB7 ${SIDE_CONTEXT_LABELS[batch.sideContext]}` : ""]
+                }), batch.comments.map((comment, index) => /* @__PURE__ */jsxs16(View16, {
                   style: {
                     gap: 6
                   },
-                  children: [/* @__PURE__ */jsxs15(Copy, {
+                  children: [/* @__PURE__ */jsxs16(Copy, {
                     children: [index + 1, ". ", comment.text]
-                  }), /* @__PURE__ */jsx18(AnchorPreview, {
+                  }), /* @__PURE__ */jsx19(AnchorPreview, {
                     anchor: comment.anchor,
                     compact: true
-                  }), /* @__PURE__ */jsx18(Action, {
+                  }), /* @__PURE__ */jsx19(Action, {
                     label: "\u53E6\u5B58\u5E76\u7F16\u8F91",
                     disabled: sending,
                     onPress: () => {
@@ -14078,11 +14304,11 @@ function BoardContent({
                       changeCompose(next, anchorPoint(next.anchor));
                     }
                   })]
-                }, comment.id)), /* @__PURE__ */jsx18(Copy, {
+                }, comment.id)), /* @__PURE__ */jsx19(Copy, {
                   small: true,
                   muted: true,
                   children: "\u539F\u5185\u5BB9\u548C\u53D1\u9001\u76EE\u6807\u5DF2\u56FA\u5B9A\u3002\u53E6\u5B58\u7F16\u8F91\u4F1A\u5EFA\u7ACB\u65B0\u8349\u7A3F\uFF0C\u539F\u53D1\u9001\u4FDD\u7559\u5F85\u6838\u5BF9\u3002"
-                }), /* @__PURE__ */jsx18(Action, {
+                }), /* @__PURE__ */jsx19(Action, {
                   testID: `board-comments-retry-${batch.intentId}`,
                   label: sending ? "\u53D1\u9001\u4E2D\u2026" : acceptedBatchIds.has(batch.intentId) ? "\u6E05\u7406\u5DF2\u63A5\u6536\u8BB0\u5F55" : "\u91CD\u8BD5\u539F\u53D1\u9001",
                   disabled: sending || sideTargetBlocked || !board.ownerAgentId,
@@ -14090,16 +14316,16 @@ function BoardContent({
                     void submitBatch(batch.destination, batch);
                   }
                 })]
-              }, batch.intentId)), draftSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx18(Notice, {
+              }, batch.intentId)), draftSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx19(Notice, {
                 error: true,
                 text: issue2.message
-              }, `${issue2.code}-${index}`)), draftError ? /* @__PURE__ */jsx18(Notice, {
+              }, `${issue2.code}-${index}`)), draftError ? /* @__PURE__ */jsx19(Notice, {
                 error: true,
                 text: draftError
-              }) : null, !availableDrafts.length && !batchSnapshot.batches.length ? /* @__PURE__ */jsx18(Copy, {
+              }) : null, !availableDrafts.length && !batchSnapshot.batches.length ? /* @__PURE__ */jsx19(Copy, {
                 muted: true,
                 children: "\u6CA1\u6709\u5F85\u53D1\u9001\u7684\u8349\u7A3F\u3002"
-              }) : null, availableDrafts.filter(saved => !staged.some(item => item.revision === saved.revision)).map(saved => /* @__PURE__ */jsxs15(View15, {
+              }) : null, availableDrafts.filter(saved => !staged.some(item => item.revision === saved.revision)).map(saved => /* @__PURE__ */jsxs16(View16, {
                 testID: `board-draft-row-${saved.id}`,
                 style: {
                   borderBottomWidth: 1,
@@ -14107,31 +14333,31 @@ function BoardContent({
                   paddingBottom: 14,
                   gap: 8
                 },
-                children: [/* @__PURE__ */jsx18(Text11, {
+                children: [/* @__PURE__ */jsx19(Text12, {
                   numberOfLines: 2,
                   style: {
                     color: c.foreground
                   },
                   children: saved.compose.text || "\u5C1A\u672A\u8F93\u5165\u6587\u5B57"
-                }), /* @__PURE__ */jsxs15(Copy, {
+                }), /* @__PURE__ */jsxs16(Copy, {
                   small: true,
                   muted: true,
                   children: [saved.compose.anchor?.selector ?? saved.compose.anchor?.text ?? "\u6574\u4E2A\u753B\u5E03", " \xB7 ", timeLabel(new Date(saved.updatedAt).toISOString())]
-                }), saved.conflicted ? /* @__PURE__ */jsx18(Notice, {
+                }), saved.conflicted ? /* @__PURE__ */jsx19(Notice, {
                   text: "\u53E6\u4E00\u7A97\u53E3\u4E5F\u4FEE\u6539\u4E86\u8FD9\u4EFD\u8349\u7A3F\uFF1B\u4E24\u4E2A\u7248\u672C\u90FD\u5DF2\u4FDD\u7559\u3002"
-                }) : null, saved.compose.intentId ? /* @__PURE__ */jsx18(Copy, {
+                }) : null, saved.compose.intentId ? /* @__PURE__ */jsx19(Copy, {
                   small: true,
                   muted: true,
                   children: "\u4E0A\u6B21\u53D1\u9001\u7ED3\u679C\u5F85\u6838\u5BF9\uFF1B\u7EE7\u7EED\u65F6\u4FDD\u7559\u539F\u53D1\u9001\u7F16\u53F7\u548C\u76EE\u6807\u3002"
-                }) : null, /* @__PURE__ */jsxs15(View15, {
+                }) : null, /* @__PURE__ */jsxs16(View16, {
                   style: {
                     flexDirection: "row",
                     gap: 8
                   },
-                  children: [/* @__PURE__ */jsx18(Action, {
+                  children: [/* @__PURE__ */jsx19(Action, {
                     label: "\u7EE7\u7EED\u7F16\u8F91",
                     onPress: () => restoreDraft(saved)
-                  }), /* @__PURE__ */jsx18(Action, {
+                  }), /* @__PURE__ */jsx19(Action, {
                     label: "\u4E22\u5F03",
                     onPress: () => {
                       var result = draftStore.remove(saved.id, saved.revision);
@@ -14140,47 +14366,51 @@ function BoardContent({
                   })]
                 })]
               }, saved.revision))]
-            }) : null, drawer === "threads" ? /* @__PURE__ */jsxs15(View15, {
+            }) : null, drawer === "threads" ? /* @__PURE__ */jsxs16(View16, {
               style: {
                 gap: 20
               },
-              children: [!board.interactions.length ? /* @__PURE__ */jsx18(Copy, {
+              children: [!board.interactions.length ? /* @__PURE__ */jsx19(Copy, {
                 muted: true,
                 children: "\u6307\u7740\u753B\u5E03\u63D0\u95EE\u3001\u63D0\u51FA\u4FEE\u6539\uFF0C\u6216\u5F00\u4E00\u4E2A\u72EC\u7ACB\u8BA8\u8BBA\u3002\u4EA4\u6D41\u4F1A\u4FDD\u7559\u5F53\u65F6\u7684\u5F15\u7528\u548C\u7248\u672C\u3002"
-              }) : null, [...interactions].filter(item => interactionRoot(item.id, interactions) === item.id).reverse().map(interaction => /* @__PURE__ */jsxs15(View15, {
+              }) : null, [...interactions].filter(item => interactionRoot(item.id, interactions) === item.id).reverse().map(interaction => /* @__PURE__ */jsxs16(View16, {
                 style: {
                   borderBottomWidth: 1,
                   borderColor: c.border,
                   paddingBottom: 18,
                   gap: 10
                 },
-                children: [/* @__PURE__ */jsxs15(Copy, {
+                children: [/* @__PURE__ */jsxs16(Copy, {
                   small: true,
                   muted: true,
                   children: [kindNames[interaction.kind], " \xB7 ", statusNames2[interactionThread(interaction.id, interactions).at(-1)?.status ?? interaction.status], " \xB7 ", timeLabel(interaction.createdAt)]
-                }), /* @__PURE__ */jsx18(Copy, {
+                }), sideProvenance(interaction) ? /* @__PURE__ */jsx19(Copy, {
+                  small: true,
+                  muted: true,
+                  children: sideProvenance(interaction)
+                }) : null, /* @__PURE__ */jsx19(Copy, {
                   children: interaction.text
-                }), /* @__PURE__ */jsx18(Action, {
+                }), /* @__PURE__ */jsx19(Action, {
                   label: "\u539F\u4F4D\u67E5\u770B\u548C\u7EE7\u7EED\u4EA4\u6D41",
                   onPress: () => locateInteraction(interaction.id)
                 })]
               }, interaction.id))]
-            }) : null, drawer === "history" ? /* @__PURE__ */jsxs15(View15, {
+            }) : null, drawer === "history" ? /* @__PURE__ */jsxs16(View16, {
               style: {
                 gap: 14
               },
-              children: [[...board.events].reverse().slice(0, 100).map(event => /* @__PURE__ */jsxs15(View15, {
+              children: [[...board.events].reverse().slice(0, 100).map(event => /* @__PURE__ */jsxs16(View16, {
                 style: {
                   gap: 3
                 },
-                children: [/* @__PURE__ */jsx18(Copy, {
+                children: [/* @__PURE__ */jsx19(Copy, {
                   children: event.summary
-                }), /* @__PURE__ */jsxs15(Copy, {
+                }), /* @__PURE__ */jsxs16(Copy, {
                   muted: true,
                   small: true,
                   children: ["r", event.revision, " \xB7 ", event.source, " \xB7 ", timeLabel(event.at)]
                 })]
-              }, event.id)), !board.events.length ? /* @__PURE__ */jsx18(Copy, {
+              }, event.id)), !board.events.length ? /* @__PURE__ */jsx19(Copy, {
                 muted: true,
                 children: "\u8FD8\u6CA1\u6709\u53D8\u5316\u3002"
               }) : null]
@@ -14208,48 +14438,56 @@ function InteractionContent({
   var [visualError, setVisualError] = useState17();
   var stale = item.anchor && item.anchor.canvasRevision !== board.canvas.revision;
   var follow = text => onFollow(discussion ? "reply" : "question", text);
-  return /* @__PURE__ */jsxs15(View15, {
+  var provenance = sideProvenance(item);
+  return /* @__PURE__ */jsxs16(View16, {
     style: {
       gap: 10,
       paddingBottom: 14,
       borderBottomWidth: 1,
       borderColor: c.border
     },
-    children: [/* @__PURE__ */jsxs15(Copy, {
+    children: [/* @__PURE__ */jsxs16(Copy, {
       small: true,
       muted: true,
       children: [kindNames[item.kind], " \xB7 ", statusNames2[item.status], " \xB7 ", timeLabel(item.createdAt)]
-    }), /* @__PURE__ */jsx18(Copy, {
+    }), provenance ? /* @__PURE__ */jsx19(View16, {
+      testID: `board-side-provenance-${item.id}`,
+      children: /* @__PURE__ */jsx19(Copy, {
+        small: true,
+        muted: true,
+        children: provenance
+      })
+    }) : null, /* @__PURE__ */jsx19(Copy, {
       children: item.text
-    }), item.comments?.map((comment, index) => /* @__PURE__ */jsxs15(View15, {
+    }), item.comments?.map((comment, index) => /* @__PURE__ */jsxs16(View16, {
       testID: `board-sent-comment-${comment.id}`,
       style: {
         gap: 6,
         paddingBottom: 8
       },
-      children: [/* @__PURE__ */jsxs15(Copy, {
+      children: [/* @__PURE__ */jsxs16(Copy, {
         children: [index + 1, ". ", comment.text]
-      }), comment.anchor && comment.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsxs15(Copy, {
+      }), comment.anchor && comment.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsxs16(Copy, {
         small: true,
         muted: true,
         children: ["\u65E7\u5F15\u7528 \xB7 \u753B\u5E03 v", comment.anchor.canvasRevision, "\uFF1B\u4FDD\u7559\u8BC4\u8BBA\u65F6\u7684\u4F4D\u7F6E\u548C\u5FEB\u7167\u3002"]
-      }) : null, showSnapshot ? /* @__PURE__ */jsx18(AnchorPreview, {
+      }) : null, showSnapshot ? /* @__PURE__ */jsx19(AnchorPreview, {
         anchor: comment.anchor,
         compact: true
-      }) : null, comment.anchor ? /* @__PURE__ */jsx18(Action, {
+      }) : null, comment.anchor ? /* @__PURE__ */jsx19(Action, {
         testID: `board-locate-comment-${comment.id}`,
         label: `\u5B9A\u4F4D\u7B2C ${index + 1} \u6761`,
         onPress: () => onLocate(comment.id)
       }) : null]
-    }, comment.id)), stale ? /* @__PURE__ */jsxs15(Copy, {
+    }, comment.id)), stale ? /* @__PURE__ */jsxs16(Copy, {
       small: true,
       muted: true,
       children: ["\u65E7\u5F15\u7528 \xB7 \u753B\u5E03 v", item.anchor.canvasRevision, "\uFF0C\u5F53\u524D v", board.canvas.revision, "\u3002\u5F15\u7528\u4FDD\u7559\u63D0\u95EE\u65F6\u5185\u5BB9\uFF1B\u6807\u8BB0\u53EF\u8DDF\u968F\u4ECD\u80FD\u786E\u8BA4\u7684\u7EC4\u4EF6\uFF0C\u8BF7\u6838\u5BF9\u5F53\u524D\u5185\u5BB9\u3002"]
-    }) : null, showSnapshot ? /* @__PURE__ */jsx18(AnchorPreview, {
+    }) : null, showSnapshot ? /* @__PURE__ */jsx19(AnchorPreview, {
       anchor: item.anchor
-    }) : null, item.response ? /* @__PURE__ */jsx18(Markdown, {
+    }) : null, item.response ? /* @__PURE__ */jsx19(Markdown, {
       children: item.response
-    }) : null, item.responseCanvas && canRenderFrames ? /* @__PURE__ */jsx18(View15, {
+    }) : null, item.responseCanvas && canRenderFrames ? /* @__PURE__ */jsx19(View16, {
       style: {
         height: 260,
         borderWidth: 1,
@@ -14257,7 +14495,7 @@ function InteractionContent({
         borderRadius: 8,
         overflow: "hidden"
       },
-      children: /* @__PURE__ */jsx18(CanvasFrame, {
+      children: /* @__PURE__ */jsx19(CanvasFrame, {
         boardId: `${board.id}.response.${item.id}`,
         title: "Agent \u7684\u53EF\u4EA4\u4E92\u56DE\u7B54",
         canvas: item.responseCanvas,
@@ -14275,33 +14513,33 @@ function InteractionContent({
           void openExternalUrl2(url).catch(error => setVisualError(errorMessage(error)));
         }
       })
-    }) : null, item.responseCanvas && !canRenderFrames ? /* @__PURE__ */jsx18(Copy, {
+    }) : null, item.responseCanvas && !canRenderFrames ? /* @__PURE__ */jsx19(Copy, {
       small: true,
       muted: true,
       children: "\u8FD9\u6761\u56DE\u590D\u5305\u542B\u53EF\u4EA4\u4E92\u56FE\u89E3\uFF0C\u8BF7\u5728\u684C\u9762\u67E5\u770B\u3002"
-    }) : null, item.error || visualError ? /* @__PURE__ */jsx18(Notice, {
+    }) : null, item.error || visualError ? /* @__PURE__ */jsx19(Notice, {
       error: true,
       text: item.error || visualError || ""
-    }) : null, item.resultReferences.length ? /* @__PURE__ */jsxs15(Copy, {
+    }) : null, item.resultReferences.length ? /* @__PURE__ */jsxs16(Copy, {
       small: true,
       muted: true,
       children: ["\u4F9D\u636E\uFF1A", item.resultReferences.join(" \xB7 ")]
-    }) : null, /* @__PURE__ */jsxs15(View15, {
+    }) : null, /* @__PURE__ */jsxs16(View16, {
       style: {
         flexDirection: "row",
         flexWrap: "wrap",
         gap: 6
       },
-      children: [item.anchor || item.comments?.some(comment => comment.anchor) ? /* @__PURE__ */jsx18(Action, {
+      children: [item.anchor || item.comments?.some(comment => comment.anchor) ? /* @__PURE__ */jsx19(Action, {
         label: showSnapshot ? "\u6536\u8D77\u539F\u59CB\u5F15\u7528" : "\u539F\u59CB\u5F15\u7528",
         onPress: () => setShowSnapshot(value => !value)
-      }) : null, unconfirmed && item.status === "failed" ? /* @__PURE__ */jsx18(Action, {
+      }) : null, unconfirmed && item.status === "failed" ? /* @__PURE__ */jsx19(Action, {
         label: "\u91CD\u8BD5\u53D1\u9001",
         onPress: onRetry
-      }) : null, !unconfirmed && (!discussion || item.agentId) ? /* @__PURE__ */jsx18(Action, {
+      }) : null, !unconfirmed && (!discussion || item.agentId) ? /* @__PURE__ */jsx19(Action, {
         label: "\u7EE7\u7EED\u4EA4\u6D41",
         onPress: () => follow()
-      }) : null, item.agentId ? /* @__PURE__ */jsx18(Action, {
+      }) : null, item.agentId ? /* @__PURE__ */jsx19(Action, {
         label: "\u4F1A\u8BDD",
         onPress: onOpenAgent
       }) : null]
@@ -14314,15 +14552,15 @@ function AnchorPreview({
   captureStatus
 }) {
   if (!anchor) return null;
-  return /* @__PURE__ */jsxs15(View15, {
+  return /* @__PURE__ */jsxs16(View16, {
     style: {
       gap: 6
     },
-    children: [/* @__PURE__ */jsxs15(Copy, {
+    children: [/* @__PURE__ */jsxs16(Copy, {
       muted: true,
       small: true,
       children: ["\u5F15\u7528 r", anchor.boardRevision, " \xB7 ", anchor.text || (anchor.kind === "point" ? "\u6307\u5B9A\u4F4D\u7F6E" : anchor.kind === "region" ? "\u6846\u9009\u533A\u57DF" : "\u753B\u5E03"), anchor.rect ? ` \xB7 (${Math.round(anchor.rect.x)}, ${Math.round(anchor.rect.y)})` : ""]
-    }), anchor.image ? /* @__PURE__ */jsx18(Image2, {
+    }), anchor.image ? /* @__PURE__ */jsx19(Image2, {
       source: {
         uri: `data:${anchor.image.mimeType};base64,${anchor.image.data}`
       },
@@ -14332,12 +14570,12 @@ function AnchorPreview({
         height: compact ? 72 : 150
       },
       accessibilityLabel: "\u63D0\u95EE\u65F6\u7684\u753B\u9762\u5FEB\u7167"
-    }) : captureStatus ? /* @__PURE__ */jsx18(View15, {
+    }) : captureStatus ? /* @__PURE__ */jsx19(View16, {
       style: {
         height: compact ? 72 : 150,
         justifyContent: "center"
       },
-      children: /* @__PURE__ */jsx18(Copy, {
+      children: /* @__PURE__ */jsx19(Copy, {
         small: true,
         muted: true,
         children: captureStatus === "pending" ? "\u622A\u56FE\u51C6\u5907\u4E2D\u2026" : "\u672A\u9644\u56FE\u7247"
@@ -14358,31 +14596,31 @@ function DecisionList({
     inferred: "\u5F85\u6838\u5B9E\u7684\u53EF\u80FD\u51B3\u7B56"
   };
   var decisions = board.decisions.filter(d => showDismissed || !["dismissed", "superseded"].includes(d.status)).sort((a, b) => Number(b.status === "questioned") - Number(a.status === "questioned") || b.updatedAt.localeCompare(a.updatedAt));
-  return /* @__PURE__ */jsxs15(View15, {
+  return /* @__PURE__ */jsxs16(View16, {
     style: {
       gap: 18
     },
-    children: [/* @__PURE__ */jsx18(Copy, {
+    children: [/* @__PURE__ */jsx19(Copy, {
       muted: true,
       children: "\u8BB0\u5F55 agent \u5728\u5DE5\u4F5C\u9014\u4E2D\u81EA\u884C\u4F5C\u51FA\u7684\u9009\u62E9\u3002\u63A8\u65AD\u4E0E\u4E8B\u5B9E\u5206\u5F00\uFF1B\u6CA1\u6709\u8BF4\u51FA\u7684\u7406\u7531\u4F1A\u6807\u4E3A\u201C\u672A\u8BF4\u660E\u201D\u3002"
-    }), /* @__PURE__ */jsxs15(Copy, {
+    }), /* @__PURE__ */jsxs16(Copy, {
       small: true,
       muted: true,
       children: [board.extraction.lastCheckedAt ? `\u6700\u8FD1\u68C0\u67E5\uFF1A${timeLabel(board.extraction.lastCheckedAt)}` : "\u5C1A\u672A\u5B8C\u6210\u4F1A\u8BDD\u68C0\u67E5", board.extraction.note ? ` \xB7 ${board.extraction.note}` : ""]
-    }), !decisions.length ? /* @__PURE__ */jsx18(Copy, {
+    }), !decisions.length ? /* @__PURE__ */jsx19(Copy, {
       children: "\u5C1A\u65E0\u5DF2\u8BB0\u5F55\u7684\u51B3\u7B56\u3002\u8FD9\u4E0D\u4EE3\u8868 agent \u6CA1\u6709\u4F5C\u8FC7\u9ED8\u8BA4\u9009\u62E9\u3002"
-    }) : null, decisions.map(decision => /* @__PURE__ */jsxs15(View15, {
+    }) : null, decisions.map(decision => /* @__PURE__ */jsxs16(View16, {
       style: {
         gap: 8,
         paddingBottom: 16,
         borderBottomWidth: 1,
         borderColor: c.border
       },
-      children: [/* @__PURE__ */jsxs15(Copy, {
+      children: [/* @__PURE__ */jsxs16(Copy, {
         small: true,
         muted: true,
         children: [basisNames[decision.basis], decision.status === "questioned" ? " \xB7 \u5DF2\u8D28\u7591" : decision.status === "dismissed" ? " \xB7 \u5DF2\u6392\u9664" : decision.status === "superseded" ? " \xB7 \u5DF2\u53D6\u4EE3" : ""]
-      }), /* @__PURE__ */jsx18(Text11, {
+      }), /* @__PURE__ */jsx19(Text12, {
         selectable: true,
         style: {
           color: c.foreground,
@@ -14391,45 +14629,45 @@ function DecisionList({
           lineHeight: 23
         },
         children: decision.choice
-      }), /* @__PURE__ */jsx18(Copy, {
+      }), /* @__PURE__ */jsx19(Copy, {
         children: decision.rationale || "\u7406\u7531\u672A\u8BF4\u660E"
-      }), decision.impact ? /* @__PURE__ */jsxs15(Copy, {
+      }), decision.impact ? /* @__PURE__ */jsxs16(Copy, {
         muted: true,
         children: ["\u5F71\u54CD\uFF1A", decision.impact]
-      }) : null, decision.evidence.map((evidence, i) => /* @__PURE__ */jsxs15(View15, {
+      }) : null, decision.evidence.map((evidence, i) => /* @__PURE__ */jsxs16(View16, {
         style: {
           gap: 2
         },
-        children: [/* @__PURE__ */jsxs15(Copy, {
+        children: [/* @__PURE__ */jsxs16(Copy, {
           small: true,
           muted: true,
           children: [evidence.kind, " \xB7 ", evidence.reference]
-        }), evidence.excerpt ? /* @__PURE__ */jsx18(Copy, {
+        }), evidence.excerpt ? /* @__PURE__ */jsx19(Copy, {
           small: true,
           children: evidence.excerpt
         }) : null]
-      }, i)), /* @__PURE__ */jsxs15(View15, {
+      }, i)), /* @__PURE__ */jsxs16(View16, {
         style: {
           flexDirection: "row",
           gap: 8,
           flexWrap: "wrap"
         },
-        children: [/* @__PURE__ */jsx18(Action, {
+        children: [/* @__PURE__ */jsx19(Action, {
           label: "\u56F4\u7ED5\u8FD9\u6761\u51B3\u7B56\u63D0\u95EE",
           onPress: () => onQuestion(decision)
-        }), decision.status === "active" ? /* @__PURE__ */jsx18(Action, {
+        }), decision.status === "active" ? /* @__PURE__ */jsx19(Action, {
           label: "\u6807\u4E3A\u6709\u5F02\u8BAE",
           onPress: () => {
             void onUpdate(decision, "questioned");
           }
-        }) : null, decision.basis === "inferred" ? /* @__PURE__ */jsx18(Action, {
+        }) : null, decision.basis === "inferred" ? /* @__PURE__ */jsx19(Action, {
           label: "\u8FD9\u4E0D\u662F\u4E00\u4E2A\u51B3\u7B56",
           onPress: () => {
             void onUpdate(decision, "dismissed");
           }
         }) : null]
       })]
-    }, decision.id)), /* @__PURE__ */jsx18(Action, {
+    }, decision.id)), /* @__PURE__ */jsx19(Action, {
       label: showDismissed ? "\u9690\u85CF\u5DF2\u6392\u9664\u4E0E\u88AB\u53D6\u4EE3\u7684\u51B3\u7B56" : "\u67E5\u770B\u5DF2\u6392\u9664\u4E0E\u88AB\u53D6\u4EE3\u7684\u51B3\u7B56",
       onPress: () => setShowDismissed(value => !value)
     })]
@@ -14444,18 +14682,18 @@ function BoardComposerSurface({
 }) {
   var c = useColors();
   var services = useBoardServices();
-  if (embeddedTitle) return /* @__PURE__ */jsx18(Modal2, {
+  if (embeddedTitle) return /* @__PURE__ */jsx19(Modal2, {
     title: embeddedTitle,
     open: true,
     onOpenChange: open => {
       if (!open) onClose();
     },
-    children: /* @__PURE__ */jsx18(Modal2.Content, {
-      children: /* @__PURE__ */jsx18(BoardServicesBoundary, {
+    children: /* @__PURE__ */jsx19(Modal2.Content, {
+      children: /* @__PURE__ */jsx19(BoardServicesBoundary, {
         services,
-        children: /* @__PURE__ */jsx18(ColorContext.Provider, {
+        children: /* @__PURE__ */jsx19(ColorContext.Provider, {
           value: c,
-          children: /* @__PURE__ */jsx18(View15, {
+          children: /* @__PURE__ */jsx19(View16, {
             testID: "board-embedded-composer",
             style: {
               maxHeight: 700
@@ -14466,7 +14704,7 @@ function BoardComposerSurface({
       })
     })
   });
-  return /* @__PURE__ */jsx18(View15, {
+  return /* @__PURE__ */jsx19(View16, {
     testID: "board-local-popover",
     accessibilityLabel: "\u539F\u4F4D\u4EA4\u6D41",
     onLayout: event => onHeight(event.nativeEvent.layout.height),
@@ -14494,16 +14732,16 @@ function BoardServicesBoundary({
   services,
   children
 }) {
-  return services ? /* @__PURE__ */jsx18(BoardServicesProvider, {
+  return services ? /* @__PURE__ */jsx19(BoardServicesProvider, {
     services,
     children
-  }) : /* @__PURE__ */jsx18(Fragment10, {
+  }) : /* @__PURE__ */jsx19(Fragment10, {
     children
   });
 }
 
 // client/home.tsx
-import { jsx as jsx19, jsxs as jsxs16 } from "react/jsx-runtime";
+import { jsx as jsx20, jsxs as jsxs17 } from "react/jsx-runtime";
 var EMPTY_CANVAS = `<style>main{padding:clamp(24px,8vw,100px);max-width:760px;margin:auto}h1{font-size:clamp(30px,5vw,54px);letter-spacing:-.04em}p{line-height:1.8;opacity:.65}#content{min-height:30vh}</style><main><p>YOUR SHARED SURFACE</p><h1>\u4ECE\u4E00\u4E2A\u95EE\u9898\u5F00\u59CB\u3002</h1><p>\u8BA9 agent \u6839\u636E\u773C\u524D\u7684\u4EFB\u52A1\u7EC4\u7EC7\u8FD9\u91CC\u3002\u89E3\u91CA\u3001\u56FE\u8868\u3001\u52A8\u753B\u548C\u4E92\u52A8\u5DE5\u5177\uFF0C\u90FD\u53EF\u4EE5\u5728\u540C\u4E00\u5757\u753B\u5E03\u4E0A\u4E0D\u65AD\u751F\u957F\u3002</p><div id="content"></div></main>`;
 function BoardHome(props) {
   useEffect17(retainBoardViewStore, []);
@@ -14517,7 +14755,7 @@ function BoardHome(props) {
     agentId: props.agentId
   };
   var key = JSON.stringify([scope.hostId, scope.surface, scope.workspaceId ?? null, scope.agentId ?? null, props.initialBoardId ?? null]);
-  return /* @__PURE__ */jsx19(RememberedBoardHome, {
+  return /* @__PURE__ */jsx20(RememberedBoardHome, {
     ...props,
     entryScope: scope
   }, key);
@@ -14544,16 +14782,16 @@ function RememberedBoardHome(props) {
     kind: "board",
     boardId
   });
-  return selected ? /* @__PURE__ */jsx19(BoardView, {
+  return selected ? /* @__PURE__ */jsx20(BoardView, {
     ...props,
     boardId: selected,
     onBack: () => choose({
       kind: "index"
     }),
     onOpenBoard: open
-  }, `${props.host.id}:${selected}`) : /* @__PURE__ */jsx19(ColorContext.Provider, {
+  }, `${props.host.id}:${selected}`) : /* @__PURE__ */jsx20(ColorContext.Provider, {
     value: props.theme.colors,
-    children: /* @__PURE__ */jsx19(BoardIndex, {
+    children: /* @__PURE__ */jsx20(BoardIndex, {
       ...props,
       onSelect: open
     })
@@ -14610,12 +14848,12 @@ function BoardIndex({
       setPending(false);
     }
   });
-  return /* @__PURE__ */jsxs16(View16, {
+  return /* @__PURE__ */jsxs17(View17, {
     style: {
       flex: 1,
       backgroundColor: c.surface0
     },
-    children: [/* @__PURE__ */jsxs16(ScrollView10, {
+    children: [/* @__PURE__ */jsxs17(ScrollView10, {
       contentContainerStyle: {
         padding: 28,
         gap: 24,
@@ -14623,18 +14861,18 @@ function BoardIndex({
         width: "100%",
         alignSelf: "center"
       },
-      children: [/* @__PURE__ */jsxs16(View16, {
+      children: [/* @__PURE__ */jsxs17(View17, {
         style: {
           flexDirection: "row",
           alignItems: "center",
           gap: 16
         },
-        children: [/* @__PURE__ */jsxs16(View16, {
+        children: [/* @__PURE__ */jsxs17(View17, {
           style: {
             flex: 1,
             gap: 7
           },
-          children: [/* @__PURE__ */jsx19(Text12, {
+          children: [/* @__PURE__ */jsx20(Text13, {
             style: {
               color: c.foreground,
               fontSize: 28,
@@ -14642,11 +14880,11 @@ function BoardIndex({
               letterSpacing: -0.7
             },
             children: "Boards"
-          }), /* @__PURE__ */jsx19(Copy, {
+          }), /* @__PURE__ */jsx20(Copy, {
             muted: true,
             children: "\u56DE\u5230\u9879\u76EE\u7684\u73B0\u72B6\uFF0C\u6307\u7740\u5185\u5BB9\u4E0E agent \u4EA4\u6D41\u3002"
           })]
-        }), /* @__PURE__ */jsx19(Action, {
+        }), /* @__PURE__ */jsx20(Action, {
           label: "\u65B0\u5EFA Board",
           icon: "Plus",
           primary: true,
@@ -14655,29 +14893,29 @@ function BoardIndex({
             setCreating(true);
           }
         })]
-      }), /* @__PURE__ */jsx19(BoardConnectionStatus, {
+      }), /* @__PURE__ */jsx20(BoardConnectionStatus, {
         status: boards.liveStatus
-      }), boards.error ? /* @__PURE__ */jsx19(Notice, {
+      }), boards.error ? /* @__PURE__ */jsx20(Notice, {
         error: true,
         text: errorMessage(boards.error)
-      }) : null, boards.liveError ? /* @__PURE__ */jsx19(Notice, {
+      }) : null, boards.liveError ? /* @__PURE__ */jsx20(Notice, {
         error: true,
         text: errorMessage(boards.liveError)
-      }) : null, boards.isPending ? /* @__PURE__ */jsx19(Copy, {
+      }) : null, boards.isPending ? /* @__PURE__ */jsx20(Copy, {
         muted: true,
         children: "\u6B63\u5728\u8BFB\u53D6\u2026"
-      }) : null, boards.data?.boards.length === 0 ? /* @__PURE__ */jsxs16(View16, {
+      }) : null, boards.data?.boards.length === 0 ? /* @__PURE__ */jsxs17(View17, {
         style: {
           paddingVertical: 60,
           gap: 14
         },
-        children: [/* @__PURE__ */jsx19(Copy, {
+        children: [/* @__PURE__ */jsx20(Copy, {
           children: "\u8FD8\u6CA1\u6709 Board\u3002"
-        }), /* @__PURE__ */jsx19(Copy, {
+        }), /* @__PURE__ */jsx20(Copy, {
           muted: true,
           children: "\u4F60\u53EF\u4EE5\u8BA9 agent \u4E3A\u5F53\u524D\u4EFB\u52A1\u5EFA\u7ACB\u4E00\u5757\u6301\u7EED\u66F4\u65B0\u7684\u81EA\u7531\u753B\u5E03\uFF0C\u6216\u5148\u5173\u8054\u4E00\u4E2A agent \u5F00\u59CB\u3002"
         })]
-      }) : null, boards.data?.boards.map(board => /* @__PURE__ */jsxs16(Pressable9, {
+      }) : null, boards.data?.boards.map(board => /* @__PURE__ */jsxs17(Pressable10, {
         accessibilityRole: "button",
         accessibilityLabel: `\u6253\u5F00 ${board.title}`,
         onPress: () => onSelect(board.id),
@@ -14692,13 +14930,13 @@ function BoardIndex({
           backgroundColor: pressed ? c.surface2 : c.surface1,
           gap: 10
         }),
-        children: [/* @__PURE__ */jsxs16(View16, {
+        children: [/* @__PURE__ */jsxs17(View17, {
           style: {
             flexDirection: "row",
             alignItems: "center",
             gap: 12
           },
-          children: [/* @__PURE__ */jsx19(Text12, {
+          children: [/* @__PURE__ */jsx20(Text13, {
             style: {
               color: c.foreground,
               fontSize: 19,
@@ -14706,7 +14944,7 @@ function BoardIndex({
               flex: 1
             },
             children: board.title
-          }), /* @__PURE__ */jsxs16(View16, {
+          }), /* @__PURE__ */jsxs17(View17, {
             testID: `board-status-${board.id}`,
             accessibilityLabel: board.status === "processing" ? "\u5DE5\u4F5C\uFF1A\u5904\u7406\u4E2D" : board.status === "error" ? "\u5DE5\u4F5C\uFF1A\u9700\u8981\u5173\u6CE8" : "\u5DE5\u4F5C\uFF1A\u7A7A\u95F2",
             style: {
@@ -14714,19 +14952,19 @@ function BoardIndex({
               alignItems: "center",
               gap: 6
             },
-            children: [/* @__PURE__ */jsx19(View16, {
+            children: [/* @__PURE__ */jsx20(View17, {
               style: {
                 width: 7,
                 height: 7,
                 borderRadius: 4,
                 backgroundColor: board.status === "processing" ? c.accent : board.status === "error" ? c.statusDanger : c.foregroundMuted
               }
-            }), /* @__PURE__ */jsxs16(Copy, {
+            }), /* @__PURE__ */jsxs17(Copy, {
               muted: true,
               small: true,
               children: ["\u5DE5\u4F5C \xB7 ", board.status === "processing" ? "\u5904\u7406\u4E2D" : board.status === "error" ? "\u9700\u8981\u5173\u6CE8" : "\u7A7A\u95F2"]
             })]
-          }), board.unreadUpdateCount > 0 ? /* @__PURE__ */jsx19(View16, {
+          }), board.unreadUpdateCount > 0 ? /* @__PURE__ */jsx20(View17, {
             testID: `board-unread-${board.id}`,
             accessibilityLabel: `${board.unreadUpdateCount} \u5904\u672A\u770B\u66F4\u65B0`,
             style: {
@@ -14735,7 +14973,7 @@ function BoardIndex({
               paddingVertical: 3,
               borderRadius: 12
             },
-            children: /* @__PURE__ */jsxs16(Text12, {
+            children: /* @__PURE__ */jsxs17(Text13, {
               style: {
                 color: c.accentForeground,
                 fontSize: 12,
@@ -14744,32 +14982,32 @@ function BoardIndex({
               children: [board.unreadUpdateCount, " \u66F4\u65B0"]
             })
           }) : null]
-        }), /* @__PURE__ */jsxs16(Copy, {
+        }), /* @__PURE__ */jsxs17(Copy, {
           muted: true,
           small: true,
           children: [board.decisionCount, " \u4E2A agent \u51B3\u7B56 \xB7 ", board.pendingCount, " \u4E2A\u5F85\u843D\u5B9E\u4EA4\u6D41"]
-        }), /* @__PURE__ */jsxs16(Copy, {
+        }), /* @__PURE__ */jsxs17(Copy, {
           muted: true,
           small: true,
           children: ["\u66F4\u65B0\u4E8E ", timeLabel(board.updatedAt)]
         })]
       }, board.id))]
-    }), /* @__PURE__ */jsx19(Modal3, {
+    }), /* @__PURE__ */jsx20(Modal3, {
       title: "\u65B0\u5EFA Board",
       open: creating,
       onOpenChange: open => {
         if (!pending) setCreating(open);
       },
-      children: /* @__PURE__ */jsx19(Modal3.Content, {
-        children: /* @__PURE__ */jsx19(ColorContext.Provider, {
+      children: /* @__PURE__ */jsx20(Modal3.Content, {
+        children: /* @__PURE__ */jsx20(ColorContext.Provider, {
           value: c,
-          children: /* @__PURE__ */jsxs16(View16, {
+          children: /* @__PURE__ */jsxs17(View17, {
             style: {
               gap: 16
             },
-            children: [/* @__PURE__ */jsx19(Copy, {
+            children: [/* @__PURE__ */jsx20(Copy, {
               children: "\u5173\u8054\u8D1F\u8D23\u7684 agent\u3002\u753B\u5E03\u5185\u5BB9\u548C\u5E03\u5C40\u7531\u5B83\u968F\u4EFB\u52A1\u81EA\u7531\u6784\u5EFA\u3002"
-            }), /* @__PURE__ */jsx19(TextInput9, {
+            }), /* @__PURE__ */jsx20(TextInput9, {
               value: title,
               onChangeText: setTitle,
               editable: !pending,
@@ -14784,17 +15022,17 @@ function BoardIndex({
                 borderRadius: 8,
                 padding: 12
               }
-            }), /* @__PURE__ */jsx19(Copy, {
+            }), /* @__PURE__ */jsx20(Copy, {
               muted: true,
               small: true,
               children: "\u8D1F\u8D23\u7684 agent"
-            }), agents.error ? /* @__PURE__ */jsx19(Notice, {
+            }), agents.error ? /* @__PURE__ */jsx20(Notice, {
               error: true,
               text: errorMessage(agents.error)
-            }) : null, agents.isPending ? /* @__PURE__ */jsx19(Copy, {
+            }) : null, agents.isPending ? /* @__PURE__ */jsx20(Copy, {
               muted: true,
               children: "\u8BFB\u53D6\u4F1A\u8BDD\u2026"
-            }) : null, /* @__PURE__ */jsx19(ScrollView10, {
+            }) : null, /* @__PURE__ */jsx20(ScrollView10, {
               style: {
                 maxHeight: 250
               },
@@ -14803,26 +15041,26 @@ function BoardIndex({
               },
               children: agents.data?.entries.filter(entry => entry.agent.status !== "closed" && (!workspaceId || entry.agent.workspaceId === workspaceId)).map(({
                 agent
-              }) => /* @__PURE__ */jsx19(Action, {
+              }) => /* @__PURE__ */jsx20(Action, {
                 label: agent.title || `Agent ${agent.id.slice(0, 8)}`,
                 active: owner === agent.id,
                 disabled: pending,
                 onPress: () => setOwner(agent.id)
               }, agent.id))
-            }), failure ? /* @__PURE__ */jsx19(Notice, {
+            }), failure ? /* @__PURE__ */jsx20(Notice, {
               error: true,
               text: failure
-            }) : null, /* @__PURE__ */jsxs16(View16, {
+            }) : null, /* @__PURE__ */jsxs17(View17, {
               style: {
                 flexDirection: "row",
                 justifyContent: "flex-end",
                 gap: 8
               },
-              children: [/* @__PURE__ */jsx19(Action, {
+              children: [/* @__PURE__ */jsx20(Action, {
                 label: "\u53D6\u6D88",
                 disabled: pending,
                 onPress: () => setCreating(false)
-              }), /* @__PURE__ */jsx19(Action, {
+              }), /* @__PURE__ */jsx20(Action, {
                 label: pending ? "\u521B\u5EFA\u4E2D\u2026" : "\u521B\u5EFA",
                 primary: true,
                 disabled: pending || !owner || !title.trim(),
@@ -14953,9 +15191,9 @@ function contributeBoardPill(client) {
 }
 
 // index.client.tsx
-import { jsx as jsx20 } from "react/jsx-runtime";
+import { jsx as jsx21 } from "react/jsx-runtime";
 function Screen(props) {
-  return /* @__PURE__ */jsx20(BoardHome, {
+  return /* @__PURE__ */jsx21(BoardHome, {
     ...props,
     initialBoardId: props.params.boardId,
     entryScope: {
@@ -14966,7 +15204,7 @@ function Screen(props) {
 }
 function AgentPanel(props) {
   var agentId = props.params?.agentId ?? props.agentId;
-  return /* @__PURE__ */jsx20(BoardHome, {
+  return /* @__PURE__ */jsx21(BoardHome, {
     ...props,
     agentId,
     entryScope: {
@@ -14978,7 +15216,7 @@ function AgentPanel(props) {
   });
 }
 function WorkspacePanel(props) {
-  return /* @__PURE__ */jsx20(BoardHome, {
+  return /* @__PURE__ */jsx21(BoardHome, {
     ...props,
     entryScope: {
       hostId: props.host.id,
@@ -14988,7 +15226,7 @@ function WorkspacePanel(props) {
   });
 }
 function Sidebar(props) {
-  return /* @__PURE__ */jsx20(SidebarRow, {
+  return /* @__PURE__ */jsx21(SidebarRow, {
     label: "Boards",
     icon: "PanelsTopLeft",
     active: props.currentScreen?.screenId === "boards",
@@ -15002,20 +15240,20 @@ function contribute(client) {
   var removers = [client.addScreen({
     id: "boards",
     title: "Boards",
-    Component: props => /* @__PURE__ */jsx20(BoardInstallationProvider, {
+    Component: props => /* @__PURE__ */jsx21(BoardInstallationProvider, {
       installation,
       host: props.host,
-      children: /* @__PURE__ */jsx20(Screen, {
+      children: /* @__PURE__ */jsx21(Screen, {
         ...props
       })
     })
   }), client.addSidebarHeaderItem({
     id: "boards",
     title: "Boards",
-    Component: props => /* @__PURE__ */jsx20(BoardInstallationProvider, {
+    Component: props => /* @__PURE__ */jsx21(BoardInstallationProvider, {
       installation,
       host: props.host,
-      children: /* @__PURE__ */jsx20(Sidebar, {
+      children: /* @__PURE__ */jsx21(Sidebar, {
         ...props
       })
     })
@@ -15024,10 +15262,10 @@ function contribute(client) {
     title: "Boards",
     icon: "PanelsTopLeft",
     locations: ["workspace", "explorer"],
-    Component: props => /* @__PURE__ */jsx20(BoardInstallationProvider, {
+    Component: props => /* @__PURE__ */jsx21(BoardInstallationProvider, {
       installation,
       host: props.host,
-      children: /* @__PURE__ */jsx20(AgentPanel, {
+      children: /* @__PURE__ */jsx21(AgentPanel, {
         ...props
       })
     })
@@ -15036,10 +15274,10 @@ function contribute(client) {
     title: "Boards",
     icon: "PanelsTopLeft",
     locations: ["workspace", "explorer"],
-    Component: props => /* @__PURE__ */jsx20(BoardInstallationProvider, {
+    Component: props => /* @__PURE__ */jsx21(BoardInstallationProvider, {
       installation,
       host: props.host,
-      children: /* @__PURE__ */jsx20(WorkspacePanel, {
+      children: /* @__PURE__ */jsx21(WorkspacePanel, {
         ...props
       })
     })
