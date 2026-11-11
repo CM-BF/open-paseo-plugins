@@ -3,9 +3,11 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { BoardStore } from "./store";
-import { BoardService } from "./service";
+import { BoardService, INHERITED_HISTORY_PROMPT } from "./service";
 import { ServiceJournal, deliveryKey } from "./journal";
-import type { Paseo, Snapshot, TimelineEntry, TimelinePage } from "./sdk";
+import { discussionConfig, INHERITED_HISTORY_SYSTEM_NOTE, type Paseo, type Snapshot, type TimelineEntry, type TimelinePage } from "./sdk";
+import { createHash } from "node:crypto";
+import { TextAttachmentSchema } from "@getpaseo/protocol/messages";
 import { extractCandidates } from "./extraction";
 import type { InteractInput } from "../shared/contracts";
 
@@ -24,6 +26,8 @@ function canvasBase(board: { canvas: { revision: number; documentVersion: number
 
 function fakeSdk() {
   const histories = new Map<string, TimelineEntry[]>();
+  const epochs = new Map<string, string>();
+  const pageHooks = new Map<string, (options: { direction?: string; cursor?: { seq: number }; limit?: number; projection?: string }) => TimelinePage | undefined>();
   const snapshots = new Map<string, Snapshot>();
   const subscribers = new Map<string, (value: unknown) => void>();
   const snapshot = (id: string) => ({ id, provider: "codex", model: "example-model", cwd: "/tmp/board-fixture", workspaceId: "wks_0123456789abcdef", status: "idle", pendingPermissions: [], activeTurn: null, thinkingOptionId: "high", currentModeId: "auto-review", features: [{ type: "select", id: "service_tier", value: "priority", label: "Speed", options: [] }, { type: "toggle", id: "plan_mode", value: false, label: "Plan" }], archivedAt: null } as unknown as Snapshot);
@@ -48,7 +52,15 @@ function fakeSdk() {
         subscribe: vi.fn((callback: (value: unknown) => void) => {
           subscribers.set(id, callback); const off = Object.assign(() => subscribers.delete(id), { ready: Promise.resolve(), release: async () => { subscribers.delete(id); } }); return off;
         }),
-        refetch: vi.fn(async (options: { cursor?: { seq: number } }) => {
+        refetch: vi.fn(async (options: { direction?: string; cursor?: { seq: number }; limit?: number; projection?: string }) => {
+          const hooked = pageHooks.get(id)?.(options); if (hooked) return hooked;
+          if (options.projection === "projected") {
+            // Owner-history capture pages backwards; readHistory keeps the canonical behaviour below.
+            const all = histories.get(id) ?? [], epoch = epochs.get(id) ?? "epoch-1";
+            const older = options.direction === "before" ? all.filter((entry) => entry.seqEnd < options.cursor!.seq) : all;
+            const entries = options.limit ? older.slice(-options.limit) : older;
+            return { entries, epoch, reset: false, staleCursor: false, hasOlder: older.length > entries.length, hasNewer: false, window: { minSeq: all[0]?.seqStart ?? 1, maxSeq: all.at(-1)?.seqEnd ?? 0, nextSeq: (all.at(-1)?.seqEnd ?? 0) + 1 }, startCursor: entries.length ? { epoch, seq: entries[0].seqStart } : null, endCursor: entries.length ? { epoch, seq: entries.at(-1)!.seqEnd } : null, error: null } as unknown as TimelinePage;
+          }
           const entries = (histories.get(id) ?? []).filter((entry) => entry.seqEnd > (options.cursor?.seq ?? 0));
           return { entries, epoch: "epoch-1", reset: false, staleCursor: false, hasOlder: false, hasNewer: false, endCursor: entries.length ? { epoch: "epoch-1", seq: entries.at(-1)!.seqEnd } : null, error: null } as TimelinePage;
         }),
@@ -57,7 +69,7 @@ function fakeSdk() {
   };
   const create = vi.fn(async (_options: Record<string, unknown>) => ref("fork-agent"));
   const api = { agents: { ref, create }, workspaces: { ref: () => ({ agents: { create } }) }, providers: { listModes: vi.fn(async () => ({ modes: [{ id: "plan_mode", label: "Plan" }] })) } } as unknown as Paseo;
-  return { api, append, snapshots, subscribers, send, sends, create, histories };
+  return { api, append, snapshots, subscribers, send, sends, create, histories, epochs, pageHooks };
 }
 
 describe("BoardService SDK adapter", () => {
@@ -1151,6 +1163,234 @@ describe("BoardService SDK adapter", () => {
     const ending = service.onTurnEnded("owner"); await paused;
     await service.interact({ boardId: "board", intentId: "third", kind: "question", text: "Third" }); await service.drain(); resume(); await ending; await service.drain();
     expect(sdk.sends[1]?.text).toContain("intent=second]"); expect(sdk.sends).toHaveLength(2);
+  });
+});
+
+describe("Side creation with the owner's history", () => {
+  let dir: string; let store: BoardStore; let journal: ServiceJournal; let service: BoardService; let sdk: ReturnType<typeof fakeSdk>; let logs: string[];
+  const start = () => { service = new BoardService(store, journal, (message) => logs.push(message)); service.capture(sdk.api); };
+  const restart = async () => { await service.dispose(); journal = new ServiceJournal(join(dir, "service.json")); await journal.init(); start(); };
+  const ownerRefetch = () => (sdk.api.agents.ref("owner") as unknown as { timeline: { refetch: { mock: { calls: Array<[Record<string, unknown>]> } } } }).timeline.refetch;
+  const captureCalls = () => ownerRefetch().mock.calls.filter(([options]) => options?.projection === "projected");
+  const interaction = async (id: string) => (await store.read("board"))!.interactions.find((item) => item.id === id)!;
+  const historySide = (intentId: string, destination: "side" | "new-side" = "new-side", text = "这里为什么这样算？") => service.interact({ boardId: "board", intentId, kind: "question", destination, text, sideContext: "owner-history" });
+  const attachment = (send = sdk.sends.at(-1)!) => (send.options.attachments as Array<Record<string, string>> | undefined)?.[0];
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "board-side-history-")); store = new BoardStore(dir); await store.init(); journal = new ServiceJournal(join(dir, "service.json")); await journal.init();
+    sdk = fakeSdk(); logs = []; start();
+    await store.create({ id: "board", title: "自由画布", ownerAgentId: "owner", workspaceId: "wks_0123456789abcdef", html: '<main id="formula">E = mc^2</main>' });
+  });
+  afterEach(async () => { await service.dispose(); await rm(dir, { recursive: true, force: true }); });
+
+  it("keeps a blank Side byte-identical: no history read, no attachment, unchanged prompts", async () => {
+    sdk.append("owner", { type: "user_message", text: "Earlier owner chat" });
+    await service.interact({ boardId: "board", intentId: "blank", kind: "question", destination: "new-side", text: "Blank question" }); await service.drain();
+    expect(sdk.create).toHaveBeenCalledTimes(1); expect(captureCalls()).toHaveLength(0);
+    expect(Object.keys(sdk.sends[0].options).sort()).toEqual(["activeTurnBehavior", "images", "messageId"]);
+    expect(sdk.sends[0].text).not.toContain(INHERITED_HISTORY_PROMPT.trim()); expect(sdk.sends[0].text).not.toContain("Earlier owner chat");
+    const config = (sdk.create.mock.calls[0][0] as { config: { systemPrompt: string } }).config;
+    expect(config).toEqual(await discussionConfig(sdk.api, sdk.snapshots.get("owner")!)); expect(config.systemPrompt).not.toContain("chat_history");
+    expect(journal.get("board/blank")!.history).toBeUndefined();
+    const saved = await interaction("blank"); expect(saved.sideContext).toBeUndefined(); expect(saved.inheritedHistory).toBeUndefined();
+    // An explicit blank choice is accepted, kept for audit and still attaches nothing.
+    await service.interact({ boardId: "board", intentId: "blank-explicit", kind: "question", destination: "new-side", text: "Explicit blank", sideContext: "blank" }); await service.drain();
+    expect(sdk.sends.at(-1)!.options).not.toHaveProperty("attachments"); expect((await interaction("blank-explicit")).sideContext).toBe("blank");
+  });
+
+  it("attaches a native chat_history snapshot with Board questions, anchors and the Board's own answers", async () => {
+    const board = (await store.read("board"))!;
+    const anchor = { kind: "text" as const, text: "E = mc^2", selector: "#formula", boardRevision: board.revision, canvasRevision: board.canvas.revision };
+    await service.interact({ boardId: "board", intentId: "main-1", kind: "question", destination: "main", text: "为什么用这个公式？", anchor }); await service.drain();
+    sdk.append("owner", { type: "tool_call", callId: "c1", name: "mcp__paseo_board__board_respond", status: "completed", error: null, detail: { type: "unknown", input: { response: "SECRET_TOOL_INPUT" }, output: { ok: "SECRET_TOOL_OUTPUT" } } } as TimelineEntry["item"]);
+    await store.respond({ boardId: "board", interactionId: "main-1", eventId: "answer-1", expectedResponseRevision: 0, response: "因为质能等价，这里用它估算能量。" });
+    sdk.append("owner", { type: "assistant_message", text: "已在画布上补充说明。" });
+    sdk.append("owner", { type: "reasoning", text: "HIDDEN_REASONING" });
+    sdk.append("owner", { type: "tool_call", callId: "c2", name: "Bash", status: "completed", error: null, detail: { type: "shell", command: "npm test", output: "SHELL_OUTPUT" } } as TimelineEntry["item"]);
+    sdk.append("owner", { type: "user_message", text: "顺便记住单位用焦耳" });
+    await historySide("fork-h"); await service.drain();
+    const sent = sdk.sends.at(-1)!; expect(sent.id).toBe("fork-agent");
+    const parsed = TextAttachmentSchema.parse(attachment());
+    expect(parsed).toMatchObject({ type: "text", mimeType: "text/plain", contextKind: "chat_history", title: "Chat history" });
+    const text = parsed.text;
+    expect(text.startsWith("<chat-history-summary>\nChat history from a previous Paseo agent.")).toBe(true);
+    for (const expected of ['[User via Board] 为什么用这个公式？ (selected: "E = mc^2" at #formula)', "[Board answer · main-1 · answered] 因为质能等价，这里用它估算能量。", "[board_respond]", "[Assistant] 已在画布上补充说明。", "[Shell] npm test", "[User] 顺便记住单位用焦耳", "Source directory: /tmp/board-fixture"]) expect(text).toContain(expected);
+    for (const hidden of ["SECRET_TOOL_INPUT", "SECRET_TOOL_OUTPUT", "HIDDEN_REASONING", "SHELL_OUTPUT", "<board-context-untrusted-json>", "first reply onward"]) expect(text).not.toContain(hidden);
+    expect(sent.text).toContain(INHERITED_HISTORY_PROMPT.trim()); expect(sent.text.startsWith("[paseo-board board=board intent=fork-h]")).toBe(true);
+    expect((sdk.create.mock.calls[0][0] as { config: { systemPrompt: string } }).config.systemPrompt).toContain(INHERITED_HISTORY_SYSTEM_NOTE.trim());
+    const saved = await interaction("fork-h");
+    expect(saved).toMatchObject({ kind: "fork", sideContext: "owner-history", inheritedHistory: { sourceAgentId: "owner", messages: 4, entries: 6, omitted: false, ownerBusy: false, chars: text.length, digest: createHash("sha256").update(text).digest("hex"), state: "sent" } });
+    expect(journal.get("board/fork-h")!.history).toMatchObject({ digest: saved.inheritedHistory!.digest }); expect(journal.get("board/fork-h")!.history!.text).toBeUndefined();
+    expect(JSON.stringify(await store.read("board"))).not.toContain("顺便记住单位用焦耳");
+  });
+
+  it("freezes the payload across a lost create response and a restart, and never re-reads the owner", async () => {
+    sdk.append("owner", { type: "assistant_message", text: "Before the snapshot" });
+    sdk.create.mockRejectedValueOnce(new Error("create response lost"));
+    await historySide("fork-lost"); await service.drain();
+    expect(journal.get("board/fork-lost")).toMatchObject({ state: "creating", history: { text: expect.stringContaining("Before the snapshot") } });
+    expect((await interaction("fork-lost")).inheritedHistory).toMatchObject({ state: "frozen" });
+    const firstText = journal.get("board/fork-lost")!.history!.text!, captures = captureCalls().length;
+    sdk.append("owner", { type: "assistant_message", text: "AFTER_THE_SNAPSHOT" });
+    await restart(); await service.reconcile(); await service.drain();
+    expect(sdk.create).toHaveBeenCalledTimes(2); expect(sdk.create.mock.calls[1][0]).toEqual(sdk.create.mock.calls[0][0]);
+    expect(captureCalls()).toHaveLength(captures);
+    expect(attachment()!.text).toBe(firstText); expect(firstText).not.toContain("AFTER_THE_SNAPSHOT");
+    expect((await interaction("fork-lost")).inheritedHistory).toMatchObject({ state: "sent" });
+  });
+
+  it("sends the same frozen text after assignFork when the new Side was busy across a restart", async () => {
+    sdk.append("owner", { type: "user_message", text: "Original owner question" });
+    sdk.snapshots.set("fork-agent", { ...sdk.snapshots.get("fork-agent")!, status: "running" });
+    await historySide("fork-busy"); await service.drain();
+    expect(journal.get("board/fork-busy")).toMatchObject({ state: "saved", targetAgentId: "fork-agent", history: { text: expect.stringContaining("Original owner question") } });
+    expect(sdk.sends).toHaveLength(0);
+    const frozen = journal.get("board/fork-busy")!.history!.text!, captures = captureCalls().length;
+    sdk.append("owner", { type: "user_message", text: "LATER_OWNER_MESSAGE" });
+    sdk.snapshots.set("fork-agent", { ...sdk.snapshots.get("fork-agent")!, status: "idle" });
+    await restart(); await service.reconcile(); await service.drain();
+    expect(attachment()!.text).toBe(frozen); expect(captureCalls()).toHaveLength(captures); expect(sdk.create).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([["archived", () => ({ archivedAt: "2026-11-11T00:00:00.000Z" })], ["missing", null]] as const)("fails clearly when the owner is %s, never falls back to blank, and releases the Side reservation", async (_name, change) => {
+    if (change) sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, ...change() } as Snapshot); else sdk.snapshots.delete("owner");
+    await historySide("fork-gone", "side"); await service.drain();
+    expect(sdk.create).not.toHaveBeenCalled(); expect(sdk.sends).toEqual([]);
+    const failed = await interaction("fork-gone");
+    expect(failed).toMatchObject({ status: "failed", sideContext: "owner-history" }); expect(failed.inheritedHistory).toBeUndefined();
+    expect(failed.error).toContain("没有改成空白 Side"); expect(failed.error).toContain("请重新发送");
+    expect((await store.read("board"))!.pendingSideInteractionId).toBeUndefined(); expect(journal.sideRoute("board")!.pendingInteractionId).toBeUndefined();
+  });
+
+  it("a failed history read releases the reservation so the next Side send creates a fresh Side", async () => {
+    sdk.append("owner", { type: "assistant_message", text: "Owner context" });
+    sdk.pageHooks.set("owner", (options) => options.projection === "projected" ? { entries: [], epoch: "epoch-1", reset: false, staleCursor: false, hasOlder: false, hasNewer: false, startCursor: null, endCursor: null, error: "timeline unavailable" } as unknown as TimelinePage : undefined);
+    await historySide("fork-error", "side"); await service.drain();
+    expect(sdk.create).not.toHaveBeenCalled();
+    expect((await interaction("fork-error")).error).toContain("读取主 agent 记录失败：timeline unavailable");
+    expect((await store.read("board"))!.pendingSideInteractionId).toBeUndefined();
+    sdk.pageHooks.delete("owner");
+    expect(await historySide("fork-retry", "side")).toMatchObject({ kind: "fork" }); await service.drain();
+    expect(sdk.create).toHaveBeenCalledTimes(1); expect(attachment()!.text).toContain("[Assistant] Owner context");
+    expect((await store.read("board"))!.sideAgentId).toBe("fork-agent");
+  });
+
+  it("a blank creation failure with an archived owner also releases the reservation and keeps the earlier Side selected", async () => {
+    await store.addInteraction({ boardId: "board", intentId: "earlier-fork", kind: "fork", text: "Earlier side" }, "earlier-side");
+    await service.selectSideAgent({ boardId: "board", agentId: "earlier-side", expectedRevision: (await store.read("board"))!.revision, eventId: "choose-earlier" });
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, archivedAt: "2026-11-11T00:00:00.000Z" } as Snapshot);
+    await service.interact({ boardId: "board", intentId: "blank-gone", kind: "question", destination: "new-side", text: "Blank but owner gone" }); await service.drain();
+    expect((await interaction("blank-gone")).error).toBe("负责人已归档或不可用，无法创建讨论分支。");
+    const board = (await store.read("board"))!; expect(board.pendingSideInteractionId).toBeUndefined(); expect(board.sideAgentId).toBe("earlier-side");
+  });
+
+  it("self-heals a reservation that an older build left on a failed uncreated fork", async () => {
+    await journal.prepare({ boardId: "board", interactionId: "stuck", ownerAgentId: "owner", kind: "fork", prompt: "x", state: "failed", error: "old failure", input: { boardId: "board", intentId: "stuck", kind: "fork", destination: "side", text: "Stuck" } }, true);
+    await store.addInteraction({ boardId: "board", intentId: "stuck", kind: "fork", destination: "side", text: "Stuck" });
+    expect(journal.sideRoute("board")!.pendingInteractionId).toBe("stuck");
+    expect(await service.interact({ boardId: "board", intentId: "after-stuck", kind: "question", destination: "side", text: "Works again" })).toMatchObject({ kind: "fork" }); await service.drain();
+    expect(sdk.create).toHaveBeenCalledTimes(1); expect((await interaction("after-stuck")).status).toBe("delivered");
+  });
+
+  it("snapshots a busy owner immediately, including its in-flight turn", async () => {
+    sdk.append("owner", { type: "user_message", text: "Long running request" });
+    sdk.append("owner", { type: "assistant_message", text: "Partial answer so far" });
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, status: "running", activeTurn: { turnId: "t1", startedAt: null } } as unknown as Snapshot);
+    await historySide("fork-busy-owner"); await service.drain();
+    expect(attachment()!.text).toContain("[Assistant] Partial answer so far"); expect(attachment()!.text).toContain("the owner was mid-turn");
+    expect((await interaction("fork-busy-owner")).inheritedHistory).toMatchObject({ ownerBusy: true, state: "sent" });
+  });
+
+  it("still attaches the native empty-history text for an owner without history", async () => {
+    await historySide("fork-empty"); await service.drain();
+    expect(attachment()!.text).toContain("No chat history to display."); expect(sdk.sends.at(-1)!.text).toContain(INHERITED_HISTORY_PROMPT.trim());
+    expect((await interaction("fork-empty")).inheritedHistory).toMatchObject({ entries: 0, messages: 0, omitted: false, state: "sent" });
+  });
+
+  it("bounds a long owner history to the newest 100,000 characters with paged reads", async () => {
+    for (let index = 0; index < 300; index++) sdk.append("owner", { type: "assistant_message", text: `row-${String(index).padStart(3, "0")} ${"x".repeat(400)}` });
+    await historySide("fork-long"); await service.drain();
+    const text = attachment()!.text;
+    expect(text.length).toBeLessThanOrEqual(100_000); expect(text).toContain("[Earlier chat history omitted]");
+    expect(text).toContain("row-299"); expect(text).not.toContain("row-000 ");
+    // Three pages exceed the curated budget, so paging stops there.
+    const calls = captureCalls(); expect(calls).toHaveLength(3);
+    expect(calls.slice(1).every(([options]) => options.direction === "before" && options.limit === 100)).toBe(true);
+    expect((await interaction("fork-long")).inheritedHistory).toMatchObject({ omitted: true, chars: text.length });
+  });
+
+  it("restarts the capture once after a timeline replacement and fails on a second replacement", async () => {
+    for (let index = 0; index < 150; index++) sdk.append("owner", { type: "assistant_message", text: `message ${index}` });
+    let replacements = 1;
+    sdk.pageHooks.set("owner", (options) => {
+      if (options.direction !== "before" || replacements <= 0) return undefined;
+      replacements--; sdk.epochs.set("owner", `epoch-${replacements + 2}`); return undefined;
+    });
+    await historySide("fork-replaced-once"); await service.drain();
+    expect(attachment()!.text).toContain("message 0"); expect((await interaction("fork-replaced-once")).inheritedHistory).toMatchObject({ state: "sent" });
+    let epoch = 10; sdk.pageHooks.set("owner", (options) => { if (options.direction === "before") sdk.epochs.set("owner", `epoch-${++epoch}`); return undefined; });
+    const sends = sdk.sends.length;
+    await historySide("fork-replaced-twice"); await service.drain();
+    expect((await interaction("fork-replaced-twice")).error).toContain("主 agent 记录在读取时被替换"); expect(sdk.sends).toHaveLength(sends); expect(sdk.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("never applies the choice to an existing Side and keeps retries exact", async () => {
+    await service.interact({ boardId: "board", intentId: "first-side", kind: "question", destination: "side", text: "Blank first Side" }); await service.drain();
+    sdk.append("fork-agent", { type: "assistant_message", text: "First Side answer" }); await service.onTurnEnded("fork-agent");
+    sdk.append("owner", { type: "user_message", text: "Owner context" });
+    expect(await historySide("to-existing", "side")).toMatchObject({ kind: "reply", agentId: "fork-agent" }); await service.drain();
+    expect(sdk.create).toHaveBeenCalledTimes(1); expect(sdk.sends.at(-1)!.options).not.toHaveProperty("attachments"); expect(captureCalls()).toHaveLength(0);
+    const reply = await interaction("to-existing"); expect(reply.sideContext).toBeUndefined(); expect(reply.inheritedHistory).toBeUndefined();
+    expect(sdk.sends.at(-1)!.text).not.toContain(INHERITED_HISTORY_PROMPT.trim());
+    // The raw request (with its choice) is the retry identity even though the reply dropped it.
+    await historySide("to-existing", "side"); await service.drain(); expect(sdk.sends).toHaveLength(2);
+    await expect(service.interact({ boardId: "board", intentId: "to-existing", kind: "question", destination: "side", text: "这里为什么这样算？" })).rejects.toHaveProperty("code", "idempotency_conflict");
+    await expect(service.interact({ boardId: "board", intentId: "main-choice", kind: "question", destination: "main", text: "Main", sideContext: "owner-history" })).rejects.toThrow("sideContext applies only");
+  });
+
+  it("recovers an old-version saved interaction with its choice and still sends history", async () => {
+    sdk.append("owner", { type: "assistant_message", text: "Recovered context" });
+    await store.addInteraction({ boardId: "board", intentId: "recover", kind: "fork", destination: "new-side", text: "Recovered fork", sideContext: "owner-history" });
+    await service.reconcile(); await service.drain();
+    expect(journal.get("board/recover")!.input).toMatchObject({ sideContext: "owner-history" });
+    expect(attachment()!.text).toContain("Recovered context"); expect((await interaction("recover")).inheritedHistory).toMatchObject({ state: "sent" });
+  });
+
+  it("reports an uncertain first send honestly and promotes it only on timeline evidence", async () => {
+    sdk.send.mockRejectedValueOnce(new Error("socket closed"));
+    await historySide("fork-unknown"); await service.drain();
+    expect(journal.get("board/fork-unknown")).toMatchObject({ state: "unknown" }); expect(journal.get("board/fork-unknown")!.history!.text).toBeUndefined();
+    expect(await interaction("fork-unknown")).toMatchObject({ status: "failed", inheritedHistory: { state: "uncertain" } });
+    // A provider that re-read its history coalesced the attachment into the first user message.
+    const prompt = journal.get("board/fork-unknown")!.prompt;
+    sdk.append("fork-agent", { type: "user_message", text: `<chat-history-summary>\nChat history from a previous Paseo agent.\n\nNo chat history to display.\n</chat-history-summary>\n\n${prompt}` });
+    sdk.append("fork-agent", { type: "assistant_message", text: "Answer after replay" });
+    await service.syncHistory("fork-agent"); await service.drain();
+    expect(journal.get("board/fork-unknown")!.state).toBe("delivered");
+    expect(await interaction("fork-unknown")).toMatchObject({ status: "processing", response: "Answer after replay", inheritedHistory: { state: "sent" } });
+  });
+
+  it("marks a send interrupted by a restart as uncertain and compacts the text", async () => {
+    await historySide("fork-restart"); await service.drain();
+    // Simulate a crash after the sending write and before the native acknowledgement.
+    await journal.patch("board/fork-restart", { state: "sending", history: { ...journal.get("board/fork-restart")!.history!, text: "pending text" } });
+    expect(journal.get("board/fork-restart")!.history!.text).toBe("pending text");
+    await restart(); expect(journal.get("board/fork-restart")).toMatchObject({ state: "unknown" }); expect(journal.get("board/fork-restart")!.history!.text).toBeUndefined();
+    await service.reconcile(); await service.drain();
+    expect((await interaction("fork-restart")).inheritedHistory).toMatchObject({ state: "uncertain" });
+  });
+
+  it("compacts the text when a pending history Side is settled or its Board is replaced", async () => {
+    sdk.snapshots.set("fork-agent", { ...sdk.snapshots.get("fork-agent")!, status: "running" });
+    await service.interact({ boardId: "board", expectedCreatedAt: (await store.read("board"))!.createdAt, intentId: "fork-settle", kind: "question", destination: "new-side", text: "Pending history Side", sideContext: "owner-history" }); await service.drain();
+    expect(journal.get("board/fork-settle")!.history!.text).toBeDefined();
+    await journal.settleUnsent("board/fork-settle"); expect(journal.get("board/fork-settle")!.history!.text).toBeUndefined();
+    await journal.patch("board/fork-settle", { state: "saved", history: { ...journal.get("board/fork-settle")!.history!, text: "again" } });
+    const path = join(dir, "boards", "board.json"), envelope = JSON.parse(await readFile(path, "utf8"));
+    envelope.board.createdAt = new Date(Date.parse(envelope.board.createdAt) + 1000).toISOString(); await writeFile(path, JSON.stringify(envelope));
+    sdk.snapshots.set("fork-agent", { ...sdk.snapshots.get("fork-agent")!, status: "idle" });
+    await service.reconcile(); await service.drain();
+    expect(journal.get("board/fork-settle")).toMatchObject({ state: "failed" }); expect(journal.get("board/fork-settle")!.history!.text).toBeUndefined();
+    expect(journal.get("board/fork-settle")!.history!.digest).toMatch(/^[a-f0-9]{64}$/);
   });
 });
 

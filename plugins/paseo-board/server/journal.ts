@@ -11,6 +11,25 @@ export interface CreationSpec {
   labels: Record<string, string>; workspaceId?: string; cwd: string;
 }
 
+/**
+ * The owner's history frozen for a new Side. Metadata (and the digest) stays for provenance;
+ * `text` is the chat_history attachment and exists only while the first send can still happen.
+ */
+export interface HistorySnapshot {
+  sourceAgentId: string;
+  capturedAt: string;
+  messages: number;
+  entries: number;
+  omitted: boolean;
+  ownerBusy: boolean;
+  chars: number;
+  /** sha256 of the attachment text, kept after the text is compacted away. */
+  digest: string;
+  text?: string;
+}
+/** States in which a delivery may still create or send; only these keep snapshot text. */
+export const SENDABLE_STATES: ReadonlySet<Delivery["state"]> = new Set(["saved", "creating", "sending"]);
+
 export interface Delivery {
   boardId: string;
   interactionId: string;
@@ -25,6 +44,8 @@ export interface Delivery {
   sourceSnapshot?: Interaction["sourceSnapshot"];
   waitForSideInteractionId?: string;
   creationSpec?: CreationSpec;
+  /** Frozen with creationSpec in the same write, before create; never passed to create. */
+  history?: HistorySnapshot;
   state: "saved" | "creating" | "sending" | "delivered" | "unknown" | "failed" | "settled";
   awaitingTurn?: boolean;
   needsRecovery?: boolean;
@@ -63,11 +84,14 @@ export class ServiceJournal {
         if (delivery.state === "sending") { delivery.state = "unknown"; delivery.error = "投递时服务中断，送达结果未知；请在原会话核对。"; }
         if (delivery.awaitingTurn && !delivery.outcome) delivery.needsRecovery = true;
       }
+      this.compact();
       await this.flush();
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
   get(id: string): Delivery | undefined { const value = this.data.deliveries[id]; return value && structuredClone(value); }
   all(): Delivery[] { return structuredClone(Object.values(this.data.deliveries)); }
+  /** Reads a projection of one delivery without cloning its prompt and images. */
+  peek<T>(id: string, read: (delivery: Readonly<Delivery>) => T): T | undefined { const value = this.data.deliveries[id]; return value && read(value); }
   binding(token: string): Binding | undefined { return this.data.bindings[token] && { ...this.data.bindings[token] }; }
   tokenFor(agentId: string): string | undefined { return Object.entries(this.data.bindings).find(([, binding]) => binding.agentId === agentId)?.[0]; }
   cursor(agentId: string): Cursor | undefined { return this.data.cursors[agentId]; }
@@ -110,6 +134,26 @@ export class ServiceJournal {
     });
     return this.get(key)!;
   }
+  /** A fork that never reached `creating` releases its pending-Side reservation in the same write. */
+  async failUncreatedFork(key: string, error: string): Promise<Delivery> {
+    await this.change(() => {
+      const delivery = this.data.deliveries[key];
+      if (!delivery) throw new Error("Delivery record not found");
+      if (delivery.kind !== "fork" || delivery.targetAgentId || !["saved", "failed"].includes(delivery.state)) throw new Error("Only an uncreated fork can release its Side reservation");
+      Object.assign(delivery, { state: "failed", error, awaitingTurn: false, needsRecovery: false });
+      this.releaseReservation(delivery.boardId, delivery.interactionId);
+    });
+    return this.get(key)!;
+  }
+  /** Repairs a reservation left by an older build whose uncreated origin already failed or settled. */
+  async releaseSide(boardId: string, interactionId: string): Promise<void> {
+    await this.change(() => { this.releaseReservation(boardId, interactionId); });
+  }
+  private releaseReservation(boardId: string, interactionId: string): void {
+    const route = this.data.sideRoutes[boardId];
+    // Restore the previously selected Side (if any); the next Side send creates a fresh one.
+    if (route?.pendingInteractionId === interactionId) this.data.sideRoutes[boardId] = { ...(route.agentId ? { agentId: route.agentId } : {}), version: route.version + 1 };
+  }
   async put(delivery: Delivery): Promise<void> { await this.change(() => { this.data.deliveries[deliveryKey(delivery.boardId, delivery.interactionId)] = structuredClone(delivery); }); }
   async patch(key: string, update: Partial<Delivery>): Promise<Delivery> {
     await this.change(() => { const current = this.data.deliveries[key]; if (!current) throw new Error("Delivery record not found"); this.data.deliveries[key] = { ...current, ...structuredClone(update) }; });
@@ -141,10 +185,14 @@ export class ServiceJournal {
   private async change(work: () => void): Promise<void> {
     const result = this.tail.then(async () => {
       const previous = structuredClone(this.data);
-      try { work(); await this.flush(); } catch (error) { this.data = previous; throw error; }
+      try { work(); this.compact(); await this.flush(); } catch (error) { this.data = previous; throw error; }
     });
     this.tail = result.catch(() => undefined);
     await result;
+  }
+  /** Snapshot text is only needed until the first send; delivered, unknown, failed and settled are never resent. */
+  private compact(): void {
+    for (const delivery of Object.values(this.data.deliveries)) if (delivery.history?.text !== undefined && !SENDABLE_STATES.has(delivery.state)) delete delivery.history.text;
   }
   private async flush(): Promise<void> {
     const temporary = `${this.file}.${randomUUID()}.tmp`;

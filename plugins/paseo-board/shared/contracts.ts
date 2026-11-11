@@ -197,6 +197,32 @@ export const CanvasUpdateSchema = z.object({
   actorAgentId: z.string().optional(),
 });
 export const DestinationSchema = z.enum(["main", "side", "new-side"]);
+/** What a send that creates a new Side starts with. Absent means blank; the server never defaults to history. */
+export const SideContextSchema = z.enum(["blank", "owner-history"]);
+export type SideContext = z.infer<typeof SideContextSchema>;
+/** User-visible provenance of a Side created with the owner's history. Never contains the history text. */
+export const InheritedHistorySchema = z.object({
+  sourceAgentId: z.string().min(1).max(160),
+  capturedAt: z.string().min(1).max(100),
+  /** User and assistant messages actually included. */
+  messages: z.number().int().nonnegative(),
+  /** All curated lines included, including tool summaries and Board answers. */
+  entries: z.number().int().nonnegative(),
+  /** Older history existed but was not included. */
+  omitted: z.boolean(),
+  /** The owner had an active turn or pending permission at capture. */
+  ownerBusy: z.boolean(),
+  chars: z.number().int().nonnegative(),
+  digest: z.string().regex(/^[a-f0-9]{64}$/),
+  /** Derived from the first-send outcome: provenance never claims history the Side did not receive. */
+  state: z.enum(["frozen", "sent", "uncertain", "not_sent"]),
+});
+export type InheritedHistory = z.infer<typeof InheritedHistorySchema>;
+function validateSideContext(input: { sideContext?: unknown; destination?: string; kind: string }, context: z.RefinementCtx): void {
+  if (input.sideContext === undefined) return;
+  if (input.destination === "side" || input.destination === "new-side" || (!input.destination && input.kind === "fork")) return;
+  context.addIssue({ code: "custom", path: ["sideContext"], message: "sideContext applies only to a send that may create a Side" });
+}
 export const SourceSnapshotSchema = z.object({
   id: IdSchema, text: z.string().max(24000), response: z.string().max(64000).optional(),
   responseRevision: z.number().int().nonnegative(), resultReferences: z.array(z.string()),
@@ -223,6 +249,8 @@ export const InteractionSchema = z.object({
   error: z.string().optional(),
   sourceInteractionId: IdSchema.optional(),
   sourceSnapshot: SourceSnapshotSchema.optional(),
+  sideContext: SideContextSchema.optional(),
+  inheritedHistory: InheritedHistorySchema.optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 }).superRefine(validateCommentContext);
@@ -275,7 +303,7 @@ export const RespondInputSchema = z.object({
   resultReferences: z.array(z.string().max(4000)).max(100).optional(),
 });
 export const EmitInputSchema = z.object({ boardId: IdSchema, eventId: IdSchema, source: z.string().min(1).max(200), kind: z.string().max(200).default("update"), summary: z.string().max(4000), canvasBase: CanvasBaseSchema.optional(), data: JsonDataSchema.optional(), dataPatch: DataPatchesSchema.optional(), focusSelectors: FocusSelectorsSchema.optional(), observation: z.object({ id: IdSchema, name: z.string().max(200), value: z.unknown(), evidence: EvidenceSchema }).optional() });
-export const InteractInputSchema = z.object({ boardId: IdSchema, expectedCreatedAt: z.string().min(1).max(100).optional(), intentId: IdSchema, kind: z.enum(["question", "change", "fork", "return", "reply"]), destination: DestinationSchema.optional(), text: z.string().min(1).max(24000), anchor: AnchorSchema.optional(), comments: CommentsSchema.optional(), sourceInteractionId: IdSchema.optional() }).superRefine(validateCommentContext);
+export const InteractInputSchema = z.object({ boardId: IdSchema, expectedCreatedAt: z.string().min(1).max(100).optional(), intentId: IdSchema, kind: z.enum(["question", "change", "fork", "return", "reply"]), destination: DestinationSchema.optional(), text: z.string().min(1).max(24000), anchor: AnchorSchema.optional(), comments: CommentsSchema.optional(), sourceInteractionId: IdSchema.optional(), sideContext: SideContextSchema.optional() }).superRefine(validateCommentContext).superRefine(validateSideContext);
 export const SelectSideAgentInputSchema = z.object({ boardId: IdSchema, agentId: z.string().min(1).max(160), expectedRevision: z.number().int().nonnegative(), eventId: IdSchema });
 export const RenameInputSchema = z.object({ boardId: IdSchema, expectedTitle: z.string(), title: z.string().trim().min(1).max(200), eventId: IdSchema });
 export const EditInputSchema = z.object({
