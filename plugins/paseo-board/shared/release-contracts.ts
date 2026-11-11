@@ -12,6 +12,8 @@ export const PublicApiOriginSchema = z.string().max(2048).refine(value => {
   } catch { return false; }
 }, "API 地址应为 HTTPS 来源（例如 https://api.example.com），本机测试可用 HTTP loopback；不含路径或凭据");
 export const PublicApiOriginsSchema = z.array(PublicApiOriginSchema).max(8).refine(values => new Set(values).size === values.length, "API 来源不能重复");
+/** A loopback origin resolves to each visitor's own machine, so it only makes sense for local testing. */
+export const isLoopbackOrigin = (origin: string) => { const { hostname } = new URL(origin); return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]"; };
 export const LIVE_LIMITS = { paths: 32, documentBytes: 60_000 } as const;
 export const LiveChannelIdSchema = z.string().regex(/^c[a-f0-9]{32}$/);
 const unsafeLiveSegments = new Set(["__proto__", "prototype", "constructor"]);
@@ -54,9 +56,11 @@ export const ReleaseCreateBaseSchema = z.object({
   theme: z.enum(["light", "dark"]).default("light"),
   apiOrigins: PublicApiOriginsSchema.default([]),
   live: LiveReleaseSchema.optional(),
+  // Private: the live origin was appended to apiOrigins by the server, so a later retarget may drop it.
+  liveOriginAdded: z.boolean().optional(),
 });
 /** The client asks for live data by flag only; the server resolves channel, origin and paths. */
-export const ReleaseCreateRpcSchema = ReleaseCreateBaseSchema.omit({ live: true }).extend({ liveData: z.boolean().optional() });
+export const ReleaseCreateRpcSchema = ReleaseCreateBaseSchema.omit({ live: true, liveOriginAdded: true }).extend({ liveData: z.boolean().optional() });
 export const ReleaseCreateSchema = ReleaseCreateBaseSchema.superRefine((value, context) => {
   if (value.live && !value.apiOrigins.includes(value.live.origin)) context.addIssue({ code: "custom", path: ["live", "origin"], message: "实时数据来源必须包含在 apiOrigins 中" });
 });
@@ -64,7 +68,7 @@ export const ReleaseCreateSchema = ReleaseCreateBaseSchema.superRefine((value, c
 export const ReleaseSettingsSchema = z.object({
   title: z.string(), network: z.enum(["offline", "cdn"]), theme: z.enum(["light", "dark"]),
   apiOrigins: PublicApiOriginsSchema, publicData: JsonDataSchema,
-  live: LiveReleaseSchema.optional(),
+  live: LiveReleaseSchema.optional(), liveOriginAdded: z.boolean().optional(),
 });
 export const ReleaseSourceSchema = z.object({
   boardId: IdSchema, boardCreatedAt: z.string(), canvasBase: CanvasBaseSchema,

@@ -4,8 +4,8 @@ import { join, resolve } from "node:path";
 import { createServer } from "node:http";
 import { DOMParser } from "linkedom";
 import { IdSchema, type Board, type CanvasBase } from "../shared/contracts";
-import { ReleaseCreateSchema, ReleaseIdSchema, ReleaseManifestSchema, ReleaseMetaSchema, type ReleaseCreateInput, type ReleaseManifest, type ReleaseMeta, type ReleaseSettings } from "../shared/release-contracts";
-import { STATIC_VIEWER_RUNTIME, STATIC_VIEWER_SHELL, STATIC_VIEWER_VERSION } from "../shared/static-viewer";
+import { ReleaseCreateSchema, ReleaseIdSchema, ReleaseManifestSchema, ReleaseMetaSchema, livePathSegments, type LiveRelease, type ReleaseCreateInput, type ReleaseManifest, type ReleaseMeta, type ReleaseSettings } from "../shared/release-contracts";
+import { STATIC_VIEWER_LIVE_VERSION, STATIC_VIEWER_RUNTIME, STATIC_VIEWER_SHELL, STATIC_VIEWER_VERSION, staticViewerRuntime, staticViewerShell } from "../shared/static-viewer";
 import { DEFAULT_DARK_COLORS, DEFAULT_LIGHT_COLORS, frameThemeFromColors } from "../shared/frame-theme";
 import stylesheet from "../shared/assets/visualize.css.txt";
 import icons from "../shared/assets/runtime-icons.txt";
@@ -50,9 +50,24 @@ function dependenciesFor(html: string): { dependencies: string[]; resources: str
   return { resources: [...resources].sort(), dependencies: [...dependencies].sort() };
 }
 
+/** A live path may create missing parents, but must never traverse a value the release froze as non-object. */
+function assertLivePathsFit(live: LiveRelease, data: Record<string, unknown>): void {
+  const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+  for (const path of live.paths) {
+    let node: unknown = data;
+    for (const part of livePathSegments(path).slice(0, -1)) {
+      if (!isObject(node)) throw new Error(`实时路径 ${path} 的上级在发布数据里不是对象`);
+      if (!Object.hasOwn(node, part)) { node = {}; break; }
+      node = node[part];
+    }
+    if (!isObject(node)) throw new Error(`实时路径 ${path} 的上级在发布数据里不是对象`);
+  }
+}
+
 /** Builds only final authored content + the caller's explicit public data; never serializes Board. */
 export function buildRelease(input: ReleaseCreateInput & { board: Board }): StaticRelease {
   const options = ReleaseCreateSchema.parse(input), { board } = input;
+  if (options.live) assertLivePathsFit(options.live, options.publicData);
   if (options.boardId !== board.id) throw new Error("Release source Board does not match the requested Board");
   if (options.expectedCanvasBase.revision !== board.canvas.revision || options.expectedCanvasBase.documentVersion !== board.canvas.documentVersion) throw new Error("Canvas changed; review the current Board before preparing a new release");
   assertJson(options.publicData, "Public release data");
@@ -99,17 +114,19 @@ export function buildRelease(input: ReleaseCreateInput & { board: Board }): Stat
   if (/\b(?:board\s*\.\s*ask|sendFollowUpMessage)\s*\(/.test(html)) warnings.push("网页里有请求 agent 的按钮或代码；发布版不会联系 agent，该请求会立即取消。");
   if (resources.dependencies.length) warnings.push("源码含外部地址；CDN 资源需要联网，其他地址可能是普通链接或会被阻止的请求。");
   if (options.apiOrigins.length) warnings.push(`此版本可通过 board.request 连接以下后端：${options.apiOrigins.join("、")}。请求不附带浏览器 Cookie；应用身份验证由后端实现，预览页不发起这些请求。`);
-  const content = { viewerVersion: STATIC_VIEWER_VERSION, title, network: options.network, apiOrigins: options.apiOrigins, data: options.publicData, html, prefix, suffix, runtime: STATIC_VIEWER_RUNTIME, shell: STATIC_VIEWER_SHELL, notice: NOTICE, license };
+  if (options.live) warnings.push(`此版本会定时从 ${options.live.origin} 读取实时公开数据，只接受这些路径：${options.live.paths.join("、")}。访客会看到后端最新的内容；访客浏览器也可能保留最后读到的一份。`);
+  const { live } = options, runtime = live ? staticViewerRuntime(true) : STATIC_VIEWER_RUNTIME, shell = live ? staticViewerShell(true) : STATIC_VIEWER_SHELL, viewerVersion = live ? STATIC_VIEWER_LIVE_VERSION : STATIC_VIEWER_VERSION;
+  const content = { viewerVersion, title, network: options.network, apiOrigins: options.apiOrigins, data: options.publicData, html, prefix, suffix, runtime, shell, notice: NOTICE, license, ...(live ? { live } : {}) };
   // The opaque digest scopes the private provenance to one source, without exposing its ID.
   const releaseId = `release-${sha256(canonicalJson({ content, source: { boardId: board.id, canvasBase: authored.canvasBase } }))}`;
-  const config = { releaseId, data: options.publicData, apiOrigins: options.apiOrigins, html, prefix, suffix, runtime: STATIC_VIEWER_RUNTIME };
-  const index = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(outerCsp)}"><title>${escapeHtml(title)}</title><style>html,body{margin:0;height:100%;background:${theme.tokens["host-sheet"]}}iframe{width:100%;height:100%;border:0;display:block}aside{position:fixed;left:8px;bottom:8px;max-width:calc(100% - 32px);font:13px/1.4 system-ui;padding:8px 12px;color:#fff;background:#252525;border-radius:6px}aside[hidden]{display:none}</style></head><body><iframe title="${escapeHtml(title)}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe><aside role="status" hidden></aside><script>(${STATIC_VIEWER_SHELL})(${scriptJson(config)});</script></body></html>`;
+  const config = { releaseId, data: options.publicData, apiOrigins: options.apiOrigins, html, prefix, suffix, runtime, ...(live ? { live } : {}) };
+  const index = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(outerCsp)}"><title>${escapeHtml(title)}</title><style>html,body{margin:0;height:100%;background:${theme.tokens["host-sheet"]}}iframe{width:100%;height:100%;border:0;display:block}aside{position:fixed;left:8px;bottom:8px;max-width:calc(100% - 32px);font:13px/1.4 system-ui;padding:8px 12px;color:#fff;background:#252525;border-radius:6px}aside[hidden]{display:none}${live ? "aside[data-live]{left:auto;right:8px}" : ""}</style></head><body><iframe title="${escapeHtml(title)}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe><aside role="status" hidden></aside>${live ? '<aside data-live role="status" aria-live="polite" hidden></aside>' : ""}<script>(${shell})(${scriptJson(config)});</script></body></html>`;
   const files: Record<string, string> = { "index.html": index, "NOTICE": NOTICE, "LICENSE-APACHE-2.0": license };
   const inventory = fileInventory(files), artifactHash = sha256(canonicalJson(inventory));
-  const manifest = ReleaseManifestSchema.parse({ formatVersion: 1, releaseId, artifactHash, title, viewerVersion: STATIC_VIEWER_VERSION, network: options.network, apiOrigins: options.apiOrigins, dependencies: resources.dependencies, warnings, files: inventory });
+  const manifest = ReleaseManifestSchema.parse({ formatVersion: 1, releaseId, artifactHash, title, viewerVersion, network: options.network, apiOrigins: options.apiOrigins, ...(live ? { live } : {}), dependencies: resources.dependencies, warnings, files: inventory });
   files["release.json"] = canonicalJson(manifest) + "\n";
   if (Object.values(files).reduce((sum, value) => sum + Buffer.byteLength(value), 0) > MAX_RELEASE_BYTES) throw new Error("Public release exceeds the 8 MiB export limit");
-  const settings: ReleaseSettings = { title, network: options.network, theme: options.theme, apiOrigins: options.apiOrigins, publicData: JSON.parse(canonicalJson(options.publicData)) };
+  const settings: ReleaseSettings = { title, network: options.network, theme: options.theme, apiOrigins: options.apiOrigins, publicData: JSON.parse(canonicalJson(options.publicData)), ...(live ? { live } : {}), ...(options.liveOriginAdded ? { liveOriginAdded: true } : {}) };
   return { manifest, files, settings, provenance: { boardId: board.id, boardRevision: board.revision, canvasBase: authored.canvasBase, boardCreatedAt: board.createdAt, patchCount: board.canvas.patches.length } };
 }
 

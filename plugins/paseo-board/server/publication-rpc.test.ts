@@ -4,14 +4,15 @@ import { join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReleaseManifest, PagesJob, ShareStatus, ShareUpdateResult } from "../shared/release-contracts";
-import { GitHubHostSchema, GitHubRepositoryNameSchema, PagesPrepareSchema } from "../shared/release-contracts";
+import { GitHubHostSchema, GitHubRepositoryNameSchema, PagesPrepareSchema, createReleaseRpc } from "../shared/release-contracts";
 import { BoardStore } from "./store";
 import { ReleaseRepository } from "./static-release";
-import { registerPublicationRpc, type PagesGateway } from "./publication-rpc";
+import { registerPublicationRpc, type LiveReleaseSource, type PagesGateway } from "./publication-rpc";
+import type { LiveReleaseChannel } from "./live-data";
 
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
-async function fixture() {
+async function fixture(options: { live?: LiveReleaseSource } = {}) {
   const root = await mkdtemp(join(tmpdir(), "board-publication-rpc-")); directories.push(root);
   const store = new BoardStore(join(root, "boards"));
   const board = await store.create({ id: "work", title: "Work", ownerAgentId: "owner", html: "<p>Published text</p>", data: { secret: "PRIVATE_DATA" } });
@@ -32,7 +33,7 @@ async function fixture() {
   });
   const ready = vi.fn(async () => {});
   registerPublicationRpc({ handle(contract: { name: string }, handler: (input: unknown) => Promise<unknown>) { handlers.set(contract.name, handler); } } as PluginServerContext,
-    { ready, requireBoard, releases, pages });
+    { ready, requireBoard, releases, pages, ...(options.live ? { live: options.live } : {}) });
   const invoke = (name: string, input: unknown) => {
     const handler = handlers.get(name); if (!handler) throw new Error("Missing RPC " + name); return handler(input);
   };
@@ -280,6 +281,160 @@ describe("share status and one-click share update", () => {
     const result = await update(f, share.seriesId, { documentVersion: 1, patchCount: 1 });
     expect(result).toMatchObject({ request: { shareKey: hex, githubHost: "github.com", repository: "fixture/site" } });
     noPagesWrites(f);
+  });
+
+  describe("live data on releases and share updates", () => {
+    const channelId = `c${"a".repeat(32)}`, origin = "https://live.example.com", paths = ["/live/a", "/live/b"];
+    const channelFor = (overrides: Partial<LiveReleaseChannel> = {}): LiveReleaseChannel => ({ origin, channelId, paths, state: "live", channelState: "ready", ...overrides });
+    const liveFixture = async (initial: LiveReleaseChannel | null) => {
+      let channel = initial;
+      const f = await fixture({ live: { releaseChannel: async () => channel } });
+      return { f, setChannel: (next: LiveReleaseChannel | null) => { channel = next; } };
+    };
+    const base = { boardId: "work", expectedCanvasBase: { revision: 1, documentVersion: 1 }, publicData: { label: "Public" } };
+    const createLive = (f: Fixture, extra: Record<string, unknown> = {}) => f.invoke("board.release.create", { ...base, liveData: true, ...extra }) as Promise<ReleaseManifest>;
+    const liveUpdate = (f: Fixture, seriesId: string, liveMode: "keep" | "current") => f.invoke("board.release.share-update", { boardId: "work", seriesId, expectedSource: { documentVersion: 1, patchCount: 0 }, liveMode }) as Promise<ShareUpdateResult>;
+    const liveSeries = async (f: Fixture, extra: Record<string, unknown> = {}) => {
+      const manifest = await createLive(f, extra);
+      vi.mocked(f.pages.list).mockResolvedValue([job(manifest, { shareKey: key, sharePath: `boards/${key}`, shareUrl: `https://fixture.github.io/site/boards/${key}/` })]);
+      return { manifest, seriesId: (await status(f)).shares[0].seriesId };
+    };
+
+    it("resolves the live block on the server from a client boolean", async () => {
+      const { f } = await liveFixture(channelFor()), manifest = await createLive(f);
+      expect(manifest).toMatchObject({ viewerVersion: 3, live: { origin, channelId, paths }, apiOrigins: [origin] });
+      const meta = (await f.releases.meta(manifest.releaseId))!;
+      expect(meta.settings).toMatchObject({ live: { origin, channelId, paths }, liveOriginAdded: true, apiOrigins: [origin] });
+      expect(JSON.stringify(await f.releases.read(manifest.releaseId))).not.toContain("liveOriginAdded");
+    });
+    it("does not duplicate an origin the human already listed, and records that it was theirs", async () => {
+      const { f } = await liveFixture(channelFor()), manifest = await createLive(f, { apiOrigins: [origin, "https://api.example.com"] });
+      expect(manifest.apiOrigins).toEqual([origin, "https://api.example.com"]);
+      expect((await f.releases.meta(manifest.releaseId))!.settings).not.toHaveProperty("liveOriginAdded");
+    });
+    it("cannot be pointed at another channel: a client-sent live object never reaches the handler", async () => {
+      const parsed = createReleaseRpc.input.parse({ ...base, live: { origin: "https://evil.example.com", channelId: `c${"b".repeat(32)}`, paths: ["/x"] }, liveData: false });
+      expect(parsed).not.toHaveProperty("live");
+      const { f } = await liveFixture(channelFor()), manifest = await f.invoke("board.release.create", parsed) as ReleaseManifest;
+      expect(manifest.viewerVersion).toBe(2); expect(manifest).not.toHaveProperty("live");
+    });
+    it("builds the unchanged non-live release when the flag is off, without asking for a channel", async () => {
+      const releaseChannel = vi.fn(async () => channelFor()), f = await fixture({ live: { releaseChannel } }), manifest = await f.invoke("board.release.create", base) as ReleaseManifest;
+      expect(manifest).not.toHaveProperty("live"); expect(manifest.viewerVersion).toBe(2); expect(releaseChannel).not.toHaveBeenCalled();
+    });
+    it("refuses a live release without a confirmed channel holding a public copy", async () => {
+      const { f, setChannel } = await liveFixture(null);
+      await expect(createLive(f)).rejects.toThrow("实时公开连接");
+      for (const channelState of ["pending", "blocked", "revoking", "revoked"] as const) { setChannel(channelFor({ channelState })); await expect(createLive(f)).rejects.toThrow("实时公开连接"); }
+      setChannel(channelFor({ channelState: "paused", state: "paused" }));
+      expect((await createLive(f)).live?.channelId).toBe(channelId);
+      expect(f.pages.prepare).not.toHaveBeenCalled();
+    });
+    it("refuses a live release that would exceed the origin limit", async () => {
+      const { f } = await liveFixture(channelFor()), apiOrigins = Array.from({ length: 8 }, (_, index) => `https://api${index}.example.com`);
+      await expect(createLive(f, { apiOrigins })).rejects.toThrow("8 个上限");
+      expect((await createLive(f, { apiOrigins: apiOrigins.slice(0, 7) })).apiOrigins).toHaveLength(8);
+    });
+
+    it("keeps the stored live block by default, even after revoke, and reports the drift", async () => {
+      const { f, setChannel } = await liveFixture(channelFor()), { manifest, seriesId } = await liveSeries(f);
+      setChannel(channelFor({ channelState: "revoked", state: "revoked", paths: ["/live/a", "/live/c"] }));
+      const result = await liveUpdate(f, seriesId, "keep");
+      expect(result).toEqual({ upToDate: true, liveDrift: { addedPaths: ["/live/c"], removedPaths: ["/live/b"], originChanged: false, channelState: "revoked" } });
+      await patch(f, "authored");
+      const rebuilt = await f.invoke("board.release.share-update", { boardId: "work", seriesId, expectedSource: { documentVersion: 1, patchCount: 1 } }) as ShareUpdateResult;
+      if (!("manifest" in rebuilt)) throw new Error("Expected a new release");
+      expect(rebuilt.manifest.live).toEqual(manifest.live);
+      expect(rebuilt.liveDrift?.channelState).toBe("revoked");
+      noPagesWrites(f);
+    });
+    it("omits the drift when the share matches the channel", async () => {
+      const { f } = await liveFixture(channelFor()), { seriesId } = await liveSeries(f);
+      expect(await liveUpdate(f, seriesId, "keep")).toEqual({ upToDate: true });
+      expect((await status(f)).shares[0].settings?.live).toEqual({ origin, paths });
+      noPagesWrites(f);
+    });
+    it("adopts the current channel on request, on an otherwise unchanged page, with no remaining drift", async () => {
+      const { f, setChannel } = await liveFixture(channelFor()), { manifest, seriesId } = await liveSeries(f);
+      setChannel(channelFor({ paths: ["/live/a", "/live/z"] }));
+      const result = await liveUpdate(f, seriesId, "current");
+      if (!("manifest" in result)) throw new Error("Expected a new release");
+      expect(result.manifest.releaseId).not.toBe(manifest.releaseId);
+      expect(result.manifest.live?.paths).toEqual(["/live/a", "/live/z"]);
+      expect(result.liveDrift).toBeUndefined();
+      expect(result.request).toMatchObject({ shareKey: key, repository: "fixture/site" });
+      noPagesWrites(f);
+    });
+    it("gives a non-live share live data through one current update, and reports it as drift first", async () => {
+      const { f } = await liveFixture(channelFor()), manifest = await f.create();
+      vi.mocked(f.pages.list).mockResolvedValue([job(manifest, { shareKey: key, shareUrl: `https://fixture.github.io/site/boards/${key}/` })]);
+      const seriesId = (await status(f)).shares[0].seriesId;
+      expect(await liveUpdate(f, seriesId, "keep")).toEqual({ upToDate: true, liveDrift: { addedPaths: paths, removedPaths: [], originChanged: false, channelState: "live" } });
+      const adopted = await liveUpdate(f, seriesId, "current");
+      if (!("manifest" in adopted)) throw new Error("Expected a new release");
+      expect(adopted.manifest).toMatchObject({ viewerVersion: 3, apiOrigins: [origin], live: { origin, channelId, paths } });
+    });
+    it("refuses current when the channel cannot back a release", async () => {
+      const { f, setChannel } = await liveFixture(channelFor()), { seriesId } = await liveSeries(f);
+      const count = (await f.releases.list()).length;
+      setChannel(null); await expect(liveUpdate(f, seriesId, "current")).rejects.toThrow("实时公开连接");
+      setChannel(channelFor({ channelState: "revoked", state: "revoked" })); await expect(liveUpdate(f, seriesId, "current")).rejects.toThrow("实时公开连接");
+      expect((await f.releases.list()).length).toBe(count);
+      noPagesWrites(f);
+    });
+    it("reports a removed channel as drift with state none", async () => {
+      const { f, setChannel } = await liveFixture(channelFor()), { seriesId } = await liveSeries(f);
+      setChannel(null);
+      expect(await liveUpdate(f, seriesId, "keep")).toEqual({ upToDate: true, liveDrift: { addedPaths: [], removedPaths: paths, originChanged: false, channelState: "none" } });
+    });
+    it("reports an origin change, drops an old origin only live used, and keeps one the human listed", async () => {
+      const moved = "https://new-live.example.com";
+      const { f, setChannel } = await liveFixture(channelFor()), { seriesId } = await liveSeries(f);
+      setChannel(channelFor({ origin: moved }));
+      expect(await liveUpdate(f, seriesId, "keep")).toEqual({ upToDate: true, liveDrift: { addedPaths: [], removedPaths: [], originChanged: true, channelState: "live" } });
+      const adopted = await liveUpdate(f, seriesId, "current");
+      if (!("manifest" in adopted)) throw new Error("Expected a new release");
+      expect(adopted.manifest.apiOrigins).toEqual([moved]); expect(adopted.manifest.live?.origin).toBe(moved);
+      expect((await f.releases.meta(adopted.manifest.releaseId))!.settings.liveOriginAdded).toBe(true);
+
+      const second = await liveFixture(channelFor()), listed = await liveSeries(second.f, { apiOrigins: [origin, "https://api.example.com"] });
+      second.setChannel(channelFor({ origin: moved }));
+      const kept = await liveUpdate(second.f, listed.seriesId, "current");
+      if (!("manifest" in kept)) throw new Error("Expected a new release");
+      expect(kept.manifest.apiOrigins).toEqual([origin, "https://api.example.com", moved]);
+    });
+    it("keeps a live origin that stayed the same when adopting new paths", async () => {
+      const { f, setChannel } = await liveFixture(channelFor()), { seriesId } = await liveSeries(f);
+      setChannel(channelFor({ paths: ["/live/q"] }));
+      const adopted = await liveUpdate(f, seriesId, "current");
+      if (!("manifest" in adopted)) throw new Error("Expected a new release");
+      expect(adopted.manifest.apiOrigins).toEqual([origin]);
+      expect((await f.releases.meta(adopted.manifest.releaseId))!.settings.liveOriginAdded).toBe(true);
+    });
+    it("refuses to publish a loopback live release to a public Pages host, including through share updates", async () => {
+      const loopback = "http://127.0.0.1:8787";
+      const { f, setChannel } = await liveFixture(channelFor({ origin: loopback })), manifest = await createLive(f);
+      const request = { eventId: "publish", releaseId: manifest.releaseId, artifactHash: manifest.artifactHash, account: "fixture", repository: "fixture/site" };
+      for (const name of ["board.pages.prepare", "board.pages.publish"]) await expect(f.invoke(name, request)).rejects.toThrow("本机测试用的实时数据不能发布到公开站点");
+      await expect(f.invoke("board.pages.publish", { ...request, githubHost: "github.enterprise.example" })).rejects.toThrow("本机测试用");
+      noPagesWrites(f);
+      await f.invoke("board.pages.publish", { ...request, githubHost: "localhost" });
+      expect(f.pages.publish).toHaveBeenCalledTimes(1);
+
+      vi.mocked(f.pages.list).mockResolvedValue([job(manifest, { shareKey: key, shareUrl: `https://fixture.github.io/site/boards/${key}/` })]);
+      const seriesId = (await status(f)).shares[0].seriesId;
+      await expect(liveUpdate(f, seriesId, "keep")).rejects.toThrow("本机测试用");
+      setChannel(channelFor({ origin: "https://live.example.com" }));
+      const adopted = await liveUpdate(f, seriesId, "current");
+      if (!("manifest" in adopted)) throw new Error("Expected a new release");
+      expect(adopted.manifest.live?.origin).toBe("https://live.example.com");
+      expect(adopted.manifest.apiOrigins).toEqual(["https://live.example.com"]);
+    });
+    it("still publishes a non-live or HTTPS live release normally", async () => {
+      const { f } = await liveFixture(channelFor()), manifest = await createLive(f);
+      await f.invoke("board.pages.publish", { eventId: "publish", releaseId: manifest.releaseId, artifactHash: manifest.artifactHash, account: "fixture", repository: "fixture/site" });
+      expect(f.pages.publish).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("rejects a share series of another Board", async () => {

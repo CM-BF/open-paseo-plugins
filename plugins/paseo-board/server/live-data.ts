@@ -56,6 +56,8 @@ export interface LiveStore {
 }
 export interface LiveDataOptions { fetcher?: typeof fetch; clock?: LiveClock; random?: () => number; log?: (message: string) => void }
 export interface LivePublicView { paths: string[]; state: LiveState }
+/** What a release or share update needs to know about a Board's channel; never carries the token. */
+export interface LiveReleaseChannel { origin: string; channelId: string; paths: string[]; state: LiveState; channelState: LiveChannel["state"] }
 
 interface Runtime {
   file: string; boardId: string; createdAt: string; active: boolean;
@@ -398,6 +400,14 @@ export class LiveDataPublisher {
     const current = await this.store.projectPublic(boardId, expectedCreatedAt, []);
     if (!current || current.createdAt !== expectedCreatedAt) throw new BoardStoreError("board_identity_changed", "This Board was replaced; reopen it before changing live data");
     return current;
+  }
+
+  /** The Board's channel as the release flow sees it, including one that can no longer publish. */
+  async releaseChannel(boardId: string, createdAt: string): Promise<LiveReleaseChannel | null> {
+    const file = this.fileFor(boardId, createdAt), record = await this.readRecord(file);
+    if (!record) return null;
+    const { origin, channelId, marks, state: channelState } = record, state = this.status(record, await this.readJournal(file), this.runtimes.get(file)).state;
+    return { origin, channelId, paths: marks.map(mark => mark.path).sort(), state, channelState };
   }
 
   async publicView(boardId: string, createdAt: string): Promise<LivePublicView | undefined> {

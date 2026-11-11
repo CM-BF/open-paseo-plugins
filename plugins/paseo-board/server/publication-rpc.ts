@@ -3,9 +3,10 @@ import type { Board } from "../shared/contracts";
 import {
   createReleaseRpc, listReleasesRpc, previewReleaseRpc, downloadReleaseRpc,
   githubAccountsRpc, githubRepositoriesRpc, preparePagesRpc, publishPagesRpc, mergePagesRpc,
-  refreshPagesRpc, listPagesJobsRpc, shareStatusRpc, shareUpdateRpc, type PagesJob, type PagesPrepareInput,
-  type GitHubAccount, type GitHubRepository, type ReleaseMeta, type Share, type ShareStatus, type ShareUpdateResult,
+  refreshPagesRpc, listPagesJobsRpc, shareStatusRpc, shareUpdateRpc, isLoopbackOrigin, type PagesJob, type PagesPrepareInput,
+  type GitHubAccount, type GitHubRepository, type LiveDrift, type LiveRelease, type ReleaseMeta, type ReleaseSettings, type Share, type ShareStatus, type ShareUpdateResult,
 } from "../shared/release-contracts";
+import type { LiveReleaseChannel } from "./live-data";
 import { sha256, type ReleaseRepository, type StaticRelease } from "./static-release";
 import { canonicalJson } from "./store-format";
 
@@ -19,6 +20,32 @@ export interface PagesGateway {
   list(releaseId?: string, options?: { skipInvalid?: boolean }): Promise<PagesJob[]>;
   read(jobId: string): Promise<PagesJob>;
 }
+
+/** The Board's live channel as release building sees it; absent when the plugin has no publisher. */
+export interface LiveReleaseSource { releaseChannel(board: Board): Promise<LiveReleaseChannel | null> }
+const LOOPBACK_LIVE_REFUSAL = "本机测试用的实时数据不能发布到公开站点；请先连接访客能访问的后端";
+const NO_LIVE_CHANNEL = "这张 Board 还没有可用的实时公开连接；请先在「实时公开数据」里确认后端和公开字段";
+const isLoopbackHost = (host: string) => host === "localhost" || host === "127.0.0.1";
+const refuseLoopbackLive = (live: LiveRelease | undefined, githubHost: string | undefined) => {
+  if (live && isLoopbackOrigin(live.origin) && !isLoopbackHost(githubHost ?? "github.com")) throw new Error(LOOPBACK_LIVE_REFUSAL);
+};
+/** Only a channel the human has confirmed and that holds a public copy can back a release. */
+const releaseBlock = (channel: LiveReleaseChannel | null): LiveRelease => {
+  if (!channel || (channel.channelState !== "ready" && channel.channelState !== "paused")) throw new Error(NO_LIVE_CHANNEL);
+  return { origin: channel.origin, channelId: channel.channelId, paths: channel.paths };
+};
+const withLiveOrigin = (apiOrigins: readonly string[], origin: string) => {
+  if (apiOrigins.includes(origin)) return [...apiOrigins];
+  if (apiOrigins.length >= 8) throw new Error("连接的后端来源已达 8 个上限，无法再加入实时数据后端");
+  return [...apiOrigins, origin];
+};
+const liveDrift = (stored: LiveRelease | undefined, channel: LiveReleaseChannel | null): LiveDrift | undefined => {
+  const had = new Set(stored?.paths ?? []), now = new Set(channel?.paths ?? []);
+  const addedPaths = [...now].filter(path => !had.has(path)), removedPaths = [...had].filter(path => !now.has(path));
+  const originChanged = !!stored && !!channel && stored.origin !== channel.origin;
+  if (!addedPaths.length && !removedPaths.length && !originChanged) return undefined;
+  return { addedPaths, removedPaths, originChanged, channelState: channel?.state ?? "none" };
+};
 
 type Owned = { job: PagesJob; release: StaticRelease; meta?: ReleaseMeta };
 type Series = { githubHost: string; repository: string; key: string; keyed: boolean; members: Owned[] };
@@ -108,28 +135,40 @@ async function boardShares(board: Board, releases: ReleaseRepository, pages: Pag
       verified: !!job.shareUrl || adoptable && job.status === "live" && !!job.url, state,
       releaseId: release.manifest.releaseId, title: release.manifest.title, publishedJobId: job.jobId, settingsAvailable: !!meta,
       source, ...(inFlight ? { inFlightJobId: inFlight.job.jobId } : {}), activity: latest,
-      ...(meta ? { settings: { network: meta.settings.network, theme: meta.settings.theme, apiOrigins: meta.settings.apiOrigins, publicDataBytes: Buffer.byteLength(canonicalJson(meta.settings.publicData)) } } : {}),
+      ...(meta ? { settings: { network: meta.settings.network, theme: meta.settings.theme, apiOrigins: meta.settings.apiOrigins, publicDataBytes: Buffer.byteLength(canonicalJson(meta.settings.publicData)), ...(meta.settings.live ? { live: { origin: meta.settings.live.origin, paths: meta.settings.live.paths } } : {}) } } : {}),
     });
   }
   shares.sort((a, b) => byCreated(b.activity, a.activity));
   return { current, shares: shares.map(({ activity: _, ...share }) => share), foreignKeys };
 }
 
+/** Rebuilds a share's settings on the Board's current channel, dropping an old origin that was only there for live. */
+function adoptCurrentLive(stored: Omit<ReleaseSettings, "title">, live: LiveRelease): Omit<ReleaseSettings, "title"> {
+  const previous = stored.live?.origin;
+  const carried = stored.apiOrigins.filter(origin => !(stored.liveOriginAdded && origin === previous && origin !== live.origin));
+  const added = !carried.includes(live.origin) || !!stored.liveOriginAdded && previous === live.origin;
+  const { liveOriginAdded: _, ...rest } = stored;
+  return { ...rest, apiOrigins: withLiveOrigin(carried, live.origin), live, ...(added ? { liveOriginAdded: true } : {}) };
+}
+
 /** Host-user RPCs only: these operations are not exposed by the agent Board bridge. */
 export function registerPublicationRpc(server: PluginServerContext, options: {
   ready(): Promise<void>; requireBoard(id: string): Promise<Board>;
-  releases: ReleaseRepository; pages: PagesGateway;
+  releases: ReleaseRepository; pages: PagesGateway; live?: LiveReleaseSource;
 }): void {
   const { releases, pages } = options;
+  /** Resolved on the server: a client can only ask for the Board's own channel, never name one. */
+  const currentLive = async (board: Board) => releaseBlock(await options.live?.releaseChannel(board) ?? null);
   const release = async (id: string) => {
     await options.ready();
     return releases.read(id);
   };
   server.handle(createReleaseRpc, async ({ liveData, ...input }) => {
     await options.ready();
-    if (liveData) throw new Error("Live data releases are not available in this build");
     const board = await options.requireBoard(input.boardId);
-    return (await releases.create({ ...input, board })).manifest;
+    if (!liveData) return (await releases.create({ ...input, board })).manifest;
+    const live = await currentLive(board), apiOrigins = input.apiOrigins ?? [];
+    return (await releases.create({ ...input, board, live, apiOrigins: withLiveOrigin(apiOrigins, live.origin), ...(apiOrigins.includes(live.origin) ? {} : { liveOriginAdded: true }) })).manifest;
   });
   server.handle(listReleasesRpc, async input => {
     await options.ready(); await options.requireBoard(input.boardId);
@@ -139,8 +178,9 @@ export function registerPublicationRpc(server: PluginServerContext, options: {
   server.handle(downloadReleaseRpc, async input => { await release(input.releaseId); return releases.download(input.releaseId); });
   server.handle(githubAccountsRpc, async input => { await options.ready(); return pages.accounts(input.githubHost); });
   server.handle(githubRepositoriesRpc, async input => { await options.ready(); return pages.repositories(input.account, input.githubHost); });
-  server.handle(preparePagesRpc, async input => { await release(input.releaseId); return pages.prepare(input); });
-  server.handle(publishPagesRpc, async input => { await release(input.releaseId); return pages.publish(input); });
+  // A loopback data source would resolve to each visitor's own machine on a public page.
+  server.handle(preparePagesRpc, async input => { refuseLoopbackLive((await release(input.releaseId)).manifest.live, input.githubHost); return pages.prepare(input); });
+  server.handle(publishPagesRpc, async input => { refuseLoopbackLive((await release(input.releaseId)).manifest.live, input.githubHost); return pages.publish(input); });
   server.handle(mergePagesRpc, async input => {
     await options.ready(); const job = await pages.read(input.jobId); await release(job.releaseId);
     return pages.merge(input);
@@ -163,15 +203,20 @@ export function registerPublicationRpc(server: PluginServerContext, options: {
     const meta = await releases.meta(share.releaseId);
     if (!meta || meta.source.boardId !== board.id || meta.source.boardCreatedAt !== board.createdAt) throw new Error("这个分享页没有保存发布设置，无法一键更新；请用「沿用上次分享页的设置」重新生成一次");
     if (input.expectedSource.documentVersion !== current.documentVersion || input.expectedSource.patchCount !== current.patchCount) throw new Error("Canvas changed; review the current Board before updating the share link");
-    const { title, ...settings } = meta.settings;
+    const { title, ...stored } = meta.settings;
+    const channel = options.live ? await options.live.releaseChannel(board) : null;
+    const settings = input.liveMode === "current" ? adoptCurrentLive(stored, releaseBlock(channel)) : stored;
+    refuseLoopbackLive(settings.live, share.githubHost);
+    // Reported on both results, so the panel can offer adoption even when the page is otherwise up to date.
+    const drift = options.live ? liveDrift(settings.live, channel) : undefined;
     // Current revision: data-only writes since the review must not block the update.
     const release = await releases.create({ ...settings, title: title || undefined, board, boardId: board.id, expectedCanvasBase: current.canvasBase });
     // Up to date only when that release is on the link; a never-merged attempt is retried with the same request.
-    if (share.onLink && release.manifest.releaseId === share.releaseId) return { upToDate: true };
+    if (share.onLink && release.manifest.releaseId === share.releaseId) return { upToDate: true, ...(drift ? { liveDrift: drift } : {}) };
     return { manifest: release.manifest, request: {
       releaseId: release.manifest.releaseId, artifactHash: release.manifest.artifactHash, githubHost: share.githubHost,
       account: share.account, repository: share.repository, shareKey: share.shareKey ?? share.key,
-    } };
+    }, ...(drift ? { liveDrift: drift } : {}) };
   });
   server.handle(listPagesJobsRpc, async input => {
     await options.ready(); if (input.releaseId) await release(input.releaseId);

@@ -590,6 +590,17 @@ describe("live data publisher", () => {
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 
+  it("describes its channel for release building without the token, and reports each stored state", async () => {
+    expect(await h.publisher.releaseChannel(scope.boardId, scope.expectedCreatedAt)).toBeNull();
+    await connect();
+    const ready = await h.publisher.releaseChannel(scope.boardId, scope.expectedCreatedAt);
+    expect(ready).toMatchObject({ origin, paths: baseMarks.map(mark => mark.path).sort(), state: "live", channelState: "ready" });
+    expect(JSON.stringify(ready)).not.toContain(secret);
+    await act("pause");
+    expect(await h.publisher.releaseChannel(scope.boardId, scope.expectedCreatedAt)).toMatchObject({ state: "paused", channelState: "paused" });
+    await act("revoke");
+    expect(await h.publisher.releaseChannel(scope.boardId, scope.expectedCreatedAt)).toMatchObject({ channelState: "revoking" });
+  });
   it("does not restart polling work after close", async () => {
     await connect();
     await h.publisher.close();

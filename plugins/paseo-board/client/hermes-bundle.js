@@ -6538,10 +6538,13 @@ var ReleaseCreateBaseSchema = z3.object({
   network: z3.enum(["offline", "cdn"]).default("offline"),
   theme: z3.enum(["light", "dark"]).default("light"),
   apiOrigins: PublicApiOriginsSchema.default([]),
-  live: LiveReleaseSchema.optional()
+  live: LiveReleaseSchema.optional(),
+  // Private: the live origin was appended to apiOrigins by the server, so a later retarget may drop it.
+  liveOriginAdded: z3.boolean().optional()
 });
 var ReleaseCreateRpcSchema = ReleaseCreateBaseSchema.omit({
-  live: true
+  live: true,
+  liveOriginAdded: true
 }).extend({
   liveData: z3.boolean().optional()
 });
@@ -6558,7 +6561,8 @@ var ReleaseSettingsSchema = z3.object({
   theme: z3.enum(["light", "dark"]),
   apiOrigins: PublicApiOriginsSchema,
   publicData: JsonDataSchema,
-  live: LiveReleaseSchema.optional()
+  live: LiveReleaseSchema.optional(),
+  liveOriginAdded: z3.boolean().optional()
 });
 var ReleaseSourceSchema = z3.object({
   boardId: IdSchema,

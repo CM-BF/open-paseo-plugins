@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -158,6 +159,54 @@ describe("fixed public releases", () => {
       expect((await fetch(server.url + "private.json")).status).toBe(404);
       expect((await fetch(server.url, { method: "POST" })).status).toBe(404);
     } finally { await server.close(); }
+  });
+  const LIVE = { origin: "https://live.example.com", channelId: `c${"a".repeat(32)}`, paths: ["/live/a", "/live/b"] };
+  it("keeps a non-live release byte-identical to the pre-live build for a fixed input", async () => {
+    const pinned = await new BoardStore(join(root, "pin")).create({ id: "pin-board", title: "Pin fixture", ownerAgentId: "pin-agent", html: '<main><p id="pin">Pinned text</p></main>', data: { secret: "PRIVATE" } });
+    const release = buildRelease({ board: pinned, boardId: pinned.id, expectedCanvasBase: { revision: pinned.canvas.revision, documentVersion: pinned.canvas.documentVersion }, publicData: { label: "Pin" }, apiOrigins: ["https://api.example.com"] });
+    expect(release.manifest.releaseId).toBe("release-d01ce6b6691a4f9371b158fbcef51a068a9abca9064e91fdb69b81af9cad6338");
+    expect(release.manifest.artifactHash).toBe("73dd283fec53173f58770a745d84fef7be28b0318f0d75588ea9d4c09819f83b");
+    expect(createHash("sha256").update(release.files["index.html"]).digest("hex")).toBe("0810b73f0e55ad42e8d526b1da7810cd3ea48b270d15d3447abe29f1c16799a3");
+    expect(release.manifest.viewerVersion).toBe(2);
+    expect(release.manifest).not.toHaveProperty("live"); expect(release.settings).not.toHaveProperty("live");
+    for (const marker of ["data-live", "live-ready", "paseo-board-live:"]) expect(release.files["index.html"]).not.toContain(marker);
+  });
+  it("embeds a frozen live block, uses the live viewer and changes the release identity", () => {
+    const base = buildRelease(options()), release = buildRelease({ ...options(), apiOrigins: [LIVE.origin], live: LIVE });
+    expect(release.manifest.viewerVersion).toBe(3); expect(release.manifest.live).toEqual(LIVE);
+    expect(release.manifest.releaseId).not.toBe(base.manifest.releaseId);
+    expect(release.files["index.html"]).toContain("connect-src https://live.example.com");
+    expect(release.files["index.html"]).toContain('<aside data-live role="status" aria-live="polite" hidden></aside>');
+    expect(release.files["index.html"]).toContain("live-ready");
+    expect(release.settings?.live).toEqual(LIVE);
+    expect(release.manifest.warnings.some(warning => warning.includes("实时公开数据") && warning.includes("/live/a"))).toBe(true);
+    expect(validateRelease(release)).toBe(release);
+    const other = buildRelease({ ...options(), apiOrigins: [LIVE.origin], live: { ...LIVE, paths: ["/live/a"] } });
+    expect(other.manifest.releaseId).not.toBe(release.manifest.releaseId);
+  });
+  it("keeps the private origin bookkeeping out of every public file", () => {
+    const release = buildRelease({ ...options(), apiOrigins: [LIVE.origin], live: LIVE, liveOriginAdded: true });
+    expect(release.settings?.liveOriginAdded).toBe(true);
+    expect(JSON.stringify(release.files)).not.toContain("liveOriginAdded");
+    expect(release.manifest).not.toHaveProperty("liveOriginAdded");
+    const same = buildRelease({ ...options(), apiOrigins: [LIVE.origin], live: LIVE });
+    expect(same.manifest.releaseId).toBe(release.manifest.releaseId);
+  });
+  it("requires the live origin in apiOrigins and refuses a path through a frozen non-object", () => {
+    expect(() => buildRelease({ ...options(), apiOrigins: [], live: LIVE })).toThrow("apiOrigins");
+    expect(() => buildRelease({ ...options(), publicData: { live: "text" }, apiOrigins: [LIVE.origin], live: LIVE })).toThrow("不是对象");
+    expect(() => buildRelease({ ...options(), publicData: { live: [1] }, apiOrigins: [LIVE.origin], live: LIVE })).toThrow("不是对象");
+    expect(() => buildRelease({ ...options(), publicData: { live: { a: "frozen" } }, apiOrigins: [LIVE.origin], live: LIVE })).not.toThrow();
+    expect(() => buildRelease({ ...options(), publicData: {}, apiOrigins: [LIVE.origin], live: { ...LIVE, paths: ["/missing/deep/x"] } })).not.toThrow();
+    expect(() => buildRelease({ ...options(), publicData: { a: { b: 1 } }, apiOrigins: [LIVE.origin], live: { ...LIVE, paths: ["/a/b/c"] } })).toThrow("不是对象");
+  });
+  it("carries the live block through the settings sidecar and parses old sidecars", async () => {
+    const releases = join(root, "releases"), repository = new ReleaseRepository(releases), release = await repository.create({ ...options(), apiOrigins: [LIVE.origin], live: LIVE });
+    expect((await repository.meta(release.manifest.releaseId))?.settings.live).toEqual(LIVE);
+    expect((await repository.read(release.manifest.releaseId)).manifest.live).toEqual(LIVE);
+    const legacy = await repository.create(options()), file = join(releases, `${legacy.manifest.releaseId}.settings.json`), stored = JSON.parse(await readFile(file, "utf8"));
+    expect(stored.settings).not.toHaveProperty("live");
+    expect((await repository.meta(legacy.manifest.releaseId))?.settings).not.toHaveProperty("live");
   });
   it("executes the actual repository CLI to export a public directory and readable ZIP", async () => {
     const boardFile = join(root, "private-board.json"), dataFile = join(root, "public-data.json"), directory = join(root, "cli-public"), zip = join(root, "cli-public.zip");

@@ -78,7 +78,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     void ready.then(() => service.reconcile()).catch((error) => log(String(error)));
   };
   const checkReady = async () => { await ready; if (stopped) throw new Error("Board service stopped"); };
-  registerPublicationRpc(server, { ready: checkReady, requireBoard: id => service.requireBoard(id), releases, pages });
+  registerPublicationRpc(server, { ready: checkReady, requireBoard: id => service.requireBoard(id), releases, pages, live: { releaseChannel: board => live.releaseChannel(board.id, board.createdAt) } });
   // Human UI RPCs alone can configure access. CLI/MCP expose only bound, policy-checked reads and triage.
   const inboxUser = { kind: "user" as const, id: "paseo-client" };
   server.handle(inboxListRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inbox.list(input, inboxUser); });
