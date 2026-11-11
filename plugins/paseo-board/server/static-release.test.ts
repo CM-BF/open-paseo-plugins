@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -110,6 +110,45 @@ describe("fixed public releases", () => {
     await writeFile(join(root, "releases", release.manifest.releaseId + ".json"), JSON.stringify(release));
     await expect(repository.preview(release.manifest.releaseId)).rejects.toThrow("hash");
     await expect(repository.download("../../private")).rejects.toThrow();
+  });
+  it("returns deterministic private settings and extended provenance without changing public files", () => {
+    board.canvas.patches.push({ id: "private-patch", selector: "#replace", operation: "replace", html: '<p id="replace">PUBLIC_FINAL</p>' });
+    const first = buildRelease({ ...options(), publicData: { a: 1, b: { c: 3, d: 4 } }, theme: "dark", apiOrigins: ["https://api.example.com"] });
+    const second = buildRelease({ ...options(), publicData: { b: { d: 4, c: 3 }, a: 1 }, theme: "dark", apiOrigins: ["https://api.example.com"] });
+    expect(first.settings).toEqual({ title: "Public fixture", network: "offline", theme: "dark", apiOrigins: ["https://api.example.com"], publicData: { a: 1, b: { c: 3, d: 4 } } });
+    expect(JSON.stringify(second.settings)).toBe(JSON.stringify(first.settings));
+    expect(first.provenance).toEqual({ boardId: board.id, boardRevision: board.revision, canvasBase: { revision: 1, documentVersion: 1 }, boardCreatedAt: board.createdAt, patchCount: 1 });
+    expect(JSON.stringify(first.files)).not.toContain(board.createdAt);
+  });
+  it("writes the settings sidecar once, also for a pre-existing release file, and keeps it out of listings", async () => {
+    const releases = join(root, "releases"), repository = new ReleaseRepository(releases), built = buildRelease(options()), id = built.manifest.releaseId;
+    // A release stored by older code: no settings and no extended provenance.
+    const legacy = JSON.stringify({ manifest: built.manifest, files: built.files, provenance: { boardId: board.id, boardRevision: board.revision, canvasBase: built.provenance.canvasBase } });
+    await mkdir(releases, { recursive: true }); await writeFile(join(releases, `${id}.json`), legacy);
+    expect(await repository.meta(id)).toBeUndefined();
+    const created = await repository.create(options());
+    expect(created.manifest.releaseId).toBe(id); expect(await readFile(join(releases, `${id}.json`), "utf8")).toBe(legacy);
+    const meta = await repository.meta(id), sidecar = await readFile(join(releases, `${id}.settings.json`), "utf8");
+    expect(meta).toMatchObject({ formatVersion: 1, releaseId: id, settings: built.settings, source: { boardId: board.id, boardCreatedAt: board.createdAt, canvasBase: { revision: 1, documentVersion: 1 }, documentVersion: 1, patchCount: 0 } });
+    expect(Date.parse(meta!.createdAt)).not.toBeNaN();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await repository.create(options());
+    expect(await readFile(join(releases, `${id}.settings.json`), "utf8")).toBe(sidecar);
+    const fresh = await repository.create({ ...options(), title: "Second" });
+    expect(JSON.parse(await readFile(join(releases, `${fresh.manifest.releaseId}.json`), "utf8"))).not.toHaveProperty("settings");
+    expect((await repository.meta(fresh.manifest.releaseId))?.settings.title).toBe("Second");
+    expect((await repository.list(board.id)).map(release => release.manifest.releaseId).sort()).toEqual([id, fresh.manifest.releaseId].sort());
+    expect((await readdir(releases)).filter(name => name.endsWith(".settings.json"))).toHaveLength(2);
+  });
+  it("treats a missing, corrupt or mismatched settings sidecar as absent", async () => {
+    const releases = join(root, "releases"), repository = new ReleaseRepository(releases), release = await repository.create(options()), id = release.manifest.releaseId;
+    const file = join(releases, `${id}.settings.json`), valid = JSON.parse(await readFile(file, "utf8"));
+    expect(await repository.meta("../../private")).toBeUndefined();
+    expect(await repository.meta("release-" + "0".repeat(64))).toBeUndefined();
+    await writeFile(file, "{not json"); expect(await repository.meta(id)).toBeUndefined();
+    await writeFile(file, JSON.stringify({ ...valid, releaseId: "release-" + "1".repeat(64) })); expect(await repository.meta(id)).toBeUndefined();
+    await writeFile(file, JSON.stringify({ ...valid, settings: { ...valid.settings, theme: "neon" } })); expect(await repository.meta(id)).toBeUndefined();
+    expect(await repository.list(board.id)).toHaveLength(1);
   });
   it("serves only frozen public files on loopback with correct content types", async () => {
     const release = buildRelease(options()), server = await serveRelease(release);

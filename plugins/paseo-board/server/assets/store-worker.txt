@@ -37652,6 +37652,29 @@ var ReleaseCreateSchema = external_exports.object({
   theme: external_exports.enum(["light", "dark"]).default("light"),
   apiOrigins: PublicApiOriginsSchema.default([])
 });
+var ReleaseSettingsSchema = external_exports.object({
+  title: external_exports.string(),
+  network: external_exports.enum(["offline", "cdn"]),
+  theme: external_exports.enum(["light", "dark"]),
+  apiOrigins: PublicApiOriginsSchema,
+  publicData: JsonDataSchema
+});
+var ReleaseSourceSchema = external_exports.object({
+  boardId: IdSchema,
+  boardCreatedAt: external_exports.string(),
+  canvasBase: CanvasBaseSchema,
+  documentVersion: external_exports.number().int().nonnegative(),
+  patchCount: external_exports.number().int().nonnegative()
+});
+var ReleaseMetaSchema = external_exports.object({
+  formatVersion: external_exports.literal(1),
+  releaseId: ReleaseIdSchema,
+  settings: ReleaseSettingsSchema,
+  source: ReleaseSourceSchema,
+  createdAt: external_exports.string()
+});
+var ShareKeySchema = external_exports.string().regex(/^(s[a-f0-9]{20}|[a-f0-9]{64})$/);
+var PagesRefusalCodeSchema = external_exports.enum(["series-busy", "newer-on-share", "share-foreign", "up-to-date", "share-files-mismatch"]);
 var GitHubHostSchema = external_exports.string().min(1).max(253).transform((value) => value.toLowerCase()).refine((value) => !/[^a-z0-9.-]/.test(value) && value.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)), "Invalid GitHub hostname");
 var GitHubLoginSchema = external_exports.string().min(1).max(100).regex(/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/).refine((value) => !/[^a-zA-Z0-9_.-]/.test(value), "Invalid GitHub login");
 var GitHubRepositoryNameSchema = external_exports.string().max(300).refine((value) => {
@@ -37667,7 +37690,8 @@ var PagesPrepareSchema = external_exports.object({
   githubHost: GitHubHostSchema.optional(),
   account: GitHubLoginSchema,
   repository: GitHubRepositoryNameSchema,
-  createRepository: external_exports.enum(["public", "private"]).optional()
+  createRepository: external_exports.enum(["public", "private"]).optional(),
+  shareKey: ShareKeySchema.optional()
 });
 var PagesJobSchema = PagesPrepareSchema.extend({
   jobId: IdSchema,
@@ -37690,11 +37714,49 @@ var PagesJobSchema = PagesPrepareSchema.extend({
   pagesConfigurationRequested: external_exports.boolean().optional(),
   pagesConfigurationHash: external_exports.string().optional(),
   publicationMode: external_exports.enum(["workflow", "legacy-subdirectory", "legacy-branch"]).optional(),
-  sitePath: external_exports.string().regex(/^boards\/[a-f0-9]{64}$/).optional(),
+  // Legacy jobs: boards/<releaseHex>. Series jobs: the version archive boards/<key>/v/<releaseHex>.
+  sitePath: external_exports.string().regex(/^boards\/(?:[a-f0-9]{64}|(?:s[a-f0-9]{20}|[a-f0-9]{64})\/v\/[a-f0-9]{64})$/).optional(),
   sourcePath: external_exports.enum(["/", "/docs"]).optional(),
   autoPublish: external_exports.boolean().optional(),
-  autoPublishUntil: external_exports.string().datetime().optional()
+  autoPublishUntil: external_exports.string().datetime().optional(),
+  // Stable share directory relative to the source root (absent = Pages root in workflow mode).
+  sharePath: external_exports.string().regex(/^boards\/(?:s[a-f0-9]{20}|[a-f0-9]{64})$/).optional(),
+  shareDeployedUrl: external_exports.string().optional(),
+  shareUrl: external_exports.string().optional(),
+  adoptedFrom: IdSchema.optional(),
+  refusal: external_exports.object({ code: PagesRefusalCodeSchema, message: external_exports.string() }).optional()
 });
+var ShareSourceSchema = external_exports.object({ canvasBase: CanvasBaseSchema, documentVersion: external_exports.number().int().nonnegative(), patchCount: external_exports.number().int().nonnegative().optional() });
+var ShareSchema = external_exports.object({
+  seriesId: IdSchema,
+  githubHost: GitHubHostSchema,
+  account: GitHubLoginSchema,
+  repository: GitHubRepositoryNameSchema,
+  shareKey: ShareKeySchema.optional(),
+  adoptable: external_exports.boolean(),
+  link: external_exports.string().optional(),
+  verified: external_exports.boolean(),
+  state: external_exports.enum(["up-to-date", "changed", "legacy", "updating", "merged-unverified", "failed"]),
+  releaseId: ReleaseIdSchema,
+  title: external_exports.string(),
+  publishedJobId: IdSchema,
+  settingsAvailable: external_exports.boolean(),
+  source: ShareSourceSchema,
+  inFlightJobId: IdSchema.optional()
+});
+var ShareStatusSchema = external_exports.object({
+  current: ShareSourceSchema.required(),
+  shares: external_exports.array(ShareSchema)
+});
+var ShareUpdateSchema = external_exports.object({
+  boardId: IdSchema,
+  seriesId: IdSchema,
+  expectedSource: external_exports.object({ documentVersion: external_exports.number().int().nonnegative(), patchCount: external_exports.number().int().nonnegative() })
+});
+var ShareUpdateResultSchema = external_exports.union([
+  external_exports.object({ upToDate: external_exports.literal(true) }),
+  external_exports.object({ manifest: ReleaseManifestSchema, request: PagesPrepareSchema.omit({ eventId: true, createRepository: true }) })
+]);
 var releaseInput = external_exports.object({ releaseId: ReleaseIdSchema });
 var createReleaseRpc = defineRpc({ name: "board.release.create", input: ReleaseCreateSchema, output: ReleaseManifestSchema });
 var listReleasesRpc = defineRpc({ name: "board.release.list", input: external_exports.object({ boardId: IdSchema }), output: external_exports.array(ReleaseManifestSchema) });
@@ -37706,6 +37768,8 @@ var preparePagesRpc = defineRpc({ name: "board.pages.prepare", input: PagesPrepa
 var publishPagesRpc = defineRpc({ name: "board.pages.publish", input: PagesPrepareSchema, output: PagesJobSchema });
 var mergePagesRpc = defineRpc({ name: "board.pages.merge", input: external_exports.object({ jobId: IdSchema, expectedHead: external_exports.string().regex(/^[a-f0-9]{40}$/) }), output: PagesJobSchema });
 var refreshPagesRpc = defineRpc({ name: "board.pages.refresh", input: external_exports.object({ jobId: IdSchema }), output: PagesJobSchema });
+var shareStatusRpc = defineRpc({ name: "board.release.share-status", input: external_exports.object({ boardId: IdSchema }), output: ShareStatusSchema });
+var shareUpdateRpc = defineRpc({ name: "board.release.share-update", input: ShareUpdateSchema, output: ShareUpdateResultSchema });
 var listPagesJobsRpc = defineRpc({ name: "board.pages.list", input: external_exports.object({ releaseId: ReleaseIdSchema.optional() }), output: external_exports.array(PagesJobSchema) });
 
 // shared/assets/component-layout-state.txt
@@ -39246,7 +39310,8 @@ function buildRelease(input2) {
   const manifest = ReleaseManifestSchema.parse({ formatVersion: 1, releaseId, artifactHash, title, viewerVersion: STATIC_VIEWER_VERSION, network: options.network, apiOrigins: options.apiOrigins, dependencies: resources.dependencies, warnings, files: inventory });
   files["release.json"] = canonicalJson(manifest) + "\n";
   if (Object.values(files).reduce((sum, value) => sum + Buffer.byteLength(value), 0) > MAX_RELEASE_BYTES) throw new Error("Public release exceeds the 8 MiB export limit");
-  return { manifest, files, provenance: { boardId: board.id, boardRevision: board.revision, canvasBase: authored.canvasBase } };
+  const settings = { title, network: options.network, theme: options.theme, apiOrigins: options.apiOrigins, publicData: JSON.parse(canonicalJson(options.publicData)) };
+  return { manifest, files, settings, provenance: { boardId: board.id, boardRevision: board.revision, canvasBase: authored.canvasBase, boardCreatedAt: board.createdAt, patchCount: board.canvas.patches.length } };
 }
 function releaseZip(files) {
   const local = [], central = [];

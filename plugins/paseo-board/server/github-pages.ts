@@ -316,10 +316,15 @@ export class GitHubPagesManager {
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 32_768) throw new PublicationValidationError("Invalid Pages job file");
     const job = PagesJobSchema.parse(JSON.parse(await readFile(file, "utf8"))); if (job.jobId !== id) throw new PublicationValidationError("Pages job identity changed"); return job;
   }
-  async list(releaseId?: string): Promise<PagesJob[]> {
+  /** skipInvalid: status views omit unreadable journal files instead of failing. */
+  async list(releaseId?: string, options: { skipInvalid?: boolean } = {}): Promise<PagesJob[]> {
     let names: string[]; try { names = await readdir(this.root); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
     const jobs: PagesJob[] = [];
-    for (const name of names.sort()) if (/^pages-[a-f0-9]{40}\.json$/.test(name)) { const job = await this.read(name.slice(0, -5)); if (!releaseId || job.releaseId === releaseId) jobs.push(job); }
+    for (const name of names.sort()) if (/^pages-[a-f0-9]{40}\.json$/.test(name)) {
+      let job: PagesJob;
+      try { job = await this.read(name.slice(0, -5)); } catch (error) { if (options.skipInvalid) continue; throw error; }
+      if (!releaseId || job.releaseId === releaseId) jobs.push(job);
+    }
     return jobs;
   }
   private async save(job: PagesJob): Promise<PagesJob> {

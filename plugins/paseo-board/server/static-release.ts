@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { createServer } from "node:http";
 import { DOMParser } from "linkedom";
 import { IdSchema, type Board, type CanvasBase } from "../shared/contracts";
-import { ReleaseCreateSchema, ReleaseIdSchema, ReleaseManifestSchema, type ReleaseCreateInput, type ReleaseManifest } from "../shared/release-contracts";
+import { ReleaseCreateSchema, ReleaseIdSchema, ReleaseManifestSchema, ReleaseMetaSchema, type ReleaseCreateInput, type ReleaseManifest, type ReleaseMeta, type ReleaseSettings } from "../shared/release-contracts";
 import { STATIC_VIEWER_RUNTIME, STATIC_VIEWER_SHELL, STATIC_VIEWER_VERSION } from "../shared/static-viewer";
 import { DEFAULT_DARK_COLORS, DEFAULT_LIGHT_COLORS, frameThemeFromColors } from "../shared/frame-theme";
 import stylesheet from "../shared/assets/visualize.css.txt";
@@ -20,7 +20,10 @@ const NOTICE = "Paseo Board public viewer\nCopyright 2026 Shurui Gui\n\nThe defa
 export type StaticRelease = {
   manifest: ReleaseManifest;
   files: Record<string, string>;
-  provenance: { boardId: string; boardRevision: number; canvasBase: CanvasBase };
+  // boardCreatedAt/patchCount are absent from releases built before share updates.
+  provenance: { boardId: string; boardRevision: number; canvasBase: CanvasBase; boardCreatedAt?: string; patchCount?: number };
+  // Returned by buildRelease only; persisted in the private settings sidecar, not the release file.
+  settings?: ReleaseSettings;
 };
 export const sha256 = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 const scriptJson = (value: unknown) => canonicalJson(value).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
@@ -106,7 +109,8 @@ export function buildRelease(input: ReleaseCreateInput & { board: Board }): Stat
   const manifest = ReleaseManifestSchema.parse({ formatVersion: 1, releaseId, artifactHash, title, viewerVersion: STATIC_VIEWER_VERSION, network: options.network, apiOrigins: options.apiOrigins, dependencies: resources.dependencies, warnings, files: inventory });
   files["release.json"] = canonicalJson(manifest) + "\n";
   if (Object.values(files).reduce((sum, value) => sum + Buffer.byteLength(value), 0) > MAX_RELEASE_BYTES) throw new Error("Public release exceeds the 8 MiB export limit");
-  return { manifest, files, provenance: { boardId: board.id, boardRevision: board.revision, canvasBase: authored.canvasBase } };
+  const settings: ReleaseSettings = { title, network: options.network, theme: options.theme, apiOrigins: options.apiOrigins, publicData: JSON.parse(canonicalJson(options.publicData)) };
+  return { manifest, files, settings, provenance: { boardId: board.id, boardRevision: board.revision, canvasBase: authored.canvasBase, boardCreatedAt: board.createdAt, patchCount: board.canvas.patches.length } };
 }
 
 export function validateRelease(release: StaticRelease): StaticRelease {
@@ -127,16 +131,39 @@ export interface ReleaseComputation {
 export class ReleaseRepository {
   constructor(readonly root: string, private readonly computation?: ReleaseComputation) {}
   async create(input: ReleaseCreateInput & { board: Board }): Promise<StaticRelease> {
-    const release = this.computation ? await this.computation.buildRelease(input) : buildRelease(input);
+    const { settings, ...release } = this.computation ? await this.computation.buildRelease(input) : buildRelease(input);
+    const id = release.manifest.releaseId, { provenance } = release;
     await ensureDirectory(this.root);
-    const file = join(this.root, `${release.manifest.releaseId}.json`), temporary = `${file}.${randomUUID()}.tmp`;
+    await this.writeOnce(join(this.root, `${id}.json`), JSON.stringify(release));
+    // Also for a pre-existing (legacy) file: these settings are exactly the inputs behind this releaseId.
+    if (settings && provenance.boardCreatedAt !== undefined && provenance.patchCount !== undefined) {
+      const meta: ReleaseMeta = { formatVersion: 1, releaseId: id, settings, createdAt: new Date().toISOString(), source: {
+        boardId: provenance.boardId, boardCreatedAt: provenance.boardCreatedAt, canvasBase: provenance.canvasBase,
+        documentVersion: provenance.canvasBase.documentVersion, patchCount: provenance.patchCount,
+      } };
+      await this.writeOnce(join(this.root, `${id}.settings.json`), JSON.stringify(ReleaseMetaSchema.parse(meta)));
+    }
+    const directory = await open(this.root, "r"); try { await directory.sync(); } finally { await directory.close(); }
+    return this.read(id);
+  }
+  /** First writer wins; an existing file is never replaced. */
+  private async writeOnce(file: string, content: string): Promise<void> {
+    const temporary = `${file}.${randomUUID()}.tmp`;
     try {
       const handle = await open(temporary, "wx", 0o600);
-      try { await handle.writeFile(JSON.stringify(release)); await handle.sync(); } finally { await handle.close(); }
+      try { await handle.writeFile(content); await handle.sync(); } finally { await handle.close(); }
       try { await link(temporary, file); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-      const directory = await open(this.root, "r"); try { await directory.sync(); } finally { await directory.close(); }
     } finally { await unlink(temporary).catch(error => { if (error.code !== "ENOENT") throw error; }); }
-    return this.read(release.manifest.releaseId);
+  }
+  /** Private settings sidecar; undefined when absent or unreadable (status must never throw). */
+  async meta(id: string): Promise<ReleaseMeta | undefined> {
+    try {
+      ReleaseIdSchema.parse(id);
+      const file = join(this.root, `${id}.settings.json`), stat = await lstat(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_RELEASE_BYTES * 3) return undefined;
+      const meta = ReleaseMetaSchema.safeParse(JSON.parse(await readFile(file, "utf8")));
+      return meta.success && meta.data.releaseId === id ? meta.data : undefined;
+    } catch { return undefined; }
   }
   async read(id: string): Promise<StaticRelease> {
     ReleaseIdSchema.parse(id);
