@@ -3,6 +3,7 @@ import { Pressable, Text, View } from "react-native";
 import { ScrollView } from "@getpaseo/plugin/client/ui";
 import type { Interaction } from "../shared/contracts";
 import { Action, Copy, useColors } from "./ui";
+import { sideProvenance } from "./side-context";
 
 export function SideAgentPicker({ interactions, selectedId, pending, disabled, onSelect }: {
   interactions: Interaction[]; selectedId?: string; pending: boolean; disabled: boolean; onSelect(agentId: string): Promise<boolean>;
@@ -10,8 +11,8 @@ export function SideAgentPicker({ interactions, selectedId, pending, disabled, o
   const c = useColors();
   const [open, setOpen] = useState(false);
   const choices = useMemo(() => {
-    const agents = new Map<string, { id: string; label: string; text: string }>();
-    for (const item of interactions) if (item.kind === "fork" && item.agentId && !agents.has(item.agentId)) agents.set(item.agentId, { id: item.agentId, label: `旁支 ${agents.size + 1}`, text: item.text.replace(/\s+/g, " ").slice(0, 90) });
+    const agents = new Map<string, { id: string; label: string; text: string; provenance?: string }>();
+    for (const item of interactions) if (item.kind === "fork" && item.agentId && !agents.has(item.agentId)) agents.set(item.agentId, { id: item.agentId, label: `旁支 ${agents.size + 1}`, text: item.text.replace(/\s+/g, " ").slice(0, 90), provenance: sideProvenance(item) });
     return [...agents.values()];
   }, [interactions]);
   const current = choices.find(item => item.id === selectedId);
@@ -24,9 +25,10 @@ export function SideAgentPicker({ interactions, selectedId, pending, disabled, o
     {open ? <View testID="board-side-agent-options" style={{ borderWidth: 1, borderColor: c.border, borderRadius: 8, overflow: "hidden" }}>
       <ScrollView style={{ maxHeight: 156 }} contentContainerStyle={{ padding: 4, gap: 3 }} keyboardShouldPersistTaps="handled">
         {!choices.length ? <Copy small muted>还没有旁支。Side 发送会建立一个，并在之后继续使用。</Copy> : null}
-        {choices.map(item => <Pressable key={item.id} testID={`board-side-agent-${item.id}`} accessibilityRole="button" accessibilityLabel={`使用${item.label}：${item.text}`} accessibilityState={{ selected: !pending && selectedId === item.id, disabled }} disabled={disabled} onPress={() => { void onSelect(item.id).then(changed => { if (changed) setOpen(false); }); }} style={({ pressed }) => ({ padding: 8, gap: 3, borderRadius: 5, backgroundColor: pressed || !pending && selectedId === item.id ? c.surface2 : c.surface0 })}>
+        {choices.map(item => <Pressable key={item.id} testID={`board-side-agent-${item.id}`} accessibilityRole="button" accessibilityLabel={`使用${item.label}：${item.text}${item.provenance ? `（${item.provenance}）` : ""}`} accessibilityState={{ selected: !pending && selectedId === item.id, disabled }} disabled={disabled} onPress={() => { void onSelect(item.id).then(changed => { if (changed) setOpen(false); }); }} style={({ pressed }) => ({ padding: 8, gap: 3, borderRadius: 5, backgroundColor: pressed || !pending && selectedId === item.id ? c.surface2 : c.surface0 })}>
           <Text style={{ color: c.foreground, fontSize: 12, fontWeight: "600" }}>{item.label}{!pending && selectedId === item.id ? " · 当前" : ""}</Text>
           <Text numberOfLines={2} style={{ color: c.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{item.text}</Text>
+          {item.provenance ? <Text testID={`board-side-agent-provenance-${item.id}`} numberOfLines={2} style={{ color: c.foregroundMuted, fontSize: 11, lineHeight: 15 }}>{item.provenance}</Text> : null}
         </Pressable>)}
       </ScrollView>
     </View> : null}

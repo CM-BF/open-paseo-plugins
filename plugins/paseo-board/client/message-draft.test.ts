@@ -35,4 +35,13 @@ describe("durable message acknowledgement", () => {
     const reply = receipt({ destination: "side", kind: "reply" });
     expect(acceptedDraftInteraction({ ...draft, destination: "side" }, [reply])).toBe(reply);
   });
+  it("requires the frozen new-Side choice on a created Side but not on a reply to an existing one", () => {
+    const history = { ...draft, destination: "side" as const, sideContext: "owner-history" as const };
+    const fork = receipt({ destination: "side", kind: "fork", sideContext: "owner-history" });
+    expect(acceptedDraftInteraction(history, [fork])).toBe(fork);
+    expect(acceptedDraftInteraction(history, [receipt({ destination: "side", kind: "fork" })])).toBeUndefined();
+    expect(acceptedDraftInteraction({ ...history, sideContext: undefined }, [fork])).toBeUndefined();
+    const reply = receipt({ destination: "side", kind: "reply" });
+    expect(acceptedDraftInteraction(history, [reply])).toBe(reply);
+  });
 });

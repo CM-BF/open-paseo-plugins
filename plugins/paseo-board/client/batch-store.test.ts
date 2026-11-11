@@ -104,4 +104,18 @@ describe("durable comment batch", () => {
     expect(store.put(batch)).toMatchObject({ ok: false }); expect(data.size).toBe(0);
     expect(createBatchStore(scope, null).put(batch)).toMatchObject({ ok: false });
   });
+  it("freezes the new-Side choice with the destination and requires it on a created Side", () => {
+    const { storage } = memory(), store = createBatchStore(scope, storage);
+    const batch = createCommentBatch([draft("first")], "history-intent", "new-side", undefined, "owner-history");
+    expect(batch.sideContext).toBe("owner-history");
+    expect(store.put(batch)).toEqual({ ok: true }); expect(createBatchStore(scope, storage).list().batches[0].sideContext).toBe("owner-history");
+    expect(createCommentBatch([draft("first")], "main-intent", "main", undefined, "owner-history").sideContext).toBeUndefined();
+    expect(createCommentBatch([draft("first")], "blank-intent", "side", undefined, "blank").sideContext).toBeUndefined();
+    const item: Interaction = { id: batch.intentId, kind: "fork", destination: "new-side", text: batch.text, comments: batch.comments, sideContext: "owner-history", status: "saved", resultReferences: [], createdAt: "now", updatedAt: "now" };
+    expect(acceptedBatchInteraction(batch, [item])).toBe(item);
+    expect(acceptedBatchInteraction(batch, [{ ...item, sideContext: undefined }])).toBeUndefined();
+    const side = createCommentBatch([draft("first")], "side-intent", "side", undefined, "owner-history");
+    const reply: Interaction = { ...item, id: side.intentId, destination: "side", kind: "reply", sideContext: undefined };
+    expect(acceptedBatchInteraction(side, [reply])).toBe(reply);
+  });
 });

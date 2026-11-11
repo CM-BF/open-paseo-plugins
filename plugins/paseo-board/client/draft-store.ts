@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AnchorSchema, IdSchema, type Anchor, type Interaction } from "../shared/contracts";
+import { AnchorSchema, IdSchema, SideContextSchema, type Anchor, type Interaction, type SideContext } from "../shared/contracts";
 import type { CaptureFailureReason } from "../shared/frame-contract";
 import { browserDraftStorage } from "./draft-storage-web";
 
@@ -13,6 +13,8 @@ export interface DraftCompose {
   /** Captured source entity; retained across uncertain-send retries. */
   expectedCreatedAt?: string;
   destination?: "main" | "side" | "new-side";
+  /** Frozen at the send click with destination; only `owner-history` is ever stored. */
+  sideContext?: SideContext;
   captureStatus?: "ready" | "failed" | "omitted";
   captureFailureReason?: CaptureFailureReason;
 }
@@ -58,6 +60,7 @@ const ComposeSchema = z.object({
   sourceInteractionId: IdSchema.optional(), intentId: IdSchema.optional(),
   expectedCreatedAt: z.string().min(1).max(100).optional(),
   destination: z.enum(["main", "side", "new-side"]).optional(),
+  sideContext: SideContextSchema.optional(),
   captureStatus: z.enum(["ready", "failed", "omitted"]).optional(),
   captureFailureReason: z.enum(["content-changed", "too-complex", "unsupported-layout", "too-large", "timeout", "generation-failed"]).optional(),
 }).refine(value => !value.intentId || Boolean(value.destination), "An uncertain send needs its immutable destination");

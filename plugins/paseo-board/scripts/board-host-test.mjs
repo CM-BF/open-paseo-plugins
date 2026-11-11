@@ -16,6 +16,7 @@ const batchScope = process.env.BOARD_HOST_TEST_SCOPE === 'batch';
 const toolbarScope = process.env.BOARD_HOST_TEST_SCOPE === 'toolbar';
 const modalScope = process.env.BOARD_HOST_TEST_SCOPE === 'modal';
 const inboxScope = process.env.BOARD_HOST_TEST_SCOPE === 'inbox';
+const forkScope = process.env.BOARD_HOST_TEST_SCOPE === 'fork';
 const resumeScopeName = process.env.BOARD_HOST_TEST_SCOPE;
 const resumeScope = ['resume','resume-core','resume-reconnect','resume-retirement'].includes(resumeScopeName);
 const bundle = await build({ entryPoints: [join(directory, 'board-host-fixture.tsx')], bundle: true, format: 'iife', platform: 'browser', write: false, loader: { '.txt': 'text' }, define: { 'process.env.NODE_ENV': '"test"' }, plugins: [{ name: 'host-adapters', setup(build) { build.onResolve({ filter: /^(react-native|@getpaseo\/plugin(?:\/client(?:\/ui)?)?)$/ }, () => ({ path: join(directory, 'board-host-adapter.tsx') })); } }] });
@@ -171,6 +172,10 @@ try {
     assert.equal(await frame(`document.elementFromPoint(${x-origin.x},${y-origin.y})===document.querySelector(${JSON.stringify(selector)})`), true, 'The reference point must hit its authored target, not a restored marker or overlay');
     return openAt(x-origin.x,y-origin.y);
   };
+  const runSideContext = async () => {
+    const { runSideContextChecks } = await import('./side-context-checks.mjs');
+    await runSideContextChecks({ assert, command, evaluate, until, frame, untilFrame, key, click, hostClick, hostLocation, openAt, sendText, noPopover, closePopover, canvasRect, input, popover, check, origin: `http://127.0.0.1:${server.address().port}` });
+  };
   const runToolbarChecks = async () => {
     const toolbar='[data-testid="board-toolbar"]', popup='[data-testid="board-toolbar-popup"]';
     await evaluate(`window.toolbarOriginalFrame=document.querySelector('iframe[data-board-id="host-fixture"]');true`);
@@ -295,6 +300,8 @@ try {
     check('New Board modal receives the explicit theme, accepts native text input and cancels without a create RPC');
   } else if (toolbarScope) {
     await runToolbarChecks();
+  } else if (forkScope) {
+    await runSideContext();
   } else if (inboxScope) {
     const { runInboxHostChecks } = await import('./inbox-host-checks.mjs');
     await runInboxHostChecks({ assert, command, evaluate, until, frame, untilFrame, key, click, hostClick, hostLocation, sendText, submitCount, canvasRect, check });
@@ -1457,6 +1464,8 @@ try {
   await until(`document.querySelector(${JSON.stringify(navPosition)})?.getAttribute('aria-label')?.includes('更新 11/11')`);
   assert.equal(await evaluate(seenUpdate('update-old-document')), false);
   check('the Board index shows per-project unread badges, and a first visit without a saved view focuses its newest unread location once without claiming an unavailable target was seen');
+  // A fresh fixture page: the new-Side choice flows do not depend on the state above.
+  await runSideContext();
   }
 
   }

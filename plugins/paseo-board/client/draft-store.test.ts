@@ -210,4 +210,14 @@ describe("durable contextual message drafts", () => {
     const { storage } = memory(), store = createDraftStore(scope, storage), off = store.subscribe(() => { throw new Error("observer failed"); });
     const result = saved(store.put(input())); expect(store.remove(result.id, result.revision)).toEqual({ ok: true }); off();
   });
+  it("round-trips the frozen new-Side choice and still reads records without one", () => {
+    const { storage } = memory(), store = createDraftStore(scope, storage);
+    saved(store.put({ ...input("history"), compose: { ...input("history").compose, intentId: "intent-history", destination: "new-side", sideContext: "owner-history" } }));
+    saved(store.put(input("legacy")));
+    const restored = createDraftStore(scope, storage).list();
+    expect(restored.issues).toEqual([]);
+    expect(restored.drafts.find(item => item.id === "history")?.compose).toMatchObject({ destination: "new-side", sideContext: "owner-history" });
+    expect(restored.drafts.find(item => item.id === "legacy")?.compose.sideContext).toBeUndefined();
+    expect(store.put({ ...input("invalid"), compose: { ...input("invalid").compose, sideContext: "everything" as never } })).toMatchObject({ ok: false });
+  });
 });

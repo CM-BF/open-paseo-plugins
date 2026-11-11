@@ -4,7 +4,7 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { openExternalUrl } from "@getpaseo/plugin/client";
 import { BoardServicesProvider, useBoardRpc, useBoardServices, type BoardServices } from "./transport";
 import { Markdown, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
-import { interactBoardRpc, markUpdatesSeenRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc, type Anchor, type Board, type Decision, type Interaction, type JsonData } from "../shared/contracts";
+import { interactBoardRpc, markUpdatesSeenRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc, type Anchor, type Board, type Decision, type Interaction, type JsonData, type SideContext } from "../shared/contracts";
 import type { AskRequest, AskResult, ComposeRequest, CaptureStatus, CaptureFailureReason, SelectionCapture, FrameTheme, InteractionLocation, SelectionMode, CanvasViewState } from "../shared/frame-contract";
 import { interactionMarkers, interactionMarkerId, markerInteractionId, sameSelectionAnchor } from "../shared/frame-contract";
 import { frameThemeFromColors } from "../shared/frame-theme";
@@ -28,6 +28,8 @@ import { acceptedBatchInteraction, batchContainsDraft, createBatchStore, createC
 import { readBoardView, writeBoardView, retainBoardViewStore, flushBoardViewStore } from "./view-store";
 import { DiscussionRail } from "./discussion-rail";
 import { SideAgentPicker } from "./side-agent-picker";
+import { SideContextChoice } from "./side-context-choice";
+import { SIDE_CONTEXT_LABELS, SIDE_CONTEXT_SCOPE, createSideContextStore, sideContextExisting, sideProvenance } from "./side-context";
 import { useUpdateNavigation } from "./update-navigation";
 import { CompositionSourceSync, CompositionSourcesPanel, useCompositionSources } from "./composition-sources";
 import { CompositionEmbeds } from "./composition-view";
@@ -39,7 +41,7 @@ export interface BoardViewProps extends PluginSurfaceProps {
   embedded?: { mount: CompositionMount; viewScope: string; onOpen(): void };
 }
 type Destination = "main" | "side" | "new-side";
-type Compose = { draftId?: string; draftRevision?: string; queuedAt?: number; selectionId?: string; captureStatus?: CaptureStatus | "omitted"; captureFailureReason?: CaptureFailureReason; kind: Interaction["kind"]; text: string; intentId?: string; expectedCreatedAt?: string; destination?: Destination; anchor?: Anchor; sourceInteractionId?: string; resolve?: (result: AskResult) => void };
+type Compose = { draftId?: string; draftRevision?: string; queuedAt?: number; selectionId?: string; captureStatus?: CaptureStatus | "omitted"; captureFailureReason?: CaptureFailureReason; kind: Interaction["kind"]; text: string; intentId?: string; expectedCreatedAt?: string; destination?: Destination; sideContext?: SideContext; anchor?: Anchor; sourceInteractionId?: string; resolve?: (result: AskResult) => void };
 const captureFailureNames: Record<CaptureFailureReason, string> = {
   "content-changed": "截图过程中画布内容发生变化，请重新框选。",
   "too-complex": "选区内容过于复杂，请缩小选区。",
@@ -118,6 +120,12 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
   const [sideChoiceUncertain, setSideChoiceUncertain] = useState(false);
   const sideTargetBlocked = choosingSide || sideChoiceUncertain;
   const [inputFocusToken, setInputFocusToken] = useState(0);
+  // The new-Side choice is a local per-Board preference. It is read when a composer or the
+  // drafts drawer opens and is never changed by another window while one is open.
+  const sideContexts = useMemo(() => createSideContextStore({ hostId: host.id, boardId }), [host.id, boardId]);
+  const [sideContext, setSideContext] = useState<SideContext>(() => sideContexts.read());
+  const sideChoiceOpen = Boolean(compose) || drawer === "drafts";
+  useEffect(() => { if (sideChoiceOpen) setSideContext(sideContexts.read()); }, [sideChoiceOpen, sideContexts]);
   const [message, setMessage] = useState<string | null>(null);
   const [frameError, setFrameError] = useState<string | null>(null);
   const [height, setHeight] = useState(500);
@@ -179,7 +187,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
     draft.draftId ??= localId("draft");
     const input = { id: draft.draftId, open, position, queuedAt: draft.queuedAt, compose: {
       kind: draft.kind, text: draft.text, anchor: draft.anchor, sourceInteractionId: draft.sourceInteractionId,
-      intentId: draft.intentId, expectedCreatedAt: draft.expectedCreatedAt, destination: draft.destination,
+      intentId: draft.intentId, expectedCreatedAt: draft.expectedCreatedAt, destination: draft.destination, sideContext: draft.sideContext,
       captureStatus: draft.captureStatus === "pending" ? "omitted" as const : draft.captureStatus,
       captureFailureReason: draft.captureFailureReason,
     } };
@@ -221,7 +229,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
       // Editing after an uncertain send starts another draft. The original
       // immutable request stays available until its receipt is confirmed.
       persistCompose(previous, false);
-      changeCompose({ ...previous, text, draftId: undefined, draftRevision: undefined, intentId: undefined, destination: undefined });
+      changeCompose({ ...previous, text, draftId: undefined, draftRevision: undefined, intentId: undefined, destination: undefined, sideContext: undefined });
     } else changeCompose({ ...previous, text });
   };
   useEffect(() => {
@@ -367,7 +375,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
   const retryUnconfirmed = (item: Interaction) => {
     if (pending.current || composeRef.current) return;
     if (item.comments) { setDrawer("drafts"); return; }
-    const draft: Compose = { kind: item.kind, text: item.text, intentId: item.id, expectedCreatedAt: item.expectedCreatedAt, destination: item.destination, anchor: item.anchor, sourceInteractionId: item.sourceInteractionId };
+    const draft: Compose = { kind: item.kind, text: item.text, intentId: item.id, expectedCreatedAt: item.expectedCreatedAt, destination: item.destination, sideContext: item.sideContext, anchor: item.anchor, sourceInteractionId: item.sourceInteractionId };
     changeCompose(draft); setMessage(null);
   };
   const submit = async (destination: Destination = "main") => {
@@ -377,6 +385,8 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
     // An uncertain send retries its immutable route and ID. Changing text starts a new intent.
     if (draft.intentId && destination !== draft.destination) return;
     draft.queuedAt = undefined;
+    // The visible choice is frozen with the route; a retry keeps its original value.
+    if (!draft.intentId) draft.sideContext = destination !== "main" && sideContext === "owner-history" ? "owner-history" : undefined;
     draft.destination = destination;
     pending.current = true; setSending(true); setMessage(null);
     if (!draft.intentId) draft.expectedCreatedAt ??= board.createdAt;
@@ -391,8 +401,8 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
       return;
     }
     const now = new Date().toISOString();
-    const submitted = { expectedCreatedAt: draft.expectedCreatedAt, intentId: draft.intentId, kind: draft.kind, destination, text: draft.text.trim(), anchor: draft.anchor, sourceInteractionId: draft.sourceInteractionId };
-    const local: Interaction = { id: submitted.intentId, expectedCreatedAt: submitted.expectedCreatedAt, kind: submitted.kind, destination, text: submitted.text, anchor: submitted.anchor, sourceInteractionId: submitted.sourceInteractionId, status: "sending", resultReferences: [], createdAt: now, updatedAt: now };
+    const submitted = { expectedCreatedAt: draft.expectedCreatedAt, intentId: draft.intentId, kind: draft.kind, destination, text: draft.text.trim(), anchor: draft.anchor, sourceInteractionId: draft.sourceInteractionId, ...(draft.sideContext ? { sideContext: draft.sideContext } : {}) };
+    const local: Interaction = { id: submitted.intentId, expectedCreatedAt: submitted.expectedCreatedAt, kind: submitted.kind, destination, text: submitted.text, anchor: submitted.anchor, sourceInteractionId: submitted.sourceInteractionId, ...(draft.sideContext ? { sideContext: draft.sideContext } : {}), status: "sending", resultReferences: [], createdAt: now, updatedAt: now };
     setOptimistic(items => [...items.filter(item => item.id !== local.id), local]);
     setSelectedInteractionId(interactionRoot(draft.sourceInteractionId ?? draft.intentId, interactions));
     try {
@@ -414,7 +424,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
     pending.current = true; setSending(true); setBatchError(null);
     let batch: CommentBatch;
     try {
-      batch = retry ?? await prepareCommentBatch({ hostId: host.id, boardId, expectedCreatedAt: board.createdAt }, draftStore, batchStore, destination, localId("batch"), reviewed);
+      batch = retry ?? await prepareCommentBatch({ hostId: host.id, boardId, expectedCreatedAt: board.createdAt, sideContext }, draftStore, batchStore, destination, localId("batch"), reviewed);
       if (batch.expectedCreatedAt && batch.expectedCreatedAt !== board.createdAt) throw new Error("画板已被替换；原发送记录已保留，不能发送给新画板。");
       if (acceptedBatchInteraction(batch, board.interactions)) {
         const cleaned = reconcileBatchDrafts(batch, draftStore), removed = cleaned.ok ? batchStore.remove(batch) : cleaned;
@@ -425,10 +435,10 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
       if (!saved.ok) throw new Error(saved.message);
     } catch (error) { pending.current = false; setSending(false); setBatchError(errorMessage(error)); return; }
     const now = new Date().toISOString();
-    const local: Interaction = { id: batch.intentId, kind: "change", destination: batch.destination, text: batch.text, comments: batch.comments, status: "sending", resultReferences: [], createdAt: now, updatedAt: now };
+    const local: Interaction = { id: batch.intentId, kind: "change", destination: batch.destination, text: batch.text, comments: batch.comments, ...(batch.sideContext ? { sideContext: batch.sideContext } : {}), status: "sending", resultReferences: [], createdAt: now, updatedAt: now };
     setOptimistic(items => [...items.filter(item => item.id !== local.id), local]);
     try {
-      const result = await send({ boardId, expectedCreatedAt: batch.expectedCreatedAt, intentId: batch.intentId, kind: "change", destination: batch.destination, text: batch.text, comments: batch.comments });
+      const result = await send({ boardId, expectedCreatedAt: batch.expectedCreatedAt, intentId: batch.intentId, kind: "change", destination: batch.destination, text: batch.text, comments: batch.comments, ...(batch.sideContext ? { sideContext: batch.sideContext } : {}) });
       if (!acceptedBatchInteraction(batch, [result])) throw new Error("返回的发送记录与这组评论不一致；原发送已保留，请稍后核对。");
       setOptimistic(items => items.map(item => item.id === result.id ? result : item));
       const cleaned = reconcileBatchDrafts(batch, draftStore), removed = cleaned.ok ? batchStore.remove(batch) : cleaned;
@@ -457,6 +467,14 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
     setDrawer("drafts");
     await submitBatch("main", undefined, reviewed.map(({ id, revision }) => ({ id, revision })));
   };
+  const chooseSideContext = (value: SideContext) => {
+    setSideContext(value); sideContexts.write(value);
+    // Keep Option/Alt+Enter working after a click: return focus to the message input.
+    if (composeRef.current) setInputFocusToken(next => next + 1);
+  };
+  const sideExists = Boolean(board?.sideAgentId || board?.pendingSideInteractionId);
+  const sideContextNotes = (value: SideContext, frozen: boolean, existingAction?: string) => frozen ? ["重试沿用原发送的选择，不会改变。"]
+    : [...(value === "owner-history" ? [SIDE_CONTEXT_SCOPE] : []), ...(sideExists ? [sideContextExisting(existingAction)] : [])];
   const releaseSideChoice = () => {
     sideChoicePending.current = false; setChoosingSide(false); setSideChoiceUncertain(false);
     if (composeRef.current) setInputFocusToken(value => value + 1);
@@ -576,6 +594,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
             {compose.captureStatus ? <View style={{ minHeight: 36 }}><Copy small muted>{compose.captureStatus === "pending" ? "截图准备中；现在发送会保留文字和位置，不附图片。" : compose.captureStatus === "failed" ? `截图失败：${captureFailureNames[compose.captureFailureReason ?? "generation-failed"]}文字和位置已保留。` : compose.captureStatus === "omitted" ? "此次发送不附图片，保留原来的文字和位置。" : "已附选区截图。"}</Copy></View> : null}
             {compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? <Copy small muted>引用来自旧画布版本；agent 会对照原来的位置和快照。</Copy> : null}
             <SideAgentPicker interactions={board.interactions} selectedId={board.sideAgentId} pending={Boolean(board.pendingSideInteractionId)} disabled={sending || sideTargetBlocked || Boolean(compose.intentId)} onSelect={chooseSideAgent} />
+            {compose.intentId && compose.destination === "main" ? null : <SideContextChoice value={compose.intentId ? compose.sideContext ?? "blank" : sideContext} disabled={sending || sideTargetBlocked || Boolean(compose.intentId)} notes={sideContextNotes(compose.intentId ? compose.sideContext ?? "blank" : sideContext, Boolean(compose.intentId))} onChange={chooseSideContext} />}
             {canRenderFrames ? <WebMessageInput value={compose.text} focusToken={inputFocusToken} disabled={sending || sideTargetBlocked} onChange={changeDraftText} onStage={stageMessage} onSubmit={destination => { void (destination === "main" ? submitMain() : submit(destination)); }} onClose={closePopover} placeholder="想了解什么？或希望这里发生什么变化？" style={{ color: c.foreground, background: c.surface1, border: `1px solid ${c.border}`, borderRadius: 8, padding: 10, minHeight: 80, fontSize: 14 }} /> : <TextInput autoFocus accessibilityLabel="发给 agent 的消息" value={compose.text} editable={!sending && !sideTargetBlocked} multiline maxLength={24000} onChangeText={changeDraftText} placeholder="想了解什么？或希望这里发生什么变化？" placeholderTextColor={c.foregroundMuted} style={{ color: c.foreground, backgroundColor: c.surface1, borderColor: c.border, borderWidth: 1, borderRadius: 8, padding: 10, minHeight: 80, textAlignVertical: "top" }} />}
             {draftError ? <Notice error text={`草稿未能保存在本机：${draftError} 当前输入仍保留，请先复制文字。`} /> : <Copy small muted>草稿保存在本机；收起或断线后可继续编辑。</Copy>}
             {!board.ownerAgentId ? <Notice error text="这块 Board 尚未关联负责的 agent。请让 agent 接管后再发送。" /> : null}
@@ -586,13 +605,14 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
               {!compose.intentId && !compose.sourceInteractionId ? <Action testID="board-comment-stage" label={compose.queuedAt !== undefined ? "保存到待发送" : "加入待发送"} disabled={sending || !compose.text.trim()} onPress={stageCompose} /> : null}
               {compose.intentId ? <Action label={sending ? "发送中…" : "重试原发送"} disabled={sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId} primary onPress={() => { void submit(compose.destination ?? "main"); }} /> : <>
                 <Action label={board.sideAgentId || board.pendingSideInteractionId ? "Side 发送" : "新建 Side 并发送"} icon="GitBranch" disabled={sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId} onPress={() => { void submit("side"); }} />
+                {board.sideAgentId || board.pendingSideInteractionId ? <Action testID="board-compose-new-side" label="新建 Side 并发送" disabled={sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId} onPress={() => { void submit("new-side"); }} /> : null}
                 <Action label={staged.some(item => item.id !== compose.draftId) ? "主会话统一发送" : "主会话发送"} disabled={sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId} primary onPress={() => { void submitMain(); }} />
               </>}
             </View>
             {compose.intentId ? <Copy small muted>重试只沿原目标继续，不合并待发送评论；Enter 不会重新暂存。修改文字会另存新草稿，原发送仍保留待核对。</Copy> : null}
             {!compose.intentId && !compose.sourceInteractionId ? <Copy small muted>加入待发送后可继续评论其他位置，再从待发送清单一起发送。{compose.captureStatus === "pending" ? "现在加入会保留文字和位置，不附图片。" : ""}</Copy> : null}
             <Copy small muted>{compose.sourceInteractionId ? "Enter 保存追问草稿 · ⌘ / Ctrl + Enter 发送追问（须先处理待发送评论）" : "Enter 加入待发送 · ⌘ / Ctrl + Enter 当前评论和待发送评论一起发主会话"}
-Option / Alt + Enter 当前评论发 Side · Option / Alt + Shift + Enter 新 Side · Shift+Enter 换行</Copy>
+Option / Alt + Enter 当前评论发 Side · Option / Alt + Shift + Enter 新 Side（{sideContext === "owner-history" ? "带主 agent 记录" : "空白"}）· Shift+Enter 换行</Copy>
           </View> : null}
         </ScrollView>
       </BoardComposerSurface> : null}
@@ -639,6 +659,7 @@ Option / Alt + Enter 当前评论发 Side · Option / Alt + Shift + Enter 新 Si
             </View>
           </View>)}
           <SideAgentPicker interactions={board.interactions} selectedId={board.sideAgentId} pending={Boolean(board.pendingSideInteractionId)} disabled={sending || sideTargetBlocked} onSelect={chooseSideAgent} />
+          <SideContextChoice testID="board-batch-side-context" value={sideContext} disabled={sending || sideTargetBlocked} notes={sideContextNotes(sideContext, false, "统一发送到 Side")} onChange={chooseSideContext} />
           {sideChoiceUncertain ? <Action label={choosingSide ? "正在核对 Side 目标…" : "核对 Side 目标"} disabled={choosingSide} onPress={() => { void verifySideChoice(); }} /> : null}
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             <Action testID="board-comments-send-main" label="统一发送到主会话" primary disabled={sending || sideTargetBlocked || !board.ownerAgentId} onPress={() => { void submitBatch("main"); }} />
@@ -647,7 +668,7 @@ Option / Alt + Enter 当前评论发 Side · Option / Alt + Shift + Enter 新 Si
           </View>
         </View> : null}
         {batchSnapshot.batches.map(batch => <View key={batch.intentId} testID={`board-comment-batch-${batch.intentId}`} style={{ gap: 10, paddingBottom: 14, borderBottomWidth: 1, borderColor: c.border }}>
-          <Copy>{acceptedBatchIds.has(batch.intentId) ? "评论已接收，正在清理本机记录" : "发送结果待核对"} · {batch.comments.length} 条 · {batch.destination === "main" ? "主会话" : batch.destination === "new-side" ? "新 Side" : "Side"}</Copy>
+          <Copy>{acceptedBatchIds.has(batch.intentId) ? "评论已接收，正在清理本机记录" : "发送结果待核对"} · {batch.comments.length} 条 · {batch.destination === "main" ? "主会话" : batch.destination === "new-side" ? "新 Side" : "Side"}{batch.sideContext ? ` · ${SIDE_CONTEXT_LABELS[batch.sideContext]}` : ""}</Copy>
           {batch.comments.map((comment, index) => <View key={comment.id} style={{ gap: 6 }}>
             <Copy>{index + 1}. {comment.text}</Copy><AnchorPreview anchor={comment.anchor} compact />
             <Action label="另存并编辑" disabled={sending} onPress={() => { if (composeRef.current || pending.current) return; setDrawer(null); setSelectedInteractionId(undefined); const next: Compose = { kind: "question", text: comment.text, anchor: comment.anchor, queuedAt: Date.now() }; setPopoverPoint(anchorPoint(next.anchor)); changeCompose(next, anchorPoint(next.anchor)); }} />
@@ -673,6 +694,7 @@ Option / Alt + Enter 当前评论发 Side · Option / Alt + Shift + Enter 新 Si
         {!board.interactions.length ? <Copy muted>指着画布提问、提出修改，或开一个独立讨论。交流会保留当时的引用和版本。</Copy> : null}
         {[...interactions].filter(item => interactionRoot(item.id, interactions) === item.id).reverse().map(interaction => <View key={interaction.id} style={{ borderBottomWidth: 1, borderColor: c.border, paddingBottom: 18, gap: 10 }}>
           <Copy small muted>{kindNames[interaction.kind]} · {statusNames[interactionThread(interaction.id, interactions).at(-1)?.status ?? interaction.status]} · {timeLabel(interaction.createdAt)}</Copy>
+          {sideProvenance(interaction) ? <Copy small muted>{sideProvenance(interaction)}</Copy> : null}
           <Copy>{interaction.text}</Copy>
           <Action label="原位查看和继续交流" onPress={() => locateInteraction(interaction.id)} />
         </View>)}
@@ -694,8 +716,10 @@ function InteractionContent({ item, board, frameTheme, onFollow, onOpenAgent, un
   const [visualError, setVisualError] = useState<string>();
   const stale = item.anchor && item.anchor.canvasRevision !== board.canvas.revision;
   const follow = (text?: string) => onFollow(discussion ? "reply" : "question", text);
+  const provenance = sideProvenance(item);
   return <View style={{ gap: 10, paddingBottom: 14, borderBottomWidth: 1, borderColor: c.border }}>
     <Copy small muted>{kindNames[item.kind]} · {statusNames[item.status]} · {timeLabel(item.createdAt)}</Copy>
+    {provenance ? <View testID={`board-side-provenance-${item.id}`}><Copy small muted>{provenance}</Copy></View> : null}
     <Copy>{item.text}</Copy>
     {item.comments?.map((comment, index) => <View key={comment.id} testID={`board-sent-comment-${comment.id}`} style={{ gap: 6, paddingBottom: 8 }}>
       <Copy>{index + 1}. {comment.text}</Copy>

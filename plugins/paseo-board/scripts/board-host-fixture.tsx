@@ -59,7 +59,7 @@ window.addEventListener('message',async e=>{
   }
   if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='restore-view')parent.postMessage({channel:'host-fixture-restore',request:e.data,at:performance.now(),context:board.getContext(),scroll:{x:scrollX,y:scrollY}},'*');if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-interaction')parent.postMessage({channel:'host-fixture-focus',id:e.data.id},'*');if(e.source===parent&&e.data?.channel==='paseo-board-frame-v1'&&e.data.type==='focus-update')parent.postMessage({channel:'host-fixture-update',request:e.data},'*');if(e.source===parent&&e.data?.channel==='host-fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'host-fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'host-fixture-result',id:e.data.id,error:error.message},'*')}}
 });
-</script>${fixtureParams.get("batch") === "1" ? `<section id="batch-authored-target" style="position:absolute;top:360px;left:28px;width:360px;padding:12px;border:1px solid #aaa">A section with an authored Comment action</section><button id="batch-authored-comment" style="position:absolute;top:430px;left:28px">Comment</button><script>window.batchAskResults=[];window.batchAskErrors=[];document.querySelector('#batch-authored-comment').onclick=()=>board.ask({prompt:'Review this authored section',anchor:document.querySelector('#batch-authored-target')}).then(result=>batchAskResults.push(result),error=>batchAskErrors.push(error.message));</script>` : ""}`;
+</script>${fixtureParams.get("batch") === "1" ? `<section id="batch-authored-target" style="position:absolute;top:360px;left:28px;width:360px;padding:12px;border:1px solid #aaa">A section with an authored Comment action</section><button id="batch-authored-comment" style="position:absolute;top:430px;left:28px">Comment</button><script>window.batchAskResults=[];window.batchAskErrors=[];document.querySelector('#batch-authored-comment').onclick=()=>board.ask({prompt:'Review this authored section',anchor:document.querySelector('#batch-authored-target')}).then(result=>batchAskResults.push(result),error=>batchAskErrors.push(error.message));</script>` : ""}${fixtureParams.get("fork") === "1" ? `<button id="fork-ask" style="position:absolute;top:300px;left:420px">Ask a Side with context</button><script>window.forkAskResults=[];document.querySelector('#fork-ask').onclick=()=>board.ask({prompt:'Ask a Side that knows the owner context',kind:'fork',anchor:document.querySelector('#fork-ask')}).then(result=>forkAskResults.push(result),error=>forkAskResults.push({error:error.message}));</script>` : ""}`;
 let persisted: Board = retainedFixture?.board ?? { schemaVersion: 1, id: fixtureBoardId, title: "Host integration fixture", ownerAgentId: "owner-fixture", revision: 1, createdAt: now(), updatedAt: now(), canvas: { html: fragment, revision: 1, documentVersion: 1, data: { summary: "Isolated test fixture" }, patches: [] }, decisions: [], interactions: [], updates: [], seenUpdateIds: [], events: [], observations: [], userState: {}, extraction: {} };
 // Resume exercises normal inactive-cache retention; existing scopes deliberately
 // retain their zero-GC behavior to preserve their original cold-remount contract.
@@ -79,6 +79,10 @@ const pendingFailureReads: Array<() => void> = [];
 let eventEpoch: string = retainedFixture?.eventEpoch ?? "fixture";
 let submitMode: "held" | "accept" | "reject" | "lost-response" = "held";
 let sideSequence = retainedFixture?.sideSequence ?? 0;
+// Like the real service, a retry is compared with the original raw request, not with the
+// resolved interaction (a reply to an existing Side drops sideContext).
+const interactRequests: Record<string, string> = retainedFixture?.interactRequests ?? {};
+const canonical = (value: unknown): string => JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 let choiceMode: "held" | "accept" | "reject" | "lost-response" = "accept";
 let readFails = retainedFixture?.readFails ?? false;
 let renameMode: "held" | "accept" | "reject" | "lost-response" = "accept";
@@ -110,7 +114,7 @@ const notify = (reason: "metadata" | "attention" = "metadata") => {
   // after advance(). Publish the fully committed projection at the microtask edge.
   global.queueMicrotask(() => { eventSequence++; const event = { cursor: cursor(), summary: summary(), canvasRevision: persisted.canvas.revision, reason }; eventJournal.push(copy(event)); for (const listener of eventListeners) listener.change(copy(event)); });
 };
-const persistFixture = () => { if (fixtureServerKey) global.sessionStorage.setItem(fixtureServerKey, JSON.stringify({ board: persisted, calls: fixture.calls, sideSequence, readFails, ...(resumeScope ? { resumeBoards: [...resumeBoards], eventEpoch } : {}) })); };
+const persistFixture = () => { if (fixtureServerKey) global.sessionStorage.setItem(fixtureServerKey, JSON.stringify({ board: persisted, calls: fixture.calls, sideSequence, readFails, interactRequests, ...(resumeScope ? { resumeBoards: [...resumeBoards], eventEpoch } : {}) })); };
 const advance = () => { persisted = { ...persisted, revision: persisted.revision + 1, updatedAt: now() }; persistFixture(); notify(); };
 const fixture: any = global.hostFixture = {
   resumeScope,
@@ -204,6 +208,7 @@ const fixture: any = global.hostFixture = {
     } else if (destination === "side") { kind = "reply"; agentId = persisted.sideAgentId!; }
     else if (destination === "main") kind = item.input.comments || item.input.kind === "change" ? "change" : "question";
     const time = now(); const result: Interaction = { ...item.input, kind, status, agentId, resultReferences: [], createdAt: time, updatedAt: time };
+    if (kind !== "fork") delete (result as any).sideContext;
     delete (result as any).boardId; (result as any).id = item.input.intentId; delete (result as any).intentId;
     persisted.interactions = [...persisted.interactions.filter(entry => entry.id !== result.id), result]; advance(); if (settle) { pending.delete(id); if (submitMode === "lost-response") item.reject(new Error("Fixture interaction response lost after commit")); else item.resolve(copy(result)); } return result;
   },
@@ -311,10 +316,14 @@ const fixture: any = global.hostFixture = {
     if (name === "board.interact") {
       if (input.boardId !== persisted.id || input.expectedCreatedAt !== undefined && input.expectedCreatedAt !== persisted.createdAt) throw new Error("Fixture interaction Board incarnation changed");
       const existing = persisted.interactions.find(item => item.id === input.intentId);
+      const original = interactRequests[input.intentId];
       if (existing) {
-        for (const key of ["expectedCreatedAt", "text", "anchor", "comments", "destination", "sourceInteractionId"]) if (JSON.stringify((existing as any)[key]) !== JSON.stringify(input[key])) throw new Error("Fixture interaction idempotency conflict");
+        if (original !== undefined) { if (original !== canonical(input)) throw new Error("Fixture interaction idempotency conflict"); }
+        else for (const key of ["expectedCreatedAt", "text", "anchor", "comments", "destination", "sourceInteractionId", "sideContext"]) if (JSON.stringify((existing as any)[key]) !== JSON.stringify(input[key])) throw new Error("Fixture interaction idempotency conflict");
         return copy(existing);
       }
+      if (original !== undefined && original !== canonical(input)) throw new Error("Fixture interaction idempotency conflict");
+      interactRequests[input.intentId] = canonical(input); persistFixture();
       if (input.sourceInteractionId && !persisted.interactions.some(item => item.id === input.sourceInteractionId)) throw new Error("Fixture source interaction does not exist");
       return new Promise<Interaction>((resolve, reject) => {
         pending.set(input.intentId, { input, resolve, reject });

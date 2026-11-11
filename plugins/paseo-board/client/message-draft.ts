@@ -9,6 +9,8 @@ export function acceptedDraftInteraction(draft: DraftCompose, interactions: Inte
   const kinds = draft.destination === "main" ? [draft.kind === "change" ? "change" : "question"]
     : draft.destination === "new-side" ? ["fork"] : draft.destination === "side" ? ["fork", "reply"] : [draft.kind];
   if (!kinds.includes(item.kind)) return undefined;
+  // Replies to an existing Side drop the choice; a created Side must carry exactly the frozen one.
+  if (item.kind === "fork" && item.sideContext !== draft.sideContext) return undefined;
   if (!item.anchor || !draft.anchor) return item.anchor === draft.anchor ? item : undefined;
   const received = AnchorSchema.safeParse(item.anchor), frozen = AnchorSchema.safeParse(draft.anchor);
   return received.success && frozen.success && JSON.stringify(received.data) === JSON.stringify(frozen.data) ? item : undefined;
