@@ -1300,6 +1300,17 @@ describe("Side creation with the owner's history", () => {
     expect((await interaction("fork-busy-owner")).inheritedHistory).toMatchObject({ ownerBusy: true, state: "sent" });
   });
 
+  it("reads the owner's history by agent even when the owner works in another workspace", async () => {
+    sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, workspaceId: "wks_other0123456789", cwd: "/elsewhere" } as Snapshot);
+    sdk.append("owner", { type: "assistant_message", text: "Context from another workspace" });
+    const workspaceCreate = vi.fn(async (_options: Record<string, unknown>) => sdk.api.agents.ref("fork-agent"));
+    (sdk.api as unknown as { workspaces: { ref: (id: string) => unknown } }).workspaces.ref = vi.fn(() => ({ agents: { create: workspaceCreate } }));
+    await historySide("fork-elsewhere"); await service.drain();
+    expect((sdk.api as unknown as { workspaces: { ref: ReturnType<typeof vi.fn> } }).workspaces.ref).toHaveBeenCalledWith("wks_0123456789abcdef");
+    expect(workspaceCreate).toHaveBeenCalledTimes(1);
+    expect(attachment()!.text).toContain("[Assistant] Context from another workspace"); expect(attachment()!.text).toContain("Source directory: /elsewhere");
+  });
+
   it("still attaches the native empty-history text for an owner without history", async () => {
     await historySide("fork-empty"); await service.drain();
     expect(attachment()!.text).toContain("No chat history to display."); expect(sdk.sends.at(-1)!.text).toContain(INHERITED_HISTORY_PROMPT.trim());

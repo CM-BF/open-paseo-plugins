@@ -542,9 +542,10 @@ export class BoardService {
   }
   private async fail(delivery: Delivery, error: string): Promise<void> {
     if (await this.retireReplacedDelivery(delivery, await this.requireBoard(delivery.boardId))) return;
-    if (delivery.kind === "fork" && !delivery.targetAgentId && delivery.state === "saved") {
+    const key = deliveryKey(delivery.boardId, delivery.interactionId), stored = this.journal.get(key);
+    if (delivery.kind === "fork" && !delivery.targetAgentId && delivery.state === "saved" && stored?.state === "saved" && !stored.targetAgentId) {
       // No native agent was ever requested: release the Side reservation so the next Side send creates a fresh one.
-      const failed = await this.journal.failUncreatedFork(deliveryKey(delivery.boardId, delivery.interactionId), error);
+      const failed = await this.journal.failUncreatedFork(key, error);
       await this.updateDeliveryInteraction(failed, { status: "failed", error });
       await this.projectSideAgent(delivery.boardId, this.deliveryCreatedAt(failed));
       return;
