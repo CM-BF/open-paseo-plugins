@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { acquireLock, exists, noSymlinks, writeJson } from './files.mjs';
 import { migrateUnlocked, openDatabase } from './storage.mjs';
 import { commentsRoute, httpError, initializeComments } from './comments.mjs';
+import { createLive } from './live.mjs';
 
 async function readBody(request) {
   if (!/^application\/json(?:;|$)/i.test(request.headers['content-type'] || '')) throw httpError(415, 'Use application/json');
@@ -36,6 +37,7 @@ export async function startApp(app) {
     await migrateUnlocked(app);
     db = openDatabase(app.database);
     const deploymentId = await initializeComments(app, db);
+    const live = await createLive(app, deploymentId);
     const { route } = await import(pathToFileURL(app.entry).href);
     const { createStorage } = await import(pathToFileURL(path.join(app.root, 'storage.mjs')).href);
     const storage = await createStorage(db);
@@ -51,7 +53,7 @@ export async function startApp(app) {
         if (origin && !app.config.origins.includes(origin)) throw httpError(403, 'Origin is not allowed');
         if (origin) { response.setHeader('access-control-allow-origin', origin); response.setHeader('vary', 'Origin'); }
         if (request.method === 'OPTIONS') { response.writeHead(204, { 'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS', 'access-control-allow-headers': 'Content-Type, Idempotency-Key, Authorization', 'access-control-max-age': '600' }); response.end(); return; }
-        if (url.pathname === '/_board/health' && request.method === 'GET') { json(200, { status: 'ok', id: app.owner.id, deploymentId, instanceId }); return; }
+        if (url.pathname === '/_board/health' && request.method === 'GET') { json(200, { status: 'ok', id: app.owner.id, deploymentId, instanceId, live: live.enabled ? 1 : 0 }); return; }
         if (url.pathname === '/_board/shutdown' && request.method === 'POST') {
           const supplied = Buffer.from(request.headers['x-board-control'] || ''), expected = Buffer.from(controlToken);
           if (origin || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress) || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw httpError(403, 'Control denied');
@@ -60,6 +62,7 @@ export async function startApp(app) {
         if (url.pathname === '/public-config.json' && request.method === 'GET') { json(200, app.config.public ?? {}); return; }
         const context = { request, response, url, db, storage, config: app.config, deploymentId, readJson: () => readBody(request), json };
         if (await commentsRoute(context)) return;
+        if (await live.route(context)) return;
         if (url.pathname.startsWith('/_board/')) throw httpError(404, 'Not found');
         if (await route(context)) return;
         if (request.method === 'GET' && await staticFile(app, url, response)) return;

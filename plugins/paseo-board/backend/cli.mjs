@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { exists, loadApp, readJson } from './files.mjs';
-import { initializeApp } from './scaffold.mjs';
+import { initializeApp, updateRuntime } from './scaffold.mjs';
 import { backup, migrate, restore } from './storage.mjs';
 import { startApp } from './server.mjs';
 import { createSshPlan, runSsh } from './ssh.mjs';
@@ -18,10 +18,11 @@ function options(args) {
 export async function main(args) {
   try {
     const [command, ...remaining] = args;
-    if (!command || command === 'help') { console.log('board-app init|start|status|stop|migrate|backup|restore --dir <app>\nboard-app ssh plan --dir <app> --host <alias> --root <absolute-path> --out <plan.json>\nboard-app ssh deploy|start|status|logs|stop|migrate|backup --plan <plan.json> [--confirm <digest>]'); return; }
+    if (!command || command === 'help') { console.log('board-app init|start|status|stop|migrate|backup|restore --dir <app>\nboard-app update-runtime --dir <app>\nboard-app ssh plan --dir <app> --host <alias> --root <absolute-path> --out <plan.json>\nboard-app ssh deploy|start|status|logs|stop|migrate|backup --plan <plan.json> [--confirm <digest>]'); return; }
     if (command === 'ssh') { const [operation, ...rest] = remaining, opts = options(rest); const result = operation === 'plan' ? await createSshPlan(opts) : await runSsh(operation, opts); console.log(JSON.stringify(result)); return; }
     const opts = options(remaining), directory = path.resolve(opts.dir || '.');
     if (command === 'init') { console.log(JSON.stringify(await initializeApp(directory, opts.id))); return; }
+    if (command === 'update-runtime') { console.log(JSON.stringify(await updateRuntime(directory))); return; }
     const envFile = path.join(directory, '.env');
     if (await exists(envFile)) process.loadEnvFile(envFile);
     const app = await loadApp(directory);
