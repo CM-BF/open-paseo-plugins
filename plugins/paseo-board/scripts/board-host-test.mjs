@@ -182,6 +182,10 @@ try {
       assert.equal(bar.height,48); assert.equal(bar.width,width);
       const bounds=await evaluate(`(()=>{const bar=document.querySelector(${JSON.stringify(toolbar)}),r=bar.getBoundingClientRect();return [...bar.querySelectorAll(':scope > button, :scope > [data-testid="board-title"]')].map(e=>({label:e.getAttribute('aria-label')||e.getAttribute('data-testid'),rect:e.getBoundingClientRect().toJSON(),inside:e.getBoundingClientRect().top>=r.top&&e.getBoundingClientRect().bottom<=r.bottom&&e.getBoundingClientRect().left>=r.left&&e.getBoundingClientRect().right<=r.right}))})()`);
       assert.ok(bounds.every(b=>b.inside),JSON.stringify({width,bounds}));
+      // The unpublished-changes dot lives inside the 32px 更多 button; it adds no toolbar child.
+      await until("document.querySelector('[data-testid=\"board-share-badge\"]')");
+      const badge=await evaluate(`(()=>{const b=document.querySelector('[data-testid="board-share-badge"]').getBoundingClientRect(),m=document.querySelector('[data-testid="board-more-open"]'),q=m.getBoundingClientRect();return{inside:b.left>=q.left&&b.right<=q.right&&b.top>=q.top&&b.bottom<=q.bottom,hit:m.contains(document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)),more:{width:q.width,height:q.height},label:m.getAttribute('aria-label')}})()`);
+      assert.ok(badge.inside&&badge.hit,JSON.stringify({width,badge}));assert.equal(badge.more.height,32);assert.equal(badge.more.width,32);assert.equal(badge.label,'更多');
       for (const label of ['选择工具','快捷键','更多']) {
         await hostClick(`button[aria-label="${label}"]`); await until(`document.querySelector(${JSON.stringify(popup)})`);
         assert.deepEqual(await canvasRect(),before,`${label} must overlay without moving the canvas at ${width}px`);
@@ -199,6 +203,7 @@ try {
         }
         if(label==='更多') {
           for(const item of ['决策 0','讨论','变化']) assert.ok(await evaluate(`!!document.querySelector('button[aria-label="${item}"]')`));
+          assert.ok(await evaluate(`document.querySelector('button[aria-label="导出与发布"]').textContent.includes('有改动还没发布')&&!!document.querySelector('[data-testid="board-share-update"][aria-label="更新分享页"]')`),'More explains the dot and offers the share update');
           if(width<820) assert.ok(await evaluate(`!!document.querySelector('button[aria-label="当前引用"]')`));
         }
         await key('Escape'); await until(`!document.querySelector(${JSON.stringify(popup)})`);assert.deepEqual(await canvasRect(),before);
@@ -225,14 +230,14 @@ try {
       const screenshot=await command('Page.captureScreenshot',{format:'png'});
       if(process.env.BOARD_TOOLBAR_SCREENSHOT_DIR) await writeFile(join(process.env.BOARD_TOOLBAR_SCREENSHOT_DIR,`toolbar-${width}-closed.png`),Buffer.from(screenshot.data,'base64'));
       console.log('MEASURE toolbar '+JSON.stringify({width,bar,canvas:before,buttons:bounds.map(b=>({label:b.label,x:b.rect.x,y:b.rect.y,width:b.rect.width,height:b.rect.height}))}));
-      check(`the ${width}px toolbar stays on one 48px row; tools, shortcuts, more and rename remain reachable without moving or rebuilding the canvas`);
+      check(`the ${width}px toolbar stays on one 48px row with the share dot inside 更多; tools, shortcuts, more and rename remain reachable without moving or rebuilding the canvas`);
     }
   };
   if (resumeScope) {
     const { runResumeHostChecks } = await import('./resume-host-checks.mjs');
     await runResumeHostChecks({assert,command,evaluate,until,frame,untilFrame,key,clickPoint,hostClick,sendText,check,origin:`http://127.0.0.1:${server.address().port}`,scope:resumeScopeName});
   } else {
-  await command('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/${batchScope ? '?drafts=1&batch=1' : draftScope ? '?drafts=1' : ''}` });
+  await command('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/${batchScope ? '?drafts=1&batch=1' : draftScope ? '?drafts=1' : toolbarScope ? '?share=changed' : ''}` });
   await command('Page.bringToFront');
   await until('window.hostFixture?.ready >= 1');
   await until("document.querySelector('[data-testid=board-canvas-container]')");

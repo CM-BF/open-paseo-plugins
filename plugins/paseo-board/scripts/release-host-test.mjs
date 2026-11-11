@@ -14,9 +14,9 @@ import { build } from 'esbuild';
 const directory=dirname(fileURLToPath(import.meta.url)), root=dirname(directory);
 const temporary=await mkdtemp(join(tmpdir(),'paseo-release-host-'));
 const downloads=join(temporary,'downloads'); await mkdir(downloads);
-const core=await build({stdin:{contents:`export {BoardStore} from './server/store';export {BoardCopies} from './server/board-copy';export {ReleaseRepository} from './server/static-release';export {canonicalJson} from './server/store-format';`,resolveDir:root,loader:'ts'},bundle:true,platform:'node',format:'cjs',write:false,loader:{'.txt':'text'}});
+const core=await build({stdin:{contents:`export {BoardStore} from './server/store';export {BoardCopies} from './server/board-copy';export {ReleaseRepository} from './server/static-release';export {canonicalJson} from './server/store-format';export {registerPublicationRpc} from './server/publication-rpc';`,resolveDir:root,loader:'ts'},bundle:true,platform:'node',format:'cjs',write:false,loader:{'.txt':'text'}});
 const coreFile=join(temporary,'core.cjs'); await writeFile(coreFile,core.outputFiles[0].text);
-const {BoardStore,BoardCopies,ReleaseRepository,canonicalJson}=createRequire(import.meta.url)(coreFile);
+const {BoardStore,BoardCopies,ReleaseRepository,canonicalJson,registerPublicationRpc}=createRequire(import.meta.url)(coreFile);
 const boardStore=new BoardStore(join(temporary,'boards')), repository=new ReleaseRepository(join(temporary,'releases'));
 let sourceBoard, publishMode='accept', jobSequence=0, holdRefresh=false, failPreviewReleaseId;
 const publicationTimers=new Set();
@@ -25,6 +25,11 @@ const heldRefresh=[];
 const calls=[], jobs=new Map(), prepareReceipts=new Map(), copiedBoards=[];
 const enterpriseHost='github.enterprise.example';
 let configuredAccounts=[{login:'fixture-alice',host:'github.com',active:true},{login:'fixture-bob',host:'github.com',active:false},{login:'fixture-alice',host:enterpriseHost,active:true}];
+// Share status/update run the actual server handlers over this adapter's job journal.
+const shareHandlers=new Map();
+registerPublicationRpc({handle:(contract,handler)=>shareHandlers.set(contract.name,handler)},{ready:async()=>{},requireBoard:async id=>{assert.equal(sourceBoard?.id,id);return sourceBoard},releases:repository,
+  pages:{list:async()=>structuredClone([...jobs.values()]),read:async id=>structuredClone(jobs.get(id))}});
+const pagesRoot=input=>(input.githubHost===enterpriseHost?'https://pages.enterprise.example/'+input.account+'/':'https://'+input.account+'.github.io/')+input.repository.split('/')[1]+'/';
 const copies=new BoardCopies(join(temporary,'copies'),{read:async id=>sourceBoard?.id===id?sourceBoard:boardStore.read(id),create:input=>boardStore.create(input)});
 const rpc=async(name,input,board)=>{
   calls.push({name,input:structuredClone(input)});sourceBoard=board;
@@ -33,6 +38,7 @@ const rpc=async(name,input,board)=>{
   if(name==='board.release.list')return (await repository.list(input.boardId)).map(r=>r.manifest);
   if(name==='board.release.preview'){if(input.releaseId===failPreviewReleaseId){failPreviewReleaseId=undefined;throw new Error('Fixture selected preview unavailable')}return repository.preview(input.releaseId)}
   if(name==='board.release.download')return repository.download(input.releaseId);
+  if(name==='board.release.share-status'||name==='board.release.share-update')return shareHandlers.get(name)(input);
   if(name==='board.pages.accounts')return configuredAccounts.filter(account=>!input.githubHost||account.host===input.githubHost);
   if(name==='board.pages.repositories')return [{name:input.account+'/site',private:false,url:'https://'+(input.githubHost??'github.com')+'/'+input.account+'/site'},{name:input.account+'/private-site',private:true,url:'https://'+(input.githubHost??'github.com')+'/'+input.account+'/private-site'}];
   if(name==='board.pages.list')return [...jobs.values()].filter(j=>!input.releaseId||j.releaseId===input.releaseId);
@@ -42,8 +48,10 @@ const rpc=async(name,input,board)=>{
     else prepareReceipts.set(input.eventId,structuredClone(input));
     const release=await repository.read(input.releaseId);assert.equal(release.manifest.artifactHash,input.artifactHash);
     let job=[...jobs.values()].find(j=>j.eventId===input.eventId);
-    if(!job){job={...input,jobId:'fixture-job-'+(++jobSequence),status:'prepared',branch:'board-release/'+input.eventId,baseBranch:'main',baseSha:'a'.repeat(40),headSha:'b'.repeat(40)};jobs.set(job.jobId,job)}
-    job.autoPublish=true;job.autoPublishUntil=new Date(Date.now()+30*60*1000).toISOString();job.publicationMode='legacy-subdirectory';job.sitePath='boards/'+input.releaseId.slice(8,24);
+    if(!job){job={...input,jobId:'fixture-job-'+(++jobSequence),status:'prepared',branch:'board-release/'+input.eventId,baseBranch:'main',baseSha:'a'.repeat(40),headSha:'b'.repeat(40),createdAt:new Date().toISOString()};jobs.set(job.jobId,job)}
+    job.autoPublish=true;job.autoPublishUntil=new Date(Date.now()+30*60*1000).toISOString();job.publicationMode='legacy-subdirectory';
+    // Series layout: stable boards/<key> plus the version archive; key-less requests keep boards/<releaseHex>.
+    if(input.shareKey){job.sharePath='boards/'+input.shareKey;job.sitePath=job.sharePath+'/v/'+input.releaseId.slice(8)}else job.sitePath='boards/'+input.releaseId.slice(8);
     if(publishMode==='lost-response'){publishMode='accept';job.status='unknown';job.autoPublishUntil=new Date(Date.now()-1).toISOString();job.error='Fixture response lost after automatic retry window expired';throw new Error('Fixture response lost; outcome unknown')}
     const recovering=publishMode==='recovering';publishMode='accept';
     job.status=recovering?'unknown':'pr-open';job.prNumber=jobSequence;job.prUrl='https://'+(input.githubHost??'github.com')+'/'+input.repository+'/pull/'+job.prNumber;delete job.error;
@@ -51,9 +59,9 @@ const rpc=async(name,input,board)=>{
     // is closed. The separate manager tests cover real GitHub head validation.
     later(()=>{job.status='deploying';job.mergedSha='c'.repeat(40)},100);
     later(()=>{
-      const url=(input.githubHost===enterpriseHost?'https://pages.enterprise.example/'+input.account+'/':'https://'+input.account+'.github.io/')+input.repository.split('/')[1]+'/'+job.sitePath+'/';
-      if(input.githubHost===enterpriseHost){job.status='deploying';job.deployedUrl=url;job.error='部署已完成，但站点需要公司登录，页面内容待核验。'}
-      else{job.status='live';job.url=url;job.verifiedAt=new Date().toISOString()}
+      const url=pagesRoot(input)+job.sitePath+'/',share=job.sharePath&&pagesRoot(input)+job.sharePath+'/';
+      if(input.githubHost===enterpriseHost){job.status='deploying';job.deployedUrl=url;if(share)job.shareDeployedUrl=share;job.error='部署已完成，但站点需要公司登录，页面内容待核验。'}
+      else{job.status='live';job.url=url;job.verifiedAt=new Date().toISOString();if(share){job.shareDeployedUrl=share;job.shareUrl=share}}
     },350);
     return structuredClone(job);
   }
@@ -227,8 +235,11 @@ try {
   await until("document.querySelector('[data-testid=board-pages-job]')?.textContent.includes('已核实上线')",9000);
   assert.equal(count('board.pages.publish'),1,'Full page loss does not create another publication');
   assert.equal(count('board.pages.merge'),0,'The server owns all merge progression');
+  assert.match(prepared.shareKey,/^s[a-f0-9]{20}$/,'A first publication starts a share series');
   await click(button('打开已发布网页'));
-  assert.equal(await evaluate('hostFixture.links.at(-1)'),'https://fixture-alice.github.io/site/boards/'+frozen.manifest.releaseId.slice(8,24)+'/');
+  assert.equal(await evaluate('hostFixture.links.at(-1)'),'https://fixture-alice.github.io/site/boards/'+prepared.shareKey+'/');
+  await click(button('打开此版本'));
+  assert.equal(await evaluate('hostFixture.links.at(-1)'),'https://fixture-alice.github.io/site/boards/'+prepared.shareKey+'/v/'+frozen.manifest.releaseId.slice(8)+'/');
   await screenshot('release-desktop-live');
   check('One explicit publish click starts the exact snapshot and repository; the server completes PR, merge and verified deployment across full page loss without another publish or merge click (GitHub adapter)');
   // A different target creates a new explicit request; response loss must persist it.
@@ -343,8 +354,9 @@ try {
   assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(button('打开已发布网页'))})`),false);
   assert.equal(await evaluate("document.querySelector('[data-testid=board-pages-job]').textContent.includes('已核实上线')"),false);
   const beforePrivateOpen=count('board.pages.publish');await click(button('打开网页（内容待核验）'));
-  await until(`hostFixture.links.at(-1)===${JSON.stringify('https://pages.enterprise.example/fixture-alice/site/boards/'+frozen.manifest.releaseId.slice(8,24)+'/')}`);
-  assert.equal(await evaluate('hostFixture.links.at(-1)'),'https://pages.enterprise.example/fixture-alice/site/boards/'+frozen.manifest.releaseId.slice(8,24)+'/');
+  assert.match(enterpriseRequest.shareKey,/^s[a-f0-9]{20}$/);assert.notEqual(enterpriseRequest.shareKey,prepared.shareKey,'Another host is another share link');
+  await until(`hostFixture.links.at(-1)===${JSON.stringify('https://pages.enterprise.example/fixture-alice/site/boards/'+enterpriseRequest.shareKey+'/')}`);
+  assert.equal(await evaluate('hostFixture.links.at(-1)'),'https://pages.enterprise.example/fixture-alice/site/boards/'+enterpriseRequest.shareKey+'/');
   assert.equal(count('board.pages.publish'),beforePrivateOpen);
   check('An Enterprise site with a successful build but login-protected contents exposes an explicitly unverified link without claiming live verification or starting another publication');
   await command('Emulation.setDeviceMetricsOverride',{width:420,height:860,deviceScaleFactor:1,mobile:false});
@@ -393,6 +405,130 @@ try {
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(apiInput)}).value`),'');
   assert.equal(count('board.release.create'),beforeApi+1);
   check('A stored manifest without apiOrigins still lists and previews through the real repository without granting backend access or creating a replacement release');
+  if(!process.env.BOARD_RELEASE_PREVIEW_SWITCH_ONLY){
+    // Share links follow their Board. A fresh Board keeps this share list deterministic.
+    configuredAccounts=[{login:'fixture-alice',host:'github.com',active:true},{login:'fixture-bob',host:'github.com',active:false}];
+    await command('Emulation.setDeviceMetricsOverride',{width:1200,height:900,deviceScaleFactor:1,mobile:false});
+    const loadPage=async load=>{const id=await evaluate('hostFixture.pageInstance');await load();await until(`window.hostFixture&&hostFixture.pageInstance!==${JSON.stringify(id)}&&hostFixture.mainReady()?.ready`)};
+    const statusReads="hostFixture.publicationCalls.filter(c=>c.name==='board.release.share-status').length";
+    const badge='[data-testid="board-share-badge"]', confirm='[data-testid="board-share-confirm"]';
+    const jobText=text=>`document.querySelector('[data-testid=board-pages-job]')?.textContent.includes(${JSON.stringify(text)})`;
+    const opened=url=>until(`hostFixture.links.at(-1)===${JSON.stringify(url)}`);
+    await loadPage(()=>command('Page.navigate',{url:origin+'/?drafts=1&board=share-fixture'}));
+    await until(`${statusReads}>0`);
+    await click('[data-testid="board-more-open"]');
+    assert.equal(await evaluate(`!!document.querySelector('[data-testid="board-share-update"]')||!!document.querySelector(${JSON.stringify(badge)})`),false,'Nothing shared yet: no dot and no update action');
+    await click(button('导出与发布'));await until("document.querySelector('[data-testid=board-release-panel]')");
+    assert.equal(await evaluate("!!document.querySelector('[data-testid=board-share-status]')"),false);
+    await replace('input[aria-label="发布名称"]','Shared page fixture');await replace('[data-testid="board-release-data"]','{"shared":1}');
+    await click(button('深色'));await click(button('允许 CDN 库'));await click(button('生成固定版本并预览'));
+    await until("document.body.textContent.includes('Shared page fixture · 固定版本')&&document.querySelector('[data-testid=board-release-preview]')");
+    const v1=(await repository.list('share-fixture'))[0].manifest;
+    await click(button('读取 GitHub 账号'));await click(button('fixture-alice · github.com'));await click(button('fixture-alice/site'));
+    await click(button('确认预览和数据，可发布此版本'));await click(button('一键发布'));
+    await until(jobText('已核实上线'),12000);
+    const firstShare=calls.filter(c=>c.name==='board.pages.publish').at(-1).input;
+    assert.match(firstShare.shareKey,/^s[a-f0-9]{20}$/);assert.equal(firstShare.releaseId,v1.releaseId);assert.ok(calls.filter(c=>c.name==='board.pages.publish').slice(0,-1).every(c=>c.input.shareKey!==firstShare.shareKey),'Another Board on the same repository gets its own share link');
+    const shareLink='https://fixture-alice.github.io/site/boards/'+firstShare.shareKey+'/';
+    await click(button('打开已发布网页'));await opened(shareLink);
+    await click(button('打开此版本'));await opened(shareLink+'v/'+v1.releaseId.slice(8)+'/');
+    check('A first one-click publication mints a share key: the opened link is the stable share link and the exact version stays separately openable');
+    // A pre-feature publication of this Board: per-release directory and no stored settings.
+    const shareBoard=await evaluate('hostFixture.board()');
+    const r0=await repository.create({boardId:shareBoard.id,expectedCanvasBase:{revision:shareBoard.canvas.revision,documentVersion:shareBoard.canvas.documentVersion},title:'Old shared page',network:'cdn',publicData:{old:true},board:shareBoard});
+    await rm(join(repository.root,r0.manifest.releaseId+'.settings.json'));
+    const r0hex=r0.manifest.releaseId.slice(8), legacyLink='https://fixture-alice.github.io/legacy-share/boards/'+r0hex+'/';
+    jobs.set('legacy-share-job',{eventId:'legacy-share',releaseId:r0.manifest.releaseId,artifactHash:r0.manifest.artifactHash,account:'fixture-alice',repository:'fixture-alice/legacy-share',jobId:'legacy-share-job',status:'live',branch:'legacy-share',mergedSha:'d'.repeat(40),publicationMode:'legacy-subdirectory',sitePath:'boards/'+r0hex,sourcePath:'/',url:legacyLink,verifiedAt:new Date().toISOString(),createdAt:'2026-01-01T00:00:00.000Z'});
+    const beforeClose=await evaluate(statusReads);
+    await click(button('关闭窗口'));await until(`!document.querySelector('[data-testid=board-release-panel]')&&${statusReads}>${beforeClose}`);
+    await click('[data-testid="board-more-open"]');
+    await until(`document.querySelector('[data-testid="board-share-update"]')&&document.querySelector(${JSON.stringify(button('导出与发布'))}).textContent.includes('分享页已是最新')`);
+    await click('[data-testid="board-more-open"]');
+    await evaluate('hostFixture.updateCanvas();true');await until('hostFixture.cacheBoard()?.canvas.revision===hostFixture.board().canvas.revision');
+    await evaluate('new Promise(resolve=>setTimeout(resolve,200))');
+    assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(badge)})`),false,'A data-only write is not an unpublished change');
+    const readsBeforeEdit=await evaluate(statusReads);
+    await evaluate("hostFixture.patchCanvas('Edited after sharing');true");
+    await until(`document.querySelector(${JSON.stringify(badge)})`);
+    assert.equal(await evaluate(statusReads),readsBeforeEdit,'The dot compares the live canvas locally; an edit does not refetch share status');
+    await click('[data-testid="board-more-open"]');
+    await until(`document.querySelector(${JSON.stringify(button('导出与发布'))}).textContent.includes('2 个分享页有改动还没发布')`);
+    const publishesBeforeUpdate=count('board.pages.publish');
+    await click('[data-testid="board-share-update"]');
+    await until(`document.querySelector(${JSON.stringify(confirm)})&&document.querySelector('[data-testid=board-release-preview]')`,15000);
+    const updateCall=calls.filter(c=>c.name==='board.release.share-update').at(-1).input;
+    assert.equal(updateCall.boardId,'share-fixture');assert.deepEqual(updateCall.expectedSource,{documentVersion:1,patchCount:1});
+    assert.equal(count('board.pages.publish'),publishesBeforeUpdate,'Opening an update builds and previews only');
+    const v2=(await repository.list('share-fixture')).find(r=>r.provenance.patchCount===1&&r.manifest.title==='Shared page fixture');assert.ok(v2);
+    assert.notEqual(v2.manifest.releaseId,v1.releaseId);
+    assert.deepEqual((await repository.meta(v2.manifest.releaseId)).settings,(await repository.meta(v1.releaseId)).settings,'The update inherits title, theme, network, API origins and public data');
+    const confirmText=await evaluate(`document.querySelector(${JSON.stringify(confirm)}).parentElement.textContent`);
+    assert.ok(confirmText.includes(shareLink)&&confirmText.includes('访客本地保存的状态会从新版本重新开始'),confirmText);
+    assert.ok(await evaluate("document.querySelector('[data-testid=board-share-status]').textContent.includes('有改动还没发布')"));
+    check('After an authored edit (not a data-only write) the More dot appears without refetching; 更新分享页 builds with the inherited settings and previews it without publishing');
+    const beforeReload=count('board.pages.publish');
+    await loadPage(()=>command('Page.reload',{ignoreCache:true}));
+    await until(`document.querySelector(${JSON.stringify(badge)})`);
+    assert.equal(count('board.pages.publish'),beforeReload,'Reload never publishes');
+    await click('[data-testid="board-more-open"]');await click('[data-testid="board-share-update"]');
+    await until(`document.querySelector(${JSON.stringify(confirm)})&&document.querySelector('[data-testid=board-release-preview]')`,15000);
+    assert.equal(count('board.pages.publish'),beforeReload);
+    await click(confirm);
+    await until(jobText('已核实上线'),12000);
+    const updated=calls.filter(c=>c.name==='board.pages.publish').at(-1).input;
+    assert.equal(count('board.pages.publish'),beforeReload+1);
+    assert.deepEqual({...updated,eventId:undefined},{releaseId:v2.manifest.releaseId,artifactHash:v2.manifest.artifactHash,githubHost:'github.com',account:'fixture-alice',repository:'fixture-alice/site',shareKey:firstShare.shareKey,eventId:undefined});
+    assert.notEqual(updated.eventId,firstShare.eventId);
+    await click(button('打开已发布网页'));await opened(shareLink);
+    await click(button('打开此版本'));await opened(shareLink+'v/'+v2.manifest.releaseId.slice(8)+'/');
+    check('One 确认并更新分享页 click publishes the reviewed build with the same share key, so the same link updates; a full reload before it published nothing');
+    await click(button('Shared page fixture · '+v1.artifactHash.slice(0,10)));
+    await until(jobText('已核实上线'));
+    await click(button('打开此版本'));await opened(shareLink+'v/'+v1.releaseId.slice(8)+'/');
+    check('The previous version stays listed and openable at its own archive link after the update');
+    await until(`[...document.querySelectorAll('[data-testid=board-share-status] button')].some(b=>b.getAttribute('aria-label')==='沿用上次分享页的设置')`);
+    await click(button('沿用上次分享页的设置'));
+    await until(`document.querySelector('input[aria-label="发布名称"]').value==='Old shared page'`);
+    const recoveredText=await evaluate("document.querySelector('[data-testid=board-share-status]').textContent");
+    assert.ok(recoveredText.includes('允许 CDN 库')&&recoveredText.includes('不连接后端')&&recoveredText.includes('主题和公开数据没有保存'),recoveredText);
+    assert.equal(await evaluate(`document.querySelector('textarea[aria-label="后端 API 来源"]').value`),'');
+    await replace('[data-testid="board-release-data"]','{"old":true}');await click(button('生成固定版本并预览'));
+    await until(`document.querySelector(${JSON.stringify(confirm)})&&document.body.textContent.includes('Old shared page · 固定版本')&&document.querySelector('[data-testid=board-release-preview]')`);
+    assert.ok((await evaluate(`document.querySelector(${JSON.stringify(confirm)}).parentElement.textContent`)).includes(legacyLink));
+    const beforeAdopt=count('board.pages.publish');
+    await click(confirm);await until(jobText('已核实上线'),12000);
+    const adopted=calls.filter(c=>c.name==='board.pages.publish').at(-1).input;
+    assert.equal(count('board.pages.publish'),beforeAdopt+1);assert.equal(adopted.shareKey,r0hex);assert.equal(adopted.repository,'fixture-alice/legacy-share');
+    assert.ok((await repository.meta(adopted.releaseId)).settings.network==='cdn');
+    await click(button('打开已发布网页'));await opened(legacyLink);
+    check('A pre-feature share without stored settings is adopted: recovered settings are listed, theme and data are chosen again, and one confirmation updates the link already sent');
+    await click(button('关闭窗口'));await until(`!document.querySelector('[data-testid=board-release-panel]')&&!document.querySelector(${JSON.stringify(badge)})`,9000);
+    await click('[data-testid="board-more-open"]');
+    await until(`document.querySelector(${JSON.stringify(button('导出与发布'))}).textContent.includes('分享页已是最新')`);
+    await click('[data-testid="board-more-open"]');
+    check('Once every share link carries the current authored source, the dot clears');
+    // Stale local requests: a typed server refusal drops the record; any other can be discarded.
+    await open();
+    await click(button('Shared page fixture · '+v1.artifactHash.slice(0,10)));await until(jobText('已核实上线'));
+    await click(button('读取 GitHub 账号'));await click(button('fixture-bob · github.com'));await click(button('fixture-bob/site'));
+    await click(button('确认预览和数据，可发布此版本'));publishMode='lost-before-job';
+    await click(button('一键发布'));await until("document.body.textContent.includes('Fixture connection lost before any readable job')");
+    const refused=calls.filter(c=>c.name==='board.pages.publish').at(-1).input;
+    assert.match(refused.shareKey,/^s[a-f0-9]{20}$/);
+    jobs.set('refused-job',{...refused,jobId:'refused-job',status:'failed',branch:'refused',createdAt:new Date().toISOString(),error:'分享页上已有更新的版本，此请求不会覆盖。',refusal:{code:'newer-on-share',message:'分享页上已有更新的版本，此请求不会覆盖。'}});
+    await click(button('fixture-bob/private-site · 私有仓库'));publishMode='lost-before-job';
+    await click(button('一键发布'));
+    await until(`Object.keys(localStorage).filter(k=>k.startsWith('@paseo:board-pages:')&&k.includes('share-fixture')).length===2`);
+    const beforeStale=count('board.pages.publish');
+    await reload();
+    await until(`!document.querySelector(${JSON.stringify(button('恢复发布 · github.com · fixture-bob/site'))})&&document.querySelector(${JSON.stringify(button('恢复发布 · github.com · fixture-bob/private-site'))})`);
+    await click(button('放弃 · github.com · fixture-bob/private-site'));
+    await until(`!document.querySelector(${JSON.stringify(button('恢复发布 · github.com · fixture-bob/private-site'))})&&Object.keys(localStorage).filter(k=>k.startsWith('@paseo:board-pages:')&&k.includes('share-fixture')).length===0`);
+    await reload();
+    assert.equal(await evaluate("document.body.textContent.includes('待核对的发布请求')"),false);
+    assert.equal(count('board.pages.publish'),beforeStale,'Cleaning up stale requests never publishes');
+    check('A request the server refused for good leaves the local retry list on reopen, and any other stale request can be discarded without publishing');
+  }
   console.log(`Release host integration: ${passed} checks passed (actual static/copy core; adapted GitHub and Paseo transport, no external publication).`);
 } catch(error){console.error('Release host failed:',error);console.error('Browser exceptions:',JSON.stringify(logs).slice(-4000));console.error('Download events:',JSON.stringify(downloadEvents));console.error('RPC calls:',JSON.stringify(calls.map(c=>({name:c.name,input:c.input}))).slice(-7000));process.exitCode=1}
 finally{

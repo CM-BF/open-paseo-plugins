@@ -6,7 +6,14 @@ const browser = globalThis as unknown as {
   URL?: { createObjectURL(blob: unknown): string; revokeObjectURL(url: string): void };
   Blob?: new (data: unknown[], options: { type: string }) => unknown;
   atob?(data: string): string;
+  navigator?: { clipboard?: { writeText(text: string): Promise<void> } };
 };
+/** Previews need a DOM; without one an update could be confirmed unseen. */
+export const canPreviewRelease = () => !!browser.document;
+export async function copyText(text: string): Promise<void> {
+  if (!browser.navigator?.clipboard) throw new Error("此客户端无法复制，请手动选择链接文字。");
+  await browser.navigator.clipboard.writeText(text);
+}
 
 export function downloadReleaseZip(base64: string, fileName: string): void {
   if (!browser.document || !browser.URL || !browser.Blob || !browser.atob) throw new Error("此客户端无法下载文件，请使用导出目录或桌面版。");

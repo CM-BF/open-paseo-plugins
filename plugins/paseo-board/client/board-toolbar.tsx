@@ -17,6 +17,8 @@ export interface BoardToolbarProps {
   onOpenDrawer(drawer: "decisions" | "threads" | "history"): void; onCompose(): void;
   draftCount?: number; draftIssue?: boolean; onOpenDrafts?(): void;
   onPublish?(): void;
+  /** Share links of this Board: a dot on 更多 when one has unpublished authored changes. */
+  share?: { attention: boolean; detail?: string; available: boolean }; onUpdateShare?(): void;
   onInbox?(): void;
   onSources?(): void; sourceCount?: number;
 }
@@ -25,11 +27,12 @@ const modeDescriptions: Record<SelectionMode, string> = {
   off: "操作画布；右键打开消息输入。", component: "选择组件后，直接拖动、右键引用或双击文字改字。",
   text: "拖选文字，在旁边发消息。", region: "拖出一个区域，引用图片、图表或空白。", point: "点击需要交流的位置。",
 };
-function ToolbarButton({ label, icon, text, active, onPress, testID, primary }: { label: string; icon: string; text?: string; active?: boolean; onPress(): void; testID?: string; primary?: boolean }) {
+function ToolbarButton({ label, icon, text, active, onPress, testID, primary, badge }: { label: string; icon: string; text?: string; active?: boolean; onPress(): void; testID?: string; primary?: boolean; badge?: string }) {
   const c = useColors();
-  return <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: active }} onPress={onPress} style={({ pressed }) => ({ height: 32, minWidth: 32, flexShrink: 0, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, paddingHorizontal: text ? 8 : 6, borderRadius: 6, borderWidth: 0, backgroundColor: primary ? c.accent : pressed || active ? c.surface2 : "transparent" })}>
+  return <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: active }} onPress={onPress} style={({ pressed }) => ({ position: "relative", height: 32, minWidth: 32, flexShrink: 0, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, paddingHorizontal: text ? 8 : 6, borderRadius: 6, borderWidth: 0, backgroundColor: primary ? c.accent : pressed || active ? c.surface2 : "transparent" })}>
     <Icon name={icon} size={16} color={primary ? c.accentForeground : c.foregroundMuted} />
     {text ? <Text numberOfLines={1} style={{ color: primary ? c.accentForeground : c.foreground, fontSize: 12 }}>{text}</Text> : null}
+    {badge ? <View testID={badge} style={{ pointerEvents: "none", position: "absolute", top: 5, right: 5, width: 7, height: 7, borderRadius: 4, backgroundColor: c.accent, borderWidth: 1, borderColor: c.surface0 }} /> : null}
   </Pressable>;
 }
 function MenuAction({ label, icon, onPress, selected, detail, testID }: { label: string; icon: string; onPress(): void; selected?: boolean; detail?: string; testID?: string }) {
@@ -58,7 +61,7 @@ export function BoardToolbar(props: BoardToolbarProps) {
     {!compact && props.canSelect ? <UpdateNavigation navigation={props.updateNavigation} compact /> : null}
     {drafts && !narrow ? <ToolbarButton testID="board-drafts-open" label={`草稿 ${props.draftCount ?? 0}`} icon={props.draftIssue ? "FileWarning" : "FilePenLine"} text={compact ? undefined : `草稿 ${props.draftCount ?? 0}`} onPress={() => run(() => props.onOpenDrafts?.())} /> : null}
     <ToolbarButton testID="board-shortcuts-open" label="快捷键" icon="Keyboard" active={menu === "shortcuts"} onPress={() => open("shortcuts")} />
-    <ToolbarButton testID="board-more-open" label="更多" icon="Ellipsis" active={menu === "more"} onPress={() => open("more")} />
+    <ToolbarButton testID="board-more-open" label="更多" icon="Ellipsis" active={menu === "more"} badge={props.share?.attention ? "board-share-badge" : undefined} onPress={() => open("more")} />
     <ToolbarButton label="发消息" icon="MessageCircle" text={compact ? undefined : "发消息"} primary onPress={() => run(props.onCompose)} />
     <ToolbarPopover open={menu !== null} title={title} onClose={() => setMenu(null)} containerId="board-toolbar" testID="board-toolbar-popup" width={Math.min(340, width - 16)} right={8}>
       {menu === "tools" ? <>{modes.map(([mode, label, icon]) => <MenuAction key={mode} label={label} icon={icon} selected={props.selectionMode === mode} detail={modeDescriptions[mode]} onPress={() => run(() => props.onSelectionModeChange(mode))} />)}<Copy small muted>Esc 返回交互。也可按住 ⌘ / Ctrl + Shift，直接点击组件。</Copy></> : null}
@@ -90,7 +93,8 @@ export function BoardToolbar(props: BoardToolbarProps) {
         <MenuAction label="变化" icon="History" onPress={() => run(() => props.onOpenDrawer("history"))} />
         {props.onInbox ? <MenuAction testID="board-inbox-open" label="评论收件箱" icon="Inbox" detail="查看访客评论，控制 agent 读取与内部处理权限" onPress={() => run(() => props.onInbox?.())} /> : null}
         {props.onSources ? <MenuAction testID="board-composition-open" label={`组合来源${props.sourceCount ? ` ${props.sourceCount}` : ""}`} icon="PanelsTopLeft" detail="让 agent 引用、读取并组合其他 Board" onPress={() => run(() => props.onSources?.())} /> : null}
-        {props.onPublish ? <MenuAction label="导出与发布" icon="Upload" onPress={() => run(() => props.onPublish?.())} /> : null}
+        {props.onPublish ? <MenuAction label="导出与发布" icon="Upload" detail={props.share?.detail} onPress={() => run(() => props.onPublish?.())} /> : null}
+        {props.onUpdateShare && props.share?.available ? <MenuAction testID="board-share-update" label="更新分享页" icon="RefreshCw" detail={props.share.attention ? "预览新版本，确认后更新原来的分享链接" : "查看分享链接和状态"} onPress={() => run(() => props.onUpdateShare?.())} /> : null}
       </> : null}
     </ToolbarPopover>
   </View>;

@@ -14,6 +14,8 @@ import { useBoard } from "./data";
 import { ComponentEditPanel, useComponentEditor } from "./component-editor";
 import { BoardToolbar } from "./board-toolbar";
 import { ReleasePanel } from "./release-panel";
+import { shareSummary } from "./share-status";
+import { useShareStatus } from "./use-share-status";
 import { BoardInbox } from "./inbox";
 import { BoardConnectionStatus } from "./connection-status";
 import { createStateWriter } from "./state-writer";
@@ -84,6 +86,11 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
   const [selectionCaptureCancelId, setSelectionCaptureCancelId] = useState<string>();
   const [drawer, setDrawer] = useState<"decisions" | "threads" | "history" | "drafts" | null>(null);
   const [releaseOpen, setReleaseOpen] = useState(false);
+  const [releaseIntent, setReleaseIntent] = useState<"publish" | "update">("publish");
+  const shareStatus = useShareStatus(board, !embedded);
+  const releaseWasOpen = useRef(false);
+  // The panel may have published: re-read share links once it closes.
+  useEffect(() => { if (releaseWasOpen.current && !releaseOpen) shareStatus.refresh(); releaseWasOpen.current = releaseOpen; }, [releaseOpen, shareStatus.refresh]);
   const [inboxOpen, setInboxOpen] = useState(false);
   const draftStore = useMemo(() => createDraftStore({ hostId: host.id, boardId }), [host.id, boardId]);
   const [draftSnapshot, setDraftSnapshot] = useState(() => draftStore.list());
@@ -534,7 +541,9 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
       anchor={anchor} selectedText={selectedText} onClearReference={() => { setAnchor(undefined); setSelectionClearToken(value => value + 1); }}
       updateNavigation={updateNavigation} onOpenDrawer={setDrawer} onCompose={() => openCompose("question")}
       draftCount={availableDrafts.length + batchSnapshot.batches.length} draftIssue={draftSnapshot.issues.length > 0 || batchSnapshot.issues.length > 0 || Boolean(draftError || batchError)}
-      onPublish={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current && !pending.current) { setDrawer(null); setReleaseOpen(true); } }}
+      onPublish={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current && !pending.current) { setDrawer(null); setReleaseIntent("publish"); setReleaseOpen(true); } }}
+      share={{ ...shareSummary(shareStatus.shares), available: shareStatus.shares.length > 0 }}
+      onUpdateShare={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current && !pending.current) { setDrawer(null); setReleaseIntent("update"); setReleaseOpen(true); } }}
       onInbox={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current && !pending.current) { setDrawer(null); setInboxOpen(true); } }}
       onOpenDrafts={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current) setDrawer("drafts"); }}
       sourceCount={sources.data?.sources.length} onSources={sources.enabled ? () => setSourcesOpen(true) : undefined} /> : null}
@@ -597,7 +606,7 @@ Option / Alt + Enter 当前评论发 Side · Option / Alt + Shift + Enter 新 Si
     </BoardServicesBoundary></Modal.Content></Modal>
     <Modal title="导出与发布" open={releaseOpen} onOpenChange={setReleaseOpen}><Modal.Content><BoardServicesBoundary services={services}>
       <ColorContext.Provider value={c}>
-      {releaseOpen ? <ReleasePanel board={board} hostId={host.id} onOpenBoard={id => leaveBoard(() => { setReleaseOpen(false); if (onOpenBoard) onOpenBoard(id); else onBack(); })} /> : null}
+      {releaseOpen ? <ReleasePanel board={board} hostId={host.id} intent={releaseIntent} shares={shareStatus} onOpenBoard={id => leaveBoard(() => { setReleaseOpen(false); if (onOpenBoard) onOpenBoard(id); else onBack(); })} /> : null}
       </ColorContext.Provider>
     </BoardServicesBoundary></Modal.Content></Modal>
     <Modal title={drawer === "decisions" ? "Agent 做过的默认决策" : drawer === "threads" ? "围绕画布的讨论" : drawer === "drafts" ? "待发送与本机草稿" : "发生了什么变化"} open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }}><Modal.Content><BoardServicesBoundary services={services}>

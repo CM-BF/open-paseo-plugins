@@ -37742,7 +37742,9 @@ var ShareSchema = external_exports.object({
   publishedJobId: IdSchema,
   settingsAvailable: external_exports.boolean(),
   source: ShareSourceSchema,
-  inFlightJobId: IdSchema.optional()
+  inFlightJobId: IdSchema.optional(),
+  // Summary of the stored settings an update inherits; public data is reported only by size.
+  settings: external_exports.object({ network: external_exports.enum(["offline", "cdn"]), theme: external_exports.enum(["light", "dark"]), apiOrigins: PublicApiOriginsSchema, publicDataBytes: external_exports.number().int().nonnegative() }).optional()
 });
 var ShareStatusSchema = external_exports.object({
   current: ShareSourceSchema.required(),

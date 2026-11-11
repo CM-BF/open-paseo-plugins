@@ -37,7 +37,7 @@ var __async = (__this, __arguments, generator) => {
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 
 // client/home.tsx
-import { useEffect as useEffect14, useRef as useRef12, useState as useState15 } from "react";
+import { useEffect as useEffect15, useRef as useRef13, useState as useState16 } from "react";
 import { Pressable as Pressable8, Text as Text11, View as View15 } from "react-native";
 import { useQuery as useQuery3 } from "@tanstack/react-query";
 
@@ -1396,7 +1396,7 @@ function timeLabel(at) {
 }
 
 // client/board.tsx
-import { useCallback as useCallback7, useEffect as useEffect13, useMemo as useMemo6, useRef as useRef11, useState as useState14 } from "react";
+import { useCallback as useCallback8, useEffect as useEffect14, useMemo as useMemo7, useRef as useRef12, useState as useState15 } from "react";
 import { Image as Image2, Text as Text10, View as View14 } from "react-native";
 import { openExternalUrl as openExternalUrl2 } from "@getpaseo/plugin/client";
 import { Markdown, Modal as Modal2, ScrollView as ScrollView8, TextInput as TextInput7 } from "@getpaseo/plugin/client/ui";
@@ -6085,7 +6085,8 @@ function ToolbarButton({
   active,
   onPress,
   testID,
-  primary
+  primary,
+  badge
 }) {
   var c = useColors();
   return /* @__PURE__ */jsxs6(Pressable5, {
@@ -6099,6 +6100,7 @@ function ToolbarButton({
     style: ({
       pressed
     }) => ({
+      position: "relative",
       height: 32,
       minWidth: 32,
       flexShrink: 0,
@@ -6122,6 +6124,20 @@ function ToolbarButton({
         fontSize: 12
       },
       children: text
+    }) : null, badge ? /* @__PURE__ */jsx8(View6, {
+      testID: badge,
+      style: {
+        pointerEvents: "none",
+        position: "absolute",
+        top: 5,
+        right: 5,
+        width: 7,
+        height: 7,
+        borderRadius: 4,
+        backgroundColor: c.accent,
+        borderWidth: 1,
+        borderColor: c.surface0
+      }
     }) : null]
   });
 }
@@ -6281,6 +6297,7 @@ function BoardToolbar(props) {
       label: "\u66F4\u591A",
       icon: "Ellipsis",
       active: menu === "more",
+      badge: props.share?.attention ? "board-share-badge" : void 0,
       onPress: () => open("more")
     }), /* @__PURE__ */jsx8(ToolbarButton, {
       label: "\u53D1\u6D88\u606F",
@@ -6418,7 +6435,14 @@ function BoardToolbar(props) {
         }) : null, props.onPublish ? /* @__PURE__ */jsx8(MenuAction, {
           label: "\u5BFC\u51FA\u4E0E\u53D1\u5E03",
           icon: "Upload",
+          detail: props.share?.detail,
           onPress: () => run(() => props.onPublish?.())
+        }) : null, props.onUpdateShare && props.share?.available ? /* @__PURE__ */jsx8(MenuAction, {
+          testID: "board-share-update",
+          label: "\u66F4\u65B0\u5206\u4EAB\u9875",
+          icon: "RefreshCw",
+          detail: props.share.attention ? "\u9884\u89C8\u65B0\u7248\u672C\uFF0C\u786E\u8BA4\u540E\u66F4\u65B0\u539F\u6765\u7684\u5206\u4EAB\u94FE\u63A5" : "\u67E5\u770B\u5206\u4EAB\u94FE\u63A5\u548C\u72B6\u6001",
+          onPress: () => run(() => props.onUpdateShare?.())
         }) : null]
       }) : null]
     })]
@@ -6485,6 +6509,29 @@ var ReleaseCreateSchema = z3.object({
   theme: z3.enum(["light", "dark"]).default("light"),
   apiOrigins: PublicApiOriginsSchema.default([])
 });
+var ReleaseSettingsSchema = z3.object({
+  title: z3.string(),
+  network: z3.enum(["offline", "cdn"]),
+  theme: z3.enum(["light", "dark"]),
+  apiOrigins: PublicApiOriginsSchema,
+  publicData: JsonDataSchema
+});
+var ReleaseSourceSchema = z3.object({
+  boardId: IdSchema,
+  boardCreatedAt: z3.string(),
+  canvasBase: CanvasBaseSchema,
+  documentVersion: z3.number().int().nonnegative(),
+  patchCount: z3.number().int().nonnegative()
+});
+var ReleaseMetaSchema = z3.object({
+  formatVersion: z3.literal(1),
+  releaseId: ReleaseIdSchema,
+  settings: ReleaseSettingsSchema,
+  source: ReleaseSourceSchema,
+  createdAt: z3.string()
+});
+var ShareKeySchema = z3.string().regex(/^(s[a-f0-9]{20}|[a-f0-9]{64})$/);
+var PagesRefusalCodeSchema = z3.enum(["series-busy", "newer-on-share", "share-foreign", "up-to-date", "share-files-mismatch"]);
 var GitHubHostSchema = z3.string().min(1).max(253).transform(value => value.toLowerCase()).refine(value => !/[^a-z0-9.-]/.test(value) && value.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)), "Invalid GitHub hostname");
 var GitHubLoginSchema = z3.string().min(1).max(100).regex(/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/).refine(value => !/[^a-zA-Z0-9_.-]/.test(value), "Invalid GitHub login");
 var GitHubRepositoryNameSchema = z3.string().max(300).refine(value => {
@@ -6508,7 +6555,8 @@ var PagesPrepareSchema = z3.object({
   githubHost: GitHubHostSchema.optional(),
   account: GitHubLoginSchema,
   repository: GitHubRepositoryNameSchema,
-  createRepository: z3.enum(["public", "private"]).optional()
+  createRepository: z3.enum(["public", "private"]).optional(),
+  shareKey: ShareKeySchema.optional()
 });
 var PagesJobSchema = PagesPrepareSchema.extend({
   jobId: IdSchema,
@@ -6531,11 +6579,71 @@ var PagesJobSchema = PagesPrepareSchema.extend({
   pagesConfigurationRequested: z3.boolean().optional(),
   pagesConfigurationHash: z3.string().optional(),
   publicationMode: z3.enum(["workflow", "legacy-subdirectory", "legacy-branch"]).optional(),
-  sitePath: z3.string().regex(/^boards\/[a-f0-9]{64}$/).optional(),
+  // Legacy jobs: boards/<releaseHex>. Series jobs: the version archive boards/<key>/v/<releaseHex>.
+  sitePath: z3.string().regex(/^boards\/(?:[a-f0-9]{64}|(?:s[a-f0-9]{20}|[a-f0-9]{64})\/v\/[a-f0-9]{64})$/).optional(),
   sourcePath: z3.enum(["/", "/docs"]).optional(),
   autoPublish: z3.boolean().optional(),
-  autoPublishUntil: z3.string().datetime().optional()
+  autoPublishUntil: z3.string().datetime().optional(),
+  // Stable share directory relative to the source root (absent = Pages root in workflow mode).
+  sharePath: z3.string().regex(/^boards\/(?:s[a-f0-9]{20}|[a-f0-9]{64})$/).optional(),
+  shareDeployedUrl: z3.string().optional(),
+  shareUrl: z3.string().optional(),
+  adoptedFrom: IdSchema.optional(),
+  refusal: z3.object({
+    code: PagesRefusalCodeSchema,
+    message: z3.string()
+  }).optional()
 });
+var ShareSourceSchema = z3.object({
+  canvasBase: CanvasBaseSchema,
+  documentVersion: z3.number().int().nonnegative(),
+  patchCount: z3.number().int().nonnegative().optional()
+});
+var ShareSchema = z3.object({
+  seriesId: IdSchema,
+  githubHost: GitHubHostSchema,
+  account: GitHubLoginSchema,
+  repository: GitHubRepositoryNameSchema,
+  shareKey: ShareKeySchema.optional(),
+  adoptable: z3.boolean(),
+  link: z3.string().optional(),
+  verified: z3.boolean(),
+  state: z3.enum(["up-to-date", "changed", "legacy", "updating", "merged-unverified", "failed"]),
+  releaseId: ReleaseIdSchema,
+  title: z3.string(),
+  publishedJobId: IdSchema,
+  settingsAvailable: z3.boolean(),
+  source: ShareSourceSchema,
+  inFlightJobId: IdSchema.optional(),
+  // Summary of the stored settings an update inherits; public data is reported only by size.
+  settings: z3.object({
+    network: z3.enum(["offline", "cdn"]),
+    theme: z3.enum(["light", "dark"]),
+    apiOrigins: PublicApiOriginsSchema,
+    publicDataBytes: z3.number().int().nonnegative()
+  }).optional()
+});
+var ShareStatusSchema = z3.object({
+  current: ShareSourceSchema.required(),
+  shares: z3.array(ShareSchema)
+});
+var ShareUpdateSchema = z3.object({
+  boardId: IdSchema,
+  seriesId: IdSchema,
+  expectedSource: z3.object({
+    documentVersion: z3.number().int().nonnegative(),
+    patchCount: z3.number().int().nonnegative()
+  })
+});
+var ShareUpdateResultSchema = z3.union([z3.object({
+  upToDate: z3.literal(true)
+}), z3.object({
+  manifest: ReleaseManifestSchema,
+  request: PagesPrepareSchema.omit({
+    eventId: true,
+    createRepository: true
+  })
+})]);
 var releaseInput = z3.object({
   releaseId: ReleaseIdSchema
 });
@@ -6608,6 +6716,18 @@ var refreshPagesRpc = defineRpc3({
   }),
   output: PagesJobSchema
 });
+var shareStatusRpc = defineRpc3({
+  name: "board.release.share-status",
+  input: z3.object({
+    boardId: IdSchema
+  }),
+  output: ShareStatusSchema
+});
+var shareUpdateRpc = defineRpc3({
+  name: "board.release.share-update",
+  input: ShareUpdateSchema,
+  output: ShareUpdateResultSchema
+});
 var listPagesJobsRpc = defineRpc3({
   name: "board.pages.list",
   input: z3.object({
@@ -6619,6 +6739,13 @@ var listPagesJobsRpc = defineRpc3({
 // client/release-web.ts
 import { createElement as createElement3 } from "react";
 var browser3 = globalThis;
+var canPreviewRelease = () => !!browser3.document;
+function copyText(text) {
+  return __async(this, null, function* () {
+    if (!browser3.navigator?.clipboard) throw new Error("\u6B64\u5BA2\u6237\u7AEF\u65E0\u6CD5\u590D\u5236\uFF0C\u8BF7\u624B\u52A8\u9009\u62E9\u94FE\u63A5\u6587\u5B57\u3002");
+    yield browser3.navigator.clipboard.writeText(text);
+  });
+}
 function downloadReleaseZip(base64, fileName) {
   if (!browser3.document || !browser3.URL || !browser3.Blob || !browser3.atob) throw new Error("\u6B64\u5BA2\u6237\u7AEF\u65E0\u6CD5\u4E0B\u8F7D\u6587\u4EF6\uFF0C\u8BF7\u4F7F\u7528\u5BFC\u51FA\u76EE\u5F55\u6216\u684C\u9762\u7248\u3002");
   var bytes = Uint8Array.from(browser3.atob(base64), character => character.charCodeAt(0));
@@ -6687,7 +6814,7 @@ function browserDraftStorage() {
 
 // client/pages-outbox.ts
 var pagesGitHubHost = request => request.githubHost ?? "github.com";
-var samePagesTarget = (left, right) => left.releaseId === right.releaseId && left.artifactHash === right.artifactHash && pagesGitHubHost(left) === pagesGitHubHost(right) && left.account === right.account && left.repository === right.repository && left.createRepository === right.createRepository;
+var samePagesTarget = (left, right) => left.releaseId === right.releaseId && left.artifactHash === right.artifactHash && pagesGitHubHost(left) === pagesGitHubHost(right) && left.account === right.account && left.repository === right.repository && left.createRepository === right.createRepository && left.shareKey === right.shareKey;
 var samePagesRequest = (left, right) => left.eventId === right.eventId && samePagesTarget(left, right);
 function createPagesOutbox(hostId, boardId, storage = browserDraftStorage()) {
   var prefix = `@paseo:board-pages:v1:${encodeURIComponent(JSON.stringify([hostId, boardId]))}:`;
@@ -6737,8 +6864,80 @@ function createPagesOutbox(hostId, boardId, storage = browserDraftStorage()) {
   };
 }
 
+// client/share-status.ts
+var shareStateNames = {
+  "up-to-date": "\u5206\u4EAB\u9875\u5DF2\u662F\u6700\u65B0",
+  changed: "\u6709\u6539\u52A8\u8FD8\u6CA1\u53D1\u5E03",
+  legacy: "\u6709\u6539\u52A8\u8FD8\u6CA1\u53D1\u5E03 \xB7 \u9700\u6CBF\u7528\u4E0A\u6B21\u8BBE\u7F6E\u91CD\u65B0\u751F\u6210\u4E00\u6B21",
+  updating: "\u5206\u4EAB\u9875\u66F4\u65B0\u4E2D",
+  "merged-unverified": "\u5DF2\u5408\u5E76\uFF0C\u7F51\u9875\u5185\u5BB9\u5F85\u6838\u9A8C",
+  failed: "\u4E0A\u6B21\u66F4\u65B0\u6CA1\u6709\u5B8C\u6210"
+};
+function shareChanged(share, canvas) {
+  var {
+    source
+  } = share;
+  return source.patchCount === void 0 ? source.canvasBase.revision !== canvas.revision || source.documentVersion !== canvas.documentVersion : source.documentVersion !== canvas.documentVersion || source.patchCount !== canvas.patches.length;
+}
+function liveShareState(share, canvas) {
+  if (share.state === "updating" || share.state === "failed") return share.state;
+  if (shareChanged(share, canvas)) return share.settingsAvailable && share.source.patchCount !== void 0 ? "changed" : "legacy";
+  if (share.state === "changed" || share.state === "legacy") return share.verified ? "up-to-date" : "merged-unverified";
+  return share.state;
+}
+var liveShares = (shares, canvas) => shares.map(share => ({
+  ...share,
+  live: liveShareState(share, canvas)
+}));
+var shareNeedsUpdate = share => share.live === "changed" || share.live === "legacy";
+function shareSummary(shares) {
+  var stale = shares.filter(shareNeedsUpdate).length;
+  if (stale) return {
+    attention: true,
+    detail: stale > 1 ? `${stale} \u4E2A\u5206\u4EAB\u9875\u6709\u6539\u52A8\u8FD8\u6CA1\u53D1\u5E03` : shareStateNames.changed
+  };
+  if (shares.some(share => share.live === "updating")) return {
+    attention: false,
+    detail: shareStateNames.updating
+  };
+  if (!shares.length) return {
+    attention: false
+  };
+  return {
+    attention: false,
+    detail: shares.every(share => share.live === "up-to-date") ? shareStateNames["up-to-date"] : shareStateNames[shares[0].live]
+  };
+}
+var shareKeyOf = share => share.shareKey ?? share.releaseId.slice(8);
+var sameTarget = (item, target) => pagesGitHubHost(item) === pagesGitHubHost(target) && item.repository.toLowerCase() === target.repository.toLowerCase();
+function reusableShareKey(target, known) {
+  return known.shares?.find(share => share.shareKey && sameTarget(share, target))?.shareKey ?? known.requests?.find(item => item.shareKey && sameTarget(item, target))?.shareKey ?? known.jobs?.find(item => item.shareKey && sameTarget(item, target))?.shareKey;
+}
+function mintShareKey(random = randomBytes) {
+  return "s" + Array.from(random(10), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+function randomBytes(count) {
+  var bytes = new Uint8Array(count),
+    crypto = globalThis.crypto;
+  if (crypto?.getRandomValues) return crypto.getRandomValues(bytes);
+  for (var index = 0; index < count; index++) bytes[index] = Math.floor(Math.random() * 256);
+  return bytes;
+}
+var refusedJob = job => job.status === "failed" && !!job.refusal && job.refusal.code !== "up-to-date";
+var byteLabel = bytes => bytes < 1024 ? `${bytes} \u5B57\u8282` : `${(bytes / 1024).toFixed(1)} KB`;
+function inheritedSettingsText(share) {
+  if (!share.settings) return `\u540D\u79F0\u300C${share.title}\u300D \xB7 \u6CA1\u6709\u4FDD\u5B58\u5176\u4F59\u8BBE\u7F6E`;
+  var {
+    network,
+    theme,
+    apiOrigins,
+    publicDataBytes
+  } = share.settings;
+  return [`\u540D\u79F0\u300C${share.title}\u300D`, network === "cdn" ? "\u5141\u8BB8 CDN \u5E93" : "\u4EC5\u5185\u7F6E\u8D44\u6E90", theme === "dark" ? "\u6DF1\u8272" : "\u6D45\u8272", apiOrigins.length ? `\u540E\u7AEF\u6765\u6E90\uFF1A${apiOrigins.join("\u3001")}` : "\u4E0D\u8FDE\u63A5\u540E\u7AEF", `\u516C\u5F00\u6570\u636E ${byteLabel(publicDataBytes)}`].join(" \xB7 ");
+}
+
 // client/release-panel.tsx
-import { jsx as jsx9, jsxs as jsxs7 } from "react/jsx-runtime";
+import { Fragment as Fragment4, jsx as jsx9, jsxs as jsxs7 } from "react/jsx-runtime";
 var statusNames = {
   prepared: "\u51C6\u5907\u53D1\u5E03\u6587\u4EF6",
   "pr-open": "PR \u5DF2\u521B\u5EFA\uFF0C\u7B49\u5F85\u81EA\u52A8\u5408\u5E76",
@@ -6757,14 +6956,21 @@ var publicationRequest = value => ({
   } : {}),
   account: value.account,
   repository: value.repository,
-  createRepository: value.createRepository
+  createRepository: value.createRepository,
+  ...(value.shareKey ? {
+    shareKey: value.shareKey
+  } : {})
 });
+var finalRefusal = value => refusedJob(value) && value.refusal?.code !== "series-busy";
+var VISITOR_NOTICE = "\u8BBF\u5BA2\u672C\u5730\u4FDD\u5B58\u7684\u72B6\u6001\u4F1A\u4ECE\u65B0\u7248\u672C\u91CD\u65B0\u5F00\u59CB\uFF1B\u90E8\u5206\u8BBF\u5BA2\u53EF\u80FD\u51E0\u5206\u949F\u540E\u624D\u770B\u5230\u65B0\u7248\uFF08\u7F13\u5B58\uFF09\u3002";
 var automaticallyPublishing = value => value.autoPublish === true && !["live", "failed"].includes(value.status) && Boolean(value.autoPublishUntil && Date.parse(value.autoPublishUntil) > Date.now());
 var jobStatusName = value => value.status === "pr-open" && !automaticallyPublishing(value) ? "PR \u5DF2\u521B\u5EFA\uFF0C\u7B49\u5F85\u7EE7\u7EED\u53D1\u5E03" : statusNames[value.status];
 function ReleasePanel({
   board,
   hostId,
-  onOpenBoard
+  onOpenBoard,
+  intent = "publish",
+  shares
 }) {
   var c = useColors();
   var copyBoard = useBoardRpc(copyBoardRpc),
@@ -6777,6 +6983,7 @@ function ReleasePanel({
   var publish = useBoardRpc(publishPagesRpc),
     refresh = useBoardRpc(refreshPagesRpc),
     listJobs = useBoardRpc(listPagesJobsRpc);
+  var shareUpdate = useBoardRpc(shareUpdateRpc);
   var [title, setTitle] = useState8(`${board.title} \xB7 \u53D1\u5E03\u7248`);
   var [publicData, setPublicData] = useState8("{}");
   var [network, setNetwork] = useState8("offline");
@@ -6807,6 +7014,13 @@ function ReleasePanel({
     selectionGeneration = useRef7(0);
   var copyRequest = useRef7(void 0);
   var pageRequest = useRef7(void 0);
+  var [target, setTarget] = useState8();
+  var targetRef = useRef7(target);
+  targetRef.current = target;
+  var sessionKeys = useRef7(/* @__PURE__ */new Map()),
+    autoUpdate = useRef7(false);
+  var desktop = useMemo2(() => canPreviewRelease() && browserDraftStorage() !== null, []);
+  var shareList = shares?.shares ?? [];
   var field = {
     color: c.foreground,
     backgroundColor: c.surface1,
@@ -6821,7 +7035,7 @@ function ReleasePanel({
     void list({
       boardId: board.id
     }).then(value => {
-      if (mounted.current) setReleases(value);
+      if (mounted.current) setReleases(values => [...values.filter(item => !value.some(saved => saved.releaseId === item.releaseId)), ...value]);
     }).catch(error => {
       if (mounted.current) setFailure(errorMessage(error));
     });
@@ -6830,12 +7044,34 @@ function ReleasePanel({
     };
   }, [board.id, list]);
   useEffect8(() => {
+    var pending;
     try {
-      setPendingPages(outbox.list());
+      pending = outbox.list();
+      setPendingPages(pending);
     } catch (error) {
       setFailure(errorMessage(error));
+      return;
     }
-  }, [outbox]);
+    var active = true;
+    void (() => __async(null, null, function* () {
+      for (var releaseId of new Set(pending.map(item => item.releaseId))) {
+        var history = yield listJobs({
+          releaseId
+        }).catch(() => []);
+        if (!active) return;
+        var _loop3 = function* (request) {
+          if (history.some(item => finalRefusal(item) && samePagesRequest(item, request))) outbox.remove(request.eventId);
+        };
+        for (var request of pending) {
+          yield* _loop3(request);
+        }
+      }
+      if (active) setPendingPages(outbox.list());
+    }))();
+    return () => {
+      active = false;
+    };
+  }, [outbox, listJobs]);
   useEffect8(() => {
     if (!job || !automaticallyPublishing(job)) return;
     var active = true,
@@ -6920,11 +7156,11 @@ function ReleasePanel({
       setRepository(latest.repository);
       setCreateRepository(latest.createRepository);
     }
-    var _loop3 = function* (request) {
-      if (history.some(item => item.autoPublish && samePagesRequest(item, request))) outbox.remove(request.eventId);
+    var _loop4 = function* (request) {
+      if (history.some(item => (item.autoPublish || finalRefusal(item)) && samePagesRequest(item, request))) outbox.remove(request.eventId);
     };
     for (var request of outbox.list()) {
-      yield* _loop3(request);
+      yield* _loop4(request);
     }
     setPendingPages(outbox.list());
   });
@@ -6943,10 +7179,21 @@ function ReleasePanel({
     rememberJob(yield publish(frozen));
     outbox.remove(frozen.eventId);
     if (mounted.current) setPendingPages(outbox.list());
+    shares?.refresh();
   });
+  var shareKeyFor = (destination, pending) => {
+    var id2 = JSON.stringify([destination.githubHost, destination.repository.toLowerCase()]);
+    var key = reusableShareKey(destination, {
+      shares: shares?.status?.shares,
+      requests: pending,
+      jobs
+    }) ?? sessionKeys.current.get(id2) ?? mintShareKey();
+    sessionKeys.current.set(id2, key);
+    return key;
+  };
   var requestPages = () => run(() => __async(null, null, function* () {
     if (!selected || reviewed !== selected.artifactHash) return;
-    var target = {
+    var destination = {
       releaseId: selected.releaseId,
       artifactHash: selected.artifactHash,
       githubHost,
@@ -6955,20 +7202,187 @@ function ReleasePanel({
       createRepository
     };
     var previous = pageRequest.current;
-    var matchesTarget = item => samePagesTarget(item, target);
-    var known = jobs.find(item => item.status === "live" && matchesTarget(item)) ?? outbox.list().find(matchesTarget) ?? jobs.find(matchesTarget);
-    if (!previous || !samePagesTarget(previous, target)) pageRequest.current = known ? publicationRequest(known) : {
-      ...target,
-      eventId: localId("pages")
-    };
+    var matchesTarget = item => samePagesTarget(item, {
+      ...destination,
+      shareKey: item.shareKey
+    });
+    if (!previous || !matchesTarget(previous)) {
+      var pending = outbox.list();
+      var known = jobs.find(item => item.status === "live" && matchesTarget(item)) ?? pending.find(matchesTarget) ?? jobs.find(matchesTarget);
+      pageRequest.current = known ? publicationRequest(known) : {
+        ...destination,
+        eventId: localId("pages"),
+        shareKey: shareKeyFor(destination, pending)
+      };
+    }
     yield sendPagesRequest(pageRequest.current);
   }));
-  return /* @__PURE__ */jsxs7(View7, {
-    testID: "board-release-panel",
+  var aimAtShare = share => {
+    setGitHubHost(share.githubHost);
+    setAccount(share.account);
+    setRepository(share.repository);
+    setCreateRepository(void 0);
+    pageRequest.current = void 0;
+  };
+  var startUpdate = share => run(() => __async(null, null, function* () {
+    var next = {
+      share,
+      shareKey: shareKeyOf(share)
+    };
+    targetRef.current = next;
+    setTarget(next);
+    var result = yield shareUpdate({
+      boardId: board.id,
+      seriesId: share.seriesId,
+      expectedSource: {
+        documentVersion: board.canvas.documentVersion,
+        patchCount: board.canvas.patches.length
+      }
+    });
+    if (!mounted.current || targetRef.current !== next) return;
+    if ("upToDate" in result) {
+      var done = {
+        ...next,
+        upToDate: true
+      };
+      targetRef.current = done;
+      setTarget(done);
+      return;
+    }
+    var built = {
+      ...next,
+      releaseId: result.manifest.releaseId,
+      shareKey: result.request.shareKey ?? next.shareKey
+    };
+    targetRef.current = built;
+    setTarget(built);
+    setReleases(values => [result.manifest, ...values.filter(item => item.releaseId !== result.manifest.releaseId)]);
+    yield showRelease(result.manifest);
+    if (mounted.current && targetRef.current === built) aimAtShare(share);
+  }));
+  var recoverSettings = share => run(() => __async(null, null, function* () {
+    var saved = yield preview({
+      releaseId: share.releaseId
+    });
+    if (!mounted.current) return;
+    var manifest = saved.manifest;
+    setTitle(manifest.title);
+    setNetwork(manifest.network);
+    setApiOriginsText((manifest.apiOrigins ?? []).join("\n"));
+    copyRequest.current = void 0;
+    var next = {
+      share,
+      shareKey: shareKeyOf(share),
+      recovered: manifest
+    };
+    targetRef.current = next;
+    setTarget(next);
+  }));
+  var confirmShare = () => run(() => __async(null, null, function* () {
+    var current = targetRef.current;
+    if (!selected || !current?.releaseId || current.releaseId !== selected.releaseId) return;
+    setReviewed(selected.artifactHash);
+    var {
+      share
+    } = current;
+    var destination = {
+      releaseId: selected.releaseId,
+      artifactHash: selected.artifactHash,
+      githubHost: share.githubHost,
+      account: share.account,
+      repository: share.repository,
+      shareKey: current.shareKey
+    };
+    var known = outbox.list().find(item => samePagesTarget(item, destination)) ?? jobs.find(item => samePagesTarget(item, destination));
+    var request = known ? publicationRequest(known) : {
+      ...destination,
+      eventId: localId("pages")
+    };
+    aimAtShare(share);
+    pageRequest.current = request;
+    yield sendPagesRequest(request);
+  }));
+  useEffect8(() => {
+    if (intent !== "update" || autoUpdate.current || !desktop) return;
+    var share = shareList.find(item => item.live === "changed");
+    if (!share) return;
+    autoUpdate.current = true;
+    void startUpdate(share);
+  }, [intent, desktop, shareList]);
+  var copyLink = url => {
+    void copyText(url).catch(error => {
+      if (mounted.current) setFailure(errorMessage(error));
+    });
+  };
+  var shareSection = shareList.length ? /* @__PURE__ */jsxs7(View7, {
+    testID: "board-share-status",
     style: {
-      gap: 18
+      gap: 10
     },
     children: [/* @__PURE__ */jsx9(Copy, {
+      children: "\u5206\u4EAB\u9875"
+    }), shareList.map(share => {
+      var stale = shareChanged(share, board.canvas) || share.live === "failed",
+        active = target?.share.seriesId === share.seriesId;
+      return /* @__PURE__ */jsxs7(View7, {
+        style: {
+          gap: 6,
+          padding: 10,
+          borderWidth: 1,
+          borderRadius: 8,
+          borderColor: active ? c.accent : c.border
+        },
+        children: [/* @__PURE__ */jsx9(Copy, {
+          children: shareStateNames[share.live]
+        }), /* @__PURE__ */jsxs7(Copy, {
+          small: true,
+          muted: true,
+          children: [pagesGitHubHost(share), " \xB7 ", share.repository, share.link ? `
+${share.link}${share.verified ? "" : "\uFF08\u5185\u5BB9\u5F85\u6838\u9A8C\uFF09"}` : "\n\u5206\u4EAB\u94FE\u63A5\u5C1A\u672A\u90E8\u7F72"]
+        }), /* @__PURE__ */jsxs7(Copy, {
+          small: true,
+          muted: true,
+          children: ["\u6CBF\u7528\u8BBE\u7F6E\uFF1A", inheritedSettingsText(share)]
+        }), /* @__PURE__ */jsxs7(View7, {
+          style: {
+            flexDirection: "row",
+            flexWrap: "wrap",
+            gap: 6
+          },
+          children: [share.link ? /* @__PURE__ */jsx9(Action, {
+            label: "\u6253\u5F00\u5206\u4EAB\u9875",
+            onPress: () => openUrl(share.link)
+          }) : null, share.link ? /* @__PURE__ */jsx9(Action, {
+            label: "\u590D\u5236\u94FE\u63A5",
+            onPress: () => copyLink(share.link)
+          }) : null, desktop && stale && share.live !== "updating" && share.settingsAvailable ? /* @__PURE__ */jsx9(Action, {
+            label: "\u66F4\u65B0\u6B64\u5206\u4EAB\u9875",
+            primary: !active,
+            disabled: busy,
+            onPress: () => {
+              void startUpdate(share);
+            }
+          }) : null, desktop && stale && share.live !== "updating" && !share.settingsAvailable ? /* @__PURE__ */jsx9(Action, {
+            label: "\u6CBF\u7528\u4E0A\u6B21\u5206\u4EAB\u9875\u7684\u8BBE\u7F6E",
+            disabled: busy,
+            onPress: () => {
+              void recoverSettings(share);
+            }
+          }) : null]
+        }), active && target?.upToDate ? /* @__PURE__ */jsx9(Notice, {
+          text: "\u5206\u4EAB\u9875\u5DF2\u662F\u5F53\u524D\u5185\u5BB9\uFF0C\u65E0\u9700\u66F4\u65B0\u3002"
+        }) : null, active && target?.recovered ? /* @__PURE__ */jsxs7(Copy, {
+          small: true,
+          muted: true,
+          children: ["\u5DF2\u6CBF\u7528\u4E0A\u6B21\u5206\u4EAB\u9875\u7684\u8BBE\u7F6E\uFF1A\u540D\u79F0\u300C", target.recovered.title, "\u300D \xB7 ", target.recovered.network === "cdn" ? "\u5141\u8BB8 CDN \u5E93" : "\u4EC5\u5185\u7F6E\u8D44\u6E90", " \xB7 ", target.recovered.apiOrigins?.length ? `\u540E\u7AEF\u6765\u6E90\uFF1A${target.recovered.apiOrigins.join("\u3001")}` : "\u4E0D\u8FDE\u63A5\u540E\u7AEF", "\u3002\u4E3B\u9898\u548C\u516C\u5F00\u6570\u636E\u6CA1\u6709\u4FDD\u5B58\uFF0C\u8BF7\u5728\u4E0B\u65B9\u91CD\u65B0\u9009\u62E9\uFF0C\u518D\u70B9\u300C\u751F\u6210\u56FA\u5B9A\u7248\u672C\u5E76\u9884\u89C8\u300D\u3002"]
+        }) : null]
+      }, share.seriesId);
+    }), !desktop ? /* @__PURE__ */jsx9(Notice, {
+      text: "\u8BF7\u5728\u684C\u9762\u7248\u66F4\u65B0\u5206\u4EAB\u9875\uFF1A\u6B64\u5BA2\u6237\u7AEF\u65E0\u6CD5\u9884\u89C8\u65B0\u7248\u672C\u6216\u4FDD\u7559\u53D1\u5E03\u91CD\u8BD5\u8BB0\u5F55\u3002"
+    }) : null]
+  }) : null;
+  var editor = /* @__PURE__ */jsxs7(Fragment4, {
+    children: [intent === "update" ? null : /* @__PURE__ */jsx9(Copy, {
       children: "\u628A\u5F53\u524D\u5185\u5BB9\u56FA\u5B9A\u6210\u4E00\u4E2A\u53EF\u72EC\u7ACB\u6253\u5F00\u7684\u7F51\u7AD9\u3002\u4E4B\u540E\u7EE7\u7EED\u4FEE\u6539 Board\uFF0C\u4E0D\u4F1A\u6539\u53D8\u5DF2\u5BFC\u51FA\u6216\u5DF2\u4E0A\u7EBF\u7684\u7248\u672C\u3002"
     }), /* @__PURE__ */jsxs7(View7, {
       style: {
@@ -7103,24 +7517,42 @@ function ReleasePanel({
             });
             if (!mounted.current) return;
             setReleases(values => [result, ...values.filter(item => item.releaseId !== result.releaseId)]);
+            var recovering = targetRef.current?.recovered ? {
+              ...targetRef.current,
+              releaseId: result.releaseId
+            } : void 0;
+            if (recovering) {
+              targetRef.current = recovering;
+              setTarget(recovering);
+            }
             yield showRelease(result);
+            if (recovering && mounted.current && targetRef.current === recovering) aimAtShare(recovering.share);
           }));
         }
       })]
-    }), failure ? /* @__PURE__ */jsx9(Notice, {
-      error: true,
-      text: failure
-    }) : null, pendingPages.length ? /* @__PURE__ */jsxs7(View7, {
+    })]
+  });
+  var failureNotice = failure ? /* @__PURE__ */jsx9(Notice, {
+    error: true,
+    text: failure
+  }) : null;
+  var pendingSection = pendingPages.length ? /* @__PURE__ */jsxs7(View7, {
+    style: {
+      gap: 6
+    },
+    children: [/* @__PURE__ */jsx9(Copy, {
+      children: "\u5F85\u6838\u5BF9\u7684\u53D1\u5E03\u8BF7\u6C42"
+    }), /* @__PURE__ */jsx9(Copy, {
+      small: true,
+      muted: true,
+      children: "\u4E0A\u6B21\u5173\u95ED\u6216\u65AD\u7EBF\u524D\u7684\u7248\u672C\u548C\u76EE\u6807\u5DF2\u4FDD\u7559\u3002\u5DF2\u53D7\u7406\u7684\u53D1\u5E03\u4F1A\u5728\u540E\u53F0\u7EE7\u7EED\uFF1B\u6CA1\u6709\u53D7\u7406\u56DE\u6267\u65F6\u53EF\u91CD\u8BD5\u540C\u4E00\u6B21\u8BF7\u6C42\u3002\u653E\u5F03\u53EA\u5220\u9664\u672C\u673A\u7684\u91CD\u8BD5\u8BB0\u5F55\u3002"
+    }), pendingPages.map(request => /* @__PURE__ */jsxs7(View7, {
       style: {
+        flexDirection: "row",
+        flexWrap: "wrap",
         gap: 6
       },
-      children: [/* @__PURE__ */jsx9(Copy, {
-        children: "\u5F85\u6838\u5BF9\u7684\u53D1\u5E03\u8BF7\u6C42"
-      }), /* @__PURE__ */jsx9(Copy, {
-        small: true,
-        muted: true,
-        children: "\u4E0A\u6B21\u5173\u95ED\u6216\u65AD\u7EBF\u524D\u7684\u7248\u672C\u548C\u76EE\u6807\u5DF2\u4FDD\u7559\u3002\u5DF2\u53D7\u7406\u7684\u53D1\u5E03\u4F1A\u5728\u540E\u53F0\u7EE7\u7EED\uFF1B\u6CA1\u6709\u53D7\u7406\u56DE\u6267\u65F6\u53EF\u91CD\u8BD5\u540C\u4E00\u6B21\u8BF7\u6C42\u3002"
-      }), pendingPages.map(request => /* @__PURE__ */jsx9(Action, {
+      children: [/* @__PURE__ */jsx9(Action, {
         label: `\u6062\u590D\u53D1\u5E03 \xB7 ${pagesGitHubHost(request)} \xB7 ${request.repository}`,
         disabled: busy,
         onPress: () => {
@@ -7137,266 +7569,384 @@ function ReleasePanel({
             setCreateRepository(request.createRepository);
           }));
         }
-      }, request.eventId))]
-    }) : null, releases.length ? /* @__PURE__ */jsxs7(View7, {
+      }), /* @__PURE__ */jsx9(Action, {
+        label: `\u653E\u5F03 \xB7 ${pagesGitHubHost(request)} \xB7 ${request.repository}`,
+        disabled: busy,
+        onPress: () => {
+          try {
+            outbox.remove(request.eventId);
+            setPendingPages(outbox.list());
+            if (pageRequest.current?.eventId === request.eventId) pageRequest.current = void 0;
+          } catch (error) {
+            setFailure(errorMessage(error));
+          }
+        }
+      })]
+    }, request.eventId))]
+  }) : null;
+  var releasesSection = releases.length ? /* @__PURE__ */jsxs7(View7, {
+    style: {
+      gap: 6
+    },
+    children: [/* @__PURE__ */jsx9(Copy, {
+      children: "\u672C\u673A\u53D1\u5E03\u7248\u672C"
+    }), /* @__PURE__ */jsx9(ScrollView2, {
       style: {
-        gap: 6
+        maxHeight: 160
+      },
+      contentContainerStyle: {
+        gap: 4
+      },
+      children: releases.map(release => /* @__PURE__ */jsx9(Action, {
+        label: `${release.title} \xB7 ${release.artifactHash.slice(0, 10)}`,
+        active: release.releaseId === selected?.releaseId,
+        disabled: busy,
+        onPress: () => {
+          void run(() => showRelease(release));
+        }
+      }, release.releaseId))
+    })]
+  }) : null;
+  var confirming = selected && target?.releaseId === selected.releaseId ? target : void 0;
+  var confirmedJob = confirming && selected ? jobs.find(item => item.releaseId === selected.releaseId && item.shareKey === confirming.shareKey && (item.status === "live" || automaticallyPublishing(item))) : void 0;
+  var selectedSection = selected ? /* @__PURE__ */jsxs7(View7, {
+    style: {
+      gap: 12
+    },
+    children: [/* @__PURE__ */jsxs7(Copy, {
+      children: [selected.title, " \xB7 \u56FA\u5B9A\u7248\u672C ", selected.artifactHash.slice(0, 12)]
+    }), selected.apiOrigins?.length ? /* @__PURE__ */jsxs7(Copy, {
+      small: true,
+      muted: true,
+      children: ["\u5DF2\u56FA\u5B9A\u7684\u540E\u7AEF\u6765\u6E90\uFF1A", selected.apiOrigins.join("\u3001")]
+    }) : null, html ? /* @__PURE__ */jsx9(ReleasePreview, {
+      html
+    }) : null, confirming ? /* @__PURE__ */jsxs7(View7, {
+      style: {
+        gap: 8,
+        padding: 10,
+        borderWidth: 1,
+        borderRadius: 8,
+        borderColor: c.accent
+      },
+      children: [/* @__PURE__ */jsxs7(Copy, {
+        children: ["\u786E\u8BA4\u540E\u66F4\u65B0\u8FD9\u4E2A\u5206\u4EAB\u94FE\u63A5\uFF1A", confirming.share.link ?? `${pagesGitHubHost(confirming.share)} \xB7 ${confirming.share.repository}`]
+      }), confirming.share.adoptable ? /* @__PURE__ */jsx9(Copy, {
+        small: true,
+        muted: true,
+        children: "\u94FE\u63A5\u4FDD\u6301\u4E0D\u53D8\uFF1B\u4E4B\u524D\u7684\u7248\u672C\u53E6\u5B58\u5728\u8FD9\u4E2A\u94FE\u63A5\u4E0B\u7684 v/ \u76EE\u5F55\uFF0C\u4ECD\u53EF\u6253\u5F00\u3002"
+      }) : null, /* @__PURE__ */jsx9(Copy, {
+        small: true,
+        muted: true,
+        children: confirming.recovered ? `\u672C\u6B21\u4F7F\u7528\u9762\u677F\u4E2D\u7684\u8BBE\u7F6E\uFF1A\u540D\u79F0\u300C${selected.title}\u300D \xB7 ${selected.network === "cdn" ? "\u5141\u8BB8 CDN \u5E93" : "\u4EC5\u5185\u7F6E\u8D44\u6E90"} \xB7 ${selected.apiOrigins?.length ? `\u540E\u7AEF\u6765\u6E90\uFF1A${selected.apiOrigins.join("\u3001")}` : "\u4E0D\u8FDE\u63A5\u540E\u7AEF"}` : `\u6CBF\u7528\u8BBE\u7F6E\uFF1A${inheritedSettingsText(confirming.share)}`
+      }), /* @__PURE__ */jsx9(Copy, {
+        small: true,
+        muted: true,
+        children: VISITOR_NOTICE
+      }), /* @__PURE__ */jsx9(Action, {
+        testID: "board-share-confirm",
+        label: confirmedJob ? "\u5DF2\u63D0\u4EA4\u66F4\u65B0" : "\u786E\u8BA4\u5E76\u66F4\u65B0\u5206\u4EAB\u9875",
+        primary: true,
+        disabled: busy || !html || !!confirmedJob,
+        onPress: () => {
+          void confirmShare();
+        }
+      })]
+    }) : null, selected.warnings.map((warning, index) => /* @__PURE__ */jsx9(Notice, {
+      text: warning
+    }, index)), /* @__PURE__ */jsxs7(Copy, {
+      small: true,
+      muted: true,
+      children: ["\u6587\u4EF6\uFF1A", selected.files.map(file => file.path).join("\u3001"), selected.dependencies.length ? `
+\u5916\u90E8\u4F9D\u8D56\uFF1A${selected.dependencies.join("\u3001")}` : "\n\u65E0\u9700\u5916\u90E8\u4F9D\u8D56\u3002"]
+    }), /* @__PURE__ */jsx9(Action, {
+      label: "\u4E0B\u8F7D ZIP",
+      disabled: busy,
+      onPress: () => {
+        void run(() => __async(null, null, function* () {
+          var bundle = yield download({
+            releaseId: selected.releaseId
+          });
+          downloadReleaseZip(bundle.zipBase64, bundle.fileName);
+        }));
+      }
+    }), /* @__PURE__ */jsx9(Copy, {
+      small: true,
+      muted: true,
+      children: "\u81EA\u6709\u670D\u52A1\u5668\uFF1A\u89E3\u538B\u540E\u628A\u76EE\u5F55\u4EA4\u7ED9 Nginx\u3001Caddy \u6216\u73B0\u6709\u9759\u6001\u7AD9\u70B9\u670D\u52A1\u3002\u7F51\u7AD9\u65E0\u9700\u8FD0\u884C Paseo\u3002"
+    }), /* @__PURE__ */jsx9(Action, {
+      label: reviewed === selected.artifactHash ? "\u5DF2\u786E\u8BA4\u6B64\u7248\u672C\u53EF\u53D1\u5E03" : "\u786E\u8BA4\u9884\u89C8\u548C\u6570\u636E\uFF0C\u53EF\u53D1\u5E03\u6B64\u7248\u672C",
+      active: reviewed === selected.artifactHash,
+      disabled: busy,
+      onPress: () => setReviewed(selected.artifactHash)
+    }), /* @__PURE__ */jsxs7(View7, {
+      style: {
+        gap: 8,
+        borderTopWidth: 1,
+        borderColor: c.border,
+        paddingTop: 14
       },
       children: [/* @__PURE__ */jsx9(Copy, {
-        children: "\u672C\u673A\u53D1\u5E03\u7248\u672C"
-      }), /* @__PURE__ */jsx9(ScrollView2, {
+        children: "GitHub Pages"
+      }), /* @__PURE__ */jsx9(Copy, {
+        small: true,
+        muted: true,
+        children: "\u70B9\u51FB\u53D1\u5E03\u540E\u81EA\u52A8\u521B\u5EFA PR\u3001\u5408\u5E76\u3001\u90E8\u7F72\u5E76\u6838\u5BF9\u7F51\u9875\u3002\u5173\u95ED\u9762\u677F\u540E\u4ECD\u4F1A\u7EE7\u7EED\u3002\u5DF2\u6709\u7AD9\u70B9\u4F1A\u4F7F\u7528\u72EC\u7ACB\u76EE\u5F55\uFF0C\u4FDD\u7559\u539F\u6765\u7684\u9875\u9762\u3002"
+      }), /* @__PURE__ */jsx9(Copy, {
+        small: true,
+        muted: true,
+        children: "\u652F\u6301 github.com \u548C\u516C\u53F8\u5185\u90E8 GitHub\u3002\u7F51\u7AD9\u8BBF\u95EE\u6743\u9650\u7531\u6240\u9009 GitHub \u7684 Pages \u8BBE\u7F6E\u51B3\u5B9A\uFF1B\u79C1\u6709\u4ED3\u5E93\u4E0D\u4EE3\u8868\u7F51\u7AD9\u4E5F\u79C1\u6709\u3002"
+      }), /* @__PURE__ */jsx9(TextInput3, {
+        accessibilityLabel: "GitHub \u4E3B\u673A\uFF08\u53EF\u9009\uFF09",
+        placeholder: "\u7559\u7A7A\u8BFB\u53D6\u5DF2\u767B\u5F55\u4E3B\u673A\uFF0C\u6216\u586B\u5199\u516C\u53F8 GitHub \u57DF\u540D",
+        placeholderTextColor: c.foregroundMuted,
+        value: githubHostFilter,
+        onChangeText: value => {
+          setGitHubHostFilter(value);
+          setAccountList([]);
+          setAccount("");
+          setRepoList([]);
+          setRepository("");
+          setCreateRepository(void 0);
+          pageRequest.current = void 0;
+        },
+        editable: !busy,
+        autoCapitalize: "none",
+        style: field
+      }), /* @__PURE__ */jsx9(Action, {
+        label: "\u8BFB\u53D6 GitHub \u8D26\u53F7",
+        disabled: busy,
+        onPress: () => {
+          void run(() => __async(null, null, function* () {
+            var filter = githubHostFilter.trim();
+            setAccountList(yield accounts(filter ? {
+              githubHost: filter
+            } : {}));
+          }));
+        }
+      }), accountList.map(item => /* @__PURE__ */jsx9(Action, {
+        label: `${item.login} \xB7 ${item.host}`,
+        active: account === item.login && githubHost === item.host,
+        disabled: busy,
+        onPress: () => {
+          setGitHubHost(item.host);
+          setAccount(item.login);
+          setRepoList([]);
+          setRepository("");
+          setCreateRepository(void 0);
+          pageRequest.current = void 0;
+          void run(() => __async(null, null, function* () {
+            return setRepoList(yield repositories({
+              account: item.login,
+              githubHost: item.host
+            }));
+          }));
+        }
+      }, `${item.host}/${item.login}`)), account ? /* @__PURE__ */jsxs7(Copy, {
+        small: true,
+        muted: true,
+        children: ["\u53D1\u5E03\u8D26\u53F7\uFF1A", account, " \xB7 ", githubHost]
+      }) : null, /* @__PURE__ */jsx9(TextInput3, {
+        accessibilityLabel: "GitHub \u4ED3\u5E93 owner/repo",
+        placeholder: "owner/repository",
+        placeholderTextColor: c.foregroundMuted,
+        value: repository,
+        onChangeText: value => {
+          setRepository(value);
+          pageRequest.current = void 0;
+        },
+        editable: !busy,
+        style: field
+      }), repoList.length ? /* @__PURE__ */jsx9(ScrollView2, {
         style: {
-          maxHeight: 160
+          maxHeight: 180
         },
         contentContainerStyle: {
           gap: 4
         },
-        children: releases.map(release => /* @__PURE__ */jsx9(Action, {
-          label: `${release.title} \xB7 ${release.artifactHash.slice(0, 10)}`,
-          active: release.releaseId === selected?.releaseId,
+        children: repoList.map(item => /* @__PURE__ */jsx9(Action, {
+          label: `${item.name}${item.private ? " \xB7 \u79C1\u6709\u4ED3\u5E93" : ""}`,
+          active: repository === item.name,
           disabled: busy,
           onPress: () => {
-            void run(() => showRelease(release));
+            setRepository(item.name);
+            setCreateRepository(void 0);
+            pageRequest.current = void 0;
           }
-        }, release.releaseId))
-      })]
-    }) : null, selected ? /* @__PURE__ */jsxs7(View7, {
-      style: {
-        gap: 12
-      },
-      children: [/* @__PURE__ */jsxs7(Copy, {
-        children: [selected.title, " \xB7 \u56FA\u5B9A\u7248\u672C ", selected.artifactHash.slice(0, 12)]
-      }), selected.apiOrigins?.length ? /* @__PURE__ */jsxs7(Copy, {
-        small: true,
-        muted: true,
-        children: ["\u5DF2\u56FA\u5B9A\u7684\u540E\u7AEF\u6765\u6E90\uFF1A", selected.apiOrigins.join("\u3001")]
-      }) : null, html ? /* @__PURE__ */jsx9(ReleasePreview, {
-        html
-      }) : null, selected.warnings.map((warning, index) => /* @__PURE__ */jsx9(Notice, {
-        text: warning
-      }, index)), /* @__PURE__ */jsxs7(Copy, {
-        small: true,
-        muted: true,
-        children: ["\u6587\u4EF6\uFF1A", selected.files.map(file => file.path).join("\u3001"), selected.dependencies.length ? `
-\u5916\u90E8\u4F9D\u8D56\uFF1A${selected.dependencies.join("\u3001")}` : "\n\u65E0\u9700\u5916\u90E8\u4F9D\u8D56\u3002"]
+        }, item.name))
+      }) : null, /* @__PURE__ */jsxs7(View7, {
+        style: {
+          flexDirection: "row",
+          flexWrap: "wrap",
+          gap: 6
+        },
+        children: [/* @__PURE__ */jsx9(Action, {
+          label: "\u73B0\u6709\u4ED3\u5E93",
+          active: !createRepository,
+          disabled: busy,
+          onPress: () => {
+            setCreateRepository(void 0);
+            pageRequest.current = void 0;
+          }
+        }), /* @__PURE__ */jsx9(Action, {
+          label: "\u65B0\u5EFA\u516C\u5F00\u4ED3\u5E93",
+          active: createRepository === "public",
+          disabled: busy,
+          onPress: () => {
+            setCreateRepository("public");
+            pageRequest.current = void 0;
+          }
+        }), /* @__PURE__ */jsx9(Action, {
+          label: "\u65B0\u5EFA\u79C1\u6709\u4ED3\u5E93",
+          active: createRepository === "private",
+          disabled: busy,
+          onPress: () => {
+            setCreateRepository("private");
+            pageRequest.current = void 0;
+          }
+        })]
       }), /* @__PURE__ */jsx9(Action, {
-        label: "\u4E0B\u8F7D ZIP",
+        label: createRepository ? "\u521B\u5EFA\u4ED3\u5E93\u5E76\u4E00\u952E\u53D1\u5E03" : "\u4E00\u952E\u53D1\u5E03",
+        disabled: busy || !account || !repository.trim() || reviewed !== selected.artifactHash || jobs.some(item => item.releaseId === selected.releaseId && pagesGitHubHost(item) === githubHost && item.account === account && item.repository === repository.trim() && automaticallyPublishing(item)),
+        primary: true,
+        onPress: () => {
+          void requestPages();
+        }
+      }), jobs.map(item => /* @__PURE__ */jsx9(Action, {
+        label: `${pagesGitHubHost(item)} \xB7 ${item.repository} \xB7 ${jobStatusName(item)}`,
+        active: item.jobId === job?.jobId,
         disabled: busy,
         onPress: () => {
-          void run(() => __async(null, null, function* () {
-            var bundle = yield download({
-              releaseId: selected.releaseId
-            });
-            downloadReleaseZip(bundle.zipBase64, bundle.fileName);
-          }));
+          currentJob.current = item;
+          setJob(item);
+          setGitHubHost(pagesGitHubHost(item));
+          setAccount(item.account);
+          setRepository(item.repository);
+          setCreateRepository(item.createRepository);
+          pageRequest.current = void 0;
         }
-      }), /* @__PURE__ */jsx9(Copy, {
-        small: true,
-        muted: true,
-        children: "\u81EA\u6709\u670D\u52A1\u5668\uFF1A\u89E3\u538B\u540E\u628A\u76EE\u5F55\u4EA4\u7ED9 Nginx\u3001Caddy \u6216\u73B0\u6709\u9759\u6001\u7AD9\u70B9\u670D\u52A1\u3002\u7F51\u7AD9\u65E0\u9700\u8FD0\u884C Paseo\u3002"
-      }), /* @__PURE__ */jsx9(Action, {
-        label: reviewed === selected.artifactHash ? "\u5DF2\u786E\u8BA4\u6B64\u7248\u672C\u53EF\u53D1\u5E03" : "\u786E\u8BA4\u9884\u89C8\u548C\u6570\u636E\uFF0C\u53EF\u53D1\u5E03\u6B64\u7248\u672C",
-        active: reviewed === selected.artifactHash,
-        disabled: busy,
-        onPress: () => setReviewed(selected.artifactHash)
-      }), /* @__PURE__ */jsxs7(View7, {
+      }, item.jobId)), job ? /* @__PURE__ */jsxs7(View7, {
+        testID: "board-pages-job",
         style: {
-          gap: 8,
-          borderTopWidth: 1,
-          borderColor: c.border,
-          paddingTop: 14
+          gap: 8
         },
-        children: [/* @__PURE__ */jsx9(Copy, {
-          children: "GitHub Pages"
-        }), /* @__PURE__ */jsx9(Copy, {
+        children: [/* @__PURE__ */jsxs7(Copy, {
+          children: [pagesGitHubHost(job), " \xB7 ", job.repository, " \xB7 ", jobStatusName(job)]
+        }), job.sitePath ? /* @__PURE__ */jsxs7(Copy, {
           small: true,
           muted: true,
-          children: "\u70B9\u51FB\u53D1\u5E03\u540E\u81EA\u52A8\u521B\u5EFA PR\u3001\u5408\u5E76\u3001\u90E8\u7F72\u5E76\u6838\u5BF9\u7F51\u9875\u3002\u5173\u95ED\u9762\u677F\u540E\u4ECD\u4F1A\u7EE7\u7EED\u3002\u5DF2\u6709\u7AD9\u70B9\u4F1A\u4F7F\u7528\u72EC\u7ACB\u76EE\u5F55\uFF0C\u4FDD\u7559\u539F\u6765\u7684\u9875\u9762\u3002"
-        }), /* @__PURE__ */jsx9(Copy, {
+          children: ["\u53D1\u5E03\u76EE\u5F55\uFF1A", job.sitePath]
+        }) : null, job.shareKey && (job.shareUrl ?? job.shareDeployedUrl) ? /* @__PURE__ */jsxs7(Copy, {
           small: true,
           muted: true,
-          children: "\u652F\u6301 github.com \u548C\u516C\u53F8\u5185\u90E8 GitHub\u3002\u7F51\u7AD9\u8BBF\u95EE\u6743\u9650\u7531\u6240\u9009 GitHub \u7684 Pages \u8BBE\u7F6E\u51B3\u5B9A\uFF1B\u79C1\u6709\u4ED3\u5E93\u4E0D\u4EE3\u8868\u7F51\u7AD9\u4E5F\u79C1\u6709\u3002"
-        }), /* @__PURE__ */jsx9(TextInput3, {
-          accessibilityLabel: "GitHub \u4E3B\u673A\uFF08\u53EF\u9009\uFF09",
-          placeholder: "\u7559\u7A7A\u8BFB\u53D6\u5DF2\u767B\u5F55\u4E3B\u673A\uFF0C\u6216\u586B\u5199\u516C\u53F8 GitHub \u57DF\u540D",
-          placeholderTextColor: c.foregroundMuted,
-          value: githubHostFilter,
-          onChangeText: value => {
-            setGitHubHostFilter(value);
-            setAccountList([]);
-            setAccount("");
-            setRepoList([]);
-            setRepository("");
-            setCreateRepository(void 0);
-            pageRequest.current = void 0;
-          },
-          editable: !busy,
-          autoCapitalize: "none",
-          style: field
-        }), /* @__PURE__ */jsx9(Action, {
-          label: "\u8BFB\u53D6 GitHub \u8D26\u53F7",
+          children: ["\u5206\u4EAB\u94FE\u63A5\uFF1A", job.shareUrl ?? job.shareDeployedUrl]
+        }) : null, automaticallyPublishing(job) ? /* @__PURE__ */jsx9(Copy, {
+          small: true,
+          muted: true,
+          children: "\u53D1\u5E03\u5DF2\u4EA4\u7ED9\u540E\u53F0\uFF0C\u6B63\u5728\u81EA\u52A8\u5B8C\u6210\u540E\u7EED\u6B65\u9AA4\u3002"
+        }) : null, job.refusal?.code === "up-to-date" ? /* @__PURE__ */jsx9(Copy, {
+          small: true,
+          muted: true,
+          children: "\u5206\u4EAB\u9875\u4E0A\u5DF2\u7ECF\u662F\u8FD9\u4E2A\u7248\u672C\uFF0C\u6CA1\u6709\u65B0\u5EFA PR\u3002"
+        }) : null, job.error ? /* @__PURE__ */jsx9(Notice, {
+          error: true,
+          text: job.error
+        }) : null, job.prUrl ? /* @__PURE__ */jsx9(Action, {
+          label: "\u67E5\u770B PR",
+          onPress: () => openUrl(job.prUrl)
+        }) : null, job.status !== "live" && !automaticallyPublishing(job) && !finalRefusal(job) ? /* @__PURE__ */jsx9(Action, {
+          label: "\u4E00\u952E\u7EE7\u7EED\u53D1\u5E03",
+          disabled: busy || reviewed !== job.artifactHash,
+          onPress: () => {
+            void run(() => sendPagesRequest(publicationRequest(job)));
+          }
+        }) : null, /* @__PURE__ */jsx9(Action, {
+          label: "\u6838\u5BF9\u90E8\u7F72\u72B6\u6001",
           disabled: busy,
           onPress: () => {
             void run(() => __async(null, null, function* () {
-              var filter = githubHostFilter.trim();
-              setAccountList(yield accounts(filter ? {
-                githubHost: filter
-              } : {}));
-            }));
-          }
-        }), accountList.map(item => /* @__PURE__ */jsx9(Action, {
-          label: `${item.login} \xB7 ${item.host}`,
-          active: account === item.login && githubHost === item.host,
-          disabled: busy,
-          onPress: () => {
-            setGitHubHost(item.host);
-            setAccount(item.login);
-            setRepoList([]);
-            setRepository("");
-            setCreateRepository(void 0);
-            pageRequest.current = void 0;
-            void run(() => __async(null, null, function* () {
-              return setRepoList(yield repositories({
-                account: item.login,
-                githubHost: item.host
+              return rememberJob(yield refresh({
+                jobId: job.jobId
               }));
             }));
           }
-        }, `${item.host}/${item.login}`)), account ? /* @__PURE__ */jsxs7(Copy, {
-          small: true,
-          muted: true,
-          children: ["\u53D1\u5E03\u8D26\u53F7\uFF1A", account, " \xB7 ", githubHost]
-        }) : null, /* @__PURE__ */jsx9(TextInput3, {
-          accessibilityLabel: "GitHub \u4ED3\u5E93 owner/repo",
-          placeholder: "owner/repository",
-          placeholderTextColor: c.foregroundMuted,
-          value: repository,
-          onChangeText: value => {
-            setRepository(value);
-            pageRequest.current = void 0;
-          },
-          editable: !busy,
-          style: field
-        }), repoList.length ? /* @__PURE__ */jsx9(ScrollView2, {
-          style: {
-            maxHeight: 180
-          },
-          contentContainerStyle: {
-            gap: 4
-          },
-          children: repoList.map(item => /* @__PURE__ */jsx9(Action, {
-            label: `${item.name}${item.private ? " \xB7 \u79C1\u6709\u4ED3\u5E93" : ""}`,
-            active: repository === item.name,
-            disabled: busy,
-            onPress: () => {
-              setRepository(item.name);
-              setCreateRepository(void 0);
-              pageRequest.current = void 0;
-            }
-          }, item.name))
-        }) : null, /* @__PURE__ */jsxs7(View7, {
-          style: {
-            flexDirection: "row",
-            flexWrap: "wrap",
-            gap: 6
-          },
-          children: [/* @__PURE__ */jsx9(Action, {
-            label: "\u73B0\u6709\u4ED3\u5E93",
-            active: !createRepository,
-            disabled: busy,
-            onPress: () => {
-              setCreateRepository(void 0);
-              pageRequest.current = void 0;
-            }
-          }), /* @__PURE__ */jsx9(Action, {
-            label: "\u65B0\u5EFA\u516C\u5F00\u4ED3\u5E93",
-            active: createRepository === "public",
-            disabled: busy,
-            onPress: () => {
-              setCreateRepository("public");
-              pageRequest.current = void 0;
-            }
-          }), /* @__PURE__ */jsx9(Action, {
-            label: "\u65B0\u5EFA\u79C1\u6709\u4ED3\u5E93",
-            active: createRepository === "private",
-            disabled: busy,
-            onPress: () => {
-              setCreateRepository("private");
-              pageRequest.current = void 0;
-            }
-          })]
-        }), /* @__PURE__ */jsx9(Action, {
-          label: createRepository ? "\u521B\u5EFA\u4ED3\u5E93\u5E76\u4E00\u952E\u53D1\u5E03" : "\u4E00\u952E\u53D1\u5E03",
-          disabled: busy || !account || !repository.trim() || reviewed !== selected.artifactHash || jobs.some(item => item.releaseId === selected.releaseId && pagesGitHubHost(item) === githubHost && item.account === account && item.repository === repository.trim() && automaticallyPublishing(item)),
-          primary: true,
-          onPress: () => {
-            void requestPages();
-          }
-        }), jobs.map(item => /* @__PURE__ */jsx9(Action, {
-          label: `${pagesGitHubHost(item)} \xB7 ${item.repository} \xB7 ${jobStatusName(item)}`,
-          active: item.jobId === job?.jobId,
-          disabled: busy,
-          onPress: () => {
-            currentJob.current = item;
-            setJob(item);
-            setGitHubHost(pagesGitHubHost(item));
-            setAccount(item.account);
-            setRepository(item.repository);
-            setCreateRepository(item.createRepository);
-            pageRequest.current = void 0;
-          }
-        }, item.jobId)), job ? /* @__PURE__ */jsxs7(View7, {
-          testID: "board-pages-job",
-          style: {
-            gap: 8
-          },
-          children: [/* @__PURE__ */jsxs7(Copy, {
-            children: [pagesGitHubHost(job), " \xB7 ", job.repository, " \xB7 ", jobStatusName(job)]
-          }), job.sitePath ? /* @__PURE__ */jsxs7(Copy, {
-            small: true,
-            muted: true,
-            children: ["\u53D1\u5E03\u76EE\u5F55\uFF1A", job.sitePath]
-          }) : null, automaticallyPublishing(job) ? /* @__PURE__ */jsx9(Copy, {
-            small: true,
-            muted: true,
-            children: "\u53D1\u5E03\u5DF2\u4EA4\u7ED9\u540E\u53F0\uFF0C\u6B63\u5728\u81EA\u52A8\u5B8C\u6210\u540E\u7EED\u6B65\u9AA4\u3002"
-          }) : null, job.error ? /* @__PURE__ */jsx9(Notice, {
-            error: true,
-            text: job.error
-          }) : null, job.prUrl ? /* @__PURE__ */jsx9(Action, {
-            label: "\u67E5\u770B PR",
-            onPress: () => openUrl(job.prUrl)
-          }) : null, job.status !== "live" && !automaticallyPublishing(job) ? /* @__PURE__ */jsx9(Action, {
-            label: "\u4E00\u952E\u7EE7\u7EED\u53D1\u5E03",
-            disabled: busy || reviewed !== job.artifactHash,
-            onPress: () => {
-              void run(() => sendPagesRequest(publicationRequest(job)));
-            }
-          }) : null, /* @__PURE__ */jsx9(Action, {
-            label: "\u6838\u5BF9\u90E8\u7F72\u72B6\u6001",
-            disabled: busy,
-            onPress: () => {
-              void run(() => __async(null, null, function* () {
-                return rememberJob(yield refresh({
-                  jobId: job.jobId
-                }));
-              }));
-            }
-          }), job.status !== "live" && job.deployedUrl ? /* @__PURE__ */jsx9(Action, {
+        }), job.shareKey ? /* @__PURE__ */jsxs7(Fragment4, {
+          children: [job.shareUrl ? /* @__PURE__ */jsx9(Action, {
+            label: "\u6253\u5F00\u5DF2\u53D1\u5E03\u7F51\u9875",
+            onPress: () => openUrl(job.shareUrl)
+          }) : job.shareDeployedUrl ? /* @__PURE__ */jsx9(Action, {
+            label: "\u6253\u5F00\u7F51\u9875\uFF08\u5185\u5BB9\u5F85\u6838\u9A8C\uFF09",
+            onPress: () => openUrl(job.shareDeployedUrl)
+          }) : null, (job.url ?? job.deployedUrl) && (job.url ?? job.deployedUrl) !== (job.shareUrl ?? job.shareDeployedUrl) ? /* @__PURE__ */jsx9(Action, {
+            label: "\u6253\u5F00\u6B64\u7248\u672C",
+            onPress: () => openUrl(job.url ?? job.deployedUrl)
+          }) : null]
+        }) : /* @__PURE__ */jsxs7(Fragment4, {
+          children: [job.status !== "live" && job.deployedUrl ? /* @__PURE__ */jsx9(Action, {
             label: "\u6253\u5F00\u7F51\u9875\uFF08\u5185\u5BB9\u5F85\u6838\u9A8C\uFF09",
             onPress: () => openUrl(job.deployedUrl)
           }) : null, job.status === "live" && job.url ? /* @__PURE__ */jsx9(Action, {
             label: "\u6253\u5F00\u5DF2\u53D1\u5E03\u7F51\u9875",
             onPress: () => openUrl(job.url)
           }) : null]
-        }) : null]
-      })]
-    }) : null]
+        })]
+      }) : null]
+    })]
+  }) : null;
+  return /* @__PURE__ */jsx9(View7, {
+    testID: "board-release-panel",
+    style: {
+      gap: 18
+    },
+    children: intent === "update" ? /* @__PURE__ */jsxs7(Fragment4, {
+      children: [shareSection, failureNotice, selectedSection, pendingSection, editor, releasesSection]
+    }) : /* @__PURE__ */jsxs7(Fragment4, {
+      children: [shareSection, editor, failureNotice, pendingSection, releasesSection, selectedSection]
+    })
   });
 }
 
+// client/use-share-status.ts
+import { useCallback as useCallback5, useEffect as useEffect9, useMemo as useMemo3, useRef as useRef8, useState as useState9 } from "react";
+function useShareStatus(board, enabled) {
+  var read = useBoardRpc(shareStatusRpc);
+  var [status, setStatus] = useState9();
+  var generation = useRef8(0);
+  var boardId = enabled ? board?.id : void 0,
+    createdAt = board?.createdAt;
+  var refresh = useCallback5(() => {
+    if (!boardId) return;
+    var current = ++generation.current;
+    void read({
+      boardId
+    }).then(value => {
+      if (current === generation.current) setStatus(value);
+    }, () => {});
+  }, [boardId, read]);
+  useEffect9(() => {
+    setStatus(void 0);
+    refresh();
+    return () => {
+      generation.current++;
+    };
+  }, [refresh, createdAt]);
+  var updating = status?.shares.some(share => share.state === "updating") ?? false;
+  useEffect9(() => {
+    if (!updating) return;
+    var timer = setInterval(refresh, 5e3);
+    return () => clearInterval(timer);
+  }, [updating, refresh]);
+  var canvas = board?.canvas;
+  var shares = useMemo3(() => status && canvas ? liveShares(status.shares, canvas) : [], [status, canvas?.revision, canvas?.documentVersion, canvas?.patches.length]);
+  return {
+    status,
+    shares,
+    refresh
+  };
+}
+
 // client/inbox.tsx
-import { useEffect as useEffect10, useRef as useRef9, useState as useState10 } from "react";
+import { useEffect as useEffect11, useRef as useRef10, useState as useState11 } from "react";
 import { View as View9 } from "react-native";
 import { ScrollView as ScrollView4, TextInput as TextInput5 } from "@getpaseo/plugin/client/ui";
 
@@ -7627,10 +8177,10 @@ var inboxSyncRpc = defineRpc5({
 });
 
 // client/inbox-panel.tsx
-import { useEffect as useEffect9, useRef as useRef8, useState as useState9 } from "react";
+import { useEffect as useEffect10, useRef as useRef9, useState as useState10 } from "react";
 import { View as View8 } from "react-native";
 import { ScrollView as ScrollView3, TextInput as TextInput4 } from "@getpaseo/plugin/client/ui";
-import { Fragment as Fragment4, jsx as jsx10, jsxs as jsxs8 } from "react/jsx-runtime";
+import { Fragment as Fragment5, jsx as jsx10, jsxs as jsxs8 } from "react/jsx-runtime";
 var statuses = {
   new: "\u672A\u5904\u7406",
   reviewing: "\u5904\u7406\u4E2D",
@@ -7644,17 +8194,17 @@ function InboxPanel({
   onTriage
 }) {
   var c = useColors();
-  var [page, setPage] = useState9();
-  var [comments, setComments] = useState9([]);
-  var [failure, setFailure] = useState9();
-  var [busy, setBusy] = useState9(false);
-  var [selected, setSelected] = useState9();
-  var [selectedRevision, setSelectedRevision] = useState9();
-  var [note, setNote] = useState9("");
-  var [labels2, setLabels] = useState9("");
-  var flight = useRef8(false),
-    generation = useRef8(0);
-  var callbacks = useRef8({
+  var [page, setPage] = useState10();
+  var [comments, setComments] = useState10([]);
+  var [failure, setFailure] = useState10();
+  var [busy, setBusy] = useState10(false);
+  var [selected, setSelected] = useState10();
+  var [selectedRevision, setSelectedRevision] = useState10();
+  var [note, setNote] = useState10("");
+  var [labels2, setLabels] = useState10("");
+  var flight = useRef9(false),
+    generation = useRef9(0);
+  var callbacks = useRef9({
     onList,
     onPolicy,
     onTriage
@@ -7703,7 +8253,7 @@ function InboxPanel({
       }
     }
   });
-  useEffect9(() => {
+  useEffect10(() => {
     generation.current++;
     flight.current = false;
     setPage(void 0);
@@ -7776,7 +8326,7 @@ function InboxPanel({
         disabled: busy,
         onPress: () => void run(() => load()),
         testID: "board-inbox-refresh"
-      }), page?.permissions.configure ? /* @__PURE__ */jsxs8(Fragment4, {
+      }), page?.permissions.configure ? /* @__PURE__ */jsxs8(Fragment5, {
         children: [/* @__PURE__ */jsx10(Action, {
           label: `Agent \u8BFB\u53D6\uFF1A${page.policy.read ? "\u5DF2\u5141\u8BB8" : "\u672A\u5141\u8BB8"}`,
           active: page.policy.read,
@@ -7889,12 +8439,12 @@ function InboxPanel({
 }
 
 // client/inbox.tsx
-import { Fragment as Fragment5, jsx as jsx11, jsxs as jsxs9 } from "react/jsx-runtime";
+import { Fragment as Fragment6, jsx as jsx11, jsxs as jsxs9 } from "react/jsx-runtime";
 function BoardInbox({
   scope,
   hostId
 }) {
-  var [tab, setTab] = useState10("comments");
+  var [tab, setTab] = useState11("comments");
   var list = useBoardRpc(inboxListRpc, hostId),
     policy = useBoardRpc(inboxPolicyRpc, hostId),
     triage = useBoardRpc(inboxTriageRpc, hostId);
@@ -7940,19 +8490,19 @@ function InboxSources({
   var connect = useBoardRpc(inboxConnectRpc, hostId),
     sync = useBoardRpc(inboxSyncRpc, hostId),
     reconcile = useBoardRpc(inboxReconcileRpc, hostId);
-  var [sources, setSources] = useState10([]),
-    [error, setError] = useState10(),
-    [notice, setNotice] = useState10();
-  var [busy, setBusy] = useState10(false),
-    [editing, setEditing] = useState10();
-  var [sourceId, setSourceId] = useState10(""),
-    [deploymentId, setDeploymentId] = useState10(""),
-    [label, setLabel] = useState10(""),
-    [endpoint, setEndpoint] = useState10(""),
-    [token2, setToken] = useState10("");
-  var pending = useRef9(void 0),
-    flight = useRef9(false),
-    alive = useRef9(true);
+  var [sources, setSources] = useState11([]),
+    [error, setError] = useState11(),
+    [notice, setNotice] = useState11();
+  var [busy, setBusy] = useState11(false),
+    [editing, setEditing] = useState11();
+  var [sourceId, setSourceId] = useState11(""),
+    [deploymentId, setDeploymentId] = useState11(""),
+    [label, setLabel] = useState11(""),
+    [endpoint, setEndpoint] = useState11(""),
+    [token2, setToken] = useState11("");
+  var pending = useRef10(void 0),
+    flight = useRef10(false),
+    alive = useRef10(true);
   var field = {
     color: c.foreground,
     backgroundColor: c.surface1,
@@ -7983,7 +8533,7 @@ function InboxSources({
       }
     }
   });
-  useEffect10(() => {
+  useEffect11(() => {
     alive.current = true;
     void run(refresh);
     return () => {
@@ -8126,7 +8676,7 @@ function InboxSources({
           label: "\u6838\u5BF9\u4E0A\u6B21\u914D\u7F6E",
           disabled: busy,
           onPress: () => update(source, "reconcile")
-        }) : /* @__PURE__ */jsxs9(Fragment5, {
+        }) : /* @__PURE__ */jsxs9(Fragment6, {
           children: [/* @__PURE__ */jsx11(Action, {
             label: "\u540C\u6B65\u4E00\u9875\u8BC4\u8BBA",
             disabled: busy || !source.enabled,
@@ -8894,7 +9444,7 @@ function sameData(left, right) {
   return keys.length === Object.keys(b).filter(key => b[key] !== void 0).length && keys.every(key => Object.prototype.hasOwnProperty.call(b, key) && sameData(a[key], b[key]));
 }
 function reconcileBatchDrafts(batch, store2) {
-  var _loop4 = function (source) {
+  var _loop5 = function (source) {
       var snapshot = store2.list();
       if (snapshot.issues.length) return {
         v: {
@@ -8913,7 +9463,7 @@ function reconcileBatchDrafts(batch, store2) {
     },
     _ret2;
   for (var source of batch.drafts) {
-    _ret2 = _loop4(source);
+    _ret2 = _loop5(source);
     if (_ret2 === 0) continue;
     if (_ret2) return _ret2.v;
   }
@@ -8974,7 +9524,7 @@ function createBatchStore(scope, storage = browserDraftStorage()) {
         var existing = storage.getItem(key);
         if (existing !== null && existing !== raw) return failure("\u8FD9\u6B21\u53D1\u9001\u5DF2\u6709\u56FA\u5B9A\u5185\u5BB9\u548C\u76EE\u6807\uFF1B\u8BF7\u91CD\u8BD5\u539F\u53D1\u9001\u3002");
         if (existing === null) {
-          var _loop5 = function () {
+          var _loop6 = function () {
               var otherKey = storage.key(index);
               if (!otherKey?.startsWith(prefix)) return 0; // continue
               var otherRaw = storage.getItem(otherKey);
@@ -8988,7 +9538,7 @@ function createBatchStore(scope, storage = browserDraftStorage()) {
             },
             _ret3;
           for (var index = 0; index < storage.length; index++) {
-            _ret3 = _loop5();
+            _ret3 = _loop6();
             if (_ret3 === 0) continue;
             if (_ret3) return _ret3.v;
           }
@@ -9597,7 +10147,7 @@ function DiscussionRail({
 }
 
 // client/side-agent-picker.tsx
-import { useMemo as useMemo3, useState as useState11 } from "react";
+import { useMemo as useMemo4, useState as useState12 } from "react";
 import { Pressable as Pressable7, Text as Text8, View as View12 } from "react-native";
 import { ScrollView as ScrollView6 } from "@getpaseo/plugin/client/ui";
 import { jsx as jsx14, jsxs as jsxs12 } from "react/jsx-runtime";
@@ -9609,8 +10159,8 @@ function SideAgentPicker({
   onSelect
 }) {
   var c = useColors();
-  var [open, setOpen] = useState11(false);
-  var choices = useMemo3(() => {
+  var [open, setOpen] = useState12(false);
+  var choices = useMemo4(() => {
     var agents = /* @__PURE__ */new Map();
     for (var item of interactions) if (item.kind === "fork" && item.agentId && !agents.has(item.agentId)) agents.set(item.agentId, {
       id: item.agentId,
@@ -9711,7 +10261,7 @@ function SideAgentPicker({
 }
 
 // client/composition-sources.tsx
-import { useCallback as useCallback5, useEffect as useEffect11, useMemo as useMemo4, useRef as useRef10, useState as useState12 } from "react";
+import { useCallback as useCallback6, useEffect as useEffect12, useMemo as useMemo5, useRef as useRef11, useState as useState13 } from "react";
 import { Text as Text9, View as View13 } from "react-native";
 import { useQuery as useQuery2, useQueryClient as useQueryClient2 } from "@tanstack/react-query";
 import { ScrollView as ScrollView7, TextInput as TextInput6 } from "@getpaseo/plugin/client/ui";
@@ -9893,25 +10443,25 @@ function hasCompositionSource(state, revision, ref) {
 var compositionSourceSignal = summary => summary ? JSON.stringify(summary) : void 0;
 
 // client/composition-sources.tsx
-import { Fragment as Fragment6, jsx as jsx15, jsxs as jsxs13 } from "react/jsx-runtime";
+import { Fragment as Fragment7, jsx as jsx15, jsxs as jsxs13 } from "react/jsx-runtime";
 function useCompositionSources(parent, enabled = true) {
   var service = useBoardServices(parent.hostId);
   var read = useBoardRpc(compositionSourcesRpc, parent.hostId);
   var set = useBoardRpc(setCompositionSourcesRpc, parent.hostId);
   var sendSnapshot = useBoardRpc(syncCompositionSourceRpc, parent.hostId);
   var cache = useQueryClient2();
-  var scope = useMemo4(() => ({}), [parent.hostId, parent.boardId, service?.generation, enabled]);
-  var scopeRef = useRef10(scope);
+  var scope = useMemo5(() => ({}), [parent.hostId, parent.boardId, service?.generation, enabled]);
+  var scopeRef = useRef11(scope);
   scopeRef.current = scope;
   var active = Boolean(enabled && service?.isCurrent());
-  var current = useCallback5(() => enabled && scopeRef.current === scope && Boolean(service?.isCurrent()), [enabled, scope, service]);
-  useEffect11(() => {
+  var current = useCallback6(() => enabled && scopeRef.current === scope && Boolean(service?.isCurrent()), [enabled, scope, service]);
+  useEffect12(() => {
     scopeRef.current = scope;
     return () => {
       if (scopeRef.current === scope) scopeRef.current = {};
     };
   }, [scope]);
-  var key = useMemo4(() => ["paseo-board-composition-sources", parent.hostId, parent.boardId, service?.generation], [parent.hostId, parent.boardId, service?.generation]);
+  var key = useMemo5(() => ["paseo-board-composition-sources", parent.hostId, parent.boardId, service?.generation], [parent.hostId, parent.boardId, service?.generation]);
   var query = useQuery2({
     queryKey: key,
     queryFn: () => __async(null, null, function* () {
@@ -9928,11 +10478,11 @@ function useCompositionSources(parent, enabled = true) {
     refetchInterval: active ? 1e4 : false,
     refetchIntervalInBackground: false
   });
-  var [problems, setProblems] = useState12({});
-  useEffect11(() => {
+  var [problems, setProblems] = useState13({});
+  useEffect12(() => {
     setProblems({});
   }, [scope, query.data?.revision]);
-  var report = useCallback5((ref, error) => {
+  var report = useCallback6((ref, error) => {
     if (!current()) return;
     setProblems(previous => {
       var id2 = boardRefKey(ref),
@@ -9956,7 +10506,7 @@ function useCompositionSources(parent, enabled = true) {
     cache.setQueryData(key, previous => mergeCompositionSources(previous, accepted));
     return accepted;
   });
-  var canSynchronize = useCallback5((revision, ref) => current() && hasCompositionSource(cache.getQueryData(key), revision, ref), [cache, key, current]);
+  var canSynchronize = useCallback6((revision, ref) => current() && hasCompositionSource(cache.getQueryData(key), revision, ref), [cache, key, current]);
   var sync = input => __async(null, null, function* () {
     if (input.boardId !== parent.boardId || !canSynchronize(input.expectedSourcesRevision, input.ref)) throw new Error("\u6765\u6E90\u6388\u6743\u5DF2\u53D8\u66F4\uFF0C\u5DF2\u4E22\u5F03\u5F85\u540C\u6B65\u8D44\u6599\u3002");
     var accepted = yield sendSnapshot(input);
@@ -9992,7 +10542,7 @@ function CompositionSourceSync({
   controller
 }) {
   var services = useBoardTransports();
-  return /* @__PURE__ */jsx15(Fragment6, {
+  return /* @__PURE__ */jsx15(Fragment7, {
     children: controller.enabled ? controller.data?.sources.map(({
       ref
     }) => {
@@ -10024,7 +10574,7 @@ function SourceObservation({
   var sourceSignal = compositionSourceSignal(summary);
   var sourceEpoch = list.data?.cursor.epoch;
   var connected = !list.liveError && list.liveStatus !== "disconnected";
-  useEffect11(() => {
+  useEffect12(() => {
     if (!available || !connected || !service.isCurrent() || !controller.canSynchronize(sourcesRevision, source)) return;
     var live = true,
       attempts = 0,
@@ -10069,14 +10619,14 @@ function CompositionSourcesPanel({
 }) {
   var c = useColors();
   var services = useBoardTransports();
-  var [filter, setFilter] = useState12("");
-  var [draft, setDraft] = useState12();
-  var [baseRevision, setBaseRevision] = useState12();
-  var [pending, setPending] = useState12(false);
-  var [failure, setFailure] = useState12();
-  var panelScope = useRef10(controller.scope);
+  var [filter, setFilter] = useState13("");
+  var [draft, setDraft] = useState13();
+  var [baseRevision, setBaseRevision] = useState13();
+  var [pending, setPending] = useState13(false);
+  var [failure, setFailure] = useState13();
+  var panelScope = useRef11(controller.scope);
   panelScope.current = controller.scope;
-  useEffect11(() => {
+  useEffect12(() => {
     setDraft(void 0);
     setBaseRevision(void 0);
     setPending(false);
@@ -10086,7 +10636,7 @@ function CompositionSourcesPanel({
     ...source.ref,
     sourceCreatedAt: source.sourceCreatedAt
   })) ?? [];
-  var selectedKeys = useMemo4(() => new Set(selected.map(boardRefKey)), [selected]);
+  var selectedKeys = useMemo5(() => new Set(selected.map(boardRefKey)), [selected]);
   var toggle = ref => {
     if (pending || !controller.data) return;
     var id2 = boardRefKey(ref);
@@ -10309,8 +10859,8 @@ function HostSourceChoices({
 }
 
 // client/composition-view.tsx
-import { useCallback as useCallback6, useEffect as useEffect12, useMemo as useMemo5, useState as useState13, useSyncExternalStore as useSyncExternalStore2 } from "react";
-import { Fragment as Fragment7, jsx as jsx16 } from "react/jsx-runtime";
+import { useCallback as useCallback7, useEffect as useEffect13, useMemo as useMemo6, useState as useState14, useSyncExternalStore as useSyncExternalStore2 } from "react";
+import { Fragment as Fragment8, jsx as jsx16 } from "react/jsx-runtime";
 var MAX_EMBEDS = 8;
 var mountKeys = /* @__PURE__ */new WeakMap();
 var nextMountKey = 0;
@@ -10330,8 +10880,8 @@ function CompositionEmbeds({
   ...surface
 }) {
   var services = useBoardTransports();
-  var grants = useMemo5(() => new Map(sources?.boardCreatedAt === parentCreatedAt ? sources.sources.map(source => [boardRefKey(source.ref), source]) : []), [sources, parentCreatedAt]);
-  return /* @__PURE__ */jsx16(Fragment7, {
+  var grants = useMemo6(() => new Map(sources?.boardCreatedAt === parentCreatedAt ? sources.sources.map(source => [boardRefKey(source.ref), source]) : []), [sources, parentCreatedAt]);
+  return /* @__PURE__ */jsx16(Fragment8, {
     children: mounts.map((mount, index) => /* @__PURE__ */jsx16(CompositionEmbed, {
       mount,
       parent,
@@ -10351,7 +10901,7 @@ function CompositionEmbed({
   ...surface
 }) {
   var slot = useSyncExternalStore2(mount.subscribe, mount.getSnapshot, mount.getSnapshot);
-  var ref = useMemo5(() => ({
+  var ref = useMemo6(() => ({
     hostId: slot.hostId,
     boardId: slot.boardId
   }), [slot.hostId, slot.boardId]);
@@ -10359,7 +10909,7 @@ function CompositionEmbed({
   var grant = grants.get(key);
   var service = services.find(item => item.hostId === ref.hostId);
   var failure = key === boardRefKey(parent) ? "\u8FD9\u5F20\u753B\u677F\u4E0D\u80FD\u5D4C\u5165\u81EA\u5DF1" : !grant ? "\u8BF7\u5148\u5728\u300C\u7EC4\u5408\u6765\u6E90\u300D\u4E2D\u9009\u62E9\u8FD9\u5F20\u753B\u677F" : !grant.sourceCreatedAt ? "\u6B63\u5728\u6838\u5BF9\u6765\u6E90\u753B\u677F\u2026" : slot.snapshotId ? "\u6B64\u56FA\u5B9A\u7248\u672C\u7F29\u7565\u6682\u4E0D\u53EF\u7528\uFF0C\u8BF7\u6253\u5F00\u539F\u753B\u677F\u6838\u5BF9" : overBudget ? "\u672C\u9875\u540C\u65F6\u663E\u793A\u7684\u753B\u677F\u5DF2\u8FBE\u4E0A\u9650\uFF0C\u8BF7\u6253\u5F00\u539F\u753B\u677F" : !service ? "\u7B49\u5F85\u6B64 host \u7684 Board \u63D2\u4EF6\u8FDE\u63A5" : void 0;
-  var open = useCallback6(() => {
+  var open = useCallback7(() => {
     service?.openScreen({
       screenId: "boards",
       params: {
@@ -10367,7 +10917,7 @@ function CompositionEmbed({
       }
     });
   }, [service, ref.boardId]);
-  useEffect12(() => {
+  useEffect13(() => {
     if (!failure) return;
     mount.setPresentation({
       title: ref.boardId,
@@ -10377,7 +10927,7 @@ function CompositionEmbed({
     });
     mount.setStatus(failure);
   }, [mount, ref, service, failure, open]);
-  var embedded = useMemo5(() => ({
+  var embedded = useMemo6(() => ({
     mount,
     viewScope: JSON.stringify([parent.hostId, parent.boardId, slot.id, grant?.sourceCreatedAt]),
     onOpen: open
@@ -10429,7 +10979,7 @@ function AuthorizedSource({
   var board = query.data;
   var listed = index.data?.boards.find(item => item.id === source.boardId);
   var valid = board?.createdAt === createdAt && listed?.createdAt === createdAt;
-  useEffect12(() => {
+  useEffect13(() => {
     if (valid) return;
     mount.setPresentation({
       title: source.boardId,
@@ -10451,9 +11001,9 @@ function BoardPreview({
 }) {
   var query = useBoard(service.hostId, refValue.boardId);
   var board = query.data;
-  var frameTheme = useMemo5(() => frameThemeFromColors(theme.colors), [theme.colors]);
-  var [failure, setFailure] = useState13();
-  useEffect12(() => {
+  var frameTheme = useMemo6(() => frameThemeFromColors(theme.colors), [theme.colors]);
+  var [failure, setFailure] = useState14();
+  useEffect13(() => {
     mount.setPresentation({
       title: board ? `${board.title} \xB7 r${board.revision} \xB7 \u53EA\u8BFB\u9884\u89C8` : refValue.boardId,
       hostLabel: service.label,
@@ -10486,7 +11036,7 @@ function BoardPreview({
 }
 
 // client/board.tsx
-import { Fragment as Fragment8, jsx as jsx17, jsxs as jsxs14 } from "react/jsx-runtime";
+import { Fragment as Fragment9, jsx as jsx17, jsxs as jsxs14 } from "react/jsx-runtime";
 var captureFailureNames = {
   "content-changed": "\u622A\u56FE\u8FC7\u7A0B\u4E2D\u753B\u5E03\u5185\u5BB9\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u6846\u9009\u3002",
   "too-complex": "\u9009\u533A\u5185\u5BB9\u8FC7\u4E8E\u590D\u6742\uFF0C\u8BF7\u7F29\u5C0F\u9009\u533A\u3002",
@@ -10532,31 +11082,31 @@ function BoardContent({
 }) {
   var c = useColors();
   var services = useBoardServices(host.id);
-  var sourceRef = useMemo6(() => ({
+  var sourceRef = useMemo7(() => ({
     hostId: host.id,
     boardId
   }), [host.id, boardId]);
   var sources = useCompositionSources(sourceRef, !embedded);
-  var [sourcesOpen, setSourcesOpen] = useState14(false);
-  var [compositionMounts, setCompositionMounts] = useState14([]);
-  var composition = useMemo6(() => embedded ? void 0 : {
+  var [sourcesOpen, setSourcesOpen] = useState15(false);
+  var [compositionMounts, setCompositionMounts] = useState15([]);
+  var composition = useMemo7(() => embedded ? void 0 : {
     hostId: host.id,
     onSlots: setCompositionMounts
   }, [host.id, Boolean(embedded)]);
   var viewInstance = embedded?.viewScope;
   var query = useBoard(host.id, boardId);
   var board = query.data;
-  useEffect13(() => retainBoardViewStore(), []);
-  var viewSession = useMemo6(() => {
+  useEffect14(() => retainBoardViewStore(), []);
+  var viewSession = useMemo7(() => {
     var saved = board?.canvas.documentVersion ? readBoardView(host.id, boardId, board.canvas.documentVersion, viewInstance) : void 0;
     return {
       saved,
       latest: saved?.view
     };
   }, [host.id, boardId, board?.canvas.documentVersion, viewInstance]);
-  var [settledView, setSettledView] = useState14();
-  var [reconciledView, setReconciledView] = useState14();
-  useEffect13(() => {
+  var [settledView, setSettledView] = useState15();
+  var [reconciledView, setReconciledView] = useState15();
+  useEffect14(() => {
     if (board && !query.isFetching && !query.isError && (query.liveStatus === "connected" || query.liveStatus === "checking")) setReconciledView(viewSession);
   }, [viewSession, board, query.isFetching, query.isError, query.liveStatus]);
   var componentEditor = useComponentEditor(host.id, boardId, board, query.accept, query.refetch, viewInstance);
@@ -10565,55 +11115,62 @@ function BoardContent({
   var record2 = useBoardRpc(recordDecisionRpc);
   var selectSide = useBoardRpc(selectSideAgentRpc);
   var markUpdatesSeen = useBoardRpc(markUpdatesSeenRpc);
-  var [selectionMode, setSelectionMode] = useState14("off");
-  var [anchor, setAnchor] = useState14();
-  var [selectionClearToken, setSelectionClearToken] = useState14(0);
-  var [selectionCaptureCancelId, setSelectionCaptureCancelId] = useState14();
-  var [drawer, setDrawer] = useState14(null);
-  var [releaseOpen, setReleaseOpen] = useState14(false);
-  var [inboxOpen, setInboxOpen] = useState14(false);
-  var draftStore = useMemo6(() => createDraftStore({
+  var [selectionMode, setSelectionMode] = useState15("off");
+  var [anchor, setAnchor] = useState15();
+  var [selectionClearToken, setSelectionClearToken] = useState15(0);
+  var [selectionCaptureCancelId, setSelectionCaptureCancelId] = useState15();
+  var [drawer, setDrawer] = useState15(null);
+  var [releaseOpen, setReleaseOpen] = useState15(false);
+  var [releaseIntent, setReleaseIntent] = useState15("publish");
+  var shareStatus = useShareStatus(board, !embedded);
+  var releaseWasOpen = useRef12(false);
+  useEffect14(() => {
+    if (releaseWasOpen.current && !releaseOpen) shareStatus.refresh();
+    releaseWasOpen.current = releaseOpen;
+  }, [releaseOpen, shareStatus.refresh]);
+  var [inboxOpen, setInboxOpen] = useState15(false);
+  var draftStore = useMemo7(() => createDraftStore({
     hostId: host.id,
     boardId
   }), [host.id, boardId]);
-  var [draftSnapshot, setDraftSnapshot] = useState14(() => draftStore.list());
-  var batchStore = useMemo6(() => createBatchStore({
+  var [draftSnapshot, setDraftSnapshot] = useState15(() => draftStore.list());
+  var batchStore = useMemo7(() => createBatchStore({
     hostId: host.id,
     boardId
   }), [host.id, boardId]);
-  var [batchSnapshot, setBatchSnapshot] = useState14(() => batchStore.list());
-  var [batchError, setBatchError] = useState14(null);
-  var acceptedBatchIds = useMemo6(() => new Set(batchSnapshot.batches.filter(batch => (!batch.expectedCreatedAt || batch.expectedCreatedAt === board?.createdAt) && acceptedBatchInteraction(batch, board?.interactions ?? [])).map(batch => batch.intentId)), [batchSnapshot.batches, board?.interactions, board?.createdAt]);
-  var staged = useMemo6(() => queuedDrafts(draftSnapshot.drafts, batchSnapshot.batches), [draftSnapshot, batchSnapshot]);
-  var availableDrafts = useMemo6(() => draftSnapshot.drafts.filter(draft => !batchSnapshot.batches.some(batch => batchContainsDraft(batch, draft))), [draftSnapshot, batchSnapshot]);
-  var [draftError, setDraftError] = useState14(null);
-  var restorationHandled = useRef11(false);
-  var [compose, setCompose] = useState14(null);
-  var composeRef = useRef11(compose);
+  var [batchSnapshot, setBatchSnapshot] = useState15(() => batchStore.list());
+  var [batchError, setBatchError] = useState15(null);
+  var acceptedBatchIds = useMemo7(() => new Set(batchSnapshot.batches.filter(batch => (!batch.expectedCreatedAt || batch.expectedCreatedAt === board?.createdAt) && acceptedBatchInteraction(batch, board?.interactions ?? [])).map(batch => batch.intentId)), [batchSnapshot.batches, board?.interactions, board?.createdAt]);
+  var staged = useMemo7(() => queuedDrafts(draftSnapshot.drafts, batchSnapshot.batches), [draftSnapshot, batchSnapshot]);
+  var availableDrafts = useMemo7(() => draftSnapshot.drafts.filter(draft => !batchSnapshot.batches.some(batch => batchContainsDraft(batch, draft))), [draftSnapshot, batchSnapshot]);
+  var [draftError, setDraftError] = useState15(null);
+  var restorationHandled = useRef12(false);
+  var [compose, setCompose] = useState15(null);
+  var composeRef = useRef12(compose);
   composeRef.current = compose;
-  var [sending, setSending] = useState14(false);
-  var pending = useRef11(false);
-  var sideChoicePending = useRef11(false);
-  var [choosingSide, setChoosingSide] = useState14(false);
-  var [sideChoiceUncertain, setSideChoiceUncertain] = useState14(false);
+  var [sending, setSending] = useState15(false);
+  var pending = useRef12(false);
+  var sideChoicePending = useRef12(false);
+  var [choosingSide, setChoosingSide] = useState15(false);
+  var [sideChoiceUncertain, setSideChoiceUncertain] = useState15(false);
   var sideTargetBlocked = choosingSide || sideChoiceUncertain;
-  var [inputFocusToken, setInputFocusToken] = useState14(0);
-  var [message, setMessage] = useState14(null);
-  var [frameError, setFrameError] = useState14(null);
-  var [height, setHeight] = useState14(500);
-  var [width, setWidth] = useState14(900);
-  var [stageWidth, setStageWidth] = useState14(900);
-  var [popoverHeight, setPopoverHeight] = useState14(300);
-  var [popoverPoint, setPopoverPoint] = useState14({
+  var [inputFocusToken, setInputFocusToken] = useState15(0);
+  var [message, setMessage] = useState15(null);
+  var [frameError, setFrameError] = useState15(null);
+  var [height, setHeight] = useState15(500);
+  var [width, setWidth] = useState15(900);
+  var [stageWidth, setStageWidth] = useState15(900);
+  var [popoverHeight, setPopoverHeight] = useState15(300);
+  var [popoverPoint, setPopoverPoint] = useState15({
     x: 24,
     y: 24
   });
-  var popoverPointRef = useRef11(popoverPoint);
+  var popoverPointRef = useRef12(popoverPoint);
   popoverPointRef.current = popoverPoint;
-  var [selectedInteractionId, setSelectedInteractionId] = useState14();
-  var [focusInteraction, setFocusInteraction] = useState14();
-  var [interactionLocation, setInteractionLocation] = useState14();
-  var [optimistic, setOptimistic] = useState14([]);
+  var [selectedInteractionId, setSelectedInteractionId] = useState15();
+  var [focusInteraction, setFocusInteraction] = useState15();
+  var [interactionLocation, setInteractionLocation] = useState15();
+  var [optimistic, setOptimistic] = useState15([]);
   var updatesBlocked = Boolean(componentEditor.draft || compose || selectedInteractionId || drawer || releaseOpen || sourcesOpen || sending || selectionMode !== "off");
   var updateNavigation = useUpdateNavigation(board, updatesBlocked, id2 => __async(null, null, function* () {
     if (!embedded) query.accept(yield markUpdatesSeen({
@@ -10629,25 +11186,25 @@ function BoardContent({
     restoring: settledView !== viewSession,
     reconciling: reconciledView !== viewSession
   } : void 0);
-  var followRef = useRef11(updateNavigation.follow);
+  var followRef = useRef12(updateNavigation.follow);
   followRef.current = updateNavigation.follow;
-  var onViewState = useCallback7(view => {
+  var onViewState = useCallback8(view => {
     if (view.documentVersion !== board?.canvas.documentVersion) return;
     viewSession.latest = view;
     writeBoardView(host.id, boardId, view, followRef.current, viewInstance);
   }, [host.id, boardId, board?.canvas.documentVersion, viewSession, viewInstance]);
-  var onFinalViewState = useCallback7(view => {
+  var onFinalViewState = useCallback8(view => {
     if (view.documentVersion !== board?.canvas.documentVersion) return;
     writeBoardView(host.id, boardId, view, updateNavigation.follow, viewInstance);
     flushBoardViewStore();
   }, [host.id, boardId, board?.canvas.documentVersion, updateNavigation.follow, viewInstance]);
-  var onViewRestored = useCallback7(() => {
+  var onViewRestored = useCallback8(() => {
     setSettledView(viewSession);
   }, [viewSession]);
-  useEffect13(() => {
+  useEffect14(() => {
     if (viewSession.latest) writeBoardView(host.id, boardId, viewSession.latest, updateNavigation.follow, viewInstance);
   }, [host.id, boardId, viewSession, updateNavigation.follow, viewInstance]);
-  useEffect13(() => {
+  useEffect14(() => {
     if (!embedded) return;
     var unread = board?.updates.filter(item => !board.seenUpdateIds.includes(item.id)).length ?? 0;
     embedded.mount.setPresentation({
@@ -10662,28 +11219,28 @@ function BoardContent({
     });
     embedded.mount.setStatus(!board ? query.isPending ? "\u6B63\u5728\u8FDE\u63A5\u753B\u677F\u2026" : "\u753B\u677F\u6682\u65F6\u65E0\u6CD5\u8FDE\u63A5" : query.error || query.liveError ? "\u8FDE\u63A5\u4E2D\u65AD \xB7 \u5F53\u524D\u663E\u793A\u4E0A\u6B21\u6536\u5230\u7684\u5185\u5BB9" : frameError ?? "");
   }, [embedded, board, boardId, host.label, query.isPending, query.error, query.liveError, frameError, staged.length, batchSnapshot.batches.length]);
-  var interactions = useMemo6(() => mergeInteractions(board?.interactions ?? [], optimistic), [board?.interactions, optimistic]);
-  var markers = useMemo6(() => interactionMarkers(interactions), [interactions]);
-  var thread = useMemo6(() => interactionThread(selectedInteractionId ? markerInteractionId(selectedInteractionId, interactions) : void 0, interactions), [selectedInteractionId, interactions]);
+  var interactions = useMemo7(() => mergeInteractions(board?.interactions ?? [], optimistic), [board?.interactions, optimistic]);
+  var markers = useMemo7(() => interactionMarkers(interactions), [interactions]);
+  var thread = useMemo7(() => interactionThread(selectedInteractionId ? markerInteractionId(selectedInteractionId, interactions) : void 0, interactions), [selectedInteractionId, interactions]);
   var popover = popoverPlacement(popoverPoint, {
     width,
     height
   }, popoverHeight);
-  var stateWriter = useRef11(null);
-  var frameTheme = useMemo6(() => frameThemeFromColors(theme.colors), [theme.colors]);
-  useEffect13(() => {
+  var stateWriter = useRef12(null);
+  var frameTheme = useMemo7(() => frameThemeFromColors(theme.colors), [theme.colors]);
+  useEffect14(() => {
     var refresh = () => setDraftSnapshot(draftStore.list());
     var unsubscribe = draftStore.subscribe(refresh);
     refresh();
     return unsubscribe;
   }, [draftStore]);
-  useEffect13(() => {
+  useEffect14(() => {
     var refresh = () => setBatchSnapshot(batchStore.list());
     var unsubscribe = batchStore.subscribe(refresh);
     refresh();
     return unsubscribe;
   }, [batchStore]);
-  var persistCompose = useCallback7((draft, open = true, position2 = popoverPointRef.current) => {
+  var persistCompose = useCallback8((draft, open = true, position2 = popoverPointRef.current) => {
     draft.draftId ?? (draft.draftId = localId("draft"));
     var input = {
       id: draft.draftId,
@@ -10718,14 +11275,14 @@ function BoardContent({
     } else setDraftError(result.issue.message);
     return result.ok;
   }, [draftStore]);
-  var changeCompose = useCallback7((draft, position2 = popoverPointRef.current) => {
+  var changeCompose = useCallback8((draft, position2 = popoverPointRef.current) => {
     restorationHandled.current = true;
     if (!draft.intentId) draft.expectedCreatedAt ?? (draft.expectedCreatedAt = board?.createdAt);
     persistCompose(draft, true, position2);
     composeRef.current = draft;
     setCompose(draft);
   }, [persistCompose, board?.createdAt]);
-  var removeDraft = useCallback7(draft => {
+  var removeDraft = useCallback8(draft => {
     if (!draft.draftId || !draft.draftRevision) return true;
     var result = draftStore.remove(draft.draftId, draft.draftRevision);
     if (!result.ok) setDraftError(result.issue.message);
@@ -10768,7 +11325,7 @@ function BoardContent({
       text
     });
   };
-  useEffect13(() => {
+  useEffect14(() => {
     var batches = batchSnapshot.batches;
     if (!board) {
       if (!query.isPending && !restorationHandled.current) {
@@ -10781,7 +11338,7 @@ function BoardContent({
     var firstRead = !restorationHandled.current;
     restorationHandled.current = true;
     var latest;
-    var _loop6 = function (_saved) {
+    var _loop7 = function (_saved) {
         if (batches.some(batch => batchContainsDraft(batch, _saved))) return 0; // continue
         var receipt = !_saved.compose.expectedCreatedAt || _saved.compose.expectedCreatedAt === board.createdAt ? acceptedDraftInteraction(_saved.compose, board.interactions) : void 0;
         if (receipt) {
@@ -10807,12 +11364,12 @@ function BoardContent({
       },
       _ret4;
     for (var _saved of draftStore.list().drafts) {
-      _ret4 = _loop6(_saved);
+      _ret4 = _loop7(_saved);
       if (_ret4 === 0) continue;
     }
     if (latest && !embedded) restoreDraft(latest);
   }, [board, draftStore, query.isPending, sending, batchSnapshot.batches]);
-  useEffect13(() => {
+  useEffect14(() => {
     if (!board || pending.current) return;
     for (var batch of batchSnapshot.batches) {
       if (!acceptedBatchIds.has(batch.intentId)) continue;
@@ -10821,11 +11378,11 @@ function BoardContent({
       if (!removed.ok) setBatchError(removed.message);
     }
   }, [board, sending, batchStore, draftStore, batchSnapshot.batches, acceptedBatchIds]);
-  var onAnchor = useCallback7(next => {
+  var onAnchor = useCallback8(next => {
     setAnchor(next);
     setSelectionMode("off");
   }, []);
-  var onAsk = useCallback7(request => new Promise(resolve => {
+  var onAsk = useCallback8(request => new Promise(resolve => {
     if (composeRef.current || pending.current) {
       resolve({
         status: "cancelled",
@@ -10844,7 +11401,7 @@ function BoardContent({
     setMessage(null);
     changeCompose(next, request.position ?? anchorPoint(request.anchor));
   }), [changeCompose]);
-  var onCompose = useCallback7(request => {
+  var onCompose = useCallback8(request => {
     if (composeRef.current || pending.current) return;
     var next = {
       kind: "question",
@@ -10861,7 +11418,7 @@ function BoardContent({
     setDrawer(null);
     changeCompose(next, request.position ?? anchorPoint(request.anchor));
   }, [changeCompose]);
-  var onSelectionCapture = useCallback7(capture => {
+  var onSelectionCapture = useCallback8(capture => {
     var draft = composeRef.current;
     if (!draft || pending.current || draft.intentId || draft.captureStatus !== "pending" || draft.selectionId !== capture.selectionId || !draft.anchor || !sameSelectionAnchor(draft.anchor, capture.anchor)) return;
     var next = {
@@ -10873,8 +11430,8 @@ function BoardContent({
     changeCompose(next);
     setAnchor(capture.anchor);
   }, [changeCompose]);
-  var onState = useCallback7(state => stateWriter.current?.schedule(state), []);
-  useEffect13(() => {
+  var onState = useCallback8(state => stateWriter.current?.schedule(state), []);
+  useEffect14(() => {
     var expectedCreatedAt = board?.createdAt;
     if (!expectedCreatedAt) return;
     var writer = createStateWriter(state => save({
@@ -10888,14 +11445,14 @@ function BoardContent({
       if (stateWriter.current === writer) stateWriter.current = null;
     };
   }, [save, boardId, board?.createdAt]);
-  useEffect13(() => {
+  useEffect14(() => {
     setFrameError(null);
   }, [board?.canvas.documentVersion]);
-  useEffect13(() => {
+  useEffect14(() => {
     var persisted = new Set(board?.interactions.map(item => item.id));
     setOptimistic(items => items.some(item => persisted.has(item.id)) ? items.filter(item => !persisted.has(item.id)) : items);
   }, [board?.interactions]);
-  useEffect13(() => () => {
+  useEffect14(() => () => {
     if (!pending.current) composeRef.current?.resolve?.({
       status: "cancelled"
     });
@@ -11502,6 +12059,19 @@ function BoardContent({
         if (composeRef.current) cancelCompose();
         if (!composeRef.current && !pending.current) {
           setDrawer(null);
+          setReleaseIntent("publish");
+          setReleaseOpen(true);
+        }
+      },
+      share: {
+        ...shareSummary(shareStatus.shares),
+        available: shareStatus.shares.length > 0
+      },
+      onUpdateShare: () => {
+        if (composeRef.current) cancelCompose();
+        if (!composeRef.current && !pending.current) {
+          setDrawer(null);
+          setReleaseIntent("update");
           setReleaseOpen(true);
         }
       },
@@ -11824,7 +12394,7 @@ function BoardContent({
                   onPress: () => {
                     void submit(compose.destination ?? "main");
                   }
-                }) : /* @__PURE__ */jsxs14(Fragment8, {
+                }) : /* @__PURE__ */jsxs14(Fragment9, {
                   children: [/* @__PURE__ */jsx17(Action, {
                     label: board.sideAgentId || board.pendingSideInteractionId ? "Side \u53D1\u9001" : "\u65B0\u5EFA Side \u5E76\u53D1\u9001",
                     icon: "GitBranch",
@@ -11898,7 +12468,7 @@ function BoardContent({
           if (!composeRef.current) setDrawer("drafts");
         }
       }) : null]
-    }) : null, !embedded ? /* @__PURE__ */jsxs14(Fragment8, {
+    }) : null, !embedded ? /* @__PURE__ */jsxs14(Fragment9, {
       children: [/* @__PURE__ */jsx17(CompositionSourceSync, {
         parent: sourceRef,
         controller: sources
@@ -11958,6 +12528,8 @@ function BoardContent({
             children: releaseOpen ? /* @__PURE__ */jsx17(ReleasePanel, {
               board,
               hostId: host.id,
+              intent: releaseIntent,
+              shares: shareStatus,
               onOpenBoard: id2 => leaveBoard(() => {
                 setReleaseOpen(false);
                 if (onOpenBoard) onOpenBoard(id2);else onBack();
@@ -12266,9 +12838,9 @@ function InteractionContent({
 }) {
   var c = useColors();
   var discussion = item.kind === "fork" || item.kind === "reply";
-  var [showSnapshot, setShowSnapshot] = useState14(false);
-  var [visualState, setVisualState] = useState14({});
-  var [visualError, setVisualError] = useState14();
+  var [showSnapshot, setShowSnapshot] = useState15(false);
+  var [visualState, setVisualState] = useState15({});
+  var [visualError, setVisualError] = useState15();
   var stale = item.anchor && item.anchor.canvasRevision !== board.canvas.revision;
   var follow = text => onFollow(discussion ? "reply" : "question", text);
   return /* @__PURE__ */jsxs14(View14, {
@@ -12414,7 +12986,7 @@ function DecisionList({
   onQuestion
 }) {
   var c = useColors();
-  var [showDismissed, setShowDismissed] = useState14(false);
+  var [showDismissed, setShowDismissed] = useState15(false);
   var basisNames = {
     explicit: "Agent \u660E\u786E\u8BB0\u5F55",
     observed: "\u89C2\u5BDF\u5230\u7684\u884C\u4E3A\u53D8\u5316",
@@ -12560,7 +13132,7 @@ function BoardServicesBoundary({
   return services ? /* @__PURE__ */jsx17(BoardServicesProvider, {
     services,
     children
-  }) : /* @__PURE__ */jsx17(Fragment8, {
+  }) : /* @__PURE__ */jsx17(Fragment9, {
     children
   });
 }
@@ -12569,7 +13141,7 @@ function BoardServicesBoundary({
 import { jsx as jsx18, jsxs as jsxs15 } from "react/jsx-runtime";
 var EMPTY_CANVAS = `<style>main{padding:clamp(24px,8vw,100px);max-width:760px;margin:auto}h1{font-size:clamp(30px,5vw,54px);letter-spacing:-.04em}p{line-height:1.8;opacity:.65}#content{min-height:30vh}</style><main><p>YOUR SHARED SURFACE</p><h1>\u4ECE\u4E00\u4E2A\u95EE\u9898\u5F00\u59CB\u3002</h1><p>\u8BA9 agent \u6839\u636E\u773C\u524D\u7684\u4EFB\u52A1\u7EC4\u7EC7\u8FD9\u91CC\u3002\u89E3\u91CA\u3001\u56FE\u8868\u3001\u52A8\u753B\u548C\u4E92\u52A8\u5DE5\u5177\uFF0C\u90FD\u53EF\u4EE5\u5728\u540C\u4E00\u5757\u753B\u5E03\u4E0A\u4E0D\u65AD\u751F\u957F\u3002</p><div id="content"></div></main>`;
 function BoardHome(props) {
-  useEffect14(retainBoardViewStore, []);
+  useEffect15(retainBoardViewStore, []);
   var scope = props.entryScope ? {
     ...props.entryScope,
     hostId: props.host.id
@@ -12586,18 +13158,18 @@ function BoardHome(props) {
   }, key);
 }
 function RememberedBoardHome(props) {
-  var [selected, setSelected] = useState15(() => {
+  var [selected, setSelected] = useState16(() => {
     if (props.initialBoardId) return props.initialBoardId;
     var saved = readLastBoard(props.entryScope, props.tab);
     return saved?.kind === "board" ? saved.boardId : void 0;
   });
-  var navigated = useRef12(false);
+  var navigated = useRef13(false);
   var choose = selection => {
     navigated.current = true;
     writeLastBoard(props.entryScope, selection, props.tab);
     setSelected(selection.kind === "board" ? selection.boardId : void 0);
   };
-  useEffect14(() => {
+  useEffect15(() => {
     if (props.initialBoardId && !navigated.current) writeLastBoard(props.entryScope, {
       kind: "board",
       boardId: props.initialBoardId
@@ -12633,12 +13205,12 @@ function BoardIndex({
   var paseo = useBoardPaseo(host.id);
   var services = useBoardServices(host.id);
   var boards = useBoardList(host.id, workspaceId);
-  var [creating, setCreating] = useState15(false);
-  var [title, setTitle] = useState15("");
-  var [owner, setOwner] = useState15(agentId);
-  var [pending, setPending] = useState15(false);
-  var [failure, setFailure] = useState15(null);
-  var [draftId, setDraftId] = useState15(() => localId("board"));
+  var [creating, setCreating] = useState16(false);
+  var [title, setTitle] = useState16("");
+  var [owner, setOwner] = useState16(agentId);
+  var [pending, setPending] = useState16(false);
+  var [failure, setFailure] = useState16(null);
+  var [draftId, setDraftId] = useState16(() => localId("board"));
   var agents = useQuery3({
     queryKey: ["paseo-board-owners", host.id, services?.generation ?? null],
     queryFn: () => __async(null, null, function* () {

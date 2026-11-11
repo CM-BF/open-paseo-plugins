@@ -7,7 +7,7 @@ export const pagesGitHubHost = (request: { githubHost?: string }) => request.git
 export const samePagesTarget = (left: PagesPrepareInput, right: Omit<PagesPrepareInput, "eventId">) =>
   left.releaseId === right.releaseId && left.artifactHash === right.artifactHash &&
   pagesGitHubHost(left) === pagesGitHubHost(right) && left.account === right.account &&
-  left.repository === right.repository && left.createRepository === right.createRepository;
+  left.repository === right.repository && left.createRepository === right.createRepository && left.shareKey === right.shareKey;
 export const samePagesRequest = (left: PagesPrepareInput, right: PagesPrepareInput) =>
   left.eventId === right.eventId && samePagesTarget(left, right);
 

@@ -8,13 +8,16 @@ import { copyBoardRpc, type CopyBoardInput } from "../shared/board-copy";
 import {
   createReleaseRpc, listReleasesRpc, previewReleaseRpc, downloadReleaseRpc,
   githubAccountsRpc, githubRepositoriesRpc, publishPagesRpc,
-  refreshPagesRpc, listPagesJobsRpc, type ReleaseManifest, type PagesJob,
+  refreshPagesRpc, listPagesJobsRpc, shareUpdateRpc, type ReleaseManifest, type PagesJob,
   PublicApiOriginsSchema,
   type PagesPrepareInput, type GitHubAccount, type GitHubRepository,
 } from "../shared/release-contracts";
 import { Action, Copy, Notice, errorMessage, localId, useColors } from "./ui";
-import { downloadReleaseZip, ReleasePreview } from "./release-web";
+import { canPreviewRelease, copyText, downloadReleaseZip, ReleasePreview } from "./release-web";
 import { createPagesOutbox, pagesGitHubHost, samePagesRequest, samePagesTarget } from "./pages-outbox";
+import { browserDraftStorage } from "./draft-storage-web";
+import { inheritedSettingsText, mintShareKey, refusedJob, reusableShareKey, shareChanged, shareKeyOf, shareStateNames, type LiveShare } from "./share-status";
+import type { ShareStatusController } from "./use-share-status";
 
 const statusNames: Record<PagesJob["status"], string> = {
   prepared: "准备发布文件", "pr-open": "PR 已创建，等待自动合并", merged: "已合并，等待部署", deploying: "部署并核对网页中",
@@ -24,17 +27,24 @@ const publicationRequest = (value: PagesPrepareInput): PagesPrepareInput => ({
   eventId: value.eventId, releaseId: value.releaseId, artifactHash: value.artifactHash,
   ...(value.githubHost ? { githubHost: value.githubHost } : {}),
   account: value.account, repository: value.repository, createRepository: value.createRepository,
+  ...(value.shareKey ? { shareKey: value.shareKey } : {}),
 });
+// Refusals a retry cannot change; series-busy may pass once the other update merges.
+const finalRefusal = (value: PagesJob) => refusedJob(value) && value.refusal?.code !== "series-busy";
+/** One share link being updated from this panel: built by share-update, or regenerated once from recovered settings. */
+type ShareTarget = { share: LiveShare; shareKey: string; releaseId?: string; upToDate?: boolean; recovered?: ReleaseManifest };
+const VISITOR_NOTICE = "访客本地保存的状态会从新版本重新开始；部分访客可能几分钟后才看到新版（缓存）。";
 const automaticallyPublishing = (value: PagesJob) => value.autoPublish === true &&
   !["live", "failed"].includes(value.status) && Boolean(value.autoPublishUntil && Date.parse(value.autoPublishUntil) > Date.now());
 const jobStatusName = (value: PagesJob) => value.status === "pr-open" && !automaticallyPublishing(value) ? "PR 已创建，等待继续发布" : statusNames[value.status];
 
-export function ReleasePanel({ board, hostId, onOpenBoard }: { board: Board; hostId: string; onOpenBoard?(id: string): void }) {
+export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", shares }: { board: Board; hostId: string; onOpenBoard?(id: string): void; intent?: "publish" | "update"; shares?: ShareStatusController }) {
   const c = useColors();
   const copyBoard = useBoardRpc(copyBoardRpc), create = useBoardRpc(createReleaseRpc), list = useBoardRpc(listReleasesRpc);
   const preview = useBoardRpc(previewReleaseRpc), download = useBoardRpc(downloadReleaseRpc);
   const accounts = useBoardRpc(githubAccountsRpc), repositories = useBoardRpc(githubRepositoriesRpc);
   const publish = useBoardRpc(publishPagesRpc), refresh = useBoardRpc(refreshPagesRpc), listJobs = useBoardRpc(listPagesJobsRpc);
+  const shareUpdate = useBoardRpc(shareUpdateRpc);
   const [title, setTitle] = useState(`${board.title} · 发布版`);
   const [publicData, setPublicData] = useState("{}");
   const [network, setNetwork] = useState<"offline" | "cdn">("offline");
@@ -58,16 +68,34 @@ export function ReleasePanel({ board, hostId, onOpenBoard }: { board: Board; hos
   const selectedReleaseId = useRef<string | undefined>(undefined), selectionGeneration = useRef(0);
   const copyRequest = useRef<CopyBoardInput | undefined>(undefined);
   const pageRequest = useRef<PagesPrepareInput | undefined>(undefined);
+  const [target, setTarget] = useState<ShareTarget>();
+  const targetRef = useRef(target); targetRef.current = target;
+  const sessionKeys = useRef(new Map<string, string>()), autoUpdate = useRef(false);
+  // Updating needs a visible preview and a durable retry record (absent on native/Hermes).
+  const desktop = useMemo(() => canPreviewRelease() && browserDraftStorage() !== null, []);
+  const shareList = shares?.shares ?? [];
   const field = { color: c.foreground, backgroundColor: c.surface1, borderWidth: 1, borderColor: c.border, borderRadius: 6, padding: 8, fontSize: 13 };
   useEffect(() => {
     mounted.current = true;
-    void list({ boardId: board.id }).then(value => { if (mounted.current) setReleases(value); }).catch(error => { if (mounted.current) setFailure(errorMessage(error)); });
+    void list({ boardId: board.id }).then(value => { if (mounted.current) setReleases(values => [...values.filter(item => !value.some(saved => saved.releaseId === item.releaseId)), ...value]); }).catch(error => { if (mounted.current) setFailure(errorMessage(error)); });
     return () => { mounted.current = false; };
   }, [board.id, list]);
   useEffect(() => {
-    try { setPendingPages(outbox.list()); }
-    catch (error) { setFailure(errorMessage(error)); }
-  }, [outbox]);
+    let pending: PagesPrepareInput[];
+    try { pending = outbox.list(); setPendingPages(pending); }
+    catch (error) { setFailure(errorMessage(error)); return; }
+    // Drop retry records the server refused for good; they would only resurface as stale requests.
+    let active = true;
+    void (async () => {
+      for (const releaseId of new Set(pending.map(item => item.releaseId))) {
+        const history = await listJobs({ releaseId }).catch(() => [] as PagesJob[]);
+        if (!active) return;
+        for (const request of pending) if (history.some(item => finalRefusal(item) && samePagesRequest(item, request))) outbox.remove(request.eventId);
+      }
+      if (active) setPendingPages(outbox.list());
+    })();
+    return () => { active = false; };
+  }, [outbox, listJobs]);
   useEffect(() => {
     if (!job || !automaticallyPublishing(job)) return;
     let active = true, attempts = 0;
@@ -108,7 +136,7 @@ export function ReleasePanel({ board, hostId, onOpenBoard }: { board: Board; hos
     const latest = history.find(item => automaticallyPublishing(item)) ?? history.find(item => item.status === "live") ?? history[0];
     currentJob.current = latest; setJob(latest);
     if (latest) { setGitHubHost(pagesGitHubHost(latest)); setAccount(latest.account); setRepository(latest.repository); setCreateRepository(latest.createRepository); }
-    for (const request of outbox.list()) if (history.some(item => item.autoPublish && samePagesRequest(item, request))) outbox.remove(request.eventId);
+    for (const request of outbox.list()) if (history.some(item => (item.autoPublish || finalRefusal(item)) && samePagesRequest(item, request))) outbox.remove(request.eventId);
     setPendingPages(outbox.list());
   };
   const rememberJob = (value: PagesJob) => {
@@ -123,19 +151,92 @@ export function ReleasePanel({ board, hostId, onOpenBoard }: { board: Board; hos
     rememberJob(await publish(frozen));
     outbox.remove(frozen.eventId);
     if (mounted.current) setPendingPages(outbox.list());
+    shares?.refresh();
+  };
+  /** Joins this Board's series on the same host+repository, else mints a key once per target. */
+  const shareKeyFor = (destination: { githubHost: string; repository: string }, pending: PagesPrepareInput[]) => {
+    const id = JSON.stringify([destination.githubHost, destination.repository.toLowerCase()]);
+    const key = reusableShareKey(destination, { shares: shares?.status?.shares, requests: pending, jobs }) ?? sessionKeys.current.get(id) ?? mintShareKey();
+    sessionKeys.current.set(id, key); return key;
   };
   const requestPages = () => run(async () => {
     if (!selected || reviewed !== selected.artifactHash) return;
-    const target = { releaseId: selected.releaseId, artifactHash: selected.artifactHash, githubHost, account, repository: repository.trim(), createRepository };
+    const destination = { releaseId: selected.releaseId, artifactHash: selected.artifactHash, githubHost, account, repository: repository.trim(), createRepository };
     const previous = pageRequest.current;
-    const matchesTarget = (item: PagesPrepareInput) => samePagesTarget(item, target);
-    const known = jobs.find(item => item.status === "live" && matchesTarget(item)) ?? outbox.list().find(matchesTarget) ?? jobs.find(matchesTarget);
-    if (!previous || !samePagesTarget(previous, target)) pageRequest.current = known
-      ? publicationRequest(known) : { ...target, eventId: localId("pages") };
+    // A recorded request for this destination keeps its exact event, with or without a share key.
+    const matchesTarget = (item: PagesPrepareInput) => samePagesTarget(item, { ...destination, shareKey: item.shareKey });
+    if (!previous || !matchesTarget(previous)) {
+      const pending = outbox.list();
+      const known = jobs.find(item => item.status === "live" && matchesTarget(item)) ?? pending.find(matchesTarget) ?? jobs.find(matchesTarget);
+      pageRequest.current = known ? publicationRequest(known) : { ...destination, eventId: localId("pages"), shareKey: shareKeyFor(destination, pending) };
+    }
     await sendPagesRequest(pageRequest.current!);
   });
-  return <View testID="board-release-panel" style={{ gap: 18 }}>
-    <Copy>把当前内容固定成一个可独立打开的网站。之后继续修改 Board，不会改变已导出或已上线的版本。</Copy>
+  const aimAtShare = (share: LiveShare) => {
+    setGitHubHost(share.githubHost); setAccount(share.account); setRepository(share.repository); setCreateRepository(undefined); pageRequest.current = undefined;
+  };
+  /** Builds the update locally with the share's stored settings and shows its preview; never publishes. */
+  const startUpdate = (share: LiveShare) => run(async () => {
+    const next: ShareTarget = { share, shareKey: shareKeyOf(share) };
+    targetRef.current = next; setTarget(next);
+    const result = await shareUpdate({ boardId: board.id, seriesId: share.seriesId, expectedSource: { documentVersion: board.canvas.documentVersion, patchCount: board.canvas.patches.length } });
+    if (!mounted.current || targetRef.current !== next) return;
+    if ("upToDate" in result) { const done = { ...next, upToDate: true }; targetRef.current = done; setTarget(done); return; }
+    const built = { ...next, releaseId: result.manifest.releaseId, shareKey: result.request.shareKey ?? next.shareKey };
+    targetRef.current = built; setTarget(built);
+    setReleases(values => [result.manifest, ...values.filter(item => item.releaseId !== result.manifest.releaseId)]);
+    await showRelease(result.manifest);
+    if (mounted.current && targetRef.current === built) aimAtShare(share);
+  });
+  /** A share without stored settings: fill in what its manifest still records, and say what is missing. */
+  const recoverSettings = (share: LiveShare) => run(async () => {
+    const saved = await preview({ releaseId: share.releaseId });
+    if (!mounted.current) return;
+    const manifest = saved.manifest;
+    setTitle(manifest.title); setNetwork(manifest.network); setApiOriginsText((manifest.apiOrigins ?? []).join("\n")); copyRequest.current = undefined;
+    const next: ShareTarget = { share, shareKey: shareKeyOf(share), recovered: manifest };
+    targetRef.current = next; setTarget(next);
+  });
+  const confirmShare = () => run(async () => {
+    const current = targetRef.current;
+    if (!selected || !current?.releaseId || current.releaseId !== selected.releaseId) return;
+    setReviewed(selected.artifactHash);
+    const { share } = current;
+    const destination = { releaseId: selected.releaseId, artifactHash: selected.artifactHash, githubHost: share.githubHost, account: share.account, repository: share.repository, shareKey: current.shareKey };
+    const known = outbox.list().find(item => samePagesTarget(item, destination)) ?? jobs.find(item => samePagesTarget(item, destination));
+    const request = known ? publicationRequest(known) : { ...destination, eventId: localId("pages") };
+    aimAtShare(share); pageRequest.current = request;
+    await sendPagesRequest(request);
+  });
+  useEffect(() => {
+    if (intent !== "update" || autoUpdate.current || !desktop) return;
+    const share = shareList.find(item => item.live === "changed");
+    if (!share) return;
+    autoUpdate.current = true; void startUpdate(share);
+  }, [intent, desktop, shareList]);
+  const copyLink = (url: string) => { void copyText(url).catch(error => { if (mounted.current) setFailure(errorMessage(error)); }); };
+  const shareSection = shareList.length ? <View testID="board-share-status" style={{ gap: 10 }}>
+    <Copy>分享页</Copy>
+    {shareList.map(share => {
+      const stale = shareChanged(share, board.canvas) || share.live === "failed", active = target?.share.seriesId === share.seriesId;
+      return <View key={share.seriesId} style={{ gap: 6, padding: 10, borderWidth: 1, borderRadius: 8, borderColor: active ? c.accent : c.border }}>
+        <Copy>{shareStateNames[share.live]}</Copy>
+        <Copy small muted>{pagesGitHubHost(share)} · {share.repository}{share.link ? `\n${share.link}${share.verified ? "" : "（内容待核验）"}` : "\n分享链接尚未部署"}</Copy>
+        <Copy small muted>沿用设置：{inheritedSettingsText(share)}</Copy>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+          {share.link ? <Action label="打开分享页" onPress={() => openUrl(share.link!)} /> : null}
+          {share.link ? <Action label="复制链接" onPress={() => copyLink(share.link!)} /> : null}
+          {desktop && stale && share.live !== "updating" && share.settingsAvailable ? <Action label="更新此分享页" primary={!active} disabled={busy} onPress={() => { void startUpdate(share); }} /> : null}
+          {desktop && stale && share.live !== "updating" && !share.settingsAvailable ? <Action label="沿用上次分享页的设置" disabled={busy} onPress={() => { void recoverSettings(share); }} /> : null}
+        </View>
+        {active && target?.upToDate ? <Notice text="分享页已是当前内容，无需更新。" /> : null}
+        {active && target?.recovered ? <Copy small muted>已沿用上次分享页的设置：名称「{target.recovered.title}」 · {target.recovered.network === "cdn" ? "允许 CDN 库" : "仅内置资源"} · {target.recovered.apiOrigins?.length ? `后端来源：${target.recovered.apiOrigins.join("、")}` : "不连接后端"}。主题和公开数据没有保存，请在下方重新选择，再点「生成固定版本并预览」。</Copy> : null}
+      </View>;
+    })}
+    {!desktop ? <Notice text="请在桌面版更新分享页：此客户端无法预览新版本或保留发布重试记录。" /> : null}
+  </View> : null;
+  const editor = <>
+    {intent === "update" ? null : <Copy>把当前内容固定成一个可独立打开的网站。之后继续修改 Board，不会改变已导出或已上线的版本。</Copy>}
     <View style={{ gap: 8 }}>
       <Copy>发布名称</Copy>
       <TextInput accessibilityLabel="发布名称" value={title} onChangeText={value => { setTitle(value); copyRequest.current = undefined; }} editable={!busy} style={field} />
@@ -167,21 +268,38 @@ export function ReleasePanel({ board, hostId, onOpenBoard }: { board: Board; hos
         const result = await create({ boardId: board.id, expectedCanvasBase: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion }, title: title.trim(), publicData: parsed as Board["canvas"]["data"], apiOrigins, network, theme });
         if (!mounted.current) return;
         setReleases(values => [result, ...values.filter(item => item.releaseId !== result.releaseId)]);
+        // Recovered settings: this generation becomes the reviewed update for that share link.
+        const recovering = targetRef.current?.recovered ? { ...targetRef.current, releaseId: result.releaseId } : undefined;
+        if (recovering) { targetRef.current = recovering; setTarget(recovering); }
         await showRelease(result);
+        if (recovering && mounted.current && targetRef.current === recovering) aimAtShare(recovering.share);
       }); }} />
     </View>
-    {failure ? <Notice error text={failure} /> : null}
-    {pendingPages.length ? <View style={{ gap: 6 }}><Copy>待核对的发布请求</Copy><Copy small muted>上次关闭或断线前的版本和目标已保留。已受理的发布会在后台继续；没有受理回执时可重试同一次请求。</Copy>{pendingPages.map(request => <Action key={request.eventId} label={`恢复发布 · ${pagesGitHubHost(request)} · ${request.repository}`} disabled={busy} onPress={() => { void run(async () => {
-      const saved = await preview({ releaseId: request.releaseId });
-      if (saved.manifest.artifactHash !== request.artifactHash) throw new Error("发布版本与原请求不一致。");
-      await showRelease(saved.manifest);
-      pageRequest.current = request; setGitHubHost(pagesGitHubHost(request)); setAccount(request.account); setRepository(request.repository); setCreateRepository(request.createRepository);
-    }); }} />)}</View> : null}
-    {releases.length ? <View style={{ gap: 6 }}><Copy>本机发布版本</Copy><ScrollView style={{ maxHeight: 160 }} contentContainerStyle={{ gap: 4 }}>{releases.map(release => <Action key={release.releaseId} label={`${release.title} · ${release.artifactHash.slice(0, 10)}`} active={release.releaseId === selected?.releaseId} disabled={busy} onPress={() => { void run(() => showRelease(release)); }} />)}</ScrollView></View> : null}
-    {selected ? <View style={{ gap: 12 }}>
+  </>;
+  const failureNotice = failure ? <Notice error text={failure} /> : null;
+  const pendingSection = pendingPages.length ? <View style={{ gap: 6 }}><Copy>待核对的发布请求</Copy><Copy small muted>上次关闭或断线前的版本和目标已保留。已受理的发布会在后台继续；没有受理回执时可重试同一次请求。放弃只删除本机的重试记录。</Copy>{pendingPages.map(request => <View key={request.eventId} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}><Action label={`恢复发布 · ${pagesGitHubHost(request)} · ${request.repository}`} disabled={busy} onPress={() => { void run(async () => {
+    const saved = await preview({ releaseId: request.releaseId });
+    if (saved.manifest.artifactHash !== request.artifactHash) throw new Error("发布版本与原请求不一致。");
+    await showRelease(saved.manifest);
+    pageRequest.current = request; setGitHubHost(pagesGitHubHost(request)); setAccount(request.account); setRepository(request.repository); setCreateRepository(request.createRepository);
+  }); }} /><Action label={`放弃 · ${pagesGitHubHost(request)} · ${request.repository}`} disabled={busy} onPress={() => {
+    try { outbox.remove(request.eventId); setPendingPages(outbox.list()); if (pageRequest.current?.eventId === request.eventId) pageRequest.current = undefined; }
+    catch (error) { setFailure(errorMessage(error)); }
+  }} /></View>)}</View> : null;
+  const releasesSection = releases.length ? <View style={{ gap: 6 }}><Copy>本机发布版本</Copy><ScrollView style={{ maxHeight: 160 }} contentContainerStyle={{ gap: 4 }}>{releases.map(release => <Action key={release.releaseId} label={`${release.title} · ${release.artifactHash.slice(0, 10)}`} active={release.releaseId === selected?.releaseId} disabled={busy} onPress={() => { void run(() => showRelease(release)); }} />)}</ScrollView></View> : null;
+  const confirming = selected && target?.releaseId === selected.releaseId ? target : undefined;
+  const confirmedJob = confirming && selected ? jobs.find(item => item.releaseId === selected.releaseId && item.shareKey === confirming.shareKey && (item.status === "live" || automaticallyPublishing(item))) : undefined;
+  const selectedSection = selected ? <View style={{ gap: 12 }}>
       <Copy>{selected.title} · 固定版本 {selected.artifactHash.slice(0, 12)}</Copy>
       {selected.apiOrigins?.length ? <Copy small muted>已固定的后端来源：{selected.apiOrigins.join("、")}</Copy> : null}
       {html ? <ReleasePreview html={html} /> : null}
+      {confirming ? <View style={{ gap: 8, padding: 10, borderWidth: 1, borderRadius: 8, borderColor: c.accent }}>
+        <Copy>确认后更新这个分享链接：{confirming.share.link ?? `${pagesGitHubHost(confirming.share)} · ${confirming.share.repository}`}</Copy>
+        {confirming.share.adoptable ? <Copy small muted>链接保持不变；之前的版本另存在这个链接下的 v/ 目录，仍可打开。</Copy> : null}
+        <Copy small muted>{confirming.recovered ? `本次使用面板中的设置：名称「${selected.title}」 · ${selected.network === "cdn" ? "允许 CDN 库" : "仅内置资源"} · ${selected.apiOrigins?.length ? `后端来源：${selected.apiOrigins.join("、")}` : "不连接后端"}` : `沿用设置：${inheritedSettingsText(confirming.share)}`}</Copy>
+        <Copy small muted>{VISITOR_NOTICE}</Copy>
+        <Action testID="board-share-confirm" label={confirmedJob ? "已提交更新" : "确认并更新分享页"} primary disabled={busy || !html || !!confirmedJob} onPress={() => { void confirmShare(); }} />
+      </View> : null}
       {selected.warnings.map((warning, index) => <Notice key={index} text={warning} />)}
       <Copy small muted>文件：{selected.files.map(file => file.path).join("、")}{selected.dependencies.length ? `\n外部依赖：${selected.dependencies.join("、")}` : "\n无需外部依赖。"}</Copy>
       <Action label="下载 ZIP" disabled={busy} onPress={() => { void run(async () => { const bundle = await download({ releaseId: selected.releaseId }); downloadReleaseZip(bundle.zipBase64, bundle.fileName); }); }} />
@@ -205,15 +323,26 @@ export function ReleasePanel({ board, hostId, onOpenBoard }: { board: Board; hos
         {job ? <View testID="board-pages-job" style={{ gap: 8 }}>
           <Copy>{pagesGitHubHost(job)} · {job.repository} · {jobStatusName(job)}</Copy>
           {job.sitePath ? <Copy small muted>发布目录：{job.sitePath}</Copy> : null}
+          {job.shareKey && (job.shareUrl ?? job.shareDeployedUrl) ? <Copy small muted>分享链接：{job.shareUrl ?? job.shareDeployedUrl}</Copy> : null}
           {automaticallyPublishing(job) ? <Copy small muted>发布已交给后台，正在自动完成后续步骤。</Copy> : null}
+          {job.refusal?.code === "up-to-date" ? <Copy small muted>分享页上已经是这个版本，没有新建 PR。</Copy> : null}
           {job.error ? <Notice error text={job.error} /> : null}
           {job.prUrl ? <Action label="查看 PR" onPress={() => openUrl(job.prUrl!)} /> : null}
-          {job.status !== "live" && !automaticallyPublishing(job) ? <Action label="一键继续发布" disabled={busy || reviewed !== job.artifactHash} onPress={() => { void run(() => sendPagesRequest(publicationRequest(job))); }} /> : null}
+          {job.status !== "live" && !automaticallyPublishing(job) && !finalRefusal(job) ? <Action label="一键继续发布" disabled={busy || reviewed !== job.artifactHash} onPress={() => { void run(() => sendPagesRequest(publicationRequest(job))); }} /> : null}
           <Action label="核对部署状态" disabled={busy} onPress={() => { void run(async () => rememberJob(await refresh({ jobId: job.jobId }))); }} />
-          {job.status !== "live" && job.deployedUrl ? <Action label="打开网页（内容待核验）" onPress={() => openUrl(job.deployedUrl!)} /> : null}
-          {job.status === "live" && job.url ? <Action label="打开已发布网页" onPress={() => openUrl(job.url!)} /> : null}
+          {job.shareKey ? <>
+            {/* Series jobs: the share link is what people received; the archive keeps this exact version. */}
+            {job.shareUrl ? <Action label="打开已发布网页" onPress={() => openUrl(job.shareUrl!)} /> : job.shareDeployedUrl ? <Action label="打开网页（内容待核验）" onPress={() => openUrl(job.shareDeployedUrl!)} /> : null}
+            {(job.url ?? job.deployedUrl) && (job.url ?? job.deployedUrl) !== (job.shareUrl ?? job.shareDeployedUrl) ? <Action label="打开此版本" onPress={() => openUrl((job.url ?? job.deployedUrl)!)} /> : null}
+          </> : <>
+            {job.status !== "live" && job.deployedUrl ? <Action label="打开网页（内容待核验）" onPress={() => openUrl(job.deployedUrl!)} /> : null}
+            {job.status === "live" && job.url ? <Action label="打开已发布网页" onPress={() => openUrl(job.url!)} /> : null}
+          </>}
         </View> : null}
       </View>
-    </View> : null}
+    </View> : null;
+  return <View testID="board-release-panel" style={{ gap: 18 }}>
+    {intent === "update" ? <>{shareSection}{failureNotice}{selectedSection}{pendingSection}{editor}{releasesSection}</>
+      : <>{shareSection}{editor}{failureNotice}{pendingSection}{releasesSection}{selectedSection}</>}
   </View>;
 }

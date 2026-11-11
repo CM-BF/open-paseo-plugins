@@ -83,6 +83,8 @@ export const ShareSchema = z.object({
   state: z.enum(["up-to-date", "changed", "legacy", "updating", "merged-unverified", "failed"]),
   releaseId: ReleaseIdSchema, title: z.string(), publishedJobId: IdSchema, settingsAvailable: z.boolean(),
   source: ShareSourceSchema, inFlightJobId: IdSchema.optional(),
+  // Summary of the stored settings an update inherits; public data is reported only by size.
+  settings: z.object({ network: z.enum(["offline", "cdn"]), theme: z.enum(["light", "dark"]), apiOrigins: PublicApiOriginsSchema, publicDataBytes: z.number().int().nonnegative() }).optional(),
 });
 export const ShareStatusSchema = z.object({
   current: ShareSourceSchema.required(), shares: z.array(ShareSchema),

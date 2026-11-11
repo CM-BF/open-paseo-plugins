@@ -107,6 +107,7 @@ async function boardShares(board: Board, releases: ReleaseRepository, pages: Pag
       verified: !!job.shareUrl || adoptable && job.status === "live" && !!job.url, state,
       releaseId: release.manifest.releaseId, title: release.manifest.title, publishedJobId: job.jobId, settingsAvailable: !!meta,
       source, ...(inFlight ? { inFlightJobId: inFlight.job.jobId } : {}), activity: latest,
+      ...(meta ? { settings: { network: meta.settings.network, theme: meta.settings.theme, apiOrigins: meta.settings.apiOrigins, publicDataBytes: Buffer.byteLength(canonicalJson(meta.settings.publicData)) } } : {}),
     });
   }
   shares.sort((a, b) => byCreated(b.activity, a.activity));

@@ -211,6 +211,8 @@ const fixture: any = global.hostFixture = {
   reject: (id = [...pending.keys()][0]) => { const item = pending.get(id); if (!item) throw new Error(`No pending ${id}`); pending.delete(id); item.reject(new Error("Fixture delivery unavailable")); },
   updateInteraction: (id: string, patch: Partial<Interaction>) => { persisted.interactions = persisted.interactions.map(item => item.id === id ? { ...item, ...copy(patch), updatedAt: now() } : item); advance(); },
   updateCanvas: () => { persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, data: { ...persisted.canvas.data, next: true } }; advance(); },
+  // An authored change (one more agent patch), unlike updateCanvas's data-only write.
+  patchCanvas: (text: string) => { persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, patches: [...persisted.canvas.patches, { id: `share-edit-${persisted.canvas.patches.length + 1}`, at: now(), source: "agent", selector: "#far", operation: "append", html: `<p class="share-edit">${text}</p>` } as any] }; advance(); },
   addUpdate: (value: Partial<CanvasUpdate> & { id: string }, patch?: any) => {
     if (patch) persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, patches: [...persisted.canvas.patches, { id: `patch-${value.id}`, at: now(), source: "agent", ...copy(patch) }] };
     advance();
@@ -278,6 +280,14 @@ const fixture: any = global.hostFixture = {
       return copy(persisted);
     }
     if (name === "board.state") { persisted.userState = copy(input.state); return { saved: true }; }
+    // Share links: none by default; ?share=changed seeds one with unpublished authored changes.
+    if (name === "board.release.share-status") {
+      const canvas = persisted.canvas, key = "s" + "a".repeat(20);
+      return { current: { canvasBase: { revision: canvas.revision, documentVersion: canvas.documentVersion }, documentVersion: canvas.documentVersion, patchCount: canvas.patches.length },
+        shares: fixtureParams.get("share") === "changed" ? [{ seriesId: "share-fixture", githubHost: "github.com", account: "fixture", repository: "fixture/site", shareKey: key, adoptable: false,
+          link: `https://fixture.github.io/site/boards/${key}/`, verified: true, state: "changed", releaseId: "release-" + "b".repeat(64), title: "Fixture share", publishedJobId: "fixture-share-job",
+          settingsAvailable: true, source: { canvasBase: { revision: 0, documentVersion: 0 }, documentVersion: 0, patchCount: 0 } }] : [] };
+    }
     if (name === "board.side-agent") {
       if (!persisted.interactions.some(item => item.kind === 'fork' && item.agentId === input.agentId)) throw new Error('Fixture side agent is unrelated');
       return new Promise<Board>((resolve, reject) => {

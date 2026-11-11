@@ -54,3 +54,18 @@ it("treats a missing GitHub host as public without changing an original legacy r
   expect(outbox.list()).toEqual([request]);
   expect(() => outbox.save({ ...request, githubHost: "github.enterprise.example" })).toThrow("同一次发布请求");
 });
+it("binds a share key into the immutable request and keeps key-less legacy records unchanged", () => {
+  const db = storage(), outbox = createPagesOutbox("host", "board", db), shareKey = "s" + "c".repeat(20);
+  const series = { ...request, eventId: "publish-share", shareKey };
+  outbox.save(series);
+  expect(createPagesOutbox("host", "board", db).list()).toEqual([series]);
+  expect(samePagesTarget(series, request)).toBe(false);
+  expect(samePagesTarget(series, { ...request, shareKey })).toBe(true);
+  expect(() => outbox.save({ ...series, shareKey: "s" + "d".repeat(20) })).toThrow("同一次发布请求");
+  expect(() => outbox.save({ ...series, shareKey: undefined })).toThrow("同一次发布请求");
+  expect(() => outbox.save({ ...series, shareKey: "not-a-key" })).toThrow();
+  const legacyKey = `@paseo:board-pages:v1:${encodeURIComponent(JSON.stringify(["host", "board"]))}:${request.eventId}`;
+  db.setItem(legacyKey, JSON.stringify(request));
+  expect(outbox.list().find(item => item.eventId === request.eventId)).toEqual(request);
+  expect(outbox.list().find(item => item.eventId === request.eventId)).not.toHaveProperty("shareKey");
+});

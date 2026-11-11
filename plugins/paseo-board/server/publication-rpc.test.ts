@@ -132,8 +132,10 @@ describe("share status and one-click share update", () => {
     expect(initial.current).toEqual({ canvasBase: { revision: 1, documentVersion: 1 }, documentVersion: 1, patchCount: 0 });
     expect(initial.shares).toEqual([expect.objectContaining({ shareKey: key, adoptable: false, link: `https://fixture.github.io/site/boards/${key}/`, verified: true, state: "up-to-date",
       releaseId: manifest.releaseId, title: "Work", publishedJobId: "job", settingsAvailable: true, githubHost: "github.com", account: "fixture", repository: "fixture/site",
-      source: { canvasBase: { revision: 1, documentVersion: 1 }, documentVersion: 1, patchCount: 0 } })]);
+      source: { canvasBase: { revision: 1, documentVersion: 1 }, documentVersion: 1, patchCount: 0 },
+      settings: { network: "offline", theme: "light", apiOrigins: [], publicDataBytes: Buffer.byteLength('{"label":"Public"}') } })]);
     expect(JSON.stringify(initial)).not.toContain("PRIVATE_DATA");
+    expect(JSON.stringify(initial)).not.toContain('"label"');
     await dataOnly(f, 1);
     const data = await status(f);
     expect(data.current.canvasBase.revision).toBe(2); expect(data.shares[0].state).toBe("up-to-date");
@@ -192,6 +194,7 @@ describe("share status and one-click share update", () => {
     await rm(sidecar(f, manifest.releaseId));
     await dataOnly(f, 1);
     expect((await status(f)).shares[0]).toMatchObject({ state: "up-to-date", settingsAvailable: false });
+    expect((await status(f)).shares[0].settings).toBeUndefined();
     await patch(f, "authored");
     const [share] = (await status(f)).shares;
     expect(share.state).toBe("legacy");
