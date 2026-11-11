@@ -6,7 +6,7 @@ import type { BoardChange } from "../shared/contracts";
 import { IdSchema } from "../shared/contracts";
 import {
   LiveChannelSchema, LiveChannelStateSchema, LiveErrorSchema, LiveGetInputSchema, LiveGetOutputSchema, LiveMarksSchema, LiveSetInputSchema, LiveSetOutputSchema,
-  LiveTokenSchema, LiveWithheldSchema, LIVE_LIMITS, type LiveChannel, type LiveGetOutput, type LiveMark, type LivePreview, type LiveSetInput, type LiveSetOutput, type LiveStatus,
+  LiveTokenSchema, LiveWithheldSchema, LIVE_LIMITS, LIVE_RUNTIME_OUTDATED, type LiveChannel, type LiveGetOutput, type LiveMark, type LivePreview, type LiveSetInput, type LiveSetOutput, type LiveStatus,
 } from "../shared/live-data";
 import { LiveChannelIdSchema, PublicApiOriginSchema, type LiveState } from "../shared/release-contracts";
 import { sortLiveMarks, type LiveBoardProjection } from "./live-projection";
@@ -40,7 +40,7 @@ const JournalSchema = z.object({
 });
 type Journal = z.infer<typeof JournalSchema>;
 const emptyJournal = (): Journal => ({ version: 1, seq: 0, attempts: 0, withheld: [], overLimit: false });
-const HealthSchema = z.object({ id: z.string(), deploymentId: z.string(), live: z.number().default(0) });
+const HealthSchema = z.object({ id: z.string(), deploymentId: z.string(), live: z.number().default(LIVE_RUNTIME_OUTDATED) });
 const ReplySchema = z.object({ error: z.string().optional(), currentSeq: z.number().int().positive().optional(), seq: z.number().int().positive().optional() });
 type Reply = z.infer<typeof ReplySchema>;
 

@@ -11,12 +11,13 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { build } from 'esbuild';
+import { createLiveHostBackend, runLiveHostChecks } from './live-host-checks.mjs';
 const directory=dirname(fileURLToPath(import.meta.url)), root=dirname(directory);
 const temporary=await mkdtemp(join(tmpdir(),'paseo-release-host-'));
 const downloads=join(temporary,'downloads'); await mkdir(downloads);
-const core=await build({stdin:{contents:`export {BoardStore} from './server/store';export {BoardCopies} from './server/board-copy';export {ReleaseRepository} from './server/static-release';export {canonicalJson} from './server/store-format';export {registerPublicationRpc} from './server/publication-rpc';`,resolveDir:root,loader:'ts'},bundle:true,platform:'node',format:'cjs',write:false,loader:{'.txt':'text'}});
+const core=await build({stdin:{contents:`export {BoardStore} from './server/store';export {BoardCopies} from './server/board-copy';export {ReleaseRepository} from './server/static-release';export {canonicalJson} from './server/store-format';export {registerPublicationRpc} from './server/publication-rpc';export {LiveDataPublisher} from './server/live-data';export {projectLive} from './server/live-projection';`,resolveDir:root,loader:'ts'},bundle:true,platform:'node',format:'cjs',write:false,loader:{'.txt':'text'}});
 const coreFile=join(temporary,'core.cjs'); await writeFile(coreFile,core.outputFiles[0].text);
-const {BoardStore,BoardCopies,ReleaseRepository,canonicalJson,registerPublicationRpc}=createRequire(import.meta.url)(coreFile);
+const {BoardStore,BoardCopies,ReleaseRepository,canonicalJson,registerPublicationRpc,LiveDataPublisher,projectLive}=createRequire(import.meta.url)(coreFile);
 const boardStore=new BoardStore(join(temporary,'boards')), repository=new ReleaseRepository(join(temporary,'releases'));
 let sourceBoard, publishMode='accept', jobSequence=0, holdRefresh=false, failPreviewReleaseId;
 const publicationTimers=new Set();
@@ -28,11 +29,15 @@ let configuredAccounts=[{login:'fixture-alice',host:'github.com',active:true},{l
 // Share status/update run the actual server handlers over this adapter's job journal.
 const shareHandlers=new Map();
 registerPublicationRpc({handle:(contract,handler)=>shareHandlers.set(contract.name,handler)},{ready:async()=>{},requireBoard:async id=>{assert.equal(sourceBoard?.id,id);return sourceBoard},releases:repository,
-  pages:{list:async()=>structuredClone([...jobs.values()]),read:async id=>structuredClone(jobs.get(id))}});
+  pages:{list:async()=>structuredClone([...jobs.values()]),read:async id=>structuredClone(jobs.get(id))},
+  live:{releaseChannel:board=>liveHost.publisher.releaseChannel(board.id,board.createdAt)}});
 const pagesRoot=input=>(input.githubHost===enterpriseHost?'https://pages.enterprise.example/'+input.account+'/':'https://'+input.account+'.github.io/')+input.repository.split('/')[1]+'/';
 const copies=new BoardCopies(join(temporary,'copies'),{read:async id=>sourceBoard?.id===id?sourceBoard:boardStore.read(id),create:input=>boardStore.create(input)});
 const rpc=async(name,input,board)=>{
-  calls.push({name,input:structuredClone(input)});sourceBoard=board;
+  const recorded=structuredClone(input);if(name==='board.live.set'&&recorded.token){delete recorded.token;recorded.tokenSent=true}
+  calls.push({name,input:recorded});sourceBoard=board;
+  if(name.startsWith('board.live.'))return liveHost.rpc(name,input);
+  if(name==='board.release.create'&&input.liveData)return shareHandlers.get(name)(input);
   if(name==='board.copy'){const copied=await copies.copy(input);copiedBoards.push(copied);return copied}
   if(name==='board.release.create')return (await repository.create({...input,board})).manifest;
   if(name==='board.release.list')return (await repository.list(input.boardId)).map(r=>r.manifest);
@@ -80,6 +85,7 @@ const server=createServer(async(req,res)=>{
 });
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const origin='http://127.0.0.1:'+server.address().port;
+const liveHost=await createLiveHostBackend({temporary,pageOrigin:origin,currentBoard:()=>sourceBoard,setBoard:board=>{sourceBoard=board},LiveDataPublisher,projectLive});
 const chrome = spawn(process.env.BROWSER_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', ['--headless=new', '--remote-debugging-pipe', `--user-data-dir=${join(temporary, 'profile')}`, '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-extensions', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', '--use-mock-keychain', '--window-size=1100,850', 'about:blank'], { detached: true, stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] });
 let seq = 0;
 let buffer = '';
@@ -529,6 +535,10 @@ try {
     assert.equal(count('board.pages.publish'),beforeStale,'Cleaning up stale requests never publishes');
     check('A request the server refused for good leaves the local retry list on reopen, and any other stale request can be discarded without publishing');
   }
+  if(!process.env.BOARD_RELEASE_PREVIEW_SWITCH_ONLY){
+    const loadPage=async load=>{const id=await evaluate('hostFixture.pageInstance');await load();await until(`window.hostFixture&&hostFixture.pageInstance!==${JSON.stringify(id)}&&hostFixture.mainReady()?.ready`)};
+    await runLiveHostChecks({assert,command,evaluate,until,click,replace,button,check,pageOrigin:origin,live:liveHost,calls,repository,jobs,loadPage});
+  }
   console.log(`Release host integration: ${passed} checks passed (actual static/copy core; adapted GitHub and Paseo transport, no external publication).`);
 } catch(error){console.error('Release host failed:',error);console.error('Browser exceptions:',JSON.stringify(logs).slice(-4000));console.error('Download events:',JSON.stringify(downloadEvents));console.error('RPC calls:',JSON.stringify(calls.map(c=>({name:c.name,input:c.input}))).slice(-7000));process.exitCode=1}
 finally{
@@ -536,5 +546,6 @@ finally{
   try{process.kill(-chrome.pid,'SIGKILL')}catch{}
   chrome.stdio[3].destroy();chrome.stdio[4].destroy();chrome.stderr.destroy();
   for(const entry of commands.values()){clearTimeout(entry.timer);entry.reject(new Error('browser closed'))}
+  await liveHost.close().catch(()=>{});
   server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await rm(temporary,{recursive:true,force:true,maxRetries:5,retryDelay:100});
 }

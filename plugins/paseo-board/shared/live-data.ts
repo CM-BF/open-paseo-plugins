@@ -5,6 +5,8 @@ import { InboxScopeSchema } from "./inbox";
 import { LIVE_LIMITS, LiveChannelIdSchema, LivePathSchema, LiveStateSchema, PublicApiOriginSchema, livePathsDisjoint } from "./release-contracts";
 
 export { LIVE_LIMITS };
+/** Health value for a backend whose runtime predates live data: its health response has no `live` field. */
+export const LIVE_RUNTIME_OUTDATED = -1;
 
 export const LiveMarkSchema = z.object({ path: LivePathSchema, subtree: z.boolean() }).strict();
 const LiveMarkListSchema = z.array(LiveMarkSchema).max(LIVE_LIMITS.paths).refine(marks => livePathsDisjoint(marks.map(mark => mark.path)), "公开路径不能重复或互相包含");

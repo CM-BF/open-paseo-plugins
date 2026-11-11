@@ -16,6 +16,9 @@ import { BoardToolbar } from "./board-toolbar";
 import { ReleasePanel } from "./release-panel";
 import { shareSummary } from "./share-status";
 import { useShareStatus } from "./use-share-status";
+import { useLiveStatus } from "./use-live-status";
+import { liveSummary } from "./live-status";
+import { LiveDataPanel } from "./live-data";
 import { BoardInbox } from "./inbox";
 import { BoardConnectionStatus } from "./connection-status";
 import { createStateWriter } from "./state-writer";
@@ -92,6 +95,10 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
   // The panel may have published: re-read share links once it closes.
   useEffect(() => { if (releaseWasOpen.current && !releaseOpen) shareStatus.refresh(); releaseWasOpen.current = releaseOpen; }, [releaseOpen, shareStatus.refresh]);
   const [inboxOpen, setInboxOpen] = useState(false);
+  const liveStatus = useLiveStatus(board, !embedded);
+  const [liveOpen, setLiveOpen] = useState(false);
+  const liveWasOpen = useRef(false);
+  useEffect(() => { if (liveWasOpen.current && !liveOpen) liveStatus.refresh(); liveWasOpen.current = liveOpen; }, [liveOpen, liveStatus.refresh]);
   const draftStore = useMemo(() => createDraftStore({ hostId: host.id, boardId }), [host.id, boardId]);
   const [draftSnapshot, setDraftSnapshot] = useState(() => draftStore.list());
   const batchStore = useMemo(() => createBatchStore({ hostId: host.id, boardId }), [host.id, boardId]);
@@ -123,7 +130,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
   const [focusInteraction, setFocusInteraction] = useState<{ id: string; token: number }>();
   const [interactionLocation, setInteractionLocation] = useState<{ id: string; location: InteractionLocation }>();
   const [optimistic, setOptimistic] = useState<Interaction[]>([]);
-  const updatesBlocked = Boolean(componentEditor.draft || compose || selectedInteractionId || drawer || releaseOpen || sourcesOpen || sending || selectionMode !== "off");
+  const updatesBlocked = Boolean(componentEditor.draft || compose || selectedInteractionId || drawer || releaseOpen || liveOpen || sourcesOpen || sending || selectionMode !== "off");
   const updateNavigation = useUpdateNavigation(board, updatesBlocked, async id => { if (!embedded) query.accept(await markUpdatesSeen({ boardId, updateIds: [id] })); }, embedded ? { follow: false, skipInitialUnread: true } : viewSession.saved ? {
     follow: viewSession.saved.follow, skipInitialUnread: true, restoring: settledView !== viewSession, reconciling: reconciledView !== viewSession,
   } : undefined);
@@ -544,6 +551,8 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
       onPublish={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current && !pending.current) { setDrawer(null); setReleaseIntent("publish"); setReleaseOpen(true); } }}
       share={{ ...shareSummary(shareStatus.shares), available: shareStatus.shares.length > 0 }}
       onUpdateShare={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current && !pending.current) { setDrawer(null); setReleaseIntent("update"); setReleaseOpen(true); } }}
+      live={liveSummary(liveStatus.data)}
+      onLiveData={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current && !pending.current) { setDrawer(null); setLiveOpen(true); } }}
       onInbox={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current && !pending.current) { setDrawer(null); setInboxOpen(true); } }}
       onOpenDrafts={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current) setDrawer("drafts"); }}
       sourceCount={sources.data?.sources.length} onSources={sources.enabled ? () => setSourcesOpen(true) : undefined} /> : null}
@@ -604,9 +613,12 @@ Option / Alt + Enter 当前评论发 Side · Option / Alt + Shift + Enter 新 Si
     <Modal title="评论收件箱" open={inboxOpen} onOpenChange={setInboxOpen}><Modal.Content><BoardServicesBoundary services={services}>
       <ColorContext.Provider value={c}>{inboxOpen ? <BoardInbox key={JSON.stringify([host.id, board.id, board.createdAt])} hostId={host.id} scope={{ boardId: board.id, expectedCreatedAt: board.createdAt }} /> : null}</ColorContext.Provider>
     </BoardServicesBoundary></Modal.Content></Modal>
+    <Modal title="实时公开数据" open={liveOpen} onOpenChange={setLiveOpen}><Modal.Content><BoardServicesBoundary services={services}>
+      <ColorContext.Provider value={c}>{liveOpen ? <LiveDataPanel key={JSON.stringify([host.id, board.id, board.createdAt])} board={board} hostId={host.id} live={liveStatus} shares={shareStatus} /> : null}</ColorContext.Provider>
+    </BoardServicesBoundary></Modal.Content></Modal>
     <Modal title="导出与发布" open={releaseOpen} onOpenChange={setReleaseOpen}><Modal.Content><BoardServicesBoundary services={services}>
       <ColorContext.Provider value={c}>
-      {releaseOpen ? <ReleasePanel board={board} hostId={host.id} intent={releaseIntent} shares={shareStatus} onOpenBoard={id => leaveBoard(() => { setReleaseOpen(false); if (onOpenBoard) onOpenBoard(id); else onBack(); })} /> : null}
+      {releaseOpen ? <ReleasePanel board={board} hostId={host.id} intent={releaseIntent} shares={shareStatus} live={liveStatus} onOpenBoard={id => leaveBoard(() => { setReleaseOpen(false); if (onOpenBoard) onOpenBoard(id); else onBack(); })} /> : null}
       </ColorContext.Provider>
     </BoardServicesBoundary></Modal.Content></Modal>
     <Modal title={drawer === "decisions" ? "Agent 做过的默认决策" : drawer === "threads" ? "围绕画布的讨论" : drawer === "drafts" ? "待发送与本机草稿" : "发生了什么变化"} open={drawer !== null} onOpenChange={open => { if (!open) setDrawer(null); }}><Modal.Content><BoardServicesBoundary services={services}>

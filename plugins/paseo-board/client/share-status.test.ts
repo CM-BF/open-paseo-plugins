@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PagesJob, Share } from "../shared/release-contracts";
-import { inheritedSettingsText, liveShareState, liveShares, mintShareKey, refusedJob, reusableShareKey, shareKeyOf, shareSummary } from "./share-status";
+import { inheritedSettingsText, liveShareState, liveShares, mintShareKey, refusedJob, reusableShareKey, shareKeyOf, shareLiveDrift, shareSummary } from "./share-status";
 
 const hex = "a".repeat(64), key = "s" + "b".repeat(20);
 const share = (overrides: Partial<Share> = {}): Share => ({
@@ -70,5 +70,26 @@ describe("share keys and stale requests", () => {
     expect(inheritedSettingsText(share({ settings: { network: "cdn", theme: "dark", apiOrigins: ["https://api.example.com"], publicDataBytes: 2048 } })))
       .toBe("名称「Work」 · 允许 CDN 库 · 深色 · 后端来源：https://api.example.com · 公开数据 2.0 KB");
     expect(inheritedSettingsText(share({ settingsAvailable: false }))).toContain("没有保存");
+  });
+});
+
+describe("share live drift", () => {
+  const settings = { network: "offline" as const, theme: "light" as const, apiOrigins: [], publicDataBytes: 2 };
+  const channel = (paths: string[], origin = "https://api.example.com") => ({ origin, marks: paths.map(path => ({ path, subtree: false })) }) as never;
+  it("reports added, removed and origin changes against the share's stored live block", () => {
+    const stored = share({ settings: { ...settings, live: { origin: "https://api.example.com", paths: ["/a", "/b"] } } });
+    expect(shareLiveDrift(stored, channel(["/a", "/b"]))).toBeUndefined();
+    expect(shareLiveDrift(stored, channel(["/a", "/c"]))).toEqual({ addedPaths: ["/c"], removedPaths: ["/b"], originChanged: false });
+    expect(shareLiveDrift(stored, channel(["/a", "/b"], "https://other.example.com"))).toEqual({ addedPaths: [], removedPaths: [], originChanged: true });
+    expect(shareLiveDrift(stored, null)).toEqual({ addedPaths: [], removedPaths: ["/a", "/b"], originChanged: false });
+  });
+  it("offers a non-live share the channel's paths, and says nothing without settings or a channel", () => {
+    expect(shareLiveDrift(share({ settings }), channel(["/a"]))).toEqual({ addedPaths: ["/a"], removedPaths: [], originChanged: false });
+    expect(shareLiveDrift(share({ settings }), null)).toBeUndefined();
+    expect(shareLiveDrift(share(), channel(["/a"]))).toBeUndefined();
+  });
+  it("states an inherited live block in the update summary only when present", () => {
+    expect(inheritedSettingsText(share({ settings: { ...settings, live: { origin: "https://api.example.com", paths: ["/a"] } } }))).toContain("实时数据 1 个路径（https://api.example.com）");
+    expect(inheritedSettingsText(share({ settings }))).not.toContain("实时数据");
   });
 });

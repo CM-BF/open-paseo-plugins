@@ -57,6 +57,21 @@ The sandbox and CORS boundaries follow the browser's [iframe sandbox
 rules](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/iframe)
 and [Fetch credential behavior](https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API/Using_Fetch).
 
+## Live public data
+
+The owner can mark Board data as public under **More → 实时公开数据** and turn on
+the switch of the same name in the publishing panel. The release freezes the
+backend origin and paths; the viewer polls that one document and overlays its
+values onto the frozen data. Authored code needs no changes if it reads through
+`board.getData()`, `board.watch`, `board.onData` or the `board:data` event; write
+live values with `textContent`. Without a live channel a release behaves exactly
+as before: `board.watch` fires once and `onData` never fires.
+
+The backend origin must allow each page's exact origin, as for any API. A page
+stays frozen until one confirmed share update adopts a new path set. A loopback
+backend cannot be published to a public site. See
+[live public data](live-data.md) for the owner's flow, limits and residual risks.
+
 ## Visitor comments and the native inbox
 
 Enable the scaffold's optional comment intake, then use the optional editable

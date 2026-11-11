@@ -29,7 +29,7 @@ function element(tag: string, props: any, defaults: any = {}) {
     const observer = new global.ResizeObserver(fire); observer.observe(ref.current); fire(); return () => observer.disconnect();
   }, [!!onLayout]);
   const next: any = { ...rest, ref, style: { ...defaults, ...styles(style) }, "data-testid": testID, "aria-label": accessibilityLabel, role: accessibilityRole, onClick: onPress };
-  if (accessibilityState) { next["aria-disabled"] = accessibilityState.disabled; next["aria-selected"] = accessibilityState.selected; }
+  if (accessibilityState) { next["aria-disabled"] = accessibilityState.disabled; next["aria-selected"] = accessibilityState.selected; next["aria-checked"] = accessibilityState.checked; }
   if (onChangeText) next.onChange = (event: any) => onChangeText(event.target.value);
   if (editable === false) next.disabled = true;
   if (tag === "img") { next.src = source?.uri; return createElement(tag, next); }

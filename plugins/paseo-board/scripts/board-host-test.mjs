@@ -232,6 +232,22 @@ try {
       console.log('MEASURE toolbar '+JSON.stringify({width,bar,canvas:before,buttons:bounds.map(b=>({label:b.label,x:b.rect.x,y:b.rect.y,width:b.rect.width,height:b.rect.height}))}));
       check(`the ${width}px toolbar stays on one 48px row with the share dot inside 更多; tools, shortcuts, more and rename remain reachable without moving or rebuilding the canvas`);
     }
+    // A blocked live channel raises the same dot with no share link involved, and adds no toolbar child.
+    await command('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/?live=blocked` });
+    await until('window.hostFixture?.ready >= 1');
+    for (const width of [1024,320]) {
+      await command('Emulation.setDeviceMetricsOverride',{width,height:800,deviceScaleFactor:1,mobile:false});
+      await until("document.querySelector('[data-testid=\"board-share-badge\"]')&&document.querySelector('[data-testid=board-toolbar]')");
+      await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      await evaluate('new Promise(resolve=>setTimeout(resolve,100))');
+      const bar=await hostLocation(toolbar);assert.equal(bar.height,48);assert.equal(bar.width,width);
+      const direct=await evaluate(`(()=>{const bar=document.querySelector(${JSON.stringify(toolbar)}),r=bar.getBoundingClientRect();return [...bar.querySelectorAll(':scope > button')].every(e=>e.getBoundingClientRect().right<=r.right&&e.getBoundingClientRect().left>=r.left)})()`);
+      assert.equal(direct,true);
+      await hostClick('[data-testid="board-more-open"]');await until(`document.querySelector(${JSON.stringify(popup)})`);
+      assert.ok(await evaluate(`document.querySelector('[data-testid="board-live-open"][aria-label="实时公开数据"]').textContent.includes('已停止推送，需要你处理')`));
+      await key('Escape');await until(`!document.querySelector(${JSON.stringify(popup)})`);
+      check(`the ${width}px toolbar keeps its geometry when a blocked live channel raises the dot in 更多`);
+    }
   };
   if (resumeScope) {
     const { runResumeHostChecks } = await import('./resume-host-checks.mjs');

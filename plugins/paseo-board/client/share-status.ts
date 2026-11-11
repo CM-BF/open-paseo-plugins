@@ -1,4 +1,5 @@
 import type { Board } from "../shared/contracts";
+import type { LiveChannel } from "../shared/live-data";
 import type { PagesJob, PagesPrepareInput, Share } from "../shared/release-contracts";
 import { pagesGitHubHost } from "./pages-outbox";
 
@@ -68,7 +69,17 @@ const byteLabel = (bytes: number) => bytes < 1024 ? `${bytes} 字节` : `${(byte
 /** Settings an update inherits, stated explicitly (API authority is never implied). */
 export function inheritedSettingsText(share: Share): string {
   if (!share.settings) return `名称「${share.title}」 · 没有保存其余设置`;
-  const { network, theme, apiOrigins, publicDataBytes } = share.settings;
+  const { network, theme, apiOrigins, publicDataBytes, live } = share.settings;
   return [`名称「${share.title}」`, network === "cdn" ? "允许 CDN 库" : "仅内置资源", theme === "dark" ? "深色" : "浅色",
-    apiOrigins.length ? `后端来源：${apiOrigins.join("、")}` : "不连接后端", `公开数据 ${byteLabel(publicDataBytes)}`].join(" · ");
+    apiOrigins.length ? `后端来源：${apiOrigins.join("、")}` : "不连接后端", `公开数据 ${byteLabel(publicDataBytes)}`,
+    ...(live ? [`实时数据 ${live.paths.length} 个路径（${live.origin}）`] : [])].join(" · ");
+}
+export type ShareLiveDrift = { addedPaths: string[]; removedPaths: string[]; originChanged: boolean };
+/** How the Board's current channel differs from what the share was built with; the server reports the same on update. */
+export function shareLiveDrift(share: Share, channel: LiveChannel | null | undefined): ShareLiveDrift | undefined {
+  if (!share.settings) return undefined;
+  const stored = share.settings.live, had = new Set(stored?.paths ?? []), now = new Set(channel?.marks.map(mark => mark.path) ?? []);
+  const addedPaths = [...now].filter(path => !had.has(path)), removedPaths = [...had].filter(path => !now.has(path));
+  const originChanged = !!stored && !!channel && stored.origin !== channel.origin;
+  return addedPaths.length || removedPaths.length || originChanged ? { addedPaths, removedPaths, originChanged } : undefined;
 }

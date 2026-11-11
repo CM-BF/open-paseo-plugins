@@ -206,6 +206,41 @@ This prevents a historical backup from impersonating a continuous comment stream
 Read/triage permission in Board is separate from the export token. Neither
 permits changing the app nor posting a public response.
 
+## Live public data
+
+Set `BOARD_LIVE_WRITE_TOKEN` in the server's `.env` (32 to 512 printable ASCII
+characters) and restart the app to enable the live routes. Generate it yourself;
+it is not an agent task. Enter the same value once in the Board's owner panel
+(More → 实时公开数据); see [live public data](live-data.md). Without a valid
+token every live route returns 404 and no `live/` directory is created.
+`/_board/health` reports `live: 1` when the routes exist and `live: 0` when
+they do not; a runtime older than this feature omits the field.
+
+An existing project keeps the runtime copied at its creation, and its own
+`board-app.mjs` cannot update that copy. Use the installed launcher:
+
+```sh
+paseo-board-app update-runtime --dir /absolute/path/my-app
+```
+
+It checks the app's identity without creating a data directory, stages every
+file, then renames them. It changes only `.board/runtime`, and never routes,
+storage, migrations or data. Then run the normal reviewed `ssh plan` / `ssh deploy`.
+
+Routes under `/_board/live/<channelId>`:
+
+- `GET` is public, answered from memory, and returns 204 when `?v=<dep8>.<seq>`
+  matches the current version, otherwise the document. It carries
+  `Board-Live: f=<0|1|g>, p=<seconds>`.
+- `PUT` and `DELETE` need `Authorization: Bearer TOKEN` and refuse any `Origin`
+  header. The publisher is the only intended writer.
+
+Add every page origin to `origins`, as for any API. The owner panel probes this
+and shows the exact fix for a shared page the backend would refuse. Each document is one
+file in `<dataDir>/live/`, outside SQLite: redeploys and same-directory restores
+keep it, and a cold restore deletes it and asks the owner to re-confirm. Malformed
+files are skipped and logged and never stop the app.
+
 ## Verification
 
 Run `node --test backend/checks.mjs`. These checks use actual Node HTTP, SQLite,

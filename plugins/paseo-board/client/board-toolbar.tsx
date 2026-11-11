@@ -19,6 +19,8 @@ export interface BoardToolbarProps {
   onPublish?(): void;
   /** Share links of this Board: a dot on 更多 when one has unpublished authored changes. */
   share?: { attention: boolean; detail?: string; available: boolean }; onUpdateShare?(): void;
+  /** Live public data for this Board: a dot on 更多 when the owner has to act. */
+  live?: { attention: boolean; detail?: string }; onLiveData?(): void;
   onInbox?(): void;
   onSources?(): void; sourceCount?: number;
 }
@@ -61,7 +63,7 @@ export function BoardToolbar(props: BoardToolbarProps) {
     {!compact && props.canSelect ? <UpdateNavigation navigation={props.updateNavigation} compact /> : null}
     {drafts && !narrow ? <ToolbarButton testID="board-drafts-open" label={`草稿 ${props.draftCount ?? 0}`} icon={props.draftIssue ? "FileWarning" : "FilePenLine"} text={compact ? undefined : `草稿 ${props.draftCount ?? 0}`} onPress={() => run(() => props.onOpenDrafts?.())} /> : null}
     <ToolbarButton testID="board-shortcuts-open" label="快捷键" icon="Keyboard" active={menu === "shortcuts"} onPress={() => open("shortcuts")} />
-    <ToolbarButton testID="board-more-open" label="更多" icon="Ellipsis" active={menu === "more"} badge={props.share?.attention ? "board-share-badge" : undefined} onPress={() => open("more")} />
+    <ToolbarButton testID="board-more-open" label="更多" icon="Ellipsis" active={menu === "more"} badge={props.share?.attention || props.live?.attention ? "board-share-badge" : undefined} onPress={() => open("more")} />
     <ToolbarButton label="发消息" icon="MessageCircle" text={compact ? undefined : "发消息"} primary onPress={() => run(props.onCompose)} />
     <ToolbarPopover open={menu !== null} title={title} onClose={() => setMenu(null)} containerId="board-toolbar" testID="board-toolbar-popup" width={Math.min(340, width - 16)} right={8}>
       {menu === "tools" ? <>{modes.map(([mode, label, icon]) => <MenuAction key={mode} label={label} icon={icon} selected={props.selectionMode === mode} detail={modeDescriptions[mode]} onPress={() => run(() => props.onSelectionModeChange(mode))} />)}<Copy small muted>Esc 返回交互。也可按住 ⌘ / Ctrl + Shift，直接点击组件。</Copy></> : null}
@@ -95,6 +97,7 @@ export function BoardToolbar(props: BoardToolbarProps) {
         {props.onSources ? <MenuAction testID="board-composition-open" label={`组合来源${props.sourceCount ? ` ${props.sourceCount}` : ""}`} icon="PanelsTopLeft" detail="让 agent 引用、读取并组合其他 Board" onPress={() => run(() => props.onSources?.())} /> : null}
         {props.onPublish ? <MenuAction label="导出与发布" icon="Upload" detail={props.share?.detail} onPress={() => run(() => props.onPublish?.())} /> : null}
         {props.onUpdateShare && props.share?.available ? <MenuAction testID="board-share-update" label="更新分享页" icon="RefreshCw" detail={props.share.attention ? "预览新版本，确认后更新原来的分享链接" : "查看分享链接和状态"} onPress={() => run(() => props.onUpdateShare?.())} /> : null}
+        {props.onLiveData ? <MenuAction testID="board-live-open" label="实时公开数据" icon="Radio" detail={props.live?.detail} onPress={() => run(() => props.onLiveData?.())} /> : null}
       </> : null}
     </ToolbarPopover>
   </View>;

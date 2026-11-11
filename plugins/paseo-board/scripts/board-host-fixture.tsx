@@ -210,6 +210,7 @@ const fixture: any = global.hostFixture = {
   commitPending: (id = [...pending.keys()][0]) => fixture.accept(id, "delivered", false),
   reject: (id = [...pending.keys()][0]) => { const item = pending.get(id); if (!item) throw new Error(`No pending ${id}`); pending.delete(id); item.reject(new Error("Fixture delivery unavailable")); },
   updateInteraction: (id: string, patch: Partial<Interaction>) => { persisted.interactions = persisted.interactions.map(item => item.id === id ? { ...item, ...copy(patch), updatedAt: now() } : item); advance(); },
+  setCanvasData: (data: Board["canvas"]["data"]) => { persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, data }; advance(); },
   updateCanvas: () => { persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, data: { ...persisted.canvas.data, next: true } }; advance(); },
   // An authored change (one more agent patch), unlike updateCanvas's data-only write.
   patchCanvas: (text: string) => { persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, patches: [...persisted.canvas.patches, { id: `share-edit-${persisted.canvas.patches.length + 1}`, at: now(), source: "agent", selector: "#far", operation: "append", html: `<p class="share-edit">${text}</p>` } as any] }; advance(); },
@@ -287,6 +288,13 @@ const fixture: any = global.hostFixture = {
         shares: fixtureParams.get("share") === "changed" ? [{ seriesId: "share-fixture", githubHost: "github.com", account: "fixture", repository: "fixture/site", shareKey: key, adoptable: false,
           link: `https://fixture.github.io/site/boards/${key}/`, verified: true, state: "changed", releaseId: "release-" + "b".repeat(64), title: "Fixture share", publishedJobId: "fixture-share-job",
           settingsAvailable: true, source: { canvasBase: { revision: 0, documentVersion: 0 }, documentVersion: 0, patchCount: 0 } }] : [] };
+    }
+    // Live data: off by default; ?live=blocked seeds a channel the owner has to act on.
+    if (name === "board.live.get") {
+      const status = { state: "off", seq: 0, attempts: 0, withheld: [] };
+      if (fixtureParams.get("live") !== "blocked") return { channel: null, status, preview: null, backend: null, originProblems: [], consentDigest: null };
+      return { channel: { channelId: `c${"a".repeat(32)}`, origin: "https://api.example.test", deploymentId: "fixture-deployment", marks: [{ path: "/live", subtree: false }], state: "blocked", eventId: "fixture-live-event" },
+        status: { ...status, state: "blocked", lastError: { code: "token_rejected", message: "后端拒绝了写入令牌", at: "2026-11-10T00:00:00.000Z" } }, preview: null, backend: null, originProblems: [], consentDigest: null };
     }
     if (name === "board.side-agent") {
       if (!persisted.interactions.some(item => item.kind === 'fork' && item.agentId === input.agentId)) throw new Error('Fixture side agent is unrelated');
