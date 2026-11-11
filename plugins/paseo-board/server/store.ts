@@ -11,6 +11,8 @@ import {
 import { assertId, assertJson, BoardStoreError, canonicalJson, ensureDirectory, fingerprint, parseInput, readEnvelope, serialized, writeEnvelope, type Envelope } from "./store-format";
 import { changeFeed, parseFeed } from "./feeds";
 import { applyDataPatch } from "./data-patch";
+import { projectLive, type LiveBoardProjection } from "./live-projection";
+import type { LiveMark } from "../shared/live-data";
 import { summarizeBoard, sortBoardSummaries, type BoardCommitNotice } from "./board-events";
 import { ComponentSourceMismatch, prepareComponentPatch, validateHtmlPatchRoots } from "./authored-source";
 
@@ -90,6 +92,18 @@ export class BoardStore {
     const path = this.path(boardId);
     await this.init();
     return serialized(path, async () => (await readEnvelope(path, boardId))?.board ?? null);
+  }
+
+  /** Public allow-list of one identified Board. A replaced Board projects nothing. */
+  async projectPublic(boardId: string, expectedCreatedAt: string, marks: readonly LiveMark[]): Promise<LiveBoardProjection | null> {
+    const path = this.path(boardId);
+    await this.init();
+    return serialized(path, async () => {
+      const board = (await readEnvelope(path, boardId))?.board;
+      if (!board) return null;
+      const { createdAt, canvas: { revision: canvasRevision, data } } = board;
+      return { createdAt, canvasRevision, ...(createdAt === expectedCreatedAt ? projectLive(data, marks) : { bytes: 0, overLimit: false, withheld: [], pathBytes: {} }) };
+    });
   }
 
   async create(raw: CreateInput): Promise<Board> {

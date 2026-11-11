@@ -18,6 +18,7 @@ import { ReadSourceInputSchema, SourcesInputSchema } from "../shared/composition
 import type { CompositionSources } from "./composition";
 import type { InboxStore } from "./inbox-store";
 import { InboxListInputSchema, InboxReadInputSchema, InboxTriageInputSchema } from "../shared/inbox";
+import type { LiveDataPublisher } from "./live-data";
 
 export type Operation = "inbox_list" | "inbox_read" | "inbox_triage" | "sources" | "read_source" | "list" | "read" | "create" | "publish" | "decision" | "emit" | "respond" | "feed";
 const terminal = new Set<Interaction["status"]>(["applied", "rejected", "answered"]);
@@ -89,6 +90,9 @@ export class BoardService {
   private composition?: CompositionSources;
   private inbox?: InboxStore;
   useInbox(inbox: InboxStore): void { this.inbox = inbox; }
+  private live?: Pick<LiveDataPublisher, "publicView">;
+  /** Read-only: agents learn which paths are public, and nothing that controls them. */
+  useLive(live: Pick<LiveDataPublisher, "publicView">): void { this.live = live; }
   private knownHostId?: string;
   useComposition(sources: CompositionSources): void { this.composition = sources; }
   async localHostId(): Promise<string | undefined> {
@@ -178,8 +182,9 @@ export class BoardService {
     switch (operation) {
       case "read": {
         const read = ReadInputSchema.parse(input);
-        if (read.view === "inspect") return inspectBoard(board, read);
-        return { ...board, authoring: describeAuthoring(board.canvas, read.selector) };
+        const livePublic = await this.live?.publicView(board.id, board.createdAt).catch(() => undefined);
+        const view = read.view === "inspect" ? inspectBoard(board, read) : { ...board, authoring: describeAuthoring(board.canvas, read.selector) };
+        return livePublic ? { ...view, livePublic } : view;
       }
       case "publish": {
         if (actor && ["sideAgentId", "pendingSideInteractionId", "sideAgentRevision"].some(field => input[field] !== undefined)) throw new Error("Only the user can select the Board's side conversation");

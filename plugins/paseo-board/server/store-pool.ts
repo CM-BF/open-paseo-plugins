@@ -12,6 +12,7 @@ import type { BoardStore, BoardStoreApi } from "./store";
 import { BoardStoreError, assertId, ensureDirectory } from "./store-format";
 import { BoardEventHub } from "./board-events";
 import { boardPartition, isComputeMethod, type WorkerMethod } from "./store-worker-protocol";
+import type { LiveBoardProjection } from "./live-projection";
 
 interface Job { id: string; method: WorkerMethod; args: unknown[]; boardId: string; bytes: number; resolve(value: any): void; reject(error: Error): void }
 interface Slot { index: number; child?: ChildProcess; ready: boolean; queue: Job[]; bytes: number; active?: Job; timer?: ReturnType<typeof setTimeout>; starting?: Promise<void>; started: boolean; restarts: number[]; retryAt: number; recoveryTimer?: ReturnType<typeof setTimeout> }
@@ -164,7 +165,7 @@ export class BoardStorePool implements BoardStoreApi {
         slot.child = undefined; slot.ready = false; slot.active = undefined;
         const failure = new BoardStoreError("worker_unavailable", "Board worker exited; queued operations were not executed", { diagnostic: stderr });
         rejectReady(failure);
-        if (active) active.reject(new BoardStoreError(active.method === "read" || isComputeMethod(active.method) ? "worker_unavailable" : "outcome_unknown", "Board worker stopped before its response; inspect state or retry the identical durable request", { method: active.method, boardId: active.boardId }));
+        if (active) active.reject(new BoardStoreError(active.method === "read" || active.method === "projectPublic" || isComputeMethod(active.method) ? "worker_unavailable" : "outcome_unknown", "Board worker stopped before its response; inspect state or retry the identical durable request", { method: active.method, boardId: active.boardId }));
         for (const job of slot.queue.splice(0)) job.reject(failure);
         slot.bytes = 0;
         void this.saveLease().then(() => this.recoverWorker(slot)).catch(() => { void this.close(); });
@@ -227,6 +228,8 @@ export class BoardStorePool implements BoardStoreApi {
   hasChanges(cursor: BoardEventCursor): boolean { return this.events.hasChanges(cursor); }
   subscribe(listener: (change: BoardChange) => void) { return this.events.subscribe(listener); }
   read: BoardStore["read"] = id => this.call("read", id, [id]);
+  /** Read-only and small on the wire: only the public projection crosses IPC, never a Board. */
+  projectPublic: BoardStore["projectPublic"] = (...args): Promise<LiveBoardProjection | null> => this.call("projectPublic", args[0], args);
   create: BoardStore["create"] = raw => { const input: CreateInput = { ...raw, id: raw.id ?? randomUUID() }; return this.call("create", input.id!, [input]); };
   publish: BoardStore["publish"] = (...args) => this.call("publish", args[0].boardId, args);
   respond: BoardStore["respond"] = (...args) => this.call("respond", args[0].boardId, args);

@@ -1,4 +1,4 @@
-export const STORE_METHODS = ["read", "create", "publish", "respond", "emit", "feed", "rename", "edit", "recordDecision", "saveState", "markUpdatesSeen", "addInteraction", "updateInteraction", "projectSideAgent", "updateExtraction"] as const;
+export const STORE_METHODS = ["read", "create", "publish", "respond", "emit", "feed", "rename", "edit", "recordDecision", "saveState", "markUpdatesSeen", "addInteraction", "updateInteraction", "projectSideAgent", "updateExtraction", "projectPublic"] as const;
 export type StoreMethod = typeof STORE_METHODS[number];
 
 /** Pure CPU work shares the same bounded queue without enlarging BoardStoreApi. */

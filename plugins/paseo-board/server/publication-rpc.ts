@@ -125,8 +125,9 @@ export function registerPublicationRpc(server: PluginServerContext, options: {
     await options.ready();
     return releases.read(id);
   };
-  server.handle(createReleaseRpc, async input => {
+  server.handle(createReleaseRpc, async ({ liveData, ...input }) => {
     await options.ready();
+    if (liveData) throw new Error("Live data releases are not available in this build");
     const board = await options.requireBoard(input.boardId);
     return (await releases.create({ ...input, board })).manifest;
   });

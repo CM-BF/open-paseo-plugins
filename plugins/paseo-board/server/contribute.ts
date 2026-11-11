@@ -22,6 +22,8 @@ import { InboxStore } from "./inbox-store";
 import { InboxConnections } from "./inbox-sync";
 import { inboxListRpc, inboxReadRpc, inboxPolicyRpc, inboxTriageRpc } from "../shared/inbox";
 import { inboxConnectRpc, inboxConnectionsRpc, inboxSyncRpc, inboxReconcileRpc } from "../shared/inbox-connection";
+import { LiveDataPublisher } from "./live-data";
+import { liveGetRpc, liveSetRpc } from "../shared/live-data";
 
 export interface ContributeOptions { rootDir?: string; runtimeDir?: string; home?: string; linkSkills?: boolean; eventTransport?: { publish(change: BoardChange): void }; onService?: (service: BoardService) => void }
 
@@ -41,6 +43,8 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   } });
   service.useInbox(inbox);
   const inboxConnections = new InboxConnections(root, inbox);
+  const live = new LiveDataPublisher(root, store, { log });
+  service.useLive(live);
   const copies = new BoardCopies(join(root, "copies"), store, board => store.materializeAuthoredHtml(board.id, board.canvas));
   const releases = new ReleaseRepository(join(root, "releases"), store);
   const pages = new GitHubPagesManager(join(root, "pages"), releases);
@@ -62,6 +66,8 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     if (stopped) return;
     if (options.linkSkills !== false) await linkSkills(paths, options.home);
     if (!stopped) pages.start();
+    // Publishing is independent of the rest of the plugin; a failure here is reported, not fatal.
+    if (!stopped) await live.start().catch(() => log("live data publisher failed to start"));
   })();
   void ready.catch((error) => log(`startup failed: ${String(error)}`));
   let captured = false;
@@ -83,6 +89,8 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   server.handle(inboxConnectionsRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxConnections.list(input); });
   server.handle(inboxSyncRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxConnections.sync(input); });
   server.handle(inboxReconcileRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxConnections.reconcile(input); });
+  server.handle(liveGetRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return live.get(input); });
+  server.handle(liveSetRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return live.set(input); });
 
   server.handle(compositionSourcesRpc, async ({ boardId }, { paseo }) => { capture(paseo); await checkReady(); return composition.list(boardId); });
   server.handle(setCompositionSourcesRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return composition.set(input); });
@@ -145,7 +153,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     stopped = true;
     for (const remove of removers) remove();
     // Mark components stopped before awaiting startup; startup may be paused at any await.
-    await Promise.all([bridge.close(), service.dispose(), pages.close()]);
+    await Promise.all([bridge.close(), service.dispose(), pages.close(), live.close()]);
     await ready.catch(() => undefined);
     await bridge.close();
     await store.close();

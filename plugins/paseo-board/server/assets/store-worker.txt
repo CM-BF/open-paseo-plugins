@@ -1244,7 +1244,7 @@ var require_CSSStyleSheet = __commonJS({
         _setTimeout = setTimeout;
       }
       var sheet = this;
-      return new _Promise(function(resolve2, reject) {
+      return new _Promise(function(resolve3, reject) {
         if (!sheet.__constructed || sheet.__disallowModification) {
           reject(errorUtils2.createError(
             sheet,
@@ -1267,7 +1267,7 @@ var require_CSSStyleSheet = __commonJS({
           }
           sheet.__cssRules.splice.apply(sheet.__cssRules, [0, sheet.__cssRules.length].concat(rules));
           delete sheet.__disallowModification;
-          resolve2(sheet);
+          resolve3(sheet);
         });
       });
     };
@@ -5504,7 +5504,7 @@ var require_canvas = __commonJS({
 });
 
 // server/store.ts
-var import_node_crypto2 = require("node:crypto");
+var import_node_crypto3 = require("node:crypto");
 var import_promises2 = require("node:fs/promises");
 var import_node_path2 = require("node:path");
 
@@ -9070,7 +9070,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     }
     return propValues;
   });
-  const isObject2 = isObject;
+  const isObject3 = isObject;
   const catchall = def.catchall;
   let value;
   const memo2 = globalConfig.memoizer;
@@ -9078,7 +9078,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input2 = payload.value;
-    if (!isObject2(input2)) {
+    if (!isObject3(input2)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -9214,7 +9214,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     return doc.compile();
   };
   let fastpass;
-  const isObject2 = isObject;
+  const isObject3 = isObject;
   const jit = !globalConfig.jitless;
   const allowsEval2 = allowsEval;
   const fastEnabled = jit && allowsEval2.value;
@@ -9223,7 +9223,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input2 = payload.value;
-    if (!isObject2(input2)) {
+    if (!isObject3(input2)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -10575,7 +10575,7 @@ var recursive = /* @__PURE__ */ new WeakMap();
 var NONE = 0;
 var ASSUMED = 1;
 var PROVEN = 2;
-function isRecursive(inst, stack, resolve2) {
+function isRecursive(inst, stack, resolve3) {
   const cached2 = recursive.get(inst);
   if (cached2 !== void 0)
     return cached2 ? PROVEN : NONE;
@@ -10585,7 +10585,7 @@ function isRecursive(inst, stack, resolve2) {
   let result = NONE;
   const check2 = (child) => {
     if (result !== PROVEN && child?._zod) {
-      const answer = isRecursive(child, stack, resolve2);
+      const answer = isRecursive(child, stack, resolve3);
       if (answer > result)
         result = answer;
     }
@@ -10596,7 +10596,7 @@ function isRecursive(inst, stack, resolve2) {
       const desc = Object.getOwnPropertyDescriptor(sh, key2);
       if (spread && !desc.enumerable)
         continue;
-      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve2) : NONE;
+      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve3) : NONE;
       if (child > answer)
         answer = child;
     }
@@ -10660,7 +10660,7 @@ function isRecursive(inst, stack, resolve2) {
       break;
     // `$ZodLazy` caches its inner on the def, so a resolved edge is followed exactly
     case "lazy": {
-      const inner = def._cachedInner ?? (resolve2 ? inst._zod.innerType : void 0);
+      const inner = def._cachedInner ?? (resolve3 ? inst._zod.innerType : void 0);
       merge2(inner ? isRecursive(inner, stack, false) : ASSUMED);
       break;
     }
@@ -26256,6 +26256,239 @@ function changeFeed(board, input2, at, actorAgentId) {
   };
 }
 
+// server/live-projection.ts
+var import_node_crypto2 = require("node:crypto");
+
+// shared/release-contracts.ts
+var ReleaseIdSchema = external_exports.string().regex(/^release-[a-f0-9]{64}$/);
+var PublicApiOriginSchema = external_exports.string().max(2048).refine((value) => {
+  try {
+    const url2 = new URL(value);
+    const validHost = /^\[[a-f0-9:]+\]$/i.test(url2.hostname) || url2.hostname.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label));
+    return validHost && url2.origin === value && !url2.username && !url2.password && (url2.protocol === "https:" || url2.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url2.hostname));
+  } catch {
+    return false;
+  }
+}, "API \u5730\u5740\u5E94\u4E3A HTTPS \u6765\u6E90\uFF08\u4F8B\u5982 https://api.example.com\uFF09\uFF0C\u672C\u673A\u6D4B\u8BD5\u53EF\u7528 HTTP loopback\uFF1B\u4E0D\u542B\u8DEF\u5F84\u6216\u51ED\u636E");
+var PublicApiOriginsSchema = external_exports.array(PublicApiOriginSchema).max(8).refine((values) => new Set(values).size === values.length, "API \u6765\u6E90\u4E0D\u80FD\u91CD\u590D");
+var LIVE_LIMITS = { paths: 32, documentBytes: 6e4 };
+var LiveChannelIdSchema = external_exports.string().regex(/^c[a-f0-9]{32}$/);
+var unsafeLiveSegments = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
+var livePathSegments = (path) => path.slice(1).split("/").map((part) => part.replace(/~[01]/g, (escape4) => escape4 === "~0" ? "~" : "/"));
+var LivePathSchema = external_exports.string().max(500).refine((path) => {
+  if (!path.startsWith("/") || /~(?:[^01]|$)/.test(path)) return false;
+  const parts = livePathSegments(path);
+  return parts.length <= 64 && !parts.some((part) => unsafeLiveSegments.has(part));
+}, "\u516C\u5F00\u8DEF\u5F84\u5E94\u4E3A\u975E\u6839 JSON Pointer\uFF0C\u4E0D\u80FD\u542B\u5371\u9669\u952E\uFF0C\u6700\u591A 500 \u5B57\u7B26\u300164 \u5C42");
+var livePathsDisjoint = (paths) => {
+  if (paths.length > LIVE_LIMITS.paths) return false;
+  const decoded = paths.map(livePathSegments);
+  return decoded.every((parts, index) => decoded.every((other, at) => at <= index || !parts.slice(0, Math.min(parts.length, other.length)).every((part, position) => part === other[position])));
+};
+var LiveStateSchema = external_exports.enum(["off", "pending", "syncing", "live", "retrying", "paused", "too-large", "blocked", "revoking", "revoked"]);
+var LiveReleaseSchema = external_exports.object({
+  origin: PublicApiOriginSchema,
+  channelId: LiveChannelIdSchema,
+  paths: external_exports.array(LivePathSchema).min(1).max(LIVE_LIMITS.paths).refine((paths) => livePathsDisjoint(paths) && paths.every((path, index) => index === 0 || paths[index - 1] < path), "\u5B9E\u65F6\u8DEF\u5F84\u5FC5\u987B\u6392\u5E8F\u3001\u552F\u4E00\u4E14\u4E92\u4E0D\u5305\u542B")
+}).strict();
+var LiveDriftSchema = external_exports.object({
+  addedPaths: external_exports.array(external_exports.string()),
+  removedPaths: external_exports.array(external_exports.string()),
+  originChanged: external_exports.boolean(),
+  channelState: external_exports.union([LiveStateSchema, external_exports.literal("none")])
+}).strict();
+var ReleaseManifestSchema = external_exports.object({
+  formatVersion: external_exports.literal(1),
+  releaseId: ReleaseIdSchema,
+  artifactHash: external_exports.string().regex(/^[a-f0-9]{64}$/),
+  title: external_exports.string(),
+  viewerVersion: external_exports.number().int(),
+  network: external_exports.enum(["offline", "cdn"]),
+  apiOrigins: PublicApiOriginsSchema.optional(),
+  live: LiveReleaseSchema.optional(),
+  dependencies: external_exports.array(external_exports.string()),
+  warnings: external_exports.array(external_exports.string()),
+  files: external_exports.array(external_exports.object({ path: external_exports.string(), sha256: external_exports.string(), bytes: external_exports.number().int().nonnegative() }))
+});
+var ReleaseCreateBaseSchema = external_exports.object({
+  boardId: IdSchema,
+  expectedCanvasBase: CanvasBaseSchema,
+  publicData: JsonDataSchema,
+  title: external_exports.string().min(1).max(200).optional(),
+  network: external_exports.enum(["offline", "cdn"]).default("offline"),
+  theme: external_exports.enum(["light", "dark"]).default("light"),
+  apiOrigins: PublicApiOriginsSchema.default([]),
+  live: LiveReleaseSchema.optional()
+});
+var ReleaseCreateRpcSchema = ReleaseCreateBaseSchema.omit({ live: true }).extend({ liveData: external_exports.boolean().optional() });
+var ReleaseCreateSchema = ReleaseCreateBaseSchema.superRefine((value, context2) => {
+  if (value.live && !value.apiOrigins.includes(value.live.origin)) context2.addIssue({ code: "custom", path: ["live", "origin"], message: "\u5B9E\u65F6\u6570\u636E\u6765\u6E90\u5FC5\u987B\u5305\u542B\u5728 apiOrigins \u4E2D" });
+});
+var ReleaseSettingsSchema = external_exports.object({
+  title: external_exports.string(),
+  network: external_exports.enum(["offline", "cdn"]),
+  theme: external_exports.enum(["light", "dark"]),
+  apiOrigins: PublicApiOriginsSchema,
+  publicData: JsonDataSchema,
+  live: LiveReleaseSchema.optional()
+});
+var ReleaseSourceSchema = external_exports.object({
+  boardId: IdSchema,
+  boardCreatedAt: external_exports.string(),
+  canvasBase: CanvasBaseSchema,
+  documentVersion: external_exports.number().int().nonnegative(),
+  patchCount: external_exports.number().int().nonnegative()
+});
+var ReleaseMetaSchema = external_exports.object({
+  formatVersion: external_exports.literal(1),
+  releaseId: ReleaseIdSchema,
+  settings: ReleaseSettingsSchema,
+  source: ReleaseSourceSchema,
+  createdAt: external_exports.string()
+});
+var ShareKeySchema = external_exports.string().regex(/^(s[a-f0-9]{20}|[a-f0-9]{64})$/);
+var PagesRefusalCodeSchema = external_exports.enum(["series-busy", "newer-on-share", "share-foreign", "up-to-date", "share-files-mismatch"]);
+var GitHubHostSchema = external_exports.string().min(1).max(253).transform((value) => value.toLowerCase()).refine((value) => !/[^a-z0-9.-]/.test(value) && value.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)), "Invalid GitHub hostname");
+var GitHubLoginSchema = external_exports.string().min(1).max(100).regex(/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/).refine((value) => !/[^a-zA-Z0-9_.-]/.test(value), "Invalid GitHub login");
+var GitHubRepositoryNameSchema = external_exports.string().max(300).refine((value) => {
+  const parts = value.split("/");
+  return parts.length === 2 && parts.every((part) => part.length > 0 && part !== "." && part !== ".." && !/[^a-zA-Z0-9_.-]/.test(part));
+}, "Expected owner/repository without path traversal");
+var GitHubAccountSchema = external_exports.object({ login: GitHubLoginSchema, host: GitHubHostSchema, active: external_exports.boolean() });
+var GitHubRepositorySchema = external_exports.object({ name: external_exports.string(), private: external_exports.boolean(), url: external_exports.string() });
+var PagesPrepareSchema = external_exports.object({
+  eventId: IdSchema,
+  releaseId: ReleaseIdSchema,
+  artifactHash: external_exports.string().regex(/^[a-f0-9]{64}$/),
+  githubHost: GitHubHostSchema.optional(),
+  account: GitHubLoginSchema,
+  repository: GitHubRepositoryNameSchema,
+  createRepository: external_exports.enum(["public", "private"]).optional(),
+  shareKey: ShareKeySchema.optional()
+});
+var PagesJobSchema = PagesPrepareSchema.extend({
+  jobId: IdSchema,
+  status: external_exports.enum(["prepared", "pr-open", "merged", "deploying", "live", "failed", "unknown"]),
+  branch: external_exports.string(),
+  baseBranch: external_exports.string().optional(),
+  baseSha: external_exports.string().optional(),
+  headSha: external_exports.string().optional(),
+  prNumber: external_exports.number().int().optional(),
+  prUrl: external_exports.string().optional(),
+  mergedSha: external_exports.string().optional(),
+  deploymentId: external_exports.string().optional(),
+  url: external_exports.string().optional(),
+  deployedUrl: external_exports.string().optional(),
+  verifiedAt: external_exports.string().optional(),
+  error: external_exports.string().optional(),
+  treeSha: external_exports.string().optional(),
+  createdAt: external_exports.string().optional(),
+  pagesConfigured: external_exports.boolean().optional(),
+  pagesConfigurationRequested: external_exports.boolean().optional(),
+  pagesConfigurationHash: external_exports.string().optional(),
+  publicationMode: external_exports.enum(["workflow", "legacy-subdirectory", "legacy-branch"]).optional(),
+  // Legacy jobs: boards/<releaseHex>. Series jobs: the version archive boards/<key>/v/<releaseHex>.
+  sitePath: external_exports.string().regex(/^boards\/(?:[a-f0-9]{64}|(?:s[a-f0-9]{20}|[a-f0-9]{64})\/v\/[a-f0-9]{64})$/).optional(),
+  sourcePath: external_exports.enum(["/", "/docs"]).optional(),
+  autoPublish: external_exports.boolean().optional(),
+  autoPublishUntil: external_exports.string().datetime().optional(),
+  // Stable share directory relative to the source root (absent = Pages root in workflow mode).
+  sharePath: external_exports.string().regex(/^boards\/(?:s[a-f0-9]{20}|[a-f0-9]{64})$/).optional(),
+  shareDeployedUrl: external_exports.string().optional(),
+  shareUrl: external_exports.string().optional(),
+  adoptedFrom: IdSchema.optional(),
+  refusal: external_exports.object({ code: PagesRefusalCodeSchema, message: external_exports.string() }).optional()
+});
+var ShareSourceSchema = external_exports.object({ canvasBase: CanvasBaseSchema, documentVersion: external_exports.number().int().nonnegative(), patchCount: external_exports.number().int().nonnegative().optional() });
+var ShareSchema = external_exports.object({
+  seriesId: IdSchema,
+  githubHost: GitHubHostSchema,
+  account: GitHubLoginSchema,
+  repository: GitHubRepositoryNameSchema,
+  shareKey: ShareKeySchema.optional(),
+  adoptable: external_exports.boolean(),
+  link: external_exports.string().optional(),
+  verified: external_exports.boolean(),
+  state: external_exports.enum(["up-to-date", "changed", "legacy", "updating", "merged-unverified", "failed"]),
+  releaseId: ReleaseIdSchema,
+  title: external_exports.string(),
+  publishedJobId: IdSchema,
+  settingsAvailable: external_exports.boolean(),
+  source: ShareSourceSchema,
+  inFlightJobId: IdSchema.optional(),
+  // Branch-directory shares keep older versions online under <link>v/<hex>/; workflow (Pages root) shares do not.
+  archivesOnline: external_exports.boolean().optional(),
+  // Summary of the stored settings an update inherits; public data is reported only by size.
+  settings: external_exports.object({ network: external_exports.enum(["offline", "cdn"]), theme: external_exports.enum(["light", "dark"]), apiOrigins: PublicApiOriginsSchema, publicDataBytes: external_exports.number().int().nonnegative(), live: external_exports.object({ origin: PublicApiOriginSchema, paths: external_exports.array(external_exports.string()) }).optional() }).optional()
+});
+var ShareStatusSchema = external_exports.object({
+  current: ShareSourceSchema.required(),
+  shares: external_exports.array(ShareSchema)
+});
+var ShareUpdateSchema = external_exports.object({
+  boardId: IdSchema,
+  seriesId: IdSchema,
+  expectedSource: external_exports.object({ documentVersion: external_exports.number().int().nonnegative(), patchCount: external_exports.number().int().nonnegative() }),
+  liveMode: external_exports.enum(["keep", "current"]).default("keep")
+});
+var ShareUpdateResultSchema = external_exports.union([
+  external_exports.object({ upToDate: external_exports.literal(true), liveDrift: LiveDriftSchema.optional() }),
+  external_exports.object({ manifest: ReleaseManifestSchema, request: PagesPrepareSchema.omit({ eventId: true, createRepository: true }), liveDrift: LiveDriftSchema.optional() })
+]);
+var releaseInput = external_exports.object({ releaseId: ReleaseIdSchema });
+var createReleaseRpc = defineRpc({ name: "board.release.create", input: ReleaseCreateRpcSchema, output: ReleaseManifestSchema });
+var listReleasesRpc = defineRpc({ name: "board.release.list", input: external_exports.object({ boardId: IdSchema }), output: external_exports.array(ReleaseManifestSchema) });
+var previewReleaseRpc = defineRpc({ name: "board.release.preview", input: releaseInput, output: external_exports.object({ manifest: ReleaseManifestSchema, html: external_exports.string() }) });
+var downloadReleaseRpc = defineRpc({ name: "board.release.download", input: releaseInput, output: external_exports.object({ manifest: ReleaseManifestSchema, fileName: external_exports.string(), zipBase64: external_exports.string() }) });
+var githubAccountsRpc = defineRpc({ name: "board.pages.accounts", input: external_exports.object({ githubHost: GitHubHostSchema.optional() }), output: external_exports.array(GitHubAccountSchema) });
+var githubRepositoriesRpc = defineRpc({ name: "board.pages.repositories", input: external_exports.object({ account: GitHubLoginSchema, githubHost: GitHubHostSchema.optional() }), output: external_exports.array(GitHubRepositorySchema) });
+var preparePagesRpc = defineRpc({ name: "board.pages.prepare", input: PagesPrepareSchema, output: PagesJobSchema });
+var publishPagesRpc = defineRpc({ name: "board.pages.publish", input: PagesPrepareSchema, output: PagesJobSchema });
+var mergePagesRpc = defineRpc({ name: "board.pages.merge", input: external_exports.object({ jobId: IdSchema, expectedHead: external_exports.string().regex(/^[a-f0-9]{40}$/) }), output: PagesJobSchema });
+var refreshPagesRpc = defineRpc({ name: "board.pages.refresh", input: external_exports.object({ jobId: IdSchema }), output: PagesJobSchema });
+var shareStatusRpc = defineRpc({ name: "board.release.share-status", input: external_exports.object({ boardId: IdSchema }), output: ShareStatusSchema });
+var shareUpdateRpc = defineRpc({ name: "board.release.share-update", input: ShareUpdateSchema, output: ShareUpdateResultSchema });
+var listPagesJobsRpc = defineRpc({ name: "board.pages.list", input: external_exports.object({ releaseId: ReleaseIdSchema.optional() }), output: external_exports.array(PagesJobSchema) });
+
+// server/live-projection.ts
+var owns2 = (object2, key2) => Object.prototype.hasOwnProperty.call(object2, key2);
+var isObject2 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+var MAX_DOCUMENT_DEPTH = 64;
+function sortLiveMarks(marks) {
+  return [...marks].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+}
+function resolve(data, path) {
+  let current = data;
+  for (const key2 of pointer(path)) {
+    if (!isObject2(current)) return { reason: "non-object-parent" };
+    if (!owns2(current, key2)) return { reason: "absent" };
+    current = current[key2];
+  }
+  return { value: current };
+}
+var holdsObject = (value) => Array.isArray(value) ? value.some(holdsObject) : !!value && typeof value === "object";
+var tooDeep = (value, depth) => !!value && typeof value === "object" && (depth > MAX_DOCUMENT_DEPTH || Object.values(value).some((item) => tooDeep(item, depth + 1)));
+function projectLive(data, marks) {
+  const values = {}, withheld = [], pathBytes = {};
+  for (const { path, subtree } of sortLiveMarks(marks)) {
+    const found = resolve(data, path);
+    if ("reason" in found) {
+      withheld.push({ path, reason: found.reason });
+      continue;
+    }
+    if (!subtree && holdsObject(found.value)) {
+      withheld.push({ path, reason: "object-without-subtree" });
+      continue;
+    }
+    values[path] = found.value;
+    pathBytes[path] = Buffer.byteLength(canonicalJson(found.value), "utf8");
+  }
+  const body = canonicalJson(values), bytes = Buffer.byteLength(body, "utf8");
+  const overLimit = bytes > LIVE_LIMITS.documentBytes || Object.values(values).some((value) => tooDeep(value, 2));
+  if (overLimit) return { bytes, overLimit, withheld, pathBytes };
+  return { body, digest: (0, import_node_crypto2.createHash)("sha256").update(body).digest("hex"), bytes, overLimit, withheld, pathBytes };
+}
+
 // server/board-events.ts
 function summarizeBoard(board) {
   const { id, title, projectId, workspaceId, ownerAgentId, revision, createdAt, updatedAt } = board;
@@ -29887,8 +30120,8 @@ var CustomElementRegistry = class {
     } : (element) => element.localName === localName;
     registry2.set(localName, { Class: Class2, check: check2 });
     if (waiting.has(localName)) {
-      for (const resolve2 of waiting.get(localName))
-        resolve2(Class2);
+      for (const resolve3 of waiting.get(localName))
+        resolve3(Class2);
       waiting.delete(localName);
     }
     ownerDocument.querySelectorAll(
@@ -29928,13 +30161,13 @@ var CustomElementRegistry = class {
    */
   whenDefined(localName) {
     const { registry: registry2, waiting } = this;
-    return new Promise((resolve2) => {
+    return new Promise((resolve3) => {
       if (registry2.has(localName))
-        resolve2(registry2.get(localName).Class);
+        resolve3(registry2.get(localName).Class);
       else {
         if (!waiting.has(localName))
           waiting.set(localName, []);
-        waiting.get(localName).push(resolve2);
+        waiting.get(localName).push(resolve3);
       }
     });
   }
@@ -37167,10 +37400,21 @@ var BoardStore = class {
     await this.init();
     return serialized(path, async () => (await readEnvelope(path, boardId))?.board ?? null);
   }
+  /** Public allow-list of one identified Board. A replaced Board projects nothing. */
+  async projectPublic(boardId, expectedCreatedAt, marks) {
+    const path = this.path(boardId);
+    await this.init();
+    return serialized(path, async () => {
+      const board = (await readEnvelope(path, boardId))?.board;
+      if (!board) return null;
+      const { createdAt, canvas: { revision: canvasRevision, data } } = board;
+      return { createdAt, canvasRevision, ...createdAt === expectedCreatedAt ? projectLive(data, marks) : { bytes: 0, overLimit: false, withheld: [], pathBytes: {} } };
+    });
+  }
   async create(raw) {
     const input2 = parseInput(CreateInputSchema, raw);
     assertJson(input2.data, "Canvas data");
-    const id = assertId(input2.id ?? (0, import_node_crypto2.randomUUID)());
+    const id = assertId(input2.id ?? (0, import_node_crypto3.randomUUID)());
     const payload = { ...input2, id };
     const digest = fingerprint("create", payload);
     const path = this.path(id);
@@ -37605,7 +37849,7 @@ var BoardStore = class {
 };
 
 // server/store-worker-protocol.ts
-var STORE_METHODS = ["read", "create", "publish", "respond", "emit", "feed", "rename", "edit", "recordDecision", "saveState", "markUpdatesSeen", "addInteraction", "updateInteraction", "projectSideAgent", "updateExtraction"];
+var STORE_METHODS = ["read", "create", "publish", "respond", "emit", "feed", "rename", "edit", "recordDecision", "saveState", "markUpdatesSeen", "addInteraction", "updateInteraction", "projectSideAgent", "updateExtraction", "projectPublic"];
 var COMPUTE_METHODS = ["buildRelease", "releaseZip", "materializeAuthoredHtml"];
 function isComputeMethod(method) {
   return typeof method === "string" && COMPUTE_METHODS.includes(method);
@@ -37617,164 +37861,7 @@ function boardPartition(id, count) {
 }
 
 // server/static-release.ts
-var import_node_crypto3 = require("node:crypto");
-
-// shared/release-contracts.ts
-var ReleaseIdSchema = external_exports.string().regex(/^release-[a-f0-9]{64}$/);
-var PublicApiOriginSchema = external_exports.string().max(2048).refine((value) => {
-  try {
-    const url2 = new URL(value);
-    const validHost = /^\[[a-f0-9:]+\]$/i.test(url2.hostname) || url2.hostname.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label));
-    return validHost && url2.origin === value && !url2.username && !url2.password && (url2.protocol === "https:" || url2.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url2.hostname));
-  } catch {
-    return false;
-  }
-}, "API \u5730\u5740\u5E94\u4E3A HTTPS \u6765\u6E90\uFF08\u4F8B\u5982 https://api.example.com\uFF09\uFF0C\u672C\u673A\u6D4B\u8BD5\u53EF\u7528 HTTP loopback\uFF1B\u4E0D\u542B\u8DEF\u5F84\u6216\u51ED\u636E");
-var PublicApiOriginsSchema = external_exports.array(PublicApiOriginSchema).max(8).refine((values) => new Set(values).size === values.length, "API \u6765\u6E90\u4E0D\u80FD\u91CD\u590D");
-var ReleaseManifestSchema = external_exports.object({
-  formatVersion: external_exports.literal(1),
-  releaseId: ReleaseIdSchema,
-  artifactHash: external_exports.string().regex(/^[a-f0-9]{64}$/),
-  title: external_exports.string(),
-  viewerVersion: external_exports.number().int(),
-  network: external_exports.enum(["offline", "cdn"]),
-  apiOrigins: PublicApiOriginsSchema.optional(),
-  dependencies: external_exports.array(external_exports.string()),
-  warnings: external_exports.array(external_exports.string()),
-  files: external_exports.array(external_exports.object({ path: external_exports.string(), sha256: external_exports.string(), bytes: external_exports.number().int().nonnegative() }))
-});
-var ReleaseCreateSchema = external_exports.object({
-  boardId: IdSchema,
-  expectedCanvasBase: CanvasBaseSchema,
-  publicData: JsonDataSchema,
-  title: external_exports.string().min(1).max(200).optional(),
-  network: external_exports.enum(["offline", "cdn"]).default("offline"),
-  theme: external_exports.enum(["light", "dark"]).default("light"),
-  apiOrigins: PublicApiOriginsSchema.default([])
-});
-var ReleaseSettingsSchema = external_exports.object({
-  title: external_exports.string(),
-  network: external_exports.enum(["offline", "cdn"]),
-  theme: external_exports.enum(["light", "dark"]),
-  apiOrigins: PublicApiOriginsSchema,
-  publicData: JsonDataSchema
-});
-var ReleaseSourceSchema = external_exports.object({
-  boardId: IdSchema,
-  boardCreatedAt: external_exports.string(),
-  canvasBase: CanvasBaseSchema,
-  documentVersion: external_exports.number().int().nonnegative(),
-  patchCount: external_exports.number().int().nonnegative()
-});
-var ReleaseMetaSchema = external_exports.object({
-  formatVersion: external_exports.literal(1),
-  releaseId: ReleaseIdSchema,
-  settings: ReleaseSettingsSchema,
-  source: ReleaseSourceSchema,
-  createdAt: external_exports.string()
-});
-var ShareKeySchema = external_exports.string().regex(/^(s[a-f0-9]{20}|[a-f0-9]{64})$/);
-var PagesRefusalCodeSchema = external_exports.enum(["series-busy", "newer-on-share", "share-foreign", "up-to-date", "share-files-mismatch"]);
-var GitHubHostSchema = external_exports.string().min(1).max(253).transform((value) => value.toLowerCase()).refine((value) => !/[^a-z0-9.-]/.test(value) && value.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)), "Invalid GitHub hostname");
-var GitHubLoginSchema = external_exports.string().min(1).max(100).regex(/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/).refine((value) => !/[^a-zA-Z0-9_.-]/.test(value), "Invalid GitHub login");
-var GitHubRepositoryNameSchema = external_exports.string().max(300).refine((value) => {
-  const parts = value.split("/");
-  return parts.length === 2 && parts.every((part) => part.length > 0 && part !== "." && part !== ".." && !/[^a-zA-Z0-9_.-]/.test(part));
-}, "Expected owner/repository without path traversal");
-var GitHubAccountSchema = external_exports.object({ login: GitHubLoginSchema, host: GitHubHostSchema, active: external_exports.boolean() });
-var GitHubRepositorySchema = external_exports.object({ name: external_exports.string(), private: external_exports.boolean(), url: external_exports.string() });
-var PagesPrepareSchema = external_exports.object({
-  eventId: IdSchema,
-  releaseId: ReleaseIdSchema,
-  artifactHash: external_exports.string().regex(/^[a-f0-9]{64}$/),
-  githubHost: GitHubHostSchema.optional(),
-  account: GitHubLoginSchema,
-  repository: GitHubRepositoryNameSchema,
-  createRepository: external_exports.enum(["public", "private"]).optional(),
-  shareKey: ShareKeySchema.optional()
-});
-var PagesJobSchema = PagesPrepareSchema.extend({
-  jobId: IdSchema,
-  status: external_exports.enum(["prepared", "pr-open", "merged", "deploying", "live", "failed", "unknown"]),
-  branch: external_exports.string(),
-  baseBranch: external_exports.string().optional(),
-  baseSha: external_exports.string().optional(),
-  headSha: external_exports.string().optional(),
-  prNumber: external_exports.number().int().optional(),
-  prUrl: external_exports.string().optional(),
-  mergedSha: external_exports.string().optional(),
-  deploymentId: external_exports.string().optional(),
-  url: external_exports.string().optional(),
-  deployedUrl: external_exports.string().optional(),
-  verifiedAt: external_exports.string().optional(),
-  error: external_exports.string().optional(),
-  treeSha: external_exports.string().optional(),
-  createdAt: external_exports.string().optional(),
-  pagesConfigured: external_exports.boolean().optional(),
-  pagesConfigurationRequested: external_exports.boolean().optional(),
-  pagesConfigurationHash: external_exports.string().optional(),
-  publicationMode: external_exports.enum(["workflow", "legacy-subdirectory", "legacy-branch"]).optional(),
-  // Legacy jobs: boards/<releaseHex>. Series jobs: the version archive boards/<key>/v/<releaseHex>.
-  sitePath: external_exports.string().regex(/^boards\/(?:[a-f0-9]{64}|(?:s[a-f0-9]{20}|[a-f0-9]{64})\/v\/[a-f0-9]{64})$/).optional(),
-  sourcePath: external_exports.enum(["/", "/docs"]).optional(),
-  autoPublish: external_exports.boolean().optional(),
-  autoPublishUntil: external_exports.string().datetime().optional(),
-  // Stable share directory relative to the source root (absent = Pages root in workflow mode).
-  sharePath: external_exports.string().regex(/^boards\/(?:s[a-f0-9]{20}|[a-f0-9]{64})$/).optional(),
-  shareDeployedUrl: external_exports.string().optional(),
-  shareUrl: external_exports.string().optional(),
-  adoptedFrom: IdSchema.optional(),
-  refusal: external_exports.object({ code: PagesRefusalCodeSchema, message: external_exports.string() }).optional()
-});
-var ShareSourceSchema = external_exports.object({ canvasBase: CanvasBaseSchema, documentVersion: external_exports.number().int().nonnegative(), patchCount: external_exports.number().int().nonnegative().optional() });
-var ShareSchema = external_exports.object({
-  seriesId: IdSchema,
-  githubHost: GitHubHostSchema,
-  account: GitHubLoginSchema,
-  repository: GitHubRepositoryNameSchema,
-  shareKey: ShareKeySchema.optional(),
-  adoptable: external_exports.boolean(),
-  link: external_exports.string().optional(),
-  verified: external_exports.boolean(),
-  state: external_exports.enum(["up-to-date", "changed", "legacy", "updating", "merged-unverified", "failed"]),
-  releaseId: ReleaseIdSchema,
-  title: external_exports.string(),
-  publishedJobId: IdSchema,
-  settingsAvailable: external_exports.boolean(),
-  source: ShareSourceSchema,
-  inFlightJobId: IdSchema.optional(),
-  // Branch-directory shares keep older versions online under <link>v/<hex>/; workflow (Pages root) shares do not.
-  archivesOnline: external_exports.boolean().optional(),
-  // Summary of the stored settings an update inherits; public data is reported only by size.
-  settings: external_exports.object({ network: external_exports.enum(["offline", "cdn"]), theme: external_exports.enum(["light", "dark"]), apiOrigins: PublicApiOriginsSchema, publicDataBytes: external_exports.number().int().nonnegative() }).optional()
-});
-var ShareStatusSchema = external_exports.object({
-  current: ShareSourceSchema.required(),
-  shares: external_exports.array(ShareSchema)
-});
-var ShareUpdateSchema = external_exports.object({
-  boardId: IdSchema,
-  seriesId: IdSchema,
-  expectedSource: external_exports.object({ documentVersion: external_exports.number().int().nonnegative(), patchCount: external_exports.number().int().nonnegative() })
-});
-var ShareUpdateResultSchema = external_exports.union([
-  external_exports.object({ upToDate: external_exports.literal(true) }),
-  external_exports.object({ manifest: ReleaseManifestSchema, request: PagesPrepareSchema.omit({ eventId: true, createRepository: true }) })
-]);
-var releaseInput = external_exports.object({ releaseId: ReleaseIdSchema });
-var createReleaseRpc = defineRpc({ name: "board.release.create", input: ReleaseCreateSchema, output: ReleaseManifestSchema });
-var listReleasesRpc = defineRpc({ name: "board.release.list", input: external_exports.object({ boardId: IdSchema }), output: external_exports.array(ReleaseManifestSchema) });
-var previewReleaseRpc = defineRpc({ name: "board.release.preview", input: releaseInput, output: external_exports.object({ manifest: ReleaseManifestSchema, html: external_exports.string() }) });
-var downloadReleaseRpc = defineRpc({ name: "board.release.download", input: releaseInput, output: external_exports.object({ manifest: ReleaseManifestSchema, fileName: external_exports.string(), zipBase64: external_exports.string() }) });
-var githubAccountsRpc = defineRpc({ name: "board.pages.accounts", input: external_exports.object({ githubHost: GitHubHostSchema.optional() }), output: external_exports.array(GitHubAccountSchema) });
-var githubRepositoriesRpc = defineRpc({ name: "board.pages.repositories", input: external_exports.object({ account: GitHubLoginSchema, githubHost: GitHubHostSchema.optional() }), output: external_exports.array(GitHubRepositorySchema) });
-var preparePagesRpc = defineRpc({ name: "board.pages.prepare", input: PagesPrepareSchema, output: PagesJobSchema });
-var publishPagesRpc = defineRpc({ name: "board.pages.publish", input: PagesPrepareSchema, output: PagesJobSchema });
-var mergePagesRpc = defineRpc({ name: "board.pages.merge", input: external_exports.object({ jobId: IdSchema, expectedHead: external_exports.string().regex(/^[a-f0-9]{40}$/) }), output: PagesJobSchema });
-var refreshPagesRpc = defineRpc({ name: "board.pages.refresh", input: external_exports.object({ jobId: IdSchema }), output: PagesJobSchema });
-var shareStatusRpc = defineRpc({ name: "board.release.share-status", input: external_exports.object({ boardId: IdSchema }), output: ShareStatusSchema });
-var shareUpdateRpc = defineRpc({ name: "board.release.share-update", input: ShareUpdateSchema, output: ShareUpdateResultSchema });
-var listPagesJobsRpc = defineRpc({ name: "board.pages.list", input: external_exports.object({ releaseId: ReleaseIdSchema.optional() }), output: external_exports.array(PagesJobSchema) });
+var import_node_crypto4 = require("node:crypto");
 
 // shared/assets/component-layout-state.txt
 var component_layout_state_default = `function (api, documentVersion) {
@@ -39236,7 +39323,7 @@ var publication_license_default = `
 var MAX_RELEASE_BYTES = 8 * 1024 * 1024;
 var CDNS = ["https://unpkg.com", "https://cdn.jsdelivr.net", "https://esm.sh", "https://cdnjs.cloudflare.com"];
 var NOTICE = "Paseo Board public viewer\nCopyright 2026 Shurui Gui\n\nThe default stylesheet and optional icon/tooltip helpers are derived from OpenAI Codex rust-v0.146.0, Copyright 2025 OpenAI, under Apache-2.0; see LICENSE-APACHE-2.0.\nOptional helpers load lucide (ISC) and Floating UI (MIT) from unpkg.com. Those third-party packages are not included in this archive.\nAuthored page content retains its original authors' rights.\n";
-var sha256 = (value) => (0, import_node_crypto3.createHash)("sha256").update(value).digest("hex");
+var sha256 = (value) => (0, import_node_crypto4.createHash)("sha256").update(value).digest("hex");
 var scriptJson = (value) => canonicalJson(value).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 var escapeHtml = (value) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 var fileInventory = (files) => Object.keys(files).sort().map((path) => ({ path, sha256: sha256(files[path]), bytes: Buffer.byteLength(files[path]) }));

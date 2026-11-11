@@ -6484,6 +6484,35 @@ var PublicApiOriginSchema = z3.string().max(2048).refine(value => {
   }
 }, "API \u5730\u5740\u5E94\u4E3A HTTPS \u6765\u6E90\uFF08\u4F8B\u5982 https://api.example.com\uFF09\uFF0C\u672C\u673A\u6D4B\u8BD5\u53EF\u7528 HTTP loopback\uFF1B\u4E0D\u542B\u8DEF\u5F84\u6216\u51ED\u636E");
 var PublicApiOriginsSchema = z3.array(PublicApiOriginSchema).max(8).refine(values => new Set(values).size === values.length, "API \u6765\u6E90\u4E0D\u80FD\u91CD\u590D");
+var LIVE_LIMITS = {
+  paths: 32,
+  documentBytes: 6e4
+};
+var LiveChannelIdSchema = z3.string().regex(/^c[a-f0-9]{32}$/);
+var unsafeLiveSegments = /* @__PURE__ */new Set(["__proto__", "prototype", "constructor"]);
+var livePathSegments = path => path.slice(1).split("/").map(part => part.replace(/~[01]/g, escape => escape === "~0" ? "~" : "/"));
+var LivePathSchema = z3.string().max(500).refine(path => {
+  if (!path.startsWith("/") || /~(?:[^01]|$)/.test(path)) return false;
+  var parts = livePathSegments(path);
+  return parts.length <= 64 && !parts.some(part => unsafeLiveSegments.has(part));
+}, "\u516C\u5F00\u8DEF\u5F84\u5E94\u4E3A\u975E\u6839 JSON Pointer\uFF0C\u4E0D\u80FD\u542B\u5371\u9669\u952E\uFF0C\u6700\u591A 500 \u5B57\u7B26\u300164 \u5C42");
+var livePathsDisjoint = paths => {
+  if (paths.length > LIVE_LIMITS.paths) return false;
+  var decoded = paths.map(livePathSegments);
+  return decoded.every((parts, index) => decoded.every((other, at) => at <= index || !parts.slice(0, Math.min(parts.length, other.length)).every((part, position2) => part === other[position2])));
+};
+var LiveStateSchema = z3.enum(["off", "pending", "syncing", "live", "retrying", "paused", "too-large", "blocked", "revoking", "revoked"]);
+var LiveReleaseSchema = z3.object({
+  origin: PublicApiOriginSchema,
+  channelId: LiveChannelIdSchema,
+  paths: z3.array(LivePathSchema).min(1).max(LIVE_LIMITS.paths).refine(paths => livePathsDisjoint(paths) && paths.every((path, index) => index === 0 || paths[index - 1] < path), "\u5B9E\u65F6\u8DEF\u5F84\u5FC5\u987B\u6392\u5E8F\u3001\u552F\u4E00\u4E14\u4E92\u4E0D\u5305\u542B")
+}).strict();
+var LiveDriftSchema = z3.object({
+  addedPaths: z3.array(z3.string()),
+  removedPaths: z3.array(z3.string()),
+  originChanged: z3.boolean(),
+  channelState: z3.union([LiveStateSchema, z3.literal("none")])
+}).strict();
 var ReleaseManifestSchema = z3.object({
   formatVersion: z3.literal(1),
   releaseId: ReleaseIdSchema,
@@ -6492,6 +6521,7 @@ var ReleaseManifestSchema = z3.object({
   viewerVersion: z3.number().int(),
   network: z3.enum(["offline", "cdn"]),
   apiOrigins: PublicApiOriginsSchema.optional(),
+  live: LiveReleaseSchema.optional(),
   dependencies: z3.array(z3.string()),
   warnings: z3.array(z3.string()),
   files: z3.array(z3.object({
@@ -6500,21 +6530,35 @@ var ReleaseManifestSchema = z3.object({
     bytes: z3.number().int().nonnegative()
   }))
 });
-var ReleaseCreateSchema = z3.object({
+var ReleaseCreateBaseSchema = z3.object({
   boardId: IdSchema,
   expectedCanvasBase: CanvasBaseSchema,
   publicData: JsonDataSchema,
   title: z3.string().min(1).max(200).optional(),
   network: z3.enum(["offline", "cdn"]).default("offline"),
   theme: z3.enum(["light", "dark"]).default("light"),
-  apiOrigins: PublicApiOriginsSchema.default([])
+  apiOrigins: PublicApiOriginsSchema.default([]),
+  live: LiveReleaseSchema.optional()
+});
+var ReleaseCreateRpcSchema = ReleaseCreateBaseSchema.omit({
+  live: true
+}).extend({
+  liveData: z3.boolean().optional()
+});
+var ReleaseCreateSchema = ReleaseCreateBaseSchema.superRefine((value, context) => {
+  if (value.live && !value.apiOrigins.includes(value.live.origin)) context.addIssue({
+    code: "custom",
+    path: ["live", "origin"],
+    message: "\u5B9E\u65F6\u6570\u636E\u6765\u6E90\u5FC5\u987B\u5305\u542B\u5728 apiOrigins \u4E2D"
+  });
 });
 var ReleaseSettingsSchema = z3.object({
   title: z3.string(),
   network: z3.enum(["offline", "cdn"]),
   theme: z3.enum(["light", "dark"]),
   apiOrigins: PublicApiOriginsSchema,
-  publicData: JsonDataSchema
+  publicData: JsonDataSchema,
+  live: LiveReleaseSchema.optional()
 });
 var ReleaseSourceSchema = z3.object({
   boardId: IdSchema,
@@ -6622,7 +6666,11 @@ var ShareSchema = z3.object({
     network: z3.enum(["offline", "cdn"]),
     theme: z3.enum(["light", "dark"]),
     apiOrigins: PublicApiOriginsSchema,
-    publicDataBytes: z3.number().int().nonnegative()
+    publicDataBytes: z3.number().int().nonnegative(),
+    live: z3.object({
+      origin: PublicApiOriginSchema,
+      paths: z3.array(z3.string())
+    }).optional()
   }).optional()
 });
 var ShareStatusSchema = z3.object({
@@ -6635,23 +6683,26 @@ var ShareUpdateSchema = z3.object({
   expectedSource: z3.object({
     documentVersion: z3.number().int().nonnegative(),
     patchCount: z3.number().int().nonnegative()
-  })
+  }),
+  liveMode: z3.enum(["keep", "current"]).default("keep")
 });
 var ShareUpdateResultSchema = z3.union([z3.object({
-  upToDate: z3.literal(true)
+  upToDate: z3.literal(true),
+  liveDrift: LiveDriftSchema.optional()
 }), z3.object({
   manifest: ReleaseManifestSchema,
   request: PagesPrepareSchema.omit({
     eventId: true,
     createRepository: true
-  })
+  }),
+  liveDrift: LiveDriftSchema.optional()
 })]);
 var releaseInput = z3.object({
   releaseId: ReleaseIdSchema
 });
 var createReleaseRpc = defineRpc3({
   name: "board.release.create",
-  input: ReleaseCreateSchema,
+  input: ReleaseCreateRpcSchema,
   output: ReleaseManifestSchema
 });
 var listReleasesRpc = defineRpc3({

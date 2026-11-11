@@ -78,6 +78,12 @@ describe("bounded Board worker processes", () => {
     expect(store.diagnostics().map(slot => slot.pid)).toEqual(pids);
   });
 
+  it("treats a worker death during a public projection as retryable, because it writes nothing", async () => {
+    const store = pool({ workers: 1, workerSource: interceptCalls("if (message?.method === 'projectPublic') process.exit(1)") });
+    const board = await create(store, "projected");
+    await expect(store.projectPublic(board.id, board.createdAt, [{ path: "/a", subtree: false }])).rejects.toMatchObject({ code: "worker_unavailable" });
+  });
+
   it("builds publication snapshots, materializes copies and generates identical ZIP bytes through the existing real workers", async () => {
     const store = pool({ workers: 2, workerSource: await compileCurrentWorker() });
     let board = await store.create({ id: "publication", title: "Public page", html: '<main><h1 id="title">Old text</h1></main>', data: { secret: "Private data" } });
