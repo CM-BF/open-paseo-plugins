@@ -214,6 +214,11 @@ const fixture: any = global.hostFixture = {
   },
   commitPending: (id = [...pending.keys()][0]) => fixture.accept(id, "delivered", false),
   reject: (id = [...pending.keys()][0]) => { const item = pending.get(id); if (!item) throw new Error(`No pending ${id}`); pending.delete(id); item.reject(new Error("Fixture delivery unavailable")); },
+  // Mirrors the service: a Side that failed before creation has no agent and releases its reservation.
+  failCreation: (id: string, error: string, previousSide?: string) => {
+    persisted.interactions = persisted.interactions.map(item => item.id === id ? { ...item, status: "failed" as const, error, agentId: undefined, updatedAt: now() } : item);
+    persisted.sideAgentId = previousSide; delete persisted.pendingSideInteractionId; advance();
+  },
   updateInteraction: (id: string, patch: Partial<Interaction>) => { persisted.interactions = persisted.interactions.map(item => item.id === id ? { ...item, ...copy(patch), updatedAt: now() } : item); advance(); },
   setCanvasData: (data: Board["canvas"]["data"]) => { persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, data }; advance(); },
   updateCanvas: () => { persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, data: { ...persisted.canvas.data, next: true } }; advance(); },

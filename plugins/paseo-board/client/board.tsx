@@ -378,6 +378,13 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
     const draft: Compose = { kind: item.kind, text: item.text, intentId: item.id, expectedCreatedAt: item.expectedCreatedAt, destination: item.destination, sideContext: item.sideContext, anchor: item.anchor, sourceInteractionId: item.sourceInteractionId };
     changeCompose(draft); setMessage(null);
   };
+  // A Side that failed before creation has no agent to continue with: start a new send with the same words and location.
+  const resendFailed = (item: Interaction) => {
+    if (pending.current || composeRef.current || item.comments) return;
+    const draft: Compose = { kind: "question", text: item.text, anchor: item.anchor };
+    setSelectedInteractionId(undefined); setPopoverPoint(anchorPoint(draft.anchor)); setMessage(null);
+    changeCompose(draft, anchorPoint(draft.anchor)); setInputFocusToken(value => value + 1);
+  };
   const submit = async (destination: Destination = "main") => {
     const draft = composeRef.current;
     if (!draft?.text.trim() || pending.current || sideChoicePending.current || !board?.ownerAgentId) return;
@@ -588,7 +595,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
         <View style={{ flexDirection: "row", alignItems: "center", padding: 8, gap: 8, borderBottomWidth: 1, borderColor: c.border }}><Text style={{ color: c.foreground, fontWeight: "600", flex: 1 }}>{compose ? "发给 agent" : "这里的讨论"}</Text>{compose ? <Action testID="board-draft-dismiss" label="收起" disabled={sending} onPress={closePopover} /> : !canRenderFrames ? <Action label="关闭" disabled={sending} onPress={closePopover} /> : null}</View>
         <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ padding: 12, gap: 16 }} keyboardShouldPersistTaps="handled">
           {interactionLocation && interactionLocation.id === selectedInteractionId && interactionLocation.location !== "component" ? <Copy small muted>{({ collapsed: "组件当前不可见 · 标记跟随可见外层", ancestor: "原内容不可见 · 标记暂随可见外层", hidden: "组件当前隐藏 · 可从侧栏请求定位", snapshot: "未定位到当前组件 · 可查看原始引用" })[interactionLocation.location]}</Copy> : null}
-          {thread.map(item => <InteractionContent key={item.id} item={item} board={board} frameTheme={frameTheme} unconfirmed={!board.interactions.some(saved => saved.id === item.id)} onLocate={id => locateInteraction(interactionMarkerId(item.id, id))} onRetry={() => retryUnconfirmed(item)} onFollow={(kind, text, resolve) => openCompose(kind, item, text, resolve)} onOpenAgent={() => { if (item.agentId && navigation) navigation.openAgent({ agentId: item.agentId, serverId: host.id }); }} />)}
+          {thread.map(item => <InteractionContent key={item.id} item={item} board={board} frameTheme={frameTheme} unconfirmed={!board.interactions.some(saved => saved.id === item.id)} onLocate={id => locateInteraction(interactionMarkerId(item.id, id))} onRetry={() => retryUnconfirmed(item)} onResend={() => resendFailed(item)} onFollow={(kind, text, resolve) => openCompose(kind, item, text, resolve)} onOpenAgent={() => { if (item.agentId && navigation) navigation.openAgent({ agentId: item.agentId, serverId: host.id }); }} />)}
           {compose ? <View style={{ gap: 10 }}>
             {!thread.length ? <AnchorPreview anchor={compose.anchor} compact captureStatus={compose.captureStatus} /> : null}
             {compose.captureStatus ? <View style={{ minHeight: 36 }}><Copy small muted>{compose.captureStatus === "pending" ? "截图准备中；现在发送会保留文字和位置，不附图片。" : compose.captureStatus === "failed" ? `截图失败：${captureFailureNames[compose.captureFailureReason ?? "generation-failed"]}文字和位置已保留。` : compose.captureStatus === "omitted" ? "此次发送不附图片，保留原来的文字和位置。" : "已附选区截图。"}</Copy></View> : null}
@@ -705,9 +712,9 @@ Option / Alt + Enter 当前评论发 Side · Option / Alt + Shift + Enter 新 Si
   </View>;
 }
 
-function InteractionContent({ item, board, frameTheme, onFollow, onOpenAgent, unconfirmed, onRetry, onLocate }: {
+function InteractionContent({ item, board, frameTheme, onFollow, onOpenAgent, unconfirmed, onRetry, onResend, onLocate }: {
   item: Interaction; board: Board; frameTheme: FrameTheme;
-  onFollow(kind: Compose["kind"], text?: string, resolve?: Compose["resolve"]): void; onOpenAgent(): void; unconfirmed: boolean; onRetry(): void; onLocate(commentId: string): void;
+  onFollow(kind: Compose["kind"], text?: string, resolve?: Compose["resolve"]): void; onOpenAgent(): void; unconfirmed: boolean; onRetry(): void; onResend(): void; onLocate(commentId: string): void;
 }) {
   const c = useColors();
   const discussion = item.kind === "fork" || item.kind === "reply";
@@ -739,6 +746,7 @@ function InteractionContent({ item, board, frameTheme, onFollow, onOpenAgent, un
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
       {item.anchor || item.comments?.some(comment => comment.anchor) ? <Action label={showSnapshot ? "收起原始引用" : "原始引用"} onPress={() => setShowSnapshot(value => !value)} /> : null}
       {unconfirmed && item.status === "failed" ? <Action label="重试发送" onPress={onRetry} /> : null}
+      {!unconfirmed && item.kind === "fork" && item.status === "failed" && !item.agentId && !item.comments ? <Action testID={`board-resend-${item.id}`} label="重新编辑发送" onPress={onResend} /> : null}
       {!unconfirmed && (!discussion || item.agentId) ? <Action label="继续交流" onPress={() => follow()} /> : null}
       {item.agentId ? <Action label="会话" onPress={onOpenAgent} /> : null}
     </View>

@@ -181,6 +181,26 @@ export async function runSideContextChecks({ assert, command, evaluate, until, f
   await closePopover();
   check('canvas board.ask with kind fork opens the composer with the visible choice, and the hotkey creates the Side with owner history');
 
+  // A history Side that failed before creation offers a fresh send with the same words and location.
+  const sideBeforeFailure = await evaluate('hostFixture.board().sideAgentId');
+  await openAt(760, 420); await sendText('History Side that fails before creation'); await key('Enter', 'Enter', 9);
+  const failedFork = await pendingIntent();
+  await evaluate('hostFixture.accept()'); await untilMarker(failedFork, 'delivered');
+  await evaluate(`hostFixture.failCreation(${JSON.stringify(failedFork)},'读取主 agent 记录失败：timeline unavailable。没有创建 Side，也没有改成空白 Side；请重新发送（可在输入框改选「空白 Side」）。',${JSON.stringify(sideBeforeFailure)})`);
+  await until(`document.querySelector('[data-testid="board-side-provenance-${failedFork}"]')?.textContent==='带主 agent 记录 · 未建立（没有创建 Side）'`);
+  assert.ok((await text(popover)).includes('没有改成空白 Side'));
+  await hostClick(`[data-testid="board-resend-${failedFork}"]`);
+  await until(`document.querySelector(${JSON.stringify(input)})?.value==='History Side that fails before creation'`);
+  await until(`document.activeElement===document.querySelector(${JSON.stringify(input)})`);
+  assert.equal(await checked(history), 'true');
+  await key('Enter', 'Enter', 9);
+  const resent = await pendingIntent();
+  const resentCall = await lastCall();
+  assert.notEqual(resent, failedFork); assert.equal(resentCall.destination, 'new-side'); assert.equal(resentCall.sideContext, 'owner-history'); assert.equal(resentCall.text, 'History Side that fails before creation');
+  await evaluate('hostFixture.accept()'); await untilMarker(resent, 'delivered');
+  await closePopover();
+  check('a history Side that failed before creation says so in its header, keeps no blank fallback, and 重新编辑发送 starts a fresh send with the same words and the visible choice');
+
   // The choice is a per-Board local preference that survives a reload; blank removes it.
   assert.deepEqual(JSON.parse(await evaluate(`localStorage.getItem(${JSON.stringify(prefKey)})`)), { v: 1, choice: 'owner-history' });
   await fresh();

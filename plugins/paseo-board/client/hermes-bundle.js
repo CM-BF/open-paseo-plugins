@@ -13120,6 +13120,19 @@ function BoardContent({
     changeCompose(draft);
     setMessage(null);
   };
+  var resendFailed = item => {
+    if (pending.current || composeRef.current || item.comments) return;
+    var draft = {
+      kind: "question",
+      text: item.text,
+      anchor: item.anchor
+    };
+    setSelectedInteractionId(void 0);
+    setPopoverPoint(anchorPoint(draft.anchor));
+    setMessage(null);
+    changeCompose(draft, anchorPoint(draft.anchor));
+    setInputFocusToken(value => value + 1);
+  };
   var submit = (destination = "main") => __async(null, null, function* () {
     var draft = composeRef.current;
     if (!draft?.text.trim() || pending.current || sideChoicePending.current || !board?.ownerAgentId) return;
@@ -13828,6 +13841,7 @@ function BoardContent({
               unconfirmed: !board.interactions.some(saved => saved.id === item.id),
               onLocate: id2 => locateInteraction(interactionMarkerId(item.id, id2)),
               onRetry: () => retryUnconfirmed(item),
+              onResend: () => resendFailed(item),
               onFollow: (kind, text, resolve) => openCompose(kind, item, text, resolve),
               onOpenAgent: () => {
                 if (item.agentId && navigation) navigation.openAgent({
@@ -14429,6 +14443,7 @@ function InteractionContent({
   onOpenAgent,
   unconfirmed,
   onRetry,
+  onResend,
   onLocate
 }) {
   var c = useColors();
@@ -14536,6 +14551,10 @@ function InteractionContent({
       }) : null, unconfirmed && item.status === "failed" ? /* @__PURE__ */jsx19(Action, {
         label: "\u91CD\u8BD5\u53D1\u9001",
         onPress: onRetry
+      }) : null, !unconfirmed && item.kind === "fork" && item.status === "failed" && !item.agentId && !item.comments ? /* @__PURE__ */jsx19(Action, {
+        testID: `board-resend-${item.id}`,
+        label: "\u91CD\u65B0\u7F16\u8F91\u53D1\u9001",
+        onPress: onResend
       }) : null, !unconfirmed && (!discussion || item.agentId) ? /* @__PURE__ */jsx19(Action, {
         label: "\u7EE7\u7EED\u4EA4\u6D41",
         onPress: () => follow()
