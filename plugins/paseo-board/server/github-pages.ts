@@ -351,13 +351,18 @@ export class GitHubPagesManager {
   async repositories(account: string, githubHost = "github.com"): Promise<GitHubRepository[]> {
     GitHubHostSchema.parse(githubHost);
     if (!validLogin(account)) throw new PublicationValidationError("Invalid GitHub account");
-    const result: GitHubRepository[] = [];
-    for (let page = 1; page <= 5; page++) {
-      const repositories = await this.transport.request<RepositoryInfo[]>(account, "GET", `/user/repos?per_page=100&page=${page}&sort=updated`, undefined, githubHost);
-      result.push(...repositories.filter(repo => repo.permissions?.push).map(repo => ({ name: repo.full_name, private: repo.private, url: repo.html_url })));
-      if (repositories.length < 100) break;
-    }
-    return result;
+    // The account's own repositories come first: an enterprise login can reach thousands of organization repositories.
+    const found = new Map<string, GitHubRepository>(), own = `${account.toLowerCase()}/`;
+    const collect = async (affiliation: string, pages: number) => {
+      for (let page = 1; page <= pages; page++) {
+        const repositories = await this.transport.request<RepositoryInfo[]>(account, "GET", `/user/repos?per_page=100&page=${page}&sort=updated&affiliation=${affiliation}`, undefined, githubHost);
+        for (const repo of repositories) if (repo.permissions?.push && !found.has(repo.full_name.toLowerCase())) found.set(repo.full_name.toLowerCase(), { name: repo.full_name, private: repo.private, url: repo.html_url, ...(repo.full_name.toLowerCase().startsWith(own) ? { personal: true } : {}) });
+        if (repositories.length < 100) break;
+      }
+    };
+    await collect("owner", 10);
+    await collect("collaborator,organization_member", 5);
+    return [...found.values()];
   }
   private exclusive<T>(id: string, action: () => Promise<T>): Promise<T> {
     const key = `${resolve(this.root)}:${id}`, previous = pending.get(key) ?? Promise.resolve();

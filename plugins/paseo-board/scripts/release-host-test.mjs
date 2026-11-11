@@ -45,7 +45,7 @@ const rpc=async(name,input,board)=>{
   if(name==='board.release.download')return repository.download(input.releaseId);
   if(name==='board.release.share-status'||name==='board.release.share-update')return shareHandlers.get(name)(input);
   if(name==='board.pages.accounts')return configuredAccounts.filter(account=>!input.githubHost||account.host===input.githubHost);
-  if(name==='board.pages.repositories')return [{name:input.account+'/site',private:false,url:'https://'+(input.githubHost??'github.com')+'/'+input.account+'/site'},{name:input.account+'/private-site',private:true,url:'https://'+(input.githubHost??'github.com')+'/'+input.account+'/private-site'}];
+  if(name==='board.pages.repositories')return [{name:input.account+'/site',private:false,personal:true,url:'https://'+(input.githubHost??'github.com')+'/'+input.account+'/site'},{name:input.account+'/private-site',private:true,url:'https://'+(input.githubHost??'github.com')+'/'+input.account+'/private-site'}];
   if(name==='board.pages.list')return [...jobs.values()].filter(j=>!input.releaseId||j.releaseId===input.releaseId);
   if(name==='board.pages.publish'){
     if(publishMode==='lost-before-job'){publishMode='accept';throw new Error('Fixture connection lost before any readable job')}
@@ -227,7 +227,14 @@ try {
   await click(button('读取 GitHub 账号'));
   await until(`document.querySelector(${JSON.stringify(button('fixture-alice · github.com'))})&&document.querySelector(${JSON.stringify(button('fixture-alice · '+enterpriseHost))})&&!document.querySelector(${JSON.stringify(button('读取 GitHub 账号'))}).disabled`);
   assert.equal(await evaluate(`Boolean(document.querySelector(${JSON.stringify(button('fixture-alice · github.com'))})&&document.querySelector(${JSON.stringify(button('fixture-alice · '+enterpriseHost))}))`),true);
-  await click(button('fixture-alice · github.com'));await click(button('fixture-alice/site'));
+  await click(button('fixture-alice · github.com'));
+  await until(`document.querySelector(${JSON.stringify(button('fixture-alice/site'))})&&document.body.textContent.includes('我的仓库（fixture-alice）')`);
+  await replace('input[aria-label="GitHub 仓库 owner/repo"]','PRIVATE');
+  await until(`!document.querySelector(${JSON.stringify(button('fixture-alice/site'))})&&document.querySelector(${JSON.stringify(button('fixture-alice/private-site · 私有仓库'))})`);
+  await replace('input[aria-label="GitHub 仓库 owner/repo"]','fixture-alice/site');
+  await until(`document.querySelector(${JSON.stringify(button('fixture-alice/private-site · 私有仓库'))})&&document.querySelector(${JSON.stringify(button('fixture-alice/site'))})`);
+  check('The account\'s own repositories are grouped first, typing filters the list, and an exact name keeps every option');
+  await click(button('fixture-alice/site'));
   assert.deepEqual(calls.find(c=>c.name==='board.pages.repositories').input,{account:'fixture-alice',githubHost:'github.com'});
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(button('一键发布'))}).disabled`),true);
   await click(button('一键发布'));assert.equal(count('board.pages.publish'),0);

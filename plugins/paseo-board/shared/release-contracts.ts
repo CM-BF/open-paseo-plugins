@@ -97,7 +97,7 @@ export const GitHubRepositoryNameSchema = z.string().max(300).refine(value => {
   return parts.length === 2 && parts.every(part => part.length > 0 && part !== "." && part !== ".." && !/[^a-zA-Z0-9_.-]/.test(part));
 }, "Expected owner/repository without path traversal");
 export const GitHubAccountSchema = z.object({ login: GitHubLoginSchema, host: GitHubHostSchema, active: z.boolean() });
-export const GitHubRepositorySchema = z.object({ name: z.string(), private: z.boolean(), url: z.string() });
+export const GitHubRepositorySchema = z.object({ name: z.string(), private: z.boolean(), url: z.string(), personal: z.boolean().optional() });
 export const PagesPrepareSchema = z.object({
   eventId: IdSchema, releaseId: ReleaseIdSchema, artifactHash: z.string().regex(/^[a-f0-9]{64}$/),
   githubHost: GitHubHostSchema.optional(),

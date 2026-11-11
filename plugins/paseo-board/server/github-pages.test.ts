@@ -12,6 +12,7 @@ type Pr = { number: number; html_url: string; state: string; merged: boolean; me
 class FakeGitHub implements GitHubTransport {
   calls: Array<{ account: string; method: string; path: string; body?: unknown; githubHost?: string }> = [];
   base = "a".repeat(40); exists = true; private = false;
+  repoListing?: Array<{ full_name: string; private: boolean; html_url: string; permissions: { push: boolean }; affiliation: string }>;
   branches = new Map([["main", this.base]]); trees = new Map<string, Record<string, string>>([["base-tree", { "README.md": "Unrelated repository file" }]]);
   commits = new Map([[this.base, "base-tree"]]); parents = new Map<string, string[]>([[this.base, []]]); prs: Pr[] = [];
   pages: { html_url: string; build_type: string; cname?: string; source?: {branch: string; path: string} } | undefined;
@@ -30,6 +31,11 @@ class FakeGitHub implements GitHubTransport {
     this.calls.push({ account, method, path, body, githubHost }); const url = new URL(path, "https://api.github.com"), p = url.pathname;
     const payload = body as Record<string, unknown>;
     const output = (value: unknown) => structuredClone(value) as T;
+    if (p === "/user/repos" && method === "GET" && this.repoListing) {
+      const query = new URLSearchParams(path.split("?")[1] ?? ""), affiliation = query.get("affiliation")?.split(",") ?? ["owner", "collaborator", "organization_member"];
+      const page = Number(query.get("page") ?? 1), perPage = Number(query.get("per_page") ?? 30);
+      return output(this.repoListing.filter(repo => affiliation.includes(repo.affiliation)).slice((page - 1) * perPage, page * perPage).map(({ affiliation: _, ...repo }) => repo) as never);
+    }
     if (p === "/user/repos" && method === "GET") return output([{ full_name: "writer/site", private: this.private, html_url: "https://github.com/writer/site", permissions: { push: true } }, { full_name: "reader/readonly", private: false, html_url: "https://github.com/reader/readonly", permissions: { push: false } }]);
     if (p === "/user/repos" && method === "POST") { this.exists = true; this.private = payload.private === true; this.after(p); return output({ full_name: "writer/site", private: this.private, default_branch: "main", permissions: { push: true } }); }
     if (p === "/repos/writer/site") { if (!this.exists) throw new GitHubApiError(404); return output({ full_name: "writer/site", private: this.private, default_branch: "main", permissions: { push: true } }); }
@@ -128,8 +134,23 @@ describe("resumable GitHub Pages publication", () => {
   });
   it("lists selected identities and writable repositories without switching accounts", async () => {
     expect(await manager.accounts()).toEqual([{ login: "writer", host: "github.com", active: true }]);
-    expect(await manager.repositories("writer")).toEqual([{ name: "writer/site", private: false, url: "https://github.com/writer/site" }]);
+    expect(await manager.repositories("writer")).toEqual([{ name: "writer/site", private: false, url: "https://github.com/writer/site", personal: true }]);
     expect(github.calls.every(call => call.account === "writer")).toBe(true);
+  });
+  it("finds the account's own repositories even when organization repositories exceed the listing limit", async () => {
+    const repo = (full_name: string, affiliation: string, push = true) => ({ full_name, private: false, html_url: `https://git.corp.example/${full_name}`, permissions: { push }, affiliation });
+    github.repoListing = [repo("friend/shared", "collaborator"), repo("company/readonly", "organization_member", false), ...Array.from({ length: 620 }, (_, index) => repo(`company/service-${index}`, "organization_member")), repo("writer/notes", "owner"), repo("writer/site", "owner")];
+    const listed = await manager.repositories("writer", "git.corp.example");
+    expect(listed.slice(0, 2)).toEqual([{ name: "writer/notes", private: false, url: "https://git.corp.example/writer/notes", personal: true }, { name: "writer/site", private: false, url: "https://git.corp.example/writer/site", personal: true }]);
+    expect(listed.filter(item => item.personal)).toHaveLength(2);
+    expect(listed.some(item => item.name === "friend/shared" && !item.personal)).toBe(true);
+    expect(listed.some(item => item.name === "company/readonly")).toBe(false);
+    expect(new Set(listed.map(item => item.name)).size).toBe(listed.length);
+    expect(github.calls.every(call => call.githubHost === "git.corp.example")).toBe(true);
+  });
+  it("does not mark a repository under another owner as personal", async () => {
+    github.repoListing = [{ full_name: "writer-team/site", private: false, html_url: "https://github.com/writer-team/site", permissions: { push: true }, affiliation: "owner" }];
+    expect(await manager.repositories("writer")).toEqual([{ name: "writer-team/site", private: false, url: "https://github.com/writer-team/site" }]);
   });
   it("supports installed older gh auth status without exposing credential details", () => {
     const accounts = parseGitHubAccounts("github.com\n ✓ Logged in to github.com account writer (keyring)\n - Active account: true\n - Token: NEVER_RETURN_ME\n ✓ Logged in to github.com account colleague (keyring)\n - Active account: false\n");

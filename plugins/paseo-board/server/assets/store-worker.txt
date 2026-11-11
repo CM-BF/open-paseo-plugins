@@ -26358,7 +26358,7 @@ var GitHubRepositoryNameSchema = external_exports.string().max(300).refine((valu
   return parts.length === 2 && parts.every((part) => part.length > 0 && part !== "." && part !== ".." && !/[^a-zA-Z0-9_.-]/.test(part));
 }, "Expected owner/repository without path traversal");
 var GitHubAccountSchema = external_exports.object({ login: GitHubLoginSchema, host: GitHubHostSchema, active: external_exports.boolean() });
-var GitHubRepositorySchema = external_exports.object({ name: external_exports.string(), private: external_exports.boolean(), url: external_exports.string() });
+var GitHubRepositorySchema = external_exports.object({ name: external_exports.string(), private: external_exports.boolean(), url: external_exports.string(), personal: external_exports.boolean().optional() });
 var PagesPrepareSchema = external_exports.object({
   eventId: IdSchema,
   releaseId: ReleaseIdSchema,

@@ -6611,7 +6611,8 @@ var GitHubAccountSchema = z3.object({
 var GitHubRepositorySchema = z3.object({
   name: z3.string(),
   private: z3.boolean(),
-  url: z3.string()
+  url: z3.string(),
+  personal: z3.boolean().optional()
 });
 var PagesPrepareSchema = z3.object({
   eventId: IdSchema,
@@ -6935,6 +6936,21 @@ function createPagesOutbox(hostId, boardId, storage = browserDraftStorage()) {
     remove(eventId) {
       requireStorage().removeItem(prefix + eventId);
     }
+  };
+}
+
+// client/repo-picker.ts
+var SHOWN_REPOSITORIES = 100;
+function repositoryChoices(list, typed, limit = SHOWN_REPOSITORIES) {
+  var query = typed.trim().toLowerCase();
+  var matching = query && !list.some(item => item.name.toLowerCase() === query) ? list.filter(item => item.name.toLowerCase().includes(query)) : list;
+  var personal = matching.filter(item => item.personal).slice(0, limit);
+  var others = matching.filter(item => !item.personal).slice(0, limit - personal.length);
+  return {
+    personal,
+    others,
+    hidden: matching.length - personal.length - others.length,
+    noMatch: list.length > 0 && matching.length === 0
   };
 }
 
@@ -8229,6 +8245,17 @@ ${share.link}${share.verified ? "" : "\uFF08\u5185\u5BB9\u5F85\u6838\u9A8C\uFF09
   var confirming = selected && target?.releaseId === selected.releaseId ? target : void 0;
   var confirmedJob = confirming && selected ? jobs.find(item => item.releaseId === selected.releaseId && item.shareKey === confirming.shareKey && (item.status === "live" || automaticallyPublishing(item))) : void 0;
   var refusedConfirm = confirming && selected && !confirmedJob ? jobs.find(item => item.releaseId === selected.releaseId && item.shareKey === confirming.shareKey && finalRefusal(item)) : void 0;
+  var repoChoices = repositoryChoices(repoList, repository);
+  var repoOption = item => /* @__PURE__ */jsx9(Action, {
+    label: `${item.name}${item.private ? " \xB7 \u79C1\u6709\u4ED3\u5E93" : ""}`,
+    active: repository === item.name,
+    disabled: busy,
+    onPress: () => {
+      setRepository(item.name);
+      setCreateRepository(void 0);
+      pageRequest.current = void 0;
+    }
+  }, item.name);
   var selectedSection = selected ? /* @__PURE__ */jsxs7(View7, {
     style: {
       gap: 12
@@ -8392,23 +8419,40 @@ ${share.link}${share.verified ? "" : "\uFF08\u5185\u5BB9\u5F85\u6838\u9A8C\uFF09
         },
         editable: !busy,
         style: field
-      }), repoList.length ? /* @__PURE__ */jsx9(ScrollView2, {
-        style: {
-          maxHeight: 180
-        },
-        contentContainerStyle: {
-          gap: 4
-        },
-        children: repoList.map(item => /* @__PURE__ */jsx9(Action, {
-          label: `${item.name}${item.private ? " \xB7 \u79C1\u6709\u4ED3\u5E93" : ""}`,
-          active: repository === item.name,
-          disabled: busy,
-          onPress: () => {
-            setRepository(item.name);
-            setCreateRepository(void 0);
-            pageRequest.current = void 0;
-          }
-        }, item.name))
+      }), repoList.length ? /* @__PURE__ */jsxs7(Fragment4, {
+        children: [/* @__PURE__ */jsx9(Copy, {
+          small: true,
+          muted: true,
+          children: "\u8F93\u5165\u540D\u79F0\u53EF\u4EE5\u7B5B\u9009\uFF0C\u4E5F\u53EF\u4EE5\u76F4\u63A5\u586B\u5199 owner/\u4ED3\u5E93\u540D\u3002"
+        }), /* @__PURE__ */jsxs7(ScrollView2, {
+          style: {
+            maxHeight: 260
+          },
+          contentContainerStyle: {
+            gap: 4
+          },
+          children: [repoChoices.personal.length ? /* @__PURE__ */jsxs7(Copy, {
+            small: true,
+            muted: true,
+            children: ["\u6211\u7684\u4ED3\u5E93\uFF08", account, "\uFF09"]
+          }) : null, repoChoices.personal.map(repoOption), repoChoices.others.length ? /* @__PURE__ */jsx9(Copy, {
+            small: true,
+            muted: true,
+            children: "\u7EC4\u7EC7\u548C\u534F\u4F5C\u4ED3\u5E93"
+          }) : null, repoChoices.others.map(repoOption)]
+        }), repoChoices.hidden ? /* @__PURE__ */jsxs7(Copy, {
+          small: true,
+          muted: true,
+          children: ["\u8FD8\u6709 ", repoChoices.hidden, " \u4E2A\u4ED3\u5E93\u6CA1\u6709\u663E\u793A\uFF0C\u8F93\u5165\u540D\u79F0\u53EF\u4EE5\u7B5B\u9009\u3002"]
+        }) : null, repoChoices.noMatch ? /* @__PURE__ */jsx9(Copy, {
+          small: true,
+          muted: true,
+          children: "\u6CA1\u6709\u5339\u914D\u7684\u4ED3\u5E93\u3002\u53EF\u4EE5\u76F4\u63A5\u586B\u5199 owner/\u4ED3\u5E93\u540D\uFF0C\u6216\u9009\u62E9\u4E0B\u9762\u7684\u65B0\u5EFA\u4ED3\u5E93\u3002"
+        }) : null, !repoList.some(item => item.personal) ? /* @__PURE__ */jsxs7(Copy, {
+          small: true,
+          muted: true,
+          children: ["\u8FD9\u4E2A\u8D26\u53F7\u540D\u4E0B\u8FD8\u6CA1\u6709\u53EF\u5199\u7684\u4E2A\u4EBA\u4ED3\u5E93\u3002\u53EF\u4EE5\u586B\u5199 ", account, "/\u4ED3\u5E93\u540D\uFF0C\u518D\u9009\u62E9\u65B0\u5EFA\u4ED3\u5E93\u3002"]
+        }) : null]
       }) : null, /* @__PURE__ */jsxs7(View7, {
         style: {
           flexDirection: "row",

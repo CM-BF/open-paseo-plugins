@@ -17,6 +17,7 @@ import { Action, Copy, Notice, errorMessage, localId, useColors } from "./ui";
 import { canPreviewRelease, copyText, downloadReleaseZip, ReleasePreview } from "./release-web";
 import { createPagesOutbox, pagesGitHubHost, samePagesRequest, samePagesTarget } from "./pages-outbox";
 import { browserDraftStorage } from "./draft-storage-web";
+import { repositoryChoices } from "./repo-picker";
 import { inheritedSettingsText, mintShareKey, refusedJob, reusableShareKey, shareChanged, shareKeyOf, shareLiveDrift, shareStateNames, type LiveShare, type ShareLiveDrift } from "./share-status";
 import type { ShareStatusController } from "./use-share-status";
 import type { LiveStatusController } from "./use-live-status";
@@ -325,6 +326,8 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
   const confirmedJob = confirming && selected ? jobs.find(item => item.releaseId === selected.releaseId && item.shareKey === confirming.shareKey && (item.status === "live" || automaticallyPublishing(item))) : undefined;
   // The server refused this exact request for good; resending it would only be refused again.
   const refusedConfirm = confirming && selected && !confirmedJob ? jobs.find(item => item.releaseId === selected.releaseId && item.shareKey === confirming.shareKey && finalRefusal(item)) : undefined;
+  const repoChoices = repositoryChoices(repoList, repository);
+  const repoOption = (item: GitHubRepository) => <Action key={item.name} label={`${item.name}${item.private ? " · 私有仓库" : ""}`} active={repository === item.name} disabled={busy} onPress={() => { setRepository(item.name); setCreateRepository(undefined); pageRequest.current = undefined; }} />;
   const selectedSection = selected ? <View style={{ gap: 12 }}>
       <Copy>{selected.title} · 固定版本 {selected.artifactHash.slice(0, 12)}</Copy>
       {selected.apiOrigins?.length ? <Copy small muted>已固定的后端来源：{selected.apiOrigins.join("、")}</Copy> : null}
@@ -352,7 +355,18 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
         {accountList.map(item => <Action key={`${item.host}/${item.login}`} label={`${item.login} · ${item.host}`} active={account === item.login && githubHost === item.host} disabled={busy} onPress={() => { setGitHubHost(item.host); setAccount(item.login); setRepoList([]); setRepository(""); setCreateRepository(undefined); pageRequest.current = undefined; void run(async () => setRepoList(await repositories({ account: item.login, githubHost: item.host }))); }} />)}
         {account ? <Copy small muted>发布账号：{account} · {githubHost}</Copy> : null}
         <TextInput accessibilityLabel="GitHub 仓库 owner/repo" placeholder="owner/repository" placeholderTextColor={c.foregroundMuted} value={repository} onChangeText={value => { setRepository(value); pageRequest.current = undefined; }} editable={!busy} style={field} />
-        {repoList.length ? <ScrollView style={{ maxHeight: 180 }} contentContainerStyle={{ gap: 4 }}>{repoList.map(item => <Action key={item.name} label={`${item.name}${item.private ? " · 私有仓库" : ""}`} active={repository === item.name} disabled={busy} onPress={() => { setRepository(item.name); setCreateRepository(undefined); pageRequest.current = undefined; }} />)}</ScrollView> : null}
+        {repoList.length ? <>
+          <Copy small muted>输入名称可以筛选，也可以直接填写 owner/仓库名。</Copy>
+          <ScrollView style={{ maxHeight: 260 }} contentContainerStyle={{ gap: 4 }}>
+            {repoChoices.personal.length ? <Copy small muted>我的仓库（{account}）</Copy> : null}
+            {repoChoices.personal.map(repoOption)}
+            {repoChoices.others.length ? <Copy small muted>组织和协作仓库</Copy> : null}
+            {repoChoices.others.map(repoOption)}
+          </ScrollView>
+          {repoChoices.hidden ? <Copy small muted>还有 {repoChoices.hidden} 个仓库没有显示，输入名称可以筛选。</Copy> : null}
+          {repoChoices.noMatch ? <Copy small muted>没有匹配的仓库。可以直接填写 owner/仓库名，或选择下面的新建仓库。</Copy> : null}
+          {!repoList.some(item => item.personal) ? <Copy small muted>这个账号名下还没有可写的个人仓库。可以填写 {account}/仓库名，再选择新建仓库。</Copy> : null}
+        </> : null}
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
           <Action label="现有仓库" active={!createRepository} disabled={busy} onPress={() => { setCreateRepository(undefined); pageRequest.current = undefined; }} />
           <Action label="新建公开仓库" active={createRepository === "public"} disabled={busy} onPress={() => { setCreateRepository("public"); pageRequest.current = undefined; }} />
