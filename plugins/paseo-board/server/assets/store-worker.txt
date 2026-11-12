@@ -39152,10 +39152,11 @@ body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
   backdrop-filter: blur(26px) saturate(1.6);
   transition: transform 320ms var(--lg-ease-out), opacity 220ms var(--lg-ease-out);
 }
-/* In an island (no data-lg-page) the dock sticks to the bottom of the panel instead. */
-[data-style="liquid-glass"]:not([data-lg-page]) [data-lg~="dock"] { position: sticky; left: auto; bottom: 12px; width: fit-content; margin: 16px auto 0; transform: none; }
-/* Tucked away, or giving way to an open module. */
+/* Tucked away, or giving way to an open module. In an island (no data-lg-page) the dock is
+   sticky at the bottom of the panel and gives way with a short sink inside its own box. */
 [data-style="liquid-glass"] [data-lg~="dock"]:is(.is-tucked, .is-yielding) { transform: translate(-50%, calc(100% + 24px)); opacity: 0; pointer-events: none; }
+[data-style="liquid-glass"]:not([data-lg-page]) [data-lg~="dock"] { position: sticky; left: auto; bottom: 12px; width: fit-content; margin: 16px auto 0; transform: none; }
+[data-style="liquid-glass"]:not([data-lg-page]) [data-lg~="dock"].is-yielding { transform: translateY(8px); }
 [data-style="liquid-glass"] [data-lg~="dock"].lg-instant { transition: none; }
 [data-style="liquid-glass"] [data-lg-dock-item] {
   position: relative;
@@ -39399,8 +39400,7 @@ var liquid_glass_js_default = `/* Paseo Board liquid-glass preset 1.0.0 (behavio
     grid: svg('<rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/>'),
     clock: svg('<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>'),
   };
-  // Icon for palette rows and strip thumbs: an authored svg (cloned), a named built-in icon
-  // (data-lg-icon="chart") or a kit fallback.
+  // Icon for palette rows and strip thumbs: an authored svg (cloned), data-lg-icon or a fallback.
   const iconInto = (target, source, fallback) => {
     const owner = source && (source.matches('[data-lg-icon], [data-lg-dock-item]') ? source : source.querySelector('[data-lg-icon]'));
     const authored = owner && (owner.matches('svg') ? owner : owner.querySelector(':scope > svg') || (owner.matches('[data-lg-dock-item]') ? null : owner.querySelector('svg')));
@@ -39434,10 +39434,10 @@ var liquid_glass_js_default = `/* Paseo Board liquid-glass preset 1.0.0 (behavio
     ro.observe(el);
     b.add(() => { ro.disconnect(); cancelAnimationFrame(f); });
   };
-  // A fixed dock's top at rest (ignores its slide-away transform), else null.
+  // A fixed or sticky dock's top at rest (minus its slide-away translation), else null.
   const dockTop = d => {
     const cs = d && getComputedStyle(d);
-    return cs?.position === 'fixed' ? document.documentElement.clientHeight - parseFloat(cs.bottom) - d.offsetHeight : null;
+    return /fixed|sticky/.test(cs?.position) ? d.getBoundingClientRect().top - (parseFloat(cs.transform.split(',')[5]) || 0) : null;
   };
   // Only the outermost marker is a scope: a nested data-style="liquid-glass" is inert.
   const outerScope = el => { let s = el?.closest?.(SCOPE), up; while (s && (up = s.parentElement?.closest(SCOPE))) s = up; return s || null; };
@@ -40174,12 +40174,12 @@ var liquid_glass_js_default = `/* Paseo Board liquid-glass preset 1.0.0 (behavio
       m.focus({ preventScroll: true });
       reveal(m);
     }
-    // Keep the open module and its strip in view (above a fixed dock if the module's top allows);
+    // Keep the open module and its strip in view (above a dock below it if the module's top allows);
     // repeated once settled, as the page is short while the animation runs.
     function reveal(m, settled) {
       const top = m.getBoundingClientRect().top;
       if (top < 0 || top > innerHeight * 0.6) { if (!settled) root.scrollIntoView({ behavior: scrollBehavior(), block: 'start' }); return; }
-      const limit = (dockTop(document.querySelector('[data-lg~="dock"]:not(.is-tucked)')) ?? innerHeight) - 12;
+      const t = dockTop(document.querySelector('[data-lg~="dock"]:not(.is-tucked)')), limit = (t > top ? t : innerHeight) - 12;
       const bottom = root.getBoundingClientRect().top + strip.offsetTop + strip.offsetHeight;
       if (bottom > limit) window.scrollBy({ top: Math.min(bottom - limit, Math.max(0, top - 12)), behavior: scrollBehavior() });
     }
@@ -40286,8 +40286,7 @@ var liquid_glass_js_default = `/* Paseo Board liquid-glass preset 1.0.0 (behavio
      "mod+k" only on request: inside the canvas it would shadow Paseo's \u2318K).
      Entries: any element with data-lg-command (+ data-lg-group, data-lg-keywords).
      [data-lg-palette-open] buttons also open it. Paseo can forward "/" while the
-     Board screen has focus; the host gets focus back on Esc. The open palette is in
-     the browser's top layer (popover), above Board's own markers and overlays. */
+     Board screen has focus; the host gets focus back on Esc. Shown in the top layer. */
   // "/" (or \u300C\u3001\u300D/\u300C\uFF0F\u300D from that key with a Chinese IME in Chinese punctuation mode).
   const isSlash = e => e.key === '/' || (e.code === 'Slash' && (e.key === '\u3001' || e.key === '\uFF0F'));
   function initPalette(root, b) {
@@ -40477,8 +40476,7 @@ var liquid_glass_js_default = `/* Paseo Board liquid-glass preset 1.0.0 (behavio
 
   /* dock \u2014 floating glass dock of icons ([data-lg-dock-item] + data-lg-label,
      with an svg child or data-lg-icon="name"). Hover magnifies the icon and its
-     neighbours; a glass label shows the name. Use data-lg="dock nav". On narrow
-     panes it is compact and tucks away while scrolling down. */
+     neighbours; a glass label shows the name. Use data-lg="dock nav". */
   function initDock(dock, b) {
     const items = () => [...dock.querySelectorAll(':scope > [data-lg-dock-item]')];
     const labelled = new Set();
@@ -40569,8 +40567,8 @@ var liquid_glass_js_default = `/* Paseo Board liquid-glass preset 1.0.0 (behavio
     let lastY = scrollY, scrollFrame = 0, restTimer = 0, tucked = false, revealUntil = 0, holdUntil = 0;
     const narrowPage = () => !!page && narrowQuery.matches;
     const tuck = on => { if (tucked === on) return; tucked = on; dock.classList.toggle('is-tucked', on); };
-    // While a module is open, a fixed dock gives way where it would cover it or its strip, unless
-    // keyboard focus is in the dock.
+    // While a module is open, the dock (fixed, or sticky in an island) gives way where it would
+    // cover it or its strip, unless keyboard focus is in the dock.
     const yields = () => {
       const open = [...document.querySelectorAll('[data-lg~="expand"].is-expanded')], top = open.length ? dockTop(dock) : null;
       if (top == null) return false;
@@ -40773,7 +40771,6 @@ var liquid_glass_js_default = `/* Paseo Board liquid-glass preset 1.0.0 (behavio
         });
       }
       pts = data;
-      // x labels, thinned to fit
       gX.replaceChildren();
       // Thin labels to fit; a label still wider than its room is shortened with an ellipsis.
       const textWidth = l => [...l].reduce((w, ch) => w + (ch.charCodeAt(0) > 255 ? 12 : 7.5), 0);
