@@ -208,7 +208,9 @@ describe("tool output excerpts", () => {
     expect(sanitizeOutput(`before data:image/png;base64,${base64} after`)).toBe("before [binary data omitted] after");
     expect(sanitizeOutput(`token: ${base64}\nnext line`)).toBe("token: [binary data omitted]\nnext line");
     const mime = Array.from({ length: 6 }, () => base64.slice(0, 76)).join("\n") + "\nAB==";
-    expect(sanitizeOutput(`--boundary\n${mime}\n--boundary--`)).toBe("--boundary\n[binary data omitted]\n\n--boundary--");
+    // The block (including its short last line) becomes one marker line, without leaving a blank line behind.
+    expect(sanitizeOutput(`--boundary\n${mime}\n--boundary--`)).toBe("--boundary\n[binary data omitted]\n--boundary--");
+    expect(sanitizeOutput(`${mime.split("\n").slice(0, 3).join("\n")}\nnext line`)).toBe("[binary data omitted]\nnext line");
     // Long runs of plain letters or digits are ordinary text, not base64.
     expect(sanitizeOutput("a".repeat(300))).toBe("a".repeat(300));
     // Terminal colours and carriage-return progress redraws are cleaned up.

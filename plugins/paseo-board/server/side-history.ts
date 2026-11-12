@@ -115,7 +115,7 @@ export function sanitizeOutput(raw: string): string | undefined {
     .replace(/data:[^,\s]{1,100};base64,[A-Za-z0-9+/=]*/g, BINARY_OMITTED)
     // MIME-wrapped base64 (several full-width lines) and long single-line runs. Anchored to line starts, so
     // a huge single-line output is scanned once instead of being retried from every position.
-    .replace(/^(?:[A-Za-z0-9+/]{60,}={0,2}\n){2,}(?:[A-Za-z0-9+/]+={0,2}$)?/gm, run => looksEncoded(run) ? `${BINARY_OMITTED}\n` : run)
+    .replace(/^(?:[A-Za-z0-9+/]{60,}={0,2}\n){2,}(?:[A-Za-z0-9+/]+={0,2}$)?/gm, run => looksEncoded(run) ? BINARY_OMITTED + (run.endsWith("\n") ? "\n" : "") : run)
     .replace(/[A-Za-z0-9+/_-]{200,}={0,2}/g, run => looksEncoded(run) ? BINARY_OMITTED : run)
     .replace(/\n{3,}/g, "\n\n")
     .trim();
