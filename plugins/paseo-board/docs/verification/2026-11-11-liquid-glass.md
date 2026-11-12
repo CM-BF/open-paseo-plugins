@@ -27,3 +27,7 @@
 ## 未覆盖
 
 真实 Paseo 应用（Electron 焦点、agent/工作区面板、终端与输入框旁的 `/`、⌘K）未验证，需要用户批准后按[预设参考](../liquid-glass.md#verification)中的手工清单检查。截图见验证目录 `glass-shots/`。
+
+## 评审问题修复（第二轮）
+
+修复后在提交 `6a1a4f4a55c91d64596046b0bcb63658e770afe7` 上重跑全套，每步退出码均为 0：TypeScript；单元 53 个文件 817 项与 inbox-sync 10 项；画布浏览器 152 项（液态玻璃 34 项，新增 13 项回归检查）；宿主 41 项；发布页 32 项；发布宿主 38 项；`build:client`、`build:worker` 两次 sha256 相同且与已提交字节一致；`build:app` 输入未变。修复内容和逐项证据见验证目录 `FIX-GLASS.md`，截图在 `glass-shots/`。真实 Paseo 应用仍未验证。

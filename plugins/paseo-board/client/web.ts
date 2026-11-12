@@ -432,8 +432,9 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
             break;
           }
           if (!message.opened) break;
-          // A late reply: the fallback already gave focus back. If focus is still where it was
-          // given back, the palette takes it again; otherwise the palette closes.
+          // A late reply: the fallback already gave focus back. If the user has not focused
+          // anything else in Paseo since, the palette keeps focus; otherwise it closes and focus
+          // returns to what the user chose.
           const expired = presetExpired.current, page = browser.document, target = frame.current;
           presetExpired.current = undefined;
           if (expired?.sessionId === sessionId && Date.now() - expired.at < 5000 && page && target?.focus && !expired.movedTo) {
