@@ -8,7 +8,7 @@ import { build } from 'esbuild';
 // CanvasFrame host: activation, all seven roles, host "/" forwarding, live-patch activation,
 // legacy hand-over, reduced motion, layout shift, identity and a pass of every interaction in
 // light/dark at desktop and narrow widths; dark-theme readability, an open module's strip against
-// the dock, and benign ResizeObserver notices (any Board). Screenshots only when
+// the page and island dock, and benign ResizeObserver notices (any Board). Screenshots only when
 // BOARD_GLASS_SHOT_DIR is set. BOARD_LEGACY_BOARD_HTML=<path to a 0.2 kit Board source> also runs
 // that real Board through the frame host (not part of this repository).
 export async function runLiquidGlassChecks({ evaluate, frame, update, command, send, clickPoint, location, drag, key, until, untilFrame, settleFrame, setReducedMotion, profile, directory, baseHtml, check }) {
@@ -551,7 +551,12 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   // the topmost element at its centre and a real click switches modules; the dock never covers the
   // open module or its close button, and it is back once the module is out of its way. Narrow
   // panes also try the things that bring a tucked dock back (pointer at the bottom edge, scroll up).
+  // Island mode (no data-lg-page) too, where the dock is sticky inside the panel (verifier finding:
+  // at 950x787 the strip at 717-771 sat under the sticky dock at 711-775); its short sink while it
+  // gives way adds no scroll.
   const stripPage = reset + example + bridge;
+  const islandPage = stripPage.replace('data-style="liquid-glass" data-lg-page>', 'data-style="liquid-glass">');
+  assert.notEqual(islandPage, stripPage);
   const expandedQ = "document.querySelector('#modules [data-lg~=expand]').classList.contains('is-expanded')";
   const stripState = `(()=>{const root=document.querySelector('#modules [data-lg~=expand]'),strip=root.querySelector('.lg-strip'),m=root.querySelector('[data-lg-module].is-open'),dock=document.querySelector('#dock'),ds=getComputedStyle(dock),d=dock.getBoundingClientRect();
     const shown=ds.pointerEvents!=='none'&&parseFloat(ds.opacity)>0.05;
@@ -590,22 +595,29 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
     await untilFrame(`document.querySelector('#modules [data-lg-module]:nth-of-type(${n})').classList.contains('is-open')`); await settleStrip();
   };
   const closeModule = async () => { await key('Escape'); await untilFrame(`!${expandedQ}`, 3000); await settleStrip(); };
-  for (const size of [{ width: 950, height: 787 }, { width: 420, height: 787 }, { width: 320, height: 640 }]) {
-    const label = `${size.width}x${size.height}`, narrowPane = size.width <= 720;
+  const stripRuns = [['page', 950, 787], ['page', 420, 787], ['page', 320, 640], ['island', 950, 787], ['island', 420, 787]];
+  for (const [mode, width, height] of stripRuns) {
+    const size = { width, height }, island = mode === 'island', name = `${island ? 'island-' : ''}${width}`;
+    const label = `${mode} ${width}x${height}`, narrowPane = !island && width <= 720;
     await viewport(size.width, size.height + 40);
-    await load(stripPage, { height: size.height });
+    await load(island ? islandPage : stripPage, { height: size.height });
     await untilFrame("window.LiquidGlass?.version==='1.0.0'&&!document.querySelector('.lg-rolling')", 4000);
+    assert.equal(await frame("getComputedStyle(document.querySelector('#dock')).position"), island ? 'sticky' : 'fixed');
     // a) From the page end.
     await frame('scrollTo(0,document.documentElement.scrollHeight)'); await settleStrip();
     await openModule();
     await stripClear(`${label} opened at the page end`);
-    await shot(`glass-strip-${size.width}-page-end`);
+    await shot(`glass-strip-${name}-page-end`);
     // The strip is really clickable: a real click on a thumbnail switches modules.
     await switchFromStrip();
-    await stripClear(`${label} after switching from the strip`);
+    const switched = await stripClear(`${label} after switching from the strip`);
     // b) The strip scrolled into the dock's band at the bottom edge of the pane.
     await frame("(()=>{const s=document.querySelector('#modules .lg-strip').getBoundingClientRect();scrollBy({top:s.bottom-(innerHeight-14),behavior:'instant'});return true})()"); await settleStrip();
-    await stripClear(`${label} strip at the bottom edge`);
+    const edge = await stripClear(`${label} strip at the bottom edge`);
+    if (island) {
+      assert.equal(await frame("document.querySelector('#dock').classList.contains('is-yielding')"), true, `${label}: the sticky dock gives way ${JSON.stringify(edge)}`);
+      assert.equal(edge.max, switched.max, `${label}: giving way adds no scroll ${JSON.stringify({ switched, edge })}`);
+    }
     if (narrowPane) {
       // What brings a tucked narrow dock back: the pointer near the bottom edge, a scroll up.
       const bottomEdge = await evaluate("(()=>{const r=document.querySelector('iframe').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height-30}})()");
@@ -616,7 +628,7 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
       await frame("(()=>{const s=document.querySelector('#modules .lg-strip').getBoundingClientRect();scrollBy({top:s.bottom-(innerHeight-14),behavior:'instant'});return true})()"); await settleStrip();
       await stripClear(`${label} after scrolling up`);
     }
-    await shot(`glass-strip-${size.width}-bottom-edge`);
+    await shot(`glass-strip-${name}-bottom-edge`);
     if (!narrowPane) {
       // Keyboard focus in the dock brings it back over the strip; Shift+Tab back gives way again.
       // A mouse click leaves focus on a dock button in Chromium, so only keyboard focus counts.
@@ -651,7 +663,7 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
     await frame("(()=>{const g=document.querySelector('#modules [data-lg~=expand]').getBoundingClientRect();scrollBy({top:g.bottom-innerHeight+4,behavior:'instant'});return true})()"); await settleStrip();
     await openModule();
     await stripClear(`${label} opened with the grid at the bottom edge`);
-    await shot(`glass-strip-${size.width}-grid-bottom`);
+    await shot(`glass-strip-${name}-grid-bottom`);
     await closeModule();
     if (!narrowPane) {
       // Nothing open: the desktop dock is there again.
@@ -659,7 +671,7 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
     }
   }
   await viewport(1100);
-  check('an open module\'s thumbnail strip stays visible and clickable above the dock at 950x787, 420x787 and 320x640; the dock never covers the open module and comes back when out of the way');
+  check('an open module\'s thumbnail strip stays visible and clickable above the dock at 950x787, 420x787 and 320x640, and above the sticky island dock at 950x787 and 420x787; the dock never covers the open module and comes back when out of the way');
 
   // 8c. Forced colours: built-in icons, dots and the chosen option use system colours.
   await load(page); await untilFrame("window.LiquidGlass?.version==='1.0.0'&&!document.querySelector('.lg-rolling')", 4000);
