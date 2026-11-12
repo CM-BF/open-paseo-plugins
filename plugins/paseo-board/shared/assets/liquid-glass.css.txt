@@ -119,6 +119,8 @@ body:has([data-style="liquid-glass"][data-lg-page]) {
   color: #2B1D1A;
   background: transparent;
 }
+/* The marker on the body element itself (a full authored document): no 960px Board column. */
+body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
 [data-style="liquid-glass"][data-lg-page] {
   --lg-dock-reserve: 0px;
   position: relative;
@@ -225,8 +227,7 @@ body:has([data-style="liquid-glass"][data-lg-page]) {
   background: rgba(255, 255, 255, 0.55);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.8), 0 1px 2px rgba(80, 40, 30, 0.12);
 }
-[data-style="liquid-glass"] .lg-sr,
-[data-style="liquid-glass"] .lg-chart-table {
+[data-style="liquid-glass"] .lg-sr {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -315,7 +316,7 @@ body:has([data-style="liquid-glass"][data-lg-page]) {
 }
 [data-style="liquid-glass"] .lg-header > :first-child { display: grid; gap: 12px; min-width: min(100%, 320px); flex: 1 1 420px; }
 [data-style="liquid-glass"] .lg-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-[data-style="liquid-glass"] .lg-section { display: grid; gap: 16px; margin: 0; scroll-margin-top: 24px; }
+[data-style="liquid-glass"] .lg-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin: 0; scroll-margin-top: 24px; }
 [data-style="liquid-glass"] .lg-section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
 [data-style="liquid-glass"] .lg-section-head > p { margin: 0; }
 [data-style="liquid-glass"] .lg-grid {
@@ -355,7 +356,9 @@ body:has([data-style="liquid-glass"][data-lg-page]) {
 }
 [data-style="liquid-glass"] .lg-icon > svg { width: 19px; height: 19px; }
 [data-style="liquid-glass"] [data-lg-summary] { margin-top: 18px; }
-[data-style="liquid-glass"] [data-lg-detail] { margin-top: 20px; }
+/* Wide detail content (a table) scrolls inside the module; the module never outgrows the pane. */
+[data-style="liquid-glass"] [data-lg-detail] { margin-top: 20px; overflow-x: auto; overscroll-behavior-x: contain; }
+[data-style="liquid-glass"] .lg-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
 [data-style="liquid-glass"] .lg-big { font: 560 34px/1.1 var(--lg-mono); font-variant-numeric: tabular-nums; letter-spacing: -0.03em; }
 [data-style="liquid-glass"] .lg-list { display: grid; margin: 0; padding: 0; list-style: none; }
 [data-style="liquid-glass"] .lg-list > li {
@@ -681,10 +684,11 @@ body:has([data-style="liquid-glass"][data-lg-page]) {
 [data-style="liquid-glass"] [data-lg~="split"]:not(.lg-mounted):has(> [aria-pressed="true"]) > [data-lg-option]:not([aria-pressed="true"]),
 [data-style="liquid-glass"] [data-lg~="split"]:not(.lg-mounted):not(:has(> [aria-pressed="true"])) > [data-lg-option]:not(:first-of-type) { display: none; }
 [data-style="liquid-glass"] [data-lg~="split"].is-merging { transition: width 520ms var(--lg-spring-soft); }
+/* The open row floats above its neighbours; the goo box is the closed footprint only. */
+[data-style="liquid-glass"] [data-lg~="split"]:is(.is-open, .is-merging) { z-index: 6; }
 [data-style="liquid-glass"] .lg-split-goo {
   position: absolute;
-  left: 0;
-  top: 0;
+  inset: 0 0 auto 0;
   height: 42px;
   pointer-events: none;
   filter: url(#lg-goo-filter);
@@ -759,6 +763,9 @@ body:has([data-style="liquid-glass"][data-lg-page]) {
 [data-style="liquid-glass"] [data-lg~="palette"] { position: fixed; inset: 0; z-index: 1000; display: none; margin: 0; }
 [data-style="liquid-glass"] [data-lg~="palette"].is-mounted { display: block; }
 [data-style="liquid-glass"] [data-lg~="palette"]:not(.is-open) { pointer-events: none; }
+/* The generated layer is a manual popover (top layer) where supported: nothing on the page,
+   not even Board's comment markers, paints over the open palette. */
+[data-style="liquid-glass"] .lg-pal-layer { position: fixed; inset: 0; width: auto; height: auto; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; overflow: visible; color: inherit; background: transparent; }
 [data-style="liquid-glass"] .lg-pal-scrim {
   position: absolute;
   inset: 0;
@@ -888,6 +895,7 @@ body:has([data-style="liquid-glass"][data-lg-page]) {
 /* In an island (no data-lg-page) the dock sticks to the bottom of the panel instead. */
 [data-style="liquid-glass"]:not([data-lg-page]) [data-lg~="dock"] { position: sticky; left: auto; bottom: 12px; width: fit-content; margin: 16px auto 0; transform: none; }
 [data-style="liquid-glass"] [data-lg~="dock"].is-tucked { transform: translate(-50%, calc(100% + 24px)); opacity: 0; pointer-events: none; }
+[data-style="liquid-glass"] [data-lg~="dock"].lg-instant { transition: none; }
 [data-style="liquid-glass"] [data-lg-dock-item] {
   position: relative;
   z-index: 1;
@@ -1006,6 +1014,9 @@ body:has([data-style="liquid-glass"][data-lg-page]) {
   [data-style="liquid-glass"]:not([data-lg-page]):not([data-style="liquid-glass"] *) { padding: 16px; }
   [data-style="liquid-glass"] [data-lg-module].is-open { padding: 22px 18px; }
   [data-style="liquid-glass"] .lg-stat-value > :first-child { font-size: 32px; }
+  /* A tighter open droplet, so three options fit a 260px pane. */
+  [data-style="liquid-glass"] { --lg-split-gap: 6px; }
+  [data-style="liquid-glass"] [data-lg~="split"] > [data-lg-option] { padding: 0 12px; }
 }
 @media (hover: none) {
   [data-style="liquid-glass"] [data-lg~="card"] { transform: none; }
@@ -1019,6 +1030,16 @@ body:has([data-style="liquid-glass"][data-lg-page]) {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
+  /* Mask icons, dots, meters and the chosen option would be forced to Canvas (invisible):
+     paint them with system colours instead. */
+  [data-style="liquid-glass"] [data-lg-icon]:not([data-lg-icon=""]):not(:has(> svg))::after,
+  [data-style="liquid-glass"] .lg-dot,
+  [data-style="liquid-glass"] .lg-meter::before { forced-color-adjust: none; background: CanvasText; box-shadow: none; }
+  [data-style="liquid-glass"] :is([data-lg-dock-item].is-active, [aria-current]:not([aria-current="false"]))[data-lg-icon]::after { background: Highlight; }
+  [data-style="liquid-glass"] .lg-meter { border: 1px solid CanvasText; }
+  [data-style="liquid-glass"] .lg-split-goo { filter: none; }
+  [data-style="liquid-glass"] .lg-split-pick { forced-color-adjust: none; background: Highlight; box-shadow: none; }
+  [data-style="liquid-glass"] [data-lg~="split"].is-open > [data-lg-option].is-selected { forced-color-adjust: none; color: HighlightText; }
 }
 
 @keyframes lg-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
@@ -1028,13 +1049,15 @@ body:has([data-style="liquid-glass"][data-lg-page]) {
   25% { box-shadow: inset 0 1px 0 var(--lg-highlight), 0 0 0 3px rgba(182, 109, 68, 0.45), var(--lg-shadow-lift); }
 }
 
-/* Reduced motion: only preset-owned nodes; authored animations keep their own policy. */
+/* Reduced motion: only the role roots, their preset-styled items and lg-* classes (never their
+   other descendants); one 1 ms iteration, so nothing loops. Authored animations keep their policy. */
 @media (prefers-reduced-motion: reduce) {
-  [data-style="liquid-glass"] :is([data-lg], [data-lg] *, [data-lg-module], [data-lg-module] *, [data-lg-count], [class*="lg-"]),
-  [data-style="liquid-glass"] :is([data-lg], [data-lg-dock-item], [class*="lg-"])::before,
-  [data-style="liquid-glass"] :is([data-lg], [data-lg-dock-item], [class*="lg-"])::after {
+  [data-style="liquid-glass"] :is([data-lg], [data-lg~="nav"] > *, [data-lg-option], [data-lg-module], [data-lg-detail], [data-lg-dock-item], [class^="lg-"], [class*=" lg-"]),
+  [data-style="liquid-glass"] :is([data-lg], [data-lg-dock-item], [class^="lg-"], [class*=" lg-"])::before,
+  [data-style="liquid-glass"] :is([data-lg], [data-lg-dock-item], [class^="lg-"], [class*=" lg-"])::after {
     animation-duration: 1ms !important;
     animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 1ms !important;
     transition-delay: 0ms !important;
   }

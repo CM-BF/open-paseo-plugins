@@ -101,18 +101,20 @@
       items[next].focus();
     });
   }
-  // Escape: components close on keydown. Board's runtime consumes an Escape keydown while it
-  // clears a comment selection, so a press no component saw closes the topmost open one on
-  // keyup. These window listeners are registered before the runtime's (head script).
+  // Escape: components close on keydown. A press none saw closes the topmost one on keyup if it
+  // reached the window unprevented, or the runtime stopped it to clear a comment selection.
+  // Authored handlers that prevent it and the runtime's component editors keep their Esc.
   let escPress = null;
-  const onEscDown = e => { if (e.key === 'Escape') escPress = { handled: false }; };
+  const onEscDown = e => { if (e.key === 'Escape') escPress = { event: e, handled: false, reached: false, mode: document.documentElement.getAttribute('data-board-selection') || 'off' }; };
+  const onEscReach = e => { if (escPress && escPress.event === e) escPress.reached = true; };
   const onEscUp = e => {
     if (e.key !== 'Escape' || !escPress) return;
     const press = escPress;
     escPress = null;
-    if (!press.handled) closeTopmost();
+    if (!press.handled && (press.reached ? !press.event.defaultPrevented : /^(text|region|point)$/.test(press.mode))) closeTopmost();
   };
   window.addEventListener('keydown', onEscDown, true);
+  window.addEventListener('keydown', onEscReach);
   window.addEventListener('keyup', onEscUp, true);
   function escapeKey(target, isActive, close, b) {
     b.on(target, 'keydown', e => { if (e.key === 'Escape' && isActive()) { if (escPress) escPress.handled = true; e.preventDefault(); close(); } });
@@ -124,7 +126,8 @@
     for (const kinds of all) { const a = kinds.get('expand')?.api; if (a?.current) return a.close(); }
   }
 
-  // Shared SVG defs: the gooey filter (split) and #lg-chart-fill for hand-written charts.
+  // Shared SVG defs: the gooey filter (split; a pixel region, as the open row floats beyond
+  // the droplet's box) and #lg-chart-fill for hand-written charts.
   // Inside the outermost scope (so the gradient reads --lg-chart-*), marked as an overlay.
   function ensureDefs() {
     if (document.getElementById('lg-defs')) return;
@@ -142,7 +145,7 @@
         <stop offset="0" style="stop-color:var(--lg-chart-top)"/>
         <stop offset="1" style="stop-color:var(--lg-chart-bottom)"/>
       </linearGradient>
-      <filter id="lg-goo-filter" x="-20%" y="-80%" width="140%" height="260%" color-interpolation-filters="sRGB">
+      <filter id="lg-goo-filter" filterUnits="userSpaceOnUse" x="-2400" y="-34" width="4800" height="110" color-interpolation-filters="sRGB">
         <feGaussianBlur in="SourceGraphic" stdDeviation="7" result="blur"/>
         <feColorMatrix in="blur" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 24 -10" result="goo"/>
         <feColorMatrix in="goo" values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .62 0" result="body"/>
@@ -322,7 +325,8 @@
       if (changed && !silent) emitChange(host, valueOf(el), el, false);
     };
 
-    // Scroll spy: the last target whose top passed 35% of the viewport wins.
+    // Scroll spy: the last target whose top passed 35% of the viewport wins; the very top of
+    // the page selects the first target and the very end the last.
     let spyLock = 0;
     const spy = () => {
       if (!host.hasAttribute('data-lg-spy') || Date.now() < spyLock) return;
@@ -331,7 +335,8 @@
       const atBottom = innerHeight + scrollY >= document.documentElement.scrollHeight - 4;
       let pick = withTargets[0];
       for (const it of withTargets) if (safeQuery(it.dataset.lgTarget).getBoundingClientRect().top <= innerHeight * 0.35) pick = it;
-      if (atBottom) pick = withTargets[withTargets.length - 1];
+      if (scrollY < 8) pick = withTargets[0];
+      else if (atBottom) pick = withTargets[withTargets.length - 1];
       if (pick !== active) select(pick, { silent: true });
     };
     let spyFrame = 0;
@@ -444,9 +449,9 @@
 
   /* ==========================================================================
      Rolling numbers — [data-lg-count="1234.5"]. The authored text stays the
-     accessible, selectable value; while digits roll, a decorative reel overlay
-     covers it. Changing the attribute (or data-lg-by) rolls to the new value.
-     Content must be plain text.
+     accessible, selectable value (untouched while it shows the count); while
+     digits roll, a decorative reel overlay covers it. Changing the attribute (or
+     data-lg-by) rolls to the new value in the authored format. Plain text only.
      ========================================================================== */
   function parseNumber(raw) {
     const s = String(raw).replace(/[,\s_]/g, '');
@@ -454,14 +459,26 @@
     return { n: Number.isFinite(n) ? n : 0, dec: (s.split('.')[1] || '').length };
   }
   const formatNumber = ({ n, dec }) => n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  // The authored text's shape ("98.6%", "15,872"): new values keep its affixes and grouping, so
+  // the text only changes with the value (Board text edits compare it with the source).
+  function numberShape(text) {
+    const m = /^([^\d-]*)(-?[\d,]*\.?\d+)(\D*)$/.exec(text);
+    if (!m) return null;
+    const int = m[2].split('.')[0].replace(/[-,]/g, '');
+    return { prefix: m[1], suffix: m[3], value: parseNumber(m[2]).n, grouped: m[2].includes(',') || int.length <= 3 };
+  }
+  const formatShaped = (shape, v) => shape
+    ? shape.prefix + (shape.grouped ? formatNumber(v) : v.n.toFixed(v.dec)) + shape.suffix
+    : formatNumber(v);
 
   function initCount(el, b) {
     const original = el.textContent;
-    let odo = null, timer = 0, shown = el.textContent.trim();
+    const shape = numberShape(original.trim());
+    let odo = null, timer = 0, shown = original.trim();
     const settle = () => { clearTimeout(timer); odo?.remove(); odo = null; el.classList.remove('lg-rolling'); };
     const roll = (text, from) => {
       settle();
-      if (el.textContent !== text) el.textContent = text;
+      if (el.textContent.trim() !== text) el.textContent = text;
       if (reduced() || text === from || !el.isConnected) return;
       odo = make('span', 'lg-odo', { 'aria-hidden': 'true' }, true);
       const chars = [...text], prev = [...from];
@@ -484,15 +501,17 @@
       for (const [r, d] of reels) r.style.transform = `translateY(${-d * 1.1}em)`;
       timer = setTimeout(settle, 900 + chars.length * 45 + 80);
     };
+    const target = () => parseNumber(el.getAttribute('data-lg-count') || el.textContent);
     const update = () => {
-      const text = formatNumber(parseNumber(el.getAttribute('data-lg-count') || el.textContent));
+      const text = formatShaped(shape, target());
       if (text === shown) return;
       const from = shown;
       shown = text;
       roll(text, from);
     };
-    // First paint rolls up from zeros.
-    const first = formatNumber(parseNumber(el.getAttribute('data-lg-count') || el.textContent));
+    // First paint rolls up from zeros. Authored text that already shows the value stays as is.
+    const value = target();
+    const first = shape && shape.value === value.n ? shown : formatShaped(shape, value);
     shown = first;
     roll(first, first.replace(/\d/g, '0'));
     b.add(() => { settle(); if (el.isConnected && el.textContent !== original) el.textContent = original; });
@@ -507,7 +526,7 @@
      ========================================================================== */
   function initSplit(root, b) {
     ensureDefs();
-    const GAP = 14, CHEV = 22;
+    const CHEV = 22;
     const anchorEnd = root.dataset.lgAnchor === 'end';
     const goo = make('div', 'lg-split-goo', { 'aria-hidden': 'true' }, true);
     const pick = make('span', 'lg-split-pick', { 'aria-hidden': 'true' }, true);
@@ -521,39 +540,45 @@
 
     const pressed = o => o.getAttribute('aria-pressed') === 'true' || o.classList.contains('is-selected');
     let opts = [], blobs = [], w = [], selected = null;
-    let open = false, phaseTimer = 0;
+    let open = false, phaseTimer = 0, shift = 0;
 
-    const place = (el, x, wd, frame) => { el.style.transform = `translateX(${anchorEnd ? -(frame - x - wd) : x}px)`; };
+    const gap = () => parseFloat(cssVar(root, '--lg-split-gap', '14')) || 14;
+    const place = (el, x) => { el.style.transform = `translateX(${x}px)`; };
     const size = (el, wd) => { el.style.width = wd + 'px'; };
     const measure = () => { w = opts.map(o => o.offsetWidth); };
+    // Only the closed droplet takes space (opening never re-flows the page); the open row
+    // floats over neighbours, moved inwards to stay inside the scope and the viewport.
+    const fit = (total, closedW) => {
+      const r = root.getBoundingClientRect(), scope = outerScope(root)?.getBoundingClientRect();
+      const lo = Math.max(8, (scope?.left ?? 0) + 8), hi = Math.min(document.documentElement.clientWidth, scope?.right ?? Infinity) - 8;
+      let x = anchorEnd ? closedW - total : 0;
+      if (r.left + x + total > hi) x = hi - total - r.left;
+      if (r.left + x < lo) x = lo - r.left;
+      return Math.round(x);
+    };
+    const offsets = () => { const G = gap(), slot = []; let acc = 0; opts.forEach((o, i) => { slot[i] = acc; acc += w[i] + G; }); return { slot, total: acc - G }; };
 
     const layout = phase => {
       if (!opts.length) return;
-      const slot = [];
-      let acc = 0;
-      opts.forEach((o, i) => { slot[i] = acc; acc += w[i] + GAP; });
-      const total = acc - GAP;
+      const { slot, total } = offsets();
       const si = Math.max(0, opts.indexOf(selected));
       const closedW = w[si] + CHEV - 4;
       const isOpen = phase === 'open';
-      const frame = isOpen ? total : closedW;
-      goo.style.width = Math.max(total, closedW) + 'px';
-      if (anchorEnd) for (const el of [goo, pick, chev, ...opts, ...blobs]) { el.style.left = 'auto'; el.style.right = '0'; }
+      if (isOpen) shift = fit(total, closedW);
       opts.forEach((o, i) => {
         const delay = isOpen ? Math.abs(i - si) * 38 : phase === 'merge' && i !== si ? 40 + Math.abs(i - si) * 22 : 0;
         for (const el of [o, blobs[i]]) el.style.setProperty('--lg-d', delay + 'ms');
         o.style.setProperty('--lg-od', isOpen && o !== selected ? delay + 200 + 'ms' : '0ms');
-        const x = isOpen ? slot[i] : 0;
-        const bw = isOpen ? w[i] : closedW;
-        size(blobs[i], bw);
-        place(blobs[i], x, bw, frame);
-        place(o, x, w[i], frame);
+        const x = isOpen ? shift + slot[i] : 0;
+        size(blobs[i], isOpen ? w[i] : closedW);
+        place(blobs[i], x);
+        place(o, x);
       });
       const pw = (isOpen ? w[si] : closedW) - 8;
       size(pick, pw);
-      place(pick, (isOpen ? slot[si] : 0) + 4, pw, frame);
-      place(chev, closedW - CHEV - 6, CHEV, closedW);
-      root.style.width = (isOpen ? total : closedW) + 'px';
+      place(pick, (isOpen ? shift + slot[si] : 0) + 4);
+      place(chev, closedW - CHEV - 6);
+      root.style.width = closedW + 'px';
     };
 
     const setSelected = o => {
@@ -602,12 +627,9 @@
     const snapPick = () => {
       if (!open || reduced()) return;
       const si = opts.indexOf(selected);
-      let x = 0;
-      for (let i = 0; i < si; i++) x += w[i] + GAP;
-      const total = w.reduce((a, v) => a + v, 0) + GAP * (opts.length - 1);
       pick.style.transition = 'none';
       size(pick, w[si] - 8);
-      place(pick, x + 4, w[si] - 8, total);
+      place(pick, shift + offsets().slot[si] + 4);
       void pick.offsetWidth;
       pick.style.transition = '';
       pick.animate([{ scale: '0.86' }, { scale: '1' }], { duration: 220, easing: EASE_OUT });
@@ -922,11 +944,17 @@
      "mod+k" only on request: inside the canvas it would shadow Paseo's ⌘K).
      Entries: any element with data-lg-command (+ data-lg-group, data-lg-keywords).
      [data-lg-palette-open] buttons also open it. Paseo can forward "/" while the
-     Board screen has focus; the host gets focus back on Esc.
+     Board screen has focus; the host gets focus back on Esc. The open palette is in
+     the browser's top layer (popover), above Board's own markers and overlays.
      ========================================================================== */
+  // "/" (or 「、」/「／」 from that key with a Chinese IME in Chinese punctuation mode).
+  const isSlash = e => e.key === '/' || (e.code === 'Slash' && (e.key === '、' || e.key === '／'));
   function initPalette(root, b) {
     const id = 'lg-pal-' + ++uid;
     root.replaceChildren();
+    const layer = make('div', 'lg-pal-layer', {}, true);
+    const topLayer = typeof layer.showPopover === 'function';
+    if (topLayer) layer.setAttribute('popover', 'manual');
     const scrim = make('div', 'lg-pal-scrim', {}, true);
     const panel = make('div', 'lg-pal-panel', { role: 'dialog', 'aria-modal': 'true', 'aria-label': root.dataset.lgLabel || '命令面板' }, true);
     const field = make('div', 'lg-pal-field');
@@ -942,7 +970,9 @@
     const foot = make('div', 'lg-pal-foot');
     foot.innerHTML = '<span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>↵</kbd> 跳转</span><span><kbd>esc</kbd> 关闭</span>';
     panel.append(field, list, live, foot);
-    root.append(scrim, panel);
+    layer.append(scrim, panel);
+    root.append(layer);
+    const showLayer = on => { if (!topLayer) return; try { if (on !== layer.matches(':popover-open')) on ? layer.showPopover() : layer.hidePopover(); } catch {} };
     const capsule = new Capsule(list);
     let isOpen = false, results = [], index = 0, restoreTo = null, closeTimer = 0, forwarded = null;
     const keys = (root.dataset.lgKeys || '/').toLowerCase().split(/\s+/).filter(Boolean);
@@ -1019,15 +1049,17 @@
       capsule.set({ l: li.offsetLeft, t: li.offsetTop, r: li.offsetLeft + li.offsetWidth, b: li.offsetTop + li.offsetHeight }, immediate);
       if (scroll) li.scrollIntoView({ block: 'nearest' });
     };
-    const openPalette = ({ onCancel = null } = {}) => {
-      if (isOpen) { if (onCancel) forwarded = onCancel; return; }
+    // Forwarded opens: onCancel gives Paseo focus back, onDone tells it focus stays here.
+    const openPalette = ({ onCancel = null, onDone = null } = {}) => {
+      if (isOpen) { if (onCancel) forwarded = { cancel: onCancel, done: onDone }; return; }
       clearTimeout(closeTimer);
       isOpen = true;
-      forwarded = onCancel;
+      forwarded = onCancel ? { cancel: onCancel, done: onDone } : null;
       restoreTo = document.activeElement;
       input.value = '';
       index = 0;
       root.classList.add('is-mounted');
+      showLayer(true);
       render(true);
       void root.offsetWidth;
       root.classList.add('is-open');
@@ -1037,23 +1069,26 @@
       if (!isOpen) return;
       isOpen = false;
       root.classList.remove('is-open');
-      closeTimer = setTimeout(() => root.classList.remove('is-mounted'), reduced() ? 0 : 240);
+      closeTimer = setTimeout(() => { root.classList.remove('is-mounted'); showLayer(false); }, reduced() ? 0 : 240);
       const back = forwarded;
       forwarded = null;
-      // A forwarded open hands focus back to Paseo on cancel, so its shortcuts work again.
-      if (restore && back) { input.blur(); back(); return; }
+      if (back && restore) { input.blur(); back.cancel(); return; }
+      back?.done?.();
       if (restore && restoreTo instanceof HTMLElement && restoreTo.isConnected) restoreTo.focus({ preventScroll: true });
       else if (restore) input.blur();
     };
-    const run = r => { forwarded = null; closePalette(false); activate(r.el); };
+    const run = r => { closePalette(false); activate(r.el); };
 
     const isModK = e => (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k';
     b.on(window, 'keydown', e => {
       if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
       if (keys.includes('mod+k') && isModK(e)) { e.preventDefault(); isOpen ? closePalette() : openPalette(); return; }
       const target = e.composedPath?.()[0] || e.target;
-      if (keys.includes('/') && e.key === '/' && !isOpen && !isEditable(target) && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); openPalette(); }
+      if (keys.includes('/') && isSlash(e) && !isOpen && !isEditable(target) && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); openPalette(); }
     });
+    // Focus left the canvas or the page was hidden: close, so typing never goes nowhere.
+    b.on(window, 'blur', () => { if (isOpen) closePalette(false); });
+    b.on(document, 'visibilitychange', () => { if (document.hidden && isOpen) closePalette(false); });
     b.on(document, 'click', e => { if (e.target.closest?.('[data-lg-palette-open]')) { e.preventDefault(); openPalette(); } });
     b.on(input, 'input', () => { index = 0; render(false); });
     b.on(input, 'keydown', e => {
@@ -1065,7 +1100,7 @@
     });
     escapeKey(input, () => isOpen, () => closePalette(), b);
     b.on(scrim, 'click', () => closePalette());
-    b.add(() => { clearTimeout(closeTimer); capsule.destroy(); root.replaceChildren(); root.classList.remove('is-open', 'is-mounted'); });
+    b.add(() => { clearTimeout(closeTimer); showLayer(false); capsule.destroy(); root.replaceChildren(); root.classList.remove('is-open', 'is-mounted'); });
     return { open: openPalette, close: closePalette, keys, get isOpen() { return isOpen; } };
   }
 
@@ -1115,7 +1150,7 @@
     const label = make('div', 'lg-dock-label', { 'aria-hidden': 'true' }, true);
     dock.append(label);
     const page = dock.closest('[data-lg-page]');
-    let px = null, focusItem = null, raf = 0, base = [];
+    let px = null, focusItem = null, tapItem = null, tapTimer = 0, lastPointer = 'mouse', raf = 0, base = [];
     const scale = new Map(), lives = new Map();
     const maxScale = () => Math.min(parseFloat(dock.dataset.lgMagnify) || 1.6, narrowQuery.matches ? 1.3 : 9);
 
@@ -1149,7 +1184,7 @@
         if (Math.abs(d) < best) { best = Math.abs(d); nearest = it; }
       });
       api(dock, 'nav')?.follow();
-      const shown = focusItem || (best < sz * 0.8 ? nearest : null);
+      const shown = focusItem || tapItem || (best < sz * 0.8 ? nearest : null);
       if (shown) {
         const s = scale.get(shown) || 1;
         label.textContent = shown.dataset.lgLabel || shown.getAttribute('aria-label') || '';
@@ -1169,33 +1204,66 @@
     });
     b.on(dock, 'pointerleave', () => { px = null; kick(); });
     b.on(dock, 'focusin', e => {
-      untuck();
+      rest();
       const it = items().find(x => x.contains(e.target));
       if (it && it.matches(':focus-visible')) { focusItem = it; kick(); }
     });
-    b.on(dock, 'focusout', () => { focusItem = null; kick(); });
+    b.on(dock, 'focusout', () => { focusItem = null; kick(); reveal(600); });
+    // Touch and pen have no hover: a tapped item shows its name for a moment.
+    b.on(dock, 'pointerdown', e => { lastPointer = e.pointerType || 'mouse'; });
+    b.on(dock, 'click', e => {
+      const it = items().find(x => x.contains(e.target));
+      if (!it) return;
+      reveal(1600, true);
+      if (lastPointer === 'mouse') return;
+      clearTimeout(tapTimer);
+      tapItem = it; kick();
+      tapTimer = setTimeout(() => { tapItem = null; kick(); }, 1500);
+    });
+    b.add(() => clearTimeout(tapTimer));
     if (!dock.matches('[data-lg~="nav"]')) arrowKeys(dock, items, b);
     const ro = new ResizeObserver(measure);
     ro.observe(dock);
     b.add(() => ro.disconnect());
     measure();
 
-    // Narrow panes (page mode): tuck while scrolling down to read; come back on scroll up,
-    // near the top or the end, on focus, or when the pointer nears the bottom edge.
-    let lastY = scrollY, scrollFrame = 0, tucked = false;
+    // Narrow pages: tucked at rest (never covers content); shown at the end (room is reserved
+    // there), with focus or the pointer, near the bottom edge, briefly after scrolling up or a tap.
+    let lastY = scrollY, scrollFrame = 0, restTimer = 0, tucked = false, revealUntil = 0, holdUntil = 0;
+    const narrowPage = () => !!page && narrowQuery.matches;
     const tuck = on => { if (tucked === on) return; tucked = on; dock.classList.toggle('is-tucked', on); };
-    function untuck() { tuck(false); }
+    function rest() {
+      clearTimeout(restTimer);
+      const wait = revealUntil - Date.now();
+      if (narrowPage() && wait > 0) restTimer = setTimeout(rest, wait + 20);
+      const end = innerHeight + scrollY >= document.documentElement.scrollHeight - 4;
+      tuck(narrowPage() && wait <= 0 && !end && !dock.contains(document.activeElement) && !dock.matches(':hover'));
+    }
+    function reveal(ms, hold = false) {
+      const until = Date.now() + ms;
+      revealUntil = Math.max(revealUntil, until);
+      if (hold) holdUntil = Math.max(holdUntil, until);
+      rest();
+    }
     const onScroll = () => {
       scrollFrame = 0;
-      const y = scrollY, end = innerHeight + y >= document.documentElement.scrollHeight - 4;
-      if (!page || !narrowQuery.matches || y < 8 || end || dock.contains(document.activeElement)) tuck(false);
-      else if (y > lastY + 6 && y > 24) tuck(true);
-      else if (y < lastY - 6) tuck(false);
+      const y = scrollY;
+      if (y < lastY - 6) reveal(2500);
+      else if (y > lastY + 6 && Date.now() >= holdUntil) { revealUntil = 0; rest(); }
+      else rest();
       lastY = y;
     };
     b.on(window, 'scroll', () => { if (!scrollFrame) scrollFrame = requestAnimationFrame(onScroll); }, { passive: true });
-    b.on(window, 'pointermove', e => { if (tucked && innerHeight - e.clientY < 72) untuck(); }, { passive: true });
-    b.on(narrowQuery, 'change', () => { untuck(); scale.clear(); for (const it of items()) setScale(it, 1); base = []; measure(); });
+    b.on(window, 'pointermove', e => { if (narrowPage() && innerHeight - e.clientY < 72) reveal(1200); }, { passive: true });
+    b.on(dock, 'pointerleave', () => reveal(800));
+    b.on(narrowQuery, 'change', () => { rest(); scale.clear(); for (const it of items()) setScale(it, 1); base = []; measure(); });
+    b.on(window, 'resize', rest);
+    b.on(window, 'load', rest);
+    // First rest state without a slide-out; re-checked once the page has its final height.
+    dock.classList.add('lg-instant');
+    rest();
+    requestAnimationFrame(() => { rest(); requestAnimationFrame(() => dock.classList.remove('lg-instant')); });
+    b.add(() => { clearTimeout(restTimer); dock.classList.remove('lg-instant'); });
     b.add(() => { cancelAnimationFrame(scrollFrame); dock.classList.remove('is-tucked'); });
 
     b.add(() => {
@@ -1242,10 +1310,12 @@
     const tipRect = svgEl('rect', { rx: 9, height: 22 }), tipText = svgEl('text', { y: 15, 'text-anchor': 'middle' });
     gTip.append(tipRect, tipText);
     svgRoot.append(defs, gGrid, gMarks, gAvg, gX, gTip);
-    const table = make('table', 'lg-chart-table');
+    // A clipping box: a table never shrinks below its content (no page overflow).
+    const table = make('table', 'lg-chart-table'), tableBox = make('div', 'lg-sr');
+    tableBox.append(table);
     const empty = make('p', 'lg-chart-empty');
     empty.textContent = '暂无数据';
-    fig.append(svgRoot, table);
+    fig.append(svgRoot, tableBox);
     const fill = `url(#lg-chart-fill-${n})`;
     const canD = typeof CSS !== 'undefined' && CSS.supports?.('d', 'path("M0 0")');
     const setD = (el, d) => { if (canD) el.style.d = `path("${d}")`; else el.setAttribute('d', d); };
@@ -1307,8 +1377,10 @@
       const avgW = [...avgText].reduce((w, ch) => w + (ch.charCodeAt(0) > 255 ? 12 : 7), 18);
       const L = 44, R = showAvg ? avgW + 12 : 12, T = 14, B = 26;
       const max0 = Math.max(0, ...vals), min0 = Math.min(0, ...vals);
-      const nice = v => { const p = 10 ** Math.floor(Math.log10(Math.max(1e-9, v))); return [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map(s => s * p).find(s => s >= v) || v; };
-      const max = max0 > 0 ? nice(max0 * 1.08) : 1, min = min0 < 0 ? -nice(-min0 * 1.08) : 0;
+      // Integer data: an even axis end, so the middle tick is whole too.
+      const ints = vals.every(Number.isInteger);
+      const nice = v => { const p = 10 ** Math.floor(Math.log10(Math.max(1e-9, v))); return [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map(s => s * p).find(s => s >= v && (!ints || Number.isInteger(s / 2))) || v; };
+      const max = max0 > 0 ? nice(max0 * 1.08) : ints ? 2 : 1, min = min0 < 0 ? -nice(-min0 * 1.08) : 0;
       const ph = height - T - B, pw = width - L - R;
       const y = v => T + (1 - (v - min) / (max - min)) * ph;
       gGrid.replaceChildren();
@@ -1406,7 +1478,7 @@
     const key = fig.getAttribute('data-lg-key');
     if (key) selectKey = resolveKey(key, currentValues(controlScope(fig)));
     render();
-    b.add(() => { cancelAnimationFrame(frame); ro.disconnect(); watching?.(); svgRoot.remove(); table.remove(); empty.remove(); });
+    b.add(() => { cancelAnimationFrame(frame); ro.disconnect(); watching?.(); svgRoot.remove(); tableBox.remove(); empty.remove(); });
     return {
       update(attr) { if (attr === 'data-lg-path') subscribe(); if (attr === 'data-lg-select') selectKey = null; queue(); },
       select(k) { if (k !== selectKey) { selectKey = k; queue(); } },
@@ -1459,7 +1531,8 @@
   let queued = false, needSweep = false, started = false, alive = true;
   const pending = new Set(), touched = new Set(), changedAttrs = new Map();
   const authoredNode = n => n.nodeType === 1 && !generated.has(n);
-  const legacyKit = () => document.getElementById('lg-kit-script') || document.getElementById('lg-kit-style');
+  // Same rule as build-time detection: only a real script/style copy of the prototype kit.
+  const legacyKit = () => document.querySelector('script#lg-kit-script, style#lg-kit-style');
   const flush = () => {
     queued = false;
     if (!alive) return;
@@ -1509,16 +1582,19 @@
     if ((pending.size || needSweep || touched.size || changedAttrs.size) && !queued) { queued = true; queueMicrotask(flush); }
   });
 
-  // Paseo forwards "/" while the Board screen (not a text field) has focus. Reply so the
-  // host can hand focus back at once when there is no palette to open.
+  // Paseo forwards "/" while the Board screen (not a text field) has focus; the reply lets it
+  // hand focus back at once. preset-close: a late open after the user moved on.
   function onHostMessage(e) {
     const d = e.data;
-    if (e.source !== window.parent || window.parent === window || !d || d.channel !== CHANNEL || d.type !== 'preset-key' || d.key !== '/') return;
+    if (e.source !== window.parent || window.parent === window || !d || d.channel !== CHANNEL) return;
+    const palettes = [];
+    for (const [el, kinds] of registry) { const p = kinds.get('palette')?.api; if (p && el.isConnected) palettes.push(p); }
+    if (d.type === 'preset-close') { for (const p of palettes) if (p.isOpen) p.close(false); return; }
+    if (d.type !== 'preset-key' || d.key !== '/') return;
     const reply = (type, extra) => window.parent.postMessage({ channel: CHANNEL, boardId: d.boardId, sessionId: d.sessionId, type, ...extra }, '*');
-    let palette = null;
-    for (const [el, kinds] of registry) { const p = kinds.get('palette')?.api; if (p && el.isConnected && p.keys.includes('/')) { palette = p; break; } }
+    const palette = palettes.find(p => p.keys.includes('/'));
     if (!palette) { reply('preset-key-ack', { opened: false }); return; }
-    palette.open({ onCancel: () => reply('preset-focus-return') });
+    palette.open({ onCancel: () => reply('preset-focus-return'), onDone: () => reply('preset-handoff-end') });
     reply('preset-key-ack', { opened: palette.isOpen });
   }
 
@@ -1541,6 +1617,7 @@
     alive = false;
     mo.disconnect();
     window.removeEventListener('keydown', onEscDown, true);
+    window.removeEventListener('keydown', onEscReach);
     window.removeEventListener('keyup', onEscUp, true);
     window.removeEventListener('message', onHostMessage);
     window.removeEventListener('pointerdown', onPointerDown, true);
@@ -1556,7 +1633,7 @@
     teardown();
     const style = document.getElementById(STYLE_ID);
     if (style) style.media = 'not all';
-    const legacy = document.getElementById('lg-kit-script');
+    const legacy = document.querySelector('script#lg-kit-script');
     if (legacy && !window.LiquidGlass) {
       const s = document.createElement('script');
       s.textContent = legacy.textContent;
