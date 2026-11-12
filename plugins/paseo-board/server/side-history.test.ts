@@ -297,4 +297,32 @@ describe("tool output excerpts", () => {
     // The marker is not mistaken for an included call, and only included excerpts are counted.
     expect(capped.toolOutputs).toBe(capped.entries);
   });
+
+  it("strips every standard terminal escape before judging binary output, so tput-formatted text stays readable", () => {
+    const plain = Array.from({ length: 20 }, (_, index) => `ok line ${index}`).join("\n");
+    // `TERM=xterm-256color tput sgr0` prints ESC ( B ESC [ m (a G0 charset designation, then SGR reset).
+    expect(sanitizeOutput(Array.from({ length: 20 }, (_, index) => `\u001B[1mok\u001B(B\u001B[m line ${index}`).join("\n"))).toBe(plain);
+    // Under screen/tmux it prints ESC [ m SI (shift in).
+    expect(sanitizeOutput(Array.from({ length: 20 }, (_, index) => `\u001B[1mok\u001B[m\u000F line ${index}`).join("\n"))).toBe(plain);
+    const sequences = [
+      "\u001B(B", "\u001B)0", "\u001B*A", "\u001B+B", "\u001B-A", "\u001B%G", "\u001B#8", "\u001B F", // nF: charset designations, DECALN, UTF-8 select, S7C1T
+      "\u001B7", "\u001B8", "\u001B=", "\u001B>", // Fp: cursor save/restore, keypad modes
+      "\u001Bc", "\u001Bn", "\u001B|", "\u001B~", // Fs: reset, locking shifts
+      "\u001BD", "\u001BE", "\u001BM", "\u001BH", "\u001B\\", // Fe: 7-bit C1
+      "\u001B[?25l", "\u001B[38;5;208m", "\u001B]0;title\u0007", "\u001B]8;;https://example.test\u001B\\", // CSI, OSC
+      "\u001BPq#0;2;0;0;0#1!14~\u001B\\", "\u001B_Gf=100,a=T;iVBORw0KGgo=\u001B\\", "\u001B^private\u001B\\", "\u001BXsos\u001B\\", // DCS (sixel), APC (kitty image), PM, SOS
+      "\u000E", "\u000F", // SO, SI
+    ];
+    for (const sequence of sequences) expect(sanitizeOutput(`a${sequence}b`), JSON.stringify(sequence)).toBe("ab");
+    // A stray ESC (cut off by the daemon's item cap, or before a line break) is dropped as well.
+    expect(sanitizeOutput("a\u001B\nb\u001B[3")).toBe("a\nb3");
+    expect(sanitizeOutput(`${sequences.join("x")}\nend`)).toBe(`${"x".repeat(sequences.length - 1)}\nend`);
+    // Genuine binary is still skipped: NUL bytes, control-heavy bytes, and random bytes decoded as UTF-8 (with ESC bytes among them).
+    expect(sanitizeOutput("ELF\u0001\u0002\u0003\u0004\u0005\u0006\u0007\u0008")).toBe("[binary data omitted]");
+    let seed = 7;
+    const random = Uint8Array.from({ length: 4_000 }, () => { seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648; return 1 + (seed >> 8) % 255; });
+    expect(random.includes(0x1B)).toBe(true); expect(random.includes(0)).toBe(false);
+    expect(sanitizeOutput(new TextDecoder().decode(random))).toBe("[binary data omitted]");
+    expect(sanitizeOutput(Array.from(random, byte => String.fromCharCode(byte)).join(""))).toBe("[binary data omitted]");
+  });
 });

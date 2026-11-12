@@ -99,14 +99,24 @@ function jsonText(value: unknown): string | undefined {
   catch { return undefined; }
 }
 /**
+ * Every ECMA-48 escape sequence, in this order: control strings (OSC, DCS, SOS, PM, APC) with their payload up
+ * to BEL or ST; CSI; then any other ESC + intermediate bytes (0x20-0x2F) + final byte (0x30-0x7E), which covers
+ * charset designations such as ESC ( B or ESC ) 0, DEC private (ESC 7, ESC =), 7-bit C1 (ESC M) and ESC c.
+ * SO/SI charset shifts and a stray ESC go too. None of them is readable text, so none may count as binary.
+ */
+export function stripTerminalEscapes(raw: string): string {
+  return raw
+    .replace(/\u001B[\]PX^_][^\u0007\u001B]*(?:\u0007|\u001B\\)/g, "")
+    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001B[ -/]*[0-~]/g, "")
+    .replace(/[\u000E\u000F\u001B]/g, "");
+}
+/**
  * Terminal escapes, carriage-return redraws, binary bytes and encoded blobs removed; blank-line runs collapsed.
  * Returns undefined when nothing readable is left.
  */
 export function sanitizeOutput(raw: string): string | undefined {
-  const text = raw
-    .replace(/\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)/g, "")
-    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\u001B[@-Z\\-_]/g, "");
+  const text = stripTerminalEscapes(raw);
   // Binary output (NUL bytes, many control or replacement characters) has no readable excerpt.
   const controls = text.match(/[\u0001-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g)?.length ?? 0;
   if (text.includes("\u0000") || controls > Math.max(4, text.length * 0.02)) return BINARY_OMITTED;
