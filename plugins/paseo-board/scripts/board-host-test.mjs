@@ -16,6 +16,7 @@ const batchScope = process.env.BOARD_HOST_TEST_SCOPE === 'batch';
 const toolbarScope = process.env.BOARD_HOST_TEST_SCOPE === 'toolbar';
 const modalScope = process.env.BOARD_HOST_TEST_SCOPE === 'modal';
 const inboxScope = process.env.BOARD_HOST_TEST_SCOPE === 'inbox';
+const glassScope = process.env.BOARD_HOST_TEST_SCOPE === 'glass';
 const resumeScopeName = process.env.BOARD_HOST_TEST_SCOPE;
 const resumeScope = ['resume','resume-core','resume-reconnect','resume-retirement'].includes(resumeScopeName);
 const bundle = await build({ entryPoints: [join(directory, 'board-host-fixture.tsx')], bundle: true, format: 'iife', platform: 'browser', write: false, loader: { '.txt': 'text' }, define: { 'process.env.NODE_ENV': '"test"' }, plugins: [{ name: 'host-adapters', setup(build) { build.onResolve({ filter: /^(react-native|@getpaseo\/plugin(?:\/client(?:\/ui)?)?)$/ }, () => ({ path: join(directory, 'board-host-adapter.tsx') })); } }] });
@@ -295,6 +296,9 @@ try {
     check('New Board modal receives the explicit theme, accepts native text input and cancels without a create RPC');
   } else if (toolbarScope) {
     await runToolbarChecks();
+  } else if (glassScope) {
+    const { runGlassHostChecks } = await import('./glass-host-checks.mjs');
+    await runGlassHostChecks({ assert, command, evaluate, until, untilFrame, key, hostClick, openAt, noPopover, check });
   } else if (inboxScope) {
     const { runInboxHostChecks } = await import('./inbox-host-checks.mjs');
     await runInboxHostChecks({ assert, command, evaluate, until, frame, untilFrame, key, click, hostClick, hostLocation, sendText, submitCount, canvasRect, check });
@@ -1460,6 +1464,10 @@ try {
   }
 
   }
+  }
+  if (!process.env.BOARD_HOST_TEST_SCOPE) {
+    const { runGlassHostChecks } = await import('./glass-host-checks.mjs');
+    await runGlassHostChecks({ assert, command, evaluate, until, untilFrame, key, hostClick, openAt, noPopover, check });
   }
   const screenshot = await command('Page.captureScreenshot', { format: 'png' });
   if (process.env.BOARD_HOST_TEST_SCREENSHOT) await writeFile(process.env.BOARD_HOST_TEST_SCREENSHOT, Buffer.from(screenshot.data, 'base64'));

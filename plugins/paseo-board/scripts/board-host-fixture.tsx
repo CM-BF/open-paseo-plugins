@@ -213,6 +213,7 @@ const fixture: any = global.hostFixture = {
   setCanvasData: (data: Board["canvas"]["data"]) => { persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, data }; advance(); },
   updateCanvas: () => { persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, data: { ...persisted.canvas.data, next: true } }; advance(); },
   // An authored change (one more agent patch), unlike updateCanvas's data-only write.
+  appendHtml: (id: string, html: string) => { persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, patches: [...persisted.canvas.patches, { id, at: now(), source: "agent", selector: "body", operation: "append", html } as any] }; advance(); },
   patchCanvas: (text: string) => { persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, patches: [...persisted.canvas.patches, { id: `share-edit-${persisted.canvas.patches.length + 1}`, at: now(), source: "agent", selector: "#far", operation: "append", html: `<p class="share-edit">${text}</p>` } as any] }; advance(); },
   addUpdate: (value: Partial<CanvasUpdate> & { id: string }, patch?: any) => {
     if (patch) persisted.canvas = { ...persisted.canvas, revision: persisted.canvas.revision + 1, patches: [...persisted.canvas.patches, { id: `patch-${value.id}`, at: now(), source: "agent", ...copy(patch) }] };
