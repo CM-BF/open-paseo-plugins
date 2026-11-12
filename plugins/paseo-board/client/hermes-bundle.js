@@ -749,6 +749,8 @@ var InheritedHistorySchema = z.object({
   messages: z.number().int().nonnegative(),
   /** All curated lines included, including tool summaries and Board answers. */
   entries: z.number().int().nonnegative(),
+  /** Included tool calls that carry a short output excerpt. Absent on snapshots taken before excerpts existed (no claim either way). */
+  toolOutputs: z.number().int().nonnegative().optional(),
   /** Older history existed but was not included. */
   omitted: z.boolean(),
   /** The owner had an active turn or pending permission at capture. */
@@ -1674,6 +1676,20 @@ function validComponentEditRequest(value) {
   if (patch.layout !== void 0) return false;
   if (patch.operation === "text") return typeof patch.text === "string" && patch.text.length <= 24e3 && typeof patch.expectedText === "string" && patch.expectedText.length <= 24e3 && (patch.textNodeIndex === void 0 || Number.isSafeInteger(patch.textNodeIndex) && Number(patch.textNodeIndex) >= 0 && Number(patch.textNodeIndex) <= 1e4) && patch.destination === void 0 && patch.destinationIdentity === void 0 && patch.position === void 0;
   return short(patch.destination, 1e3) && identity(patch.destinationIdentity) && ["before", "after", "append", "prepend"].includes(patch.position) && patch.text === void 0 && patch.expectedText === void 0 && patch.textNodeIndex === void 0;
+}
+
+// client/interaction-location.ts
+var WHOLE_CANVAS_NOTE = "\u9488\u5BF9\u6574\u4E2A\u753B\u5E03";
+var LOCATION_NOTES = {
+  collapsed: "\u7EC4\u4EF6\u5F53\u524D\u4E0D\u53EF\u89C1 \xB7 \u6807\u8BB0\u8DDF\u968F\u53EF\u89C1\u5916\u5C42",
+  ancestor: "\u539F\u5185\u5BB9\u4E0D\u53EF\u89C1 \xB7 \u6807\u8BB0\u6682\u968F\u53EF\u89C1\u5916\u5C42",
+  hidden: "\u7EC4\u4EF6\u5F53\u524D\u9690\u85CF \xB7 \u53EF\u4ECE\u4FA7\u680F\u8BF7\u6C42\u5B9A\u4F4D",
+  snapshot: "\u672A\u5B9A\u4F4D\u5230\u5F53\u524D\u7EC4\u4EF6 \xB7 \u53EF\u67E5\u770B\u539F\u59CB\u5F15\u7528"
+};
+function interactionLocationNote(location, anchor) {
+  if (location === "component") return void 0;
+  if (location === "snapshot" && (!anchor || anchor.kind === "board")) return WHOLE_CANVAS_NOTE;
+  return LOCATION_NOTES[location];
 }
 
 // shared/frame-theme.ts
@@ -14564,8 +14580,8 @@ var SIDE_CONTEXT_LABELS = {
   blank: "\u7A7A\u767D Side",
   "owner-history": "\u5E26\u4E3B agent \u8BB0\u5F55"
 };
-var SIDE_CONTEXT_SCOPE = "\u51BB\u7ED3\u4E3B agent \u5F53\u524D\u5BF9\u8BDD\uFF08\u542B Board \u56DE\u590D\u548C\u5DE5\u5177\u540D\uFF0C\u4E0D\u542B\u5DE5\u5177\u8F93\u51FA\u548C\u601D\u8003\uFF09\uFF0C\u8FC7\u957F\u53EA\u5E26\u6700\u8FD1\u90E8\u5206\uFF1B\u4EC5\u4F5C\u80CC\u666F\u53C2\u8003\u3002";
-var SIDE_CONTEXT_NOTE = "\u65B0 Side \u4F1A\u5E26\u4E0A\u4E3B agent \u6700\u8FD1\u7684\u5BF9\u8BDD\uFF0C\u4EC5\u4F5C\u80CC\u666F\u53C2\u8003\u3002";
+var SIDE_CONTEXT_SCOPE = "\u51BB\u7ED3\u4E3B agent \u5F53\u524D\u5BF9\u8BDD\uFF08\u542B Board \u56DE\u590D\u3001\u5DE5\u5177\u540D\u548C\u547D\u4EE4\u8F93\u51FA\u6458\u8981\uFF1A\u6BCF\u6B21\u8F93\u51FA\u53EA\u7559\u5F00\u5934\u548C\u7ED3\u5C3E\uFF0C\u5171\u7EA6 600 \u5B57\uFF0C\u56FE\u7247\u548C\u4E8C\u8FDB\u5236\u5185\u5BB9\u4E0D\u5E26\uFF1B\u4E0D\u542B\u601D\u8003\uFF09\uFF0C\u8FC7\u957F\u53EA\u5E26\u6700\u8FD1\u90E8\u5206\uFF1B\u4EC5\u4F5C\u80CC\u666F\u53C2\u8003\u3002";
+var SIDE_CONTEXT_NOTE = "\u5E26\u4E0A\u4E3B agent \u6700\u8FD1\u7684\u5BF9\u8BDD\u548C\u547D\u4EE4\u8F93\u51FA\u6458\u8981\uFF0C\u4EC5\u4F5C\u53C2\u8003\u3002";
 var SIDE_CONTEXT_NOTE_EXISTING = "\u53EA\u6709\u65B0\u5EFA\u7684 Side \u5E26\u4E0A\u8BB0\u5F55\uFF1B\u5DF2\u6709\u65C1\u652F\u4E0D\u53D8\u3002";
 var SIDE_CONTEXT_FROZEN_NOTE = "\u91CD\u8BD5\u6CBF\u7528\u539F\u53D1\u9001\u7684\u9009\u62E9\uFF0C\u4E0D\u4F1A\u6539\u53D8\u3002";
 function sideContextNotes(value, options) {
@@ -14622,7 +14638,8 @@ function sideProvenance(item) {
   if (item.sideNotCreated || !history) return item.sideNotCreated || item.status === "failed" ? "\u5E26\u4E3B agent \u8BB0\u5F55 \xB7 \u672A\u5EFA\u7ACB\uFF08\u6CA1\u6709\u521B\u5EFA Side\uFF09" : "\u5E26\u4E3B agent \u8BB0\u5F55 \xB7 \u8BFB\u53D6\u4E2D";
   var state = history.state === "frozen" && item.status === "failed" ? "\u521B\u5EFA\u7ED3\u679C\u5F85\u6838\u5BF9" : STATE_NOTES[history.state];
   var amount = history.entries === 0 && !history.omitted ? "\u4E3B agent \u6682\u65E0\u53EF\u5E26\u7684\u8BB0\u5F55" : history.omitted ? `\u6700\u8FD1 ${history.messages} \u6761\u6D88\u606F \xB7 \u66F4\u65E9\u7684\u672A\u5E26\u4E0A` : `${history.messages} \u6761\u6D88\u606F`;
-  return ["\u5E26\u4E3B agent \u8BB0\u5F55", state, amount, history.ownerBusy ? "\u542B\u4E3B agent \u8FDB\u884C\u4E2D\u7684\u4E00\u8F6E" : ""].filter(Boolean).join(" \xB7 ");
+  var outputs = history.toolOutputs ? "\u542B\u547D\u4EE4\u8F93\u51FA\u6458\u8981" : "";
+  return ["\u5E26\u4E3B agent \u8BB0\u5F55", state, amount, outputs, history.ownerBusy ? "\u542B\u4E3B agent \u8FDB\u884C\u4E2D\u7684\u4E00\u8F6E" : ""].filter(Boolean).join(" \xB7 ");
 }
 function sideHistoryTag(item) {
   var found = historyOf(item);
@@ -15871,6 +15888,7 @@ function BoardContent({
   }, [embedded, board, boardId, host.label, query.isPending, query.error, query.liveError, frameError, staged.length, batchSnapshot.batches.length]);
   var interactions = useMemo8(() => mergeInteractions(board?.interactions ?? [], optimistic), [board?.interactions, optimistic]);
   var markers = useMemo8(() => interactionMarkers(interactions), [interactions]);
+  var locationNote = interactionLocation && interactionLocation.id === selectedInteractionId ? interactionLocationNote(interactionLocation.location, markers.find(marker => marker.id === interactionLocation.id)?.anchor) : void 0;
   var thread = useMemo8(() => interactionThread(selectedInteractionId ? markerInteractionId(selectedInteractionId, interactions) : void 0, interactions), [selectedInteractionId, interactions]);
   var popover = popoverPlacement(popoverPoint, {
     width,
@@ -16977,15 +16995,13 @@ function BoardContent({
               gap: 16
             },
             keyboardShouldPersistTaps: "handled",
-            children: [interactionLocation && interactionLocation.id === selectedInteractionId && interactionLocation.location !== "component" ? /* @__PURE__ */jsx19(Copy, {
-              small: true,
-              muted: true,
-              children: {
-                collapsed: "\u7EC4\u4EF6\u5F53\u524D\u4E0D\u53EF\u89C1 \xB7 \u6807\u8BB0\u8DDF\u968F\u53EF\u89C1\u5916\u5C42",
-                ancestor: "\u539F\u5185\u5BB9\u4E0D\u53EF\u89C1 \xB7 \u6807\u8BB0\u6682\u968F\u53EF\u89C1\u5916\u5C42",
-                hidden: "\u7EC4\u4EF6\u5F53\u524D\u9690\u85CF \xB7 \u53EF\u4ECE\u4FA7\u680F\u8BF7\u6C42\u5B9A\u4F4D",
-                snapshot: "\u672A\u5B9A\u4F4D\u5230\u5F53\u524D\u7EC4\u4EF6 \xB7 \u53EF\u67E5\u770B\u539F\u59CB\u5F15\u7528"
-              }[interactionLocation.location]
+            children: [locationNote ? /* @__PURE__ */jsx19(View16, {
+              testID: "board-interaction-location",
+              children: /* @__PURE__ */jsx19(Copy, {
+                small: true,
+                muted: true,
+                children: locationNote
+              })
             }) : null, thread.map(item => /* @__PURE__ */jsx19(InteractionContent, {
               item,
               board,
@@ -17098,7 +17114,7 @@ function BoardContent({
               }) : null, /* @__PURE__ */jsxs16(Copy, {
                 small: true,
                 muted: true,
-                children: [compose.sourceInteractionId ? "Enter \u4FDD\u5B58\u8FFD\u95EE\u8349\u7A3F \xB7 \u2318 / Ctrl + Enter \u53D1\u9001\u8FFD\u95EE\uFF08\u987B\u5148\u5904\u7406\u5F85\u53D1\u9001\u8BC4\u8BBA\uFF09" : "Enter \u52A0\u5165\u5F85\u53D1\u9001 \xB7 \u2318 / Ctrl + Enter \u5F53\u524D\u8BC4\u8BBA\u548C\u5F85\u53D1\u9001\u8BC4\u8BBA\u4E00\u8D77\u53D1\u4E3B\u4F1A\u8BDD", "Option / Alt + Enter \u5F53\u524D\u8BC4\u8BBA\u53D1 Side \xB7 Option / Alt + Shift + Enter \u65B0 Side\uFF08", composeSideContext === "owner-history" ? "\u5E26\u4E3B agent \u8BB0\u5F55" : "\u7A7A\u767D", "\uFF09\xB7 Shift+Enter \u6362\u884C"]
+                children: [compose.sourceInteractionId ? "Enter \u4FDD\u5B58\u8FFD\u95EE\u8349\u7A3F \xB7 \u2318 / Ctrl + Enter \u53D1\u9001\u8FFD\u95EE\uFF08\u987B\u5148\u5904\u7406\u5F85\u53D1\u9001\u8BC4\u8BBA\uFF09" : "Enter \u52A0\u5165\u5F85\u53D1\u9001 \xB7 \u2318 / Ctrl + Enter \u5F53\u524D\u8BC4\u8BBA\u548C\u5F85\u53D1\u9001\u8BC4\u8BBA\u4E00\u8D77\u53D1\u4E3B\u4F1A\u8BDD", "\n", "Option / Alt + Enter \u5F53\u524D\u8BC4\u8BBA\u53D1 Side \xB7 Option / Alt + Shift + Enter \u65B0 Side\uFF08", composeSideContext === "owner-history" ? "\u5E26\u4E3B agent \u8BB0\u5F55" : "\u7A7A\u767D", "\uFF09\xB7 Shift+Enter \u6362\u884C"]
               })]
             }) : null]
           }), compose ? /* @__PURE__ */jsxs16(View16, {

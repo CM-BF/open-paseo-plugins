@@ -25787,6 +25787,8 @@ var InheritedHistorySchema = external_exports.object({
   messages: external_exports.number().int().nonnegative(),
   /** All curated lines included, including tool summaries and Board answers. */
   entries: external_exports.number().int().nonnegative(),
+  /** Included tool calls that carry a short output excerpt. Absent on snapshots taken before excerpts existed (no claim either way). */
+  toolOutputs: external_exports.number().int().nonnegative().optional(),
   /** Older history existed but was not included. */
   omitted: external_exports.boolean(),
   /** The owner had an active turn or pending permission at capture. */
