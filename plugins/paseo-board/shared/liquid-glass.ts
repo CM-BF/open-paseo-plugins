@@ -14,24 +14,36 @@ export const LIQUID_GLASS_SCRIPT_ID = "paseo-board-liquid-glass-script";
 export interface LiquidGlassScan { marker: boolean; authoredKit: boolean; optOut: boolean; palette: boolean }
 export interface LiquidGlassUsage extends LiquidGlassScan { preset: boolean }
 
-// The marker only in contexts that create or select a scope: the attribute, a CSS attribute
-// selector, a dataset assignment or setAttribute. Prose such as "liquid glass" or ids such as
-// liquid-glass-preview-1 never match.
+// HTML attribute and tag names are case-insensitive; values (and so the CSS selector) are not.
+const anyCase = (name: string) => name.replace(/[a-z]/g, letter => `[${letter}${letter.toUpperCase()}]`);
+const pattern = (source: string) => new RegExp(source);
+// A quote, optionally escaped (markup inside a JS string: "<main data-style=\"liquid-glass\">").
+const Q = String.raw`\\?["']`, QT = String.raw`\\?["'\x60]`;
+// The marker only in contexts that create or select a scope: the attribute (also inside a JS
+// string), a CSS attribute selector, a dataset assignment or setAttribute. Prose such as
+// "liquid glass" or ids such as liquid-glass-preview-1 never match.
 const MARKER = [
-  /\bdata-style\s*=\s*(?:"liquid-glass"|'liquid-glass'|liquid-glass(?![\w-]))/,
-  /\[\s*data-style\s*[~|^$*]?=\s*["']?liquid-glass["']?\s*(?:[is]\s*)?\]/,
-  /\bdataset\.style\s*=\s*["'`]liquid-glass["'`]/,
-  /\bsetAttribute\(\s*["'`]data-style["'`]\s*,\s*["'`]liquid-glass["'`]\s*\)/,
+  pattern(String.raw`\b${anyCase("data-style")}\s*=\s*(?:\\?"liquid-glass\\?"|\\?'liquid-glass\\?'|liquid-glass(?![\w-]))`),
+  pattern(String.raw`\[\s*${anyCase("data-style")}\s*[~|^$*]?=\s*(?:${Q})?liquid-glass(?:${Q})?\s*(?:[is]\s*)?\]`),
+  pattern(String.raw`\bdataset(?:\.style|\[\s*${QT}style${QT}\s*\])\s*=\s*${QT}liquid-glass${QT}`),
+  pattern(String.raw`\bsetAttribute\(\s*${QT}${anyCase("data-style")}${QT}\s*,\s*${QT}liquid-glass${QT}\s*\)`),
 ];
 // A Board that inlines its own copy of the prototype kit (0.1/0.2): the built-in steps aside.
-// Only the prototype's element ids or its exact global assignment count; a defensive
-// `window.LiquidGlass = window.LiquidGlass || …` shim does not disable the preset.
-const AUTHORED_KIT = /\bid\s*=\s*["']?lg-kit-(?:script|style)\b|\bwindow\.LiquidGlass\s*=\s*\{\s*scan\s*:/;
-const OPT_OUT = /\bdata-lg-builtin\s*=\s*["']?off\b/;
-const PALETTE = /\bdata-lg\s*=\s*(?:"[^"]*\bpalette\b[^"]*"|'[^']*\bpalette\b[^']*'|palette\b)/;
+// Only a real <script>/<style> tag with the prototype's id, or its exact global assignment,
+// counts (the kit's runtime hand-over uses the same rule). Prose that shows the markup
+// (&lt;script id="lg-kit-script"&gt;) and a defensive
+// `window.LiquidGlass = window.LiquidGlass || …` shim do not disable the preset.
+const AUTHORED_KIT = pattern(String.raw`<(?:${anyCase("script")}|${anyCase("style")})\b[^>]*?\s${anyCase("id")}\s*=\s*(?:${Q})?lg-kit-(?:script|style)\b|\bwindow\.LiquidGlass\s*=\s*\{\s*scan\s*:`);
+const OPT_OUT = pattern(String.raw`\b${anyCase("data-lg-builtin")}\s*=\s*(?:${Q})?off\b`);
+// A declarative palette, in markup (also inside a JS string) or created by script.
+const PALETTE = [
+  pattern(String.raw`\b${anyCase("data-lg")}\s*=\s*(?:\\?"[^"]*?\bpalette\b[^"]*?\\?"|\\?'[^']*?\bpalette\b[^']*?\\?'|palette\b)`),
+  pattern(String.raw`\bdataset(?:\.lg|\[\s*${QT}lg${QT}\s*\])\s*=\s*${QT}[^"'\x60]*\bpalette\b`),
+  pattern(String.raw`\bsetAttribute\(\s*${QT}${anyCase("data-lg")}${QT}\s*,\s*${QT}[^"'\x60]*\bpalette\b`),
+];
 
 export function scanLiquidGlass(source: string): LiquidGlassScan {
-  return { marker: MARKER.some(pattern => pattern.test(source)), authoredKit: AUTHORED_KIT.test(source), optOut: OPT_OUT.test(source), palette: PALETTE.test(source) };
+  return { marker: MARKER.some(test => test.test(source)), authoredKit: AUTHORED_KIT.test(source), optOut: OPT_OUT.test(source), palette: PALETTE.some(test => test.test(source)) };
 }
 
 export function combineLiquidGlass(scans: Iterable<LiquidGlassScan>): LiquidGlassUsage {

@@ -24,6 +24,11 @@ describe("liquid-glass preset activation", () => {
     ["script dataset assignment", "<div id=\"x\"></div><script>document.getElementById('x').dataset.style = 'liquid-glass'</script>", []],
     ["script setAttribute", "<script>el.setAttribute(\"data-style\", \"liquid-glass\")</script>", []],
     ["author CSS selector", '<style>[data-style="liquid-glass"] .x{color:red}</style>', []],
+    ["markup inside a double-quoted JS string", '<div id="app"></div><script>app.innerHTML = "<main data-style=\\"liquid-glass\\" data-lg-page>…</main>";</script>', []],
+    ["markup inside a single-quoted JS string", "<script>app.innerHTML = '<section data-style=\\'liquid-glass\\'>x</section>';</script>", []],
+    ["a CSS selector inside a JS string", '<script>document.querySelector("[data-style=\\"liquid-glass\\"]")</script>', []],
+    ["a bracketed dataset assignment", "<script>el.dataset['style'] = 'liquid-glass'</script>", []],
+    ["an upper-case attribute name", '<MAIN DATA-STYLE="liquid-glass" data-lg-page></MAIN>', []],
   ];
   for (const [name, html, patches] of activating) {
     it(`inlines exactly one versioned preset for ${name}`, () => {
@@ -42,6 +47,7 @@ describe("liquid-glass preset activation", () => {
     ["quoted prose", "<p>We could try a \"liquid-glass\" preset later.</p>", []],
     ["ids and classes", '<div id="liquid-glass-preview-20261111" class="liquid-glass"></div>', []],
     ["a longer value", '<div data-style="liquid-glassy"></div><div data-style="liquid-glass-2"></div>', []],
+    ["an upper-case value (CSS values are case-sensitive)", '<div data-style="LIQUID-GLASS"></div>', []],
     ["text patches", "<p id=\"t\">x</p>", [{ id: "p1", selector: "#t", operation: "text", text: 'data-style="liquid-glass"', expectedText: "x" }]],
   ];
   for (const [name, html, patches] of inert) {
@@ -54,13 +60,16 @@ describe("liquid-glass preset activation", () => {
 
   it("yields to a Board that inlines its own prototype kit, and honours the opt-out", () => {
     const marker = '<main data-style="liquid-glass" data-lg-page></main>';
-    for (const own of ['<style id="lg-kit-style">x</style>', "<script id='lg-kit-script'>x</script>", "<script>window.LiquidGlass = { scan: () => scan(), version: '0.2.0' }</script>"]) {
+    for (const own of ['<style id="lg-kit-style">x</style>', "<script id='lg-kit-script'>x</script>", '<SCRIPT ID="lg-kit-script">x</SCRIPT>', "<script>window.LiquidGlass = { scan: () => scan(), version: '0.2.0' }</script>"]) {
       expect(doc(marker + own)).not.toContain(LIQUID_GLASS_STYLE_ID);
       expect(doc(marker, [{ id: "p", selector: "main", operation: "append", html: own }])).not.toContain(LIQUID_GLASS_STYLE_ID);
     }
     expect(doc('<main data-style="liquid-glass" data-lg-builtin="off"></main>')).not.toContain(LIQUID_GLASS_STYLE_ID);
-    // A defensive shim written after reading the API must not disable the preset.
+    // A defensive shim written after reading the API must not disable the preset, nor does
+    // prose that shows the old markup, or the id on an element that is not a script/style.
     expect(doc(marker + "<script>window.LiquidGlass = window.LiquidGlass || { scan(){} }</script>")).toContain(LIQUID_GLASS_STYLE_ID);
+    expect(doc(marker + '<p>旧写法：<code>&lt;script id="lg-kit-script"&gt;</code></p>')).toContain(LIQUID_GLASS_STYLE_ID);
+    expect(doc(marker + '<pre id="lg-kit-script">kit</pre>')).toContain(LIQUID_GLASS_STYLE_ID);
   });
 
   it("scans only authored HTML sources and reports a declarative palette", () => {
@@ -68,7 +77,12 @@ describe("liquid-glass preset activation", () => {
     expect(scanLiquidGlass('<div data-lg="palette"></div>').palette).toBe(true);
     expect(scanLiquidGlass("<div data-lg='dock nav palette'></div>").palette).toBe(true);
     expect(scanLiquidGlass('<div data-lg="nav"></div><p>palette</p>').palette).toBe(false);
-    expect(liquidGlassUsage(['<p data-style="liquid-glass">', '<i id="lg-kit-script">'])).toMatchObject({ marker: true, authoredKit: true, preset: false });
+    expect(scanLiquidGlass('<div data-lg-palette-open></div><i data-lg="dock"></i>').palette).toBe(false);
+    // Palettes created by script count too (host "/" forwarding is armed for them).
+    for (const source of ["<script>el.dataset.lg = 'palette'</script>", '<script>el.dataset["lg"]="dock palette"</script>', "<script>el.setAttribute('data-lg', 'palette')</script>", '<script>x.innerHTML = "<div data-lg=\\"palette\\"></div>"</script>', '<DIV DATA-LG="palette"></DIV>']) {
+      expect(scanLiquidGlass(source).palette, source).toBe(true);
+    }
+    expect(liquidGlassUsage(['<p data-style="liquid-glass">', '<script id="lg-kit-script">'])).toMatchObject({ marker: true, authoredKit: true, preset: false });
   });
 });
 
