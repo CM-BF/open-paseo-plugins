@@ -486,7 +486,7 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
     await viewport(width);
     await load(page, { height: 760 });
     await untilFrame("window.LiquidGlass?.version==='1.0.0'&&!document.querySelector('.lg-rolling')", 4000);
-    const geo = () => frame("(()=>{const k=document.querySelector('#kpi').getBoundingClientRect(),cw=document.documentElement.clientWidth,opts=[...document.querySelectorAll('#range > [data-lg-option]')].map(o=>o.getBoundingClientRect());return {kpi:Math.round(k.top+scrollY),overflow:document.documentElement.scrollWidth-cw,left:Math.round(Math.min(...opts.map(r=>r.left))),right:Math.round(Math.max(...opts.map(r=>r.right))),cw}})()");
+    const geo = () => frame("(()=>{const k=document.querySelector('#kpi').getBoundingClientRect(),cw=document.documentElement.clientWidth,opts=[...document.querySelectorAll('#range > [data-lg-option]')].map(o=>o.getBoundingClientRect());return {kpi:Math.round(k.top+scrollY),overflow:document.documentElement.scrollWidth-cw,left:Math.round(Math.min(...opts.map(r=>r.left))),right:Math.round(Math.max(...opts.map(r=>r.right))),cw,pill:getComputedStyle(document.querySelector('.lg-actions > .lg-pill')).opacity}})()");
     const closed = await geo();
     await clickIn('#range');
     await untilFrame("document.querySelector('#range').classList.contains('is-open')"); await sleep(900);
@@ -494,6 +494,8 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
     assert.equal(opened.kpi, closed.kpi, `${width}: ${JSON.stringify({ closed, opened })}`);
     assert.ok(closed.overflow <= 0 && opened.overflow <= 0, `${width}: ${JSON.stringify({ closed, opened })}`);
     assert.ok(opened.left >= 0 && opened.right <= opened.cw, `${width}: ${JSON.stringify(opened)}`);
+    // The neighbour under the floating row fades while it is open (no text through the glass).
+    assert.deepEqual([closed.pill, opened.pill], ['1', '0'], `${width}`);
     await shot(`glass-light-${width}-split-open`);
     await key('Escape');
     await untilFrame("!document.querySelector('#range').classList.contains('is-open')", 3000);
@@ -507,7 +509,7 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
     await untilFrame("!document.querySelector('#modules [data-lg~=expand]').classList.contains('is-expanded')", 3000);
   }
   await viewport(1100);
-  check('opening the split keeps the page still and inside the pane at 856/420/300px; an opened table module scrolls inside a narrow pane');
+  check('opening the split keeps the page still and inside the pane at 856/420/300px (neighbours fade); an opened table module scrolls inside a narrow pane');
 
   // 8c. Forced colours: built-in icons, dots and the chosen option use system colours.
   await load(page); await untilFrame("window.LiquidGlass?.version==='1.0.0'&&!document.querySelector('.lg-rolling')", 4000);

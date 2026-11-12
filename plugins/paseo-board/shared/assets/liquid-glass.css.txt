@@ -684,8 +684,11 @@ body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
 [data-style="liquid-glass"] [data-lg~="split"]:not(.lg-mounted):has(> [aria-pressed="true"]) > [data-lg-option]:not([aria-pressed="true"]),
 [data-style="liquid-glass"] [data-lg~="split"]:not(.lg-mounted):not(:has(> [aria-pressed="true"])) > [data-lg-option]:not(:first-of-type) { display: none; }
 [data-style="liquid-glass"] [data-lg~="split"].is-merging { transition: width 520ms var(--lg-spring-soft); }
-/* The open row floats above its neighbours; the goo box is the closed footprint only. */
+/* The open row floats above its neighbours (which fade meanwhile in header/card/section heads);
+   the goo box is the closed footprint only. */
 [data-style="liquid-glass"] [data-lg~="split"]:is(.is-open, .is-merging) { z-index: 6; }
+[data-style="liquid-glass"] :is(.lg-actions, .lg-card-head, .lg-section-head) > :not([data-lg~="split"]) { transition: opacity 180ms var(--lg-ease-out); }
+[data-style="liquid-glass"] :is(.lg-actions, .lg-card-head, .lg-section-head):has(> [data-lg~="split"]:is(.is-open, .is-merging)) > :not([data-lg~="split"]) { opacity: 0; pointer-events: none; }
 [data-style="liquid-glass"] .lg-split-goo {
   position: absolute;
   inset: 0 0 auto 0;
@@ -1014,6 +1017,7 @@ body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
   [data-style="liquid-glass"]:not([data-lg-page]):not([data-style="liquid-glass"] *) { padding: 16px; }
   [data-style="liquid-glass"] [data-lg-module].is-open { padding: 22px 18px; }
   [data-style="liquid-glass"] .lg-stat-value > :first-child { font-size: 32px; }
+  [data-style="liquid-glass"] .lg-module-head { flex-wrap: wrap; row-gap: 4px; }
   /* A tighter open droplet, so three options fit a 260px pane. */
   [data-style="liquid-glass"] { --lg-split-gap: 6px; }
   [data-style="liquid-glass"] [data-lg~="split"] > [data-lg-option] { padding: 0 12px; }
