@@ -1,3 +1,13 @@
+# 2026-11-11 — 新建 Side 可选“空白 Side / 带主 agent 记录”（隔离分支，未安装）
+
+分支 `sw/board-side-fork`（基于 `4f88cd7`），尚未推送、未安装、未重载插件，main 未改。设计、评审和实现报告在 `$PASEO_HOME/verification/paseo-board/glass-fork-20261111/`（`DESIGN-FORK.md`、`CRITIQUE-FORK.md`、`IMPL-FORK.md`），验证见[验证记录](docs/verification/2026-11-11-side-history.md)。
+
+- 输入框和待发送清单新增“新建 Side 时 ○ 空白 Side ● 带主 agent 记录”。凡是会新建 Side 的发送（没有 Side 时的 Option/Alt+Enter、Option/Alt+Shift+Enter、新建 Side 按钮、统一发送、画布 `board.ask`、右键/选中文字）都按看得见的选择执行，快捷键也一样。按 Board 记在本机，默认空白；已有 Side 不受影响，有 Side 时多一个“新建 Side 并发送”。
+- 选“带主 agent 记录”时，服务第一次处理这次创建时读取主 agent 当前对话（含进行中的一轮），按原生 fork 规则整理成最多 10 万字的 chat_history 附件，和创建参数一起先写入日志再创建 Side；重试、重启用同一份，第一条消息不再可能发送后从日志删除正文。Board 上的提问还原成原话、引用位置和 Board 上记录的回答；不带工具输出和思考。
+- Side 列表、讨论标题显示 `带主 agent 记录 · 最近 42 条消息 · 更早的未带上`，第一条消息未确认/未送达时明说。主 agent 已归档或记录读不出时不创建、不改成空白，释放 Side 预留并提供“重新编辑发送”。
+- 只用公开插件 SDK；空白 Side 的请求、提示词和系统提示与 `4f88cd7` 逐字相同。未在真实 daemon、真实 agent 或手机上运行。
+- 检查（代码 `29cc7e7`）：typecheck、812 项源码测试、10 项 inbox-sync、118 项浏览器、50 项宿主（含 12 项新 Side 选择流程及 1024/420/320 宽度）、30 项发布浏览器、38 项发布宿主全部 exit 0；重新构建两次产物逐字节一致。
+
 # 2026-11-10 — 实时公开数据：Board 勾选的字段几秒内到分享页，本机真实验收通过
 
 分支 `sw/board-live-pages`，运行版本 `90ffde931553d3415581a78c407212dee0b12b42`，已安装到本机，尚未推送，main 未改。详见[验收记录](docs/verification/2026-11-10-live-data.md)。
