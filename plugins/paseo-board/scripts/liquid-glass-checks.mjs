@@ -7,7 +7,10 @@ import { build } from 'esbuild';
 // The built-in liquid-glass preset inside the real buildBoardDocument wrapper and the real
 // CanvasFrame host: activation, all seven roles, host "/" forwarding, live-patch activation,
 // legacy hand-over, reduced motion, layout shift, identity and a pass of every interaction in
-// light/dark at desktop and narrow widths. Screenshots only when BOARD_GLASS_SHOT_DIR is set.
+// light/dark at desktop and narrow widths; dark-theme readability, an open module's strip against
+// the dock, and benign ResizeObserver notices (any Board). Screenshots only when
+// BOARD_GLASS_SHOT_DIR is set. BOARD_LEGACY_BOARD_HTML=<path to a 0.2 kit Board source> also runs
+// that real Board through the frame host (not part of this repository).
 export async function runLiquidGlassChecks({ evaluate, frame, update, command, send, clickPoint, location, drag, key, until, untilFrame, settleFrame, setReducedMotion, profile, directory, baseHtml, check }) {
   const root = join(directory, '..');
   const example = await readFile(join(root, 'examples/liquid-glass.html'), 'utf8');
@@ -27,7 +30,9 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   // Eval bridge and forwarding counter (test harness only; the example page itself has no script).
   // window.delayPresetKey (ms) holds a forwarded "/" back like a busy canvas would; parse-time
   // listeners run before the preset's own (it starts on DOMContentLoaded).
-  const bridge = `<script>window.addEventListener('message',e=>{if(window.delayPresetKey&&e.source===parent&&e.data?.type==='preset-key'&&!e.data.late){e.stopImmediatePropagation();setTimeout(()=>window.dispatchEvent(new MessageEvent('message',{data:{...e.data,late:true},source:parent})),window.delayPresetKey)}});window.presetKeyMessages=0;window.lgChanges=[];window.addEventListener('message',e=>{if(e.source===parent&&e.data?.type==='preset-key')window.presetKeyMessages++});document.addEventListener('lg:change',e=>window.lgChanges.push({name:e.detail.name,value:e.detail.value}));window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channel==='fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'fixture-result',id:e.data.id,error:error.message},'*')}}});</script>`;
+  // window.rawErrors keeps every window error message the canvas sees, including the benign
+  // ResizeObserver notices that the Board runtime does not report.
+  const bridge = `<script>window.rawErrors=[];window.addEventListener('error',e=>rawErrors.push(String(e.message)));window.addEventListener('message',e=>{if(window.delayPresetKey&&e.source===parent&&e.data?.type==='preset-key'&&!e.data.late){e.stopImmediatePropagation();setTimeout(()=>window.dispatchEvent(new MessageEvent('message',{data:{...e.data,late:true},source:parent})),window.delayPresetKey)}});window.presetKeyMessages=0;window.lgChanges=[];window.addEventListener('message',e=>{if(e.source===parent&&e.data?.type==='preset-key')window.presetKeyMessages++});document.addEventListener('lg:change',e=>window.lgChanges.push({name:e.detail.name,value:e.detail.value}));window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channel==='fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'fixture-result',id:e.data.id,error:error.message},'*')}}});</script>`;
   // A typical agent reset: the preset must survive it (no cascade layer, scoped selectors).
   const reset = '<style id="agent-reset">*{margin:0;padding:0;box-sizing:border-box}button{background:none;border:0;font:inherit}h1{font-size:20px}section{padding:0}</style>';
   // Authored motion inside a preset card: reduced motion must leave it to the author.
@@ -38,6 +43,7 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
     <article data-lg="card"><h2>注入测试</h2><figure id="xss-chart" data-lg="chart" aria-label="标签注入测试" data-lg-values="3,5" data-lg-labels='<img src=x onerror="window.__xss=1">,b'></figure></article>
     <article data-lg="card" id="motion-card"><h2>作者动画</h2><span id="authored-pulse" class="authored-pulse"></span><span id="authored-col" class="col-lg-6">列</span>
       <p><b id="count-plain" data-lg-count="1234">1234</b> · <b id="count-unit" data-lg-count="98.6" data-lg-key="{range}" data-lg-by="7d:98.6, 30d:97.25, 90d:96">98.6%</b></p>
+      <p id="ink-sample">正文 <a id="ink-link" href="#overview">链接</a> <code id="ink-code">code</code> <input id="ink-input" class="form-control" value="输入" aria-label="示例输入"></p>
       <figure id="int-chart" data-lg="chart" data-lg-values="14,19,22" data-lg-labels="一,二,三" data-lg-unit="篇" aria-label="整数计数"></figure></article>
   </section>`;
   const page = reset + authoredMotion + example.replace('<nav id="dock"', `${extras}\n  <nav id="dock"`) + bridge;
@@ -353,6 +359,13 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   await update('{interactions:[]}');
   check('the open palette sits in the top layer, above Board comment markers, and leaves it when closed');
 
+  // Colours of preset text, glass and generic authored elements (link, code, .btn, .form-control)
+  // inside the scope, and the Board tokens on the root (host) and on the scope.
+  const inkSelectors = ['#lg-page', '.lg-eyebrow', '.lg-title', '.lg-lede', '.lg-section-head .lg-muted', '#kpi-publish', '#kpi-publish .lg-stat-label', '#kpi-publish .lg-stat-value b', '#kpi-publish .lg-chip', '#recent', '#recent .lg-list li', '#recent time', '.lg-pill', '.lg-pill kbd', '#metric > button', '#glass-btn', '#ink-link', '#ink-code', '#ink-input', '#modules [data-lg-module]', '#modules [data-lg-module] h3', '#modules .lg-meta', '.lg-section-title', '#dock'];
+  const inkState = `(()=>{const pick=s=>{const e=document.querySelector(s);if(!e)return 'missing';const c=getComputedStyle(e);return [c.color,c.backgroundColor,c.backgroundImage.slice(0,160),c.borderTopColor].join(' | ')};const token=(e,n)=>getComputedStyle(e).getPropertyValue(n).trim();return {host:token(document.documentElement,'--background'),hostInk:token(document.documentElement,'--foreground'),scope:token(document.querySelector('#lg-page'),'--background'),scopeInk:token(document.querySelector('#lg-page'),'--foreground'),els:Object.fromEntries(${JSON.stringify(inkSelectors)}.map(s=>[s,pick(s)]))}})()`;
+  const paletteInk = "['#palette .lg-pal-panel','#palette .lg-pal-input','#palette .lg-pal-item','#palette .lg-pal-foot','#palette .lg-pal-scrim'].map(s=>{const e=document.querySelector(s);if(!e)return 'missing';const c=getComputedStyle(e);return [c.color,c.backgroundColor,c.backgroundImage.slice(0,160)].join(' | ')})";
+  const inks = {};
+
   // 8. All interactions per theme and width (desktop-first, mobile fallback).
   const passes = [{ name: 'light-1100', scheme: 'light', width: 1100 }, { name: 'dark-1100', scheme: 'dark', width: 1100 }, { name: 'light-480', scheme: 'light', width: 480 }, { name: 'light-360', scheme: 'light', width: 360 }];
   for (const pass of passes) {
@@ -368,6 +381,21 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
       const channels = text => text.match(/[\d.]+/g).slice(0, 3).map(Number);
       assert.ok(channels(dark.btnInk).every(v => v < 90), JSON.stringify(dark));
       assert.ok(!/rgba?\(\s*\d+,\s*\d+,\s*\d+,\s*0\)/.test(dark.btnBg) ? channels(dark.btnBg).every(v => v > 150) : true, JSON.stringify(dark));
+    }
+    // Dark Paseo theme readability: the host's own tokens on the root really are dark, yet every
+    // sampled colour inside the scope (preset text, glass, link, code, .btn, .form-control) is the
+    // light-theme value, so nothing turns light-on-light.
+    if (pass.width >= 600) {
+      await hover({ x: 4, y: 4 }); await settleFrame();
+      inks[pass.scheme] = await frame(inkState);
+      if (pass.scheme === 'dark') {
+        const [light, dark] = [inks.light, inks.dark];
+        assert.ok(!Object.values(dark.els).includes('missing'), JSON.stringify(dark.els));
+        assert.notEqual(dark.host, light.host, 'host tokens follow the Paseo theme');
+        assert.equal(dark.scope, light.scope); assert.equal(dark.scopeInk, light.scopeInk);
+        assert.notEqual(dark.scope, dark.host);
+        for (const selector of inkSelectors) assert.equal(dark.els[selector], light.els[selector], `${selector} differs in the dark host theme`);
+      }
     }
     if (pass.width < 600) {
       const narrow = await frame(`(()=>{const cols=e=>getComputedStyle(document.querySelector(e)).gridTemplateColumns.split(' ').length;const dock=document.querySelector('#dock'),item=dock.querySelector('[data-lg-dock-item]');return {kpi:cols('#kpi'),columns:cols('#trend'),overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,item:item.getBoundingClientRect().width,pad:parseFloat(getComputedStyle(document.querySelector('#lg-page')).paddingBottom),dock:dock.getBoundingClientRect().height}})()`);
@@ -437,6 +465,10 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
     await untilFrame("document.querySelector('#palette').classList.contains('is-open')");
     await command('Input.insertText', { text: '模块' });
     await sleep(450); await shot(`glass-${pass.name}-palette`);
+    if (pass.width >= 600) {
+      inks[`${pass.scheme}-palette`] = await frame(paletteInk);
+      if (pass.scheme === 'dark') assert.deepEqual(inks['dark-palette'], inks['light-palette'], 'the palette looks the same in the dark host theme');
+    }
     await key('Escape');
     await untilFrame("!document.querySelector('#palette').classList.contains('is-mounted')");
     await until("document.activeElement!==document.querySelector('iframe')", 2000);
@@ -476,6 +508,7 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
       for (const id of ['kpi-publish', 'kpi', 'metric', 'range', 'dock']) assert.equal(await liveIdentity('#' + id), componentIdentityFor(authoredDoc.querySelector('#' + id)).fingerprint, `${id} after interaction`);
     }
     check(`${pass.name}: nav, ${pass.width >= 600 ? 'card, ' : ''}split, expand, forwarded palette and dock all work`);
+    if (pass.scheme === 'dark') check('dark Paseo theme: preset text, glass, palette and generic elements (link, code, .btn, .form-control) keep their light-theme colours; host tokens outside stay dark');
   }
   await viewport(1100);
   await evaluate("setTheme('light')");
@@ -510,6 +543,123 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   }
   await viewport(1100);
   check('opening the split keeps the page still and inside the pane at 856/420/300px (neighbours fade); an opened table module scrolls inside a narrow pane');
+
+  // 8e. An open module's thumbnail strip is never under the floating dock (real-app finding: at
+  // the Paseo desktop canvas of 950x787 the strip sat completely behind the dock). Modules are the
+  // last section, as in the real Board. From the page end (where "/" → 工作台模块 lands), with the
+  // grid at the bottom edge, and with the strip scrolled into the dock's band, every thumbnail is
+  // the topmost element at its centre and a real click switches modules; the dock never covers the
+  // open module or its close button, and it is back once the module is out of its way. Narrow
+  // panes also try the things that bring a tucked dock back (pointer at the bottom edge, scroll up).
+  const stripPage = reset + example + bridge;
+  const expandedQ = "document.querySelector('#modules [data-lg~=expand]').classList.contains('is-expanded')";
+  const stripState = `(()=>{const root=document.querySelector('#modules [data-lg~=expand]'),strip=root.querySelector('.lg-strip'),m=root.querySelector('[data-lg-module].is-open'),dock=document.querySelector('#dock'),ds=getComputedStyle(dock),d=dock.getBoundingClientRect();
+    const shown=ds.pointerEvents!=='none'&&parseFloat(ds.opacity)>0.05;
+    const hit=el=>{const r=el.getBoundingClientRect(),e=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return e===el||el.contains(e)};
+    const under=r=>shown&&r.bottom>d.top&&r.top<d.bottom&&r.right>d.left&&r.left<d.right;
+    const s=strip.getBoundingClientRect(),mr=m?m.getBoundingClientRect():null,close=m&&m.querySelector('.lg-module-close'),cr=close&&close.getBoundingClientRect();
+    const thumbs=[...strip.querySelectorAll('.lg-thumb')].filter(t=>!t.hidden);
+    return {open:!!m,fits:!!mr&&s.bottom-mr.top<=innerHeight-24,thumbs:thumbs.map(t=>{const r=t.getBoundingClientRect();return {view:r.top>=0&&r.bottom<=innerHeight,hit:r.bottom<=0||r.top>=innerHeight||hit(t)}}),
+      close:!cr||cr.bottom<=0||cr.top>=innerHeight||hit(close),stripUnder:under(s),moduleUnder:!!mr&&under(mr),dockShown:shown,
+      strip:[Math.round(s.top),Math.round(s.bottom)],dock:[Math.round(d.top),Math.round(d.bottom)],module:mr&&[Math.round(mr.top),Math.round(mr.bottom)],y:Math.round(scrollY),max:document.documentElement.scrollHeight-innerHeight,ih:innerHeight}})()`;
+  // Waits for the open/switch animation, any smooth scroll and the dock's 320 ms slide.
+  const settleStrip = async () => {
+    await sleep(900);
+    await frame('new Promise(resolve=>{let y=scrollY,same=0;const tick=()=>{if(scrollY===y){if(++same>5)return resolve(true)}else{y=scrollY;same=0}setTimeout(tick,40)};tick()})');
+    await sleep(380);
+  };
+  const stripClear = async (label, { inView = true } = {}) => {
+    const state = await frame(stripState);
+    const ok = state.open && state.thumbs.length === 3 && state.thumbs.every(t => t.hit && (!inView || !state.fits || t.view)) && state.close && !state.stripUnder && !state.moduleUnder;
+    assert.ok(ok, `${label}: ${JSON.stringify(state)}`);
+    return state;
+  };
+  // Opens the first module whose title is in view (above the dock zone) with a real click.
+  const openModule = async () => {
+    const n = await frame("[...document.querySelectorAll('#modules [data-lg-module]')].findIndex(m=>{const r=m.querySelector('h3').getBoundingClientRect();return r.top>=8&&r.bottom<=innerHeight-90})+1");
+    assert.ok(n > 0, 'a module title is in view');
+    const p = await center(`#modules [data-lg-module]:nth-of-type(${n}) h3`);
+    await clickPoint(p.x, p.y);
+    await untilFrame(expandedQ); await settleStrip();
+  };
+  // A real click on the first thumbnail switches to that module (thumbnails follow module order).
+  const switchFromStrip = async () => {
+    const n = await frame("[...document.querySelectorAll('#modules .lg-strip .lg-thumb')].findIndex(t=>!t.hidden)+1");
+    const p = await center(`#modules .lg-strip .lg-thumb:nth-child(${n})`);
+    await clickPoint(p.x, p.y);
+    await untilFrame(`document.querySelector('#modules [data-lg-module]:nth-of-type(${n})').classList.contains('is-open')`); await settleStrip();
+  };
+  const closeModule = async () => { await key('Escape'); await untilFrame(`!${expandedQ}`, 3000); await settleStrip(); };
+  for (const size of [{ width: 950, height: 787 }, { width: 420, height: 787 }, { width: 320, height: 640 }]) {
+    const label = `${size.width}x${size.height}`, narrowPane = size.width <= 720;
+    await viewport(size.width, size.height + 40);
+    await load(stripPage, { height: size.height });
+    await untilFrame("window.LiquidGlass?.version==='1.0.0'&&!document.querySelector('.lg-rolling')", 4000);
+    // a) From the page end.
+    await frame('scrollTo(0,document.documentElement.scrollHeight)'); await settleStrip();
+    await openModule();
+    await stripClear(`${label} opened at the page end`);
+    await shot(`glass-strip-${size.width}-page-end`);
+    // The strip is really clickable: a real click on a thumbnail switches modules.
+    await switchFromStrip();
+    await stripClear(`${label} after switching from the strip`);
+    // b) The strip scrolled into the dock's band at the bottom edge of the pane.
+    await frame("(()=>{const s=document.querySelector('#modules .lg-strip').getBoundingClientRect();scrollBy({top:s.bottom-(innerHeight-14),behavior:'instant'});return true})()"); await settleStrip();
+    await stripClear(`${label} strip at the bottom edge`);
+    if (narrowPane) {
+      // What brings a tucked narrow dock back: the pointer near the bottom edge, a scroll up.
+      const bottomEdge = await evaluate("(()=>{const r=document.querySelector('iframe').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height-30}})()");
+      await hover({ x: bottomEdge.x - 60, y: bottomEdge.y }); await sleep(450);
+      await stripClear(`${label} pointer at the bottom edge`);
+      await hover({ x: 4, y: 4 });
+      await frame("scrollBy({top:40,behavior:'instant'}),true"); await sleep(120);
+      await frame("(()=>{const s=document.querySelector('#modules .lg-strip').getBoundingClientRect();scrollBy({top:s.bottom-(innerHeight-14),behavior:'instant'});return true})()"); await settleStrip();
+      await stripClear(`${label} after scrolling up`);
+    }
+    await shot(`glass-strip-${size.width}-bottom-edge`);
+    if (!narrowPane) {
+      // Keyboard focus in the dock brings it back over the strip; Shift+Tab back gives way again.
+      // A mouse click leaves focus on a dock button in Chromium, so only keyboard focus counts.
+      const tab = async (modifiers = 0) => {
+        await command('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers });
+        await command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers });
+      };
+      await frame("[...document.querySelectorAll('#modules .lg-strip .lg-thumb')].filter(t=>!t.hidden).at(-1).focus(),true");
+      await tab();
+      await untilFrame("document.activeElement.matches('#dock [data-lg-dock-item]')&&!document.querySelector('#dock').classList.contains('is-yielding')", 2000);
+      await tab(8);
+      await untilFrame("document.activeElement.matches('.lg-thumb')&&document.querySelector('#dock').classList.contains('is-yielding')", 2000);
+    }
+    await switchFromStrip();
+    await stripClear(`${label} switched from the bottom edge`);
+    // c) Once the open module is out of its way (the page end keeps room below it) the dock is back.
+    await frame('scrollTo(0,document.documentElement.scrollHeight)'); await settleStrip();
+    const end = await stripClear(`${label} at the page end while open`, { inView: false });
+    assert.equal(end.dockShown, true, `${label}: the dock returns at the page end ${JSON.stringify(end)}`);
+    if (!narrowPane) {
+      // A real click on a dock item leaves focus on it (Chromium) without :focus-visible: the dock
+      // still gives way once the strip reaches its band.
+      const item = await center('#dock > [data-lg-dock-item]:nth-of-type(4)');
+      await clickPoint(item.x, item.y); await settleStrip();
+      assert.equal(await frame("document.activeElement.matches('#dock [data-lg-dock-item]')&&!document.activeElement.matches(':focus-visible')"), true);
+      await frame("(()=>{const s=document.querySelector('#modules .lg-strip').getBoundingClientRect();scrollBy({top:s.bottom-(innerHeight-14),behavior:'instant'});return true})()"); await settleStrip();
+      await stripClear(`${label} strip at the bottom edge after a dock click`);
+      await frame('document.activeElement.blur(),scrollTo(0,document.documentElement.scrollHeight),true'); await settleStrip();
+    }
+    await closeModule();
+    // d) With the grid's bottom edge at the bottom of the pane (as in the real-app probe).
+    await frame("(()=>{const g=document.querySelector('#modules [data-lg~=expand]').getBoundingClientRect();scrollBy({top:g.bottom-innerHeight+4,behavior:'instant'});return true})()"); await settleStrip();
+    await openModule();
+    await stripClear(`${label} opened with the grid at the bottom edge`);
+    await shot(`glass-strip-${size.width}-grid-bottom`);
+    await closeModule();
+    if (!narrowPane) {
+      // Nothing open: the desktop dock is there again.
+      assert.equal(await frame("(()=>{const s=getComputedStyle(document.querySelector('#dock'));return s.pointerEvents!=='none'&&parseFloat(s.opacity)>0.95})()"), true);
+    }
+  }
+  await viewport(1100);
+  check('an open module\'s thumbnail strip stays visible and clickable above the dock at 950x787, 420x787 and 320x640; the dock never covers the open module and comes back when out of the way');
 
   // 8c. Forced colours: built-in icons, dots and the chosen option use system colours.
   await load(page); await untilFrame("window.LiquidGlass?.version==='1.0.0'&&!document.querySelector('.lg-rolling')", 4000);
@@ -657,6 +807,117 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   await untilFrame("document.querySelectorAll('.lg-capsule').length===0");
   assert.equal(await frame('window.LiquidGlass.version'), '0.1.0');
   check('an old kit added by a live patch takes the page over cleanly; an unguarded overwrite makes the built-in step aside');
+
+  // 14. Resizing never shows "ResizeObserver loop completed with undelivered notifications." (real-app
+  // finding on the built-in preset Board and on a Board with the 0.2 kit inlined). These notices are
+  // benign: the observer delivers the rest in the next frame. (a) The Board runtime does not report
+  // them for any Board, and a patch script still running while one fires still applies; real errors
+  // and rejections are still reported. (b) Paseo drops them even if a frame posts one itself.
+  // (c) The preset's own observers write layout in the next frame, so resizing a preset page does
+  // not make the browser raise the notice at all.
+  const legacyBoard = `<main id="ro-page" data-style="liquid-glass" data-lg-page><h1>0.2 风格 Board</h1><div id="ro-box" style="height:10px;background:#ccc"></div></main><script id="lg-kit-script">${legacyKit}</script>`
+    + `<script>window.roLoop=(frames=6)=>{const box=document.querySelector('#ro-box');let left=frames;const ro=new ResizeObserver(()=>{if(left-->0)box.style.height=(box.offsetHeight===10?20:10)+'px';else ro.disconnect()});ro.observe(box);return true};</script>${bridge}`;
+  await viewport(1100);
+  await load(legacyBoard);
+  await untilFrame("window.LiquidGlass?.version==='0.2.0'");
+  assert.equal(await evaluate("document.querySelector('iframe').srcdoc.includes('paseo-board-liquid-glass-script')"), false);
+  const roErrors = await evaluate('results.errors.length');
+  const rawRo = () => frame("window.rawErrors.filter(m=>/^ResizeObserver loop/.test(m)).length");
+  await frame('roLoop(6)');
+  await untilFrame("window.rawErrors.some(m=>/^ResizeObserver loop/.test(m))", 3000);
+  await frame("dispatchEvent(new ErrorEvent('error',{message:'ResizeObserver loop limit exceeded'})),dispatchEvent(new ErrorEvent('error',{message:'ResizeObserver loop completed with undelivered notifications.'})),true");
+  for (const width of [1100, 900, 700, 520, 760, 1100]) { await command('Emulation.setDeviceMetricsOverride', { width, height: 850, deviceScaleFactor: 1, mobile: false }); await sleep(60); }
+  await sleep(300);
+  assert.deepEqual(await evaluate(`results.errors.slice(${roErrors})`), []);
+  // A module patch still waiting (top-level await) while the loop notices fire applies, and later
+  // patches are not paused.
+  const rawBeforePatch = await rawRo();
+  await frame('roLoop(120)');
+  await update(`{canvas:{...hostProps.canvas,revision:hostProps.canvas.revision+1,patches:[...hostProps.canvas.patches,{id:'ro-module',selector:'#ro-page',operation:'append',html:${JSON.stringify('<script type="module">await new Promise(resolve=>setTimeout(resolve,500));window.modulePatched=1;</script>')}}]}}`);
+  await untilFrame('window.modulePatched===1', 5000);
+  await update(`{canvas:{...hostProps.canvas,revision:hostProps.canvas.revision+1,patches:[...hostProps.canvas.patches,{id:'ro-after',selector:'#ro-page',operation:'append',html:'<p id="ro-after">后续补丁</p>'}]}}`);
+  await untilFrame("document.querySelector('#ro-after')", 3000);
+  assert.ok(await rawRo() > rawBeforePatch, 'the loop notices fired while the module patch ran');
+  assert.deepEqual(await evaluate(`results.errors.slice(${roErrors})`), []);
+  // Real problems are still reported.
+  await frame("setTimeout(()=>{throw new Error('画布脚本出错：示例')}),Promise.reject(new Error('画布承诺被拒绝：示例')),true");
+  await until(`results.errors.slice(${roErrors}).some(e=>e.code==='runtime-error'&&e.message.includes('画布脚本出错：示例'))&&results.errors.slice(${roErrors}).some(e=>e.code==='runtime-error'&&e.message.includes('画布承诺被拒绝：示例'))`, 3000);
+  // (b) A frame that posts the notice itself: Paseo drops it, but still takes a real error.
+  const forge = message => `(()=>{const t=[...document.scripts].map(s=>s.textContent).find(t=>t.includes('"sessionId":"'));const id=k=>t.match(new RegExp('"'+k+'":"([^"]+)"'))[1];parent.postMessage({channel:'paseo-board-frame-v1',boardId:id('boardId'),sessionId:id('sessionId'),type:'error',error:{code:'runtime-error',message:${JSON.stringify(message)}}},'*');return true})()`;
+  const forgedFrom = await evaluate('results.errors.length');
+  await frame(forge('ResizeObserver loop completed with undelivered notifications.'));
+  await frame(forge('ResizeObserver loop limit exceeded'));
+  await frame(forge('画布自报的真实错误'));
+  await until(`results.errors.length>${forgedFrom}`, 3000); await sleep(150);
+  assert.deepEqual((await evaluate(`results.errors.slice(${forgedFrom})`)).map(e => e.message), ['画布自报的真实错误']);
+  check('benign ResizeObserver loop notices never reach Paseo for any Board (0.2 kit Board, resizes, a patch that runs meanwhile, a frame that posts one); real errors and rejections still do');
+
+  // (c) The built-in preset itself does not raise the notice while the pane is resized, with a module
+  // open or not (column balancing, nav capsule and the dock's yield all write in the next frame).
+  await viewport(1100);
+  await load(page); await untilFrame("window.LiquidGlass?.version==='1.0.0'&&!document.querySelector('.lg-rolling')", 4000);
+  const resizeErrors = await evaluate('results.errors.length');
+  const resizeAll = async () => {
+    for (const width of [1100, 1010, 940, 860, 780, 700, 640, 560, 480, 430, 380, 340, 300, 360, 420, 520, 620, 760, 880, 980, 1100]) {
+      await command('Emulation.setDeviceMetricsOverride', { width, height: 850, deviceScaleFactor: 1, mobile: false });
+      await sleep(50);
+    }
+    await settleFrame(); await sleep(250);
+  };
+  await resizeAll();
+  await frame(`LiquidGlass.api(document.querySelector('#modules [data-lg~=expand]'),'expand').open(document.querySelector('#modules [data-lg-module]')),true`);
+  await untilFrame(expandedQ); await sleep(900);
+  await resizeAll();
+  await frame("document.querySelector('#metric > button:nth-of-type(2)').click(),true"); await sleep(100);
+  await resizeAll();
+  assert.deepEqual(await frame("window.rawErrors.filter(m=>/ResizeObserver/.test(m))"), []);
+  assert.deepEqual(await evaluate(`results.errors.slice(${resizeErrors})`), []);
+  await key('Escape'); await untilFrame(`!${expandedQ}`, 3000);
+  await viewport(1100);
+  check('resizing a preset page back and forth (module open or not) raises no ResizeObserver loop notice at all');
+
+  // 15. Optional: the real 0.2 kit Board source (BOARD_LEGACY_BOARD_HTML, the reference Board's
+  // demo.html, not part of this repository) still works in the real frame host: the old kit alone,
+  // its palette and dock, and resizing without any error reaching Paseo.
+  if (process.env.BOARD_LEGACY_BOARD_HTML) {
+    const legacyHtml = await readFile(process.env.BOARD_LEGACY_BOARD_HTML, 'utf8');
+    await viewport(1100);
+    await load(legacyHtml + bridge, { height: 780, presetKeys: { fromBody: true } });
+    await untilFrame("window.LiquidGlass?.version==='0.2.0'", 8000);
+    const info = await frame("({builtin:window.LiquidGlass.builtin??null,builtinStyle:!!document.getElementById('paseo-board-liquid-glass-style'),builtinScript:!!document.getElementById('paseo-board-liquid-glass-script'),kitStyle:!!document.getElementById('lg-kit-style'),kitScript:!!document.getElementById('lg-kit-script'),cards:document.querySelectorAll('[data-lg~=card]').length,docks:document.querySelectorAll('[data-lg~=dock]').length,overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth})");
+    console.log('MEASURE legacy-board', JSON.stringify(info));
+    assert.deepEqual({ builtin: info.builtin, builtinStyle: info.builtinStyle, builtinScript: info.builtinScript, kitStyle: info.kitStyle, kitScript: info.kitScript }, { builtin: null, builtinStyle: false, builtinScript: false, kitStyle: true, kitScript: true });
+    assert.ok(info.cards > 0 && info.docks > 0, JSON.stringify(info));
+    await shot('legacy-0.2-board');
+    const legacyErrors = await evaluate('results.errors.length');
+    for (const width of [1100, 940, 792, 640, 520, 420, 360, 520, 792, 1100]) { await command('Emulation.setDeviceMetricsOverride', { width, height: 850, deviceScaleFactor: 1, mobile: false }); await sleep(80); }
+    await settleFrame(); await sleep(300);
+    console.log('MEASURE legacy-board-loop-notices', await frame("window.rawErrors.filter(m=>/^ResizeObserver loop/.test(m)).length"));
+    assert.deepEqual(await evaluate(`results.errors.slice(${legacyErrors})`), []);
+    // Its own palette: "/" inside the canvas opens it, Esc closes it.
+    await viewport(1100); await settleFrame();
+    await clickIn('h1');
+    const legacyPalette = "[...document.querySelectorAll('[data-lg~=palette]')].some(p=>p.classList.contains('is-open'))";
+    await slash(); await untilFrame(legacyPalette, 3000);
+    await shot('legacy-0.2-palette');
+    await key('Escape');
+    await untilFrame("![...document.querySelectorAll('[data-lg~=palette]')].some(p=>p.classList.contains('is-open')||p.classList.contains('is-mounted'))", 3000);
+    // Its dock: magnification on hover and a jump on click.
+    const dockItems = "[...document.querySelectorAll('[data-lg~=dock] [data-lg-dock-item]')].filter(b=>b.getBoundingClientRect().width>0)";
+    await frame('scrollTo(0,0)'); await settleFrame();
+    const restWidth = await frame(`${dockItems}[0].getBoundingClientRect().width`);
+    const second = await frame(`(()=>{const b=${dockItems}[1],r=b.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2,target:b.getAttribute('data-lg-target')}})()`);
+    const frameOrigin = await evaluate("(()=>{const r=document.querySelector('iframe').getBoundingClientRect();return {x:r.x,y:r.y}})()");
+    await hover({ x: frameOrigin.x + second.x - 30, y: frameOrigin.y + second.y }); await hover({ x: frameOrigin.x + second.x, y: frameOrigin.y + second.y }); await sleep(500);
+    const legacyDock = await frame(`(()=>{const e=document.elementFromPoint(${JSON.stringify(second)}.x,${JSON.stringify(second)}.y);return {hit:e&&(e.tagName+'.'+e.className),widths:${dockItems}.map(b=>Math.round(b.getBoundingClientRect().width)),s:${dockItems}.map(b=>b.style.getPropertyValue('--lg-s')),second:${JSON.stringify(second)},rest:${restWidth}}})()`);
+    assert.ok(legacyDock.widths.some(w => w > restWidth * 1.1), `the 0.2 dock magnifies ${JSON.stringify(legacyDock)}`);
+    await shot('legacy-0.2-dock');
+    await clickPoint(frameOrigin.x + second.x, frameOrigin.y + second.y);
+    await untilFrame('scrollY>40', 4000);
+    await hover({ x: 4, y: 4 });
+    assert.deepEqual(await evaluate(`results.errors.slice(${legacyErrors})`), []);
+    check('the real 0.2 kit Board renders with its own kit alone; palette, dock and resizing work without an error reaching Paseo');
+  }
 
   // Leave the shared fixture as other checks expect it.
   await command('Emulation.clearDeviceMetricsOverride');

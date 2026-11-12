@@ -50,4 +50,23 @@ export async function runGlassHostChecks({ assert, command, evaluate, until, unt
   await evaluate("document.querySelector('[data-testid=\"board-message-input\"]').focus()");
   await key('Escape'); await noPopover();
   check('the title field and an open composer keep "/" for themselves');
+
+  // Resizing the Paseo window while the canvas has a ResizeObserver that resizes what it observes
+  // (as the 0.2 kit's column balancing does): no "ResizeObserver loop …" banner over the Board.
+  // A real script error still shows its banner.
+  const screenText = "document.querySelector('[data-testid=\"board-screen\"]').textContent";
+  const loop = '<div id="ro-loop-box" style="height:10px"></div><script>(()=>{window.roNotices=0;addEventListener("error",e=>{if(/^ResizeObserver loop/.test(e.message))roNotices++});const box=document.querySelector("#ro-loop-box");let left=240;const ro=new ResizeObserver(()=>{if(left-->0)box.style.height=(box.offsetHeight===10?20:10)+"px";else ro.disconnect()});ro.observe(box)})()</script>';
+  await evaluate(`hostFixture.appendHtml('ro-loop', ${JSON.stringify(loop)})`);
+  await untilFrame('window.roNotices>0', 5000);
+  for (const width of [1100, 980, 860, 792, 900, 1040, 1100]) {
+    await command('Emulation.setDeviceMetricsOverride', { width, height: 850, deviceScaleFactor: 1, mobile: false });
+    await new Promise(resolve => setTimeout(resolve, 120));
+  }
+  await new Promise(resolve => setTimeout(resolve, 400));
+  assert.equal(await evaluate(`${screenText}.includes('ResizeObserver')`), false);
+  await evaluate(`hostFixture.appendHtml('real-error', ${JSON.stringify('<script>setTimeout(()=>{throw new Error("画布脚本出错：宿主测试")})</script>')})`);
+  await until(`${screenText}.includes('画布脚本出错：宿主测试')&&document.querySelector('[data-testid="board-screen"] [role="alert"]')!==null`, 5000);
+  assert.equal(await evaluate(`${screenText}.includes('ResizeObserver')`), false);
+  await command('Emulation.clearDeviceMetricsOverride');
+  check('resizing the Board while a canvas observer loops shows no "ResizeObserver loop" banner; a real script error still shows its banner');
 }
