@@ -104,10 +104,8 @@
   }
 }
 
-/* --------------------------------------------------------------------------
-   Page mode (data-lg-page): the blurred colour field, white light arcs and a
-   centred column; takes over the Board body margins.
-   -------------------------------------------------------------------------- */
+/* Page mode (data-lg-page): the blurred colour field, white light arcs and a
+   centred column; takes over the Board body margins. */
 html:has([data-style="liquid-glass"][data-lg-page]) {
   color-scheme: light;
   background: #EBD7CC;
@@ -181,9 +179,7 @@ body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
   line-height: 1.55;
 }
 
-/* --------------------------------------------------------------------------
-   Type
-   -------------------------------------------------------------------------- */
+/* Type */
 [data-style="liquid-glass"] :where(h1, h2, h3, h4) { color: var(--lg-ink); }
 [data-style="liquid-glass"] .lg-title {
   margin: 0;
@@ -239,9 +235,7 @@ body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
   white-space: nowrap;
 }
 
-/* --------------------------------------------------------------------------
-   Glass surfaces (cards, modules, pills)
-   -------------------------------------------------------------------------- */
+/* Glass surfaces (cards, modules, pills) */
 [data-style="liquid-glass"] .lg-glass,
 [data-style="liquid-glass"] [data-lg~="card"],
 [data-style="liquid-glass"] [data-lg-module] {
@@ -303,9 +297,7 @@ body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
   outline-offset: 2px;
 }
 
-/* --------------------------------------------------------------------------
-   Layout helpers (agents write semantic markup; no page CSS needed)
-   -------------------------------------------------------------------------- */
+/* Layout helpers (agents write semantic markup; no page CSS needed) */
 [data-style="liquid-glass"] .lg-header {
   display: flex;
   flex-wrap: wrap;
@@ -427,9 +419,7 @@ body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
   mask: var(--lg-icon) center / contain no-repeat;
 }
 
-/* --------------------------------------------------------------------------
-   KPI tiles
-   -------------------------------------------------------------------------- */
+/* KPI tiles */
 [data-style="liquid-glass"] .lg-stat { position: relative; min-width: 0; padding: 20px 22px 18px; overflow: hidden; }
 [data-style="liquid-glass"] .lg-stat-label { margin: 0; font-size: 13px; font-weight: 600; color: var(--lg-ink-muted); }
 [data-style="liquid-glass"] .lg-stat-value { display: flex; align-items: baseline; gap: 6px; margin: 10px 0 0; }
@@ -472,9 +462,7 @@ body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
 [data-style="liquid-glass"] .lg-odo-reel > span { height: 1.1em; }
 [data-style="liquid-glass"] .lg-odo-s { display: inline-block; line-height: 1.1; }
 
-/* --------------------------------------------------------------------------
-   card — cursor light, edge glow, gentle tilt (kit.js animates --lg-px/py/rx/ry/glow)
-   -------------------------------------------------------------------------- */
+/* card — cursor light, edge glow, gentle tilt (kit.js animates --lg-px/py/rx/ry/glow) */
 [data-style="liquid-glass"] [data-lg~="card"] {
   isolation: isolate;
   transform: perspective(1100px) rotateX(var(--lg-rx, 0deg)) rotateY(var(--lg-ry, 0deg)) translateZ(0);
@@ -504,9 +492,7 @@ body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
   opacity: var(--lg-glow, 0);
 }
 
-/* --------------------------------------------------------------------------
-   nav — liquid highlight capsule (generated .lg-capsule)
-   -------------------------------------------------------------------------- */
+/* nav — liquid highlight capsule (generated .lg-capsule) */
 [data-style="liquid-glass"] [data-lg~="nav"] { position: relative; isolation: isolate; }
 [data-style="liquid-glass"] [data-lg~="nav"]:not([data-lg~="dock"]) {
   display: inline-flex;
@@ -559,9 +545,7 @@ body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
   will-change: transform, width, height;
 }
 
-/* --------------------------------------------------------------------------
-   expand — modules open in place; the rest collapse into a thumbnail strip
-   -------------------------------------------------------------------------- */
+/* expand — modules open in place; the rest collapse into a thumbnail strip */
 [data-style="liquid-glass"] [data-lg~="expand"] {
   position: relative;
   display: grid;
@@ -665,10 +649,8 @@ body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
 [data-style="liquid-glass"] .lg-thumb :is(svg, .lg-thumb-ico) { width: 18px; height: 18px; flex: none; color: var(--lg-accent); --lg-icon-size: 18px; }
 [data-style="liquid-glass"] .lg-thumb[hidden] { display: none; }
 
-/* --------------------------------------------------------------------------
-   split — a glass droplet that splits into the options (gooey SVG filter on a
-   generated blob layer; the authored buttons stay crisp on top)
-   -------------------------------------------------------------------------- */
+/* split — a glass droplet that splits into the options (gooey SVG filter on a
+   generated blob layer; the authored buttons stay crisp on top) */
 [data-style="liquid-glass"] [data-lg~="split"] {
   position: relative;
   display: inline-block;
@@ -760,9 +742,7 @@ body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
 [data-style="liquid-glass"] .lg-split-chev svg { width: 16px; height: 16px; }
 [data-style="liquid-glass"] [data-lg~="split"].is-open .lg-split-chev { opacity: 0; transition: opacity 120ms; }
 
-/* --------------------------------------------------------------------------
-   palette — command palette (generated inside [data-lg~="palette"])
-   -------------------------------------------------------------------------- */
+/* palette — command palette (generated inside [data-lg~="palette"]) */
 [data-style="liquid-glass"] [data-lg~="palette"] { position: fixed; inset: 0; z-index: 1000; display: none; margin: 0; }
 [data-style="liquid-glass"] [data-lg~="palette"].is-mounted { display: block; }
 [data-style="liquid-glass"] [data-lg~="palette"]:not(.is-open) { pointer-events: none; }
@@ -870,10 +850,8 @@ body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
 [data-style="liquid-glass"] .lg-pal-foot span { display: inline-flex; align-items: center; gap: 6px; }
 [data-style="liquid-glass"] .lg-flash { animation: lg-flash 1400ms var(--lg-ease-out); }
 
-/* --------------------------------------------------------------------------
-   dock — floating glass dock: magnification and a name label. Icons are the
-   authored child (svg) or data-lg-icon; the glass tile is ::before.
-   -------------------------------------------------------------------------- */
+/* dock — floating glass dock: magnification and a name label. Icons are the
+   authored child (svg) or data-lg-icon; the glass tile is ::before. */
 [data-style="liquid-glass"] [data-lg~="dock"] {
   position: fixed;
   left: 50%;
@@ -897,7 +875,8 @@ body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
 }
 /* In an island (no data-lg-page) the dock sticks to the bottom of the panel instead. */
 [data-style="liquid-glass"]:not([data-lg-page]) [data-lg~="dock"] { position: sticky; left: auto; bottom: 12px; width: fit-content; margin: 16px auto 0; transform: none; }
-[data-style="liquid-glass"] [data-lg~="dock"].is-tucked { transform: translate(-50%, calc(100% + 24px)); opacity: 0; pointer-events: none; }
+/* Tucked away, or giving way to an open module. */
+[data-style="liquid-glass"] [data-lg~="dock"]:is(.is-tucked, .is-yielding) { transform: translate(-50%, calc(100% + 24px)); opacity: 0; pointer-events: none; }
 [data-style="liquid-glass"] [data-lg~="dock"].lg-instant { transition: none; }
 [data-style="liquid-glass"] [data-lg-dock-item] {
   position: relative;
@@ -972,9 +951,7 @@ body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
 }
 [data-style="liquid-glass"] .lg-dock-label.is-shown { opacity: 1; transform: translate(var(--lg-lx, 0px), var(--lg-ly, 0px)) translateX(-50%) scale(1); }
 
-/* --------------------------------------------------------------------------
-   chart — declarative bar/line chart (generated SVG + hidden data table)
-   -------------------------------------------------------------------------- */
+/* chart — declarative bar/line chart (generated SVG + hidden data table) */
 [data-style="liquid-glass"] [data-lg~="chart"] { position: relative; display: block; height: var(--lg-chart-h); margin: 0; min-width: 0; }
 [data-style="liquid-glass"] .lg-chart { display: block; width: 100%; height: auto; overflow: visible; user-select: none; -webkit-user-select: none; }
 [data-style="liquid-glass"] [data-lg~="chart"] > .lg-chart { position: absolute; inset: 0; height: 100%; }
@@ -996,9 +973,7 @@ body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
 [data-style="liquid-glass"] .lg-chart-tip text { fill: var(--lg-ink); }
 [data-style="liquid-glass"] .lg-chart-empty { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; color: var(--lg-ink-muted); font-size: 13px; }
 
-/* --------------------------------------------------------------------------
-   Narrow panes, touch, accessibility preferences
-   -------------------------------------------------------------------------- */
+/* Narrow panes, touch, accessibility preferences */
 @media (max-width: 900px) {
   [data-style="liquid-glass"] .lg-grid:is([data-lg-cols="3"], [data-lg-cols="4"]) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   [data-style="liquid-glass"] .lg-columns { grid-template-columns: minmax(0, 1fr); }

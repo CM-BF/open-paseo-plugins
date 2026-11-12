@@ -23,6 +23,7 @@
   const narrowQuery = matchMedia('(max-width: 720px)');
   const registry = new Map(); // element -> Map(kind -> { destroy, api })
   const generated = new WeakSet(); // nodes the kit creates; the observer ignores them
+  const docks = new Set(); // rest() of each mounted dock
   let uid = 0;
 
   /* ---------- small helpers ---------- */
@@ -81,6 +82,18 @@
     return { x: a.left - b.left, y: a.top - b.top, w: a.width, h: a.height };
   };
   const scrollBehavior = () => (reduced() ? 'auto' : 'smooth');
+  // Size changes run next frame: layout written there never raises "ResizeObserver loop …".
+  const onResize = (el, fn, b) => {
+    let f = 0;
+    const ro = new ResizeObserver(() => { f ||= requestAnimationFrame(() => { f = 0; fn(); }); });
+    ro.observe(el);
+    b.add(() => { ro.disconnect(); cancelAnimationFrame(f); });
+  };
+  // A fixed dock's top at rest (ignores its slide-away transform), else null.
+  const dockTop = d => {
+    const cs = d && getComputedStyle(d);
+    return cs?.position === 'fixed' ? document.documentElement.clientHeight - parseFloat(cs.bottom) - d.offsetHeight : null;
+  };
   // Only the outermost marker is a scope: a nested data-style="liquid-glass" is inert.
   const outerScope = el => { let s = el?.closest?.(SCOPE), up; while (s && (up = s.parentElement?.closest(SCOPE))) s = up; return s || null; };
   const controlScope = el => el.closest('[data-lg-scope]') || outerScope(el) || document;
@@ -163,10 +176,8 @@
     scope.append(holder);
   }
 
-  /* ==========================================================================
-     Capsule: four edge springs. The leading edge is stiff, the trailing edge
-     soft, so the capsule stretches while moving and rebounds when it arrives.
-     ========================================================================== */
+  /* Capsule: four edge springs. The leading edge is stiff, the trailing edge
+     soft, so the capsule stretches while moving and rebounds when it arrives. */
   const LEAD = { k: 560, c: 26 };
   const TRAIL = { k: 210, c: 21 };
   class Capsule {
@@ -237,12 +248,10 @@
     destroy() { cancelAnimationFrame(this.raf); this.el.remove(); }
   }
 
-  /* ==========================================================================
-     Named controls: a split or nav with data-lg-name publishes its value; any
+  /* Named controls: a split or nav with data-lg-name publishes its value; any
      [data-lg-key="{metric}/{range}"] in the same control scope resolves the key
      against data-lg-by (numbers roll, other elements get text) or a chart series.
-     Without data-lg-key, [data-lg-by] follows whichever split changed (0.2 rule).
-     ========================================================================== */
+     Without data-lg-key, [data-lg-by] follows whichever split changed (0.2 rule). */
   function currentValues(scope) {
     const values = {};
     for (const el of scope.querySelectorAll('[data-lg~="split"][data-lg-name], [data-lg~="nav"][data-lg-name]')) {
@@ -284,9 +293,7 @@
     root.dispatchEvent(new CustomEvent('lg:change', { bubbles: true, detail: { name, value, item } }));
   };
 
-  /* ==========================================================================
-     nav — liquid highlight capsule under the current item.
-     ========================================================================== */
+  /* nav — liquid highlight capsule under the current item. */
   function initNav(host, b) {
     const ITEM = ':scope > :is(a, button, [data-lg-item], [data-lg-dock-item])';
     const items = () => [...host.querySelectorAll(ITEM)];
@@ -358,9 +365,7 @@
     arrowKeys(host, items, b);
 
     const sync = () => active && capsule.set(rectOf(active), !capsule.raf);
-    const ro = new ResizeObserver(sync);
-    ro.observe(host);
-    b.add(() => ro.disconnect());
+    onResize(host, sync, b);
     document.fonts?.ready.then(() => host.isConnected && sync());
     if (active) mark(active);
     capsule.set(active && rectOf(active), true);
@@ -380,11 +385,9 @@
   }
   const safeQuery = sel => { try { return document.querySelector(sel); } catch { return null; } };
 
-  /* ==========================================================================
-     card — cursor light, local edge glow and a gentle 3D tilt. Driven through a
+  /* card — cursor light, local edge glow and a gentle 3D tilt. Driven through a
      Web Animation rather than inline styles, so the authored element is never
-     mutated (Board's comment screenshots and component identity stay stable).
-     ========================================================================== */
+     mutated (Board's comment screenshots and component identity stay stable). */
   // Pointer effects pause while the user presses, selects text or uses a Board selection mode:
   // Board's comment screenshots require the selected content to keep its geometry.
   let pointerDown = false;
@@ -447,12 +450,10 @@
     return { get glow() { return cur.g; } };
   }
 
-  /* ==========================================================================
-     Rolling numbers — [data-lg-count="1234.5"]. The authored text stays the
+  /* Rolling numbers — [data-lg-count="1234.5"]. The authored text stays the
      accessible, selectable value (untouched while it shows the count); while
      digits roll, a decorative reel overlay covers it. Changing the attribute (or
-     data-lg-by) rolls to the new value in the authored format. Plain text only.
-     ========================================================================== */
+     data-lg-by) rolls to the new value in the authored format. Plain text only. */
   function parseNumber(raw) {
     const s = String(raw).replace(/[,\s_]/g, '');
     const n = parseFloat(s);
@@ -518,12 +519,10 @@
     return { update };
   }
 
-  /* ==========================================================================
-     split — one glass droplet that splits into the options and merges back
+  /* split — one glass droplet that splits into the options and merges back
      after a choice. Updates [data-lg-by] values in its control scope and emits
      lg:change. Never adds a role to the authored root: write role="group"
-     aria-label="…" yourself (data-lg-label fills aria-label when it is missing).
-     ========================================================================== */
+     aria-label="…" yourself (data-lg-label fills aria-label when it is missing). */
   function initSplit(root, b) {
     ensureDefs();
     const CHEV = 22;
@@ -675,11 +674,9 @@
     };
   }
 
-  /* ==========================================================================
-     expand — modules ([data-lg-module]) open in place ([data-lg-detail] shows,
+  /* expand — modules ([data-lg-module]) open in place ([data-lg-detail] shows,
      [data-lg-summary] hides); the others fly into a thumbnail strip. Each module
-     gets a generated full-card trigger and a close button; Esc restores.
-     ========================================================================== */
+     gets a generated full-card trigger and a close button; Esc restores. */
   function sanitizeClone(node) {
     const c = node.cloneNode(true);
     for (const el of [c, ...c.querySelectorAll('*')]) {
@@ -756,6 +753,7 @@
         p.thumb.hidden = isOpen;
       }
       root.classList.toggle('is-expanded', !!openM);
+      nudge();
     };
 
     // Balanced columns: the widest count that fits with the fewest empty cells.
@@ -773,15 +771,16 @@
       }
       if (root.style.getPropertyValue('--lg-cols') !== String(best)) root.style.setProperty('--lg-cols', best);
     };
-    const ro = new ResizeObserver(balance);
-    ro.observe(root);
-    b.add(() => ro.disconnect());
+    // Docks re-check whether they cover the open module or its strip.
+    const nudge = () => docks.forEach(f => f());
+    onResize(root, () => { balance(); nudge(); }, b);
 
     const settle = () => { if (running) { const r = running; running = null; r.anims.forEach(a => a.cancel()); r.done(); } };
+    // done(true) when the animations ran to the end (not cut short by settle).
     const play = (anims, done) => {
-      const r = { anims, done: () => { if (r.finished) return; r.finished = true; done(); } };
+      const r = { anims, done: ended => { if (r.finished) return; r.finished = true; done(ended); } };
       running = r;
-      Promise.all(anims.map(a => a.finished)).then(() => { if (running === r) { running = null; r.done(); } }, () => {});
+      Promise.all(anims.map(a => a.finished)).then(() => { if (running === r) { running = null; r.done(true); } }, () => {});
     };
     const anim = (el, frames, opts) => el.animate(frames, { fill: 'both', ...opts });
     const radius = el => parseFloat(getComputedStyle(el).borderTopLeftRadius) || 24;
@@ -805,7 +804,7 @@
       if (!parts.has(m) || openM === m) return;
       if (openM) return switchTo(m);
       settle();
-      if (reduced()) { openM = m; setAria(); m.focus({ preventScroll: true }); return; }
+      if (reduced()) { openM = m; setAria(); m.focus({ preventScroll: true }); reveal(m); return; }
       const spring = springEasing(root);
       const H0 = root.offsetHeight;
       const F = relRect(m, root);
@@ -826,18 +825,17 @@
         anims.push(anim(o.g, [{ transform: 'none', opacity: 1 }, { opacity: 0.85, offset: 0.55 }, { transform: `translate(${dx}px, ${dy}px) scale(${s})`, opacity: 0 }], { duration: 560, delay: i * 30, easing: EASE_OUT }));
         anims.push(anim(thumbOf(o.x), [{ opacity: 0, transform: 'scale(.6)' }, { opacity: 1, transform: 'none' }], { duration: 560, delay: 260 + i * 45, easing: spring }));
       }
-      play(anims, () => { anims.forEach(a => a.cancel()); flying.forEach(o => o.g.remove()); shadowIn(m); });
+      play(anims, ended => { anims.forEach(a => a.cancel()); flying.forEach(o => o.g.remove()); shadowIn(m); if (ended && openM === m) reveal(m, true); });
       m.focus({ preventScroll: true });
       reveal(m);
     }
-    // Keep the opened module and its thumbnail strip in view, above a floating dock.
-    function reveal(m) {
+    // Keep the open module and its strip in view (above a fixed dock if the module's top allows);
+    // repeated once settled, as the page is short while the animation runs.
+    function reveal(m, settled) {
       const top = m.getBoundingClientRect().top;
-      if (top < 0 || top > innerHeight * 0.6) { root.scrollIntoView({ behavior: scrollBehavior(), block: 'start' }); return; }
-      const dock = document.querySelector('[data-lg~="dock"]:not(.is-tucked)');
-      const dockRect = dock && getComputedStyle(dock).position === 'fixed' ? dock.getBoundingClientRect() : null;
-      const limit = (dockRect && dockRect.height ? dockRect.top : innerHeight) - 12;
-      const bottom = root.getBoundingClientRect().top + root.scrollHeight;
+      if (top < 0 || top > innerHeight * 0.6) { if (!settled) root.scrollIntoView({ behavior: scrollBehavior(), block: 'start' }); return; }
+      const limit = (dockTop(document.querySelector('[data-lg~="dock"]:not(.is-tucked)')) ?? innerHeight) - 12;
+      const bottom = root.getBoundingClientRect().top + strip.offsetTop + strip.offsetHeight;
       if (bottom > limit) window.scrollBy({ top: Math.min(bottom - limit, Math.max(0, top - 12)), behavior: scrollBehavior() });
     }
 
@@ -846,7 +844,7 @@
       if (!a || a === m) return open(m);
       if (!parts.has(m)) return;
       settle();
-      if (reduced()) { openM = m; setAria(); m.focus({ preventScroll: true }); return; }
+      if (reduced()) { openM = m; setAria(); m.focus({ preventScroll: true }); reveal(m, true); return; }
       const spring = springEasing(root);
       const H0 = root.offsetHeight, E = relRect(a, root), TB = relRect(thumbOf(m), root);
       const ghostA = ghostOf(a, E);
@@ -860,7 +858,7 @@
         anim(thumbOf(a), [{ opacity: 0, transform: 'scale(.7)' }, { opacity: 1, transform: 'none' }], { duration: 520, delay: 280, easing: spring }),
         anim(root, [{ height: H0 + 'px' }, { height: H1 + 'px' }], { duration: 520, easing: EASE_OUT }),
       ];
-      play(anims, () => { anims.forEach(x => x.cancel()); ghostA.remove(); shadowIn(m); });
+      play(anims, ended => { anims.forEach(x => x.cancel()); ghostA.remove(); shadowIn(m); if (ended && openM === m) reveal(m, true); });
       m.focus({ preventScroll: true });
     }
 
@@ -939,14 +937,12 @@
     return { open, close, switchTo, refresh: syncModules, get current() { return openM; } };
   }
 
-  /* ==========================================================================
-     palette — "/" opens a centred glass search (data-lg-keys, default "/";
+  /* palette — "/" opens a centred glass search (data-lg-keys, default "/";
      "mod+k" only on request: inside the canvas it would shadow Paseo's ⌘K).
      Entries: any element with data-lg-command (+ data-lg-group, data-lg-keywords).
      [data-lg-palette-open] buttons also open it. Paseo can forward "/" while the
      Board screen has focus; the host gets focus back on Esc. The open palette is in
-     the browser's top layer (popover), above Board's own markers and overlays.
-     ========================================================================== */
+     the browser's top layer (popover), above Board's own markers and overlays. */
   // "/" (or 「、」/「／」 from that key with a Chinese IME in Chinese punctuation mode).
   const isSlash = e => e.key === '/' || (e.code === 'Slash' && (e.key === '、' || e.key === '／'));
   function initPalette(root, b) {
@@ -1134,12 +1130,10 @@
     setTimeout(() => el.classList.remove('lg-flash'), 1500);
   }
 
-  /* ==========================================================================
-     dock — floating glass dock of icons ([data-lg-dock-item] + data-lg-label,
+  /* dock — floating glass dock of icons ([data-lg-dock-item] + data-lg-label,
      with an svg child or data-lg-icon="name"). Hover magnifies the icon and its
      neighbours; a glass label shows the name. Use data-lg="dock nav". On narrow
-     panes it is compact and tucks away while scrolling down.
-     ========================================================================== */
+     panes it is compact and tucks away while scrolling down. */
   function initDock(dock, b) {
     const items = () => [...dock.querySelectorAll(':scope > [data-lg-dock-item]')];
     const labelled = new Set();
@@ -1222,9 +1216,7 @@
     });
     b.add(() => clearTimeout(tapTimer));
     if (!dock.matches('[data-lg~="nav"]')) arrowKeys(dock, items, b);
-    const ro = new ResizeObserver(measure);
-    ro.observe(dock);
-    b.add(() => ro.disconnect());
+    onResize(dock, measure, b);
     measure();
 
     // Narrow pages: tucked at rest (never covers content); shown at the end (room is reserved
@@ -1232,13 +1224,26 @@
     let lastY = scrollY, scrollFrame = 0, restTimer = 0, tucked = false, revealUntil = 0, holdUntil = 0;
     const narrowPage = () => !!page && narrowQuery.matches;
     const tuck = on => { if (tucked === on) return; tucked = on; dock.classList.toggle('is-tucked', on); };
+    // While a module is open, a fixed dock gives way where it would cover it or its strip, unless
+    // keyboard focus is in the dock.
+    const yields = () => {
+      const open = [...document.querySelectorAll('[data-lg~="expand"].is-expanded')], top = open.length ? dockTop(dock) : null;
+      if (top == null) return false;
+      const d = dock.getBoundingClientRect(), bottom = top + dock.offsetHeight;
+      return open.some(x => [x.querySelector(':scope > [data-lg-module].is-open'), x.querySelector(':scope > .lg-strip')].some(e => {
+        const r = e?.getBoundingClientRect();
+        return r?.height > 0 && r.bottom > top - 8 && r.top < bottom && r.right > d.left && r.left < d.right;
+      }));
+    };
     function rest() {
       clearTimeout(restTimer);
       const wait = revealUntil - Date.now();
       if (narrowPage() && wait > 0) restTimer = setTimeout(rest, wait + 20);
       const end = innerHeight + scrollY >= document.documentElement.scrollHeight - 4;
       tuck(narrowPage() && wait <= 0 && !end && !dock.contains(document.activeElement) && !dock.matches(':hover'));
+      dock.classList.toggle('is-yielding', !dock.querySelector(':focus-visible') && yields());
     }
+    docks.add(rest);
     function reveal(ms, hold = false) {
       const until = Date.now() + ms;
       revealUntil = Math.max(revealUntil, until);
@@ -1264,7 +1269,7 @@
     rest();
     requestAnimationFrame(() => { rest(); requestAnimationFrame(() => dock.classList.remove('lg-instant')); });
     b.add(() => { clearTimeout(restTimer); dock.classList.remove('lg-instant'); });
-    b.add(() => { cancelAnimationFrame(scrollFrame); dock.classList.remove('is-tucked'); });
+    b.add(() => { docks.delete(rest); cancelAnimationFrame(scrollFrame); dock.classList.remove('is-tucked', 'is-yielding'); });
 
     b.add(() => {
       cancelAnimationFrame(raf);
@@ -1275,13 +1280,11 @@
     return { scaleOf: it => scale.get(it) || 1, refresh() { items().forEach(name); scale.clear(); for (const it of [...lives.keys()]) setScale(it, 1); base = []; measure(); } };
   }
 
-  /* ==========================================================================
-     chart — <figure data-lg="chart" aria-label="…">: a bar (default) or line
+  /* chart — <figure data-lg="chart" aria-label="…">: a bar (default) or line
      chart from data-lg-values + data-lg-labels, data-lg-series (JSON keyed by one
      name, picked by data-lg-key or data-lg-select) or data-lg-path (Board data via
      board.watch). Options: data-lg-type="line", data-lg-unit, data-lg-avg. A hidden
-     table carries the data for screen readers. Data strings are only ever text.
-     ========================================================================== */
+     table carries the data for screen readers. Data strings are only ever text. */
   const MAX_POINTS = 200, MAX_SERIES = 64, MAX_JSON = 65536;
   const formatValue = v => v.toLocaleString('en-US', { maximumFractionDigits: 2 });
   const formatAverage = v => v.toLocaleString('en-US', { maximumFractionDigits: Math.abs(v) >= 10 ? 0 : 1 });
@@ -1486,9 +1489,7 @@
     };
   }
 
-  /* ==========================================================================
-     Registry, scanning and Board-patch awareness
-     ========================================================================== */
+  /* Registry, scanning and Board-patch awareness */
   const KINDS = { dock: initDock, expand: initExpand, split: initSplit, palette: initPalette, card: initCard, nav: initNav, chart: initChart };
   const ORDER = Object.keys(KINDS);
 
