@@ -7,6 +7,7 @@ import { Markdown, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/
 import { interactBoardRpc, markUpdatesSeenRpc, recordDecisionRpc, saveStateRpc, selectSideAgentRpc, type Anchor, type Board, type Decision, type Interaction, type JsonData, type SideContext } from "../shared/contracts";
 import type { AskRequest, AskResult, ComposeRequest, CaptureStatus, CaptureFailureReason, SelectionCapture, FrameTheme, InteractionLocation, SelectionMode, CanvasViewState } from "../shared/frame-contract";
 import { interactionMarkers, interactionMarkerId, markerInteractionId, sameSelectionAnchor } from "../shared/frame-contract";
+import { interactionLocationNote } from "./interaction-location";
 import { frameThemeFromColors } from "../shared/frame-theme";
 import { CanvasFrame, WebMessageInput, canRenderFrames, usePopoverDismiss } from "./web";
 import { Action, ColorContext, Copy, Notice, errorMessage, localId, timeLabel, useColors } from "./ui";
@@ -171,6 +172,10 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
   }, [embedded, board, boardId, host.label, query.isPending, query.error, query.liveError, frameError, staged.length, batchSnapshot.batches.length]);
   const interactions = useMemo(() => mergeInteractions(board?.interactions ?? [], optimistic), [board?.interactions, optimistic]);
   const markers = useMemo(() => interactionMarkers(interactions), [interactions]);
+  // A whole-canvas discussion (toolbar 发消息, board.ask without a reference) has no component to locate; its note stays neutral.
+  const locationNote = interactionLocation && interactionLocation.id === selectedInteractionId
+    ? interactionLocationNote(interactionLocation.location, markers.find(marker => marker.id === interactionLocation.id)?.anchor)
+    : undefined;
   const thread = useMemo(() => interactionThread(selectedInteractionId ? markerInteractionId(selectedInteractionId, interactions) : undefined, interactions), [selectedInteractionId, interactions]);
   const popover = popoverPlacement(popoverPoint, { width, height }, popoverHeight);
   const stateWriter = useRef<ReturnType<typeof createStateWriter> | null>(null);
@@ -609,7 +614,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
       {compose || selectedInteractionId ? <BoardComposerSurface embeddedTitle={embedded ? `${board.title} · ${host.label}` : undefined} onClose={closePopover} onHeight={setPopoverHeight} placement={popover}>
         <View style={{ flexDirection: "row", alignItems: "center", padding: 8, gap: 8, borderBottomWidth: 1, borderColor: c.border }}><Text style={{ color: c.foreground, fontWeight: "600", flex: 1 }}>{compose ? "发给 agent" : "这里的讨论"}</Text>{compose ? <Action testID="board-draft-dismiss" label="收起" disabled={sending} onPress={closePopover} /> : !canRenderFrames ? <Action label="关闭" disabled={sending} onPress={closePopover} /> : null}</View>
         <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ padding: 12, gap: 16 }} keyboardShouldPersistTaps="handled">
-          {interactionLocation && interactionLocation.id === selectedInteractionId && interactionLocation.location !== "component" ? <Copy small muted>{({ collapsed: "组件当前不可见 · 标记跟随可见外层", ancestor: "原内容不可见 · 标记暂随可见外层", hidden: "组件当前隐藏 · 可从侧栏请求定位", snapshot: "未定位到当前组件 · 可查看原始引用" })[interactionLocation.location]}</Copy> : null}
+          {locationNote ? <View testID="board-interaction-location"><Copy small muted>{locationNote}</Copy></View> : null}
           {thread.map(item => <InteractionContent key={item.id} item={item} board={board} frameTheme={frameTheme} unconfirmed={!board.interactions.some(saved => saved.id === item.id)} onLocate={id => locateInteraction(interactionMarkerId(item.id, id))} onRetry={() => retryUnconfirmed(item)} onResend={() => resendFailed(item)} onRestoreComments={() => restoreFailedComments(item)} onFollow={(kind, text, resolve) => openCompose(kind, item, text, resolve)} onOpenAgent={() => { if (item.agentId && navigation) navigation.openAgent({ agentId: item.agentId, serverId: host.id }); }} />)}
           {compose ? <View style={{ gap: 10 }}>
             {!thread.length ? <AnchorPreview anchor={compose.anchor} compact captureStatus={compose.captureStatus} /> : null}

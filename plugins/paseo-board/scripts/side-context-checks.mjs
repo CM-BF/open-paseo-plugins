@@ -293,6 +293,34 @@ export async function runSideContextChecks({ assert, command, evaluate, until, f
   await closePopover();
   check('canvas board.ask with kind fork opens the composer with the visible choice, and the hotkey creates the Side with owner history');
 
+  // A whole-canvas reference (toolbar 发消息: { kind: "board" }, no position) has no component to locate: its discussion shows a
+  // neutral note, never the error-like 未定位到当前组件 seen in the acceptance run (pre-existing on 4f88cd7).
+  const locationNote = '[data-testid="board-interaction-location"]';
+  const openFromRail = async id => {
+    await evaluate(`document.querySelector('[data-testid="board-discussion-${id}"]').scrollIntoView({block:'nearest'})`);
+    await hostClick(`[data-testid="board-discussion-${id}"]`);
+    await until(`document.querySelector(${JSON.stringify(popover)})?.textContent.includes('这里的讨论')`);
+  };
+  // A discussion anchored to a component (the board.ask button above) shows no location note at all.
+  await openFromRail(askFork);
+  await untilFrame(`document.querySelector('[data-board-markers]')?.shadowRoot?.querySelector('[data-board-interaction="${askFork}"]')?.dataset.location==='component'`);
+  assert.equal(await evaluate(`!!document.querySelector(${JSON.stringify(locationNote)})`), false);
+  await closePopover();
+  await hostClick('button[aria-label="发消息"]');
+  await until(`document.activeElement===document.querySelector(${JSON.stringify(input)})`);
+  await sendText('Whole canvas question from the toolbar'); await key('Enter', 'Enter', 4);
+  const wholeCanvas = await pendingIntent();
+  const wholeCall = await lastCall();
+  assert.equal(wholeCall.destination, 'main'); assert.deepEqual(Object.keys(wholeCall.anchor).sort(), ['boardRevision', 'canvasRevision', 'kind']); assert.equal(wholeCall.anchor.kind, 'board');
+  await evaluate('hostFixture.accept()'); await untilMarker(wholeCanvas, 'delivered');
+  await closePopover();
+  await openFromRail(wholeCanvas);
+  await until(`document.querySelector(${JSON.stringify(locationNote)})?.textContent==='针对整个画布'`);
+  assert.equal((await text(popover)).includes('未定位到当前组件'), false);
+  await shoot('whole-canvas-location-note.png');
+  await closePopover();
+  check('a whole-canvas discussion from the toolbar 发消息 opens with the neutral note 针对整个画布, not 未定位到当前组件; a component-anchored one shows no note');
+
   // A history Side that failed before creation offers a fresh send with the same words and location.
   const sideBeforeFailure = await evaluate('hostFixture.board().sideAgentId');
   await openAt(760, 420); await sendText('History Side that fails before creation'); await key('Enter', 'Enter', 9);
