@@ -1,0 +1,1655 @@
+/* Paseo Board liquid-glass preset 1.0.0 (behaviours).
+   Inlined by Board only when the authored source contains data-style="liquid-glass".
+   Declarative: data-lg="nav | card | expand | split | palette | dock | chart" (space
+   separated) inside the outermost [data-style="liquid-glass"] scope, plus data-lg-count,
+   data-lg-by and named controls (data-lg-name / data-lg-key). Mounts what it finds, follows
+   Board patches (including replays) and cleans up when elements are removed.
+   Public: window.LiquidGlass = { version, builtin, scan(el?), api(el, kind), destroy(el),
+   teardown() }. Events: "lg:change" (bubbles) from nav and split, detail {name, value, item}. */
+(() => {
+  'use strict';
+  const VERSION = '1.0.0';
+  const STYLE_ID = 'paseo-board-liquid-glass-style';
+  // Evaluated twice, or a copy that runs before this one already owns the page.
+  if (window.LiquidGlass) return;
+
+  const SCOPE = '[data-style="liquid-glass"]';
+  const IGNORE = '.lg-ghost-layer, .lg-placeholder';
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const CHANNEL = 'paseo-board-frame-v1';
+  const motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
+  const reduced = () => motionQuery.matches;
+  const noHover = () => matchMedia('(hover: none)').matches;
+  const narrowQuery = matchMedia('(max-width: 720px)');
+  const registry = new Map(); // element -> Map(kind -> { destroy, api })
+  const generated = new WeakSet(); // nodes the kit creates; the observer ignores them
+  let uid = 0;
+
+  /* ---------- small helpers ---------- */
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  // Decorative generated nodes carry data-board-overlay: Board then leaves them out of
+  // component identity, comment anchors, layout observation and screenshots.
+  const make = (tag, cls, attrs = {}, overlay = false) => {
+    const el = document.createElement(tag);
+    if (cls) el.className = cls;
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    if (overlay) el.setAttribute('data-board-overlay', '');
+    generated.add(el);
+    return el;
+  };
+  const svgEl = (tag, attrs = {}) => {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+    generated.add(el);
+    return el;
+  };
+  // Constant kit icons only (never data); authored icons are cloned, not re-parsed.
+  const svg = paths => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+  const ICONS = {
+    search: svg('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>'),
+    close: svg('<path d="M6 6l12 12M18 6 6 18"/>'),
+    chevron: svg('<path d="m7 10 5 5 5-5"/>'),
+    jump: svg('<path d="M9 6h9v9"/><path d="M18 6 6 18"/>'),
+    grid: svg('<rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/>'),
+    clock: svg('<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>'),
+  };
+  // Icon for palette rows and strip thumbs: an authored svg (cloned), a named built-in icon
+  // (data-lg-icon="chart") or a kit fallback.
+  const iconInto = (target, source, fallback) => {
+    const owner = source && (source.matches('[data-lg-icon], [data-lg-dock-item]') ? source : source.querySelector('[data-lg-icon]'));
+    const authored = owner && (owner.matches('svg') ? owner : owner.querySelector(':scope > svg') || (owner.matches('[data-lg-dock-item]') ? null : owner.querySelector('svg')));
+    if (authored) { const copy = authored.cloneNode(true); copy.removeAttribute('id'); copy.setAttribute('aria-hidden', 'true'); target.append(copy); return; }
+    const name = owner?.getAttribute('data-lg-icon');
+    if (name) { const i = make('span', 'lg-thumb-ico', { 'data-lg-icon': name, 'aria-hidden': 'true' }); target.append(i); return; }
+    target.insertAdjacentHTML('beforeend', fallback);
+  };
+  // A disposer bag: every listener/observer/loop registers its own teardown.
+  const bag = () => {
+    const fns = [];
+    return {
+      on(target, type, fn, opts) { target.addEventListener(type, fn, opts); fns.push(() => target.removeEventListener(type, fn, opts)); },
+      add(fn) { fns.push(fn); },
+      dispose() { while (fns.length) { try { fns.pop()(); } catch (e) { console.error(e); } } },
+    };
+  };
+  const cssVar = (el, name, fallback) => getComputedStyle(el).getPropertyValue(name).trim() || fallback;
+  const springEasing = el => cssVar(el, '--lg-spring', 'cubic-bezier(.34,1.4,.5,1)');
+  const EASE_OUT = 'cubic-bezier(.22,1,.36,1)';
+  const isEditable = t => t instanceof Element && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || /^(textbox|searchbox|combobox|spinbutton)$/.test(t.getAttribute('role') || ''));
+  const relRect = (el, host) => {
+    const a = el.getBoundingClientRect(), b = host.getBoundingClientRect();
+    return { x: a.left - b.left, y: a.top - b.top, w: a.width, h: a.height };
+  };
+  const scrollBehavior = () => (reduced() ? 'auto' : 'smooth');
+  // Only the outermost marker is a scope: a nested data-style="liquid-glass" is inert.
+  const outerScope = el => { let s = el?.closest?.(SCOPE), up; while (s && (up = s.parentElement?.closest(SCOPE))) s = up; return s || null; };
+  const controlScope = el => el.closest('[data-lg-scope]') || outerScope(el) || document;
+  // Drop an inline style attribute the kit emptied, unless the author wrote one.
+  const tidyStyle = (el, authoredStyle) => { if (!authoredStyle && el.getAttribute('style') === '') el.removeAttribute('style'); };
+
+  // Arrow keys move focus between a group's items (roving focus).
+  function arrowKeys(host, getItems, b) {
+    b.on(host, 'keydown', e => {
+      const keys = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1, Home: -Infinity, End: Infinity };
+      if (!(e.key in keys) || isEditable(e.target)) return;
+      const items = getItems();
+      const i = items.findIndex(it => it.contains(e.target));
+      if (i < 0) return;
+      e.preventDefault();
+      const step = keys[e.key];
+      const next = step === -Infinity ? 0 : step === Infinity ? items.length - 1 : (i + step + items.length) % items.length;
+      items[next].focus();
+    });
+  }
+  // Escape: components close on keydown. A press none saw closes the topmost one on keyup if it
+  // reached the window unprevented, or the runtime stopped it to clear a comment selection.
+  // Authored handlers that prevent it and the runtime's component editors keep their Esc.
+  let escPress = null;
+  const onEscDown = e => { if (e.key === 'Escape') escPress = { event: e, handled: false, reached: false, mode: document.documentElement.getAttribute('data-board-selection') || 'off' }; };
+  const onEscReach = e => { if (escPress && escPress.event === e) escPress.reached = true; };
+  const onEscUp = e => {
+    if (e.key !== 'Escape' || !escPress) return;
+    const press = escPress;
+    escPress = null;
+    if (!press.handled && (press.reached ? !press.event.defaultPrevented : /^(text|region|point)$/.test(press.mode))) closeTopmost();
+  };
+  window.addEventListener('keydown', onEscDown, true);
+  window.addEventListener('keydown', onEscReach);
+  window.addEventListener('keyup', onEscUp, true);
+  function escapeKey(target, isActive, close, b) {
+    b.on(target, 'keydown', e => { if (e.key === 'Escape' && isActive()) { if (escPress) escPress.handled = true; e.preventDefault(); close(); } });
+  }
+  function closeTopmost() {
+    const all = [...registry.values()];
+    for (const kinds of all) { const a = kinds.get('palette')?.api; if (a?.isOpen) return a.close(); }
+    for (const kinds of all) { const a = kinds.get('split')?.api; if (a?.open) return a.close(true); }
+    for (const kinds of all) { const a = kinds.get('expand')?.api; if (a?.current) return a.close(); }
+  }
+
+  // Shared SVG defs: the gooey filter (split; a pixel region, as the open row floats beyond
+  // the droplet's box) and #lg-chart-fill for hand-written charts.
+  // Inside the outermost scope (so the gradient reads --lg-chart-*), marked as an overlay.
+  function ensureDefs() {
+    if (document.getElementById('lg-defs')) return;
+    const scope = outerScope(document.querySelector(SCOPE));
+    if (!scope) return;
+    const holder = document.createElementNS(SVG_NS, 'svg');
+    generated.add(holder);
+    holder.id = 'lg-defs';
+    holder.setAttribute('aria-hidden', 'true');
+    holder.setAttribute('focusable', 'false');
+    holder.setAttribute('data-board-overlay', '');
+    holder.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden;pointer-events:none';
+    holder.innerHTML = `<defs>
+      <linearGradient id="lg-chart-fill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" style="stop-color:var(--lg-chart-top)"/>
+        <stop offset="1" style="stop-color:var(--lg-chart-bottom)"/>
+      </linearGradient>
+      <filter id="lg-goo-filter" filterUnits="userSpaceOnUse" x="-2400" y="-34" width="4800" height="110" color-interpolation-filters="sRGB">
+        <feGaussianBlur in="SourceGraphic" stdDeviation="7" result="blur"/>
+        <feColorMatrix in="blur" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 24 -10" result="goo"/>
+        <feColorMatrix in="goo" values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .62 0" result="body"/>
+        <feOffset in="goo" dy="1.4" result="down"/>
+        <feComposite in="goo" in2="down" operator="out" result="rim"/>
+        <feMorphology in="goo" operator="dilate" radius="1" result="fat"/>
+        <feComposite in="fat" in2="goo" operator="out" result="edge0"/>
+        <feColorMatrix in="edge0" values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .7 0" result="edge"/>
+        <feGaussianBlur in="goo" stdDeviation="6" result="sblur"/>
+        <feOffset in="sblur" dy="6" result="soff"/>
+        <feComposite in="soff" in2="goo" operator="out" result="sout"/>
+        <feColorMatrix in="sout" values="0 0 0 0 .42  0 0 0 0 .2  0 0 0 0 .2  0 0 0 .2 0" result="shadow"/>
+        <feMerge><feMergeNode in="shadow"/><feMergeNode in="body"/><feMergeNode in="edge"/><feMergeNode in="rim"/></feMerge>
+      </filter></defs>`;
+    scope.append(holder);
+  }
+
+  /* ==========================================================================
+     Capsule: four edge springs. The leading edge is stiff, the trailing edge
+     soft, so the capsule stretches while moving and rebounds when it arrives.
+     ========================================================================== */
+  const LEAD = { k: 560, c: 26 };
+  const TRAIL = { k: 210, c: 21 };
+  class Capsule {
+    constructor(host, { pad = 0 } = {}) {
+      this.host = host;
+      this.pad = pad;
+      this.el = make('span', 'lg-capsule', { 'aria-hidden': 'true' }, true);
+      host.prepend(this.el);
+      this.edges = null;
+      this.raf = 0;
+      this.tick = this.tick.bind(this);
+    }
+    set(rect, immediate) {
+      if (!rect) return;
+      const p = this.pad;
+      const t = { l: rect.l - p, t: rect.t - p, r: rect.r + p, b: rect.b + p };
+      const e = this.edges;
+      if (!e || immediate || reduced()) {
+        this.edges = { l: { x: t.l, v: 0 }, t: { x: t.t, v: 0 }, r: { x: t.r, v: 0 }, b: { x: t.b, v: 0 } };
+        this.target = t;
+        this.render();
+        return;
+      }
+      const prev = this.target || t;
+      if (prev.l !== t.l || prev.r !== t.r) this.dirX = Math.sign(t.l + t.r - e.l.x - e.r.x) || this.dirX || 0;
+      if (prev.t !== t.t || prev.b !== t.b) this.dirY = Math.sign(t.t + t.b - e.t.x - e.b.x) || this.dirY || 0;
+      this.target = t;
+      if (!this.raf) { this.last = performance.now(); this.raf = requestAnimationFrame(this.tick); }
+    }
+    tick(now) {
+      const dt = clamp((now - this.last) / 1000, 0, 0.034);
+      this.last = now;
+      const n = Math.max(1, Math.ceil(dt * 240)), h = dt / n;
+      const e = this.edges, t = this.target;
+      const pairs = [['l', 'r', this.dirX], ['t', 'b', this.dirY]];
+      for (let s = 0; s < n; s++) {
+        for (const [a, b, dir] of pairs) {
+          const lead = dir > 0 ? b : a;
+          for (const key of [a, b]) {
+            const p = !dir || key === lead ? LEAD : TRAIL;
+            const edge = e[key];
+            edge.v += (-p.k * (edge.x - t[key]) - p.c * edge.v) * h;
+            edge.x += edge.v * h;
+          }
+        }
+      }
+      this.render();
+      const settled = ['l', 't', 'r', 'b'].every(k => Math.abs(e[k].x - t[k]) < 0.25 && Math.abs(e[k].v) < 0.5);
+      if (settled) {
+        for (const k of ['l', 't', 'r', 'b']) { e[k].x = t[k]; e[k].v = 0; }
+        this.render();
+        this.raf = 0;
+      } else this.raf = requestAnimationFrame(this.tick);
+    }
+    render() {
+      const e = this.edges, t = this.target;
+      let l = e.l.x, r = e.r.x, top = e.t.x, bot = e.b.x;
+      const tw = Math.max(1, t.r - t.l), th = Math.max(1, t.b - t.t);
+      const stretchX = Math.max(0, (r - l) / tw - 1), stretchY = Math.max(0, (bot - top) / th - 1);
+      const squashY = Math.min(th * 0.2, th * stretchX * 0.32);
+      const squashX = Math.min(tw * 0.2, tw * stretchY * 0.32);
+      l += squashX / 2; r -= squashX / 2; top += squashY / 2; bot -= squashY / 2;
+      const s = this.el.style;
+      s.transform = `translate3d(${l.toFixed(2)}px, ${top.toFixed(2)}px, 0)`;
+      s.width = Math.max(4, r - l).toFixed(2) + 'px';
+      s.height = Math.max(4, bot - top).toFixed(2) + 'px';
+    }
+    destroy() { cancelAnimationFrame(this.raf); this.el.remove(); }
+  }
+
+  /* ==========================================================================
+     Named controls: a split or nav with data-lg-name publishes its value; any
+     [data-lg-key="{metric}/{range}"] in the same control scope resolves the key
+     against data-lg-by (numbers roll, other elements get text) or a chart series.
+     Without data-lg-key, [data-lg-by] follows whichever split changed (0.2 rule).
+     ========================================================================== */
+  function currentValues(scope) {
+    const values = {};
+    for (const el of scope.querySelectorAll('[data-lg~="split"][data-lg-name], [data-lg~="nav"][data-lg-name]')) {
+      if (controlScope(el) !== scope) continue;
+      const a = api(el, 'split') || api(el, 'nav');
+      const v = a?.value;
+      if (v != null) values[el.getAttribute('data-lg-name')] = v;
+    }
+    return values;
+  }
+  const resolveKey = (template, values) => template.replace(/\{([\w-]+)\}/g, (_, n) => values[n] ?? '');
+  const lookupBy = (el, key) => {
+    for (const part of (el.getAttribute('data-lg-by') || '').split(',')) {
+      const i = part.indexOf(':');
+      if (i > 0 && part.slice(0, i).trim() === key) return part.slice(i + 1).trim();
+    }
+    return null;
+  };
+  const setValue = (el, v) => {
+    if (v == null) return;
+    if (el.hasAttribute('data-lg-count')) { if (el.getAttribute('data-lg-count') !== v) el.setAttribute('data-lg-count', v); }
+    else if (el.textContent !== v) el.textContent = v;
+  };
+  // Re-resolve keyed values in one control scope. `changed` is the control that moved (or null).
+  function syncValues(scope, changed) {
+    const values = currentValues(scope);
+    for (const el of scope.querySelectorAll('[data-lg-by]')) {
+      if (controlScope(el) !== scope) continue;
+      if (el.hasAttribute('data-lg-key')) setValue(el, lookupBy(el, resolveKey(el.getAttribute('data-lg-key'), values)));
+      else if (changed?.splitValue != null) setValue(el, lookupBy(el, changed.splitValue));
+    }
+    for (const el of scope.querySelectorAll('[data-lg~="chart"][data-lg-key]')) {
+      if (controlScope(el) === scope) api(el, 'chart')?.select(resolveKey(el.getAttribute('data-lg-key'), values));
+    }
+  }
+  const emitChange = (root, value, item, split) => {
+    const name = root.getAttribute('data-lg-name') || undefined;
+    syncValues(controlScope(root), split ? { splitValue: value } : null);
+    root.dispatchEvent(new CustomEvent('lg:change', { bubbles: true, detail: { name, value, item } }));
+  };
+
+  /* ==========================================================================
+     nav — liquid highlight capsule under the current item.
+     ========================================================================== */
+  function initNav(host, b) {
+    const ITEM = ':scope > :is(a, button, [data-lg-item], [data-lg-dock-item])';
+    const items = () => [...host.querySelectorAll(ITEM)];
+    const selectable = el => !el.hasAttribute('data-lg-palette-open') && !el.hasAttribute('data-lg-no-select');
+    const isDock = host.matches('[data-lg~="dock"]');
+    const capsule = new Capsule(host, { pad: isDock ? 3 : 0 });
+    const marked = el => (el.getAttribute('aria-current') && el.getAttribute('aria-current') !== 'false') || el.getAttribute('aria-selected') === 'true' || el.classList.contains('is-active');
+    const pickInitial = () => items().find(marked) || items().find(selectable);
+    let active = pickInitial();
+    const valueOf = el => el ? (el.dataset.lgValue ?? el.textContent.trim()) : null;
+
+    // Layout-space rect (ignores parent transforms such as a tilted card).
+    const rectOf = el => {
+      if (el.matches('[data-lg-dock-item]')) {
+        const size = parseFloat(cssVar(host, '--lg-dock-size', '46')) || 46, s = api(host, 'dock')?.scaleOf(el) || 1;
+        const cx = el.offsetLeft + el.offsetWidth / 2, bottom = el.offsetTop + el.offsetHeight;
+        return { l: cx - (size * s) / 2, r: cx + (size * s) / 2, t: bottom - size * s, b: bottom };
+      }
+      return { l: el.offsetLeft, t: el.offsetTop, r: el.offsetLeft + el.offsetWidth, b: el.offsetTop + el.offsetHeight };
+    };
+    const mark = el => {
+      for (const it of items()) {
+        const on = it === el;
+        it.classList.toggle('is-active', on);
+        if (it.getAttribute('role') === 'tab') it.setAttribute('aria-selected', String(on));
+        else if (on) { if (it.getAttribute('aria-current') !== 'true' && it.getAttribute('aria-current') !== 'page') it.setAttribute('aria-current', 'true'); }
+        else it.removeAttribute('aria-current');
+      }
+    };
+    const select = (el, { immediate = false, silent = false } = {}) => {
+      if (!el || !selectable(el)) return;
+      const changed = el !== active;
+      active = el;
+      mark(el);
+      capsule.set(rectOf(el), immediate);
+      if (changed && !silent) emitChange(host, valueOf(el), el, false);
+    };
+
+    // Scroll spy: the last target whose top passed 35% of the viewport wins; the very top of
+    // the page selects the first target and the very end the last.
+    let spyLock = 0;
+    const spy = () => {
+      if (!host.hasAttribute('data-lg-spy') || Date.now() < spyLock) return;
+      const withTargets = items().filter(it => it.dataset.lgTarget && safeQuery(it.dataset.lgTarget));
+      if (!withTargets.length) return;
+      const atBottom = innerHeight + scrollY >= document.documentElement.scrollHeight - 4;
+      let pick = withTargets[0];
+      for (const it of withTargets) if (safeQuery(it.dataset.lgTarget).getBoundingClientRect().top <= innerHeight * 0.35) pick = it;
+      if (scrollY < 8) pick = withTargets[0];
+      else if (atBottom) pick = withTargets[withTargets.length - 1];
+      if (pick !== active) select(pick, { silent: true });
+    };
+    let spyFrame = 0;
+    b.on(window, 'scroll', () => { if (!spyFrame) spyFrame = requestAnimationFrame(() => { spyFrame = 0; spy(); }); }, { passive: true });
+    b.on(window, 'scrollend', () => { const own = Date.now() < spyLock; spyLock = 0; if (!own) spy(); });
+    b.add(() => cancelAnimationFrame(spyFrame));
+
+    b.on(host, 'click', e => {
+      const it = items().find(x => x.contains(e.target));
+      if (!it || !selectable(it)) return;
+      if (it.tagName === 'A' && it.getAttribute('href')?.startsWith('#')) e.preventDefault();
+      select(it);
+      const target = it.dataset.lgTarget && safeQuery(it.dataset.lgTarget);
+      if (target) {
+        spyLock = Date.now() + 1400;
+        target.scrollIntoView({ behavior: scrollBehavior(), block: 'start' });
+      }
+    });
+    arrowKeys(host, items, b);
+
+    const sync = () => active && capsule.set(rectOf(active), !capsule.raf);
+    const ro = new ResizeObserver(sync);
+    ro.observe(host);
+    b.add(() => ro.disconnect());
+    document.fonts?.ready.then(() => host.isConnected && sync());
+    if (active) mark(active);
+    capsule.set(active && rectOf(active), true);
+    host.classList.add('lg-mounted');
+    b.add(() => { capsule.destroy(); host.classList.remove('lg-mounted'); });
+
+    return {
+      select,
+      follow: () => active && capsule.set(rectOf(active), false),
+      refresh() {
+        if (!active || !items().includes(active)) { active = pickInitial(); if (active) mark(active); }
+        if (active) capsule.set(rectOf(active), true);
+      },
+      get active() { return active; },
+      get value() { return valueOf(active); },
+    };
+  }
+  const safeQuery = sel => { try { return document.querySelector(sel); } catch { return null; } };
+
+  /* ==========================================================================
+     card — cursor light, local edge glow and a gentle 3D tilt. Driven through a
+     Web Animation rather than inline styles, so the authored element is never
+     mutated (Board's comment screenshots and component identity stay stable).
+     ========================================================================== */
+  // Pointer effects pause while the user presses, selects text or uses a Board selection mode:
+  // Board's comment screenshots require the selected content to keep its geometry.
+  let pointerDown = false;
+  const resumers = new Set();
+  const interactionFrozen = () => pointerDown || (document.documentElement.getAttribute('data-board-selection') || 'off') !== 'off' || (getSelection() ? !getSelection().isCollapsed : false);
+  const resume = () => { if (!interactionFrozen()) for (const fn of resumers) fn(); };
+  const onPointerDown = () => { pointerDown = true; };
+  const onPointerUp = () => { pointerDown = false; resume(); };
+  // A finished, zero-length animation whose keyframe is replaced each frame.
+  const liveStyle = el => {
+    let anim = null;
+    return {
+      set(frame) {
+        if (anim && anim.effect) anim.effect.setKeyframes([frame]);
+        else anim = el.animate([frame], { duration: 0, fill: 'forwards' });
+      },
+      clear() { anim?.cancel(); anim = null; },
+    };
+  };
+  function initCard(card, b) {
+    const live = liveStyle(card);
+    const cur = { x: 0, y: 0, rx: 0, ry: 0, g: 0 };
+    const tgt = { ...cur };
+    let raf = 0, primed = false;
+    const LIT = 'inset 0 1px 0 var(--lg-highlight), 0 0 26px rgba(255, 255, 255, calc(0.4 * var(--lg-glow, 0))), var(--lg-shadow-lift)';
+    const loop = () => {
+      if (interactionFrozen()) { raf = 0; return; }
+      const k = reduced() ? 1 : null;
+      cur.x += (tgt.x - cur.x) * (k || 0.32);
+      cur.y += (tgt.y - cur.y) * (k || 0.32);
+      cur.rx += (tgt.rx - cur.rx) * (k || 0.12);
+      cur.ry += (tgt.ry - cur.ry) * (k || 0.12);
+      cur.g += (tgt.g - cur.g) * (k || 0.14);
+      const done = Object.keys(cur).every(key => Math.abs(cur[key] - tgt[key]) < (key === 'g' ? 0.002 : 0.05));
+      raf = done ? 0 : requestAnimationFrame(loop);
+      if (done && tgt.g === 0) { for (const key in cur) cur[key] = 0; live.clear(); return; }
+      live.set({
+        '--lg-px': cur.x.toFixed(1) + 'px', '--lg-py': cur.y.toFixed(1) + 'px',
+        '--lg-rx': cur.rx.toFixed(2) + 'deg', '--lg-ry': cur.ry.toFixed(2) + 'deg', '--lg-glow': cur.g.toFixed(3),
+        ...(cur.g > 0.01 ? { boxShadow: LIT } : {}),
+      });
+    };
+    const kick = () => { if (!raf) raf = requestAnimationFrame(loop); };
+    b.on(card, 'pointermove', e => {
+      if (e.pointerType === 'touch' || noHover() || interactionFrozen()) return;
+      const r = card.getBoundingClientRect();
+      const nx = clamp((e.clientX - r.left) / r.width, 0, 1), ny = clamp((e.clientY - r.top) / r.height, 0, 1);
+      const max = reduced() ? 0 : Math.min(6, 2000 / Math.max(r.width, r.height));
+      tgt.x = e.clientX - r.left;
+      tgt.y = e.clientY - r.top;
+      tgt.ry = (nx - 0.5) * 2 * max;
+      tgt.rx = -(ny - 0.5) * 2 * max;
+      tgt.g = 1;
+      if (!primed) { cur.x = tgt.x; cur.y = tgt.y; primed = true; }
+      kick();
+    });
+    b.on(card, 'pointerleave', () => { tgt.rx = tgt.ry = tgt.g = 0; primed = false; kick(); });
+    resumers.add(kick);
+    b.add(() => { resumers.delete(kick); cancelAnimationFrame(raf); live.clear(); });
+    return { get glow() { return cur.g; } };
+  }
+
+  /* ==========================================================================
+     Rolling numbers — [data-lg-count="1234.5"]. The authored text stays the
+     accessible, selectable value (untouched while it shows the count); while
+     digits roll, a decorative reel overlay covers it. Changing the attribute (or
+     data-lg-by) rolls to the new value in the authored format. Plain text only.
+     ========================================================================== */
+  function parseNumber(raw) {
+    const s = String(raw).replace(/[,\s_]/g, '');
+    const n = parseFloat(s);
+    return { n: Number.isFinite(n) ? n : 0, dec: (s.split('.')[1] || '').length };
+  }
+  const formatNumber = ({ n, dec }) => n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  // The authored text's shape ("98.6%", "15,872"): new values keep its affixes and grouping, so
+  // the text only changes with the value (Board text edits compare it with the source).
+  function numberShape(text) {
+    const m = /^([^\d-]*)(-?[\d,]*\.?\d+)(\D*)$/.exec(text);
+    if (!m) return null;
+    const int = m[2].split('.')[0].replace(/[-,]/g, '');
+    return { prefix: m[1], suffix: m[3], value: parseNumber(m[2]).n, grouped: m[2].includes(',') || int.length <= 3 };
+  }
+  const formatShaped = (shape, v) => shape
+    ? shape.prefix + (shape.grouped ? formatNumber(v) : v.n.toFixed(v.dec)) + shape.suffix
+    : formatNumber(v);
+
+  function initCount(el, b) {
+    const original = el.textContent;
+    const shape = numberShape(original.trim());
+    let odo = null, timer = 0, shown = original.trim();
+    const settle = () => { clearTimeout(timer); odo?.remove(); odo = null; el.classList.remove('lg-rolling'); };
+    const roll = (text, from) => {
+      settle();
+      if (el.textContent.trim() !== text) el.textContent = text;
+      if (reduced() || text === from || !el.isConnected) return;
+      odo = make('span', 'lg-odo', { 'aria-hidden': 'true' }, true);
+      const chars = [...text], prev = [...from];
+      const offset = prev.length - chars.length;
+      const reels = [];
+      chars.forEach((ch, i) => {
+        if (!/\d/.test(ch)) { const s = make('span', 'lg-odo-s'); s.textContent = ch; odo.append(s); return; }
+        const cell = make('span', 'lg-odo-d'), reel = make('span', 'lg-odo-reel');
+        for (let d = 0; d <= 9; d++) { const s = document.createElement('span'); s.textContent = d; reel.append(s); }
+        const old = prev[i + offset];
+        reel.style.transform = `translateY(${-(/\d/.test(old || '') ? +old : 0) * 1.1}em)`;
+        reel.style.setProperty('--lg-delay', i * 45 + 'ms');
+        cell.append(reel);
+        odo.append(cell);
+        reels.push([reel, +ch]);
+      });
+      el.append(odo);
+      el.classList.add('lg-rolling');
+      void odo.offsetWidth;
+      for (const [r, d] of reels) r.style.transform = `translateY(${-d * 1.1}em)`;
+      timer = setTimeout(settle, 900 + chars.length * 45 + 80);
+    };
+    const target = () => parseNumber(el.getAttribute('data-lg-count') || el.textContent);
+    const update = () => {
+      const text = formatShaped(shape, target());
+      if (text === shown) return;
+      const from = shown;
+      shown = text;
+      roll(text, from);
+    };
+    // First paint rolls up from zeros. Authored text that already shows the value stays as is.
+    const value = target();
+    const first = shape && shape.value === value.n ? shown : formatShaped(shape, value);
+    shown = first;
+    roll(first, first.replace(/\d/g, '0'));
+    b.add(() => { settle(); if (el.isConnected && el.textContent !== original) el.textContent = original; });
+    return { update };
+  }
+
+  /* ==========================================================================
+     split — one glass droplet that splits into the options and merges back
+     after a choice. Updates [data-lg-by] values in its control scope and emits
+     lg:change. Never adds a role to the authored root: write role="group"
+     aria-label="…" yourself (data-lg-label fills aria-label when it is missing).
+     ========================================================================== */
+  function initSplit(root, b) {
+    ensureDefs();
+    const CHEV = 22;
+    const anchorEnd = root.dataset.lgAnchor === 'end';
+    const goo = make('div', 'lg-split-goo', { 'aria-hidden': 'true' }, true);
+    const pick = make('span', 'lg-split-pick', { 'aria-hidden': 'true' }, true);
+    const chev = make('span', 'lg-split-chev', { 'aria-hidden': 'true' }, true);
+    chev.innerHTML = ICONS.chevron;
+    root.prepend(goo, pick);
+    root.append(chev);
+    const ownLabel = !root.hasAttribute('aria-label') && root.dataset.lgLabel;
+    if (ownLabel) root.setAttribute('aria-label', root.dataset.lgLabel);
+    const authoredStyle = root.hasAttribute('style');
+
+    const pressed = o => o.getAttribute('aria-pressed') === 'true' || o.classList.contains('is-selected');
+    let opts = [], blobs = [], w = [], selected = null;
+    let open = false, phaseTimer = 0, shift = 0;
+
+    const gap = () => parseFloat(cssVar(root, '--lg-split-gap', '14')) || 14;
+    const place = (el, x) => { el.style.transform = `translateX(${x}px)`; };
+    const size = (el, wd) => { el.style.width = wd + 'px'; };
+    const measure = () => { w = opts.map(o => o.offsetWidth); };
+    // Only the closed droplet takes space (opening never re-flows the page); the open row
+    // floats over neighbours, moved inwards to stay inside the scope and the viewport.
+    const fit = (total, closedW) => {
+      const r = root.getBoundingClientRect(), scope = outerScope(root)?.getBoundingClientRect();
+      const lo = Math.max(8, (scope?.left ?? 0) + 8), hi = Math.min(document.documentElement.clientWidth, scope?.right ?? Infinity) - 8;
+      let x = anchorEnd ? closedW - total : 0;
+      if (r.left + x + total > hi) x = hi - total - r.left;
+      if (r.left + x < lo) x = lo - r.left;
+      return Math.round(x);
+    };
+    const offsets = () => { const G = gap(), slot = []; let acc = 0; opts.forEach((o, i) => { slot[i] = acc; acc += w[i] + G; }); return { slot, total: acc - G }; };
+
+    const layout = phase => {
+      if (!opts.length) return;
+      const { slot, total } = offsets();
+      const si = Math.max(0, opts.indexOf(selected));
+      const closedW = w[si] + CHEV - 4;
+      const isOpen = phase === 'open';
+      if (isOpen) shift = fit(total, closedW);
+      opts.forEach((o, i) => {
+        const delay = isOpen ? Math.abs(i - si) * 38 : phase === 'merge' && i !== si ? 40 + Math.abs(i - si) * 22 : 0;
+        for (const el of [o, blobs[i]]) el.style.setProperty('--lg-d', delay + 'ms');
+        o.style.setProperty('--lg-od', isOpen && o !== selected ? delay + 200 + 'ms' : '0ms');
+        const x = isOpen ? shift + slot[i] : 0;
+        size(blobs[i], isOpen ? w[i] : closedW);
+        place(blobs[i], x);
+        place(o, x);
+      });
+      const pw = (isOpen ? w[si] : closedW) - 8;
+      size(pick, pw);
+      place(pick, (isOpen ? shift + slot[si] : 0) + 4);
+      place(chev, closedW - CHEV - 6);
+      root.style.width = closedW + 'px';
+    };
+
+    const setSelected = o => {
+      selected = o;
+      for (const x of opts) {
+        x.classList.toggle('is-selected', x === o);
+        if (x.getAttribute('aria-pressed') !== String(x === o)) x.setAttribute('aria-pressed', String(x === o));
+      }
+    };
+    const syncFocusable = () => {
+      for (const x of opts) {
+        x.tabIndex = open || x === selected ? 0 : -1;
+        if (x === selected) x.setAttribute('aria-expanded', String(open)); else x.removeAttribute('aria-expanded');
+      }
+    };
+    const sync = () => {
+      opts = [...root.querySelectorAll(':scope > [data-lg-option]')];
+      while (blobs.length < opts.length) blobs.push(goo.appendChild(make('span', 'lg-split-blob')));
+      while (blobs.length > opts.length) blobs.pop().remove();
+      if (!opts.length) return;
+      if (!opts.includes(selected)) selected = opts.find(pressed) || opts[0];
+      setSelected(selected);
+      measure();
+      layout(open ? 'open' : 'closed');
+      syncFocusable();
+    };
+
+    const openUp = () => {
+      if (!opts.length) return;
+      clearTimeout(phaseTimer);
+      open = true;
+      root.classList.remove('is-merging');
+      root.classList.add('is-open');
+      layout('open');
+      syncFocusable();
+    };
+    const close = (merge = true) => {
+      if (!open) return;
+      open = false;
+      syncFocusable();
+      if (!merge || reduced()) { root.classList.remove('is-open', 'is-merging'); layout('closed'); return; }
+      root.classList.add('is-merging');
+      layout('merge');
+      phaseTimer = setTimeout(() => root.classList.remove('is-open', 'is-merging'), 520);
+    };
+    const snapPick = () => {
+      if (!open || reduced()) return;
+      const si = opts.indexOf(selected);
+      pick.style.transition = 'none';
+      size(pick, w[si] - 8);
+      place(pick, shift + offsets().slot[si] + 4);
+      void pick.offsetWidth;
+      pick.style.transition = '';
+      pick.animate([{ scale: '0.86' }, { scale: '1' }], { duration: 220, easing: EASE_OUT });
+    };
+    const choose = o => {
+      const changed = o !== selected;
+      setSelected(o);
+      if (changed) snapPick();
+      close(true);
+      if (changed) emitChange(root, o.dataset.lgOption, o, true);
+    };
+
+    b.on(root, 'click', e => {
+      if (!opts.length) return;
+      const o = opts.find(x => x.contains(e.target));
+      if (!open) { openUp(); selected.focus({ preventScroll: true }); return; }
+      if (o) choose(o);
+    });
+    escapeKey(root, () => open, () => { close(true); selected?.focus({ preventScroll: true }); }, b);
+    arrowKeys(root, () => (open ? opts : []), b);
+    b.on(document, 'pointerdown', e => { if (open && !root.contains(e.target)) close(true); }, true);
+    b.on(root, 'focusout', e => { if (open && !root.contains(e.relatedTarget) && e.relatedTarget) close(true); });
+
+    root.classList.add('lg-mounted');
+    sync();
+    document.fonts?.ready.then(() => { if (root.isConnected) { measure(); layout(open ? 'open' : 'closed'); } });
+    b.add(() => {
+      clearTimeout(phaseTimer);
+      goo.remove(); pick.remove(); chev.remove();
+      root.classList.remove('is-open', 'is-merging', 'lg-mounted');
+      root.style.removeProperty('width');
+      tidyStyle(root, authoredStyle);
+      if (ownLabel) root.removeAttribute('aria-label');
+      for (const o of opts) { for (const p of ['transform', 'left', 'right', '--lg-d', '--lg-od']) o.style.removeProperty(p); o.removeAttribute('tabindex'); o.removeAttribute('aria-expanded'); o.classList.remove('is-selected'); tidyStyle(o, false); }
+    });
+    return {
+      get open() { return open; },
+      get value() { return selected?.dataset.lgOption ?? null; },
+      openUp,
+      close,
+      choose,
+      refresh: sync,
+    };
+  }
+
+  /* ==========================================================================
+     expand — modules ([data-lg-module]) open in place ([data-lg-detail] shows,
+     [data-lg-summary] hides); the others fly into a thumbnail strip. Each module
+     gets a generated full-card trigger and a close button; Esc restores.
+     ========================================================================== */
+  function sanitizeClone(node) {
+    const c = node.cloneNode(true);
+    for (const el of [c, ...c.querySelectorAll('*')]) {
+      el.removeAttribute('id');
+      el.removeAttribute('tabindex');
+      for (const a of [...el.attributes]) if (/^data-lg(?!-module|-detail|-summary|-icon)/.test(a.name)) el.removeAttribute(a.name);
+    }
+    c.setAttribute('aria-hidden', 'true');
+    c.inert = true;
+    generated.add(c);
+    return c;
+  }
+
+  function initExpand(root, b) {
+    const modules = () => [...root.querySelectorAll(':scope > [data-lg-module]:not(.lg-placeholder)')];
+    const ghosts = make('div', 'lg-ghost-layer', { 'aria-hidden': 'true' }, true);
+    const strip = make('div', 'lg-strip lg-glass', { role: 'toolbar', 'aria-label': root.dataset.lgStripLabel || '切换模块' }, true);
+    root.append(strip, ghosts);
+    const parts = new Map();
+    let openM = null, running = null;
+    const authoredStyle = root.hasAttribute('style');
+
+    const titleOf = m => m.dataset.lgTitle || m.querySelector('h1,h2,h3,h4')?.textContent.trim() || '模块';
+    const thumbOf = m => parts.get(m)?.thumb;
+
+    function syncModules() {
+      const list = modules();
+      for (const [m, p] of parts) {
+        if (list.includes(m)) continue;
+        p.thumb.remove(); p.closer.remove(); p.trigger.remove();
+        parts.delete(m);
+      }
+      for (const m of list) {
+        if (parts.has(m)) continue;
+        const title = titleOf(m);
+        const thumb = make('button', 'lg-thumb', { type: 'button', 'aria-label': '切换到 ' + title });
+        iconInto(thumb, m, ICONS.grid);
+        thumb.append(title);
+        thumb.addEventListener('click', () => (openM ? switchTo(m) : open(m)));
+        const trigger = make('button', 'lg-module-trigger', { type: 'button', 'aria-expanded': 'false', 'aria-label': '展开 ' + title });
+        m.prepend(trigger);
+        const closer = make('button', 'lg-module-close', { type: 'button', 'aria-label': '收起 ' + title });
+        closer.innerHTML = ICONS.close;
+        closer.addEventListener('click', e => { e.stopPropagation(); close(); });
+        m.append(closer);
+        parts.set(m, { thumb, closer, trigger, ownLabel: !m.hasAttribute('aria-label'), ownRole: !m.hasAttribute('role'), ownTab: !m.hasAttribute('tabindex') });
+      }
+      const order = list.map(thumbOf);
+      if (order.some((t, i) => strip.children[i] !== t)) strip.append(...order);
+      if (openM && !list.includes(openM)) { settle(); openM = null; }
+      setAria();
+      balance();
+    }
+
+    // role/tabindex/aria-label are added only while a module is open, and only when the
+    // author did not write their own.
+    const setAria = () => {
+      for (const m of modules()) {
+        const p = parts.get(m);
+        if (!p) continue;
+        const isOpen = m === openM;
+        m.classList.toggle('is-open', isOpen);
+        if (isOpen) {
+          if (p.ownRole) m.setAttribute('role', 'region');
+          if (p.ownTab) m.setAttribute('tabindex', '-1');
+          if (p.ownLabel) m.setAttribute('aria-label', titleOf(m));
+        } else {
+          if (p.ownRole) m.removeAttribute('role');
+          if (p.ownTab) m.removeAttribute('tabindex');
+          if (p.ownLabel) m.removeAttribute('aria-label');
+        }
+        p.trigger.hidden = isOpen;
+        p.trigger.setAttribute('aria-expanded', String(isOpen));
+        p.thumb.hidden = isOpen;
+      }
+      root.classList.toggle('is-expanded', !!openM);
+    };
+
+    // Balanced columns: the widest count that fits with the fewest empty cells.
+    const balance = () => {
+      if (openM) return;
+      const n = modules().length;
+      if (!n) return;
+      const gap = parseFloat(getComputedStyle(root).columnGap) || 16;
+      const min = parseFloat(cssVar(root, '--lg-expand-col', '220')) || 220;
+      const hi = Math.min(n, Math.max(1, Math.floor((root.clientWidth + gap) / (min + gap))));
+      let best = hi, waste = Infinity;
+      for (let c = hi; c >= Math.max(1, Math.ceil(hi / 2)); c--) {
+        const empty = c * Math.ceil(n / c) - n;
+        if (empty < waste) { waste = empty; best = c; }
+      }
+      if (root.style.getPropertyValue('--lg-cols') !== String(best)) root.style.setProperty('--lg-cols', best);
+    };
+    const ro = new ResizeObserver(balance);
+    ro.observe(root);
+    b.add(() => ro.disconnect());
+
+    const settle = () => { if (running) { const r = running; running = null; r.anims.forEach(a => a.cancel()); r.done(); } };
+    const play = (anims, done) => {
+      const r = { anims, done: () => { if (r.finished) return; r.finished = true; done(); } };
+      running = r;
+      Promise.all(anims.map(a => a.finished)).then(() => { if (running === r) { running = null; r.done(); } }, () => {});
+    };
+    const anim = (el, frames, opts) => el.animate(frames, { fill: 'both', ...opts });
+    const radius = el => parseFloat(getComputedStyle(el).borderTopLeftRadius) || 24;
+    const clipFrom = (box, to, r) => `inset(0px ${Math.max(0, to.w - box.w)}px ${Math.max(0, to.h - box.h)}px 0px round ${r}px)`;
+    const clipFull = r => `inset(0px 0px 0px 0px round ${r}px)`;
+    const shadowIn = el => el.animate([{ boxShadow: 'inset 0 1px 0 rgba(255,255,255,.9)' }, {}], { duration: 320, easing: EASE_OUT });
+    const ghostOf = (node, r) => {
+      const g = sanitizeClone(node);
+      Object.assign(g.style, { left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px' });
+      ghosts.append(g);
+      return g;
+    };
+    const fadeDetail = m => {
+      const d = m.querySelector('[data-lg-detail]');
+      if (!d) return;
+      d.classList.remove('lg-enter'); void d.offsetWidth; d.classList.add('lg-enter');
+    };
+    const clean = m => { for (const p of ['position', 'left', 'top', 'width', 'height', 'margin', 'zIndex']) m.style[p] = ''; tidyStyle(m, parts.get(m)?.authoredStyle); };
+
+    function open(m) {
+      if (!parts.has(m) || openM === m) return;
+      if (openM) return switchTo(m);
+      settle();
+      if (reduced()) { openM = m; setAria(); m.focus({ preventScroll: true }); return; }
+      const spring = springEasing(root);
+      const H0 = root.offsetHeight;
+      const F = relRect(m, root);
+      const others = modules().filter(x => x !== m).map(x => ({ x, r: relRect(x, root) }));
+      const flying = others.map(o => ({ ...o, g: ghostOf(o.x, o.r) }));
+      openM = m;
+      setAria();
+      fadeDetail(m);
+      const L = relRect(m, root), H1 = root.offsetHeight;
+      const anims = [
+        anim(m, [{ transform: `translate(${F.x - L.x}px, ${F.y - L.y}px)`, clipPath: clipFrom(F, L, radius(m)) }, { transform: 'none', clipPath: clipFull(radius(m)) }], { duration: 720, easing: spring }),
+        anim(root, [{ height: H0 + 'px' }, { height: H1 + 'px' }], { duration: 560, easing: EASE_OUT }),
+        anim(strip, [{ opacity: 0, transform: 'translateY(18px) scale(.94)' }, { opacity: 1, transform: 'none' }], { duration: 620, delay: 120, easing: spring }),
+      ];
+      for (const [i, o] of flying.entries()) {
+        const T = relRect(thumbOf(o.x), root), s = T.w / o.r.w;
+        const dx = T.x - o.r.x + (T.w - o.r.w * s) / 2, dy = T.y - o.r.y + (T.h - o.r.h * s) / 2;
+        anims.push(anim(o.g, [{ transform: 'none', opacity: 1 }, { opacity: 0.85, offset: 0.55 }, { transform: `translate(${dx}px, ${dy}px) scale(${s})`, opacity: 0 }], { duration: 560, delay: i * 30, easing: EASE_OUT }));
+        anims.push(anim(thumbOf(o.x), [{ opacity: 0, transform: 'scale(.6)' }, { opacity: 1, transform: 'none' }], { duration: 560, delay: 260 + i * 45, easing: spring }));
+      }
+      play(anims, () => { anims.forEach(a => a.cancel()); flying.forEach(o => o.g.remove()); shadowIn(m); });
+      m.focus({ preventScroll: true });
+      reveal(m);
+    }
+    // Keep the opened module and its thumbnail strip in view, above a floating dock.
+    function reveal(m) {
+      const top = m.getBoundingClientRect().top;
+      if (top < 0 || top > innerHeight * 0.6) { root.scrollIntoView({ behavior: scrollBehavior(), block: 'start' }); return; }
+      const dock = document.querySelector('[data-lg~="dock"]:not(.is-tucked)');
+      const dockRect = dock && getComputedStyle(dock).position === 'fixed' ? dock.getBoundingClientRect() : null;
+      const limit = (dockRect && dockRect.height ? dockRect.top : innerHeight) - 12;
+      const bottom = root.getBoundingClientRect().top + root.scrollHeight;
+      if (bottom > limit) window.scrollBy({ top: Math.min(bottom - limit, Math.max(0, top - 12)), behavior: scrollBehavior() });
+    }
+
+    function switchTo(m) {
+      const a = openM;
+      if (!a || a === m) return open(m);
+      if (!parts.has(m)) return;
+      settle();
+      if (reduced()) { openM = m; setAria(); m.focus({ preventScroll: true }); return; }
+      const spring = springEasing(root);
+      const H0 = root.offsetHeight, E = relRect(a, root), TB = relRect(thumbOf(m), root);
+      const ghostA = ghostOf(a, E);
+      openM = m;
+      setAria();
+      fadeDetail(m);
+      const L = relRect(m, root), TA = relRect(thumbOf(a), root), H1 = root.offsetHeight;
+      const anims = [
+        anim(m, [{ transform: `translate(${TB.x - L.x}px, ${TB.y - L.y}px)`, clipPath: clipFrom(TB, L, TB.h / 2) }, { transform: 'none', clipPath: clipFull(radius(m)) }], { duration: 760, easing: spring }),
+        anim(ghostA, [{ transform: 'none', clipPath: clipFull(radius(a)), opacity: 1 }, { opacity: 0, offset: 0.32 }, { transform: `translate(${TA.x - E.x}px, ${TA.y - E.y}px)`, clipPath: clipFrom(TA, E, TA.h / 2), opacity: 0 }], { duration: 560, easing: EASE_OUT }),
+        anim(thumbOf(a), [{ opacity: 0, transform: 'scale(.7)' }, { opacity: 1, transform: 'none' }], { duration: 520, delay: 280, easing: spring }),
+        anim(root, [{ height: H0 + 'px' }, { height: H1 + 'px' }], { duration: 520, easing: EASE_OUT }),
+      ];
+      play(anims, () => { anims.forEach(x => x.cancel()); ghostA.remove(); shadowIn(m); });
+      m.focus({ preventScroll: true });
+    }
+
+    function close() {
+      const m = openM;
+      if (!m) return;
+      settle();
+      const focusBack = () => parts.get(m)?.trigger.focus({ preventScroll: true });
+      if (reduced()) { openM = null; setAria(); balance(); focusBack(); return; }
+      const spring = springEasing(root);
+      const E = relRect(m, root), H1 = root.offsetHeight;
+      const shownThumbs = modules().filter(x => x !== m).map(x => ({ x, T: relRect(thumbOf(x), root) }));
+      const stripGhost = ghostOf(strip, relRect(strip, root));
+      const holder = sanitizeClone(m);
+      holder.classList.remove('is-open');
+      holder.classList.add('lg-placeholder');
+      holder.setAttribute('data-board-overlay', '');
+      m.before(holder);
+      const p = parts.get(m);
+      if (p && p.authoredStyle === undefined) p.authoredStyle = m.hasAttribute('style');
+      m.classList.add('lg-moving', 'is-closing');
+      Object.assign(m.style, { position: 'absolute', left: E.x + 'px', top: E.y + 'px', width: E.w + 'px', height: E.h + 'px', margin: '0', zIndex: '4' });
+      openM = null;
+      setAria();
+      balance();
+      m.classList.add('is-open');
+      const G = relRect(holder, root), H0 = root.offsetHeight;
+      const anims = [
+        anim(m, [{ transform: 'none', clipPath: clipFull(radius(m)) }, { transform: `translate(${G.x - E.x}px, ${G.y - E.y}px)`, clipPath: clipFrom(G, E, radius(m)) }], { duration: 640, easing: spring }),
+        anim(root, [{ height: H1 + 'px' }, { height: H0 + 'px' }], { duration: 560, easing: EASE_OUT }),
+        anim(stripGhost, [{ opacity: 1 }, { opacity: 0, transform: 'translateY(12px) scale(.96)' }], { duration: 240, easing: EASE_OUT }),
+      ];
+      for (const [i, o] of shownThumbs.entries()) {
+        const R = relRect(o.x, root);
+        const dx = o.T.x + o.T.w / 2 - (R.x + R.w / 2), dy = o.T.y + o.T.h / 2 - (R.y + R.h / 2);
+        anims.push(anim(o.x, [{ opacity: 0, transform: `translate(${dx}px, ${dy}px) scale(.35)` }, { opacity: 1, offset: 0.6 }, { opacity: 1, transform: 'none' }], { duration: 640, delay: 40 + i * 35, easing: spring }));
+      }
+      play(anims, () => {
+        anims.forEach(x => x.cancel());
+        stripGhost.remove();
+        holder.remove();
+        m.classList.remove('lg-moving', 'is-closing');
+        if (openM !== m) m.classList.remove('is-open');
+        clean(m);
+        m.querySelector('[data-lg-summary]')?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: EASE_OUT });
+        shadowIn(m);
+      });
+      focusBack();
+    }
+
+    b.on(root, 'click', e => {
+      const m = modules().find(x => x.contains(e.target));
+      if (!m || m === openM || m.classList.contains('lg-moving')) return;
+      const control = e.target.closest('a, button, input, select, textarea, label');
+      if (control && !control.classList.contains('lg-module-trigger')) return;
+      open(m);
+    });
+    escapeKey(root, () => !!openM, close, b);
+    arrowKeys(strip, () => [...strip.children].filter(t => !t.hidden), b);
+    syncModules();
+    b.add(() => {
+      settle();
+      strip.remove(); ghosts.remove();
+      for (const p of parts.values()) { p.closer.remove(); p.trigger.remove(); }
+      root.classList.remove('is-expanded');
+      root.style.removeProperty('--lg-cols');
+      tidyStyle(root, authoredStyle);
+      for (const m of modules()) {
+        const p = parts.get(m);
+        m.classList.remove('is-open');
+        if (p?.ownRole) m.removeAttribute('role');
+        if (p?.ownTab) m.removeAttribute('tabindex');
+        if (p?.ownLabel) m.removeAttribute('aria-label');
+      }
+    });
+    return { open, close, switchTo, refresh: syncModules, get current() { return openM; } };
+  }
+
+  /* ==========================================================================
+     palette — "/" opens a centred glass search (data-lg-keys, default "/";
+     "mod+k" only on request: inside the canvas it would shadow Paseo's ⌘K).
+     Entries: any element with data-lg-command (+ data-lg-group, data-lg-keywords).
+     [data-lg-palette-open] buttons also open it. Paseo can forward "/" while the
+     Board screen has focus; the host gets focus back on Esc. The open palette is in
+     the browser's top layer (popover), above Board's own markers and overlays.
+     ========================================================================== */
+  // "/" (or 「、」/「／」 from that key with a Chinese IME in Chinese punctuation mode).
+  const isSlash = e => e.key === '/' || (e.code === 'Slash' && (e.key === '、' || e.key === '／'));
+  function initPalette(root, b) {
+    const id = 'lg-pal-' + ++uid;
+    root.replaceChildren();
+    const layer = make('div', 'lg-pal-layer', {}, true);
+    const topLayer = typeof layer.showPopover === 'function';
+    if (topLayer) layer.setAttribute('popover', 'manual');
+    const scrim = make('div', 'lg-pal-scrim', {}, true);
+    const panel = make('div', 'lg-pal-panel', { role: 'dialog', 'aria-modal': 'true', 'aria-label': root.dataset.lgLabel || '命令面板' }, true);
+    const field = make('div', 'lg-pal-field');
+    field.innerHTML = ICONS.search;
+    const input = make('input', 'lg-pal-input', {
+      type: 'text', role: 'combobox', 'aria-expanded': 'true', 'aria-controls': id + '-list', 'aria-autocomplete': 'list',
+      autocomplete: 'off', spellcheck: 'false', placeholder: root.dataset.lgPlaceholder || '搜索或跳转…',
+    });
+    const esc = make('kbd'); esc.textContent = 'esc';
+    field.append(input, esc);
+    const list = make('ul', 'lg-pal-list', { role: 'listbox', id: id + '-list', 'aria-label': '结果' });
+    const live = make('p', 'lg-sr', { 'aria-live': 'polite' });
+    const foot = make('div', 'lg-pal-foot');
+    foot.innerHTML = '<span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>↵</kbd> 跳转</span><span><kbd>esc</kbd> 关闭</span>';
+    panel.append(field, list, live, foot);
+    layer.append(scrim, panel);
+    root.append(layer);
+    const showLayer = on => { if (!topLayer) return; try { if (on !== layer.matches(':popover-open')) on ? layer.showPopover() : layer.hidePopover(); } catch {} };
+    const capsule = new Capsule(list);
+    let isOpen = false, results = [], index = 0, restoreTo = null, closeTimer = 0, forwarded = null;
+    const keys = (root.dataset.lgKeys || '/').toLowerCase().split(/\s+/).filter(Boolean);
+
+    const collect = () => [...document.querySelectorAll('[data-lg-command]')]
+      .filter(el => !el.closest(IGNORE) && !root.contains(el) && outerScope(el))
+      .map((el, order) => {
+        const title = el.dataset.lgCommand || el.textContent.trim();
+        const group = el.dataset.lgGroup || (el.matches('[data-lg-module]') ? '模块' : el.matches('[data-lg-option]') ? '筛选' : '跳转');
+        return { el, title, group, order, keywords: (el.dataset.lgKeywords || '').toLowerCase() };
+      });
+    const match = (title, q) => {
+      if (!q) return { score: 1, marks: [] };
+      const t = title.toLowerCase();
+      const at = t.indexOf(q);
+      if (at >= 0) return { score: 100 - at, marks: [...Array(q.length).keys()].map(k => at + k) };
+      const marks = [];
+      let j = 0;
+      for (let i = 0; i < t.length && j < q.length; i++) if (t[i] === q[j]) { marks.push(i); j++; }
+      return j === q.length ? { score: 40 - (marks[marks.length - 1] - marks[0]), marks } : null;
+    };
+    const highlight = (title, marks) => {
+      const frag = document.createDocumentFragment();
+      const set = new Set(marks);
+      let run = '', inMark = false;
+      const flush = () => {
+        if (!run) return;
+        if (inMark) { const m = document.createElement('mark'); m.textContent = run; frag.append(m); } else frag.append(run);
+        run = '';
+      };
+      [...title].forEach((ch, i) => { if (set.has(i) !== inMark) { flush(); inMark = set.has(i); } run += ch; });
+      flush();
+      return frag;
+    };
+    const render = firstPaint => {
+      const q = input.value.trim().toLowerCase();
+      results = collect()
+        .map(c => { const m = match(c.title, q) || (q && c.keywords.includes(q) ? { score: 10, marks: [] } : null); return m && { ...c, ...m }; })
+        .filter(Boolean)
+        .sort((a, b2) => b2.score - a.score || a.order - b2.order);
+      index = Math.min(index, Math.max(0, results.length - 1));
+      list.querySelectorAll('.lg-pal-item, .lg-pal-empty').forEach(n => n.remove());
+      live.textContent = results.length ? `${results.length} 个结果` : '没有匹配的结果';
+      if (!results.length) {
+        const empty = make('li', 'lg-pal-empty'); empty.textContent = '没有匹配的结果';
+        list.append(empty);
+        capsule.el.style.opacity = '0';
+        input.removeAttribute('aria-activedescendant');
+        return;
+      }
+      capsule.el.style.opacity = '';
+      results.forEach((r, i) => {
+        const li = make('li', 'lg-pal-item', { role: 'option', id: `${id}-opt-${i}`, 'aria-selected': String(i === index) });
+        const ico = make('span', 'lg-pal-ico', { 'aria-hidden': 'true' });
+        // Own icon only: a dock item, an element carrying data-lg-icon, or a module's header icon.
+        const source = r.el.matches('[data-lg-dock-item], [data-lg-icon]') ? r.el : r.el.matches('[data-lg-module]') ? r.el.querySelector('[data-lg-icon]') : null;
+        iconInto(ico, source, r.el.matches('[data-lg-option]') ? ICONS.clock : ICONS.jump);
+        const title = make('span', 'lg-pal-title'); title.append(highlight(r.title, r.marks));
+        const group = make('span', 'lg-pal-group'); group.textContent = r.group;
+        li.append(ico, title, group);
+        li.addEventListener('pointermove', () => { if (index !== i) move(i - index, false); });
+        li.addEventListener('click', () => run(r));
+        list.append(li);
+      });
+      move(0, true, firstPaint);
+    };
+    const move = (delta, scroll = true, immediate = false) => {
+      if (!results.length) return;
+      index = (index + delta + results.length) % results.length;
+      const items = list.querySelectorAll('.lg-pal-item');
+      items.forEach((li, i) => li.setAttribute('aria-selected', String(i === index)));
+      const li = items[index];
+      input.setAttribute('aria-activedescendant', li.id);
+      capsule.set({ l: li.offsetLeft, t: li.offsetTop, r: li.offsetLeft + li.offsetWidth, b: li.offsetTop + li.offsetHeight }, immediate);
+      if (scroll) li.scrollIntoView({ block: 'nearest' });
+    };
+    // Forwarded opens: onCancel gives Paseo focus back, onDone tells it focus stays here.
+    const openPalette = ({ onCancel = null, onDone = null } = {}) => {
+      if (isOpen) { if (onCancel) forwarded = { cancel: onCancel, done: onDone }; return; }
+      clearTimeout(closeTimer);
+      isOpen = true;
+      forwarded = onCancel ? { cancel: onCancel, done: onDone } : null;
+      restoreTo = document.activeElement;
+      input.value = '';
+      index = 0;
+      root.classList.add('is-mounted');
+      showLayer(true);
+      render(true);
+      void root.offsetWidth;
+      root.classList.add('is-open');
+      input.focus({ preventScroll: true });
+    };
+    const closePalette = (restore = true) => {
+      if (!isOpen) return;
+      isOpen = false;
+      root.classList.remove('is-open');
+      closeTimer = setTimeout(() => { root.classList.remove('is-mounted'); showLayer(false); }, reduced() ? 0 : 240);
+      const back = forwarded;
+      forwarded = null;
+      if (back && restore) { input.blur(); back.cancel(); return; }
+      back?.done?.();
+      if (restore && restoreTo instanceof HTMLElement && restoreTo.isConnected) restoreTo.focus({ preventScroll: true });
+      else if (restore) input.blur();
+    };
+    const run = r => { closePalette(false); activate(r.el); };
+
+    const isModK = e => (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k';
+    b.on(window, 'keydown', e => {
+      if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+      if (keys.includes('mod+k') && isModK(e)) { e.preventDefault(); isOpen ? closePalette() : openPalette(); return; }
+      const target = e.composedPath?.()[0] || e.target;
+      if (keys.includes('/') && isSlash(e) && !isOpen && !isEditable(target) && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); openPalette(); }
+    });
+    // Focus left the canvas or the page was hidden: close, so typing never goes nowhere.
+    b.on(window, 'blur', () => { if (isOpen) closePalette(false); });
+    b.on(document, 'visibilitychange', () => { if (document.hidden && isOpen) closePalette(false); });
+    b.on(document, 'click', e => { if (e.target.closest?.('[data-lg-palette-open]')) { e.preventDefault(); openPalette(); } });
+    b.on(input, 'input', () => { index = 0; render(false); });
+    b.on(input, 'keydown', e => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
+      else if (e.key === 'Enter') { e.preventDefault(); if (results[index]) run(results[index]); }
+      else if (e.key === 'Tab') e.preventDefault();
+    });
+    escapeKey(input, () => isOpen, () => closePalette(), b);
+    b.on(scrim, 'click', () => closePalette());
+    b.add(() => { clearTimeout(closeTimer); showLayer(false); capsule.destroy(); root.replaceChildren(); root.classList.remove('is-open', 'is-mounted'); });
+    return { open: openPalette, close: closePalette, keys, get isOpen() { return isOpen; } };
+  }
+
+  // What "jump" means depends on the target element.
+  function activate(el) {
+    const behavior = scrollBehavior();
+    const expand = el.matches('[data-lg-module]') && el.parentElement?.matches('[data-lg~="expand"]') && api(el.parentElement, 'expand');
+    if (expand) { expand.open(el); el.scrollIntoView({ behavior, block: 'start' }); return; }
+    const split = el.matches('[data-lg-option]') && api(el.parentElement, 'split');
+    if (split) {
+      el.parentElement.scrollIntoView({ behavior, block: 'center' });
+      split.openUp();
+      setTimeout(() => split.choose(el), reduced() ? 0 : 520);
+      el.focus({ preventScroll: true });
+      return;
+    }
+    if (el.matches('button, a[href], [data-lg-dock-item], [data-lg-item]')) {
+      if (!el.closest('[data-lg~="dock"]')) el.scrollIntoView({ behavior, block: 'center' });
+      el.click();
+      el.focus({ preventScroll: true });
+      return;
+    }
+    el.scrollIntoView({ behavior, block: 'start' });
+    // A temporary tabindex lets focus land on the target; it is removed on blur.
+    if (!el.hasAttribute('tabindex')) {
+      el.setAttribute('tabindex', '-1');
+      el.addEventListener('blur', () => el.removeAttribute('tabindex'), { once: true });
+    }
+    el.focus({ preventScroll: true });
+    el.classList.remove('lg-flash'); void el.offsetWidth; el.classList.add('lg-flash');
+    setTimeout(() => el.classList.remove('lg-flash'), 1500);
+  }
+
+  /* ==========================================================================
+     dock — floating glass dock of icons ([data-lg-dock-item] + data-lg-label,
+     with an svg child or data-lg-icon="name"). Hover magnifies the icon and its
+     neighbours; a glass label shows the name. Use data-lg="dock nav". On narrow
+     panes it is compact and tucks away while scrolling down.
+     ========================================================================== */
+  function initDock(dock, b) {
+    const items = () => [...dock.querySelectorAll(':scope > [data-lg-dock-item]')];
+    const labelled = new Set();
+    const name = it => {
+      if (!it.hasAttribute('aria-label') && it.dataset.lgLabel) { it.setAttribute('aria-label', it.dataset.lgLabel); labelled.add(it); }
+    };
+    items().forEach(name);
+    const label = make('div', 'lg-dock-label', { 'aria-hidden': 'true' }, true);
+    dock.append(label);
+    const page = dock.closest('[data-lg-page]');
+    let px = null, focusItem = null, tapItem = null, tapTimer = 0, lastPointer = 'mouse', raf = 0, base = [];
+    const scale = new Map(), lives = new Map();
+    const maxScale = () => Math.min(parseFloat(dock.dataset.lgMagnify) || 1.6, narrowQuery.matches ? 1.3 : 9);
+
+    const measure = () => {
+      const all = items();
+      if (all.some(it => (scale.get(it) || 1) !== 1)) return;
+      const mid = dock.clientWidth / 2;
+      base = all.map(it => it.offsetLeft + it.offsetWidth / 2 - mid);
+    };
+    const size = () => parseFloat(cssVar(dock, '--lg-dock-size', '46')) || 46;
+    const setScale = (it, v) => {
+      let live = lives.get(it);
+      if (Math.abs(v - 1) < 0.0005) { live?.clear(); lives.delete(it); return; }
+      if (!live) lives.set(it, (live = liveStyle(it)));
+      live.set({ '--lg-s': v.toFixed(4) });
+    };
+    const loop = () => {
+      const all = items(), sz = size(), sigma = sz * 1.15, MAX = maxScale();
+      const pointer = px != null ? px : focusItem ? base[all.indexOf(focusItem)] : null;
+      let moving = false, nearest = null, best = Infinity;
+      all.forEach((it, i) => {
+        const d = pointer == null || base[i] == null ? Infinity : pointer - base[i];
+        const target = d === Infinity ? 1 : 1 + (MAX - 1) * Math.exp(-(d * d) / (2 * sigma * sigma));
+        const cur = scale.get(it) || 1;
+        const next = reduced() ? target : cur + (target - cur) * 0.24;
+        const settled = Math.abs(next - target) < 0.002;
+        const value = settled ? target : next;
+        scale.set(it, value);
+        if (!settled) moving = true;
+        setScale(it, value);
+        if (Math.abs(d) < best) { best = Math.abs(d); nearest = it; }
+      });
+      api(dock, 'nav')?.follow();
+      const shown = focusItem || tapItem || (best < sz * 0.8 ? nearest : null);
+      if (shown) {
+        const s = scale.get(shown) || 1;
+        label.textContent = shown.dataset.lgLabel || shown.getAttribute('aria-label') || '';
+        label.style.setProperty('--lg-lx', shown.offsetLeft + shown.offsetWidth / 2 + 'px');
+        label.style.setProperty('--lg-ly', shown.offsetTop + shown.offsetHeight - sz * s - 10 + 'px');
+        label.classList.add('is-shown');
+      } else label.classList.remove('is-shown');
+      raf = moving || pointer != null ? requestAnimationFrame(loop) : 0;
+    };
+    const kick = () => { if (!raf) raf = requestAnimationFrame(loop); };
+    b.on(dock, 'pointerenter', () => { if (!base.length) measure(); });
+    b.on(dock, 'pointermove', e => {
+      if (e.pointerType === 'touch') return;
+      const r = dock.getBoundingClientRect();
+      px = e.clientX - (r.left + r.width / 2);
+      kick();
+    });
+    b.on(dock, 'pointerleave', () => { px = null; kick(); });
+    b.on(dock, 'focusin', e => {
+      rest();
+      const it = items().find(x => x.contains(e.target));
+      if (it && it.matches(':focus-visible')) { focusItem = it; kick(); }
+    });
+    b.on(dock, 'focusout', () => { focusItem = null; kick(); reveal(600); });
+    // Touch and pen have no hover: a tapped item shows its name for a moment.
+    b.on(dock, 'pointerdown', e => { lastPointer = e.pointerType || 'mouse'; });
+    b.on(dock, 'click', e => {
+      const it = items().find(x => x.contains(e.target));
+      if (!it) return;
+      reveal(1600, true);
+      if (lastPointer === 'mouse') return;
+      clearTimeout(tapTimer);
+      tapItem = it; kick();
+      tapTimer = setTimeout(() => { tapItem = null; kick(); }, 1500);
+    });
+    b.add(() => clearTimeout(tapTimer));
+    if (!dock.matches('[data-lg~="nav"]')) arrowKeys(dock, items, b);
+    const ro = new ResizeObserver(measure);
+    ro.observe(dock);
+    b.add(() => ro.disconnect());
+    measure();
+
+    // Narrow pages: tucked at rest (never covers content); shown at the end (room is reserved
+    // there), with focus or the pointer, near the bottom edge, briefly after scrolling up or a tap.
+    let lastY = scrollY, scrollFrame = 0, restTimer = 0, tucked = false, revealUntil = 0, holdUntil = 0;
+    const narrowPage = () => !!page && narrowQuery.matches;
+    const tuck = on => { if (tucked === on) return; tucked = on; dock.classList.toggle('is-tucked', on); };
+    function rest() {
+      clearTimeout(restTimer);
+      const wait = revealUntil - Date.now();
+      if (narrowPage() && wait > 0) restTimer = setTimeout(rest, wait + 20);
+      const end = innerHeight + scrollY >= document.documentElement.scrollHeight - 4;
+      tuck(narrowPage() && wait <= 0 && !end && !dock.contains(document.activeElement) && !dock.matches(':hover'));
+    }
+    function reveal(ms, hold = false) {
+      const until = Date.now() + ms;
+      revealUntil = Math.max(revealUntil, until);
+      if (hold) holdUntil = Math.max(holdUntil, until);
+      rest();
+    }
+    const onScroll = () => {
+      scrollFrame = 0;
+      const y = scrollY;
+      if (y < lastY - 6) reveal(2500);
+      else if (y > lastY + 6 && Date.now() >= holdUntil) { revealUntil = 0; rest(); }
+      else rest();
+      lastY = y;
+    };
+    b.on(window, 'scroll', () => { if (!scrollFrame) scrollFrame = requestAnimationFrame(onScroll); }, { passive: true });
+    b.on(window, 'pointermove', e => { if (narrowPage() && innerHeight - e.clientY < 72) reveal(1200); }, { passive: true });
+    b.on(dock, 'pointerleave', () => reveal(800));
+    b.on(narrowQuery, 'change', () => { rest(); scale.clear(); for (const it of items()) setScale(it, 1); base = []; measure(); });
+    b.on(window, 'resize', rest);
+    b.on(window, 'load', rest);
+    // First rest state without a slide-out; re-checked once the page has its final height.
+    dock.classList.add('lg-instant');
+    rest();
+    requestAnimationFrame(() => { rest(); requestAnimationFrame(() => dock.classList.remove('lg-instant')); });
+    b.add(() => { clearTimeout(restTimer); dock.classList.remove('lg-instant'); });
+    b.add(() => { cancelAnimationFrame(scrollFrame); dock.classList.remove('is-tucked'); });
+
+    b.add(() => {
+      cancelAnimationFrame(raf);
+      label.remove();
+      for (const it of [...lives.keys()]) setScale(it, 1);
+      for (const it of labelled) it.removeAttribute('aria-label');
+    });
+    return { scaleOf: it => scale.get(it) || 1, refresh() { items().forEach(name); scale.clear(); for (const it of [...lives.keys()]) setScale(it, 1); base = []; measure(); } };
+  }
+
+  /* ==========================================================================
+     chart — <figure data-lg="chart" aria-label="…">: a bar (default) or line
+     chart from data-lg-values + data-lg-labels, data-lg-series (JSON keyed by one
+     name, picked by data-lg-key or data-lg-select) or data-lg-path (Board data via
+     board.watch). Options: data-lg-type="line", data-lg-unit, data-lg-avg. A hidden
+     table carries the data for screen readers. Data strings are only ever text.
+     ========================================================================== */
+  const MAX_POINTS = 200, MAX_SERIES = 64, MAX_JSON = 65536;
+  const formatValue = v => v.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  const formatAverage = v => v.toLocaleString('en-US', { maximumFractionDigits: Math.abs(v) >= 10 ? 0 : 1 });
+  function normalize(raw) {
+    if (Array.isArray(raw)) {
+      if (raw.every(v => typeof v === 'number')) return { labels: raw.map((_, i) => String(i + 1)), values: raw };
+      if (raw.every(v => v && typeof v === 'object' && typeof v.value === 'number')) return { labels: raw.map((v, i) => String(v.label ?? i + 1)), values: raw.map(v => v.value) };
+      return null;
+    }
+    if (raw && typeof raw === 'object' && Array.isArray(raw.values) && raw.values.every(v => typeof v === 'number')) {
+      const labels = Array.isArray(raw.labels) ? raw.labels.map(String) : [];
+      return { labels: raw.values.map((_, i) => labels[i] ?? String(i + 1)), values: raw.values };
+    }
+    return null;
+  }
+  function initChart(fig, b) {
+    const n = ++uid;
+    let pathData, pathSeen = false, selectKey = null, watching = null, width = 0, height = 0;
+    const svgRoot = svgEl('svg', { class: 'lg-chart', 'aria-hidden': 'true', focusable: 'false' });
+    const defs = svgEl('defs');
+    const grad = svgEl('linearGradient', { id: `lg-chart-fill-${n}`, x1: 0, y1: 0, x2: 0, y2: 1 });
+    const s0 = svgEl('stop', { offset: 0 }), s1 = svgEl('stop', { offset: 1 });
+    s0.style.stopColor = 'var(--lg-chart-top)'; s1.style.stopColor = 'var(--lg-chart-bottom)';
+    grad.append(s0, s1); defs.append(grad);
+    const gGrid = svgEl('g'), gMarks = svgEl('g'), gX = svgEl('g'), gAvg = svgEl('g', { class: 'lg-chart-avg' }), gTip = svgEl('g', { class: 'lg-chart-tag lg-chart-tip' });
+    const tipRect = svgEl('rect', { rx: 9, height: 22 }), tipText = svgEl('text', { y: 15, 'text-anchor': 'middle' });
+    gTip.append(tipRect, tipText);
+    svgRoot.append(defs, gGrid, gMarks, gAvg, gX, gTip);
+    // A clipping box: a table never shrinks below its content (no page overflow).
+    const table = make('table', 'lg-chart-table'), tableBox = make('div', 'lg-sr');
+    tableBox.append(table);
+    const empty = make('p', 'lg-chart-empty');
+    empty.textContent = '暂无数据';
+    fig.append(svgRoot, tableBox);
+    const fill = `url(#lg-chart-fill-${n})`;
+    const canD = typeof CSS !== 'undefined' && CSS.supports?.('d', 'path("M0 0")');
+    const setD = (el, d) => { if (canD) el.style.d = `path("${d}")`; else el.setAttribute('d', d); };
+
+    const source = () => {
+      const series = fig.getAttribute('data-lg-series');
+      const key = selectKey ?? fig.getAttribute('data-lg-select');
+      if (fig.hasAttribute('data-lg-path')) {
+        if (!pathSeen) return undefined;
+        const direct = normalize(pathData);
+        if (direct) return direct;
+        if (pathData && typeof pathData === 'object') { const keys = Object.keys(pathData).slice(0, MAX_SERIES); return normalize(pathData[key && keys.includes(key) ? key : keys[0]]); }
+        return null;
+      }
+      if (series) {
+        if (series.length > MAX_JSON) return null;
+        let parsed; try { parsed = JSON.parse(series); } catch { return null; }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return normalize(parsed);
+        const keys = Object.keys(parsed).slice(0, MAX_SERIES);
+        return normalize(parsed[key && keys.includes(key) ? key : keys[0]]);
+      }
+      const values = (fig.getAttribute('data-lg-values') || '').split(',').map(s => s.trim()).filter(Boolean).map(Number);
+      if (!values.length || values.some(v => !Number.isFinite(v))) return null;
+      const labels = (fig.getAttribute('data-lg-labels') || '').split(',').map(s => s.trim());
+      return { labels: values.map((_, i) => labels[i] || String(i + 1)), values };
+    };
+
+    const text = (attrs, value) => { const t = svgEl('text', attrs); t.textContent = value; return t; };
+    let marks = [], pts = [];
+    let drawnWidth = 0;
+    function render() {
+      const r = fig.getBoundingClientRect();
+      width = Math.max(120, Math.round(r.width)); height = Math.max(80, Math.round(r.height));
+      // A new width re-lays the marks out without animating them sideways.
+      if (drawnWidth && drawnWidth !== width) { svgRoot.classList.add('is-instant'); requestAnimationFrame(() => requestAnimationFrame(() => svgRoot.classList.remove('is-instant'))); }
+      drawnWidth = width;
+      svgRoot.setAttribute('viewBox', `0 0 ${width} ${height}`);
+      let data = source();
+      if (data && data.values.length > MAX_POINTS) data = { labels: data.labels.slice(-MAX_POINTS), values: data.values.slice(-MAX_POINTS) };
+      const unit = fig.getAttribute('data-lg-unit') || '';
+      const type = fig.getAttribute('data-lg-type') === 'line' ? 'line' : 'bar';
+      const showAvg = fig.hasAttribute('data-lg-avg');
+      table.replaceChildren();
+      if (!data || !data.values.length) {
+        gGrid.replaceChildren(); gMarks.replaceChildren(); gX.replaceChildren(); gAvg.replaceChildren(); marks = [];
+        if (data !== undefined && !empty.isConnected) fig.append(empty);
+        return;
+      }
+      empty.remove();
+      // Accessible data table (caption from the figure's label).
+      const caption = make('caption'); caption.textContent = fig.getAttribute('aria-label') || '';
+      const head = make('tr'), th1 = make('th', '', { scope: 'col' }), th2 = make('th', '', { scope: 'col' });
+      th1.textContent = '项目'; th2.textContent = '数值'; head.append(th1, th2);
+      table.append(caption, head);
+      data.labels.forEach((l, i) => { const tr = make('tr'), a = make('td'), v = make('td'); a.textContent = l; v.textContent = formatValue(data.values[i]) + unit; tr.append(a, v); table.append(tr); });
+
+      const vals = data.values, count = vals.length;
+      const avg = vals.reduce((a, v) => a + v, 0) / count, avgText = `均值 ${formatAverage(avg)}${unit}`;
+      const avgW = [...avgText].reduce((w, ch) => w + (ch.charCodeAt(0) > 255 ? 12 : 7), 18);
+      const L = 44, R = showAvg ? avgW + 12 : 12, T = 14, B = 26;
+      const max0 = Math.max(0, ...vals), min0 = Math.min(0, ...vals);
+      // Integer data: an even axis end, so the middle tick is whole too.
+      const ints = vals.every(Number.isInteger);
+      const nice = v => { const p = 10 ** Math.floor(Math.log10(Math.max(1e-9, v))); return [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map(s => s * p).find(s => s >= v && (!ints || Number.isInteger(s / 2))) || v; };
+      const max = max0 > 0 ? nice(max0 * 1.08) : ints ? 2 : 1, min = min0 < 0 ? -nice(-min0 * 1.08) : 0;
+      const ph = height - T - B, pw = width - L - R;
+      const y = v => T + (1 - (v - min) / (max - min)) * ph;
+      gGrid.replaceChildren();
+      for (const f of [0, 0.5, 1]) {
+        const v = min + (max - min) * f;
+        gGrid.append(svgEl('line', { class: 'lg-chart-grid', x1: L, x2: width - R, y1: y(v), y2: y(v) }));
+        gGrid.append(text({ class: 'lg-chart-label', x: L - 8, y: y(v) + 4, 'text-anchor': 'end' }, formatValue(v)));
+      }
+      const slot = pw / count;
+      const base = y(Math.max(min, 0));
+      if (type === 'bar') {
+        const bw = Math.max(2, Math.min(30, slot * 0.56));
+        const bar = (x, top) => {
+          const h = Math.max(0, base - top), rr = Math.min(bw / 2, h);
+          return `M ${x} ${base} V ${base - h + rr} A ${rr} ${rr} 0 0 1 ${x + rr} ${base - h} H ${x + bw - rr} A ${rr} ${rr} 0 0 1 ${x + bw} ${base - h + rr} V ${base} Z`;
+        };
+        if (gMarks.dataset.type !== 'bar') { gMarks.replaceChildren(); gMarks.dataset.type = 'bar'; }
+        while (gMarks.children.length > count) gMarks.lastChild.remove();
+        marks = vals.map((v, i) => {
+          const x = L + i * slot + (slot - bw) / 2;
+          let p = gMarks.children[i];
+          if (!p) { p = svgEl('path', { class: 'lg-chart-bar', fill }); setD(p, bar(x, base)); gMarks.append(p); void p.getBoundingClientRect(); }
+          p.style.setProperty('--lg-d', i * 20 + 'ms');
+          setD(p, bar(x, Math.min(base - 3, y(Math.max(v, min)))));
+          return { el: p, cx: x + bw / 2, top: y(Math.max(v, 0)) };
+        });
+      } else {
+        const points = vals.map((v, i) => [L + i * slot + slot / 2, y(v)]);
+        const d = points.map(([x, yy], i) => `${i ? 'L' : 'M'} ${x.toFixed(1)} ${yy.toFixed(1)}`).join(' ');
+        const area = `${d} L ${points[count - 1][0].toFixed(1)} ${base} L ${points[0][0].toFixed(1)} ${base} Z`;
+        if (gMarks.dataset.type !== 'line') { gMarks.replaceChildren(); gMarks.dataset.type = 'line'; }
+        let [areaEl, lineEl] = gMarks.children;
+        if (!areaEl) { areaEl = svgEl('path', { class: 'lg-chart-area', fill }); lineEl = svgEl('path', { class: 'lg-chart-line' }); gMarks.append(areaEl, lineEl); }
+        const dots = [...gMarks.querySelectorAll('.lg-chart-dot')];
+        if (dots.length !== count) { dots.forEach(x => x.remove()); }
+        setD(areaEl, area); setD(lineEl, d);
+        marks = points.map(([x, yy], i) => {
+          let c = gMarks.querySelectorAll('.lg-chart-dot')[i];
+          if (!c) { c = svgEl('circle', { class: 'lg-chart-dot', r: 3.5 }); gMarks.append(c); }
+          c.setAttribute('cx', x); c.setAttribute('cy', yy);
+          return { el: c, cx: x, top: yy };
+        });
+      }
+      pts = data;
+      // x labels, thinned to fit
+      gX.replaceChildren();
+      // Thin labels to fit; a label still wider than its room is shortened with an ellipsis.
+      const textWidth = l => [...l].reduce((w, ch) => w + (ch.charCodeAt(0) > 255 ? 12 : 7.5), 0);
+      const longest = Math.max(...data.labels.map(textWidth), 7);
+      const every = Math.max(1, Math.min(Math.ceil(count / 2), Math.ceil((longest + 10) / slot)));
+      const room = slot * every - 8;
+      const fit = l => { if (textWidth(l) <= room) return l; let out = ''; for (const ch of l) { if (textWidth(out + ch) + 8 > room) break; out += ch; } return out + '…'; };
+      data.labels.forEach((l, i) => { if (i % every === 0) gX.append(text({ class: 'lg-chart-label', x: L + i * slot + slot / 2, y: height - 7, 'text-anchor': 'middle' }, fit(l))); });
+      gAvg.replaceChildren();
+      if (showAvg) {
+        const yy = y(avg);
+        gAvg.append(svgEl('line', { x1: L, x2: width - R, y1: yy, y2: yy }));
+        const tag = svgEl('g', { class: 'lg-chart-tag' }), label = text({ x: width - R + 6 + avgW / 2, y: yy + 4, 'text-anchor': 'middle' }, avgText);
+        tag.append(svgEl('rect', { x: width - R + 6, y: yy - 11, width: avgW, height: 22, rx: 11 }), label);
+        gAvg.append(tag);
+      }
+      hide();
+    }
+    const hide = () => { gTip.classList.remove('is-on'); for (const m of marks) m.el.classList.remove('is-dim', 'is-on'); };
+    const show = i => {
+      const m = marks[i];
+      if (!m || !pts) return;
+      for (const [j, o] of marks.entries()) { o.el.classList.toggle('is-dim', j !== i && o.el.matches('.lg-chart-bar')); o.el.classList.toggle('is-on', j === i); }
+      tipText.textContent = `${pts.labels[i]} · ${formatValue(pts.values[i])}${fig.getAttribute('data-lg-unit') || ''}`;
+      const w = Math.max(40, [...tipText.textContent].reduce((a, ch) => a + (ch.charCodeAt(0) > 255 ? 12 : 7), 18));
+      tipRect.setAttribute('width', w); tipRect.setAttribute('x', -w / 2);
+      const x = clamp(m.cx, w / 2, width - w / 2);
+      gTip.setAttribute('transform', `translate(${x} ${Math.max(0, m.top - 30)})`);
+      gTip.classList.add('is-on');
+    };
+    b.on(svgRoot, 'pointermove', e => {
+      if (!marks.length || interactionFrozen()) return;
+      const r = svgRoot.getBoundingClientRect(), x = (e.clientX - r.left) * (width / Math.max(1, r.width));
+      let best = 0;
+      marks.forEach((m, i) => { if (Math.abs(m.cx - x) < Math.abs(marks[best].cx - x)) best = i; });
+      show(best);
+    });
+    b.on(svgRoot, 'pointerleave', hide);
+    let frame = 0;
+    const queue = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; if (fig.isConnected) render(); }); };
+    const ro = new ResizeObserver(() => { const w = Math.round(fig.getBoundingClientRect().width); if (w !== width) queue(); });
+    ro.observe(fig);
+    const subscribe = () => {
+      watching?.(); watching = null; pathSeen = false;
+      const path = fig.getAttribute('data-lg-path');
+      if (path == null || typeof window.board?.watch !== 'function') return;
+      try { watching = window.board.watch(path, v => { pathData = v; pathSeen = true; queue(); }); } catch { pathSeen = true; pathData = null; }
+    };
+    subscribe();
+    const key = fig.getAttribute('data-lg-key');
+    if (key) selectKey = resolveKey(key, currentValues(controlScope(fig)));
+    render();
+    b.add(() => { cancelAnimationFrame(frame); ro.disconnect(); watching?.(); svgRoot.remove(); tableBox.remove(); empty.remove(); });
+    return {
+      update(attr) { if (attr === 'data-lg-path') subscribe(); if (attr === 'data-lg-select') selectKey = null; queue(); },
+      select(k) { if (k !== selectKey) { selectKey = k; queue(); } },
+      get data() { return source(); },
+    };
+  }
+
+  /* ==========================================================================
+     Registry, scanning and Board-patch awareness
+     ========================================================================== */
+  const KINDS = { dock: initDock, expand: initExpand, split: initSplit, palette: initPalette, card: initCard, nav: initNav, chart: initChart };
+  const ORDER = Object.keys(KINDS);
+
+  function api(el, kind) { return registry.get(el)?.get(kind)?.api; }
+  function mount(el, kind, init) {
+    let kinds = registry.get(el);
+    if (!kinds) registry.set(el, (kinds = new Map()));
+    if (kinds.has(kind)) return;
+    const b = bag();
+    try { kinds.set(kind, { destroy: b.dispose, api: init(el, b) || {} }); }
+    catch (err) { b.dispose(); console.error('[liquid-glass] ' + kind, err); }
+  }
+  function destroy(el) {
+    const kinds = registry.get(el);
+    if (!kinds) return;
+    for (const kind of [...kinds.keys()].reverse()) kinds.get(kind).destroy();
+    registry.delete(el);
+  }
+  const eligible = el => outerScope(el) && !el.closest(IGNORE);
+  function scan(root = document) {
+    if (!document.querySelector(SCOPE)) return;
+    ensureDefs();
+    const base = root.nodeType === 1 ? [root] : [];
+    const scopes = new Set();
+    for (const el of [...base, ...root.querySelectorAll('[data-lg]')]) {
+      if (!el.matches('[data-lg]') || !eligible(el)) continue;
+      const tokens = el.getAttribute('data-lg').split(/\s+/);
+      for (const kind of ORDER) if (tokens.includes(kind)) mount(el, kind, KINDS[kind]);
+    }
+    for (const el of [...base, ...root.querySelectorAll('[data-lg-count]')]) {
+      if (el.matches('[data-lg-count]') && eligible(el)) mount(el, 'count', initCount);
+    }
+    for (const el of [...base, ...root.querySelectorAll('[data-lg-key]')]) if (el.matches('[data-lg-key]') && eligible(el)) scopes.add(controlScope(el));
+    for (const s of scopes) syncValues(s, null);
+  }
+  function sweep() { for (const el of [...registry.keys()]) if (!el.isConnected) destroy(el); }
+
+  // Batches DOM changes into one microtask: sweep removed components, scan added subtrees,
+  // then let mounted hosts whose own children changed refresh themselves.
+  let queued = false, needSweep = false, started = false, alive = true;
+  const pending = new Set(), touched = new Set(), changedAttrs = new Map();
+  const authoredNode = n => n.nodeType === 1 && !generated.has(n);
+  // Same rule as build-time detection: only a real script/style copy of the prototype kit.
+  const legacyKit = () => document.querySelector('script#lg-kit-script, style#lg-kit-style');
+  const flush = () => {
+    queued = false;
+    if (!alive) return;
+    // An authored kit copy (0.1/0.2) arrived through a live patch: hand the page over to it,
+    // so this session matches what reopening the Board shows (the old kit alone).
+    if (window.LiquidGlass !== self) { teardown(); return; }
+    if (legacyKit()) { handover(); return; }
+    if (needSweep) { needSweep = false; sweep(); }
+    for (const n of pending) if (n.isConnected) scan(n);
+    pending.clear();
+    for (const host of touched) {
+      if (!host.isConnected) continue;
+      for (const entry of registry.get(host)?.values() || []) {
+        try { entry.api.refresh?.(); } catch (err) { console.error('[liquid-glass] refresh', err); }
+      }
+    }
+    touched.clear();
+    for (const [el, attrs] of changedAttrs) {
+      if (!el.isConnected) continue;
+      for (const a of attrs) {
+        if (a === 'data-lg-count') api(el, 'count')?.update();
+        else if (a === 'data-lg-by' || a === 'data-lg-key') { if (el.hasAttribute('data-lg-key')) syncValues(controlScope(el), null); }
+        else api(el, 'chart')?.update(a);
+      }
+    }
+    changedAttrs.clear();
+  };
+  const CHART_ATTRS = ['data-lg-values', 'data-lg-labels', 'data-lg-series', 'data-lg-select', 'data-lg-type', 'data-lg-unit', 'data-lg-path', 'data-lg-avg'];
+  const mo = new MutationObserver(records => {
+    // Nothing to do until a glass scope exists (keeps busy, unrelated Boards cheap).
+    if (!registry.size && !document.querySelector(SCOPE)) return;
+    for (const r of records) {
+      if (r.type === 'attributes') {
+        const el = r.target;
+        if (generated.has(el)) continue;
+        if (r.attributeName === 'data-lg') { destroy(el); pending.add(el); continue; }
+        if (r.attributeName === 'data-style') { for (const k of [...registry.keys()]) if (el.contains(k)) destroy(k); pending.add(el); continue; }
+        if (!changedAttrs.has(el)) changedAttrs.set(el, new Set());
+        changedAttrs.get(el).add(r.attributeName);
+        continue;
+      }
+      const added = [...r.addedNodes].filter(authoredNode), removed = [...r.removedNodes].filter(authoredNode);
+      if (removed.length) needSweep = true;
+      for (const n of added) if (!n.closest(IGNORE)) pending.add(n);
+      if ((added.length || removed.length) && registry.has(r.target)) touched.add(r.target);
+    }
+    if ((pending.size || needSweep || touched.size || changedAttrs.size) && !queued) { queued = true; queueMicrotask(flush); }
+  });
+
+  // Paseo forwards "/" while the Board screen (not a text field) has focus; the reply lets it
+  // hand focus back at once. preset-close: a late open after the user moved on.
+  function onHostMessage(e) {
+    const d = e.data;
+    if (e.source !== window.parent || window.parent === window || !d || d.channel !== CHANNEL) return;
+    const palettes = [];
+    for (const [el, kinds] of registry) { const p = kinds.get('palette')?.api; if (p && el.isConnected) palettes.push(p); }
+    if (d.type === 'preset-close') { for (const p of palettes) if (p.isOpen) p.close(false); return; }
+    if (d.type !== 'preset-key' || d.key !== '/') return;
+    const reply = (type, extra) => window.parent.postMessage({ channel: CHANNEL, boardId: d.boardId, sessionId: d.sessionId, type, ...extra }, '*');
+    const palette = palettes.find(p => p.keys.includes('/'));
+    if (!palette) { reply('preset-key-ack', { opened: false }); return; }
+    palette.open({ onCancel: () => reply('preset-focus-return'), onDone: () => reply('preset-handoff-end') });
+    reply('preset-key-ack', { opened: palette.isOpen });
+  }
+
+  const queuedScans = [];
+  const start = () => {
+    if (!alive || started) return;
+    started = true;
+    if (window.LiquidGlass !== self) { teardown(); return; }
+    if (legacyKit()) { handover(); return; }
+    scan();
+    for (const el of queuedScans.splice(0)) if (el.isConnected) scan(el);
+    mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-lg', 'data-lg-count', 'data-style', 'data-lg-by', 'data-lg-key', ...CHART_ATTRS] });
+    window.addEventListener('message', onHostMessage);
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('pointerup', onPointerUp, true);
+    window.addEventListener('pointercancel', onPointerUp, true);
+    document.addEventListener('selectionchange', resume);
+  };
+  function teardown() {
+    alive = false;
+    mo.disconnect();
+    window.removeEventListener('keydown', onEscDown, true);
+    window.removeEventListener('keydown', onEscReach);
+    window.removeEventListener('keyup', onEscUp, true);
+    window.removeEventListener('message', onHostMessage);
+    window.removeEventListener('pointerdown', onPointerDown, true);
+    window.removeEventListener('pointerup', onPointerUp, true);
+    window.removeEventListener('pointercancel', onPointerUp, true);
+    document.removeEventListener('selectionchange', resume);
+    for (const el of [...registry.keys()]) destroy(el);
+    document.getElementById('lg-defs')?.remove();
+    if (window.LiquidGlass === self) delete window.LiquidGlass;
+  }
+  // Remove the built-in completely (styles too) and let the authored kit run alone.
+  function handover() {
+    teardown();
+    const style = document.getElementById(STYLE_ID);
+    if (style) style.media = 'not all';
+    const legacy = document.querySelector('script#lg-kit-script');
+    if (legacy && !window.LiquidGlass) {
+      const s = document.createElement('script');
+      s.textContent = legacy.textContent;
+      (document.head || document.documentElement).append(s);
+      s.remove();
+    }
+  }
+  const self = {
+    version: VERSION,
+    builtin: true,
+    scan(el) { if (!alive) return; if (!started) { if (el) queuedScans.push(el); return; } scan(el && el.nodeType === 1 ? el : document); },
+    api,
+    destroy,
+    teardown,
+  };
+  window.LiquidGlass = self;
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
+  else start();
+})();

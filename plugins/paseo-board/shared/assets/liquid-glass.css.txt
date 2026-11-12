@@ -1,0 +1,1088 @@
+/* Paseo Board liquid-glass preset 1.0.0 (styles).
+   Inlined by Board only when the authored source contains data-style="liquid-glass".
+   Everything is scoped under the outermost [data-style="liquid-glass"] element; re-tint by
+   overriding the --lg-* variables on it. Selectors are scope-prefixed (not layered), so
+   element resets such as `button{background:none}` do not strip the preset; deliberate
+   overrides use variables or `#page-id .x`. Behaviours: data-lg="nav card expand split
+   palette dock chart" (space separated). */
+
+[data-style="liquid-glass"] {
+  /* Colour scheme */
+  --lg-peach: #E4C0A6;
+  --lg-rose: #D488AC;
+  --lg-apricot: #EBD7CC;
+  --lg-accent: #B66D44;
+  --lg-accent-ink: #FFFFFF;
+  --lg-accent-text: #8A4A28;
+  --lg-accent-deep: #9A5734;
+  --lg-accent-soft: rgba(182, 109, 68, 0.16);
+  --lg-chart-top: #E7A471;
+  --lg-chart-bottom: #C5A0AB;
+  --lg-ink: #2B1D1A;
+  --lg-ink-muted: #563A37;
+  --lg-ink-faint: rgba(43, 29, 26, 0.42);
+  --lg-good: #2E6146;
+  --lg-warn: #8A521F;
+  --lg-bad: #9A3631;
+  --lg-hairline: rgba(255, 255, 255, 0.6);
+
+  /* Glass */
+  --lg-glass: rgba(255, 255, 255, 0.56);
+  --lg-glass-strong: rgba(255, 255, 255, 0.68);
+  --lg-glass-solid: rgba(255, 252, 250, 0.80);
+  --lg-stroke: rgba(255, 255, 255, 0.5);
+  --lg-highlight: rgba(255, 255, 255, 0.92);
+  --lg-blur: 22px;
+  --lg-saturate: 1.15;
+  --lg-shadow: 0 1px 1px rgba(90, 46, 38, 0.04), 0 18px 40px -18px rgba(104, 52, 50, 0.34);
+  --lg-shadow-lift: 0 2px 4px rgba(90, 46, 38, 0.05), 0 30px 60px -24px rgba(104, 52, 50, 0.42);
+  --lg-scrim: rgba(52, 26, 32, 0.26);
+  --lg-field:
+    radial-gradient(60% 70% at 8% 0%, var(--lg-peach) 0%, transparent 72%),
+    radial-gradient(70% 60% at 70% 55%, color-mix(in oklab, var(--lg-rose) 70%, #B9A7AB) 0%, transparent 74%),
+    linear-gradient(180deg, color-mix(in oklab, var(--lg-peach) 80%, var(--lg-apricot)) 0%, color-mix(in oklab, var(--lg-rose) 40%, var(--lg-apricot)) 55%, var(--lg-apricot) 100%);
+
+  /* Shape, type and layout */
+  --lg-radius: 24px;
+  --lg-radius-sm: 14px;
+  --lg-pill: 999px;
+  --lg-font: var(--font-sans, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif);
+  --lg-mono: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  --lg-title-size: clamp(48px, 6vw, 64px);
+  --lg-max: 1120px;
+  --lg-gap: 20px;
+  --lg-chart-h: 220px;
+  --lg-dock-size: 46px;
+
+  /* Motion: springs with real overshoot (fallback: back-out bezier) */
+  --lg-spring: cubic-bezier(0.34, 1.4, 0.5, 1);
+  --lg-spring-soft: cubic-bezier(0.25, 1.06, 0.5, 1);
+  --lg-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --lg-dur: 640ms;
+
+  /* Fixed light colour scheme: re-point the injected Board tokens too, so helper classes
+     (.btn, .form-control, .viz-plot …) stay readable when the host is dark. */
+  color-scheme: light;
+  --background: var(--lg-apricot);
+  --foreground: var(--lg-ink);
+  --muted-foreground: var(--lg-ink-muted);
+  --card: var(--lg-glass-strong);
+  --card-foreground: var(--lg-ink);
+  --popover: var(--lg-glass-solid);
+  --popover-foreground: var(--lg-ink);
+  --primary: var(--lg-accent);
+  --primary-foreground: var(--lg-accent-ink);
+  --secondary: rgba(255, 255, 255, 0.5);
+  --secondary-foreground: var(--lg-ink);
+  --accent: var(--lg-accent-soft);
+  --accent-foreground: var(--lg-accent-text);
+  --muted: rgba(255, 255, 255, 0.35);
+  --border: var(--lg-stroke);
+  --input: rgba(255, 255, 255, 0.7);
+  --ring: var(--lg-accent);
+  --destructive: var(--lg-bad);
+  --success: var(--lg-good);
+  --warning: var(--lg-warn);
+  --shadow-sm: 0 1px 2px rgba(90, 46, 38, 0.12);
+  --shadow-lg: var(--lg-shadow);
+  --viz-neutral-1: color-mix(in oklab, var(--lg-ink) 11%, var(--lg-apricot));
+  --viz-neutral-2: color-mix(in oklab, var(--lg-ink) 22%, var(--lg-apricot));
+  --viz-neutral-3: color-mix(in oklab, var(--lg-ink) 38%, var(--lg-apricot));
+  --viz-neutral-4: color-mix(in oklab, var(--lg-ink) 57%, var(--lg-apricot));
+  --viz-neutral-5: color-mix(in oklab, var(--lg-ink) 78%, var(--lg-apricot));
+  --viz-recede: color-mix(in oklab, var(--lg-ink) 15%, var(--lg-apricot));
+  --viz-recede-foreground: var(--lg-ink-muted);
+  --viz-focus: var(--lg-accent);
+  color: var(--lg-ink);
+  font-family: var(--lg-font);
+}
+
+@supports (transition-timing-function: linear(0, 1)) {
+  [data-style="liquid-glass"] {
+    --lg-spring-soft: linear(0, 0.057, 0.188, 0.344, 0.498, 0.635, 0.749, 0.837, 0.903, 0.949, 0.98, 0.999, 1.009, 1.014, 1.015, 1.014, 1.012, 1.01, 1.008, 1.005, 1.004, 1.002, 1.001, 1.001, 1);
+    --lg-spring: linear(0, 0.034, 0.122, 0.242, 0.377, 0.515, 0.645, 0.762, 0.861, 0.941, 1.002, 1.046, 1.074, 1.089, 1.095, 1.092, 1.085, 1.074, 1.061, 1.048, 1.035, 1.024, 1.014, 1.007, 1.001, 0.996, 0.993, 0.992, 0.991, 0.991, 0.992, 0.993, 0.994, 0.995, 0.997, 0.998, 1);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Page mode (data-lg-page): the blurred colour field, white light arcs and a
+   centred column; takes over the Board body margins.
+   -------------------------------------------------------------------------- */
+html:has([data-style="liquid-glass"][data-lg-page]) {
+  color-scheme: light;
+  background: #EBD7CC;
+}
+body:has([data-style="liquid-glass"][data-lg-page]) {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  color: #2B1D1A;
+  background: transparent;
+}
+/* The marker on the body element itself (a full authored document): no 960px Board column. */
+body[data-style="liquid-glass"][data-lg-page] { max-width: none; }
+[data-style="liquid-glass"][data-lg-page] {
+  --lg-dock-reserve: 0px;
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  gap: var(--lg-gap);
+  min-height: 100vh;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 44px max(clamp(18px, 4vw, 48px), (100% - var(--lg-max)) / 2) calc(56px + var(--lg-dock-reserve));
+  background: var(--lg-apricot);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+/* Space for a floating dock, so the last content always scrolls above it. */
+[data-style="liquid-glass"][data-lg-page]:has([data-lg~="dock"]) { --lg-dock-reserve: calc(var(--lg-dock-size) + 52px); }
+[data-style="liquid-glass"][data-lg-page] > * { min-width: 0; }
+[data-style="liquid-glass"][data-lg-page] > :is([data-lg~="nav"], [data-lg~="split"], .lg-pill, button) { align-self: flex-start; }
+[data-style="liquid-glass"][data-lg-page]::before,
+[data-style="liquid-glass"][data-lg-page]::after {
+  content: "";
+  position: fixed;
+  pointer-events: none;
+  z-index: -1;
+}
+/* Soft colour field: warm peach top-left → grey-pink middle → light apricot bottom */
+[data-style="liquid-glass"][data-lg-page]::before {
+  inset: -14%;
+  background:
+    radial-gradient(48% 42% at 10% 6%, var(--lg-peach) 0%, transparent 72%),
+    radial-gradient(42% 36% at 84% 16%, color-mix(in oklab, var(--lg-peach) 55%, #fff) 0%, transparent 70%),
+    radial-gradient(62% 46% at 58% 50%, color-mix(in oklab, var(--lg-rose) 82%, #B9A7AB) 0%, transparent 70%),
+    radial-gradient(40% 40% at 14% 58%, color-mix(in oklab, var(--lg-rose) 55%, var(--lg-peach)) 0%, transparent 72%),
+    radial-gradient(70% 46% at 46% 104%, color-mix(in oklab, var(--lg-apricot) 70%, #fff) 0%, transparent 74%),
+    linear-gradient(180deg, var(--lg-peach) 0%, color-mix(in oklab, color-mix(in oklab, var(--lg-rose) 82%, #B9A7AB) 78%, var(--lg-peach)) 50%, var(--lg-apricot) 92%);
+  filter: blur(36px) saturate(1.04);
+}
+/* White translucent light arcs, routed away from the top-left title block */
+[data-style="liquid-glass"][data-lg-page]::after {
+  inset: 0;
+  background:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 900' preserveAspectRatio='xMidYMid slice'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='.6'><stop offset='0' stop-color='white' stop-opacity='0'/><stop offset='.5' stop-color='white' stop-opacity='1'/><stop offset='1' stop-color='white' stop-opacity='0'/></linearGradient><filter id='b' x='-30%' y='-30%' width='160%' height='160%'><feGaussianBlur stdDeviation='18'/></filter></defs><g fill='none' stroke='url(%23g)'><ellipse cx='1180' cy='-140' rx='720' ry='470' stroke-width='84' opacity='.42' filter='url(%23b)'/><ellipse cx='1180' cy='-140' rx='720' ry='470' stroke-width='1.2' opacity='.36'/><ellipse cx='60' cy='1060' rx='940' ry='430' stroke-width='96' opacity='.40' filter='url(%23b)'/><ellipse cx='60' cy='1060' rx='940' ry='430' stroke-width='1.1' opacity='.32'/><ellipse cx='760' cy='560' rx='1100' ry='300' stroke-width='60' opacity='.16' filter='url(%23b)' transform='rotate(-12 760 560)'/></g></svg>") center / cover no-repeat;
+}
+
+/* Island mode: a self-contained glass panel inside an ordinary Board. Only the
+   outermost marker is a scope; a nested marker is inert. */
+[data-style="liquid-glass"]:not([data-lg-page]):not([data-style="liquid-glass"] *) {
+  position: relative;
+  isolation: isolate;
+  display: flow-root;
+  padding: 24px;
+  border-radius: var(--lg-radius);
+  background: var(--lg-field);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), var(--lg-shadow);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+/* --------------------------------------------------------------------------
+   Type
+   -------------------------------------------------------------------------- */
+[data-style="liquid-glass"] :where(h1, h2, h3, h4) { color: var(--lg-ink); }
+[data-style="liquid-glass"] .lg-title {
+  margin: 0;
+  font-size: var(--lg-title-size);
+  line-height: 1.04;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+[data-style="liquid-glass"] .lg-title:lang(en) { letter-spacing: -0.035em; }
+[data-style="liquid-glass"] .lg-eyebrow {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lg-ink-muted);
+}
+[data-style="liquid-glass"] .lg-muted { color: var(--lg-ink-muted); }
+[data-style="liquid-glass"] .lg-lede { margin: 0; max-width: 64ch; font-size: 15px; line-height: 1.6; color: color-mix(in oklab, var(--lg-ink) 82%, transparent); }
+[data-style="liquid-glass"] :where(h2) { margin: 0; font-size: 22px; font-weight: 620; letter-spacing: -0.01em; }
+[data-style="liquid-glass"] :where(h3) { margin: 0; font-size: 16px; font-weight: 620; }
+[data-style="liquid-glass"] .lg-section-title { margin: 0; font-size: 30px; font-weight: 640; letter-spacing: -0.015em; }
+[data-style="liquid-glass"] .lg-num,
+[data-style="liquid-glass"] [data-lg-count] {
+  font-family: var(--lg-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+[data-style="liquid-glass"] .lg-kbd,
+[data-style="liquid-glass"] kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 6px;
+  font: 500 11px/1 var(--lg-mono);
+  color: var(--lg-ink-muted);
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.8), 0 1px 2px rgba(80, 40, 30, 0.12);
+}
+[data-style="liquid-glass"] .lg-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------------
+   Glass surfaces (cards, modules, pills)
+   -------------------------------------------------------------------------- */
+[data-style="liquid-glass"] .lg-glass,
+[data-style="liquid-glass"] [data-lg~="card"],
+[data-style="liquid-glass"] [data-lg-module] {
+  position: relative;
+  border-radius: var(--lg-radius);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.30), rgba(255, 255, 255, 0.05) 46%),
+    linear-gradient(rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.12)),
+    var(--lg-glass);
+  border: 1px solid var(--lg-stroke);
+  box-shadow: inset 0 1px 0 var(--lg-highlight), inset 0 -1px 0 rgba(255, 255, 255, 0.18), var(--lg-shadow);
+  -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(var(--lg-saturate));
+  backdrop-filter: blur(var(--lg-blur)) saturate(var(--lg-saturate));
+  color: var(--lg-ink);
+}
+[data-style="liquid-glass"] [data-lg~="card"] { min-width: 0; padding: 20px 22px; }
+[data-style="liquid-glass"] [data-lg~="card"] > :is(h2, h3):not(:last-child) { margin-bottom: 12px; }
+
+[data-style="liquid-glass"] .lg-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  margin: 0;
+  padding: 0 16px;
+  border-radius: var(--lg-pill);
+  border: 1px solid var(--lg-stroke);
+  background: var(--lg-glass-strong);
+  box-shadow: inset 0 1px 0 var(--lg-highlight), 0 8px 22px -14px rgba(104, 52, 50, 0.5);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  backdrop-filter: blur(18px) saturate(1.4);
+  color: var(--lg-ink);
+  font: 500 14px/1 var(--lg-font);
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform 300ms var(--lg-spring), background-color 200ms;
+}
+[data-style="liquid-glass"] .lg-pill:hover { background: rgba(255, 255, 255, 0.74); }
+[data-style="liquid-glass"] .lg-pill:active { transform: scale(0.97); }
+[data-style="liquid-glass"] .lg-pill > kbd { margin-right: -6px; }
+
+[data-style="liquid-glass"] .lg-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--lg-pill);
+  font: 600 12px/18px var(--lg-mono);
+  color: var(--lg-accent-text);
+  background: var(--lg-accent-soft);
+  white-space: nowrap;
+}
+[data-style="liquid-glass"] .lg-chip[data-tone="good"] { color: var(--lg-good); background: rgba(46, 97, 70, 0.13); }
+[data-style="liquid-glass"] .lg-chip[data-tone="warn"] { color: var(--lg-warn); background: rgba(168, 102, 42, 0.16); }
+[data-style="liquid-glass"] .lg-chip[data-tone="bad"] { color: var(--lg-bad); background: rgba(154, 54, 49, 0.13); }
+
+[data-style="liquid-glass"] :focus-visible {
+  outline: 2px solid var(--lg-accent-text);
+  outline-offset: 2px;
+}
+
+/* --------------------------------------------------------------------------
+   Layout helpers (agents write semantic markup; no page CSS needed)
+   -------------------------------------------------------------------------- */
+[data-style="liquid-glass"] .lg-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px 24px;
+  margin: 0;
+}
+[data-style="liquid-glass"] .lg-header > :first-child { display: grid; gap: 12px; min-width: min(100%, 320px); flex: 1 1 420px; }
+[data-style="liquid-glass"] .lg-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+[data-style="liquid-glass"] .lg-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin: 0; scroll-margin-top: 24px; }
+[data-style="liquid-glass"] .lg-section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+[data-style="liquid-glass"] .lg-section-head > p { margin: 0; }
+[data-style="liquid-glass"] .lg-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(var(--lg-min, 220px), 100%), 1fr));
+  gap: 16px;
+  margin: 0;
+  scroll-margin-top: 24px;
+}
+[data-style="liquid-glass"] .lg-grid[data-lg-cols="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+[data-style="liquid-glass"] .lg-grid[data-lg-cols="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+[data-style="liquid-glass"] .lg-grid[data-lg-cols="4"] { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+[data-style="liquid-glass"] .lg-columns {
+  display: grid;
+  grid-template-columns: var(--lg-ratio, minmax(0, 1.8fr) minmax(0, 1fr));
+  gap: 16px;
+  margin: 0;
+  scroll-margin-top: 24px;
+}
+[data-style="liquid-glass"] .lg-card-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px 16px; margin: 0 0 12px; }
+[data-style="liquid-glass"] .lg-card-head > :first-child { display: grid; gap: 4px; min-width: 0; }
+[data-style="liquid-glass"] .lg-card-head p { margin: 0; }
+[data-style="liquid-glass"] .lg-module-head { display: flex; align-items: center; gap: 12px; min-width: 0; margin: 0; }
+[data-style="liquid-glass"] .lg-module-head :is(h2, h3, h4) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-style="liquid-glass"] [data-lg-module].is-open .lg-module-head { padding-right: 52px; }
+[data-style="liquid-glass"] .lg-meta { margin-left: auto; font-size: 12.5px; color: var(--lg-ink-muted); white-space: nowrap; }
+[data-style="liquid-glass"] .lg-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  color: var(--lg-accent);
+  background: rgba(255, 255, 255, 0.66);
+  box-shadow: inset 0 1px 0 #fff, 0 4px 10px -6px rgba(98, 52, 44, 0.5);
+}
+[data-style="liquid-glass"] .lg-icon > svg { width: 19px; height: 19px; }
+[data-style="liquid-glass"] [data-lg-summary] { margin-top: 18px; }
+/* Wide detail content (a table) scrolls inside the module; the module never outgrows the pane. */
+[data-style="liquid-glass"] [data-lg-detail] { margin-top: 20px; overflow-x: auto; overscroll-behavior-x: contain; }
+[data-style="liquid-glass"] .lg-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
+[data-style="liquid-glass"] .lg-big { font: 560 34px/1.1 var(--lg-mono); font-variant-numeric: tabular-nums; letter-spacing: -0.03em; }
+[data-style="liquid-glass"] .lg-list { display: grid; margin: 0; padding: 0; list-style: none; }
+[data-style="liquid-glass"] .lg-list > li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 10px 0;
+  border-top: 1px solid var(--lg-hairline);
+  font-size: 13.5px;
+}
+[data-style="liquid-glass"] .lg-list > li:first-child { border-top: 0; }
+[data-style="liquid-glass"] .lg-list time,
+[data-style="liquid-glass"] .lg-list .lg-num { font-size: 12px; color: var(--lg-ink-muted); }
+[data-style="liquid-glass"] .lg-grow { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-style="liquid-glass"] .lg-dot { flex: none; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--lg-good); box-shadow: 0 0 0 3px rgba(46, 97, 70, 0.14); }
+[data-style="liquid-glass"] .lg-dot[data-tone="warn"] { background: var(--lg-warn); box-shadow: 0 0 0 3px rgba(168, 102, 42, 0.16); }
+[data-style="liquid-glass"] .lg-dot[data-tone="bad"] { background: var(--lg-bad); box-shadow: 0 0 0 3px rgba(154, 54, 49, 0.14); }
+[data-style="liquid-glass"] .lg-table { width: 100%; margin: 0; border-collapse: collapse; font-size: 14px; background: transparent; }
+[data-style="liquid-glass"] .lg-table th { padding: 0 12px 10px; border: 0; background: transparent; text-align: left; font-size: 12px; font-weight: 600; color: var(--lg-ink-muted); }
+[data-style="liquid-glass"] .lg-table td { padding: 12px; border: 0; border-top: 1px solid var(--lg-hairline); background: transparent; color: var(--lg-ink); }
+[data-style="liquid-glass"] .lg-table :is(th, td).lg-num { text-align: right; }
+[data-style="liquid-glass"] .lg-meter {
+  --lg-value: 0;
+  display: block;
+  position: relative;
+  min-width: 60px;
+  height: 6px;
+  border-radius: var(--lg-pill);
+  background: rgba(255, 255, 255, 0.6);
+  overflow: hidden;
+}
+[data-style="liquid-glass"] .lg-meter::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: calc(clamp(0, var(--lg-value), 1) * 100%);
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--lg-chart-bottom), var(--lg-chart-top));
+}
+[data-style="liquid-glass"] .lg-meter[data-tone="warn"]::before { background: linear-gradient(90deg, var(--lg-chart-bottom), var(--lg-warn)); }
+[data-style="liquid-glass"] .lg-meter[data-tone="bad"]::before { background: linear-gradient(90deg, var(--lg-chart-bottom), var(--lg-bad)); }
+[data-style="liquid-glass"] .lg-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(160deg, var(--lg-chart-top), var(--lg-accent-deep));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+/* Built-in icons: data-lg-icon="name" (CSS masks, no network, no DOM change). */
+[data-style="liquid-glass"] [data-lg-icon]:not([data-lg-icon=""]):not(:has(> svg))::after {
+  content: "";
+  display: block;
+  flex: none;
+  width: var(--lg-icon-size, 19px);
+  height: var(--lg-icon-size, 19px);
+  background: currentColor;
+  -webkit-mask: var(--lg-icon) center / contain no-repeat;
+  mask: var(--lg-icon) center / contain no-repeat;
+}
+
+/* --------------------------------------------------------------------------
+   KPI tiles
+   -------------------------------------------------------------------------- */
+[data-style="liquid-glass"] .lg-stat { position: relative; min-width: 0; padding: 20px 22px 18px; overflow: hidden; }
+[data-style="liquid-glass"] .lg-stat-label { margin: 0; font-size: 13px; font-weight: 600; color: var(--lg-ink-muted); }
+[data-style="liquid-glass"] .lg-stat-value { display: flex; align-items: baseline; gap: 6px; margin: 10px 0 0; }
+[data-style="liquid-glass"] .lg-stat-value > :first-child { font-size: 38px; font-weight: 560; line-height: 1.1; color: var(--lg-ink); }
+[data-style="liquid-glass"] .lg-stat-value > :not(:first-child) { font-size: 13px; color: var(--lg-ink-muted); }
+[data-style="liquid-glass"] .lg-stat-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 0; font-size: 12.5px; color: var(--lg-ink-muted); }
+[data-style="liquid-glass"] .lg-stat-spark {
+  position: absolute; top: 18px; right: 16px; width: 72px; height: 20px; overflow: visible;
+  fill: none; stroke: var(--lg-accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; opacity: 0.6;
+}
+
+/* Rolling numbers: the authored text stays in place; while it rolls, a decorative
+   reel overlay (aria-hidden) covers the transparent text. */
+[data-style="liquid-glass"] [data-lg-count] { position: relative; display: inline-block; line-height: 1.1; white-space: nowrap; }
+[data-style="liquid-glass"] [data-lg-count].lg-rolling { color: transparent; }
+[data-style="liquid-glass"] .lg-odo {
+  position: absolute;
+  inset: 0 auto auto 0;
+  display: inline-flex;
+  color: var(--lg-ink);
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+[data-style="liquid-glass"] .lg-odo-d {
+  display: inline-block;
+  height: 1.1em;
+  overflow: hidden;
+  line-height: 1.1;
+  -webkit-mask: linear-gradient(transparent, #000 18%, #000 82%, transparent);
+  mask: linear-gradient(transparent, #000 18%, #000 82%, transparent);
+}
+[data-style="liquid-glass"] .lg-odo-reel {
+  display: flex;
+  flex-direction: column;
+  transition: transform 900ms var(--lg-spring);
+  transition-delay: var(--lg-delay, 0ms);
+}
+[data-style="liquid-glass"] .lg-odo-reel > span { height: 1.1em; }
+[data-style="liquid-glass"] .lg-odo-s { display: inline-block; line-height: 1.1; }
+
+/* --------------------------------------------------------------------------
+   card — cursor light, edge glow, gentle tilt (kit.js animates --lg-px/py/rx/ry/glow)
+   -------------------------------------------------------------------------- */
+[data-style="liquid-glass"] [data-lg~="card"] {
+  isolation: isolate;
+  transform: perspective(1100px) rotateX(var(--lg-rx, 0deg)) rotateY(var(--lg-ry, 0deg)) translateZ(0);
+  transform-style: preserve-3d;
+}
+[data-style="liquid-glass"] [data-lg~="card"]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(250px circle at var(--lg-px, 50%) var(--lg-py, 0%), rgba(255, 255, 255, 0.85), rgba(255, 249, 245, 0.34) 40%, transparent 72%);
+  opacity: var(--lg-glow, 0);
+}
+[data-style="liquid-glass"] [data-lg~="card"]::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  padding: 1.5px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(240px circle at calc(var(--lg-px, 50%) + 1px) calc(var(--lg-py, 0%) + 1px), #fff 12%, rgba(255, 255, 255, 0.75) 26%, transparent 46%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  opacity: var(--lg-glow, 0);
+}
+
+/* --------------------------------------------------------------------------
+   nav — liquid highlight capsule (generated .lg-capsule)
+   -------------------------------------------------------------------------- */
+[data-style="liquid-glass"] [data-lg~="nav"] { position: relative; isolation: isolate; }
+[data-style="liquid-glass"] [data-lg~="nav"]:not([data-lg~="dock"]) {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  max-width: 100%;
+  gap: 2px;
+  margin: 0;
+  padding: 4px;
+  border-radius: var(--lg-pill);
+  background: rgba(255, 255, 255, 0.26);
+  box-shadow: inset 0 1px 1px rgba(98, 52, 44, 0.10), inset 0 0 0 1px rgba(255, 255, 255, 0.42);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+[data-style="liquid-glass"] [data-lg~="nav"]:not([data-lg~="dock"]) > :is(a, button, [data-lg-item]) {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  margin: 0;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--lg-pill);
+  background: transparent;
+  color: var(--lg-ink-muted);
+  font: 500 13.5px/1 var(--lg-font);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 240ms var(--lg-ease-out);
+}
+[data-style="liquid-glass"] [data-lg~="nav"] > .is-active { color: var(--lg-ink); }
+[data-style="liquid-glass"] [data-lg~="nav"]:not([data-lg~="dock"]) > :is(a, button, [data-lg-item]):hover { color: var(--lg-ink); }
+/* Before the kit mounts, mark the current item with a static pill (no layout shift). */
+[data-style="liquid-glass"] [data-lg~="nav"]:not(.lg-mounted):not([data-lg~="dock"]) > :is([aria-current]:not([aria-current="false"]), [aria-selected="true"], .is-active) { background: rgba(255, 255, 255, 0.8); color: var(--lg-ink); }
+[data-style="liquid-glass"] .lg-capsule {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 0;
+  width: 0;
+  height: 0;
+  border-radius: var(--lg-pill);
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.62));
+  box-shadow: inset 0 1px 0 #fff, inset 0 -1px 2px rgba(182, 109, 68, 0.10), 0 1px 2px rgba(98, 52, 44, 0.10), 0 8px 18px -8px rgba(98, 52, 44, 0.38);
+  will-change: transform, width, height;
+}
+
+/* --------------------------------------------------------------------------
+   expand — modules open in place; the rest collapse into a thumbnail strip
+   -------------------------------------------------------------------------- */
+[data-style="liquid-glass"] [data-lg~="expand"] {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--lg-cols, auto-fit), minmax(min(var(--lg-expand-col, 220px), 100%), 1fr));
+  gap: 16px;
+  margin: 0;
+  scroll-margin-top: 24px;
+}
+[data-style="liquid-glass"] .lg-module-trigger {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+[data-style="liquid-glass"] .lg-module-trigger[hidden] { display: none; }
+[data-style="liquid-glass"] .lg-module-trigger:focus-visible { outline-offset: 3px; }
+:where([data-style="liquid-glass"] [data-lg-module] > :not(.lg-module-trigger, .lg-module-close)) { position: relative; z-index: 1; }
+[data-style="liquid-glass"] [data-lg-module] {
+  min-width: 0;
+  margin: 0;
+  padding: 20px 22px;
+  cursor: pointer;
+  scroll-margin-top: 24px;
+  transition: transform 420ms var(--lg-spring), box-shadow 300ms var(--lg-ease-out);
+}
+[data-style="liquid-glass"] [data-lg~="expand"]:not(.is-expanded) [data-lg-module]:hover {
+  transform: translateY(-3px);
+  box-shadow: inset 0 1px 0 var(--lg-highlight), var(--lg-shadow-lift);
+}
+[data-style="liquid-glass"] [data-lg-module] [data-lg-detail] { display: none; }
+[data-style="liquid-glass"] [data-lg-module].is-open { cursor: default; }
+[data-style="liquid-glass"] [data-lg-module].is-open [data-lg-summary] { display: none; }
+[data-style="liquid-glass"] [data-lg-module].is-open [data-lg-detail] { display: block; }
+[data-style="liquid-glass"] [data-lg-module].is-open [data-lg-detail].lg-enter { animation: lg-rise 520ms var(--lg-ease-out) 120ms both; }
+[data-style="liquid-glass"] [data-lg-module].is-closing [data-lg-detail] { animation: lg-fade-out 160ms var(--lg-ease-out) both; }
+[data-style="liquid-glass"] [data-lg~="expand"].is-expanded { display: block; }
+[data-style="liquid-glass"] [data-lg~="expand"].is-expanded > [data-lg-module]:not(.is-open, .lg-moving) { display: none; }
+[data-style="liquid-glass"] [data-lg-module].is-open { min-height: var(--lg-expand-min, 360px); padding: 26px 30px; }
+[data-style="liquid-glass"] .lg-module-close {
+  position: absolute;
+  z-index: 2;
+  top: 16px;
+  right: 16px;
+  display: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--lg-stroke);
+  border-radius: var(--lg-pill);
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 1px 0 #fff;
+  color: var(--lg-ink);
+  cursor: pointer;
+  transition: transform 300ms var(--lg-spring), background-color 200ms;
+}
+[data-style="liquid-glass"] .lg-module-close svg { width: 20px; height: 20px; }
+[data-style="liquid-glass"] .lg-module-close:hover { background: rgba(255, 255, 255, 0.85); transform: rotate(90deg); }
+[data-style="liquid-glass"] [data-lg-module].is-open > .lg-module-close { display: grid; }
+[data-style="liquid-glass"] .lg-ghost-layer { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
+[data-style="liquid-glass"] .lg-ghost-layer > * { position: absolute; margin: 0; box-sizing: border-box; transform-origin: 0 0; }
+[data-style="liquid-glass"] .lg-placeholder { visibility: hidden; }
+[data-style="liquid-glass"] .lg-strip {
+  display: none;
+  justify-content: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 16px auto 0;
+  padding: 6px;
+  border-radius: var(--lg-pill);
+  flex-wrap: wrap;
+}
+[data-style="liquid-glass"] [data-lg~="expand"].is-expanded > .lg-strip,
+[data-style="liquid-glass"] .lg-ghost-layer > .lg-strip { display: flex; }
+[data-style="liquid-glass"] .lg-thumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  margin: 0;
+  padding: 0 16px 0 12px;
+  border: 0;
+  border-radius: var(--lg-pill);
+  background: transparent;
+  color: var(--lg-ink);
+  font: 500 13.5px/1 var(--lg-font);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 200ms, transform 360ms var(--lg-spring);
+}
+[data-style="liquid-glass"] .lg-thumb:hover { background: rgba(255, 255, 255, 0.6); transform: translateY(-2px); }
+[data-style="liquid-glass"] .lg-thumb :is(svg, .lg-thumb-ico) { width: 18px; height: 18px; flex: none; color: var(--lg-accent); --lg-icon-size: 18px; }
+[data-style="liquid-glass"] .lg-thumb[hidden] { display: none; }
+
+/* --------------------------------------------------------------------------
+   split — a glass droplet that splits into the options (gooey SVG filter on a
+   generated blob layer; the authored buttons stay crisp on top)
+   -------------------------------------------------------------------------- */
+[data-style="liquid-glass"] [data-lg~="split"] {
+  position: relative;
+  display: inline-block;
+  vertical-align: middle;
+  height: 42px;
+  margin: 0;
+  padding: 0;
+  transition: width 560ms var(--lg-spring);
+}
+/* Before the kit mounts: the pressed option as a static pill (same width, no shift). */
+[data-style="liquid-glass"] [data-lg~="split"]:not(.lg-mounted) { padding-right: 18px; border-radius: var(--lg-pill); background: #fff; }
+[data-style="liquid-glass"] [data-lg~="split"]:not(.lg-mounted) > [data-lg-option] { position: relative; }
+[data-style="liquid-glass"] [data-lg~="split"]:not(.lg-mounted):has(> [aria-pressed="true"]) > [data-lg-option]:not([aria-pressed="true"]),
+[data-style="liquid-glass"] [data-lg~="split"]:not(.lg-mounted):not(:has(> [aria-pressed="true"])) > [data-lg-option]:not(:first-of-type) { display: none; }
+[data-style="liquid-glass"] [data-lg~="split"].is-merging { transition: width 520ms var(--lg-spring-soft); }
+/* The open row floats above its neighbours (which fade meanwhile in header/card/section heads);
+   the goo box is the closed footprint only. */
+[data-style="liquid-glass"] [data-lg~="split"]:is(.is-open, .is-merging) { z-index: 6; }
+[data-style="liquid-glass"] :is(.lg-actions, .lg-card-head, .lg-section-head) > :not([data-lg~="split"]) { transition: opacity 180ms var(--lg-ease-out); }
+[data-style="liquid-glass"] :is(.lg-actions, .lg-card-head, .lg-section-head):has(> [data-lg~="split"]:is(.is-open, .is-merging)) > :not([data-lg~="split"]) { opacity: 0; pointer-events: none; }
+[data-style="liquid-glass"] .lg-split-goo {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 42px;
+  pointer-events: none;
+  filter: url(#lg-goo-filter);
+}
+[data-style="liquid-glass"] .lg-split-blob {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 42px;
+  border-radius: var(--lg-pill);
+  background: #fff;
+  transition: transform var(--lg-dur) var(--lg-spring) var(--lg-d, 0ms), width var(--lg-dur) var(--lg-spring) var(--lg-d, 0ms);
+}
+[data-style="liquid-glass"] .lg-split-pick {
+  position: absolute;
+  left: 0;
+  top: 4px;
+  height: 34px;
+  border-radius: var(--lg-pill);
+  background: linear-gradient(180deg, var(--lg-accent), var(--lg-accent-deep));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 6px 14px -6px rgba(154, 87, 52, 0.75);
+  pointer-events: none;
+  opacity: 0;
+  transition: transform var(--lg-dur) var(--lg-spring), width var(--lg-dur) var(--lg-spring), opacity 220ms;
+}
+[data-style="liquid-glass"] [data-lg~="split"].is-open .lg-split-pick { opacity: 1; }
+[data-style="liquid-glass"] [data-lg~="split"] > [data-lg-option] {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  height: 42px;
+  margin: 0;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--lg-pill);
+  background: transparent;
+  color: var(--lg-ink);
+  font: 500 14px/1 var(--lg-font);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform var(--lg-dur) var(--lg-spring) var(--lg-d, 0ms), opacity 160ms var(--lg-ease-out) var(--lg-od, 0ms), color 200ms;
+}
+[data-style="liquid-glass"] [data-lg~="split"].lg-mounted:not(.is-open) > [data-lg-option]:not(.is-selected) { opacity: 0; pointer-events: none; }
+[data-style="liquid-glass"] [data-lg~="split"].is-open > [data-lg-option].is-selected { color: var(--lg-accent-ink); }
+[data-style="liquid-glass"] [data-lg~="split"].is-merging .lg-split-blob { transition: transform 520ms var(--lg-spring-soft) var(--lg-d, 0ms), width 520ms var(--lg-spring-soft) var(--lg-d, 0ms); }
+[data-style="liquid-glass"] [data-lg~="split"].is-merging .lg-split-pick { transition: transform 520ms var(--lg-spring-soft), width 520ms var(--lg-spring-soft), opacity 220ms; }
+[data-style="liquid-glass"] [data-lg~="split"].is-merging > [data-lg-option] { transition: transform 520ms var(--lg-spring-soft) var(--lg-d, 0ms), opacity 120ms var(--lg-ease-out), color 200ms; }
+[data-style="liquid-glass"] [data-lg~="split"].is-merging > [data-lg-option]:not(.is-selected) { opacity: 0; }
+[data-style="liquid-glass"] [data-lg~="split"].is-open > [data-lg-option]:not(.is-selected):hover { color: var(--lg-accent-text); }
+[data-style="liquid-glass"] .lg-split-chev {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 42px;
+  color: var(--lg-accent-text);
+  pointer-events: none;
+  transition: opacity 220ms var(--lg-ease-out) 140ms;
+}
+[data-style="liquid-glass"] .lg-split-chev svg { width: 16px; height: 16px; }
+[data-style="liquid-glass"] [data-lg~="split"].is-open .lg-split-chev { opacity: 0; transition: opacity 120ms; }
+
+/* --------------------------------------------------------------------------
+   palette — command palette (generated inside [data-lg~="palette"])
+   -------------------------------------------------------------------------- */
+[data-style="liquid-glass"] [data-lg~="palette"] { position: fixed; inset: 0; z-index: 1000; display: none; margin: 0; }
+[data-style="liquid-glass"] [data-lg~="palette"].is-mounted { display: block; }
+[data-style="liquid-glass"] [data-lg~="palette"]:not(.is-open) { pointer-events: none; }
+/* The generated layer is a manual popover (top layer) where supported: nothing on the page,
+   not even Board's comment markers, paints over the open palette. */
+[data-style="liquid-glass"] .lg-pal-layer { position: fixed; inset: 0; width: auto; height: auto; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; overflow: visible; color: inherit; background: transparent; }
+[data-style="liquid-glass"] .lg-pal-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--lg-scrim);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  backdrop-filter: blur(14px) saturate(1.15);
+  opacity: 0;
+  transition: opacity 280ms var(--lg-ease-out);
+}
+[data-style="liquid-glass"] [data-lg~="palette"].is-open .lg-pal-scrim { opacity: 1; }
+[data-style="liquid-glass"] .lg-pal-panel {
+  position: absolute;
+  left: 50%;
+  top: min(18vh, 160px);
+  width: min(600px, calc(100vw - 32px));
+  border-radius: 26px;
+  overflow: hidden;
+  color: var(--lg-ink);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(255, 250, 247, 0.74));
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  box-shadow: inset 0 1px 0 #fff, 0 40px 80px -30px rgba(70, 30, 36, 0.55), 0 0 0 0.5px rgba(98, 52, 44, 0.12);
+  -webkit-backdrop-filter: blur(32px) saturate(1.6);
+  backdrop-filter: blur(32px) saturate(1.6);
+  opacity: 0;
+  transform: translate(-50%, -10px) scale(0.94);
+  transform-origin: 50% 0;
+  transition: transform 520ms var(--lg-spring), opacity 200ms var(--lg-ease-out);
+}
+[data-style="liquid-glass"] [data-lg~="palette"].is-open .lg-pal-panel { opacity: 1; transform: translate(-50%, 0) scale(1); }
+[data-style="liquid-glass"] [data-lg~="palette"].is-mounted:not(.is-open) .lg-pal-panel { transition-duration: 180ms; }
+[data-style="liquid-glass"] .lg-pal-field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 20px;
+  border-bottom: 1px solid rgba(98, 52, 44, 0.10);
+  color: var(--lg-ink-muted);
+}
+[data-style="liquid-glass"] .lg-pal-field svg { flex: none; width: 20px; height: 20px; }
+[data-style="liquid-glass"] .lg-pal-input {
+  flex: 1;
+  min-width: 0;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+  color: var(--lg-ink);
+  font: 400 18px/1.4 var(--lg-font);
+  caret-color: var(--lg-accent);
+}
+[data-style="liquid-glass"] .lg-pal-input::placeholder { color: var(--lg-ink-faint); }
+[data-style="liquid-glass"] .lg-pal-input:focus-visible { outline: none; }
+[data-style="liquid-glass"] .lg-pal-list {
+  position: relative;
+  isolation: isolate;
+  max-height: min(360px, 48vh);
+  margin: 0;
+  padding: 8px;
+  overflow-y: auto;
+  list-style: none;
+  scrollbar-width: thin;
+}
+[data-style="liquid-glass"] .lg-pal-list .lg-capsule { border-radius: 14px; background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.7)); }
+[data-style="liquid-glass"] .lg-pal-item {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 14px;
+  border-radius: 14px;
+  color: var(--lg-ink);
+  font-size: 14.5px;
+  cursor: pointer;
+}
+[data-style="liquid-glass"] .lg-pal-ico {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  color: var(--lg-accent);
+  background: var(--lg-accent-soft);
+  --lg-icon-size: 16px;
+}
+[data-style="liquid-glass"] .lg-pal-ico svg { width: 16px; height: 16px; }
+[data-style="liquid-glass"] .lg-pal-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-style="liquid-glass"] .lg-pal-title mark { padding: 0 1px; border-radius: 4px; color: var(--lg-accent-text); background: rgba(231, 164, 113, 0.3); font-weight: 650; }
+[data-style="liquid-glass"] .lg-pal-group { flex: none; font-size: 12px; color: var(--lg-ink-muted); }
+[data-style="liquid-glass"] .lg-pal-item[aria-selected="true"] .lg-pal-group::after { content: "  ↵"; color: var(--lg-accent-text); }
+[data-style="liquid-glass"] .lg-pal-empty { padding: 26px 16px; text-align: center; color: var(--lg-ink-muted); }
+[data-style="liquid-glass"] .lg-pal-foot { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 10px 18px; border-top: 1px solid rgba(98, 52, 44, 0.08); font-size: 12px; color: var(--lg-ink-muted); }
+[data-style="liquid-glass"] .lg-pal-foot span { display: inline-flex; align-items: center; gap: 6px; }
+[data-style="liquid-glass"] .lg-flash { animation: lg-flash 1400ms var(--lg-ease-out); }
+
+/* --------------------------------------------------------------------------
+   dock — floating glass dock: magnification and a name label. Icons are the
+   authored child (svg) or data-lg-icon; the glass tile is ::before.
+   -------------------------------------------------------------------------- */
+[data-style="liquid-glass"] [data-lg~="dock"] {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 900;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: calc(100vw - 20px);
+  margin: 0;
+  padding: 8px;
+  border-radius: 26px;
+  transform: translateX(-50%);
+  isolation: isolate;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.3));
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: inset 0 1px 0 #fff, 0 24px 48px -20px rgba(80, 36, 40, 0.5), 0 0 0 0.5px rgba(98, 52, 44, 0.1);
+  -webkit-backdrop-filter: blur(26px) saturate(1.6);
+  backdrop-filter: blur(26px) saturate(1.6);
+  transition: transform 320ms var(--lg-ease-out), opacity 220ms var(--lg-ease-out);
+}
+/* In an island (no data-lg-page) the dock sticks to the bottom of the panel instead. */
+[data-style="liquid-glass"]:not([data-lg-page]) [data-lg~="dock"] { position: sticky; left: auto; bottom: 12px; width: fit-content; margin: 16px auto 0; transform: none; }
+[data-style="liquid-glass"] [data-lg~="dock"].is-tucked { transform: translate(-50%, calc(100% + 24px)); opacity: 0; pointer-events: none; }
+[data-style="liquid-glass"] [data-lg~="dock"].lg-instant { transition: none; }
+[data-style="liquid-glass"] [data-lg-dock-item] {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  display: block;
+  width: calc(var(--lg-dock-size) * var(--lg-s, 1));
+  height: var(--lg-dock-size);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--lg-ink);
+  cursor: pointer;
+}
+[data-style="liquid-glass"] [data-lg-dock-item]::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: var(--lg-dock-size);
+  height: var(--lg-dock-size);
+  margin-left: calc(var(--lg-dock-size) / -2);
+  border-radius: 15px;
+  transform: scale(var(--lg-s, 1));
+  transform-origin: 50% 100%;
+  background: rgba(255, 255, 255, calc((var(--lg-s, 1) - 1) * 0.7));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, calc((var(--lg-s, 1) - 1) * 1.6)), 0 6px 14px -8px rgba(80, 36, 40, calc((var(--lg-s, 1) - 1) * 0.6));
+}
+[data-style="liquid-glass"] [data-lg-dock-item] > :is(svg, img, span),
+[data-style="liquid-glass"] [data-lg-dock-item][data-lg-icon]:not(:has(> svg))::after {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--lg-dock-size) * var(--lg-s, 1) / 2);
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  transform: translate(-50%, 50%) scale(var(--lg-s, 1));
+  pointer-events: none;
+}
+[data-style="liquid-glass"] [data-lg-dock-item]:focus-visible { outline: none; }
+[data-style="liquid-glass"] [data-lg-dock-item]:focus-visible::before { box-shadow: 0 0 0 2px var(--lg-accent-text); }
+[data-style="liquid-glass"] [data-lg-dock-item].is-active { color: var(--lg-accent); }
+[data-style="liquid-glass"] [data-lg~="dock"] > .lg-capsule { border-radius: 15px; }
+[data-style="liquid-glass"] [data-lg-dock-sep] {
+  flex: none;
+  align-self: center;
+  width: 1px;
+  height: 28px;
+  margin: 0 4px;
+  background: linear-gradient(transparent, rgba(98, 52, 44, 0.22), transparent);
+}
+[data-style="liquid-glass"] .lg-dock-label {
+  position: absolute;
+  left: 0;
+  bottom: 100%;
+  z-index: 2;
+  padding: 6px 12px;
+  border-radius: var(--lg-pill);
+  font: 500 12.5px/1.2 var(--lg-font);
+  white-space: nowrap;
+  color: var(--lg-ink);
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: inset 0 1px 0 #fff, 0 10px 24px -12px rgba(80, 36, 40, 0.5);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(var(--lg-lx, 0px), calc(var(--lg-ly, 0px) + 6px)) translateX(-50%) scale(0.9);
+  transition: opacity 180ms var(--lg-ease-out), transform 160ms var(--lg-ease-out);
+}
+[data-style="liquid-glass"] .lg-dock-label.is-shown { opacity: 1; transform: translate(var(--lg-lx, 0px), var(--lg-ly, 0px)) translateX(-50%) scale(1); }
+
+/* --------------------------------------------------------------------------
+   chart — declarative bar/line chart (generated SVG + hidden data table)
+   -------------------------------------------------------------------------- */
+[data-style="liquid-glass"] [data-lg~="chart"] { position: relative; display: block; height: var(--lg-chart-h); margin: 0; min-width: 0; }
+[data-style="liquid-glass"] .lg-chart { display: block; width: 100%; height: auto; overflow: visible; user-select: none; -webkit-user-select: none; }
+[data-style="liquid-glass"] [data-lg~="chart"] > .lg-chart { position: absolute; inset: 0; height: 100%; }
+[data-style="liquid-glass"] .lg-chart-grid { stroke: rgba(255, 255, 255, 0.8); stroke-width: 1; }
+[data-style="liquid-glass"] .lg-chart-label { font: 500 12px var(--lg-mono); fill: var(--lg-ink-muted); }
+[data-style="liquid-glass"] .lg-chart-bar { fill: url(#lg-chart-fill); }
+[data-style="liquid-glass"] .lg-chart .lg-chart-bar { transition: d 760ms var(--lg-spring), opacity 200ms; transition-delay: var(--lg-d, 0ms); }
+[data-style="liquid-glass"] .lg-chart .lg-chart-bar.is-dim { opacity: 0.45; }
+[data-style="liquid-glass"] .lg-chart.is-instant :is(.lg-chart-bar, .lg-chart-line, .lg-chart-area) { transition: none; }
+[data-style="liquid-glass"] .lg-chart-line { fill: none; stroke: var(--lg-accent); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; transition: d 760ms var(--lg-spring); }
+[data-style="liquid-glass"] .lg-chart-area { stroke: none; opacity: 0.55; transition: d 760ms var(--lg-spring); }
+[data-style="liquid-glass"] .lg-chart-dot { fill: #fff; stroke: var(--lg-accent); stroke-width: 2; transition: r 160ms; }
+[data-style="liquid-glass"] .lg-chart-dot.is-on { r: 5.5px; }
+[data-style="liquid-glass"] .lg-chart-avg line { stroke: var(--lg-accent); stroke-width: 1.2; stroke-dasharray: 3 5; opacity: 0.75; }
+[data-style="liquid-glass"] .lg-chart-tag rect { fill: rgba(255, 255, 255, 0.9); stroke: #fff; filter: drop-shadow(0 4px 8px rgba(98, 52, 44, 0.18)); }
+[data-style="liquid-glass"] .lg-chart-tag text { font: 600 11.5px var(--lg-mono); fill: var(--lg-accent-text); }
+[data-style="liquid-glass"] .lg-chart-tip { opacity: 0; pointer-events: none; transition: opacity 160ms; }
+[data-style="liquid-glass"] .lg-chart-tip.is-on { opacity: 1; }
+[data-style="liquid-glass"] .lg-chart-tip text { fill: var(--lg-ink); }
+[data-style="liquid-glass"] .lg-chart-empty { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; color: var(--lg-ink-muted); font-size: 13px; }
+
+/* --------------------------------------------------------------------------
+   Narrow panes, touch, accessibility preferences
+   -------------------------------------------------------------------------- */
+@media (max-width: 900px) {
+  [data-style="liquid-glass"] .lg-grid:is([data-lg-cols="3"], [data-lg-cols="4"]) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  [data-style="liquid-glass"] .lg-columns { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 720px) {
+  [data-style="liquid-glass"] { --lg-dock-size: 40px; }
+  [data-style="liquid-glass"] [data-lg~="dock"] { bottom: 10px; gap: 4px; padding: 6px; border-radius: 22px; }
+  [data-style="liquid-glass"] [data-lg-dock-item]::before { border-radius: 12px; }
+  [data-style="liquid-glass"] [data-lg-dock-item] > :is(svg, img, span),
+  [data-style="liquid-glass"] [data-lg-dock-item][data-lg-icon]:not(:has(> svg))::after { width: 20px; height: 20px; }
+  [data-style="liquid-glass"] [data-lg-dock-sep] { margin: 0 2px; }
+}
+@media (max-width: 560px) {
+  [data-style="liquid-glass"] .lg-grid[data-lg-cols] { grid-template-columns: minmax(0, 1fr); }
+  [data-style="liquid-glass"][data-lg-page] { padding-top: 24px; }
+  [data-style="liquid-glass"]:not([data-lg-page]):not([data-style="liquid-glass"] *) { padding: 16px; }
+  [data-style="liquid-glass"] [data-lg-module].is-open { padding: 22px 18px; }
+  [data-style="liquid-glass"] .lg-stat-value > :first-child { font-size: 32px; }
+  [data-style="liquid-glass"] .lg-module-head { flex-wrap: wrap; row-gap: 4px; }
+  /* A tighter open droplet, so three options fit a 260px pane. */
+  [data-style="liquid-glass"] { --lg-split-gap: 6px; }
+  [data-style="liquid-glass"] [data-lg~="split"] > [data-lg-option] { padding: 0 12px; }
+}
+@media (hover: none) {
+  [data-style="liquid-glass"] [data-lg~="card"] { transform: none; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  [data-style="liquid-glass"] { --lg-glass: rgba(255, 252, 250, 0.94); --lg-glass-strong: rgba(255, 252, 250, 0.96); --lg-blur: 0px; }
+}
+@media (forced-colors: active) {
+  [data-style="liquid-glass"] :is(.lg-glass, [data-lg~="card"], [data-lg-module], .lg-pill, [data-lg~="dock"], .lg-pal-panel, .lg-capsule, .lg-split-blob) {
+    border: 1px solid CanvasText;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  /* Mask icons, dots, meters and the chosen option would be forced to Canvas (invisible):
+     paint them with system colours instead. */
+  [data-style="liquid-glass"] [data-lg-icon]:not([data-lg-icon=""]):not(:has(> svg))::after,
+  [data-style="liquid-glass"] .lg-dot,
+  [data-style="liquid-glass"] .lg-meter::before { forced-color-adjust: none; background: CanvasText; box-shadow: none; }
+  [data-style="liquid-glass"] :is([data-lg-dock-item].is-active, [aria-current]:not([aria-current="false"]))[data-lg-icon]::after { background: Highlight; }
+  [data-style="liquid-glass"] .lg-meter { border: 1px solid CanvasText; }
+  [data-style="liquid-glass"] .lg-split-goo { filter: none; }
+  [data-style="liquid-glass"] .lg-split-pick { forced-color-adjust: none; background: Highlight; box-shadow: none; }
+  [data-style="liquid-glass"] [data-lg~="split"].is-open > [data-lg-option].is-selected { forced-color-adjust: none; color: HighlightText; }
+}
+
+@keyframes lg-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes lg-fade-out { to { opacity: 0; } }
+@keyframes lg-flash {
+  0%, 100% { box-shadow: inset 0 1px 0 var(--lg-highlight), var(--lg-shadow); }
+  25% { box-shadow: inset 0 1px 0 var(--lg-highlight), 0 0 0 3px rgba(182, 109, 68, 0.45), var(--lg-shadow-lift); }
+}
+
+/* Reduced motion: only the role roots, their preset-styled items and lg-* classes (never their
+   other descendants); one 1 ms iteration, so nothing loops. Authored animations keep their policy. */
+@media (prefers-reduced-motion: reduce) {
+  [data-style="liquid-glass"] :is([data-lg], [data-lg~="nav"] > *, [data-lg-option], [data-lg-module], [data-lg-detail], [data-lg-dock-item], [class^="lg-"], [class*=" lg-"]),
+  [data-style="liquid-glass"] :is([data-lg], [data-lg-dock-item], [class^="lg-"], [class*=" lg-"])::before,
+  [data-style="liquid-glass"] :is([data-lg], [data-lg-dock-item], [class^="lg-"], [class*=" lg-"])::after {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
+  }
+  [data-style="liquid-glass"] [data-lg~="card"] { transform: none; }
+}
+
+[data-style="liquid-glass"] [data-lg-icon="home"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 11.5 12 5l8 6.5V19a1 1 0 0 1-1 1h-4v-5h-6v5H5a1 1 0 0 1-1-1z'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="chart"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 20V11M12 20V5M19 20v-6'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="trend"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 16 5-5 4 4 7-7'/%3E%3Cpath d='M14 8h6v6'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="list"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 6h11M9 12h11M9 18h11'/%3E%3Ccircle cx='4.5' cy='6' r='1'/%3E%3Ccircle cx='4.5' cy='12' r='1'/%3E%3Ccircle cx='4.5' cy='18' r='1'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="grid"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='4' width='7' height='7' rx='2'/%3E%3Crect x='13' y='4' width='7' height='7' rx='2'/%3E%3Crect x='4' y='13' width='7' height='7' rx='2'/%3E%3Crect x='13' y='13' width='7' height='7' rx='2'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="search"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.5-3.5'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="clock"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='8'/%3E%3Cpath d='M12 8v4l3 2'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="users"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='9' cy='8' r='3.2'/%3E%3Cpath d='M3.5 19c.6-3 2.9-4.8 5.5-4.8s4.9 1.8 5.5 4.8'/%3E%3Ccircle cx='17' cy='9' r='2.4'/%3E%3Cpath d='M16 14.4c2.3.1 4 1.6 4.5 4.1'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="chat"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-7l-4 4v-4H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="data"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cellipse cx='12' cy='6' rx='7' ry='3'/%3E%3Cpath d='M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="upload"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 15V4M7 9l5-5 5 5'/%3E%3Cpath d='M5 20h14'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="settings"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3Cpath d='M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="doc"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 3h7l5 5v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z'/%3E%3Cpath d='M14 3v5h5M9 13h6M9 17h6'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="bell"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 16V11a6 6 0 1 1 12 0v5l1.5 2h-15Z'/%3E%3Cpath d='M10 20a2 2 0 0 0 4 0'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="check"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='8'/%3E%3Cpath d='m8.5 12 2.5 2.5 4.5-5'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="star"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m12 4 2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 16.4l-4.8 2.5.9-5.4-3.9-3.8 5.4-.8Z'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="spark"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6'/%3E%3C/svg%3E"); }
+[data-style="liquid-glass"] [data-lg-icon="code"] { --lg-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 8-5 4 5 4M15 8l5 4-5 4'/%3E%3C/svg%3E"); }

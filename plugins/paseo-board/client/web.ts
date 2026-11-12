@@ -7,6 +7,8 @@ import type { CanvasComposition, CompositionAttachment, CompositionMessageEvent,
 import { createCompositionController, type CompositionController } from "./composition-web";
 import type { Anchor, Canvas, Interaction, JsonData } from "../shared/contracts";
 import { buildBoardDocument } from "../shared/document";
+import { createLiquidGlassTracker, type LiquidGlassUsage } from "../shared/liquid-glass";
+import { presetFocusAllowed, presetKeyIntent, type PresetKeyEvent } from "./preset-keys";
 import { createFrameDelta, emptyFrameDelta, transportSnapshot, type TransportSnapshot } from "../shared/frame-delta";
 import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, sameSelectionAnchor, isCanvasViewState, type CanvasViewState, type CanvasViewRestoreStatus, type SelectionCapture, type AskRequest, type AskResult, type ComposeRequest, type FrameError, type FramePosition, type FrameSnapshot, type FrameTheme, type InteractionLocation, type FocusUpdateRequest, type UpdatePosition, type SelectionMode, type ComponentEditRequest, type ComponentEditResult } from "../shared/frame-contract";
 
@@ -17,7 +19,9 @@ type ViewPort = {
 };
 type ViewReader = { receive(event: MessageEvent): void; close(): void };
 type FrameWindow = { postMessage(message: unknown, origin: string, transfer?: ViewPort[]): void };
-type Frame = { contentWindow: FrameWindow | null; isConnected?: boolean; getBoundingClientRect?(): { width: number; height: number } };
+type Frame = { contentWindow: FrameWindow | null; isConnected?: boolean; getBoundingClientRect?(): { width: number; height: number }; focus?(options?: { preventScroll?: boolean }): void; blur?(): void; closest?(selector: string): unknown };
+type Focusable = { isConnected?: boolean; focus?(options?: { preventScroll?: boolean }): void };
+type HostKeyEvent = PresetKeyEvent & { preventDefault(): void };
 type MessageEvent = { source: unknown; data: unknown; isTrusted: boolean; compositionAuthenticated?: true };
 type OuterPointerEvent = { isTrusted: boolean; target?: { closest?(selector: string): unknown }; preventDefault(): void };
 type BrowserWindow = {
@@ -25,10 +29,12 @@ type BrowserWindow = {
   removeEventListener(name: "message", fn: (event: MessageEvent) => void): void;
   addEventListener(name: "pointerdown" | "pointerup" | "pointercancel", fn: (event: OuterPointerEvent) => void, capture: boolean): void;
   removeEventListener(name: "pointerdown" | "pointerup" | "pointercancel", fn: (event: OuterPointerEvent) => void, capture: boolean): void;
+  addEventListener(name: "keydown", fn: (event: HostKeyEvent) => void): void;
+  removeEventListener(name: "keydown", fn: (event: HostKeyEvent) => void): void;
 };
 const browser = globalThis as unknown as {
   window?: BrowserWindow;
-  document?: { activeElement: unknown; hidden: boolean; addEventListener(type: string, listener: () => void): void; removeEventListener(type: string, listener: () => void): void };
+  document?: { activeElement: unknown; hidden: boolean; body?: unknown; documentElement?: unknown; visibilityState?: string; addEventListener(type: string, listener: () => void): void; removeEventListener(type: string, listener: () => void): void };
   navigator?: { userActivation?: { isActive: boolean } };
   crypto?: { getRandomValues(bytes: Uint8Array): Uint8Array };
   MessageChannel?: new () => { port1: ViewPort; port2: ViewPort };
@@ -125,6 +131,12 @@ export interface CanvasFrameProps extends FrameSnapshot {
   onViewRestored?(result: { status: CanvasViewRestoreStatus }): void;
   onSelectionEnd?(): void;
   onSelectionClear?(): void;
+  /**
+   * Forward a bare "/" from Paseo to this canvas's liquid-glass palette (web only). fromBody: also
+   * when nothing is focused, which is right only for the route screen; panels beside chat or
+   * terminals pass false so only focus inside their own Board root counts.
+   */
+  presetKeys?: { fromBody: boolean };
 }
 
 function nonce(): string {
@@ -133,9 +145,10 @@ function nonce(): string {
   else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
-function documentFor(props: CanvasFrameProps) {
+function documentFor(props: CanvasFrameProps, glass: LiquidGlassUsage) {
   const sessionId = nonce();
-  return { boardId: props.boardId, viewScope: props.viewScope, version: props.canvas.documentVersion, sessionId, html: buildBoardDocument({ ...props, sessionId, compositionHostId: props.embeddedMount ? undefined : props.composition?.hostId }) };
+  // `preset` records what this document was built with (buildBoardDocument derives the same flag).
+  return { boardId: props.boardId, viewScope: props.viewScope, version: props.canvas.documentVersion, sessionId, preset: glass.preset, html: buildBoardDocument({ ...props, sessionId, compositionHostId: props.embeddedMount ? undefined : props.composition?.hostId }) };
 }
 
 /** Retains the iframe and its JS heap across data, patch, theme and UI-state updates. */
@@ -160,15 +173,69 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
   const transport = useRef<{ sessionId: string; capable: boolean; version: number; snapshot: TransportSnapshot } | null>(null);
   const focused = useRef<string | undefined>(undefined);
   const updateSent = useRef<string | undefined>(undefined);
+  const glassUsageRef = useRef<LiquidGlassUsage | undefined>(undefined);
   const updatePending = useRef<{ requestId: string; id: string; token: number; targetIndex: number; documentVersion: number } | undefined>(undefined);
   const viewRestore = useRef<{ sessionId: string; requestId: string; version: number; settled: boolean; resume?: CanvasViewState } | undefined>(undefined);
-  if (!document.current || document.current.boardId !== props.boardId || document.current.viewScope !== props.viewScope || (document.current.version !== props.canvas.documentVersion && props.selectionMode === "off" && !interactionLock.current)) {
-    document.current = documentFor({ ...props, userState: effectiveState() });
+  // Liquid-glass preset: usage over base + patches (incremental), the latest reading position this
+  // document reported, whether the canvas is mid-interaction, and a one-shot rebuild key.
+  const glass = useRef(createLiquidGlassTracker());
+  const glassUsage = glass.current.update(props.canvas);
+  const lastView = useRef<CanvasViewState | undefined>(undefined);
+  const canvasInteracting = useRef(false);
+  const presetRebuilt = useRef<string | undefined>(undefined);
+  const presetKey = `${props.boardId}:${props.canvas.documentVersion}`;
+  // A live patch introduced the marker into a document built without the preset: rebuild once,
+  // when the canvas is idle, restoring the current reading position (same document version).
+  const presetRebuild = Boolean(document.current && glassUsage.preset && !document.current.preset && presetRebuilt.current !== presetKey
+    && document.current.boardId === props.boardId && document.current.viewScope === props.viewScope && document.current.version === props.canvas.documentVersion
+    && props.selectionMode === "off" && !interactionLock.current && !canvasInteracting.current);
+  if (!document.current || document.current.boardId !== props.boardId || document.current.viewScope !== props.viewScope || (document.current.version !== props.canvas.documentVersion && props.selectionMode === "off" && !interactionLock.current) || presetRebuild) {
+    const previous = presetRebuild ? document.current : null;
+    document.current = documentFor({ ...props, userState: effectiveState() }, glassUsage);
     ready.current = false;
+    canvasInteracting.current = false;
+    const resume = previous && lastView.current?.documentVersion === document.current.version ? lastView.current : props.resumeView;
     viewRestore.current = { sessionId: document.current.sessionId, requestId: `${document.current.sessionId}:view`, version: document.current.version,
-      settled: false, resume: isCanvasViewState(props.resumeView) && props.resumeView.documentVersion === document.current.version ? props.resumeView : undefined };
+      settled: false, resume: isCanvasViewState(resume) && resume.documentVersion === document.current.version ? resume : undefined };
+    if (previous) {
+      presetRebuilt.current = presetKey;
+      // Highlights already shown in the replaced session are not replayed by the new one. An
+      // update request the old session never answered is sent again to the new one.
+      const swap = (key: string | undefined) => key?.startsWith(previous.sessionId + ":") ? document.current!.sessionId + key.slice(previous.sessionId.length) : key;
+      updateSent.current = updatePending.current ? undefined : swap(updateSent.current); focused.current = swap(focused.current);
+    } else lastView.current = undefined;
   }
   const rendered = document.current;
+  glassUsageRef.current = glassUsage;
+  // A forwarded "/" moved focus into the canvas: where to hand it back (Esc, no palette, timeout).
+  // A session that let a forward time out is muted (no further "/" is taken from Paseo) until it
+  // answers; `presetExpired` lets a late "opened" reply keep focus only if nobody moved on
+  // (`movedTo`: a host element focused since; Chromium lets the late palette pull focus in).
+  const presetHandoff = useRef<{ sessionId: string; element: unknown; timer?: ReturnType<typeof setTimeout> } | undefined>(undefined);
+  const presetMuted = useRef<string | undefined>(undefined);
+  const presetExpired = useRef<{ sessionId: string; element: unknown; at: number; movedTo?: unknown } | undefined>(undefined);
+  const dropPresetHandoff = () => { clearTimeout(presetHandoff.current?.timer); presetHandoff.current = undefined; };
+  const expirePresetHandoff = () => {
+    const handoff = presetHandoff.current;
+    if (!handoff) return;
+    presetMuted.current = handoff.sessionId;
+    presetExpired.current = { sessionId: handoff.sessionId, element: handoff.element, at: Date.now() };
+    restorePresetFocus();
+  };
+  const restorePresetFocus = () => {
+    const handoff = presetHandoff.current;
+    if (!handoff) return;
+    dropPresetHandoff();
+    const page = browser.document, target = frame.current;
+    if (!page) return;
+    // The user already moved on (focused something else): leave focus where it is. A removed
+    // frame leaves focus on the body, which still restores.
+    const active = page.activeElement;
+    if (active && active !== page.body && active !== target) return;
+    const element = handoff.element as Focusable | null;
+    if (element && element !== page.body && element.isConnected !== false && typeof element.focus === "function") element.focus({ preventScroll: true });
+    else if (active === target) target?.blur?.();
+  };
   const viewDelivery = useRef<ViewDelivery | undefined>(undefined);
   if (viewDelivery.current?.sessionId !== rendered.sessionId || viewDelivery.current.scope !== props.viewScope) {
     viewDelivery.current = { boardId: rendered.boardId, sessionId: rendered.sessionId, version: rendered.version,
@@ -193,8 +260,11 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
     if (viewDelivery.current !== target || document.current?.sessionId !== target.sessionId) return;
     observeCurrentView();
     if (!ready.current || !viewRestore.current?.settled || browser.document?.hidden || target.visibleAt === null
-      || target.version !== current.canvas.documentVersion || view.documentVersion !== target.version
-      || view.canvasRevision !== current.canvas.revision) return;
+      || target.version !== current.canvas.documentVersion || view.documentVersion !== target.version) return;
+    // Kept even when a patch has since advanced the revision: it only restores a same-version
+    // preset rebuild of this canvas (the runtime accepts a slightly older reading position).
+    lastView.current = view;
+    if (view.canvasRevision !== current.canvas.revision) return;
     current.onViewState?.(view);
   };
   const connectViewPort = () => {
@@ -348,7 +418,42 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
           if (ready.current && transport.current?.capable && message.documentVersion === document.current.version) syncSnapshot(true);
           break;
         case "canvas-pointer": if (userActing()) current.onCanvasPointer?.(); break;
-        case "canvas-activity": current.onCanvasActivity?.(message.busy, message.interacting); break;
+        case "canvas-activity":
+          canvasInteracting.current = message.interacting === true;
+          current.onCanvasActivity?.(message.busy, message.interacting);
+          // A pending preset rebuild waits for the canvas to go idle.
+          if (!canvasInteracting.current && glassUsageRef.current?.preset && !document.current.preset && presetRebuilt.current !== `${current.boardId}:${current.canvas.documentVersion}`) redraw(n => n + 1);
+          break;
+        case "preset-key-ack": {
+          const sessionId = document.current.sessionId, handoff = presetHandoff.current;
+          if (presetMuted.current === sessionId) presetMuted.current = undefined;
+          if (handoff?.sessionId === sessionId) {
+            if (message.opened) { clearTimeout(handoff.timer); handoff.timer = undefined; } else restorePresetFocus();
+            break;
+          }
+          if (!message.opened) break;
+          // A late reply: the fallback already gave focus back. If the user has not focused
+          // anything else in Paseo since, the palette keeps focus; otherwise it closes and focus
+          // returns to what the user chose.
+          const expired = presetExpired.current, page = browser.document, target = frame.current;
+          presetExpired.current = undefined;
+          if (expired?.sessionId === sessionId && Date.now() - expired.at < 5000 && page && target?.focus && !expired.movedTo) {
+            if (page.activeElement !== target) target.focus({ preventScroll: true });
+            presetHandoff.current = { sessionId, element: expired.element };
+            break;
+          }
+          send({ type: "preset-close" });
+          const moved = expired?.movedTo as Focusable | undefined;
+          if (moved?.focus && moved.isConnected !== false && page?.activeElement === target) moved.focus({ preventScroll: true });
+          break;
+        }
+        case "preset-focus-return":
+          if (presetHandoff.current?.sessionId === document.current.sessionId) restorePresetFocus();
+          break;
+        case "preset-handoff-end":
+          // A result was chosen (focus stays at its target) or focus already left the canvas.
+          if (presetHandoff.current?.sessionId === document.current.sessionId) dropPresetHandoff();
+          break;
         case "update-position": {
           const expected = updatePending.current;
           const requested = current.focusUpdate;
@@ -545,6 +650,38 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
       lease.retire(() => { clearTimeout(timer); reader.close(); });
     };
   }, [rendered.sessionId, props.viewScope]);
+
+  // "/" forwarding to a liquid-glass palette while this Board (not a text field) has host focus.
+  const forwardsPresetKeys = Boolean(props.presetKeys) && !props.embeddedMount;
+  useEffect(() => {
+    if (!forwardsPresetKeys || !canRenderFrames || !browser.window) return;
+    const onKey = (event: HostKeyEvent) => {
+      const current = latest.current, page = browser.document, target = frame.current, built = document.current;
+      // The document carries the preset, the live source still uses it (not handed over to an
+      // old kit) with a palette, and this session has not stopped answering.
+      if (!current.presetKeys || !page || !target || !built?.preset || !glassUsageRef.current?.preset || !glassUsageRef.current.palette || presetMuted.current === built.sessionId) return;
+      if (!ready.current || current.selectionMode !== "off" || current.composerActive || interactionLock.current) return;
+      if (!presetKeyIntent(event, page) || !presetFocusAllowed(page.activeElement, target, current.presetKeys.fromBody, page)) return;
+      const bounds = target.getBoundingClientRect?.();
+      if (!bounds || bounds.width < 1 || bounds.height < 1 || typeof target.focus !== "function") return;
+      event.preventDefault();
+      if (presetHandoff.current) clearTimeout(presetHandoff.current.timer);
+      // Without a reply within 250 ms (no palette, kit gone, error) Paseo gets focus back.
+      presetHandoff.current = { sessionId: built.sessionId, element: page.activeElement, timer: setTimeout(expirePresetHandoff, 250) };
+      target.focus({ preventScroll: true });
+      send({ type: "preset-key", key: "/" });
+    };
+    // After a fallback, note where the user moves focus in Paseo (a late reply must not keep it).
+    const onFocusIn = (event: { target?: unknown }) => {
+      const expired = presetExpired.current;
+      if (expired && event.target !== frame.current && event.target !== expired.element) expired.movedTo = event.target;
+    };
+    browser.window.addEventListener("keydown", onKey);
+    browser.document?.addEventListener("focusin", onFocusIn as () => void);
+    return () => { browser.window?.removeEventListener("keydown", onKey); browser.document?.removeEventListener("focusin", onFocusIn as () => void); };
+  }, [forwardsPresetKeys]);
+  // A replaced session (or unmount) cannot answer: hand focus back now.
+  useEffect(() => () => restorePresetFocus(), [rendered.sessionId]);
 
   const editScope = useRef(rendered.sessionId);
   useEffect(() => {

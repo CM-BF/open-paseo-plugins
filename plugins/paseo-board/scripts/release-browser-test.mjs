@@ -13,6 +13,7 @@ import { build } from 'esbuild';
 import { componentLayoutHtml } from './component-layout-fixture.mjs';
 import { createReleaseApiFixture, runReleaseApiChecks } from './release-api-checks.mjs';
 import { createLiveFixture, runLiveChecks } from './release-live-checks.mjs';
+import { createReleaseGlassFixture, runReleaseGlassChecks } from './release-glass-checks.mjs';
 
 const directory = dirname(fileURLToPath(import.meta.url)), root = dirname(directory);
 const temporary = await mkdtemp(join(tmpdir(), 'paseo-release-browser-'));
@@ -73,6 +74,8 @@ const previewBundle = await build({ stdin: { contents: `import React from 'react
 const files = new Map([['/', release.files['index.html']], ['/publication/nested/', release.files['index.html']], ['/second/', second.files['index.html']], ['/full/', fullDocument.files['index.html']], ['/copy/', copyRelease.files['index.html']], ['/layout/', layoutRelease.files['index.html']]]);
 const requests = [];
 let apiFixture, liveFixture;
+const glassFixture = await createReleaseGlassFixture({ buildRelease, store, directory });
+files.set('/glass/', glassFixture.release.files['index.html']);
 const server = createServer((request, response) => {
   requests.push({ method: request.method, url: request.url });
   if (request.url === '/preview.js') { response.setHeader('Content-Type', 'text/javascript'); response.end(previewBundle.outputFiles[0].text); return; }
@@ -80,6 +83,7 @@ const server = createServer((request, response) => {
   if (request.url === '/preview') { response.end(`<!doctype html><div id="app"></div><script>window.releaseHtml=${JSON.stringify(release.files['index.html']).replace(/</g, '\\u003c')}</script><script src="/preview.js"></script>`); return; }
   if (request.url === '/api-preview') { response.end(`<!doctype html><div id="app"></div><script>window.releaseHtml=${JSON.stringify(apiFixture.release.files['index.html']).replace(/</g, '\\u003c')}</script><script src="/preview.js"></script>`); return; }
   if (request.url === '/live-preview') { response.end(`<!doctype html><div id="app"></div><script>window.releaseHtml=${JSON.stringify(liveFixture.release.files['index.html']).replace(/</g, '\\u003c')}</script><script src="/preview.js"></script>`); return; }
+  if (request.url === '/glass-preview') { response.end(`<!doctype html><div id="app"></div><script>window.releaseHtml=${JSON.stringify(glassFixture.release.files['index.html']).replace(/</g, '\\u003c')}</script><script src="/preview.js"></script>`); return; }
   if (!files.has(request.url)) { response.writeHead(404).end(); return; }
   response.end(files.get(request.url));
 });
@@ -241,6 +245,7 @@ try {
   assert.equal(await frame('window.parentReadable'), false);
   check('the actual host ReleasePreview renders the nested opaque exported viewer and keeps local interaction available without private Board access');
   await runReleaseApiChecks({ assert, command, evaluate, frame, open, click, ready, api: apiFixture, rejectedUrl, rejectedRequests, check });
+  await runReleaseGlassChecks({ assert, command, evaluate, frame, open, check, glass: glassFixture });
   const nestedBanner = async () => { for (const context of [...contexts.values()]) { try { const text = await evaluate("document.querySelector('[data-live]')?.textContent||''", context); if (text) return text; } catch {} } return ''; };
   await runLiveChecks({ assert, frame, evaluate, open, openAt, setHidden, nestedBanner, live: liveFixture, check, pagePort: server.address().port });
   assert.deepEqual(errors, [], 'Unexpected browser runtime exception');

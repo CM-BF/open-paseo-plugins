@@ -25,7 +25,7 @@ import { createStateWriter } from "./state-writer";
 import { createDraftStore, type StoredDraft } from "./draft-store";
 import { acceptedDraftInteraction } from "./message-draft";
 import { acceptedBatchInteraction, batchContainsDraft, createBatchStore, createCommentBatch, prepareCommentBatch, queuedDrafts, reconcileBatchDrafts, restoreBatchComments, type CommentBatch } from "./batch-store";
-import { readBoardView, writeBoardView, retainBoardViewStore, flushBoardViewStore } from "./view-store";
+import { readBoardView, writeBoardView, retainBoardViewStore, flushBoardViewStore, type BoardEntryScope } from "./view-store";
 import { DiscussionRail } from "./discussion-rail";
 import { SideAgentPicker } from "./side-agent-picker";
 import { SideContextChoice, type SideContextChange } from "./side-context-choice";
@@ -39,6 +39,8 @@ import { anchorPoint, interactionRoot, interactionThread, mergeInteractions, pop
 export interface BoardViewProps extends PluginSurfaceProps {
   boardId: string; onBack(): void; onOpenBoard?(id: string): void;
   embedded?: { mount: CompositionMount; viewScope: string; onOpen(): void };
+  /** Where this Board is shown; only the route screen takes a "/" typed with nothing focused. */
+  entryScope?: BoardEntryScope;
 }
 type Destination = "main" | "side" | "new-side";
 type Compose = { draftId?: string; draftRevision?: string; queuedAt?: number; selectionId?: string; captureStatus?: CaptureStatus | "omitted"; captureFailureReason?: CaptureFailureReason; kind: Interaction["kind"]; text: string; intentId?: string; expectedCreatedAt?: string; destination?: Destination; sideContext?: SideContext; anchor?: Anchor; sourceInteractionId?: string; resolve?: (result: AskResult) => void };
@@ -56,7 +58,7 @@ const kindNames: Record<Interaction["kind"], string> = { question: "消息", cha
 export function BoardView(props: BoardViewProps) {
   return <ColorContext.Provider value={props.theme.colors}><BoardContent key={JSON.stringify([props.host.id, props.boardId])} {...props} /></ColorContext.Provider>;
 }
-function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpenBoard, embedded }: BoardViewProps) {
+function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpenBoard, embedded, entryScope }: BoardViewProps) {
   const c = useColors();
   const services = useBoardServices(host.id);
   const sourceRef = useMemo(() => ({ hostId: host.id, boardId }), [host.id, boardId]);
@@ -580,7 +582,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
       {draftSnapshot.issues.map((issue, index) => <Notice key={index} error text={issue.message} />)}
     </View>}
   </ScrollView>;
-  return <View style={embedded ? { width: 0, height: 0, overflow: "visible" } : { flex: 1, minHeight: 0, backgroundColor: c.surface0 }}>
+  return <View testID={embedded ? undefined : "board-screen"} style={embedded ? { width: 0, height: 0, overflow: "visible" } : { flex: 1, minHeight: 0, backgroundColor: c.surface0 }}>
     {!embedded ? <BoardToolbar board={board} onAccepted={query.accept} onRefresh={query.refetch} onBack={() => leaveBoard(onBack)}
       selectionMode={selectionMode} onSelectionModeChange={setSelectionMode} canSelect={canRenderFrames}
       anchor={anchor} selectedText={selectedText} onClearReference={() => { setAnchor(undefined); setSelectionClearToken(value => value + 1); }}
@@ -596,7 +598,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
       sourceCount={sources.data?.sources.length} onSources={sources.enabled ? () => setSourcesOpen(true) : undefined} /> : null}
     <View testID="board-stage" style={embedded ? { width: 0, height: 0 } : { flex: 1, minHeight: 180, flexDirection: "row" }} onLayout={event => setStageWidth(event.nativeEvent.layout.width)}>
     <View testID="board-canvas-container" style={embedded ? { width: 0, height: 0, overflow: "visible" } : { flex: 1, minWidth: 0, minHeight: 180, position: "relative", overflow: "hidden" }} onLayout={event => { setHeight(Math.max(180, event.nativeEvent.layout.height)); setWidth(event.nativeEvent.layout.width); }}>
-      {canRenderFrames ? <CanvasFrame key={board.createdAt} composition={composition} embeddedMount={embedded?.mount} viewScope={JSON.stringify([host.id, boardId, viewInstance])} boardId={board.id} title={board.title} canvas={board.canvas} boardRevision={board.revision} userState={board.userState} theme={frameTheme} height={height} resumeView={viewSession.saved?.view} onViewState={onViewState} onFinalViewState={onFinalViewState} onViewRestored={onViewRestored} selectionMode={selectionMode} selectionClearToken={selectionClearToken} selectionCaptureCancelId={selectionCaptureCancelId} interactions={interactions} selectedInteractionId={selectedInteractionId} focusInteraction={focusInteraction} focusUpdate={updateNavigation.request} composerActive={updatesBlocked} onUpdatePosition={updateNavigation.onPosition} onCanvasActivity={updateNavigation.onActivity} onOpenInteraction={openInteraction} onInteractionPosition={(id, point, location) => { if (id === selectedInteractionId) { if (!composeRef.current) setPopoverPoint(point); setInteractionLocation(location ? { id, location } : undefined); } }} onAnchor={onAnchor} onAsk={onAsk} onCompose={onCompose} onSelectionCapture={onSelectionCapture} onComponentEdit={request => {
+      {canRenderFrames ? <CanvasFrame key={board.createdAt} composition={composition} embeddedMount={embedded?.mount} viewScope={JSON.stringify([host.id, boardId, viewInstance])} boardId={board.id} title={board.title} canvas={board.canvas} boardRevision={board.revision} userState={board.userState} theme={frameTheme} height={height} resumeView={viewSession.saved?.view} onViewState={onViewState} onFinalViewState={onFinalViewState} onViewRestored={onViewRestored} selectionMode={selectionMode} selectionClearToken={selectionClearToken} selectionCaptureCancelId={selectionCaptureCancelId} interactions={interactions} selectedInteractionId={selectedInteractionId} focusInteraction={focusInteraction} focusUpdate={updateNavigation.request} composerActive={updatesBlocked} presetKeys={!embedded && !updatesBlocked && !inboxOpen ? { fromBody: (entryScope?.surface ?? "screen") === "screen" } : undefined} onUpdatePosition={updateNavigation.onPosition} onCanvasActivity={updateNavigation.onActivity} onOpenInteraction={openInteraction} onInteractionPosition={(id, point, location) => { if (id === selectedInteractionId) { if (!composeRef.current) setPopoverPoint(point); setInteractionLocation(location ? { id, location } : undefined); } }} onAnchor={onAnchor} onAsk={onAsk} onCompose={onCompose} onSelectionCapture={onSelectionCapture} onComponentEdit={request => {
         if (composeRef.current || pending.current) return Promise.resolve({ status: "rejected", message: "交流草稿已保留，请先关闭输入框再编辑组件。" });
         return componentEditor.propose(request).then(result => { if (result.status === "applied") setSelectionMode("off"); return result; });
       }} onEditScopeChange={componentEditor.invalidate} onCanvasPointer={closePopover} onState={onState} onError={error => setFrameError(`${error.message}${error.patchId ? `（${error.patchId}）` : ""}`)} onSelectionEnd={() => setSelectionMode("off")} onSelectionClear={() => { setAnchor(undefined); setSelectionMode("off"); }} onOpenLink={url => { void openExternalUrl(url).catch(e => setMessage(errorMessage(e))); }} /> : <ScrollView contentContainerStyle={{ padding: 24, gap: 16 }}><Notice text="手机兼容视图。完整的自由画布、动画和页面交互在桌面版使用；这里可以查看摘要、决策并与 agent 交流。" /><Markdown>{typeof board.canvas.data.summary === "string" ? board.canvas.data.summary : "Agent 尚未提供文字摘要。你可以直接提问，回复会出现在讨论里。"}</Markdown></ScrollView>}
