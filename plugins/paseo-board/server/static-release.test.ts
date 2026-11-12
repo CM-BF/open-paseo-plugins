@@ -8,6 +8,7 @@ import { BoardStore } from "./store";
 import { buildRelease, ReleaseRepository, releaseZip, serveRelease, validateRelease } from "./static-release";
 import type { Board } from "../shared/contracts";
 import { ReleaseManifestSchema } from "../shared/release-contracts";
+import { LIQUID_GLASS_STYLE_ID, LIQUID_GLASS_VERSION } from "../shared/liquid-glass";
 
 describe("fixed public releases", () => {
   let root: string, board: Board;
@@ -207,6 +208,30 @@ describe("fixed public releases", () => {
     const legacy = await repository.create(options()), file = join(releases, `${legacy.manifest.releaseId}.settings.json`), stored = JSON.parse(await readFile(file, "utf8"));
     expect(stored.settings).not.toHaveProperty("live");
     expect((await repository.meta(legacy.manifest.releaseId))?.settings).not.toHaveProperty("live");
+  });
+  it("includes the liquid-glass preset inline only for marked sources, offline, and focuses top-level canvases", () => {
+    const glass = '<main data-style="liquid-glass" data-lg-page><h1 class="lg-title">Glass</h1><div data-lg="palette"></div></main>';
+    const renamed = glass.replace('data-style="liquid-glass"', 'data-style="plain"');
+    const build = (html: string, patch?: string, theme: "light" | "dark" = "light") => {
+      board.canvas.html = html; board.canvas.patches = patch ? [{ id: "glass-patch", selector: "main", operation: "append", html: patch }] : [];
+      return buildRelease({ ...options(), network: "offline", theme });
+    };
+    const release = build(glass, undefined, "dark"), index = release.files["index.html"];
+    // The canvas document travels JSON-encoded inside index.html (quotes escaped, "<" as \\u003c).
+    expect(index.split(`id=\\"${LIQUID_GLASS_STYLE_ID}\\" data-version=\\"${LIQUID_GLASS_VERSION}\\"`).length - 1).toBe(1);
+    expect(index).toContain("if(top!==self)return;");
+    expect(index).toContain('data-theme=\\"dark\\"');
+    // No new dependencies or warnings: the preset is plugin-owned and fully inline.
+    const plain = build(renamed);
+    expect(release.manifest.dependencies).toEqual(plain.manifest.dependencies);
+    expect(release.manifest.warnings).toEqual(plain.manifest.warnings);
+    expect(plain.files["index.html"]).not.toContain(LIQUID_GLASS_STYLE_ID);
+    expect(plain.files["index.html"]).not.toContain("if(top!==self)return;");
+    // Introduced only by a patch: the materialized source still activates it.
+    expect(build("<main></main>", '<section data-style="liquid-glass">Island</section>').files["index.html"]).toContain(LIQUID_GLASS_STYLE_ID);
+    // A Board carrying its own old kit copy keeps it alone.
+    expect(build(glass + '<script id="lg-kit-script">window.x=1</script>').files["index.html"]).not.toContain(LIQUID_GLASS_STYLE_ID);
+    expect(release.files.NOTICE).toBe(plain.files.NOTICE);
   });
   it("executes the actual repository CLI to export a public directory and readable ZIP", async () => {
     const boardFile = join(root, "private-board.json"), dataFile = join(root, "public-data.json"), directory = join(root, "cli-public"), zip = join(root, "cli-public.zip");

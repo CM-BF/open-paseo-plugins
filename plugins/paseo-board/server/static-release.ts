@@ -7,6 +7,7 @@ import { IdSchema, type Board, type CanvasBase } from "../shared/contracts";
 import { ReleaseCreateSchema, ReleaseIdSchema, ReleaseManifestSchema, ReleaseMetaSchema, livePathSegments, type LiveRelease, type ReleaseCreateInput, type ReleaseManifest, type ReleaseMeta, type ReleaseSettings } from "../shared/release-contracts";
 import { STATIC_VIEWER_LIVE_VERSION, STATIC_VIEWER_RUNTIME, STATIC_VIEWER_SHELL, STATIC_VIEWER_VERSION, staticViewerRuntime, staticViewerShell } from "../shared/static-viewer";
 import { DEFAULT_DARK_COLORS, DEFAULT_LIGHT_COLORS, frameThemeFromColors } from "../shared/frame-theme";
+import { liquidGlassHead, liquidGlassUsage } from "../shared/liquid-glass";
 import stylesheet from "../shared/assets/visualize.css.txt";
 import icons from "../shared/assets/runtime-icons.txt";
 import tooltips from "../shared/assets/runtime-tooltips.txt";
@@ -17,6 +18,9 @@ import { assertJson, canonicalJson, ensureDirectory } from "./store-format";
 const MAX_RELEASE_BYTES = 8 * 1024 * 1024;
 const CDNS = ["https://unpkg.com", "https://cdn.jsdelivr.net", "https://esm.sh", "https://cdnjs.cloudflare.com"];
 const NOTICE = "Paseo Board public viewer\nCopyright 2026 Shurui Gui\n\nThe default stylesheet and optional icon/tooltip helpers are derived from OpenAI Codex rust-v0.146.0, Copyright 2025 OpenAI, under Apache-2.0; see LICENSE-APACHE-2.0.\nOptional helpers load lucide (ISC) and Floating UI (MIT) from unpkg.com. Those third-party packages are not included in this archive.\nAuthored page content retains its original authors' rights.\n";
+// Glass releases only: a published page opened top-level focuses its canvas once loaded, so the
+// palette's "/" works before the first click. Inside the host's release preview it does nothing.
+const PUBLISHED_CANVAS_FOCUS = `<script>(()=>{if(top!==self)return;const f=document.querySelector('iframe');f.addEventListener('load',()=>{const a=document.activeElement;if(!a||a===document.body||a===f)f.focus()})})();</script>`;
 export type StaticRelease = {
   manifest: ReleaseManifest;
   files: Record<string, string>;
@@ -79,6 +83,9 @@ export function buildRelease(input: ReleaseCreateInput & { board: Board }): Stat
     if (IdSchema.safeParse(element.getAttribute("board-id")).success) throw new Error("这张 Board 嵌入了其他画板，当前导出无法固定这些来源画板的内容。请分别打开并独立导出源 Board，或移除嵌入后再导出。");
   }
   const helpers = `${/data-tooltip|dataset\.tooltip|floatingui/i.test(html) ? tooltips : ""}${/lucide/i.test(html) ? icons : ""}`;
+  // The optional liquid-glass preset travels inline (no network), only for marked sources.
+  // It is plugin-owned, so it is not scanned for authored dependencies.
+  const preset = liquidGlassUsage([html]).preset ? liquidGlassHead() : "";
   const resources = dependenciesFor(html + helpers);
   const missing = resources.resources.filter(url => !url.startsWith("#") && !url.startsWith("data:") && !/^https:\/\//.test(url));
   if (missing.length) throw new Error(`Release contains unpackaged local/unsupported resources: ${missing.slice(0, 5).join(", ")}. Embed them as data URLs or use an approved CDN.`);
@@ -95,7 +102,7 @@ export function buildRelease(input: ReleaseCreateInput & { board: Board }): Stat
   const outerConnections = [...(options.network === "cdn" ? CDNS : []), ...options.apiOrigins].join(" ") || "'none'";
   const outerCsp = csp.replace("frame-src 'none'", "frame-src blob:").replace(`connect-src ${network || "'none'"}`, `connect-src ${outerConnections}`);
   const title = options.title ?? board.title;
-  const metadata = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(csp)}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>@layer paseo-board-defaults {${stylesheet}\n}</style>`;
+  const metadata = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(csp)}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>@layer paseo-board-defaults {${stylesheet}\n}</style>${preset}`;
   let prefix = `<!doctype html><html lang="en" data-surface="page" data-palette="custom" data-theme="${theme.scheme}" style="${escapeHtml(tokens)}"><head>${metadata}</head><body>`;
   const parsed = new DOMParser().parseFromString(html, "text/html"), authoredRoot = parsed.querySelector("html");
   if (authoredRoot) {
@@ -120,7 +127,7 @@ export function buildRelease(input: ReleaseCreateInput & { board: Board }): Stat
   // The opaque digest scopes the private provenance to one source, without exposing its ID.
   const releaseId = `release-${sha256(canonicalJson({ content, source: { boardId: board.id, canvasBase: authored.canvasBase } }))}`;
   const config = { releaseId, data: options.publicData, apiOrigins: options.apiOrigins, html, prefix, suffix, runtime, ...(live ? { live } : {}) };
-  const index = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(outerCsp)}"><title>${escapeHtml(title)}</title><style>html,body{margin:0;height:100%;background:${theme.tokens["host-sheet"]}}iframe{width:100%;height:100%;border:0;display:block}aside{position:fixed;left:8px;bottom:8px;max-width:calc(100% - 32px);font:13px/1.4 system-ui;padding:8px 12px;color:#fff;background:#252525;border-radius:6px}aside[hidden]{display:none}${live ? "aside[data-live]{left:auto;right:8px}" : ""}</style></head><body><iframe title="${escapeHtml(title)}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe><aside role="status" hidden></aside>${live ? '<aside data-live role="status" aria-live="polite" hidden></aside>' : ""}<script>(${shell})(${scriptJson(config)});</script></body></html>`;
+  const index = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(outerCsp)}"><title>${escapeHtml(title)}</title><style>html,body{margin:0;height:100%;background:${theme.tokens["host-sheet"]}}iframe{width:100%;height:100%;border:0;display:block}aside{position:fixed;left:8px;bottom:8px;max-width:calc(100% - 32px);font:13px/1.4 system-ui;padding:8px 12px;color:#fff;background:#252525;border-radius:6px}aside[hidden]{display:none}${live ? "aside[data-live]{left:auto;right:8px}" : ""}</style></head><body><iframe title="${escapeHtml(title)}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe><aside role="status" hidden></aside>${live ? '<aside data-live role="status" aria-live="polite" hidden></aside>' : ""}${preset ? PUBLISHED_CANVAS_FOCUS : ""}<script>(${shell})(${scriptJson(config)});</script></body></html>`;
   const files: Record<string, string> = { "index.html": index, "NOTICE": NOTICE, "LICENSE-APACHE-2.0": license };
   const inventory = fileInventory(files), artifactHash = sha256(canonicalJson(inventory));
   const manifest = ReleaseManifestSchema.parse({ formatVersion: 1, releaseId, artifactHash, title, viewerVersion, network: options.network, apiOrigins: options.apiOrigins, ...(live ? { live } : {}), dependencies: resources.dependencies, warnings, files: inventory });
