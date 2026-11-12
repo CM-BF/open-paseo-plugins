@@ -25,15 +25,22 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   };
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   // Eval bridge and forwarding counter (test harness only; the example page itself has no script).
-  const bridge = `<script>window.presetKeyMessages=0;window.lgChanges=[];window.addEventListener('message',e=>{if(e.source===parent&&e.data?.type==='preset-key')window.presetKeyMessages++});document.addEventListener('lg:change',e=>window.lgChanges.push({name:e.detail.name,value:e.detail.value}));window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channel==='fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'fixture-result',id:e.data.id,error:error.message},'*')}}});</script>`;
+  // window.delayPresetKey (ms) holds a forwarded "/" back like a busy canvas would; parse-time
+  // listeners run before the preset's own (it starts on DOMContentLoaded).
+  const bridge = `<script>window.addEventListener('message',e=>{if(window.delayPresetKey&&e.source===parent&&e.data?.type==='preset-key'&&!e.data.late){e.stopImmediatePropagation();setTimeout(()=>window.dispatchEvent(new MessageEvent('message',{data:{...e.data,late:true},source:parent})),window.delayPresetKey)}});window.presetKeyMessages=0;window.lgChanges=[];window.addEventListener('message',e=>{if(e.source===parent&&e.data?.type==='preset-key')window.presetKeyMessages++});document.addEventListener('lg:change',e=>window.lgChanges.push({name:e.detail.name,value:e.detail.value}));window.addEventListener('message',async e=>{if(e.source===parent&&e.data?.channel==='fixture'){try{const value=await eval(e.data.code);parent.postMessage({channel:'fixture-result',id:e.data.id,value},'*')}catch(error){parent.postMessage({channel:'fixture-result',id:e.data.id,error:error.message},'*')}}});</script>`;
   // A typical agent reset: the preset must survive it (no cascade layer, scoped selectors).
   const reset = '<style id="agent-reset">*{margin:0;padding:0;box-sizing:border-box}button{background:none;border:0;font:inherit}h1{font-size:20px}section{padding:0}</style>';
+  // Authored motion inside a preset card: reduced motion must leave it to the author.
+  const authoredMotion = '<style id="authored-motion">@keyframes authored-pulse{50%{opacity:.2}}.authored-pulse{display:inline-block;width:8px;height:8px;animation:authored-pulse 1.2s ease-in-out infinite}.col-lg-6{transition:opacity 2s}</style>';
   const extras = `<section id="glass-tests" class="lg-columns" aria-label="测试区">
     <article data-lg="card" id="tests-card"><div class="lg-card-head"><h2>数据路径</h2><button type="button" class="btn" id="glass-btn">普通按钮</button></div>
       <figure id="data-chart" data-lg="chart" data-lg-path="/trend" data-lg-type="line" data-lg-unit="次" aria-label="来自 Board 数据的折线"></figure></article>
     <article data-lg="card"><h2>注入测试</h2><figure id="xss-chart" data-lg="chart" aria-label="标签注入测试" data-lg-values="3,5" data-lg-labels='<img src=x onerror="window.__xss=1">,b'></figure></article>
+    <article data-lg="card" id="motion-card"><h2>作者动画</h2><span id="authored-pulse" class="authored-pulse"></span><span id="authored-col" class="col-lg-6">列</span>
+      <p><b id="count-plain" data-lg-count="1234">1234</b> · <b id="count-unit" data-lg-count="98.6" data-lg-key="{range}" data-lg-by="7d:98.6, 30d:97.25, 90d:96">98.6%</b></p>
+      <figure id="int-chart" data-lg="chart" data-lg-values="14,19,22" data-lg-labels="一,二,三" data-lg-unit="篇" aria-label="整数计数"></figure></article>
   </section>`;
-  const page = reset + example.replace('<nav id="dock"', `${extras}\n  <nav id="dock"`) + bridge;
+  const page = reset + authoredMotion + example.replace('<nav id="dock"', `${extras}\n  <nav id="dock"`) + bridge;
   const data = { trend: [3, 5, 4] };
 
   let version = await evaluate('hostProps.canvas.documentVersion');
@@ -60,6 +67,8 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   const hover = async ({ x, y }) => command('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
   const clickIn = async selector => { await frame(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center'})`); await settleFrame(); const p = await center(selector); await clickPoint(p.x, p.y); };
   const rgb = value => value.replace(/\s+/g, '');
+  const dockState = "({cls:document.querySelector('#dock').className,y:scrollY,h:innerHeight,sh:document.documentElement.scrollHeight,hover:document.querySelector('#dock').matches(':hover'),act:document.activeElement?.tagName+'#'+document.activeElement?.id})";
+  const untilDock = async (tucked, label, timeout = 3000) => untilFrame(`${tucked ? '' : '!'}document.querySelector('#dock').classList.contains('is-tucked')`, timeout).catch(async e => { console.log('DEBUG dock', label, JSON.stringify(await frame(dockState))); throw e; });
 
   // 1. Activation inside the real wrapper.
   await viewport(1100);
@@ -86,6 +95,19 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   console.log('MEASURE glass-layout-shift', shift);
   assert.ok(shift < 0.05, `layout shift ${shift}`);
   check('the preset mounts without measurable layout shift');
+
+  // 3b. Rolling numbers keep authored text that already shows the value (Board text edits compare
+  // the live text with the source); a new value keeps the authored affixes and grouping.
+  const counts = () => frame("['#count-plain','#count-unit','#kpi > article:nth-of-type(2) [data-lg-count]','#kpi-publish [data-lg-count]'].map(s=>document.querySelector(s).textContent)");
+  assert.deepEqual(await counts(), ['1234', '98.6%', '15,872', '126']);
+  const chooseRange = value => frame(`LiquidGlass.api(document.querySelector('#range'),'split').choose(document.querySelector('#range > [data-lg-option="${value}"]')),true`);
+  await chooseRange('90d');
+  await untilFrame("!document.querySelector('.lg-rolling')&&document.querySelector('#count-unit').textContent==='96%'", 4000);
+  assert.deepEqual(await counts(), ['1234', '96%', '183,940', '1,486']);
+  await chooseRange('7d');
+  await untilFrame("!document.querySelector('.lg-rolling')&&document.querySelector('#count-unit').textContent==='98.6%'", 4000);
+  assert.deepEqual(await counts(), ['1234', '98.6%', '15,872', '126']);
+  check('rolling numbers keep the authored text (no reformatting) and follow controls in the authored format');
 
   // 4. Identity matrix: live fingerprints (runtime algorithm) against the authored source.
   const liveIdentity = selector => frame(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});const elements=[node,...node.querySelectorAll('*')].filter(e=>!e.closest('[data-board-overlay]'));const indices=new Map(elements.map((e,i)=>[e,i]));const input=JSON.stringify(elements.map(e=>{const id=[indices.get(e.parentElement)??-1,e.localName.toLowerCase(),e.id||'',e.getAttribute('role')||'',e.getAttribute('name')||'',e.getAttribute('type')||''];const l=['data-paseo-layout','data-paseo-layout-part','data-paseo-layout-key'].map(n=>e.getAttribute(n));if(l.some(v=>v!==null))id.push(l.map(v=>v??''));return id}));let h=2166136261;for(let i=0;i<input.length;i++)h=Math.imul(h^input.charCodeAt(i),16777619);return (h>>>0).toString(16).padStart(8,'0')})()`);
@@ -171,6 +193,45 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   assert.equal(await frame('window.presetKeyMessages'), forwards); assert.equal(await paletteOpen(), false);
   check('text entry, ⌘K, "?" and selection mode never forward "/" or open the canvas palette');
 
+  // Paseo's "Boards" sidebar row keeps focus after reopening the last Board: route screen only.
+  await evaluate("document.querySelector('#sidebar-boards').focus()");
+  await slash();
+  await untilFrame("document.querySelector('#palette').classList.contains('is-open')");
+  await key('Escape');
+  await until("document.activeElement===document.querySelector('#sidebar-boards')", 2000);
+  const rowForwards = await frame('window.presetKeyMessages');
+  await update('{presetKeys:{fromBody:false}}'); await until('hostProps.presetKeys?.fromBody===false'); await settleFrame();
+  await evaluate("document.querySelector('#sidebar-boards').focus()");
+  await slash(); await sleep(350);
+  assert.equal(await frame('window.presetKeyMessages'), rowForwards); assert.equal(await paletteOpen(), false);
+  await update('{presetKeys:{fromBody:true}}'); await until('hostProps.presetKeys?.fromBody===true');
+  check('focus left on the Boards sidebar row forwards "/" for the route screen only');
+
+  // The slash key reported as 「、」 (Chinese IME, Chinese punctuation mode), from Paseo and in the canvas.
+  const imeSlash = async () => {
+    await command('Input.dispatchKeyEvent', { type: 'keyDown', key: '、', code: 'Slash', windowsVirtualKeyCode: 191, nativeVirtualKeyCode: 191 });
+    await command('Input.dispatchKeyEvent', { type: 'keyUp', key: '、', code: 'Slash', windowsVirtualKeyCode: 191, nativeVirtualKeyCode: 191 });
+  };
+  await hostBlur(); await imeSlash();
+  await untilFrame("document.querySelector('#palette').classList.contains('is-open')");
+  await key('Escape');
+  await until("document.activeElement!==document.querySelector('iframe')", 2000);
+  await clickIn('.lg-title'); await imeSlash();
+  await untilFrame("document.querySelector('#palette').classList.contains('is-open')");
+  await key('Escape');
+  await untilFrame("!document.querySelector('#palette').classList.contains('is-open')");
+  check('the slash key reported as 「、」 by a Chinese IME opens the palette from Paseo and inside the canvas');
+
+  // Focus moving to Paseo closes a forwarded palette, and Paseo forgets the handoff.
+  await hostBlur(); await slash();
+  await untilFrame("document.querySelector('#palette').classList.contains('is-open')");
+  await evaluate("document.querySelector('#host-ask').focus()");
+  await untilFrame("!document.querySelector('#palette').classList.contains('is-open')", 2000);
+  await sleep(300);
+  assert.equal(await evaluate('document.activeElement.id'), 'host-ask');
+  await hostBlur();
+  check('focus moving to Paseo closes a forwarded palette without pulling focus back');
+
   // Enter on a result is deliberate in-canvas navigation: focus stays at the target.
   await hostBlur(); await slash();
   await untilFrame("document.querySelector('#palette').classList.contains('is-open')");
@@ -185,6 +246,22 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   assert.equal(await frame("document.querySelector('#recent').hasAttribute('tabindex')"), false);
   check('Enter on a palette result jumps to its target and keeps focus there, without a lasting tabindex');
 
+  // A chosen result ends the handoff: a later session change never jumps back to the toolbar.
+  await evaluate("document.querySelector('#board-toolbar').focus()"); await slash();
+  await untilFrame("document.querySelector('#palette').classList.contains('is-open')");
+  await command('Input.insertText', { text: '最近发布' });
+  await untilFrame("document.querySelector('#palette .lg-pal-item')");
+  await key('Enter', 'Enter');
+  await untilFrame("!document.querySelector('#palette').classList.contains('is-open')");
+  assert.equal(await hostFrameFocused(), true);
+  const readyStale = await evaluate('results.ready');
+  await evaluate('replaceDocument()');
+  await until(`results.ready===${readyStale + 1}`);
+  version = await evaluate('hostProps.canvas.documentVersion');
+  await untilFrame("window.LiquidGlass?.version==='1.0.0'"); await sleep(150);
+  assert.notEqual(await evaluate('document.activeElement?.id'), 'board-toolbar');
+  check('after Enter on a forwarded result, replacing the session leaves focus alone (no stale handoff)');
+
   // Fail-safes: no palette left (acknowledged), and a kit that cannot answer (timeout).
   await frame("document.querySelector('#palette').remove()");
   await settleFrame(); await hostBlur();
@@ -198,6 +275,31 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   await until("document.activeElement===document.querySelector('iframe')", 1000).catch(() => {});
   await until("document.activeElement!==document.querySelector('iframe')", 2000);
   check('without a palette or a live kit, focus returns to Paseo (acknowledgement or 250 ms timeout)');
+  // That session stopped answering: the next "/" is left to Paseo (no swallowed key, no bounce).
+  const mutedForwards = await frame('window.presetKeyMessages');
+  await evaluate("document.querySelector('#board-toolbar').focus()"); await slash(); await sleep(350);
+  assert.equal(await frame('window.presetKeyMessages'), mutedForwards);
+  assert.equal(await evaluate('document.activeElement.id'), 'board-toolbar');
+  check('a canvas session that let a forwarded "/" time out is not forwarded to again');
+
+  // A slow canvas answers after the 250 ms fallback: the palette takes focus again if nobody
+  // moved on, and is closed if the user already did. (The frame delays the message itself.)
+  await load(page); await untilFrame("window.LiquidGlass?.version==='1.0.0'");
+  await frame('window.delayPresetKey=450,true');
+  await evaluate("document.querySelector('#board-toolbar').focus()"); await slash();
+  await until("document.activeElement===document.querySelector('#board-toolbar')", 1000);
+  await untilFrame("document.querySelector('#palette').classList.contains('is-open')", 3000);
+  await until("document.activeElement===document.querySelector('iframe')", 2000);
+  await untilFrame("document.activeElement?.classList.contains('lg-pal-input')", 2000);
+  await key('Escape');
+  await until("document.activeElement===document.querySelector('#board-toolbar')", 2000);
+  await slash(); await sleep(300);
+  await evaluate("document.querySelector('#host-ask').focus()");
+  await untilFrame("document.querySelector('#palette').classList.contains('is-mounted')", 3000);
+  await untilFrame("!document.querySelector('#palette').classList.contains('is-open')", 3000);
+  await sleep(200);
+  assert.equal(await evaluate('document.activeElement.id'), 'host-ask');
+  check('a late palette reply takes focus back only when the user has not moved on, otherwise it closes');
 
   // 7. Esc while the runtime holds a selection: one press closes the palette.
   await load(page); await untilFrame("window.LiquidGlass?.version==='1.0.0'");
@@ -209,6 +311,47 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   await untilFrame("!document.querySelector('#palette').classList.contains('is-open')", 3000);
   await update("{selectionMode:'off'}");
   check('one Esc closes the palette even when the Board runtime consumes the keydown');
+
+  // ...but an Esc that authored code prevented, or that the runtime used for its component
+  // mode, is not also taken by the preset.
+  const expandApi = "LiquidGlass.api(document.querySelector('#modules [data-lg~=expand]'),'expand')";
+  const expanded = "document.querySelector('#modules [data-lg~=expand]').classList.contains('is-expanded')";
+  const firstModule = "document.querySelector('#modules [data-lg-module]:not(.lg-placeholder)')";
+  await frame(`${expandApi}.open(${firstModule}),true`);
+  await untilFrame(expanded); await sleep(700);
+  await frame("window.authorEsc=0;window.authorModal=true;document.addEventListener('keydown',e=>{if(e.key==='Escape'&&window.authorModal){e.preventDefault();window.authorModal=false;window.authorEsc++}});document.activeElement.blur();true");
+  await key('Escape'); await sleep(400);
+  assert.deepEqual(await frame(`({esc:window.authorEsc,expanded:${expanded}})`), { esc: 1, expanded: true });
+  await key('Escape');
+  await untilFrame(`!${expanded}`, 3000);
+  await sleep(1200);
+  await frame(`${expandApi}.open(${firstModule}),true`);
+  await untilFrame(expanded); await sleep(700);
+  await update("{selectionMode:'component'}"); await untilFrame("document.documentElement.dataset.boardSelection==='component'");
+  await key('Escape');
+  await untilFrame("document.documentElement.dataset.boardSelection==='off'", 3000); await sleep(400);
+  assert.equal(await frame(expanded), true);
+  await update("{selectionMode:'off'}");
+  await key('Escape');
+  await untilFrame(`!${expanded}`, 3000);
+  check('an Esc that authored code prevented or the runtime used for component mode leaves an open module alone; a free Esc closes it');
+
+  // The open palette is in the top layer: Board's comment markers never paint over it.
+  const markerAnchors = await frame("[[520,150],[640,190],[600,260]].map(([x,y])=>({kind:'point',...board.getContext(),rect:{x:x+scrollX,y:y+scrollY,width:0,height:0},viewport:{width:innerWidth,height:innerHeight,scrollX,scrollY}}))");
+  const markerItems = markerAnchors.map((anchor, i) => ({ id: `glass-marker-${i}`, kind: 'question', text: `讨论 ${i + 1}`, status: 'answered', anchor, resultReferences: [], createdAt: '2026-11-11T00:00:00Z', updatedAt: '2026-11-11T00:00:00Z' }));
+  await update(`{interactions:${JSON.stringify(markerItems)}}`);
+  const markerCenters = "[...(document.querySelector('[data-board-markers]')?.shadowRoot?.querySelectorAll('button:not([hidden])')||[])].map(b=>{const r=b.getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]})";
+  await untilFrame(`${markerCenters}.length===3`);
+  assert.ok((await frame(`${markerCenters}.map(([x,y])=>document.elementFromPoint(x,y)?.hasAttribute('data-board-markers'))`)).every(Boolean));
+  await frame("LiquidGlass.api(document.querySelector('#palette'),'palette').open(),true");
+  await untilFrame("document.querySelector('#palette').classList.contains('is-open')"); await sleep(350);
+  const onTop = await frame(`({top:document.querySelector('#palette .lg-pal-layer').matches(':popover-open'),hits:${markerCenters}.map(([x,y])=>Boolean(document.elementFromPoint(x,y)?.closest('#palette')))})`);
+  assert.deepEqual(onTop, { top: true, hits: [true, true, true] });
+  await shot('glass-palette-over-markers');
+  await key('Escape');
+  await untilFrame("!document.querySelector('#palette').classList.contains('is-mounted')&&!document.querySelector('#palette .lg-pal-layer').matches(':popover-open')", 3000);
+  await update('{interactions:[]}');
+  check('the open palette sits in the top layer, above Board comment markers, and leaves it when closed');
 
   // 8. All interactions per theme and width (desktop-first, mobile fallback).
   const passes = [{ name: 'light-1100', scheme: 'light', width: 1100 }, { name: 'dark-1100', scheme: 'dark', width: 1100 }, { name: 'light-480', scheme: 'light', width: 480 }, { name: 'light-360', scheme: 'light', width: 360 }];
@@ -230,11 +373,14 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
       const narrow = await frame(`(()=>{const cols=e=>getComputedStyle(document.querySelector(e)).gridTemplateColumns.split(' ').length;const dock=document.querySelector('#dock'),item=dock.querySelector('[data-lg-dock-item]');return {kpi:cols('#kpi'),columns:cols('#trend'),overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,item:item.getBoundingClientRect().width,pad:parseFloat(getComputedStyle(document.querySelector('#lg-page')).paddingBottom),dock:dock.getBoundingClientRect().height}})()`);
       assert.ok(narrow.kpi <= 2, JSON.stringify(narrow)); assert.equal(narrow.columns, 1); assert.ok(narrow.overflow <= 0, JSON.stringify(narrow));
       assert.ok(narrow.item <= 42, JSON.stringify(narrow)); assert.ok(narrow.pad >= narrow.dock + 16, JSON.stringify(narrow));
+      // At rest the narrow dock is tucked away: nothing in the first view sits under it.
+      await untilDock(true, 'rest');
+      assert.equal(await frame("Boolean(document.elementFromPoint(innerWidth/2,innerHeight-30)?.closest('#dock'))"), false);
       await shot(`glass-${pass.name}-top`);
       await frame('scrollTo(0,0)'); await settleFrame();
-      await frame('scrollTo(0,500)'); await untilFrame("document.querySelector('#dock').classList.contains('is-tucked')", 3000);
+      await frame('scrollTo(0,500)'); await settleFrame(); await untilDock(true, 'scroll down');
       await shot(`glass-${pass.name}-tucked`);
-      await frame('scrollTo(0,300)'); await untilFrame("!document.querySelector('#dock').classList.contains('is-tucked')", 3000);
+      await frame('scrollTo(0,300)'); await untilDock(false, 'scroll up');
       await frame('scrollTo(0,document.documentElement.scrollHeight)'); await settleFrame(); await sleep(150);
       const bottom = await frame("(()=>{const last=document.querySelector('#glass-tests').getBoundingClientRect(),dock=document.querySelector('#dock').getBoundingClientRect();return {last:last.bottom,dock:dock.top,tucked:document.querySelector('#dock').classList.contains('is-tucked')}})()");
       assert.ok(bottom.last <= bottom.dock + 0.5 && !bottom.tucked, JSON.stringify(bottom));
@@ -296,7 +442,10 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
     await until("document.activeElement!==document.querySelector('iframe')", 2000);
     // dock: magnification and the name label (pointer), or focus label (keyboard).
     await frame('scrollTo(0,0)'); await settleFrame();
-    await untilFrame("!document.querySelector('#dock').classList.contains('is-tucked')"); await sleep(400);
+    // Narrow panes: the pointer nearing the bottom edge brings the tucked dock back.
+    const nearBottom = async () => { if (pass.width < 720) await hover(await evaluate("(()=>{const r=document.querySelector('iframe').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+Math.min(r.height,innerHeight)-30}})()")); };
+    await nearBottom();
+    await untilDock(false, 'near bottom'); await sleep(400);
     const dockItem = await location('#dock > [data-lg-dock-item]:nth-of-type(3)');
     await hover({ x: dockItem.x + dockItem.width / 2, y: dockItem.y + dockItem.height / 2 });
     await untilFrame(`parseFloat(getComputedStyle(document.querySelector('#dock > [data-lg-dock-item]:nth-of-type(3)')).getPropertyValue('--lg-s'))>${pass.width < 720 ? 1.15 : 1.3}`);
@@ -304,8 +453,24 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
     await sleep(200); await shot(`glass-${pass.name}-dock`);
     await hover({ x: 4, y: 4 });
     await untilFrame("![...document.querySelectorAll('#dock [data-lg-dock-item]')].some(i=>i.hasAttribute('style')||i.getAnimations().length)", 3000);
+    if (pass.width < 720) { await hover({ x: dockItem.x + dockItem.width / 2, y: dockItem.y + dockItem.height / 2 }); await untilDock(false, 'before click'); await sleep(400); }
     await clickPoint(dockItem.x + dockItem.width / 2, dockItem.y + dockItem.height / 2);
     await untilFrame("(()=>{const r=document.querySelector('#trend').getBoundingClientRect();return r.top>-4&&r.top<innerHeight*0.6})()", 4000);
+    if (pass.name === 'light-1100') {
+      // Back at the very top, the scroll spy selects the first dock target again.
+      await sleep(1500);
+      await frame('scrollTo(0,700)'); await sleep(300);
+      await frame('scrollTo(0,0)');
+      await untilFrame("document.querySelector('#dock [aria-current]')?.dataset.lgLabel==='总览'", 3000);
+    }
+    if (pass.name === 'light-480') {
+      // Touch has no hover: a tapped dock item shows its name for a moment (synthetic touch).
+      await hover({ x: 4, y: 4 });
+      await frame("(()=>{const it=document.querySelector('#dock > [data-lg-dock-item]:nth-of-type(2)');it.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'touch'}));window.dispatchEvent(new PointerEvent('pointerup',{pointerType:'touch'}));it.click();return true})()");
+      await untilFrame("document.querySelector('#dock .lg-dock-label').classList.contains('is-shown')&&document.querySelector('#dock .lg-dock-label').textContent==='指标'&&!document.querySelector('#dock').classList.contains('is-tucked')", 2000);
+      await shot('glass-light-480-dock-tapped');
+      await untilFrame("!document.querySelector('#dock .lg-dock-label').classList.contains('is-shown')", 3000);
+    }
     if (pass.name === 'light-1100') {
       // Identity is unchanged after real interaction too (state lives in attributes outside it).
       for (const id of ['kpi-publish', 'kpi', 'metric', 'range', 'dock']) assert.equal(await liveIdentity('#' + id), componentIdentityFor(authoredDoc.querySelector('#' + id)).fingerprint, `${id} after interaction`);
@@ -314,6 +479,65 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   }
   await viewport(1100);
   await evaluate("setTheme('light')");
+
+  // 8b. Opening the split never re-flows the page; the open row stays inside the pane; there is
+  // no sideways scroll; an opened module with a table stays inside a narrow pane.
+  for (const width of [856, 420, 300]) {
+    await viewport(width);
+    await load(page, { height: 760 });
+    await untilFrame("window.LiquidGlass?.version==='1.0.0'&&!document.querySelector('.lg-rolling')", 4000);
+    const geo = () => frame("(()=>{const k=document.querySelector('#kpi').getBoundingClientRect(),cw=document.documentElement.clientWidth,opts=[...document.querySelectorAll('#range > [data-lg-option]')].map(o=>o.getBoundingClientRect());return {kpi:Math.round(k.top+scrollY),overflow:document.documentElement.scrollWidth-cw,left:Math.round(Math.min(...opts.map(r=>r.left))),right:Math.round(Math.max(...opts.map(r=>r.right))),cw}})()");
+    const closed = await geo();
+    await clickIn('#range');
+    await untilFrame("document.querySelector('#range').classList.contains('is-open')"); await sleep(900);
+    const opened = await geo();
+    assert.equal(opened.kpi, closed.kpi, `${width}: ${JSON.stringify({ closed, opened })}`);
+    assert.ok(closed.overflow <= 0 && opened.overflow <= 0, `${width}: ${JSON.stringify({ closed, opened })}`);
+    assert.ok(opened.left >= 0 && opened.right <= opened.cw, `${width}: ${JSON.stringify(opened)}`);
+    await shot(`glass-light-${width}-split-open`);
+    await key('Escape');
+    await untilFrame("!document.querySelector('#range').classList.contains('is-open')", 3000);
+    if (width > 420) continue;
+    await frame(`LiquidGlass.api(document.querySelector('#modules [data-lg~=expand]'),'expand').open(document.querySelector('#modules [data-lg-module]')),true`);
+    await untilFrame("document.querySelector('#modules [data-lg~=expand]').classList.contains('is-expanded')"); await sleep(900);
+    const table = await frame("(()=>{const m=document.querySelector('#modules [data-lg-module].is-open'),c=m.querySelector('.lg-module-close').getBoundingClientRect(),d=m.querySelector('[data-lg-detail]'),cw=document.documentElement.clientWidth;return {module:Math.round(m.getBoundingClientRect().right),close:Math.round(c.right),cw,overflow:document.documentElement.scrollWidth-cw,scrolls:d.scrollWidth>d.clientWidth}})()");
+    assert.ok(table.module <= table.cw && table.close <= table.cw && table.overflow <= 0 && (width > 360 || table.scrolls), `${width}: ${JSON.stringify(table)}`);
+    await shot(`glass-light-${width}-expand-table`);
+    await key('Escape');
+    await untilFrame("!document.querySelector('#modules [data-lg~=expand]').classList.contains('is-expanded')", 3000);
+  }
+  await viewport(1100);
+  check('opening the split keeps the page still and inside the pane at 856/420/300px; an opened table module scrolls inside a narrow pane');
+
+  // 8c. Forced colours: built-in icons, dots and the chosen option use system colours.
+  await load(page); await untilFrame("window.LiquidGlass?.version==='1.0.0'&&!document.querySelector('.lg-rolling')", 4000);
+  // Emulation belongs to the session that set it, so each canvas target keeps one session.
+  const mediaSessions = new Map();
+  const emulate = async features => {
+    await command('Emulation.setEmulatedMedia', { features });
+    for (const target of (await send('Target.getTargets')).targetInfos.filter(info => info.type === 'iframe')) {
+      if (!mediaSessions.has(target.targetId)) mediaSessions.set(target.targetId, (await send('Target.attachToTarget', { targetId: target.targetId, flatten: true })).sessionId);
+      await send('Emulation.setEmulatedMedia', { features }, mediaSessions.get(target.targetId));
+    }
+  };
+  await emulate([{ name: 'forced-colors', value: 'active' }]);
+  await untilFrame("matchMedia('(forced-colors: active)').matches");
+  await clickIn('#range'); await untilFrame("document.querySelector('#range').classList.contains('is-open')"); await sleep(900);
+  const forced = await frame("(()=>{const after=s=>getComputedStyle(document.querySelector(s),'::after').backgroundColor;return {canvas:getComputedStyle(document.documentElement).backgroundColor,dock:after('#dock [data-lg-dock-item]:nth-of-type(2)'),current:after('#dock [data-lg-dock-item][aria-current]'),module:after('#modules .lg-icon'),dot:getComputedStyle(document.querySelector('.lg-dot')).backgroundColor,pick:getComputedStyle(document.querySelector('#range .lg-split-pick')).backgroundColor}})()");
+  for (const name of ['dock', 'current', 'module', 'dot', 'pick']) assert.notEqual(rgb(forced[name]), rgb(forced.canvas), `${name}: ${JSON.stringify(forced)}`);
+  assert.notEqual(rgb(forced.current), rgb(forced.dock), JSON.stringify(forced));
+  await shot('glass-forced-colors');
+  await key('Escape');
+  await emulate([]);
+  await untilFrame("!matchMedia('(forced-colors: active)').matches");
+  check('forced colours keep built-in icons, status dots, the current dock item and the chosen option visible');
+
+  // 8d. Page mode on the body element itself takes over the whole width.
+  await load('<body data-style="liquid-glass" data-lg-page><header class="lg-header"><div><h1 class="lg-title">整页</h1></div></header><section class="lg-grid" data-lg-cols="2"><article data-lg="card">一</article><article data-lg="card">二</article></section>' + bridge + '</body>');
+  await untilFrame("window.LiquidGlass?.version==='1.0.0'");
+  const bodyScope = await frame("(()=>{const b=document.body,r=b.getBoundingClientRect();return {scope:document.querySelector('[data-style]')===b,max:getComputedStyle(b).maxWidth,left:r.left,full:Math.abs(r.width-document.documentElement.clientWidth)<1}})()");
+  assert.deepEqual(bodyScope, { scope: true, max: 'none', left: 0, full: true });
+  check('data-style on the body element gives the full-width page, not the 960px Board column');
 
   // 9. Charts: Board data path, live data updates, and inert labels.
   await load(page); await untilFrame("window.LiquidGlass?.version==='1.0.0'");
@@ -329,6 +553,9 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   await untilFrame("document.querySelector('#trend-chart .lg-chart-tip').classList.contains('is-on')");
   assert.match(await frame("document.querySelector('#trend-chart .lg-chart-tip text').textContent"), /^周一 · 14$/);
   assert.match(await frame("document.querySelector('#trend-chart .lg-chart-avg text').textContent"), /^均值 18/);
+  // Integer data gets whole-number axis ticks (no 「12.5 篇」).
+  const ticks = await frame("[...document.querySelectorAll('#int-chart svg > g:first-of-type text')].map(t=>t.textContent)");
+  assert.deepEqual(ticks, ['0', '15', '30']);
   await shot('glass-chart-hover');
   check('declarative charts follow Board data live, show hover and average tags, and render injected labels as inert text');
 
@@ -348,6 +575,12 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   const card = await location('#kpi-publish');
   await hover({ x: card.x + 20, y: card.y + 20 }); await hover({ x: card.x + 40, y: card.y + 30 }); await settleFrame();
   assert.equal(await frame("getComputedStyle(document.querySelector('#kpi-publish')).transform"), 'none');
+  // Only preset-owned nodes collapse: an authored loop inside a card keeps its own timing, and an
+  // authored class that merely contains "lg-" is untouched.
+  const motion = await frame("(()=>{const g=s=>getComputedStyle(document.querySelector(s));return {pulse:[g('#authored-pulse').animationDuration,g('#authored-pulse').animationIterationCount],col:g('#authored-col').transitionDuration,pill:g('.lg-pill').transitionDuration,blob:g('#range .lg-split-blob').transitionDuration}})()");
+  assert.deepEqual(motion.pulse, ['1.2s', 'infinite'], JSON.stringify(motion));
+  assert.equal(motion.col, '2s', JSON.stringify(motion));
+  assert.match(motion.pill, /^0\.001s(, 0\.001s)*$/); assert.match(motion.blob, /^0\.001s(, 0\.001s)*$/);
   await frame("(()=>{window.sawMerging=false;new MutationObserver(()=>{if(document.querySelector('#range').classList.contains('is-merging'))window.sawMerging=true}).observe(document.querySelector('#range'),{attributes:true});return true})()");
   await clickIn('#range'); await untilFrame("document.querySelector('#range').classList.contains('is-open')");
   const option30 = await center('#range > [data-lg-option="30d"]'); await clickPoint(option30.x, option30.y);
@@ -359,7 +592,7 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   await shot('glass-reduced-motion');
   await key('Escape');
   await setReducedMotion(false);
-  check('reduced motion removes tilt, droplet merging and expand animation');
+  check('reduced motion removes tilt, droplet merging and expand animation, and leaves authored animations alone');
 
   // 12. Live patch activation: one idle rebuild that keeps the reading position.
   const plain = `${baseHtml}<div id="tall-spacer" style="height:1800px"></div>`;
@@ -378,6 +611,20 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   await untilFrame("document.querySelector('#second')"); await sleep(400);
   assert.equal(await evaluate('results.ready'), readyBefore + 1);
   check('a live patch that first adds the marker rebuilds the canvas once and keeps the reading position');
+
+  // An update request the replaced session never answered is sent again by the rebuilt one.
+  // (The request is one the runtime ignores, standing in for a reply lost in the rebuild.)
+  const counted = `${plain}<script>window.focusUpdates=0;window.addEventListener('message',e=>{if(e.source===parent&&e.data?.type==='focus-update')window.focusUpdates++})</script>`;
+  await load(counted, { presetKeys: undefined });
+  const lost = await frame("({id:'lost-update',eventId:'lost-update',at:new Date().toISOString(),boardRevision:board.getContext().boardRevision,canvasRevision:board.getContext().canvasRevision,documentVersion:board.getContext().documentVersion,kind:'unanswered',targets:[]})");
+  await update(`{focusUpdate:{update:${JSON.stringify(lost)},token:41,targetIndex:0}}`);
+  await untilFrame('window.focusUpdates===1');
+  const readyLost = await evaluate('results.ready');
+  await update(`{canvas:{...hostProps.canvas,revision:hostProps.canvas.revision+1,patches:[{id:'glass-lost',selector:'body',operation:'append',html:'<section id="island-lost" data-style="liquid-glass">玻璃</section>'}]}}`);
+  await until(`results.ready===${readyLost + 1}`, 8000);
+  await untilFrame("document.querySelector('#island-lost')&&window.focusUpdates===1", 3000);
+  await update('{focusUpdate:undefined}');
+  check('an update request still pending when the preset rebuild runs is sent to the rebuilt canvas');
 
   // ...and waits while the user is typing in the canvas.
   await load(plain, { presetKeys: undefined });
@@ -398,6 +645,11 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   await untilFrame("window.__legacyKitBody===1&&window.LiquidGlass?.version==='0.2.0'");
   assert.deepEqual(await frame("({media:document.querySelector('#paseo-board-liquid-glass-style').media,defs:document.querySelectorAll('#lg-defs').length,capsules:document.querySelectorAll('.lg-capsule').length})"), { media: 'not all', defs: 0, capsules: 0 });
   assert.equal(await evaluate('results.errors.length'), errorsBefore);
+  // Paseo stops forwarding "/" once the live source hands the page to the old kit.
+  const legacyForwards = await frame('window.presetKeyMessages');
+  await evaluate("document.querySelector('#board-toolbar').focus()"); await slash(); await sleep(350);
+  assert.equal(await frame('window.presetKeyMessages'), legacyForwards);
+  assert.equal(await evaluate('document.activeElement.id'), 'board-toolbar');
   await load(page); await untilFrame("window.LiquidGlass?.version==='1.0.0'");
   await frame("window.LiquidGlass={version:'0.1.0',scan(){}};document.querySelector('#kpi').append(document.createElement('div')),true");
   await untilFrame("document.querySelectorAll('.lg-capsule').length===0");
