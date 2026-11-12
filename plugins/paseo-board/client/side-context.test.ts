@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Interaction } from "../shared/contracts";
 import type { DraftStorage } from "./draft-store";
-import { createSideContextStore, SIDE_CONTEXT_PREFIX, sideContextKey, sideProvenance } from "./side-context";
+import { createSideContextStore, SIDE_CONTEXT_NOTE, SIDE_CONTEXT_NOTE_EXISTING, SIDE_CONTEXT_PREFIX, sideContextKey, sideContextNotes, sideHistoryTag, sideProvenance, visibleSideContext } from "./side-context";
 
 function memory() {
   const data = new Map<string, string>();
@@ -54,12 +54,54 @@ describe("Side provenance", () => {
     expect(sideProvenance(fork({ kind: "reply" }))).toBeUndefined();
     expect(sideProvenance(fork())).toBe("带主 agent 记录 · 读取中");
     expect(sideProvenance(fork({ status: "failed" }))).toBe("带主 agent 记录 · 未建立（没有创建 Side）");
+    expect(sideProvenance(fork({ status: "failed", sideNotCreated: true, inheritedHistory: history({ state: "frozen" }) }))).toBe("带主 agent 记录 · 未建立（没有创建 Side）");
     expect(sideProvenance(fork({ inheritedHistory: history() }))).toBe("带主 agent 记录 · 42 条消息");
     expect(sideProvenance(fork({ inheritedHistory: history({ omitted: true }) }))).toBe("带主 agent 记录 · 最近 42 条消息 · 更早的未带上");
     expect(sideProvenance(fork({ inheritedHistory: history({ entries: 0, messages: 0 }) }))).toBe("带主 agent 记录 · 主 agent 暂无可带的记录");
     expect(sideProvenance(fork({ inheritedHistory: history({ ownerBusy: true }) }))).toBe("带主 agent 记录 · 42 条消息 · 含主 agent 进行中的一轮");
-    expect(sideProvenance(fork({ inheritedHistory: history({ state: "frozen" }) }))).toBe("带主 agent 记录 · 42 条消息 · 待送达");
-    expect(sideProvenance(fork({ inheritedHistory: history({ state: "uncertain" }) }))).toBe("带主 agent 记录 · 42 条消息 · 未确认送达（这个 Side 可能没有拿到记录）");
-    expect(sideProvenance(fork({ inheritedHistory: history({ state: "not_sent" }) }))).toBe("带主 agent 记录 · 42 条消息 · 未送达（这个 Side 没有拿到记录）");
+    expect(sideProvenance(fork({ inheritedHistory: history({ state: "frozen" }) }))).toBe("带主 agent 记录 · 待送达 · 42 条消息");
+    expect(sideProvenance(fork({ inheritedHistory: history({ state: "frozen" }), status: "failed" }))).toBe("带主 agent 记录 · 创建结果待核对 · 42 条消息");
+    expect(sideProvenance(fork({ inheritedHistory: history({ state: "uncertain" }) }))).toBe("带主 agent 记录 · 未确认送达（这个 Side 可能没有拿到记录） · 42 条消息");
+    expect(sideProvenance(fork({ inheritedHistory: history({ state: "not_sent" }) }))).toBe("带主 agent 记录 · 未送达（这个 Side 没有拿到记录） · 42 条消息");
+  });
+
+  it("puts a delivery warning before the details so a two-line clamp cannot drop it", () => {
+    const worst = sideProvenance(fork({ inheritedHistory: history({ state: "uncertain", omitted: true, ownerBusy: true }) }))!;
+    expect(worst).toBe("带主 agent 记录 · 未确认送达（这个 Side 可能没有拿到记录） · 最近 42 条消息 · 更早的未带上 · 含主 agent 进行中的一轮");
+    // The label plus the warning is the prefix; at 320 px the picker fits about 34 CJK-width characters in two lines.
+    const prefix = worst.slice(0, worst.indexOf("记录）") + 3);
+    expect(prefix).toBe("带主 agent 记录 · 未确认送达（这个 Side 可能没有拿到记录）");
+    expect(prefix.replace(/[ -~]/g, "").length + prefix.replace(/[^ -~]/g, "").length / 2).toBeLessThanOrEqual(34);
+  });
+
+  it("gives the discussion rail a short tag for history Sides only", () => {
+    expect(sideHistoryTag(fork({ sideContext: undefined }))).toBeUndefined();
+    expect(sideHistoryTag(fork({ sideContext: "blank", inheritedHistory: history() }))).toBeUndefined();
+    expect(sideHistoryTag(fork())).toBe("带记录");
+    expect(sideHistoryTag(fork({ status: "failed" }))).toBeUndefined();
+    expect(sideHistoryTag(fork({ inheritedHistory: history() }))).toBe("带记录");
+    expect(sideHistoryTag(fork({ inheritedHistory: history({ state: "frozen" }) }))).toBe("带记录");
+    expect(sideHistoryTag(fork({ inheritedHistory: history({ state: "uncertain" }) }))).toBe("记录未确认");
+    expect(sideHistoryTag(fork({ inheritedHistory: history({ state: "not_sent" }) }))).toBe("未带上记录");
+    expect(sideHistoryTag(fork({ inheritedHistory: history({ state: "frozen" }), status: "failed" }))).toBe("创建待核对");
+    expect(sideHistoryTag(fork({ inheritedHistory: history({ state: "frozen" }), status: "failed", sideNotCreated: true }))).toBeUndefined();
+  });
+});
+
+describe("new-Side choice display", () => {
+  it("shows the frozen choice on a retry and the preference otherwise", () => {
+    expect(visibleSideContext({}, "owner-history")).toBe("owner-history");
+    expect(visibleSideContext({ intentId: "i1" }, "owner-history")).toBe("blank");
+    expect(visibleSideContext({ intentId: "i1", sideContext: "owner-history" }, "blank")).toBe("owner-history");
+  });
+
+  it("keeps the visible note to one short line, and none for a blank choice", () => {
+    expect(sideContextNotes("blank", { frozen: false, sideExists: true })).toEqual([]);
+    expect(sideContextNotes("owner-history", { frozen: false, sideExists: false })).toEqual([SIDE_CONTEXT_NOTE]);
+    expect(sideContextNotes("owner-history", { frozen: false, sideExists: true })).toEqual([SIDE_CONTEXT_NOTE_EXISTING]);
+    expect(sideContextNotes("owner-history", { frozen: true, sideExists: true })).toEqual(["重试沿用原发送的选择，不会改变。"]);
+    // One line in the 420 px popover (about 27 CJK-width units of 12 px text); ASCII counts as half a unit.
+    const units = (text: string) => text.replace(/[ -~]/g, "").length + text.replace(/[^ -~]/g, "").length / 2;
+    for (const note of [SIDE_CONTEXT_NOTE, SIDE_CONTEXT_NOTE_EXISTING]) expect(units(note)).toBeLessThanOrEqual(26);
   });
 });

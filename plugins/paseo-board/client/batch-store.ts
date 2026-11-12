@@ -55,6 +55,24 @@ function sameData(left: unknown, right: unknown): boolean {
   const keys = Object.keys(a).filter(key => a[key] !== undefined);
   return keys.length === Object.keys(b).filter(key => b[key] !== undefined).length && keys.every(key => Object.prototype.hasOwnProperty.call(b, key) && sameData(a[key], b[key]));
 }
+/**
+ * A grouped Side that failed before creation (sideNotCreated): put its frozen comments back into the
+ * pending queue so the group can be sent again. Each comment returns under its original draft ID, so
+ * a second press while those drafts still exist adds nothing.
+ */
+export function restoreBatchComments(store: DraftStore, interaction: Pick<Interaction, "comments">, options: { expectedCreatedAt?: string; position(anchor: BoardComment["anchor"]): { x: number; y: number }; now?: number }): { restored: number; existing: number; message?: string } {
+  const now = options.now ?? Date.now();
+  let restored = 0, existing = 0, message: string | undefined;
+  (interaction.comments ?? []).forEach((comment, index) => {
+    const result = store.put({ id: comment.id, open: false, queuedAt: now + index, position: options.position(comment.anchor), compose: {
+      kind: "question", text: comment.text, ...(comment.anchor ? { anchor: comment.anchor } : {}), ...(options.expectedCreatedAt ? { expectedCreatedAt: options.expectedCreatedAt } : {}),
+    } }, null);
+    if (result.ok) restored++;
+    else if (result.issue.code === "conflict") existing++;
+    else message ??= result.issue.message;
+  });
+  return { restored, existing, ...(message ? { message } : {}) };
+}
 /** A receipt only retires the exact captured revisions, never later edits. */
 export function reconcileBatchDrafts(batch: CommentBatch, store: DraftStore): Result {
   for (const source of batch.drafts) {

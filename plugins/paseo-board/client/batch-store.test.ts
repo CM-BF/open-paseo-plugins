@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DraftStorage, StoredDraft } from "./draft-store";
 import { createDraftStore } from "./draft-store";
-import { acceptedBatchInteraction, createBatchStore, createCommentBatch, prepareCommentBatch, queuedDrafts, reconcileBatchDrafts } from "./batch-store";
+import { acceptedBatchInteraction, createBatchStore, createCommentBatch, prepareCommentBatch, queuedDrafts, reconcileBatchDrafts, restoreBatchComments } from "./batch-store";
 import { withBatchPreparationLock, type BatchLockManager } from "./batch-lock-web";
 import type { Interaction } from "../shared/contracts";
 
@@ -14,6 +14,25 @@ function memory() {
 function draft(id: string, queuedAt = 1): StoredDraft {
   return { id, revision: `${id}-revision`, updatedAt: 3, open: false, queuedAt, position: { x: 1, y: 2 }, compose: { kind: "question", text: `Comment ${id}`, anchor: { kind: "element", boardRevision: 3, canvasRevision: 2, selector: `#${id}`, image: { mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" } } } };
 }
+describe("restoring a grouped Side that was never created", () => {
+  it("puts the frozen comments back into the queue once, in order, with their locations and the Board identity", () => {
+    const { storage } = memory(), drafts = createDraftStore(scope, storage);
+    const one = draft("one"), two = { ...draft("two"), compose: { kind: "question" as const, text: "Comment two" } };
+    const comments = [{ id: one.id, text: one.compose.text, anchor: one.compose.anchor }, { id: two.id, text: two.compose.text }];
+    const position = (anchor?: { selector?: string }) => anchor ? { x: 10, y: 20 } : { x: 24, y: 24 };
+    expect(restoreBatchComments(drafts, { comments }, { expectedCreatedAt: "entity-one", position, now: 100 })).toEqual({ restored: 2, existing: 0 });
+    const queued = queuedDrafts(drafts.list().drafts, []);
+    expect(queued.map(item => [item.id, item.compose.text, item.queuedAt, item.compose.expectedCreatedAt, item.position])).toEqual([["one", "Comment one", 100, "entity-one", { x: 10, y: 20 }], ["two", "Comment two", 101, "entity-one", { x: 24, y: 24 }]]);
+    expect(queued[0].compose.anchor?.selector).toBe("#one"); expect(queued[0].compose.anchor?.image?.mimeType).toBe("image/png");
+    expect(queued.every(item => !item.compose.intentId && !item.compose.destination && !item.compose.sideContext && !item.open)).toBe(true);
+    // A second press while the drafts still exist adds nothing.
+    expect(restoreBatchComments(drafts, { comments }, { expectedCreatedAt: "entity-one", position, now: 200 })).toEqual({ restored: 0, existing: 2 });
+    expect(drafts.list().drafts).toHaveLength(2);
+    // The restored queue forms a new batch that the user can send again (here to a new Side).
+    expect(createCommentBatch(queued, "again", "new-side", "entity-one", "owner-history")).toMatchObject({ destination: "new-side", sideContext: "owner-history", comments: [{ id: "one" }, { id: "two" }] });
+  });
+});
+
 describe("durable comment batch", () => {
   it("retains the source entity in an immutable outbox and refuses mixed replacement comments", () => {
     const { storage } = memory(), store = createBatchStore(scope, storage);

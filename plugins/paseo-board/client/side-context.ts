@@ -5,8 +5,21 @@ import { browserDraftStorage } from "./draft-storage-web";
 /** One local UI preference per host and Board; only the non-default choice is stored. */
 export const SIDE_CONTEXT_PREFIX = "@paseo:board-side-context:v1:";
 export const SIDE_CONTEXT_LABELS: Record<SideContext, string> = { blank: "空白 Side", "owner-history": "带主 agent 记录" };
+/** Full scope, shown on hover/focus of the 带主 agent 记录 option and read by screen readers; the visible note stays one line. */
 export const SIDE_CONTEXT_SCOPE = "冻结主 agent 当前对话（含 Board 回复和工具名，不含工具输出和思考），过长只带最近部分；仅作背景参考。";
-export const sideContextExisting = (action = "Side 发送") => `「${action}」进入已有旁支，不受此项影响；新建 Side 时才按此项。`;
+/** One visible line under the choice, only when 带主 agent 记录 is chosen (blank needs no explanation). */
+export const SIDE_CONTEXT_NOTE = "新 Side 会带上主 agent 最近的对话，仅作背景参考。";
+/** Replaces SIDE_CONTEXT_NOTE while a Side exists, so sending to it is not mistaken for passing it history. */
+export const SIDE_CONTEXT_NOTE_EXISTING = "只有新建的 Side 带上记录；已有旁支不变。";
+export const SIDE_CONTEXT_FROZEN_NOTE = "重试沿用原发送的选择，不会改变。";
+export function sideContextNotes(value: SideContext, options: { frozen: boolean; sideExists: boolean }): string[] {
+  if (options.frozen) return [SIDE_CONTEXT_FROZEN_NOTE];
+  return value === "owner-history" ? [options.sideExists ? SIDE_CONTEXT_NOTE_EXISTING : SIDE_CONTEXT_NOTE] : [];
+}
+/** The value every new-Side control shows and the hotkeys use: a retry keeps its frozen choice, a new send uses the preference. */
+export function visibleSideContext(compose: { intentId?: string; sideContext?: SideContext }, preference: SideContext): SideContext {
+  return compose.intentId ? compose.sideContext ?? "blank" : preference;
+}
 
 export interface SideContextStore { read(): SideContext; write(value: SideContext): void }
 // Hermes has no browser storage and writes can fail (quota, SecurityError): keep the
@@ -38,14 +51,28 @@ export function createSideContextStore(scope: { hostId: string; boardId: string 
   };
 }
 
-type ProvenanceSource = Pick<Interaction, "kind" | "status" | "sideContext" | "inheritedHistory">;
-const STATE_NOTES = { frozen: " · 待送达", sent: "", uncertain: " · 未确认送达（这个 Side 可能没有拿到记录）", not_sent: " · 未送达（这个 Side 没有拿到记录）" } as const;
+type ProvenanceSource = Pick<Interaction, "kind" | "status" | "sideContext" | "inheritedHistory" | "sideNotCreated">;
+// Delivery warnings come right after the label: a two-line clamp (Side picker, narrow widths) must never cut them off.
+const STATE_NOTES = { frozen: "待送达", sent: "", uncertain: "未确认送达（这个 Side 可能没有拿到记录）", not_sent: "未送达（这个 Side 没有拿到记录）" } as const;
+const historyOf = (item: ProvenanceSource) => item.kind === "fork" && item.sideContext === "owner-history" ? { history: item.inheritedHistory } : undefined;
 /** Shown only for Sides created with history; blank Sides and legacy forks make no claim. */
 export function sideProvenance(item: ProvenanceSource): string | undefined {
-  if (item.kind !== "fork" || item.sideContext !== "owner-history") return undefined;
-  const history = item.inheritedHistory;
-  if (!history) return item.status === "failed" ? "带主 agent 记录 · 未建立（没有创建 Side）" : "带主 agent 记录 · 读取中";
+  const found = historyOf(item);
+  if (!found) return undefined;
+  const history = found.history;
+  if (item.sideNotCreated || !history) return item.sideNotCreated || item.status === "failed" ? "带主 agent 记录 · 未建立（没有创建 Side）" : "带主 agent 记录 · 读取中";
+  // A frozen snapshot on a failed item is a create whose result is still being reconciled.
+  const state = history.state === "frozen" && item.status === "failed" ? "创建结果待核对" : STATE_NOTES[history.state];
   const amount = history.entries === 0 && !history.omitted ? "主 agent 暂无可带的记录"
     : history.omitted ? `最近 ${history.messages} 条消息 · 更早的未带上` : `${history.messages} 条消息`;
-  return `带主 agent 记录 · ${amount}${history.ownerBusy ? " · 含主 agent 进行中的一轮" : ""}${STATE_NOTES[history.state]}`;
+  return ["带主 agent 记录", state, amount, history.ownerBusy ? "含主 agent 进行中的一轮" : ""].filter(Boolean).join(" · ");
+}
+/** A few characters for the always-visible discussion rail; undefined for blank Sides and Sides never created. */
+export function sideHistoryTag(item: ProvenanceSource): string | undefined {
+  const found = historyOf(item);
+  if (!found) return undefined;
+  const state = found.history?.state;
+  if (item.sideNotCreated || !found.history) return item.sideNotCreated || item.status === "failed" ? undefined : "带记录";
+  if (state === "frozen" && item.status === "failed") return "创建待核对";
+  return state === "uncertain" ? "记录未确认" : state === "not_sent" ? "未带上记录" : "带记录";
 }

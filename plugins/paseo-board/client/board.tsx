@@ -24,12 +24,12 @@ import { BoardConnectionStatus } from "./connection-status";
 import { createStateWriter } from "./state-writer";
 import { createDraftStore, type StoredDraft } from "./draft-store";
 import { acceptedDraftInteraction } from "./message-draft";
-import { acceptedBatchInteraction, batchContainsDraft, createBatchStore, createCommentBatch, prepareCommentBatch, queuedDrafts, reconcileBatchDrafts, type CommentBatch } from "./batch-store";
+import { acceptedBatchInteraction, batchContainsDraft, createBatchStore, createCommentBatch, prepareCommentBatch, queuedDrafts, reconcileBatchDrafts, restoreBatchComments, type CommentBatch } from "./batch-store";
 import { readBoardView, writeBoardView, retainBoardViewStore, flushBoardViewStore } from "./view-store";
 import { DiscussionRail } from "./discussion-rail";
 import { SideAgentPicker } from "./side-agent-picker";
-import { SideContextChoice } from "./side-context-choice";
-import { SIDE_CONTEXT_LABELS, SIDE_CONTEXT_SCOPE, createSideContextStore, sideContextExisting, sideProvenance } from "./side-context";
+import { SideContextChoice, type SideContextChange } from "./side-context-choice";
+import { SIDE_CONTEXT_LABELS, createSideContextStore, sideContextNotes, sideHistoryTag, sideProvenance, visibleSideContext } from "./side-context";
 import { useUpdateNavigation } from "./update-navigation";
 import { CompositionSourceSync, CompositionSourcesPanel, useCompositionSources } from "./composition-sources";
 import { CompositionEmbeds } from "./composition-view";
@@ -380,10 +380,18 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
   };
   // A Side that failed before creation has no agent to continue with: start a new send with the same words and location.
   const resendFailed = (item: Interaction) => {
-    if (pending.current || composeRef.current || item.comments) return;
+    if (pending.current || composeRef.current || item.comments || !item.sideNotCreated) return;
     const draft: Compose = { kind: "question", text: item.text, anchor: item.anchor };
     setSelectedInteractionId(undefined); setPopoverPoint(anchorPoint(draft.anchor)); setMessage(null);
     changeCompose(draft, anchorPoint(draft.anchor)); setInputFocusToken(value => value + 1);
+  };
+  // A grouped Side that failed before creation: its comments go back to the pending queue to be sent again.
+  const restoreFailedComments = (item: Interaction) => {
+    if (pending.current || composeRef.current || !item.comments || !item.sideNotCreated || !board) return;
+    const result = restoreBatchComments(draftStore, item, { expectedCreatedAt: board.createdAt, position: anchorPoint });
+    setSelectedInteractionId(undefined); setMessage(null);
+    if (result.message) setBatchError(result.message);
+    setDrawer("drafts");
   };
   const submit = async (destination: Destination = "main") => {
     const draft = composeRef.current;
@@ -474,14 +482,19 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
     setDrawer("drafts");
     await submitBatch("main", undefined, reviewed.map(({ id, revision }) => ({ id, revision })));
   };
-  const chooseSideContext = (value: SideContext) => {
-    setSideContext(value); sideContexts.write(value);
-    // Keep Option/Alt+Enter working after a click: return focus to the message input.
-    if (composeRef.current) setInputFocusToken(next => next + 1);
+  const chooseSideContext: SideContextChange = (value, options = {}) => {
+    if (value !== sideContext) { setSideContext(value); sideContexts.write(value); }
+    // Keep Option/Alt+Enter working after a click, including a click on the already-checked option:
+    // return focus to the message input. Arrow keys inside the radio group keep focus there.
+    if (composeRef.current && !options.keepFocus) setInputFocusToken(next => next + 1);
   };
   const sideExists = Boolean(board?.sideAgentId || board?.pendingSideInteractionId);
-  const sideContextNotes = (value: SideContext, frozen: boolean, existingAction?: string) => frozen ? ["重试沿用原发送的选择，不会改变。"]
-    : [...(value === "owner-history" ? [SIDE_CONTEXT_SCOPE] : []), ...(sideExists ? [sideContextExisting(existingAction)] : [])];
+  // A retry shows (and its hotkeys use) its frozen choice; a new send uses the per-Board preference.
+  const composeSideContext = compose ? visibleSideContext(compose, sideContext) : sideContext;
+  const sideTags = useMemo(() => new Map(interactions.flatMap(item => {
+    const tag = sideHistoryTag(item);
+    return tag ? [[item.id, { tag, description: sideProvenance(item) ?? tag }] as const] : [];
+  })), [interactions]);
   const releaseSideChoice = () => {
     sideChoicePending.current = false; setChoosingSide(false); setSideChoiceUncertain(false);
     if (composeRef.current) setInputFocusToken(value => value + 1);
@@ -595,36 +608,43 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
         <View style={{ flexDirection: "row", alignItems: "center", padding: 8, gap: 8, borderBottomWidth: 1, borderColor: c.border }}><Text style={{ color: c.foreground, fontWeight: "600", flex: 1 }}>{compose ? "发给 agent" : "这里的讨论"}</Text>{compose ? <Action testID="board-draft-dismiss" label="收起" disabled={sending} onPress={closePopover} /> : !canRenderFrames ? <Action label="关闭" disabled={sending} onPress={closePopover} /> : null}</View>
         <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ padding: 12, gap: 16 }} keyboardShouldPersistTaps="handled">
           {interactionLocation && interactionLocation.id === selectedInteractionId && interactionLocation.location !== "component" ? <Copy small muted>{({ collapsed: "组件当前不可见 · 标记跟随可见外层", ancestor: "原内容不可见 · 标记暂随可见外层", hidden: "组件当前隐藏 · 可从侧栏请求定位", snapshot: "未定位到当前组件 · 可查看原始引用" })[interactionLocation.location]}</Copy> : null}
-          {thread.map(item => <InteractionContent key={item.id} item={item} board={board} frameTheme={frameTheme} unconfirmed={!board.interactions.some(saved => saved.id === item.id)} onLocate={id => locateInteraction(interactionMarkerId(item.id, id))} onRetry={() => retryUnconfirmed(item)} onResend={() => resendFailed(item)} onFollow={(kind, text, resolve) => openCompose(kind, item, text, resolve)} onOpenAgent={() => { if (item.agentId && navigation) navigation.openAgent({ agentId: item.agentId, serverId: host.id }); }} />)}
+          {thread.map(item => <InteractionContent key={item.id} item={item} board={board} frameTheme={frameTheme} unconfirmed={!board.interactions.some(saved => saved.id === item.id)} onLocate={id => locateInteraction(interactionMarkerId(item.id, id))} onRetry={() => retryUnconfirmed(item)} onResend={() => resendFailed(item)} onRestoreComments={() => restoreFailedComments(item)} onFollow={(kind, text, resolve) => openCompose(kind, item, text, resolve)} onOpenAgent={() => { if (item.agentId && navigation) navigation.openAgent({ agentId: item.agentId, serverId: host.id }); }} />)}
           {compose ? <View style={{ gap: 10 }}>
             {!thread.length ? <AnchorPreview anchor={compose.anchor} compact captureStatus={compose.captureStatus} /> : null}
             {compose.captureStatus ? <View style={{ minHeight: 36 }}><Copy small muted>{compose.captureStatus === "pending" ? "截图准备中；现在发送会保留文字和位置，不附图片。" : compose.captureStatus === "failed" ? `截图失败：${captureFailureNames[compose.captureFailureReason ?? "generation-failed"]}文字和位置已保留。` : compose.captureStatus === "omitted" ? "此次发送不附图片，保留原来的文字和位置。" : "已附选区截图。"}</Copy></View> : null}
             {compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? <Copy small muted>引用来自旧画布版本；agent 会对照原来的位置和快照。</Copy> : null}
             <SideAgentPicker interactions={board.interactions} selectedId={board.sideAgentId} pending={Boolean(board.pendingSideInteractionId)} disabled={sending || sideTargetBlocked || Boolean(compose.intentId)} onSelect={chooseSideAgent} />
-            {compose.intentId && compose.destination === "main" ? null : <SideContextChoice value={compose.intentId ? compose.sideContext ?? "blank" : sideContext} disabled={sending || sideTargetBlocked || Boolean(compose.intentId)} notes={sideContextNotes(compose.intentId ? compose.sideContext ?? "blank" : sideContext, Boolean(compose.intentId))} onChange={chooseSideContext} />}
+            {compose.intentId && compose.destination === "main" ? null : <SideContextChoice value={composeSideContext} disabled={sending || sideTargetBlocked || Boolean(compose.intentId)} notes={sideContextNotes(composeSideContext, { frozen: Boolean(compose.intentId), sideExists })} onChange={chooseSideContext} />}
             {canRenderFrames ? <WebMessageInput value={compose.text} focusToken={inputFocusToken} disabled={sending || sideTargetBlocked} onChange={changeDraftText} onStage={stageMessage} onSubmit={destination => { void (destination === "main" ? submitMain() : submit(destination)); }} onClose={closePopover} placeholder="想了解什么？或希望这里发生什么变化？" style={{ color: c.foreground, background: c.surface1, border: `1px solid ${c.border}`, borderRadius: 8, padding: 10, minHeight: 80, fontSize: 14 }} /> : <TextInput autoFocus accessibilityLabel="发给 agent 的消息" value={compose.text} editable={!sending && !sideTargetBlocked} multiline maxLength={24000} onChangeText={changeDraftText} placeholder="想了解什么？或希望这里发生什么变化？" placeholderTextColor={c.foregroundMuted} style={{ color: c.foreground, backgroundColor: c.surface1, borderColor: c.border, borderWidth: 1, borderRadius: 8, padding: 10, minHeight: 80, textAlignVertical: "top" }} />}
             {draftError ? <Notice error text={`草稿未能保存在本机：${draftError} 当前输入仍保留，请先复制文字。`} /> : <Copy small muted>草稿保存在本机；收起或断线后可继续编辑。</Copy>}
             {!board.ownerAgentId ? <Notice error text="这块 Board 尚未关联负责的 agent。请让 agent 接管后再发送。" /> : null}
-            {message ? <Notice error text={message} /> : null}
-            {sideChoiceUncertain ? <Action label={choosingSide ? "正在核对 Side 目标…" : "核对 Side 目标"} disabled={choosingSide} onPress={() => { void verifySideChoice().then(confirmed => { if (confirmed) setMessage(null); }); }} /> : null}
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            {compose.intentId ? <Copy small muted>重试只沿原目标继续，不合并待发送评论；Enter 不会重新暂存。修改文字会另存新草稿，原发送仍保留待核对。</Copy> : null}
+            {!compose.intentId && !compose.sourceInteractionId ? <Copy small muted>加入待发送后可继续评论其他位置，再从待发送清单一起发送。{compose.captureStatus === "pending" ? "现在加入会保留文字和位置，不附图片。" : ""}</Copy> : null}
+            <Copy small muted>{compose.sourceInteractionId ? "Enter 保存追问草稿 · ⌘ / Ctrl + Enter 发送追问（须先处理待发送评论）" : "Enter 加入待发送 · ⌘ / Ctrl + Enter 当前评论和待发送评论一起发主会话"}
+Option / Alt + Enter 当前评论发 Side · Option / Alt + Shift + Enter 新 Side（{composeSideContext === "owner-history" ? "带主 agent 记录" : "空白"}）· Shift+Enter 换行</Copy>
+          </View> : null}
+        </ScrollView>
+        {compose ? <View testID="board-compose-actions" style={{ paddingHorizontal: 12, paddingTop: 10, paddingBottom: 12, gap: 8, borderTopWidth: 1, borderColor: c.border }}>
+          {/* The send row is a footer outside the scroller: a long thread, anchor preview or note can never push it out of view. */}
+          {message ? <Notice error text={message} /> : null}
+          {sideChoiceUncertain ? <Action label={choosingSide ? "正在核对 Side 目标…" : "核对 Side 目标"} disabled={choosingSide} onPress={() => { void verifySideChoice().then(confirmed => { if (confirmed) setMessage(null); }); }} /> : null}
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", flexShrink: 1, maxWidth: "100%" }}>
               <Action testID="board-draft-discard" label="丢弃草稿" disabled={sending} onPress={discardCompose} />
               {!compose.intentId && !compose.sourceInteractionId ? <Action testID="board-comment-stage" label={compose.queuedAt !== undefined ? "保存到待发送" : "加入待发送"} disabled={sending || !compose.text.trim()} onPress={stageCompose} /> : null}
+            </View>
+            <View testID="board-compose-send" style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", flexShrink: 1, maxWidth: "100%" }}>
               {compose.intentId ? <Action label={sending ? "发送中…" : "重试原发送"} disabled={sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId} primary onPress={() => { void submit(compose.destination ?? "main"); }} /> : <>
                 <Action label={board.sideAgentId || board.pendingSideInteractionId ? "Side 发送" : "新建 Side 并发送"} icon="GitBranch" disabled={sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId} onPress={() => { void submit("side"); }} />
                 {board.sideAgentId || board.pendingSideInteractionId ? <Action testID="board-compose-new-side" label="新建 Side 并发送" disabled={sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId} onPress={() => { void submit("new-side"); }} /> : null}
                 <Action label={staged.some(item => item.id !== compose.draftId) ? "主会话统一发送" : "主会话发送"} disabled={sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId} primary onPress={() => { void submitMain(); }} />
               </>}
             </View>
-            {compose.intentId ? <Copy small muted>重试只沿原目标继续，不合并待发送评论；Enter 不会重新暂存。修改文字会另存新草稿，原发送仍保留待核对。</Copy> : null}
-            {!compose.intentId && !compose.sourceInteractionId ? <Copy small muted>加入待发送后可继续评论其他位置，再从待发送清单一起发送。{compose.captureStatus === "pending" ? "现在加入会保留文字和位置，不附图片。" : ""}</Copy> : null}
-            <Copy small muted>{compose.sourceInteractionId ? "Enter 保存追问草稿 · ⌘ / Ctrl + Enter 发送追问（须先处理待发送评论）" : "Enter 加入待发送 · ⌘ / Ctrl + Enter 当前评论和待发送评论一起发主会话"}
-Option / Alt + Enter 当前评论发 Side · Option / Alt + Shift + Enter 新 Side（{sideContext === "owner-history" ? "带主 agent 记录" : "空白"}）· Shift+Enter 换行</Copy>
-          </View> : null}
-        </ScrollView>
+          </View>
+        </View> : null}
       </BoardComposerSurface> : null}
     </View>
-    {canRenderFrames && !embedded ? <DiscussionRail markers={markers} compact={stageWidth < 720} selectedId={selectedInteractionId} disabled={sending || Boolean(compose)} statusNames={statusNames} onOpen={locateInteraction} /> : null}
+    {canRenderFrames && !embedded ? <DiscussionRail markers={markers} tags={sideTags} compact={stageWidth < 720} selectedId={selectedInteractionId} disabled={sending || Boolean(compose)} statusNames={statusNames} onOpen={locateInteraction} /> : null}
     </View>
     {!embedded ? <View style={{ paddingHorizontal: 12, paddingVertical: 5, borderTopWidth: 1, borderColor: c.border, flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}><BoardConnectionStatus status={query.error ? "disconnected" : query.liveStatus} /><Copy small muted>r{board.revision} · {timeLabel(board.updatedAt)}</Copy></View>
@@ -666,7 +686,7 @@ Option / Alt + Enter 当前评论发 Side · Option / Alt + Shift + Enter 新 Si
             </View>
           </View>)}
           <SideAgentPicker interactions={board.interactions} selectedId={board.sideAgentId} pending={Boolean(board.pendingSideInteractionId)} disabled={sending || sideTargetBlocked} onSelect={chooseSideAgent} />
-          <SideContextChoice testID="board-batch-side-context" value={sideContext} disabled={sending || sideTargetBlocked} notes={sideContextNotes(sideContext, false, "统一发送到 Side")} onChange={chooseSideContext} />
+          <SideContextChoice testID="board-batch-side-context" value={sideContext} disabled={sending || sideTargetBlocked} notes={sideContextNotes(sideContext, { frozen: false, sideExists })} onChange={chooseSideContext} />
           {sideChoiceUncertain ? <Action label={choosingSide ? "正在核对 Side 目标…" : "核对 Side 目标"} disabled={choosingSide} onPress={() => { void verifySideChoice(); }} /> : null}
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             <Action testID="board-comments-send-main" label="统一发送到主会话" primary disabled={sending || sideTargetBlocked || !board.ownerAgentId} onPress={() => { void submitBatch("main"); }} />
@@ -712,9 +732,9 @@ Option / Alt + Enter 当前评论发 Side · Option / Alt + Shift + Enter 新 Si
   </View>;
 }
 
-function InteractionContent({ item, board, frameTheme, onFollow, onOpenAgent, unconfirmed, onRetry, onResend, onLocate }: {
+function InteractionContent({ item, board, frameTheme, onFollow, onOpenAgent, unconfirmed, onRetry, onResend, onRestoreComments, onLocate }: {
   item: Interaction; board: Board; frameTheme: FrameTheme;
-  onFollow(kind: Compose["kind"], text?: string, resolve?: Compose["resolve"]): void; onOpenAgent(): void; unconfirmed: boolean; onRetry(): void; onResend(): void; onLocate(commentId: string): void;
+  onFollow(kind: Compose["kind"], text?: string, resolve?: Compose["resolve"]): void; onOpenAgent(): void; unconfirmed: boolean; onRetry(): void; onResend(): void; onRestoreComments(): void; onLocate(commentId: string): void;
 }) {
   const c = useColors();
   const discussion = item.kind === "fork" || item.kind === "reply";
@@ -746,7 +766,10 @@ function InteractionContent({ item, board, frameTheme, onFollow, onOpenAgent, un
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
       {item.anchor || item.comments?.some(comment => comment.anchor) ? <Action label={showSnapshot ? "收起原始引用" : "原始引用"} onPress={() => setShowSnapshot(value => !value)} /> : null}
       {unconfirmed && item.status === "failed" ? <Action label="重试发送" onPress={onRetry} /> : null}
-      {!unconfirmed && item.kind === "fork" && item.status === "failed" && !item.agentId && !item.comments ? <Action testID={`board-resend-${item.id}`} label="重新编辑发送" onPress={onResend} /> : null}
+      {/* Only a journal-confirmed uncreated fork (sideNotCreated) can be sent again without risking a duplicate Side. */}
+      {!unconfirmed && item.kind === "fork" && item.status === "failed" && !item.agentId && item.sideNotCreated ? item.comments
+        ? <Action testID={`board-restore-comments-${item.id}`} label="放回待发送" onPress={onRestoreComments} />
+        : <Action testID={`board-resend-${item.id}`} label="重新编辑发送" onPress={onResend} /> : null}
       {!unconfirmed && (!discussion || item.agentId) ? <Action label="继续交流" onPress={() => follow()} /> : null}
       {item.agentId ? <Action label="会话" onPress={onOpenAgent} /> : null}
     </View>
