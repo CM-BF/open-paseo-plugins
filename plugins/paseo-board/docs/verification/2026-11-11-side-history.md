@@ -28,6 +28,26 @@ Additional host scopes (`toolbar`, `drafts`, `batch`, `modal`, `inbox`, `resume`
 
 Private evidence: `$PASEO_HOME/verification/paseo-board/glass-fork-20261111/` (`IMPL-FORK.md`, `logs/final/`, `fork-shots/`).
 
+## Review fixes (code head `8b87d27`)
+
+- The composer's send buttons are a footer outside its scroller. With a Side present and 带主 agent 记录 chosen, 丢弃草稿 / 加入待发送 / Side 发送 / 新建 Side 并发送 / 主会话发送 are hit-testable without scrolling at 1440, 1024, 420 and 320 px (also without a Side, and in the non-web compatible composer at 420/320). The note under the choice is one line, only for 带主 agent 记录; the full scope is on the option's tooltip and accessibility hint.
+- The hotkey hint follows the visible (frozen on retry) choice; pressing the checked option returns focus to the input; on the web the choice is a radio group with one Tab stop and arrow/Home/End keys.
+- Provenance puts delivery warnings first; the discussion rail tags history Sides. 重新编辑发送 (and 放回待发送 for grouped sends) appears only when the service marks `sideNotCreated` (journal-confirmed: no create call), never while a create result is pending reconciliation.
+- The attachment starts with `[Earlier chat history omitted]` whenever older rows were not read (page, size or time guard, or a daemon window gap), not only when the curated text overflows. Board answers count as entries, not messages.
+
+| Check | Exit | Result |
+| --- | --- | --- |
+| `npm run typecheck` | 0 | |
+| `npx vitest run --maxWorkers=4 --exclude server/inbox-sync.test.ts` | 0 | 822 tests in 52 files |
+| `npx vitest run server/inbox-sync.test.ts --maxWorkers=1` | 0 | 10 tests |
+| `npm run test:browser` | 0 | 118 checks |
+| `npm run test:host` | 0 | 56 checks (38 existing + 18 new-Side flows) |
+| `npm run test:release` / `npm run test:release-host` | 0 / 0 | 30 / 38 checks |
+| host scopes toolbar, drafts, batch, modal, inbox, resume | 0 each | 5, 14, 13, 3, 7, 19 checks |
+| rebuild client and worker, `git status --porcelain` | 0 | byte-identical; `app-runtime.txt` inputs unchanged |
+
+The golden comparison against the read-only `4f88cd7` checkout still finds the 5 blank-mode prompt shapes and the Side system prompt byte-identical.
+
 ## Not verified
 
 The browser host harness adapts Paseo transport and native primitives; service tests use a fake SDK. Nothing was installed, no plugin was reloaded, no real agent received a history attachment, and no physical phone or Hermes build was exercised. Whether a third-party (plugin-registered) provider renders text attachments cannot be checked through the public API. The Side's own Paseo session shows no "Previous conversation" pill because the daemon does not persist attachment metadata on user messages.
