@@ -1230,7 +1230,10 @@ describe("Side creation with the owner's history", () => {
     sdk.create.mockRejectedValueOnce(new Error("create response lost"));
     await historySide("fork-lost"); await service.drain();
     expect(journal.get("board/fork-lost")).toMatchObject({ state: "creating", history: { text: expect.stringContaining("Before the snapshot") } });
-    expect((await interaction("fork-lost")).inheritedHistory).toMatchObject({ state: "frozen" });
+    // The create result is pending reconciliation: the Board must not offer a fresh send that could duplicate this Side.
+    const limbo = await interaction("fork-lost");
+    expect(limbo).toMatchObject({ status: "failed", inheritedHistory: { state: "frozen" } }); expect(limbo.agentId).toBeUndefined();
+    expect(limbo.sideNotCreated).toBeUndefined(); expect((await store.read("board"))!.pendingSideInteractionId).toBe("fork-lost");
     const firstText = journal.get("board/fork-lost")!.history!.text!, captures = captureCalls().length;
     sdk.append("owner", { type: "assistant_message", text: "AFTER_THE_SNAPSHOT" });
     await restart(); await service.reconcile(); await service.drain();
@@ -1238,6 +1241,20 @@ describe("Side creation with the owner's history", () => {
     expect(captureCalls()).toHaveLength(captures);
     expect(attachment()!.text).toBe(firstText); expect(firstText).not.toContain("AFTER_THE_SNAPSHOT");
     expect((await interaction("fork-lost")).inheritedHistory).toMatchObject({ state: "sent" });
+  });
+
+  it("marks only a journal-confirmed uncreated fork as not created, never a blank one whose create result is pending", async () => {
+    sdk.create.mockRejectedValueOnce(new Error("transient daemon error"));
+    await service.interact({ boardId: "board", intentId: "blank-limbo", kind: "question", destination: "new-side", text: "Blank limbo" }); await service.drain();
+    expect(journal.get("board/blank-limbo")!.state).toBe("creating");
+    const limbo = await interaction("blank-limbo");
+    expect(limbo).toMatchObject({ status: "failed", error: expect.stringContaining("讨论分支创建结果待核对") });
+    expect(limbo.sideNotCreated).toBeUndefined(); expect(limbo.agentId).toBeUndefined();
+    // Reconciliation finishes the original creation with the same idempotency key; the marker never appears.
+    await service.reconcile(); await service.drain();
+    const created = await interaction("blank-limbo");
+    expect(created.agentId).toBe("fork-agent"); expect(created.sideNotCreated).toBeUndefined();
+    expect(sdk.create).toHaveBeenCalledTimes(2); expect(sdk.create.mock.calls[1][0]).toEqual(sdk.create.mock.calls[0][0]);
   });
 
   it("sends the same frozen text after assignFork when the new Side was busy across a restart", async () => {
@@ -1258,7 +1275,7 @@ describe("Side creation with the owner's history", () => {
     await historySide("fork-gone", "side"); await service.drain();
     expect(sdk.create).not.toHaveBeenCalled(); expect(sdk.sends).toEqual([]);
     const failed = await interaction("fork-gone");
-    expect(failed).toMatchObject({ status: "failed", sideContext: "owner-history" }); expect(failed.inheritedHistory).toBeUndefined();
+    expect(failed).toMatchObject({ status: "failed", sideContext: "owner-history", sideNotCreated: true }); expect(failed.inheritedHistory).toBeUndefined();
     expect(failed.error).toContain("没有改成空白 Side"); expect(failed.error).toContain("请重新发送");
     expect((await store.read("board"))!.pendingSideInteractionId).toBeUndefined(); expect(journal.sideRoute("board")!.pendingInteractionId).toBeUndefined();
   });
@@ -1268,7 +1285,7 @@ describe("Side creation with the owner's history", () => {
     sdk.pageHooks.set("owner", (options) => options.projection === "projected" ? { entries: [], epoch: "epoch-1", reset: false, staleCursor: false, hasOlder: false, hasNewer: false, startCursor: null, endCursor: null, error: "timeline unavailable" } as unknown as TimelinePage : undefined);
     await historySide("fork-error", "side"); await service.drain();
     expect(sdk.create).not.toHaveBeenCalled();
-    expect((await interaction("fork-error")).error).toContain("读取主 agent 记录失败：timeline unavailable");
+    expect(await interaction("fork-error")).toMatchObject({ status: "failed", sideNotCreated: true, error: expect.stringContaining("读取主 agent 记录失败：timeline unavailable") });
     expect((await store.read("board"))!.pendingSideInteractionId).toBeUndefined();
     sdk.pageHooks.delete("owner");
     expect(await historySide("fork-retry", "side")).toMatchObject({ kind: "fork" }); await service.drain();
@@ -1281,7 +1298,7 @@ describe("Side creation with the owner's history", () => {
     await service.selectSideAgent({ boardId: "board", agentId: "earlier-side", expectedRevision: (await store.read("board"))!.revision, eventId: "choose-earlier" });
     sdk.snapshots.set("owner", { ...sdk.snapshots.get("owner")!, archivedAt: "2026-11-11T00:00:00.000Z" } as Snapshot);
     await service.interact({ boardId: "board", intentId: "blank-gone", kind: "question", destination: "new-side", text: "Blank but owner gone" }); await service.drain();
-    expect((await interaction("blank-gone")).error).toBe("负责人已归档或不可用，无法创建讨论分支。");
+    expect(await interaction("blank-gone")).toMatchObject({ error: "负责人已归档或不可用，无法创建讨论分支。", sideNotCreated: true });
     const board = (await store.read("board"))!; expect(board.pendingSideInteractionId).toBeUndefined(); expect(board.sideAgentId).toBe("earlier-side");
   });
 

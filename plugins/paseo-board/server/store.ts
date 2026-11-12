@@ -17,13 +17,13 @@ import { summarizeBoard, sortBoardSummaries, type BoardCommitNotice } from "./bo
 import { ComponentSourceMismatch, prepareComponentPatch, validateHtmlPatchRoots } from "./authored-source";
 
 export { BoardStoreError } from "./store-format";
-export type InteractionUpdate = Partial<Pick<Interaction, "status" | "agentId" | "response" | "responseRevision" | "responseSource" | "responseMethod" | "responseCanvas" | "resultReferences" | "error" | "inheritedHistory">>;
+export type InteractionUpdate = Partial<Pick<Interaction, "status" | "agentId" | "response" | "responseRevision" | "responseSource" | "responseMethod" | "responseCanvas" | "resultReferences" | "error" | "inheritedHistory" | "sideNotCreated">>;
 type DecisionUpdateInput = z.input<typeof DecisionUpdateInputSchema>;
 type StateInput = z.input<typeof StateInputSchema>;
 type Mutation = (board: Board, at: string) => void;
 
 // Updates do not change request context; omit its cross-field refinements here.
-const InteractionUpdateSchema = z.object(InteractionSchema.shape).pick({ status: true, agentId: true, response: true, responseRevision: true, responseSource: true, responseMethod: true, responseCanvas: true, resultReferences: true, error: true, inheritedHistory: true }).partial();
+const InteractionUpdateSchema = z.object(InteractionSchema.shape).pick({ status: true, agentId: true, response: true, responseRevision: true, responseSource: true, responseMethod: true, responseCanvas: true, resultReferences: true, error: true, inheritedHistory: true, sideNotCreated: true }).partial();
 const transitions: Record<Interaction["status"], readonly Interaction["status"][]> = {
   saved: ["sending", "delivered", "processing", "answered", "applied", "rejected", "failed"],
   sending: ["delivered", "processing", "answered", "applied", "rejected", "failed"],

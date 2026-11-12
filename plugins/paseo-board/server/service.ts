@@ -421,7 +421,7 @@ export class BoardService {
         if (!delivery.creationSpec) {
           const wantsHistory = delivery.input?.sideContext === "owner-history";
           const source = await paseo.agents.ref(delivery.ownerAgentId).refresh();
-          if (!source || source.agent.archivedAt) throw new Error(wantsHistory ? "主 agent 已归档或不可用，无法读取它的记录；没有创建 Side，也没有改成空白 Side。请重新发送（可在输入框改选「空白 Side」）。" : "负责人已归档或不可用，无法创建讨论分支。");
+          if (!source || source.agent.archivedAt) throw new Error(wantsHistory ? "主 agent 已归档或不可用，无法读取它的记录；没有创建 Side，也没有改成空白 Side。请重新发送（可改选「空白 Side」）。" : "负责人已归档或不可用，无法创建讨论分支。");
           const config = await discussionConfig(paseo, source.agent, { inheritedHistory: wantsHistory });
           // Snapshot moment: this first pass that persists the creation payload. It includes an
           // owner turn still in progress up to now; nothing later is ever added.
@@ -434,7 +434,7 @@ export class BoardService {
               history = captured;
               if (durationMs > 2000 || pages >= 10) this.log(`board side history ${board.id}/${interaction.id}: ${pages} pages in ${durationMs} ms, ${captured.messages} messages, omitted=${captured.omitted}`);
             } catch (error) {
-              throw new Error(`读取主 agent 记录失败：${describe(error)}。没有创建 Side，也没有改成空白 Side；请重新发送（可在输入框改选「空白 Side」）。`);
+              throw new Error(`读取主 agent 记录失败：${describe(error)}。没有创建 Side，也没有改成空白 Side；请重新发送（可改选「空白 Side」）。`);
             }
           }
           if (this.stopped) return;
@@ -547,7 +547,8 @@ export class BoardService {
     if (delivery.kind === "fork" && !delivery.targetAgentId && delivery.state === "saved" && stored?.state === "saved" && !stored.targetAgentId) {
       // No native agent was ever requested: release the Side reservation so the next Side send creates a fresh one.
       const failed = await this.journal.failUncreatedFork(key, error);
-      await this.updateDeliveryInteraction(failed, { status: "failed", error });
+      // Tells the Board a fresh send cannot duplicate a Side (unlike a create whose result is pending).
+      await this.updateDeliveryInteraction(failed, { status: "failed", error, sideNotCreated: true });
       await this.projectSideAgent(delivery.boardId, this.deliveryCreatedAt(failed));
       return;
     }

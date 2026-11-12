@@ -251,6 +251,12 @@ export const InteractionSchema = z.object({
   sourceSnapshot: SourceSnapshotSchema.optional(),
   sideContext: SideContextSchema.optional(),
   inheritedHistory: InheritedHistorySchema.optional(),
+  /**
+   * Set only when the service's journal confirms this fork failed before any Side agent was requested
+   * (no create call, reservation released). Only then can a fresh send not duplicate a Side; a fork whose
+   * create result is still pending reconciliation never carries it.
+   */
+  sideNotCreated: z.literal(true).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 }).superRefine(validateCommentContext);
