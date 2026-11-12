@@ -622,8 +622,8 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
             {!board.ownerAgentId ? <Notice error text="这块 Board 尚未关联负责的 agent。请让 agent 接管后再发送。" /> : null}
             {compose.intentId ? <Copy small muted>重试只沿原目标继续，不合并待发送评论；Enter 不会重新暂存。修改文字会另存新草稿，原发送仍保留待核对。</Copy> : null}
             {!compose.intentId && !compose.sourceInteractionId ? <Copy small muted>加入待发送后可继续评论其他位置，再从待发送清单一起发送。{compose.captureStatus === "pending" ? "现在加入会保留文字和位置，不附图片。" : ""}</Copy> : null}
-            <Copy small muted>{compose.sourceInteractionId ? "Enter 保存追问草稿 · ⌘ / Ctrl + Enter 发送追问（须先处理待发送评论）" : "Enter 加入待发送 · ⌘ / Ctrl + Enter 当前评论和待发送评论一起发主会话"}
-Option / Alt + Enter 当前评论发 Side · Option / Alt + Shift + Enter 新 Side（{composeSideContext === "owner-history" ? "带主 agent 记录" : "空白"}）· Shift+Enter 换行</Copy>
+            {/* JSX drops a bare line break after an expression, so the break between the two hint lines must be explicit. */}
+            <Copy small muted>{compose.sourceInteractionId ? "Enter 保存追问草稿 · ⌘ / Ctrl + Enter 发送追问（须先处理待发送评论）" : "Enter 加入待发送 · ⌘ / Ctrl + Enter 当前评论和待发送评论一起发主会话"}{"\n"}Option / Alt + Enter 当前评论发 Side · Option / Alt + Shift + Enter 新 Side（{composeSideContext === "owner-history" ? "带主 agent 记录" : "空白"}）· Shift+Enter 换行</Copy>
           </View> : null}
         </ScrollView>
         {compose ? <View testID="board-compose-actions" style={{ paddingHorizontal: 12, paddingTop: 10, paddingBottom: 12, gap: 8, borderTopWidth: 1, borderColor: c.border }}>

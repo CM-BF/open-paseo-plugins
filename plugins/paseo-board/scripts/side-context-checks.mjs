@@ -103,6 +103,13 @@ export async function runSideContextChecks({ assert, command, evaluate, until, f
     // The visible note is one line where the popover is wide enough (1024 and 420 px).
     const noteHeight = await evaluate(`[...document.querySelectorAll(${JSON.stringify(popover + ' span')})].find(s=>s.textContent===${JSON.stringify(NOTE)}).getBoundingClientRect().height`);
     if (width !== 320) assert.ok(noteHeight <= 19, `The history note stays on one line at ${width}px: ${noteHeight}`);
+    // The two shortcut sentences are separated by a real line break (JSX used to drop it: "…一起发主会话Option / Alt + Enter…").
+    const hintLayout = await evaluate(`(()=>{const span=[...document.querySelectorAll(${JSON.stringify(popover + ' span')})].find(e=>e.textContent.includes('Option / Alt + Shift + Enter'));
+      const walker=document.createTreeWalker(span,NodeFilter.SHOW_TEXT),nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);
+      const charRect=(needle,offset)=>{for(const node of nodes){const i=node.data.indexOf(needle);if(i>=0){const r=document.createRange();r.setStart(node,i+offset);r.setEnd(node,i+offset+1);return r.getBoundingClientRect().toJSON();}}return null};
+      return {text:span.textContent,mainEnd:charRect('一起发主会话',5),sideStart:charRect('Option / Alt + Enter',0)}})()`);
+    assert.ok(hintLayout.text.includes('一起发主会话\nOption / Alt + Enter 当前评论发 Side') && !hintLayout.text.includes('一起发主会话Option'), `The hint keeps its line break: ${JSON.stringify(hintLayout.text)}`);
+    assert.ok(hintLayout.mainEnd && hintLayout.sideStart && hintLayout.sideStart.top >= hintLayout.mainEnd.bottom - 1, `The Side shortcut starts on its own line at ${width}px: ${JSON.stringify(hintLayout)}`);
     await sendText('Geometry question');
     const sendRow = await assertSendRow(['丢弃草稿', '加入待发送', '新建 Side 并发送', '主会话发送'], { width, side: false });
     assert.deepEqual(await hostLocation('[data-testid="board-toolbar"]'), bar);
@@ -111,7 +118,7 @@ export async function runSideContextChecks({ assert, command, evaluate, until, f
     await choose(blank);
     assert.deepEqual(await canvasRect(), canvas);
     await hostClick('[data-testid="board-draft-discard"]'); await noPopover();
-    check(`at ${width}px the new-Side choice is one visible radio group inside the composer with a one-line note; every send button is visible without scrolling; toggling keeps focus, the 48px toolbar and the canvas rectangle unchanged`);
+    check(`at ${width}px the new-Side choice is one visible radio group inside the composer with a one-line note; the shortcut hint shows its two sentences on separate lines; every send button is visible without scrolling; toggling keeps focus, the 48px toolbar and the canvas rectangle unchanged`);
   }
   await command('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
   await raf();
