@@ -74,9 +74,11 @@ export type FrameMessage = FrameScope & (
   | { type: "open-link"; url: string }
   | { type: "selection-end" }
   | { type: "selection-clear" }
-  // Liquid-glass preset replies to a host-forwarded "/" (see client/preset-keys.ts).
+  // Liquid-glass preset replies to a host-forwarded "/" (see client/preset-keys.ts): whether the
+  // palette opened, give focus back (cancelled), or forget the handoff (focus stays or left).
   | { type: "preset-key-ack"; opened: boolean }
   | { type: "preset-focus-return" }
+  | { type: "preset-handoff-end" }
 );
 
 const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -169,7 +171,7 @@ export function readFrameMessage(value: unknown, scope: Pick<FrameScope, "boardI
     case "snapshot-request":
       if (!Number.isSafeInteger(value.documentVersion) || Number(value.documentVersion) < 0 || !Number.isSafeInteger(value.version) || Number(value.version) < 0 || !short(value.reason, 100)) return null;
       break;
-    case "canvas-pointer": case "selection-end": case "selection-clear": case "preset-focus-return": break;
+    case "canvas-pointer": case "selection-end": case "selection-clear": case "preset-focus-return": case "preset-handoff-end": break;
     case "preset-key-ack": if (typeof value.opened !== "boolean") return null; break;
     case "canvas-activity":
       if (typeof value.busy !== "boolean" || value.interacting !== undefined && typeof value.interacting !== "boolean" || value.interacting === true && !value.busy) return null;

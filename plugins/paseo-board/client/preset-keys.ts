@@ -4,7 +4,7 @@
 // every modifier chord and "?" never pre-empts a Paseo binding.
 
 export interface PresetKeyEvent {
-  key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean;
+  key: string; code?: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean;
   repeat?: boolean; isComposing?: boolean; keyCode?: number; defaultPrevented: boolean; target?: unknown;
 }
 type ElementLike = {
@@ -30,9 +30,15 @@ function blocks(candidate: unknown): boolean {
   return Boolean(el.closest?.(BLOCKING_SURFACES));
 }
 
+// The "/" key; with a Chinese IME in Chinese punctuation mode the same key reports 「、」 or 「／」.
+const isSlash = (event: PresetKeyEvent) => event.key === "/" || (event.code === "Slash" && (event.key === "、" || event.key === "／"));
+// Paseo's own sidebar row for this plugin's Boards screen (testID plugin-sidebar-{plugin}-{item}).
+// Clicking it reopens the last Board and leaves focus on the row.
+export const BOARD_SIDEBAR_ROW = '[data-testid="plugin-sidebar-paseo-board-boards"]';
+
 /** True only for a bare, unhandled "/" that is not text entry anywhere in the host. */
 export function presetKeyIntent(event: PresetKeyEvent, doc: PresetKeyDocument): boolean {
-  if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey) return false;
+  if (!isSlash(event) || event.ctrlKey || event.metaKey || event.altKey) return false;
   if (event.repeat || event.isComposing || event.keyCode === 229 || event.defaultPrevented) return false;
   if (doc.visibilityState !== undefined ? doc.visibilityState !== "visible" : doc.hidden === true) return false;
   const target = event.target as ElementLike | null | undefined;
@@ -41,11 +47,13 @@ export function presetKeyIntent(event: PresetKeyEvent, doc: PresetKeyDocument): 
 
 /**
  * Whose "/" this is. Focus inside this Board's own screen root (toolbar, rail, footer) always
- * qualifies. Focus on nothing (body) qualifies only when the Board is the route screen; a
- * Board shown as an agent/workspace panel beside chat or terminals never takes a body "/".
+ * qualifies. Focus on nothing (body) or on Paseo's "Boards" sidebar row (which opened this
+ * screen) qualifies only when the Board is the route screen; a Board shown as an
+ * agent/workspace panel beside chat or terminals never takes those.
  */
 export function presetFocusAllowed(active: unknown, frame: unknown, fromBody: boolean, doc: PresetKeyDocument): boolean {
   if (!active || active === doc.body || active === doc.documentElement) return fromBody;
+  if (fromBody && (active as ElementLike).closest?.(BOARD_SIDEBAR_ROW)) return true;
   const root = (frame as ElementLike | null)?.closest?.("[data-testid=\"board-screen\"]") as ElementLike | null | undefined;
   return Boolean(root && (root === active || root.contains?.(active)));
 }

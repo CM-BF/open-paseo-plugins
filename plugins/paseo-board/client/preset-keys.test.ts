@@ -18,6 +18,14 @@ describe("liquid-glass '/' forwarding intent", () => {
     const button = el("BUTTON");
     expect(presetKeyIntent(key({ target: button }), doc(button))).toBe(true);
   });
+  it("accepts the slash key as 「、」 or 「／」 from a Chinese IME in punctuation mode", () => {
+    expect(presetKeyIntent(key({ key: "、", code: "Slash" }), doc())).toBe(true);
+    expect(presetKeyIntent(key({ key: "／", code: "Slash" }), doc())).toBe(true);
+    // Only from the slash key, and never while composing.
+    expect(presetKeyIntent(key({ key: "、", code: "Comma" }), doc())).toBe(false);
+    expect(presetKeyIntent(key({ key: "、", code: "Slash", isComposing: true }), doc())).toBe(false);
+    expect(presetKeyIntent(key({ key: "、", code: "Slash", target: el("INPUT") }), doc(el("INPUT")))).toBe(false);
+  });
   it("never takes chords, '?', repeats, IME, handled keys or hidden pages", () => {
     for (const fields of [{ metaKey: true }, { ctrlKey: true }, { altKey: true }, { key: "?" }, { key: "k", metaKey: true }, { repeat: true }, { isComposing: true }, { keyCode: 229 }, { defaultPrevented: true }]) {
       expect(presetKeyIntent(key(fields), doc()), JSON.stringify(fields)).toBe(false);
@@ -48,6 +56,13 @@ describe("liquid-glass '/' forwarding scope", () => {
     expect(presetFocusAllowed(body, frame, true, doc())).toBe(true);
     expect(presetFocusAllowed(null, frame, true, doc(null))).toBe(true);
     expect(presetFocusAllowed(body, frame, false, doc())).toBe(false);
+  });
+  it("takes focus left on Paseo's Boards sidebar row only for the route screen", () => {
+    const row = { ...el("DIV", { role: "button" }), closest: (selector: string) => (selector.includes("plugin-sidebar-paseo-board-boards") ? {} : null) };
+    const otherRow = { ...el("DIV", { role: "button" }), closest: (selector: string) => (selector.includes("plugin-sidebar-other-plugin") ? {} : null) };
+    expect(presetFocusAllowed(row, frame, true, doc(row))).toBe(true);
+    expect(presetFocusAllowed(row, frame, false, doc(row))).toBe(false);
+    expect(presetFocusAllowed(otherRow, frame, true, doc(otherRow))).toBe(false);
   });
   it("refuses frames outside any Board screen root", () => {
     expect(presetFocusAllowed(button, { closest: () => null }, true, doc(button))).toBe(false);

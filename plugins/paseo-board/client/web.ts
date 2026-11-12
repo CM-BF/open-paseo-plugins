@@ -199,20 +199,33 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
       settled: false, resume: isCanvasViewState(resume) && resume.documentVersion === document.current.version ? resume : undefined };
     if (previous) {
       presetRebuilt.current = presetKey;
-      // Highlights already shown in the replaced session are not replayed by the new one.
+      // Highlights already shown in the replaced session are not replayed by the new one. An
+      // update request the old session never answered is sent again to the new one.
       const swap = (key: string | undefined) => key?.startsWith(previous.sessionId + ":") ? document.current!.sessionId + key.slice(previous.sessionId.length) : key;
-      updateSent.current = swap(updateSent.current); focused.current = swap(focused.current);
+      updateSent.current = updatePending.current ? undefined : swap(updateSent.current); focused.current = swap(focused.current);
     } else lastView.current = undefined;
   }
   const rendered = document.current;
   glassUsageRef.current = glassUsage;
   // A forwarded "/" moved focus into the canvas: where to hand it back (Esc, no palette, timeout).
+  // A session that let a forward time out is muted (no further "/" is taken from Paseo) until it
+  // answers; `presetExpired` lets a late "opened" reply keep focus only if nobody moved on
+  // (`movedTo`: a host element focused since; Chromium lets the late palette pull focus in).
   const presetHandoff = useRef<{ sessionId: string; element: unknown; timer?: ReturnType<typeof setTimeout> } | undefined>(undefined);
+  const presetMuted = useRef<string | undefined>(undefined);
+  const presetExpired = useRef<{ sessionId: string; element: unknown; at: number; movedTo?: unknown } | undefined>(undefined);
+  const dropPresetHandoff = () => { clearTimeout(presetHandoff.current?.timer); presetHandoff.current = undefined; };
+  const expirePresetHandoff = () => {
+    const handoff = presetHandoff.current;
+    if (!handoff) return;
+    presetMuted.current = handoff.sessionId;
+    presetExpired.current = { sessionId: handoff.sessionId, element: handoff.element, at: Date.now() };
+    restorePresetFocus();
+  };
   const restorePresetFocus = () => {
     const handoff = presetHandoff.current;
     if (!handoff) return;
-    presetHandoff.current = undefined;
-    clearTimeout(handoff.timer);
+    dropPresetHandoff();
     const page = browser.document, target = frame.current;
     if (!page) return;
     // The user already moved on (focused something else): leave focus where it is. A removed
@@ -412,13 +425,33 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
           if (!canvasInteracting.current && glassUsageRef.current?.preset && !document.current.preset && presetRebuilt.current !== `${current.boardId}:${current.canvas.documentVersion}`) redraw(n => n + 1);
           break;
         case "preset-key-ack": {
-          const handoff = presetHandoff.current;
-          if (!handoff || handoff.sessionId !== document.current.sessionId) break;
-          if (message.opened) { clearTimeout(handoff.timer); handoff.timer = undefined; } else restorePresetFocus();
+          const sessionId = document.current.sessionId, handoff = presetHandoff.current;
+          if (presetMuted.current === sessionId) presetMuted.current = undefined;
+          if (handoff?.sessionId === sessionId) {
+            if (message.opened) { clearTimeout(handoff.timer); handoff.timer = undefined; } else restorePresetFocus();
+            break;
+          }
+          if (!message.opened) break;
+          // A late reply: the fallback already gave focus back. If focus is still where it was
+          // given back, the palette takes it again; otherwise the palette closes.
+          const expired = presetExpired.current, page = browser.document, target = frame.current;
+          presetExpired.current = undefined;
+          if (expired?.sessionId === sessionId && Date.now() - expired.at < 5000 && page && target?.focus && !expired.movedTo) {
+            if (page.activeElement !== target) target.focus({ preventScroll: true });
+            presetHandoff.current = { sessionId, element: expired.element };
+            break;
+          }
+          send({ type: "preset-close" });
+          const moved = expired?.movedTo as Focusable | undefined;
+          if (moved?.focus && moved.isConnected !== false && page?.activeElement === target) moved.focus({ preventScroll: true });
           break;
         }
         case "preset-focus-return":
           if (presetHandoff.current?.sessionId === document.current.sessionId) restorePresetFocus();
+          break;
+        case "preset-handoff-end":
+          // A result was chosen (focus stays at its target) or focus already left the canvas.
+          if (presetHandoff.current?.sessionId === document.current.sessionId) dropPresetHandoff();
           break;
         case "update-position": {
           const expected = updatePending.current;
@@ -623,7 +656,9 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
     if (!forwardsPresetKeys || !canRenderFrames || !browser.window) return;
     const onKey = (event: HostKeyEvent) => {
       const current = latest.current, page = browser.document, target = frame.current, built = document.current;
-      if (!current.presetKeys || !page || !target || !built?.preset || !glassUsageRef.current?.palette) return;
+      // The document carries the preset, the live source still uses it (not handed over to an
+      // old kit) with a palette, and this session has not stopped answering.
+      if (!current.presetKeys || !page || !target || !built?.preset || !glassUsageRef.current?.preset || !glassUsageRef.current.palette || presetMuted.current === built.sessionId) return;
       if (!ready.current || current.selectionMode !== "off" || current.composerActive || interactionLock.current) return;
       if (!presetKeyIntent(event, page) || !presetFocusAllowed(page.activeElement, target, current.presetKeys.fromBody, page)) return;
       const bounds = target.getBoundingClientRect?.();
@@ -631,12 +666,18 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
       event.preventDefault();
       if (presetHandoff.current) clearTimeout(presetHandoff.current.timer);
       // Without a reply within 250 ms (no palette, kit gone, error) Paseo gets focus back.
-      presetHandoff.current = { sessionId: built.sessionId, element: page.activeElement, timer: setTimeout(restorePresetFocus, 250) };
+      presetHandoff.current = { sessionId: built.sessionId, element: page.activeElement, timer: setTimeout(expirePresetHandoff, 250) };
       target.focus({ preventScroll: true });
       send({ type: "preset-key", key: "/" });
     };
+    // After a fallback, note where the user moves focus in Paseo (a late reply must not keep it).
+    const onFocusIn = (event: { target?: unknown }) => {
+      const expired = presetExpired.current;
+      if (expired && event.target !== frame.current && event.target !== expired.element) expired.movedTo = event.target;
+    };
     browser.window.addEventListener("keydown", onKey);
-    return () => browser.window?.removeEventListener("keydown", onKey);
+    browser.document?.addEventListener("focusin", onFocusIn as () => void);
+    return () => { browser.window?.removeEventListener("keydown", onKey); browser.document?.removeEventListener("focusin", onFocusIn as () => void); };
   }, [forwardsPresetKeys]);
   // A replaced session (or unmount) cannot answer: hand focus back now.
   useEffect(() => () => restorePresetFocus(), [rendered.sessionId]);
