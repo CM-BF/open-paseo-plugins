@@ -77,3 +77,26 @@ The merged branch was accepted in the real Paseo app (real daemon, real Claude a
 | `npm run test:release` | 0 | 32 checks |
 | `npm run test:release-host` | 0 | 38 checks |
 | `build:client`, `build:worker` rebuild, then `git status --porcelain` | 0 | byte-identical; `app-runtime.txt` unchanged from `4f88cd7` |
+
+## Excerpt fix round (code head `6866a45`)
+
+Review findings on the tool-output excerpts, all fixed with regression tests that fail on `5eaa006` (private evidence: `$PASEO_HOME/verification/paseo-board/glass-fork-20261111/fix3-fork/`, with the red run in `red/red-old-code.log` and the full run in `final/`).
+
+- **Terminal escapes no longer look like binary.** Only CSI, OSC and a few two-byte escapes were removed, so the ESC byte of others was counted as a control character. Twenty lines of `\e[1mok\e(B\e[m line` (what `tput sgr0` prints for xterm) became `[binary data omitted]`. All ECMA-48 escapes are now removed before the binary check: control strings (OSC, DCS, SOS, PM, APC) with their payload, CSI, and every other ESC sequence, including charset designations (`ESC ( B`, `ESC ) 0`). SO/SI shifts (`tput sgr0` under screen/tmux prints `ESC [ m SI`) and a stray ESC are removed too. NUL, control-heavy and random binary output is still replaced by the marker.
+- **The 600-character cap covers the rendered block.** The cap was applied before the two-space indent, so newline-heavy outputs rendered as 1,200-1,400 characters per call (2,000 one-character lines: 1,172). The cap now covers the whole `  Label: …` block under a call, label and indents included, with each newline budgeted at its rendered width. Head and tail still get about half each around `[… N characters of output omitted …]`, and N is still the exact count of raw characters left out.
+- **No sub-agent reports.** See the corrected SDK note above: Paseo 0.15.3 sends sub-agent calls with an empty log.
+- **PROGRESS.md** no longer says the snapshot has no tool outputs.
+- **Blank Sides unchanged.** Their prompts and system prompt are still byte-identical to `4f88cd7` (golden comparison: 5 of 5 shapes).
+
+| Check | Exit | Result |
+| --- | --- | --- |
+| `build:client`, `build:worker` twice | 0 | second build byte-identical, and identical to the committed assets (the history code is server-only) |
+| `npm run typecheck` | 0 | |
+| `npx vitest run --maxWorkers=4 --exclude server/inbox-sync.test.ts` | 0 | 877 tests in 57 files |
+| `npx vitest run server/inbox-sync.test.ts --maxWorkers=1` | 0 | 10 tests |
+| `npm run test:browser` | 0 | 152 checks |
+| `npm run test:host` | 0 | 60 checks |
+| `npm run test:release` | 0 | 32 checks |
+| `npm run test:release-host` | 0 | 38 checks |
+| golden blank-prompt comparison against `4f88cd7` | 0 | 5 of 5 identical, system prompt identical |
+| `.test-tmp` removed, `git status --porcelain` | 0 | empty; `app-runtime.txt` unchanged from `4f88cd7` |
