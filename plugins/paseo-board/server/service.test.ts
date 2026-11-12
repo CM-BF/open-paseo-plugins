@@ -1218,7 +1218,9 @@ describe("Side creation with the owner's history", () => {
     expect(sent.text).toContain(INHERITED_HISTORY_PROMPT.trim()); expect(sent.text.startsWith("[paseo-board board=board intent=fork-h]")).toBe(true);
     expect((sdk.create.mock.calls[0][0] as { config: { systemPrompt: string } }).config.systemPrompt).toContain(INHERITED_HISTORY_SYSTEM_NOTE.trim());
     const saved = await interaction("fork-h");
-    expect(saved).toMatchObject({ kind: "fork", sideContext: "owner-history", inheritedHistory: { sourceAgentId: "owner", messages: 4, entries: 6, omitted: false, ownerBusy: false, chars: text.length, digest: createHash("sha256").update(text).digest("hex"), state: "sent" } });
+    // Messages: the Board question, the assistant message and the user message. The Board answer is an entry, not a message,
+    // because it often repeats an [Assistant] reply (here both exist) and must not inflate "N 条消息".
+    expect(saved).toMatchObject({ kind: "fork", sideContext: "owner-history", inheritedHistory: { sourceAgentId: "owner", messages: 3, entries: 6, omitted: false, ownerBusy: false, chars: text.length, digest: createHash("sha256").update(text).digest("hex"), state: "sent" } });
     expect(journal.get("board/fork-h")!.history).toMatchObject({ digest: saved.inheritedHistory!.digest }); expect(journal.get("board/fork-h")!.history!.text).toBeUndefined();
     expect(JSON.stringify(await store.read("board"))).not.toContain("顺便记住单位用焦耳");
   });

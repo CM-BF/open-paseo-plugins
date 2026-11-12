@@ -204,7 +204,7 @@ export type SideContext = z.infer<typeof SideContextSchema>;
 export const InheritedHistorySchema = z.object({
   sourceAgentId: z.string().min(1).max(160),
   capturedAt: z.string().min(1).max(100),
-  /** User and assistant messages actually included. */
+  /** User and assistant chat messages actually included. A Board question counts once; its recorded Board answer is an entry, not a message. */
   messages: z.number().int().nonnegative(),
   /** All curated lines included, including tool summaries and Board answers. */
   entries: z.number().int().nonnegative(),

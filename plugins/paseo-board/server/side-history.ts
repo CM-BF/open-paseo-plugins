@@ -102,10 +102,14 @@ export function curateItems(items: readonly TimelineItem[], expander?: Pick<Boar
   }
   return entries.map(entry => ({ ...entry, text: neutralize(entry.text) }));
 }
-/** Port of native fitForkContextEntries: newest first within the budget, an omission marker, head+tail for one giant entry. */
-export function fitEntries(entries: readonly CuratedEntry[], budget: number): { body: string; included: CuratedEntry[]; omitted: boolean } {
+/**
+ * Port of native fitForkContextEntries: newest first within the budget, an omission marker, head+tail for one giant entry.
+ * `olderOmitted` means rows before `entries` were never read (paging guards or a daemon window gap): the text
+ * then always starts with the omission marker, even when everything that was read fits.
+ */
+export function fitEntries(entries: readonly CuratedEntry[], budget: number, olderOmitted = false): { body: string; included: CuratedEntry[]; omitted: boolean } {
   const length = entries.reduce((total, entry) => total + entry.text.length + 1, -1);
-  if (length <= budget) return { body: entries.map(entry => entry.text).join("\n"), included: [...entries], omitted: false };
+  if (!olderOmitted && length <= budget) return { body: entries.map(entry => entry.text).join("\n"), included: [...entries], omitted: false };
   const selected: CuratedEntry[] = [];
   let remaining = budget - OMITTED.length;
   for (let index = entries.length - 1; index >= 0; index--) {
@@ -122,7 +126,7 @@ export function fitEntries(entries: readonly CuratedEntry[], budget: number): { 
     remaining -= size;
   }
   const included = selected.reverse();
-  return { body: OMITTED + included.map(entry => entry.text).join("\n"), included, omitted: true };
+  return { body: included.length ? OMITTED + included.map(entry => entry.text).join("\n") : OMITTED.trimEnd(), included, omitted: true };
 }
 interface HistoryMeta { title?: string | null; cwd?: string | null; boardId: string; capturedAt: string; busy: boolean }
 const metadata = (value: string | null | undefined) => neutralize(value?.trim() ?? "").slice(0, MAX_METADATA_CHARS);
@@ -183,7 +187,8 @@ async function captureOnce(owner: Pick<Agent, "timeline">, options: CaptureOptio
     cursor = page.startCursor ?? undefined;
   }
   const entries = chunks.reverse().flat();
-  const fitted = entries.length ? fitEntries(entries, budget) : undefined;
+  // Older rows that were never read are omitted history too: the Side must see the marker, not a history that looks complete.
+  const fitted = entries.length || older || gap ? fitEntries(entries, budget, older || gap) : undefined;
   const text = historyText(fitted ? fitted.body : EMPTY_HISTORY, meta);
   return {
     sourceAgentId: options.ownerAgentId, capturedAt: meta.capturedAt,

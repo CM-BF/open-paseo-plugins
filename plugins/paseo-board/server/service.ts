@@ -42,7 +42,8 @@ const selection = (anchor: Anchor | undefined) => {
 function boardPromptEntries(input: InteractInput, answer: { status: Interaction["status"]; response?: string } | undefined): CuratedEntry[] {
   const comments = input.comments?.map((comment, index) => `\n  ${index + 1}. ${clip(comment.text, 600)}${selection(comment.anchor)}`).join("") ?? "";
   const entries: CuratedEntry[] = [{ text: `[User via Board] ${clip(input.text, 2000)}${selection(input.anchor)}${comments}`, message: true }];
-  if (answer?.response?.trim()) entries.push({ text: `[Board answer · ${input.intentId} · ${answer.status}] ${clip(answer.response, 600)}`, message: true });
+  // A Board answer is the owner's reply as recorded on the Board; it often repeats an [Assistant] message, so it is not counted as a message.
+  if (answer?.response?.trim()) entries.push({ text: `[Board answer · ${input.intentId} · ${answer.status}] ${clip(answer.response, 600)}`, message: false });
   return entries;
 }
 

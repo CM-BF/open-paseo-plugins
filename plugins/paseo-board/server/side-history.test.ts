@@ -63,6 +63,9 @@ describe("owner history curation", () => {
     const giant = fitEntries([entry("old"), entry(`HEAD${"x".repeat(500)}TAIL`)], 200);
     expect(giant.body.length).toBe(200); expect(giant.body).toContain("[Message truncated]"); expect(giant.body).toContain("HEAD"); expect(giant.body.endsWith("TAIL")).toBe(true);
     expect(giant.included).toHaveLength(1);
+    // Rows that were never read force the marker even when everything read fits.
+    expect(fitEntries(entries, 100, true)).toEqual({ body: "[Earlier chat history omitted]\none\ntwo\nthree\nfour", included: entries, omitted: true });
+    expect(fitEntries([], 100, true)).toEqual({ body: "[Earlier chat history omitted]", included: [], omitted: true });
   });
 
   it("strips exactly one leading inherited-history block from a coalesced first message", () => {
@@ -93,16 +96,57 @@ describe("owner history capture", () => {
     expect(captured).toMatchObject({ messages: 2, entries: 3, omitted: false, ownerBusy: false, chars: captured.text.length, digest: createHash("sha256").update(captured.text).digest("hex"), pages: 1 });
   });
 
-  it("stops paging at the page cap and reports older history as omitted", async () => {
+  const MARKER = "[Earlier chat history omitted]\n";
+  const body = (text: string) => text.slice(text.indexOf("\n\n") + 2, text.lastIndexOf("\n</chat-history-summary>"));
+
+  it("stops paging at the page cap and marks the unread older history in the text", async () => {
     const items = Array.from({ length: 2500 }, (_, index) => ({ type: "user_message", text: `m${index}` })) as TimelineItem[];
     const { handle, calls } = owner(items);
     const captured = await captureOwnerHistory(handle, base);
     expect(calls).toHaveLength(20); expect(captured.omitted).toBe(true); expect(captured.text).toContain("m2499"); expect(captured.text).not.toContain("m499\n");
+    // The curated text is far below the budget, but older rows were never read: the Side must see the marker.
+    expect(captured.text.length).toBeLessThan(OWNER_HISTORY_MAX_CHARS / 2);
+    expect(body(captured.text).startsWith(`${MARKER}[User] m500\n`)).toBe(true);
+    expect(captured).toMatchObject({ entries: 2000, messages: 2000 });
   });
 
-  it("reports a daemon window that no longer starts at the beginning", async () => {
+  it("marks older history when the received-size guard stops paging after one page", async () => {
+    // Large canonical details (file contents) are never curated, but they count toward the 8 MB received guard.
+    const items = Array.from({ length: 300 }, (_, index) => tool("Read", { type: "read", filePath: `/repo/f${index}.ts`, content: "x".repeat(90_000) }));
+    const { handle, calls } = owner(items);
+    const captured = await captureOwnerHistory(handle, base);
+    expect(calls).toHaveLength(1); expect(captured.omitted).toBe(true);
+    expect(body(captured.text).startsWith(`${MARKER}[Read] /repo/f200.ts\n`)).toBe(true);
+    expect(captured.text).not.toContain("xxxxxxxx");
+  });
+
+  it("marks older history when the time guard stops paging", async () => {
+    const items = Array.from({ length: 150 }, (_, index) => ({ type: "assistant_message", text: `a${index}` })) as TimelineItem[];
+    let clock = Date.parse("2026-11-11T00:00:00.000Z");
+    const { handle, calls } = owner(items, () => { clock += 9_000; return undefined; });
+    const captured = await captureOwnerHistory(handle, { ...base, now: () => clock });
+    expect(calls).toHaveLength(1); expect(captured.omitted).toBe(true);
+    expect(body(captured.text).startsWith(`${MARKER}[Assistant] a50\n`)).toBe(true);
+  });
+
+  it("marks a daemon window that no longer starts at the beginning", async () => {
     const { handle } = owner([{ type: "assistant_message", text: "A" }] as TimelineItem[], () => ({ window: { minSeq: 40, maxSeq: 40, nextSeq: 41 } }));
-    expect((await captureOwnerHistory(handle, base)).omitted).toBe(true);
+    const captured = await captureOwnerHistory(handle, base);
+    expect(captured.omitted).toBe(true); expect(body(captured.text)).toBe(`${MARKER}[Assistant] A`);
+    expect(captured).toMatchObject({ entries: 1, messages: 1 });
+  });
+
+  it("shows only the marker, not 'no history', when unread older rows exist but nothing read was curatable", async () => {
+    const { handle } = owner([{ type: "reasoning", text: "hidden" }] as unknown as TimelineItem[], () => ({ window: { minSeq: 7, maxSeq: 7, nextSeq: 8 } }));
+    const captured = await captureOwnerHistory(handle, base);
+    expect(body(captured.text)).toBe(MARKER.trimEnd()); expect(captured.text).not.toContain("No chat history to display.");
+    expect(captured).toMatchObject({ entries: 0, messages: 0, omitted: true });
+  });
+
+  it("keeps a complete short history unmarked", async () => {
+    const captured = await captureOwnerHistory(owner([{ type: "assistant_message", text: "A" }] as TimelineItem[]).handle, base);
+    expect(body(captured.text)).toBe("[Assistant] A"); expect(captured.omitted).toBe(false);
+    expect(body((await captureOwnerHistory(owner([]).handle, base)).text)).toBe("No chat history to display.");
   });
 
   it("throws on a timeline error and stays within the total character bound", async () => {
