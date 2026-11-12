@@ -4,6 +4,13 @@ import { skillMarkdown } from "./prompts";
 import { curateItems, type TimelineItem } from "./side-history";
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+/** One dated PROGRESS.md section, from its heading to the next top-level heading. */
+function progressSection(heading: string): string {
+  const progress = read("PROGRESS.md"), start = progress.indexOf(heading);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const end = progress.indexOf("\n# ", start + heading.length);
+  return progress.slice(start, end < 0 ? undefined : end);
+}
 
 describe("history Side documentation matches what the runtime provides", () => {
   it("states that sub-agent reports are not available, because Paseo 0.15.x sends sub-agent cards with an empty log", () => {
@@ -15,5 +22,13 @@ describe("history Side documentation matches what the runtime provides", () => {
     for (const doc of [readme, verification, skillMarkdown("/plugin/bin/paseo-board")]) {
       expect(doc).not.toMatch(/sub-agent\/worktree logs?|sub-agent or worktree logs?|sub-agent logs? (?:is|are) (?:carried|included)/i);
     }
+  });
+
+  it("keeps the side-history PROGRESS entry consistent: outputs are carried as short excerpts, thinking is not", () => {
+    const section = progressSection("# 2026-11-11 — 新建 Side 可选“空白 Side / 带主 agent 记录”");
+    expect(section).not.toMatch(/不带工具输出/);
+    expect(section).toMatch(/不带思考/);
+    expect(section).toMatch(/输出摘要/);
+    expect(section).toMatch(/子 agent（Task）的报告拿不到/);
   });
 });
