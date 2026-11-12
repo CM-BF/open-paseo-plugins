@@ -25783,7 +25783,7 @@ var SideContextSchema = external_exports.enum(["blank", "owner-history"]);
 var InheritedHistorySchema = external_exports.object({
   sourceAgentId: external_exports.string().min(1).max(160),
   capturedAt: external_exports.string().min(1).max(100),
-  /** User and assistant messages actually included. */
+  /** User and assistant chat messages actually included. A Board question counts once; its recorded Board answer is an entry, not a message. */
   messages: external_exports.number().int().nonnegative(),
   /** All curated lines included, including tool summaries and Board answers. */
   entries: external_exports.number().int().nonnegative(),
@@ -25833,6 +25833,12 @@ var InteractionSchema = external_exports.object({
   sourceSnapshot: SourceSnapshotSchema.optional(),
   sideContext: SideContextSchema.optional(),
   inheritedHistory: InheritedHistorySchema.optional(),
+  /**
+   * Set only when the service's journal confirms this fork failed before any Side agent was requested
+   * (no create call, reservation released). Only then can a fresh send not duplicate a Side; a fork whose
+   * create result is still pending reconciliation never carries it.
+   */
+  sideNotCreated: external_exports.literal(true).optional(),
   createdAt: external_exports.string(),
   updatedAt: external_exports.string()
 }).superRefine(validateCommentContext);
@@ -37365,7 +37371,7 @@ function describeSource(canvas, selector, inspect) {
 }
 
 // server/store.ts
-var InteractionUpdateSchema = external_exports.object(InteractionSchema.shape).pick({ status: true, agentId: true, response: true, responseRevision: true, responseSource: true, responseMethod: true, responseCanvas: true, resultReferences: true, error: true, inheritedHistory: true }).partial();
+var InteractionUpdateSchema = external_exports.object(InteractionSchema.shape).pick({ status: true, agentId: true, response: true, responseRevision: true, responseSource: true, responseMethod: true, responseCanvas: true, resultReferences: true, error: true, inheritedHistory: true, sideNotCreated: true }).partial();
 var transitions = {
   saved: ["sending", "delivered", "processing", "answered", "applied", "rejected", "failed"],
   sending: ["delivered", "processing", "answered", "applied", "rejected", "failed"],
