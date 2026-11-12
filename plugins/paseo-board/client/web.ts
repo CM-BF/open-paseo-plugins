@@ -10,7 +10,7 @@ import { buildBoardDocument } from "../shared/document";
 import { createLiquidGlassTracker, type LiquidGlassUsage } from "../shared/liquid-glass";
 import { presetFocusAllowed, presetKeyIntent, type PresetKeyEvent } from "./preset-keys";
 import { createFrameDelta, emptyFrameDelta, transportSnapshot, type TransportSnapshot } from "../shared/frame-delta";
-import { FRAME_CHANNEL, interactionMarkers, readFrameMessage, sameSelectionAnchor, isCanvasViewState, type CanvasViewState, type CanvasViewRestoreStatus, type SelectionCapture, type AskRequest, type AskResult, type ComposeRequest, type FrameError, type FramePosition, type FrameSnapshot, type FrameTheme, type InteractionLocation, type FocusUpdateRequest, type UpdatePosition, type SelectionMode, type ComponentEditRequest, type ComponentEditResult } from "../shared/frame-contract";
+import { FRAME_CHANNEL, interactionMarkers, isBenignFrameError, readFrameMessage, sameSelectionAnchor, isCanvasViewState, type CanvasViewState, type CanvasViewRestoreStatus, type SelectionCapture, type AskRequest, type AskResult, type ComposeRequest, type FrameError, type FramePosition, type FrameSnapshot, type FrameTheme, type InteractionLocation, type FocusUpdateRequest, type UpdatePosition, type SelectionMode, type ComponentEditRequest, type ComponentEditResult } from "../shared/frame-contract";
 
 type ViewPort = {
   addEventListener(type: "message", listener: (event: MessageEvent) => void): void;
@@ -462,7 +462,8 @@ export function CanvasFrame(props: CanvasFrameProps): ReactElement | null {
           current.onUpdatePosition?.(message);
           break;
         }
-        case "error": current.onError(message.error); break;
+        // Benign ResizeObserver notices are dropped even if a frame reports them itself.
+        case "error": if (!isBenignFrameError(message.error.message)) current.onError(message.error); break;
         case "selection-end": current.onSelectionEnd?.(); break;
         case "selection-clear": current.onSelectionClear?.(); break;
         case "selection-lock": {

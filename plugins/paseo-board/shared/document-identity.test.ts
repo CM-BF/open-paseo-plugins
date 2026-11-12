@@ -19,11 +19,11 @@ type DocumentInput = FrameSnapshot & { boardId: string; sessionId: string; title
 // liquid-glass preset existed. A canvas without the preset marker must keep producing
 // exactly this string. If the template changes on purpose, update this copy in the same
 // commit and say why; never refresh it to make an unexplained difference pass.
-function frozenBuildBoardDocument(input: DocumentInput): string {
+function frozenBuildBoardDocument(input: DocumentInput, runtimeText = runtime): string {
   const tokens = Object.entries(input.theme.tokens).filter(([k, v]) => /^host-[a-z0-9-]+$/.test(k) && isSafeTokenValue(v)).map(([k, v]) => `--${k}:${v}`).join(";");
   const { html, ...canvas } = input.canvas;
   const initial = { channel: FRAME_CHANNEL, boardId: input.boardId, sessionId: input.sessionId, canvas, boardRevision: input.boardRevision, userState: input.userState, theme: input.theme, captureModule: htmlToImage, compositionHostId: input.compositionHostId, compositionSecret: input.compositionSecret };
-  const bootstrap = `<script>(${runtime})(${scriptJson(initial)}, (${frameDelta}), (${createComponentLayoutTools.toString()}), (${layoutState}), (${compositionRuntime}));</script>`;
+  const bootstrap = `<script>(${runtimeText})(${scriptJson(initial)}, (${frameDelta}), (${createComponentLayoutTools.toString()}), (${layoutState}), (${compositionRuntime}));</script>`;
   const csp = input.compositionHostId && !input.compositionSecret ? BOARD_CSP.replace("frame-src 'none'", "frame-src blob:") : BOARD_CSP;
   return `<!doctype html><html lang="en" data-surface="page" data-palette="custom" data-theme="${input.theme.scheme}" style="${escapeHtml(tokens)}"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(input.title)}</title><style>@layer paseo-board-defaults {${stylesheet}\n}</style></head><body>${bootstrap}${html.replace(/^﻿/, "")}\n${/data-tooltip|dataset\.tooltip|floatingui/i.test(html) ? tooltips : ""}${/lucide/i.test(html) ? icons : ""}</body></html>`;
 }
@@ -57,13 +57,25 @@ describe("marker-free Board documents", () => {
     const optOut = { ...base, theme: dark, canvas: canvas('<main data-style="liquid-glass" data-lg-builtin="off"></main>') };
     for (const input of [own, optOut]) expect(buildBoardDocument(input)).toBe(frozenBuildBoardDocument(input));
   });
-  it("match pinned digests recorded at 4f88cd7 before the preset existed", () => {
-    const digests = Object.fromEntries(Object.entries(MARKER_FREE_FIXTURES).map(([name, input]) => [name, createHash("sha256").update(buildBoardDocument(input)).digest("hex")]));
+  it("match pinned digests recorded at 4f88cd7 before the preset existed, apart from the benign ResizeObserver filter", () => {
+    const original = withoutBenignResizeFilter(runtime);
+    expect(original).not.toContain("benignError");
+    expect(runtime.split("benignError").length - 1).toBe(4);
+    const digests = Object.fromEntries(Object.entries(MARKER_FREE_FIXTURES).map(([name, input]) => [name, createHash("sha256").update(frozenBuildBoardDocument(input, original)).digest("hex")]));
     // These pins also depend on how vitest transpiles createComponentLayoutTools.toString().
     // If that code changes on purpose, refresh them deliberately in the same commit.
     expect(digests).toEqual(PINNED_DIGESTS);
   });
 });
+
+// The one deliberate runtime change since 4f88cd7 (every Board): benign ResizeObserver loop
+// notices are not reported. Undoing exactly that change gives back the pinned 4f88cd7 digests.
+function withoutBenignResizeFilter(text: string): string {
+  return text
+    .replace(/\n  \/\/ Browsers raise these as window errors[^\n]*\n(?:  \/\/[^\n]*\n)*  const benignError = [^\n]*/, "")
+    .replace("if (benignError(event.message)) return; ", "")
+    .replaceAll("benignError(message) || ", "");
+}
 
 const PINNED_DIGESTS: Record<string, string> = {
   plainLight: "5a4176fb88073ded24a233a0ac4b2990fde9d68b2255dbda6c541353377ababe",

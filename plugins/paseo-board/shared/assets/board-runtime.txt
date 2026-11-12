@@ -33,6 +33,10 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
   const post = (message) => composition.post({ ...message, ...scope });
   const copy = (value) => value === undefined ? undefined : structuredClone(value);
   const error = (code, message, patchId) => post({ type: "error", error: { code, message: String(message).slice(0, 4000), ...(patchId ? { patchId } : {}) } });
+  // Browsers raise these as window errors when a ResizeObserver callback resizes what it observes
+  // (authored code, old kits). The remaining notifications arrive in the next frame, so nothing
+  // failed: they never become a canvas error or fail a patch. Same rule as isBenignFrameError.
+  const benignError = (message) => /^(?:Uncaught )?ResizeObserver loop (?:completed with undelivered notifications|limit exceeded)\.?$/.test(String(message || "").trim());
   const emitListeners = (listeners, value) => { for (const listener of listeners) { try { listener(copy(value)); } catch (e) { error("listener-error", e.message); } } };
   const currentAnchor = () => ({ kind: "board", boardRevision: snapshot.boardRevision, canvasRevision: snapshot.canvas.revision });
   const acting = () => !markerReveal && composition.acting() && performance.now() - lastGesture < 1800 && navigator.userActivation && navigator.userActivation.isActive;
@@ -189,7 +193,7 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
       if (instrumentedText && script.textContent === instrumentedText) script.textContent = originalText;
       failure ? reject(failure) : resolve();
     };
-    const onError = (event) => { scriptError = new Error(event.message || "Patch script failed"); if (inlineModule) finish(scriptError); };
+    const onError = (event) => { if (benignError(event.message)) return; scriptError = new Error(event.message || "Patch script failed"); if (inlineModule) finish(scriptError); };
     const onComplete = () => finish(scriptError);
     window.addEventListener("error", onError);
     const external = script.hasAttribute("src");
@@ -3131,13 +3135,13 @@ function (initial, createFrameReceiver, createComponentLayoutTools, installCompo
   const reportedErrors = new Set();
   window.addEventListener("error", (event) => {
     const message = event.message || "Canvas resource could not load";
-    if (reportedErrors.has(message) || reportedErrors.size >= 12) return;
+    if (benignError(message) || reportedErrors.has(message) || reportedErrors.size >= 12) return;
     reportedErrors.add(message);
     error("runtime-error", message);
   });
   window.addEventListener("unhandledrejection", (event) => {
     const message = event.reason && event.reason.message || String(event.reason || "Unhandled promise rejection");
-    if (reportedErrors.has(message) || reportedErrors.size >= 12) return;
+    if (benignError(message) || reportedErrors.has(message) || reportedErrors.size >= 12) return;
     reportedErrors.add(message);
     error("runtime-error", message);
   });

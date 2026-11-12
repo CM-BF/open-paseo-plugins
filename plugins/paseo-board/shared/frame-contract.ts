@@ -5,6 +5,13 @@ export const FRAME_CHANNEL = "paseo-board-frame-v1";
 export type SelectionMode = "off" | "text" | "region" | "point" | "component";
 export interface FrameTheme { scheme: "light" | "dark"; tokens: Record<string, string> }
 export interface FrameError { code: string; message: string; patchId?: string }
+/**
+ * Browsers raise these as window errors when a ResizeObserver callback resizes what it observes;
+ * the remaining notifications simply arrive in the next frame. They are not canvas failures, so
+ * Paseo never shows them as an error banner. The Board runtime applies the same pattern.
+ */
+export const BENIGN_FRAME_ERROR = /^(?:Uncaught )?ResizeObserver loop (?:completed with undelivered notifications|limit exceeded)\.?$/;
+export function isBenignFrameError(message: string): boolean { return BENIGN_FRAME_ERROR.test(message.trim()); }
 /** CSS pixels relative to the iframe viewport (not document coordinates). */
 export interface FramePosition { x: number; y: number }
 /** Local reading position only: never author state, an edit identity or a send authority. */
