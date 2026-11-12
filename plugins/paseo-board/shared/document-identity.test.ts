@@ -52,6 +52,11 @@ describe("marker-free Board documents", () => {
       expect(buildBoardDocument(input), name).toBe(frozenBuildBoardDocument(input));
     }
   });
+  it("stay identical when the marker is present but the preset is off (own kit or opt-out)", () => {
+    const own = { ...base, theme: light, canvas: canvas('<main data-style="liquid-glass" data-lg-page></main><style id="lg-kit-style"></style><script id="lg-kit-script"></script>') };
+    const optOut = { ...base, theme: dark, canvas: canvas('<main data-style="liquid-glass" data-lg-builtin="off"></main>') };
+    for (const input of [own, optOut]) expect(buildBoardDocument(input)).toBe(frozenBuildBoardDocument(input));
+  });
   it("match pinned digests recorded at 4f88cd7 before the preset existed", () => {
     const digests = Object.fromEntries(Object.entries(MARKER_FREE_FIXTURES).map(([name, input]) => [name, createHash("sha256").update(buildBoardDocument(input)).digest("hex")]));
     // These pins also depend on how vitest transpiles createComponentLayoutTools.toString().

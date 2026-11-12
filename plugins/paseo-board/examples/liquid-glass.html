@@ -1,0 +1,126 @@
+<main id="lg-page" data-style="liquid-glass" data-lg-page>
+  <header id="overview" class="lg-header" data-lg-command="回到总览" data-lg-keywords="overview top 顶部">
+    <div>
+      <p class="lg-eyebrow">Paseo Board · 发布运营 · 演示数据</p>
+      <h1 class="lg-title">发布运营总览</h1>
+      <p class="lg-lede">虚构的发布与分享页访问数据。整页只写语义标记：样式、动效、图表和命令面板都来自内置的「液态玻璃」预设。</p>
+    </div>
+    <div class="lg-actions">
+      <div id="range" data-lg="split" data-lg-name="range" role="group" aria-label="时间范围">
+        <button type="button" data-lg-option="7d" aria-pressed="true" data-lg-command="时间范围：近 7 天" data-lg-keywords="week 7d">近 7 天</button>
+        <button type="button" data-lg-option="30d" data-lg-command="时间范围：近 30 天" data-lg-keywords="month 30d">近 30 天</button>
+        <button type="button" data-lg-option="90d" data-lg-command="时间范围：近 90 天" data-lg-keywords="quarter 90d">近 90 天</button>
+      </div>
+      <button type="button" class="lg-pill" data-lg-palette-open aria-label="打开命令面板（快捷键 /）">搜索或跳转 <kbd>/</kbd></button>
+    </div>
+  </header>
+
+  <section id="kpi" class="lg-grid" data-lg-cols="4" aria-label="关键指标">
+    <article id="kpi-publish" data-lg="card" class="lg-stat" data-lg-command="指标：发布次数" data-lg-keywords="publish">
+      <p class="lg-stat-label">发布次数</p>
+      <p class="lg-stat-value"><b data-lg-count="126" data-lg-key="{range}" data-lg-by="7d:126, 30d:512, 90d:1486">126</b><span>次</span></p>
+      <p class="lg-stat-foot"><span class="lg-chip" data-tone="good">+12.4%</span><span data-lg-key="{range}" data-lg-by="7d:较上周, 30d:较上月, 90d:较上季">较上周</span></p>
+    </article>
+    <article data-lg="card" class="lg-stat" data-lg-command="指标：分享页访问" data-lg-keywords="visits pv">
+      <p class="lg-stat-label">分享页访问</p>
+      <p class="lg-stat-value"><b data-lg-count="15872" data-lg-key="{range}" data-lg-by="7d:15872, 30d:64205, 90d:183940">15,872</b><span>次</span></p>
+      <p class="lg-stat-foot"><span class="lg-chip" data-tone="good">+8.1%</span><span>独立访客 62%</span></p>
+    </article>
+    <article data-lg="card" class="lg-stat" data-lg-command="指标：访客评论" data-lg-keywords="comments">
+      <p class="lg-stat-label">访客评论</p>
+      <p class="lg-stat-value"><b data-lg-count="268" data-lg-key="{range}" data-lg-by="7d:268, 30d:1092, 90d:3311">268</b><span>条</span></p>
+      <p class="lg-stat-foot"><span class="lg-chip" data-tone="warn">12 未读</span><span>需要分拣</span></p>
+    </article>
+    <article data-lg="card" class="lg-stat" data-lg-command="指标：平均发布耗时" data-lg-keywords="latency duration">
+      <p class="lg-stat-label">平均发布耗时</p>
+      <p class="lg-stat-value"><b data-lg-count="38.6" data-lg-key="{range}" data-lg-by="7d:38.6, 30d:44.9, 90d:47.3">38.6</b><span>秒</span></p>
+      <p class="lg-stat-foot"><span class="lg-chip" data-tone="good">−3.1 s</span><span>更快了</span></p>
+    </article>
+  </section>
+
+  <section id="trend" class="lg-columns">
+    <article data-lg="card" data-lg-command="跳到：趋势图" data-lg-keywords="chart trend 图表">
+      <div class="lg-card-head">
+        <div><h2>趋势</h2><p class="lg-muted"><span data-lg-key="{range}" data-lg-by="7d:近 7 天, 30d:近 30 天, 90d:近 90 天">近 7 天</span> · 演示数据</p></div>
+        <nav id="metric" data-lg="nav" data-lg-name="metric" aria-label="趋势指标">
+          <button type="button" aria-current="true" data-lg-value="pub" data-lg-command="趋势图：发布量">发布量</button>
+          <button type="button" data-lg-value="visit" data-lg-command="趋势图：访问量" data-lg-keywords="visits pv">访问量</button>
+        </nav>
+      </div>
+      <figure id="trend-chart" data-lg="chart" data-lg-key="{metric}/{range}" data-lg-avg aria-label="所选指标在各时段的柱状图（演示数据）"
+        data-lg-series='{"pub/7d":{"labels":["周一","周二","周三","周四","周五","周六","周日"],"values":[14,19,22,17,24,16,14]},"pub/30d":{"labels":["W1","W2","W3","W4","W5"],"values":[96,118,104,121,73]},"pub/90d":{"labels":["7月","8月","9月"],"values":[452,498,536]},"visit/7d":{"labels":["周一","周二","周三","周四","周五","周六","周日"],"values":[1890,2410,2630,2105,2980,2160,1697]},"visit/30d":{"labels":["W1","W2","W3","W4","W5"],"values":[12040,14920,13110,15530,8605]},"visit/90d":{"labels":["7月","8月","9月"],"values":[55210,61880,66850]}}'></figure>
+    </article>
+    <article id="recent" data-lg="card" data-lg-command="跳到：最近发布" data-lg-keywords="recent history">
+      <div class="lg-card-head"><h2>最近发布</h2><span class="lg-muted">今天 · 4 条</span></div>
+      <ul class="lg-list">
+        <li><i class="lg-dot"></i><span class="lg-grow">季度复盘看板</span><span class="lg-chip" data-tone="good">已上线</span><time class="lg-num">09:42</time></li>
+        <li><i class="lg-dot" data-tone="warn"></i><span class="lg-grow">设计评审 · 第 4 轮</span><span class="lg-chip" data-tone="warn">构建中</span><time class="lg-num">09:38</time></li>
+        <li><i class="lg-dot"></i><span class="lg-grow">周报模板</span><span class="lg-chip" data-tone="good">已上线</span><time class="lg-num">09:15</time></li>
+        <li><i class="lg-dot" data-tone="bad"></i><span class="lg-grow">招聘漏斗演示</span><span class="lg-chip" data-tone="bad">失败</span><time class="lg-num">08:57</time></li>
+      </ul>
+    </article>
+  </section>
+
+  <section id="modules" class="lg-section" aria-labelledby="modules-title" data-lg-command="跳到：工作台模块" data-lg-keywords="modules">
+    <div class="lg-section-head"><h2 id="modules-title" class="lg-section-title">工作台模块</h2><p class="lg-muted">点模块原位放大，其余收进底部缩略条；<kbd>esc</kbd> 原路收回。</p></div>
+    <div data-lg="expand">
+      <article data-lg-module data-lg-command="打开：发布队列" data-lg-keywords="queue publish">
+        <header class="lg-module-head"><span class="lg-icon" data-lg-icon="upload"></span><h3>发布队列</h3><span class="lg-meta">3 个进行中</span></header>
+        <div data-lg-summary><b class="lg-big">3</b> <span class="lg-muted">个待发布 · 1 个失败正在重试</span></div>
+        <div data-lg-detail>
+          <table class="lg-table">
+            <thead><tr><th>Board</th><th>目标</th><th>进度</th><th class="lg-num">预计</th></tr></thead>
+            <tbody>
+              <tr><td>设计评审 · 第 4 轮</td><td>分享链接</td><td><span class="lg-meter" style="--lg-value:.62" role="meter" aria-valuenow="62" aria-valuemin="0" aria-valuemax="100" aria-label="构建进度"></span></td><td class="lg-num">40 s</td></tr>
+              <tr><td>季度复盘看板 v2</td><td>GitHub Pages</td><td><span class="lg-chip">排队中</span></td><td class="lg-num">2 min</td></tr>
+              <tr><td>招聘漏斗演示</td><td>GitHub Pages</td><td><span class="lg-chip" data-tone="bad">失败 · 重试 1/3</span></td><td class="lg-num">—</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+      <article data-lg-module data-lg-command="打开：访客评论" data-lg-keywords="comments inbox">
+        <header class="lg-module-head"><span class="lg-icon" data-lg-icon="chat"></span><h3>访客评论</h3><span class="lg-meta">12 未读</span></header>
+        <div data-lg-summary><b class="lg-big">268</b> <span class="lg-muted">条评论 · 平均 2.4 小时分拣</span></div>
+        <div data-lg-detail>
+          <ul class="lg-list">
+            <li><span class="lg-avatar">A</span><span class="lg-grow">第三张图的单位是不是写反了？</span><span class="lg-chip" data-tone="warn">新</span></li>
+            <li><span class="lg-avatar">B</span><span class="lg-grow">方案 2 的动效很顺，能不能也放到移动端？</span><span class="lg-chip">处理中</span></li>
+            <li><span class="lg-avatar">C</span><span class="lg-grow">第 2 步的链接打不开。</span><span class="lg-chip" data-tone="good">已解决</span></li>
+          </ul>
+        </div>
+      </article>
+      <article data-lg-module data-lg-command="打开：数据源" data-lg-keywords="sources health">
+        <header class="lg-module-head"><span class="lg-icon" data-lg-icon="data"></span><h3>数据源</h3><span class="lg-meta">1 个延迟</span></header>
+        <div data-lg-summary><b class="lg-big">7/8</b> <span class="lg-muted">正常 · 最近同步 1 分钟前</span></div>
+        <div data-lg-detail>
+          <ul class="lg-list">
+            <li><span class="lg-grow">访问日志</span><span class="lg-meter" style="--lg-value:.99;width:40%"></span><span class="lg-num">99.9%</span></li>
+            <li><span class="lg-grow">评论收件箱</span><span class="lg-meter" style="--lg-value:.98;width:40%"></span><span class="lg-num">99.2%</span></li>
+            <li><span class="lg-grow">外部分享统计</span><span class="lg-meter" data-tone="warn" style="--lg-value:.71;width:40%"></span><span class="lg-num">71.0%</span></li>
+          </ul>
+        </div>
+      </article>
+      <article data-lg-module data-lg-command="打开：成员" data-lg-keywords="members team">
+        <header class="lg-module-head"><span class="lg-icon" data-lg-icon="users"></span><h3>成员</h3><span class="lg-meta">2 人在线</span></header>
+        <div data-lg-summary><b class="lg-big">5</b> <span class="lg-muted">位协作者 · 本周新增 1 位</span></div>
+        <div data-lg-detail>
+          <ul class="lg-list">
+            <li><span class="lg-avatar">林</span><span class="lg-grow">林一（虚构） · 所有者</span><span class="lg-chip" data-tone="good">在线</span></li>
+            <li><span class="lg-avatar">周</span><span class="lg-grow">周二（虚构） · 编辑</span><span class="lg-chip" data-tone="good">在线</span></li>
+            <li><span class="lg-avatar">陈</span><span class="lg-grow">陈三（虚构） · 编辑</span><span class="lg-chip">2 小时前</span></li>
+          </ul>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <nav id="dock" data-lg="dock nav" data-lg-spy aria-label="页面导航">
+    <button type="button" data-lg-dock-item data-lg-label="总览" data-lg-target="#overview" data-lg-icon="home" aria-current="true"></button>
+    <button type="button" data-lg-dock-item data-lg-label="指标" data-lg-target="#kpi" data-lg-icon="spark"></button>
+    <button type="button" data-lg-dock-item data-lg-label="趋势" data-lg-target="#trend" data-lg-icon="chart"></button>
+    <button type="button" data-lg-dock-item data-lg-label="工作台模块" data-lg-target="#modules" data-lg-icon="grid"></button>
+    <span data-lg-dock-sep aria-hidden="true"></span>
+    <button type="button" data-lg-dock-item data-lg-label="搜索  /" data-lg-palette-open data-lg-icon="search"></button>
+  </nav>
+  <div id="palette" data-lg="palette" data-lg-placeholder="搜索模块、指标或操作…"></div>
+</main>
