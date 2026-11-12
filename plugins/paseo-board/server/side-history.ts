@@ -6,7 +6,8 @@ import type { HistorySnapshot } from "./journal";
  * Owner history for a new Side, curated like Paseo's native fork context
  * (activity-curator buildAgentForkContextAttachment) using only the public
  * plugin SDK: projected timeline pages in, one bounded chat_history text out.
- * Deliberate differences are documented in DESIGN-FORK.md (AMENDMENTS A3/A4).
+ * Deliberate differences are documented in DESIGN-FORK.md (AMENDMENTS A3/A4/A18): unlike native, each
+ * tool call also carries a short excerpt of its own output, inside the same overall budget.
  */
 export const OWNER_HISTORY_MAX_CHARS = 100_000; // native MAX_FORK_CONTEXT_CHARS
 const PAGE_LIMIT = 100;
@@ -14,6 +15,8 @@ const MAX_PAGES = 20;
 const MAX_RECEIVED_CHARS = 8_000_000;
 const MAX_CAPTURE_MS = 8_000;
 const MAX_TOOL_SUMMARY_CHARS = 200;
+/** Per tool call: the output excerpt (head and tail around a marker) never exceeds this, before its two-space indent. */
+export const MAX_TOOL_OUTPUT_CHARS = 600;
 const MAX_METADATA_CHARS = 1_000;
 const OMITTED = "[Earlier chat history omitted]\n";
 const TRUNCATED = "\n[Message truncated]\n";
@@ -21,8 +24,11 @@ export const EMPTY_HISTORY = "No chat history to display.";
 
 export type TimelineItem = TimelineEntry["item"];
 type ToolCallItem = Extract<TimelineItem, { type: "tool_call" }>;
-/** One curated line (or block). `message` marks user/assistant content counted in provenance. */
-export interface CuratedEntry { text: string; message: boolean }
+/**
+ * One curated line (or block). `message` marks user/assistant content counted in provenance;
+ * `output` marks a tool call that carries an excerpt of its output.
+ */
+export interface CuratedEntry { text: string; message: boolean; output?: boolean }
 /** Expands owner messages that are Board prompts into the user's own words plus the Board's answer. */
 export interface BoardPromptExpander {
   /** Loads what reduce() needs for these items (for example the Board's recorded answers). */
@@ -62,12 +68,112 @@ export function displayToolName(name: string): string {
   if (/[:./]/.test(trimmed) || trimmed.includes("__")) return trimmed;
   return trimmed.replace(/[._-]+/g, " ").split(" ").filter(Boolean).join(" ").toLowerCase().replace(/^./, character => character.toUpperCase());
 }
+const BINARY_OMITTED = "[binary data omitted]";
+const IMAGE_OMITTED = "[image omitted]";
+const nonEmpty = (value: unknown) => typeof value === "string" && value ? value : undefined;
+// Base64 needs all three character classes; a long run of only letters or digits is ordinary text.
+const looksEncoded = (run: string) => /[0-9]/.test(run) && /[A-Z]/.test(run) && /[a-z]/.test(run);
+/** A JSON string value that is a data URL or an encoded blob; replaced as a whole before stringifying. */
+const encodedValue = (value: string) => /^data:[^,]{1,100};base64,/.test(value) || (value.length >= 200 && /^[A-Za-z0-9+/_-]+={0,2}$/.test(value) && looksEncoded(value));
+/** Readable text of a tool result value: MCP content blocks keep their text, images and blobs become short markers. */
+function outputValueText(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  const blocks = Array.isArray(value) ? value : typeof value === "object" && Array.isArray((value as { content?: unknown }).content) ? (value as { content: unknown[] }).content : undefined;
+  if (blocks?.length && blocks.every(block => typeof block === "object" && block !== null && typeof (block as { type?: unknown }).type === "string")) {
+    return blocks.map(raw => {
+      const block = raw as { type: string; text?: unknown; resource?: { text?: unknown; uri?: unknown }; uri?: unknown; name?: unknown };
+      if (block.type === "text" && typeof block.text === "string") return block.text;
+      if (block.type === "image") return IMAGE_OMITTED;
+      if (block.type === "resource") return nonEmpty(block.resource?.text) ?? BINARY_OMITTED;
+      if (block.type === "resource_link") return [nonEmpty(block.name), nonEmpty(block.uri)].filter(Boolean).join(" ");
+      if (block.type === "audio") return BINARY_OMITTED;
+      return jsonText(block);
+    }).filter(Boolean).join("\n");
+  }
+  return jsonText(value);
+}
+function jsonText(value: unknown): string | undefined {
+  try { return JSON.stringify(value, (_key, child: unknown) => typeof child === "string" && encodedValue(child) ? BINARY_OMITTED : child); }
+  catch { return undefined; }
+}
+/**
+ * Terminal escapes, carriage-return redraws, binary bytes and encoded blobs removed; blank-line runs collapsed.
+ * Returns undefined when nothing readable is left.
+ */
+export function sanitizeOutput(raw: string): string | undefined {
+  const text = raw
+    .replace(/\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)/g, "")
+    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001B[@-Z\\-_]/g, "");
+  // Binary output (NUL bytes, many control or replacement characters) has no readable excerpt.
+  const controls = text.match(/[\u0001-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g)?.length ?? 0;
+  if (text.includes("\u0000") || controls > Math.max(4, text.length * 0.02)) return BINARY_OMITTED;
+  const lines = text.replace(/\r\n/g, "\n").split("\n").map(line => (line.split("\r").filter(Boolean).pop() ?? "").trimEnd());
+  const cleaned = lines.join("\n")
+    .replace(/data:[^,\s]{1,100};base64,[A-Za-z0-9+/=]*/g, BINARY_OMITTED)
+    // MIME-wrapped base64 (several full-width lines) and long single-line runs. Anchored to line starts, so
+    // a huge single-line output is scanned once instead of being retried from every position.
+    .replace(/^(?:[A-Za-z0-9+/]{60,}={0,2}\n){2,}(?:[A-Za-z0-9+/]+={0,2}$)?/gm, run => looksEncoded(run) ? `${BINARY_OMITTED}\n` : run)
+    .replace(/[A-Za-z0-9+/_-]{200,}={0,2}/g, run => looksEncoded(run) ? BINARY_OMITTED : run)
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return cleaned || undefined;
+}
+const outputMarker = (omitted: number) => `\n[… ${omitted} characters of output omitted …]\n`;
+/** Head and tail around a marker, at most `max` characters in total; a surrogate pair is never split. */
+export function excerptOutput(text: string, max = MAX_TOOL_OUTPUT_CHARS): string {
+  if (text.length <= max) return text;
+  let marker = outputMarker(text.length - max), head = 0, tail = 0;
+  for (let pass = 0; pass < 3; pass++) {
+    const available = Math.max(0, max - marker.length);
+    head = Math.ceil(available / 2); tail = available - head;
+    if (head > 0 && /[\uD800-\uDBFF]/.test(text[head - 1])) head--;
+    if (tail > 0 && /[\uDC00-\uDFFF]/.test(text[text.length - tail])) tail--;
+    const next = outputMarker(text.length - head - tail);
+    if (next.length === marker.length) { marker = next; break; }
+    marker = next;
+  }
+  return text.slice(0, head) + marker + text.slice(text.length - tail);
+}
+/**
+ * The tool call's own result, never its input: edit/write bodies and plans are input, and plain_text
+ * may carry the agent's thinking, so those have none. Failed calls show their error first.
+ */
+function toolOutput(item: ToolCallItem): { label: string; text: string } | undefined {
+  const detail = item.detail as { type: string; [key: string]: unknown };
+  let raw: unknown;
+  switch (detail.type) {
+    case "shell": raw = detail.output; break;
+    case "read": raw = detail.content; break;
+    case "search": {
+      const paths = Array.isArray(detail.filePaths) ? detail.filePaths.filter(path => typeof path === "string") : [];
+      const web = Array.isArray(detail.webResults) ? (detail.webResults as Array<{ title?: unknown; url?: unknown }>).map(result => [nonEmpty(result?.title), nonEmpty(result?.url)].filter(Boolean).join(" — ")).filter(Boolean) : [];
+      raw = nonEmpty(detail.content) ?? (paths.length ? paths.join("\n") : web.length ? web.join("\n") : undefined);
+      break;
+    }
+    case "fetch": raw = detail.result; break;
+    case "worktree_setup": raw = detail.log; break;
+    case "sub_agent": raw = detail.log; break;
+    case "unknown": raw = detail.output; break;
+    default: raw = undefined;
+  }
+  const failed = item.status === "failed";
+  const parts = [failed ? outputValueText(typeof item.error === "object" && item.error !== null && typeof (item.error as { message?: unknown }).message === "string" ? (item.error as { message: string }).message : item.error) : undefined, outputValueText(raw)]
+    .map(part => part === undefined ? undefined : sanitizeOutput(part)).filter((part): part is string => Boolean(part));
+  const unique = parts.filter((part, index) => parts.indexOf(part) === index);
+  if (!unique.length) return undefined;
+  const exit = detail.type === "shell" && typeof detail.exitCode === "number" && detail.exitCode !== 0 ? ` (exit ${detail.exitCode})` : "";
+  const label = failed ? `Error${exit}` : item.status === "running" ? `Output so far${exit}` : item.status === "canceled" ? "Output (canceled)" : `Output${exit}`;
+  return { label, text: excerptOutput(unique.join("\n")) };
+}
 function toolEntries(item: ToolCallItem): CuratedEntry[] {
   if (item.agentMessage) {
     const message = item.agentMessage, body = message.text.trim();
     return [{ text: `[Agent ${message.sender.title || message.sender.id} · ${message.event}]`, message: false }, ...(body ? [{ text: body, message: false }] : [])];
   }
-  // Summaries come from the canonical detail only; outputs, contents, diffs and external tool input never do.
+  // The summary comes from the canonical detail only (never external tool input); the output excerpt is the call's own result.
   const detail = item.detail as { type: string; [key: string]: unknown };
   const text = (value: unknown) => typeof value === "string" && value ? value : undefined;
   let display: { name?: string; summary?: string } = {};
@@ -86,7 +192,12 @@ function toolEntries(item: ToolCallItem): CuratedEntry[] {
   }
   const name = display.name ?? displayToolName(item.name);
   const summary = clip(display.summary, MAX_TOOL_SUMMARY_CHARS);
-  return [{ text: summary ? `[${name}] ${summary}` : `[${name}]`, message: false }];
+  const header = summary ? `[${name}] ${summary}` : `[${name}]`;
+  const output = toolOutput(item);
+  if (!output) return [{ text: header, message: false }];
+  // The excerpt stays in the same entry as its call (fitting keeps or drops both) and is indented, so an
+  // output line can never pass for an `[User]` or `[Assistant]` entry.
+  return [{ text: `${header}\n  ${output.label}: ${output.text.replace(/\n/g, "\n  ")}`, message: false, output: true }];
 }
 /** Keeps user and assistant messages and tool calls; drops reasoning, todo, errors, notifications, compaction and plugin rows. */
 export function curateItems(items: readonly TimelineItem[], expander?: Pick<BoardPromptExpander, "reduce">): CuratedEntry[] {
@@ -193,6 +304,7 @@ async function captureOnce(owner: Pick<Agent, "timeline">, options: CaptureOptio
   return {
     sourceAgentId: options.ownerAgentId, capturedAt: meta.capturedAt,
     messages: fitted?.included.filter(entry => entry.message).length ?? 0, entries: fitted?.included.length ?? 0,
+    toolOutputs: fitted?.included.filter(entry => entry.output).length ?? 0,
     omitted: older || gap || Boolean(fitted?.omitted), ownerBusy: options.busy,
     chars: text.length, digest: sha256(text), text, durationMs: now() - started, pages,
   };

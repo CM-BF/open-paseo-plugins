@@ -20,6 +20,8 @@ export interface HistorySnapshot {
   capturedAt: string;
   messages: number;
   entries: number;
+  /** Included tool calls that carry an output excerpt; absent on snapshots taken before excerpts existed. */
+  toolOutputs?: number;
   omitted: boolean;
   ownerBusy: boolean;
   chars: number;

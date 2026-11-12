@@ -208,6 +208,8 @@ export const InheritedHistorySchema = z.object({
   messages: z.number().int().nonnegative(),
   /** All curated lines included, including tool summaries and Board answers. */
   entries: z.number().int().nonnegative(),
+  /** Included tool calls that carry a short output excerpt. Absent on snapshots taken before excerpts existed (no claim either way). */
+  toolOutputs: z.number().int().nonnegative().optional(),
   /** Older history existed but was not included. */
   omitted: z.boolean(),
   /** The owner had an active turn or pending permission at capture. */

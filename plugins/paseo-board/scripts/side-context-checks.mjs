@@ -28,7 +28,7 @@ export async function runSideContextChecks({ assert, command, evaluate, until, f
     await command('Input.dispatchKeyEvent', { type: 'keyDown', key: name, code, modifiers, windowsVirtualKeyCode: VK[name], ...(name === ' ' ? { text: ' ' } : {}) });
     await command('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code, modifiers: 0, windowsVirtualKeyCode: VK[name] });
   };
-  const NOTE = '新 Side 会带上主 agent 最近的对话，仅作背景参考。', NOTE_EXISTING = '只有新建的 Side 带上记录；已有旁支不变。';
+  const NOTE = '带上主 agent 最近的对话和命令输出摘要，仅作参考。', NOTE_EXISTING = '只有新建的 Side 带上记录；已有旁支不变。';
   const hint = () => evaluate(`[...document.querySelectorAll(${JSON.stringify(popover + ' span')})].map(s=>s.textContent).find(t=>t.includes('Option / Alt + Shift + Enter'))??null`);
   const activeId = () => evaluate(`document.activeElement===document.querySelector(${JSON.stringify(input)})?'input':document.activeElement?.getAttribute('data-testid')??document.activeElement?.tagName`);
   // Every send control is visible without scrolling: inside the popover, inside the viewport and the real hit target at its centre.
@@ -70,7 +70,7 @@ export async function runSideContextChecks({ assert, command, evaluate, until, f
   await press(' ', 'Space');
   await until(`document.activeElement===document.querySelector(${JSON.stringify(input)})`);
   assert.equal(await checked(history), 'true', 'Space on the checked option keeps it and returns focus to the input');
-  assert.ok((await evaluate(`document.querySelector(${JSON.stringify(history)}).title`)).includes('不含工具输出和思考'), 'The full scope stays available on the option');
+  assert.ok((await evaluate(`document.querySelector(${JSON.stringify(history)}).title`)).includes('命令输出摘要：每次输出只留开头和结尾，共约 600 字'), 'The full scope (including the output excerpts) stays available on the option');
   await press('Tab', 'Tab', 8); await press('ArrowLeft'); await until(`document.querySelector(${JSON.stringify(blank)}).getAttribute('aria-checked')==='true'`);
   assert.equal(await evaluate(`localStorage.getItem(${JSON.stringify(prefKey)})`), null, 'Arrow selection writes the same preference as a click');
   await hostClick('[data-testid="board-draft-discard"]'); await noPopover();
@@ -149,14 +149,14 @@ export async function runSideContextChecks({ assert, command, evaluate, until, f
   assert.notEqual(historySide, firstSide);
   const provenance = `[data-testid="board-side-provenance-${historyFork}"]`;
   await until(`document.querySelector(${JSON.stringify(provenance)})?.textContent==='带主 agent 记录 · 读取中'`);
-  await evaluate(`hostFixture.updateInteraction(${JSON.stringify(historyFork)},{inheritedHistory:{sourceAgentId:'owner-fixture',capturedAt:new Date().toISOString(),messages:42,entries:60,omitted:true,ownerBusy:false,chars:98000,digest:'a'.repeat(64),state:'sent'},status:'answered',response:'The Side answered with the owner context.'})`);
-  await until(`document.querySelector(${JSON.stringify(provenance)})?.textContent==='带主 agent 记录 · 最近 42 条消息 · 更早的未带上'`);
-  check('choosing 带主 agent 记录 restores input focus; Option/Alt+Shift+Enter sends new-side with owner-history, and the thread header shows the provenance and omission');
+  await evaluate(`hostFixture.updateInteraction(${JSON.stringify(historyFork)},{inheritedHistory:{sourceAgentId:'owner-fixture',capturedAt:new Date().toISOString(),messages:42,entries:60,toolOutputs:18,omitted:true,ownerBusy:false,chars:98000,digest:'a'.repeat(64),state:'sent'},status:'answered',response:'The Side answered with the owner context.'})`);
+  await until(`document.querySelector(${JSON.stringify(provenance)})?.textContent==='带主 agent 记录 · 最近 42 条消息 · 更早的未带上 · 含命令输出摘要'`);
+  check('choosing 带主 agent 记录 restores input focus; Option/Alt+Shift+Enter sends new-side with owner-history, and the thread header shows the provenance, omission and output excerpts');
 
   // The always-visible desktop discussion rail tags the history Side (not the blank one) and reads the full provenance.
   const railRow = id => `[data-testid="board-discussion-${id}"]`;
   await until(`document.querySelector(${JSON.stringify(railRow(historyFork))})?.textContent.includes('· 带记录')`);
-  assert.ok((await evaluate(`document.querySelector(${JSON.stringify(railRow(historyFork))}).getAttribute('aria-label')`)).includes('带主 agent 记录 · 最近 42 条消息 · 更早的未带上'));
+  assert.ok((await evaluate(`document.querySelector(${JSON.stringify(railRow(historyFork))}).getAttribute('aria-label')`)).includes('带主 agent 记录 · 最近 42 条消息 · 更早的未带上 · 含命令输出摘要'));
   assert.equal((await text(railRow(blankFork))).includes('带记录'), false);
   const railTag = await evaluate(`(()=>{const row=document.querySelector(${JSON.stringify(railRow(historyFork))}),line=[...row.querySelectorAll('span')].find(s=>s.textContent.includes('带记录'));return {row:row.getBoundingClientRect().toJSON(),line:line.getBoundingClientRect().toJSON(),overflow:line.scrollWidth-line.clientWidth}})()`);
   assert.ok(railTag.line.right <= railTag.row.right + 0.5 && railTag.overflow <= 0, JSON.stringify(railTag));
@@ -168,7 +168,7 @@ export async function runSideContextChecks({ assert, command, evaluate, until, f
   await until(`document.querySelector(${JSON.stringify(input)})`);
   await hostClick('[data-testid="board-side-agent-picker"] button');
   await until(`document.querySelector('[data-testid="board-side-agent-provenance-${historySide}"]')`);
-  assert.equal(await text(`[data-testid="board-side-agent-provenance-${historySide}"]`), '带主 agent 记录 · 最近 42 条消息 · 更早的未带上');
+  assert.equal(await text(`[data-testid="board-side-agent-provenance-${historySide}"]`), '带主 agent 记录 · 最近 42 条消息 · 更早的未带上 · 含命令输出摘要');
   assert.equal(await evaluate(`!!document.querySelector('[data-testid="board-side-agent-provenance-${firstSide}"]')`), false);
   await evaluate(`hostFixture.updateInteraction(${JSON.stringify(historyFork)},{inheritedHistory:{sourceAgentId:'owner-fixture',capturedAt:new Date().toISOString(),messages:42,entries:60,omitted:true,ownerBusy:false,chars:98000,digest:'a'.repeat(64),state:'uncertain'}})`);
   await until(`document.querySelector('[data-testid="board-side-agent-provenance-${historySide}"]')?.textContent.startsWith('带主 agent 记录 · 未确认送达（这个 Side 可能没有拿到记录）')`);

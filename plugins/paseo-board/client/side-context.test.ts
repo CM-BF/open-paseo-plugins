@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Interaction } from "../shared/contracts";
 import type { DraftStorage } from "./draft-store";
-import { createSideContextStore, SIDE_CONTEXT_NOTE, SIDE_CONTEXT_NOTE_EXISTING, SIDE_CONTEXT_PREFIX, sideContextKey, sideContextNotes, sideHistoryTag, sideProvenance, visibleSideContext } from "./side-context";
+import { createSideContextStore, SIDE_CONTEXT_NOTE, SIDE_CONTEXT_NOTE_EXISTING, SIDE_CONTEXT_PREFIX, SIDE_CONTEXT_SCOPE, sideContextKey, sideContextNotes, sideHistoryTag, sideProvenance, visibleSideContext } from "./side-context";
 
 function memory() {
   const data = new Map<string, string>();
@@ -59,6 +59,10 @@ describe("Side provenance", () => {
     expect(sideProvenance(fork({ inheritedHistory: history({ omitted: true }) }))).toBe("带主 agent 记录 · 最近 42 条消息 · 更早的未带上");
     expect(sideProvenance(fork({ inheritedHistory: history({ entries: 0, messages: 0 }) }))).toBe("带主 agent 记录 · 主 agent 暂无可带的记录");
     expect(sideProvenance(fork({ inheritedHistory: history({ ownerBusy: true }) }))).toBe("带主 agent 记录 · 42 条消息 · 含主 agent 进行中的一轮");
+    // Output excerpts are named only when the snapshot recorded some; older snapshots (no field) and zero make no claim.
+    expect(sideProvenance(fork({ inheritedHistory: history({ toolOutputs: 7 }) }))).toBe("带主 agent 记录 · 42 条消息 · 含命令输出摘要");
+    expect(sideProvenance(fork({ inheritedHistory: history({ toolOutputs: 7, omitted: true, ownerBusy: true }) }))).toBe("带主 agent 记录 · 最近 42 条消息 · 更早的未带上 · 含命令输出摘要 · 含主 agent 进行中的一轮");
+    expect(sideProvenance(fork({ inheritedHistory: history({ toolOutputs: 0 }) }))).toBe("带主 agent 记录 · 42 条消息");
     expect(sideProvenance(fork({ inheritedHistory: history({ state: "frozen" }) }))).toBe("带主 agent 记录 · 待送达 · 42 条消息");
     expect(sideProvenance(fork({ inheritedHistory: history({ state: "frozen" }), status: "failed" }))).toBe("带主 agent 记录 · 创建结果待核对 · 42 条消息");
     expect(sideProvenance(fork({ inheritedHistory: history({ state: "uncertain" }) }))).toBe("带主 agent 记录 · 未确认送达（这个 Side 可能没有拿到记录） · 42 条消息");
@@ -66,8 +70,8 @@ describe("Side provenance", () => {
   });
 
   it("puts a delivery warning before the details so a two-line clamp cannot drop it", () => {
-    const worst = sideProvenance(fork({ inheritedHistory: history({ state: "uncertain", omitted: true, ownerBusy: true }) }))!;
-    expect(worst).toBe("带主 agent 记录 · 未确认送达（这个 Side 可能没有拿到记录） · 最近 42 条消息 · 更早的未带上 · 含主 agent 进行中的一轮");
+    const worst = sideProvenance(fork({ inheritedHistory: history({ state: "uncertain", omitted: true, ownerBusy: true, toolOutputs: 9 }) }))!;
+    expect(worst).toBe("带主 agent 记录 · 未确认送达（这个 Side 可能没有拿到记录） · 最近 42 条消息 · 更早的未带上 · 含命令输出摘要 · 含主 agent 进行中的一轮");
     // The label plus the warning is the prefix; at 320 px the picker fits about 34 CJK-width characters in two lines.
     const prefix = worst.slice(0, worst.indexOf("记录）") + 3);
     expect(prefix).toBe("带主 agent 记录 · 未确认送达（这个 Side 可能没有拿到记录）");
@@ -103,5 +107,9 @@ describe("new-Side choice display", () => {
     // One line in the 420 px popover (about 27 CJK-width units of 12 px text); ASCII counts as half a unit.
     const units = (text: string) => text.replace(/[ -~]/g, "").length + text.replace(/[^ -~]/g, "").length / 2;
     for (const note of [SIDE_CONTEXT_NOTE, SIDE_CONTEXT_NOTE_EXISTING]) expect(units(note)).toBeLessThanOrEqual(26);
+    // What is carried is stated where the choice is made: the visible note and the full scope both name the output excerpts.
+    expect(SIDE_CONTEXT_NOTE).toContain("命令输出摘要");
+    expect(SIDE_CONTEXT_SCOPE).toContain("命令输出摘要"); expect(SIDE_CONTEXT_SCOPE).toContain("约 600 字"); expect(SIDE_CONTEXT_SCOPE).toContain("图片和二进制内容不带");
+    expect(SIDE_CONTEXT_SCOPE).not.toContain("不含工具输出");
   });
 });

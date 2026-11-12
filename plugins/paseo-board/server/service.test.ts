@@ -3,13 +3,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { BoardStore } from "./store";
-import { BoardService, INHERITED_HISTORY_PROMPT } from "./service";
+import { BoardService, INHERITED_HISTORY_PROMPT, publicHistory } from "./service";
 import { ServiceJournal, deliveryKey } from "./journal";
 import { discussionConfig, INHERITED_HISTORY_SYSTEM_NOTE, type Paseo, type Snapshot, type TimelineEntry, type TimelinePage } from "./sdk";
 import { createHash } from "node:crypto";
 import { TextAttachmentSchema } from "@getpaseo/protocol/messages";
 import { extractCandidates } from "./extraction";
-import type { InteractInput } from "../shared/contracts";
+import { InheritedHistorySchema, type InteractInput } from "../shared/contracts";
 
 const commentGroup = (intentId = "group"): InteractInput => ({
   boardId: "board", intentId, kind: "change", destination: "main", text: "Review these changes together",
@@ -1213,16 +1213,27 @@ describe("Side creation with the owner's history", () => {
     expect(parsed).toMatchObject({ type: "text", mimeType: "text/plain", contextKind: "chat_history", title: "Chat history" });
     const text = parsed.text;
     expect(text.startsWith("<chat-history-summary>\nChat history from a previous Paseo agent.")).toBe(true);
-    for (const expected of ['[User via Board] 为什么用这个公式？ (selected: "E = mc^2" at #formula)', "[Board answer · main-1 · answered] 因为质能等价，这里用它估算能量。", "[board_respond]", "[Assistant] 已在画布上补充说明。", "[Shell] npm test", "[User] 顺便记住单位用焦耳", "Source directory: /tmp/board-fixture"]) expect(text).toContain(expected);
-    for (const hidden of ["SECRET_TOOL_INPUT", "SECRET_TOOL_OUTPUT", "HIDDEN_REASONING", "SHELL_OUTPUT", "<board-context-untrusted-json>", "first reply onward"]) expect(text).not.toContain(hidden);
+    // Tool calls carry a short excerpt of their own output (A18); tool input bodies and reasoning never appear.
+    for (const expected of ['[User via Board] 为什么用这个公式？ (selected: "E = mc^2" at #formula)', "[Board answer · main-1 · answered] 因为质能等价，这里用它估算能量。", '[board_respond]\n  Output: {"ok":"SECRET_TOOL_OUTPUT"}', "[Assistant] 已在画布上补充说明。", "[Shell] npm test\n  Output: SHELL_OUTPUT", "[User] 顺便记住单位用焦耳", "Source directory: /tmp/board-fixture"]) expect(text).toContain(expected);
+    for (const hidden of ["SECRET_TOOL_INPUT", "HIDDEN_REASONING", "<board-context-untrusted-json>", "first reply onward"]) expect(text).not.toContain(hidden);
     expect(sent.text).toContain(INHERITED_HISTORY_PROMPT.trim()); expect(sent.text.startsWith("[paseo-board board=board intent=fork-h]")).toBe(true);
     expect((sdk.create.mock.calls[0][0] as { config: { systemPrompt: string } }).config.systemPrompt).toContain(INHERITED_HISTORY_SYSTEM_NOTE.trim());
     const saved = await interaction("fork-h");
     // Messages: the Board question, the assistant message and the user message. The Board answer is an entry, not a message,
     // because it often repeats an [Assistant] reply (here both exist) and must not inflate "N 条消息".
-    expect(saved).toMatchObject({ kind: "fork", sideContext: "owner-history", inheritedHistory: { sourceAgentId: "owner", messages: 3, entries: 6, omitted: false, ownerBusy: false, chars: text.length, digest: createHash("sha256").update(text).digest("hex"), state: "sent" } });
+    expect(saved).toMatchObject({ kind: "fork", sideContext: "owner-history", inheritedHistory: { sourceAgentId: "owner", messages: 3, entries: 6, toolOutputs: 2, omitted: false, ownerBusy: false, chars: text.length, digest: createHash("sha256").update(text).digest("hex"), state: "sent" } });
     expect(journal.get("board/fork-h")!.history).toMatchObject({ digest: saved.inheritedHistory!.digest }); expect(journal.get("board/fork-h")!.history!.text).toBeUndefined();
     expect(JSON.stringify(await store.read("board"))).not.toContain("顺便记住单位用焦耳");
+  });
+
+  it("projects the output-excerpt count only for snapshots that recorded it", () => {
+    const snapshot = { sourceAgentId: "owner", capturedAt: "2026-11-11T00:00:00.000Z", messages: 2, entries: 4, omitted: false, ownerBusy: false, chars: 10, digest: "a".repeat(64) };
+    // Snapshots taken before excerpts existed make no claim either way, and stay canonically equal to their stored projection.
+    const legacy = publicHistory(snapshot, "delivered");
+    expect(legacy).not.toHaveProperty("toolOutputs"); expect(InheritedHistorySchema.parse(legacy)).toEqual(legacy);
+    const current = publicHistory({ ...snapshot, toolOutputs: 3, text: "SNAPSHOT_TEXT" }, "delivered");
+    expect(current).toMatchObject({ toolOutputs: 3, state: "sent" }); expect(JSON.stringify(current)).not.toContain("SNAPSHOT_TEXT");
+    expect(InheritedHistorySchema.parse(current)).toEqual(current);
   });
 
   it("freezes the payload across a lost create response and a restart, and never re-reads the owner", async () => {
