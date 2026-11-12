@@ -298,7 +298,7 @@
     // Layout-space rect (ignores parent transforms such as a tilted card).
     const rectOf = el => {
       if (el.matches('[data-lg-dock-item]')) {
-        const size = parseFloat(cssVar(host, '--lg-dock-size', '46')) || 46, s = parseFloat(el.style.getPropertyValue('--lg-s')) || 1;
+        const size = parseFloat(cssVar(host, '--lg-dock-size', '46')) || 46, s = api(host, 'dock')?.scaleOf(el) || 1;
         const cx = el.offsetLeft + el.offsetWidth / 2, bottom = el.offsetTop + el.offsetHeight;
         return { l: cx - (size * s) / 2, r: cx + (size * s) / 2, t: bottom - size * s, b: bottom };
       }
@@ -376,17 +376,37 @@
   const safeQuery = sel => { try { return document.querySelector(sel); } catch { return null; } };
 
   /* ==========================================================================
-     card — cursor light, local edge glow and a gentle 3D tilt. The inline
-     properties are removed again once the light has faded.
+     card — cursor light, local edge glow and a gentle 3D tilt. Driven through a
+     Web Animation rather than inline styles, so the authored element is never
+     mutated (Board's comment screenshots and component identity stay stable).
      ========================================================================== */
-  const CARD_PROPS = ['--lg-px', '--lg-py', '--lg-rx', '--lg-ry', '--lg-glow'];
+  // Pointer effects pause while the user presses, selects text or uses a Board selection mode:
+  // Board's comment screenshots require the selected content to keep its geometry.
+  let pointerDown = false;
+  const resumers = new Set();
+  const interactionFrozen = () => pointerDown || (document.documentElement.getAttribute('data-board-selection') || 'off') !== 'off' || (getSelection() ? !getSelection().isCollapsed : false);
+  const resume = () => { if (!interactionFrozen()) for (const fn of resumers) fn(); };
+  const onPointerDown = () => { pointerDown = true; };
+  const onPointerUp = () => { pointerDown = false; resume(); };
+  // A finished, zero-length animation whose keyframe is replaced each frame.
+  const liveStyle = el => {
+    let anim = null;
+    return {
+      set(frame) {
+        if (anim && anim.effect) anim.effect.setKeyframes([frame]);
+        else anim = el.animate([frame], { duration: 0, fill: 'forwards' });
+      },
+      clear() { anim?.cancel(); anim = null; },
+    };
+  };
   function initCard(card, b) {
-    const authoredStyle = card.hasAttribute('style');
+    const live = liveStyle(card);
     const cur = { x: 0, y: 0, rx: 0, ry: 0, g: 0 };
     const tgt = { ...cur };
     let raf = 0, primed = false;
-    const clear = () => { for (const p of CARD_PROPS) card.style.removeProperty(p); tidyStyle(card, authoredStyle); card.classList.remove('is-lit'); };
+    const LIT = 'inset 0 1px 0 var(--lg-highlight), 0 0 26px rgba(255, 255, 255, calc(0.4 * var(--lg-glow, 0))), var(--lg-shadow-lift)';
     const loop = () => {
+      if (interactionFrozen()) { raf = 0; return; }
       const k = reduced() ? 1 : null;
       cur.x += (tgt.x - cur.x) * (k || 0.32);
       cur.y += (tgt.y - cur.y) * (k || 0.32);
@@ -395,17 +415,16 @@
       cur.g += (tgt.g - cur.g) * (k || 0.14);
       const done = Object.keys(cur).every(key => Math.abs(cur[key] - tgt[key]) < (key === 'g' ? 0.002 : 0.05));
       raf = done ? 0 : requestAnimationFrame(loop);
-      if (done && tgt.g === 0) { for (const key in cur) cur[key] = 0; clear(); return; }
-      const s = card.style;
-      s.setProperty('--lg-px', cur.x.toFixed(1) + 'px');
-      s.setProperty('--lg-py', cur.y.toFixed(1) + 'px');
-      s.setProperty('--lg-rx', cur.rx.toFixed(2) + 'deg');
-      s.setProperty('--lg-ry', cur.ry.toFixed(2) + 'deg');
-      s.setProperty('--lg-glow', cur.g.toFixed(3));
+      if (done && tgt.g === 0) { for (const key in cur) cur[key] = 0; live.clear(); return; }
+      live.set({
+        '--lg-px': cur.x.toFixed(1) + 'px', '--lg-py': cur.y.toFixed(1) + 'px',
+        '--lg-rx': cur.rx.toFixed(2) + 'deg', '--lg-ry': cur.ry.toFixed(2) + 'deg', '--lg-glow': cur.g.toFixed(3),
+        ...(cur.g > 0.01 ? { boxShadow: LIT } : {}),
+      });
     };
     const kick = () => { if (!raf) raf = requestAnimationFrame(loop); };
     b.on(card, 'pointermove', e => {
-      if (e.pointerType === 'touch' || noHover()) return;
+      if (e.pointerType === 'touch' || noHover() || interactionFrozen()) return;
       const r = card.getBoundingClientRect();
       const nx = clamp((e.clientX - r.left) / r.width, 0, 1), ny = clamp((e.clientY - r.top) / r.height, 0, 1);
       const max = reduced() ? 0 : Math.min(6, 2000 / Math.max(r.width, r.height));
@@ -415,12 +434,12 @@
       tgt.rx = -(ny - 0.5) * 2 * max;
       tgt.g = 1;
       if (!primed) { cur.x = tgt.x; cur.y = tgt.y; primed = true; }
-      card.classList.add('is-lit');
       kick();
     });
     b.on(card, 'pointerleave', () => { tgt.rx = tgt.ry = tgt.g = 0; primed = false; kick(); });
-    b.add(() => { cancelAnimationFrame(raf); clear(); });
-    return {};
+    resumers.add(kick);
+    b.add(() => { resumers.delete(kick); cancelAnimationFrame(raf); live.clear(); });
+    return { get glow() { return cur.g; } };
   }
 
   /* ==========================================================================
@@ -787,8 +806,17 @@
       }
       play(anims, () => { anims.forEach(a => a.cancel()); flying.forEach(o => o.g.remove()); shadowIn(m); });
       m.focus({ preventScroll: true });
+      reveal(m);
+    }
+    // Keep the opened module and its thumbnail strip in view, above a floating dock.
+    function reveal(m) {
       const top = m.getBoundingClientRect().top;
-      if (top < 0 || top > innerHeight * 0.6) root.scrollIntoView({ behavior: scrollBehavior(), block: 'start' });
+      if (top < 0 || top > innerHeight * 0.6) { root.scrollIntoView({ behavior: scrollBehavior(), block: 'start' }); return; }
+      const dock = document.querySelector('[data-lg~="dock"]:not(.is-tucked)');
+      const dockRect = dock && getComputedStyle(dock).position === 'fixed' ? dock.getBoundingClientRect() : null;
+      const limit = (dockRect && dockRect.height ? dockRect.top : innerHeight) - 12;
+      const bottom = root.getBoundingClientRect().top + root.scrollHeight;
+      if (bottom > limit) window.scrollBy({ top: Math.min(bottom - limit, Math.max(0, top - 12)), behavior: scrollBehavior() });
     }
 
     function switchTo(m) {
@@ -969,7 +997,9 @@
       results.forEach((r, i) => {
         const li = make('li', 'lg-pal-item', { role: 'option', id: `${id}-opt-${i}`, 'aria-selected': String(i === index) });
         const ico = make('span', 'lg-pal-ico', { 'aria-hidden': 'true' });
-        iconInto(ico, r.el.matches('[data-lg-dock-item]') ? r.el : r.el.querySelector('[data-lg-icon]'), r.el.matches('[data-lg-option]') ? ICONS.clock : ICONS.jump);
+        // Own icon only: a dock item, an element carrying data-lg-icon, or a module's header icon.
+        const source = r.el.matches('[data-lg-dock-item], [data-lg-icon]') ? r.el : r.el.matches('[data-lg-module]') ? r.el.querySelector('[data-lg-icon]') : null;
+        iconInto(ico, source, r.el.matches('[data-lg-option]') ? ICONS.clock : ICONS.jump);
         const title = make('span', 'lg-pal-title'); title.append(highlight(r.title, r.marks));
         const group = make('span', 'lg-pal-group'); group.textContent = r.group;
         li.append(ico, title, group);
@@ -1086,8 +1116,7 @@
     dock.append(label);
     const page = dock.closest('[data-lg-page]');
     let px = null, focusItem = null, raf = 0, base = [];
-    const scale = new Map();
-    const authored = new Map(items().map(it => [it, it.hasAttribute('style')]));
+    const scale = new Map(), lives = new Map();
     const maxScale = () => Math.min(parseFloat(dock.dataset.lgMagnify) || 1.6, narrowQuery.matches ? 1.3 : 9);
 
     const measure = () => {
@@ -1098,8 +1127,10 @@
     };
     const size = () => parseFloat(cssVar(dock, '--lg-dock-size', '46')) || 46;
     const setScale = (it, v) => {
-      if (Math.abs(v - 1) < 0.0005) { it.style.removeProperty('--lg-s'); tidyStyle(it, authored.get(it)); }
-      else it.style.setProperty('--lg-s', v.toFixed(4));
+      let live = lives.get(it);
+      if (Math.abs(v - 1) < 0.0005) { live?.clear(); lives.delete(it); return; }
+      if (!live) lives.set(it, (live = liveStyle(it)));
+      live.set({ '--lg-s': v.toFixed(4) });
     };
     const loop = () => {
       const all = items(), sz = size(), sigma = sz * 1.15, MAX = maxScale();
@@ -1170,10 +1201,10 @@
     b.add(() => {
       cancelAnimationFrame(raf);
       label.remove();
-      for (const it of items()) setScale(it, 1);
+      for (const it of [...lives.keys()]) setScale(it, 1);
       for (const it of labelled) it.removeAttribute('aria-label');
     });
-    return { refresh() { items().forEach(name); for (const it of items()) if (!authored.has(it)) authored.set(it, it.hasAttribute('style')); scale.clear(); for (const it of items()) setScale(it, 1); base = []; measure(); } };
+    return { scaleOf: it => scale.get(it) || 1, refresh() { items().forEach(name); scale.clear(); for (const it of [...lives.keys()]) setScale(it, 1); base = []; measure(); } };
   }
 
   /* ==========================================================================
@@ -1184,7 +1215,8 @@
      table carries the data for screen readers. Data strings are only ever text.
      ========================================================================== */
   const MAX_POINTS = 200, MAX_SERIES = 64, MAX_JSON = 65536;
-  const formatValue = v => (Math.abs(v) < 10 && !Number.isInteger(v) ? v.toFixed(1) : Math.round(v * 100) / 100).toLocaleString('en-US');
+  const formatValue = v => v.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  const formatAverage = v => v.toLocaleString('en-US', { maximumFractionDigits: Math.abs(v) >= 10 ? 0 : 1 });
   function normalize(raw) {
     if (Array.isArray(raw)) {
       if (raw.every(v => typeof v === 'number')) return { labels: raw.map((_, i) => String(i + 1)), values: raw };
@@ -1243,9 +1275,13 @@
 
     const text = (attrs, value) => { const t = svgEl('text', attrs); t.textContent = value; return t; };
     let marks = [], pts = [];
+    let drawnWidth = 0;
     function render() {
       const r = fig.getBoundingClientRect();
       width = Math.max(120, Math.round(r.width)); height = Math.max(80, Math.round(r.height));
+      // A new width re-lays the marks out without animating them sideways.
+      if (drawnWidth && drawnWidth !== width) { svgRoot.classList.add('is-instant'); requestAnimationFrame(() => requestAnimationFrame(() => svgRoot.classList.remove('is-instant'))); }
+      drawnWidth = width;
       svgRoot.setAttribute('viewBox', `0 0 ${width} ${height}`);
       let data = source();
       if (data && data.values.length > MAX_POINTS) data = { labels: data.labels.slice(-MAX_POINTS), values: data.values.slice(-MAX_POINTS) };
@@ -1267,7 +1303,7 @@
       data.labels.forEach((l, i) => { const tr = make('tr'), a = make('td'), v = make('td'); a.textContent = l; v.textContent = formatValue(data.values[i]) + unit; tr.append(a, v); table.append(tr); });
 
       const vals = data.values, count = vals.length;
-      const avg = vals.reduce((a, v) => a + v, 0) / count, avgText = `均值 ${formatValue(avg)}${unit}`;
+      const avg = vals.reduce((a, v) => a + v, 0) / count, avgText = `均值 ${formatAverage(avg)}${unit}`;
       const avgW = [...avgText].reduce((w, ch) => w + (ch.charCodeAt(0) > 255 ? 12 : 7), 18);
       const L = 44, R = showAvg ? avgW + 12 : 12, T = 14, B = 26;
       const max0 = Math.max(0, ...vals), min0 = Math.min(0, ...vals);
@@ -1319,9 +1355,13 @@
       pts = data;
       // x labels, thinned to fit
       gX.replaceChildren();
-      const longest = Math.max(...data.labels.map(l => [...l].length), 1);
-      const every = Math.max(1, Math.ceil((longest * 7.5 + 10) / slot));
-      data.labels.forEach((l, i) => { if (i % every === 0) gX.append(text({ class: 'lg-chart-label', x: L + i * slot + slot / 2, y: height - 7, 'text-anchor': 'middle' }, l)); });
+      // Thin labels to fit; a label still wider than its room is shortened with an ellipsis.
+      const textWidth = l => [...l].reduce((w, ch) => w + (ch.charCodeAt(0) > 255 ? 12 : 7.5), 0);
+      const longest = Math.max(...data.labels.map(textWidth), 7);
+      const every = Math.max(1, Math.min(Math.ceil(count / 2), Math.ceil((longest + 10) / slot)));
+      const room = slot * every - 8;
+      const fit = l => { if (textWidth(l) <= room) return l; let out = ''; for (const ch of l) { if (textWidth(out + ch) + 8 > room) break; out += ch; } return out + '…'; };
+      data.labels.forEach((l, i) => { if (i % every === 0) gX.append(text({ class: 'lg-chart-label', x: L + i * slot + slot / 2, y: height - 7, 'text-anchor': 'middle' }, fit(l))); });
       gAvg.replaceChildren();
       if (showAvg) {
         const yy = y(avg);
@@ -1345,7 +1385,7 @@
       gTip.classList.add('is-on');
     };
     b.on(svgRoot, 'pointermove', e => {
-      if (!marks.length) return;
+      if (!marks.length || interactionFrozen()) return;
       const r = svgRoot.getBoundingClientRect(), x = (e.clientX - r.left) * (width / Math.max(1, r.width));
       let best = 0;
       marks.forEach((m, i) => { if (Math.abs(m.cx - x) < Math.abs(marks[best].cx - x)) best = i; });
@@ -1492,6 +1532,10 @@
     for (const el of queuedScans.splice(0)) if (el.isConnected) scan(el);
     mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-lg', 'data-lg-count', 'data-style', 'data-lg-by', 'data-lg-key', ...CHART_ATTRS] });
     window.addEventListener('message', onHostMessage);
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('pointerup', onPointerUp, true);
+    window.addEventListener('pointercancel', onPointerUp, true);
+    document.addEventListener('selectionchange', resume);
   };
   function teardown() {
     alive = false;
@@ -1499,6 +1543,10 @@
     window.removeEventListener('keydown', onEscDown, true);
     window.removeEventListener('keyup', onEscUp, true);
     window.removeEventListener('message', onHostMessage);
+    window.removeEventListener('pointerdown', onPointerDown, true);
+    window.removeEventListener('pointerup', onPointerUp, true);
+    window.removeEventListener('pointercancel', onPointerUp, true);
+    document.removeEventListener('selectionchange', resume);
     for (const el of [...registry.keys()]) destroy(el);
     document.getElementById('lg-defs')?.remove();
     if (window.LiquidGlass === self) delete window.LiquidGlass;

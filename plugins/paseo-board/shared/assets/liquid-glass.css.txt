@@ -469,15 +469,12 @@ body:has([data-style="liquid-glass"][data-lg-page]) {
 [data-style="liquid-glass"] .lg-odo-s { display: inline-block; line-height: 1.1; }
 
 /* --------------------------------------------------------------------------
-   card — cursor light, edge glow, gentle tilt (kit.js drives --lg-px/py/rx/ry/glow)
+   card — cursor light, edge glow, gentle tilt (kit.js animates --lg-px/py/rx/ry/glow)
    -------------------------------------------------------------------------- */
 [data-style="liquid-glass"] [data-lg~="card"] {
   isolation: isolate;
   transform: perspective(1100px) rotateX(var(--lg-rx, 0deg)) rotateY(var(--lg-ry, 0deg)) translateZ(0);
   transform-style: preserve-3d;
-}
-[data-style="liquid-glass"] [data-lg~="card"].is-lit {
-  box-shadow: inset 0 1px 0 var(--lg-highlight), 0 0 26px rgba(255, 255, 255, calc(0.4 * var(--lg-glow, 0))), var(--lg-shadow-lift);
 }
 [data-style="liquid-glass"] [data-lg~="card"]::before {
   content: "";
@@ -760,6 +757,7 @@ body:has([data-style="liquid-glass"][data-lg-page]) {
    -------------------------------------------------------------------------- */
 [data-style="liquid-glass"] [data-lg~="palette"] { position: fixed; inset: 0; z-index: 1000; display: none; margin: 0; }
 [data-style="liquid-glass"] [data-lg~="palette"].is-mounted { display: block; }
+[data-style="liquid-glass"] [data-lg~="palette"]:not(.is-open) { pointer-events: none; }
 [data-style="liquid-glass"] .lg-pal-scrim {
   position: absolute;
   inset: 0;
@@ -973,6 +971,7 @@ body:has([data-style="liquid-glass"][data-lg-page]) {
 [data-style="liquid-glass"] .lg-chart-bar { fill: url(#lg-chart-fill); }
 [data-style="liquid-glass"] .lg-chart .lg-chart-bar { transition: d 760ms var(--lg-spring), opacity 200ms; transition-delay: var(--lg-d, 0ms); }
 [data-style="liquid-glass"] .lg-chart .lg-chart-bar.is-dim { opacity: 0.45; }
+[data-style="liquid-glass"] .lg-chart.is-instant :is(.lg-chart-bar, .lg-chart-line, .lg-chart-area) { transition: none; }
 [data-style="liquid-glass"] .lg-chart-line { fill: none; stroke: var(--lg-accent); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; transition: d 760ms var(--lg-spring); }
 [data-style="liquid-glass"] .lg-chart-area { stroke: none; opacity: 0.55; transition: d 760ms var(--lg-spring); }
 [data-style="liquid-glass"] .lg-chart-dot { fill: #fff; stroke: var(--lg-accent); stroke-width: 2; transition: r 160ms; }
