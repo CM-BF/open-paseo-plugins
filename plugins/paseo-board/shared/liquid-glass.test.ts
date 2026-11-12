@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { buildBoardDocument } from "./document";
 import type { FrameSnapshot } from "./frame-contract";
 import { DEFAULT_DARK_COLORS, DEFAULT_LIGHT_COLORS, frameThemeFromColors } from "./frame-theme";
+import { boardInstructions, skillMarkdown } from "../server/prompts";
 import { LIQUID_GLASS_SCRIPT_ID, LIQUID_GLASS_STYLE_ID, LIQUID_GLASS_VERSION, canvasSources, createLiquidGlassTracker, liquidGlassAssets, liquidGlassHead, liquidGlassUsage, scanLiquidGlass } from "./liquid-glass";
 
 type Patch = { id: string; selector: string; operation: "append" | "replace" | "text"; html?: string; text?: string; expectedText?: string };
@@ -163,5 +164,27 @@ describe("canonical liquid-glass example", () => {
     const text = doc(example, [], "dark");
     expect(text).toContain('data-theme="dark"');
     expect(count(text, `<style id="${LIQUID_GLASS_STYLE_ID}"`)).toBe(1);
+  });
+});
+
+describe("liquid-glass agent documentation", () => {
+  const skill = skillMarkdown("/plugin/bin/paseo-board");
+  const section = skill.slice(skill.indexOf("### Optional liquid-glass style preset"), skill.indexOf("### Maintain a long-lived composition"));
+  it("adds one short sentence to the always-injected instructions", () => {
+    const sentences = boardInstructions("/plugin/bin/paseo-board", "/plugin/SKILL.md").split(/(?<=\.)\s+/).filter(text => /liquid.glass/i.test(text));
+    expect(sentences).toEqual(['For a "liquid glass" (液态玻璃) look, use the built-in preset (data-style="liquid-glass"); see the skill.']);
+    expect(sentences[0].length).toBeLessThanOrEqual(160);
+  });
+  it("documents the versioned contract with a complete page that activates every role", () => {
+    expect(section).toContain(`(v${LIQUID_GLASS_VERSION})`);
+    const page = section.match(/```html\n([\s\S]*?)```/)?.[1] ?? "";
+    expect(liquidGlassUsage([page])).toMatchObject({ preset: true, palette: true });
+    for (const role of ["nav", "card", "expand", "split", "palette", "dock", "chart"]) expect(page).toMatch(new RegExp(`data-lg="[^"]*\\b${role}\\b`));
+    expect(page).not.toMatch(/<script|<style/);
+    for (const topic of ["Scope:", "Roles", "Values:", "Helpers:", "Colour scheme:", "Accessibility:", "Limits:", "reduced motion"]) expect(section).toContain(topic);
+    // Every documented built-in icon exists in the stylesheet.
+    const icons = section.match(/data-lg-icon="(home\|[^"]+)"/)?.[1].split("|") ?? [];
+    expect(icons.length).toBeGreaterThan(10);
+    for (const icon of icons) expect(liquidGlassAssets.css).toContain(`[data-lg-icon="${icon}"]`);
   });
 });

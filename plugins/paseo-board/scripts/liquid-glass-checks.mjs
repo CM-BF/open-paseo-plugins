@@ -305,6 +305,10 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
     await untilFrame("![...document.querySelectorAll('#dock [data-lg-dock-item]')].some(i=>i.hasAttribute('style')||i.getAnimations().length)", 3000);
     await clickPoint(dockItem.x + dockItem.width / 2, dockItem.y + dockItem.height / 2);
     await untilFrame("(()=>{const r=document.querySelector('#trend').getBoundingClientRect();return r.top>-4&&r.top<innerHeight*0.6})()", 4000);
+    if (pass.name === 'light-1100') {
+      // Identity is unchanged after real interaction too (state lives in attributes outside it).
+      for (const id of ['kpi-publish', 'kpi', 'metric', 'range', 'dock']) assert.equal(await liveIdentity('#' + id), componentIdentityFor(authoredDoc.querySelector('#' + id)).fingerprint, `${id} after interaction`);
+    }
     check(`${pass.name}: nav, ${pass.width >= 600 ? 'card, ' : ''}split, expand, forwarded palette and dock all work`);
   }
   await viewport(1100);

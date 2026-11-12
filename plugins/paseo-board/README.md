@@ -142,6 +142,17 @@ Network access is limited to HTTPS resources on `unpkg.com`, `cdn.jsdelivr.net`,
 
 Visual verification needs the actual Board renderer. A raw HTML file lacks its injected styles and runtime, and there is no `board_preview` tool. Use an owned test Board in Paseo, or an isolated development harness built with `buildBoardDocument` for explicit light/dark palettes without changing the user's global theme. Clearly distinguish renderer checks from native UI verification; the repository's browser tests cover their fixtures, not every authored design.
 
+### Liquid-glass style preset (optional)
+
+An agent can give a Board the built-in "liquid glass" (液态玻璃) look by writing semantic markup only: `data-style="liquid-glass"` on the outermost container (plus `data-lg-page` for a whole page), `data-lg` roles (`nav`, `card`, `expand`, `split`, `palette`, `dock`, `chart`), named controls (`data-lg-name` / `data-lg-key` with `data-lg-by`), rolling numbers (`data-lg-count`), `lg-*` layout helpers and built-in icons (`data-lg-icon`). The [example page](examples/liquid-glass.html) has no page script and no page CSS. Re-tint with `--lg-accent`, `--lg-peach`, `--lg-rose`, `--lg-apricot`, `--lg-chart-top`/`--lg-chart-bottom` and `--lg-ink` on the scope.
+
+- **Opt-in.** Board inlines the preset (version 1.0.0, CSS + JS, no network) only when the base HTML or a patch contains the marker in an attribute, CSS selector, `dataset.style` or `setAttribute` context. Every other Board produces byte-identical documents and releases (pinned by tests). `data-lg-builtin="off"` opts out; a Board that already inlines the prototype kit (`#lg-kit-script`) keeps it.
+- **Everywhere the canvas runs:** live Board, response canvases, exported and published releases (offline exports included), light and dark hosts (the preset owns a fixed light colour scheme), desktop and narrow panes (compact dock that tucks away while scrolling down; the page always reserves space below the last content).
+- **Keyboard.** `/` opens the page's command palette. In Paseo it works before you click into the canvas when this Board's screen (or, for the Board route screen, nothing) has focus; text fields, the composer, terminals, dialogs, `⌘K`, `?` and other shortcuts stay with Paseo. Esc hands focus back. Published pages focus their canvas on load.
+- **Live patches.** A patch that first introduces the marker rebuilds the canvas once when it is idle, keeping the reading position.
+- **Cost.** A glass document grows by about 140 KB (about 35 KB gzip). The plugin's client bundle and store worker each carry the preset as string constants: `client/hermes-bundle.js` grew by 150,519 bytes and `server/assets/store-worker.txt` by 143,410 bytes at 1.0.0.
+- **Limits.** Component move/copy/layout in the Board UI works for cards, KPI tiles, lists, nav, split and dock; charts and expand modules contain generated structure, so edit their source instead. See [the preset reference](docs/liquid-glass.md) for the full contract, coverage matrix, measured behaviour and a manual Paseo checklist.
+
 The [interactive diff example](examples/interactive-diff.html) uses the injected palette and controls, with split/unified views and editable bounded line comparisons. Append its self-contained section to a Board; its controls remain local and save only their own state field. It is illustrative content, not a mandatory Board layout or a publication-history diff.
 
 ## Latest-state feeds

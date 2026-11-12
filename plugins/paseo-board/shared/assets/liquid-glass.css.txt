@@ -257,6 +257,7 @@ body:has([data-style="liquid-glass"][data-lg-page]) {
   color: var(--lg-ink);
 }
 [data-style="liquid-glass"] [data-lg~="card"] { min-width: 0; padding: 20px 22px; }
+[data-style="liquid-glass"] [data-lg~="card"] > :is(h2, h3):not(:last-child) { margin-bottom: 12px; }
 
 [data-style="liquid-glass"] .lg-pill {
   display: inline-flex;
