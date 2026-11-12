@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { CAPTURE_FAILURE_REASONS, FRAME_CHANNEL, interactionMarkerId, interactionMarkers, markerInteractionId, readFrameMessage, sameSelectionAnchor, validAnchor, isCanvasViewState } from "./frame-contract";
+import runtime from "./assets/board-runtime.txt";
+import { BENIGN_FRAME_ERROR, CAPTURE_FAILURE_REASONS, FRAME_CHANNEL, isBenignFrameError, interactionMarkerId, interactionMarkers, markerInteractionId, readFrameMessage, sameSelectionAnchor, validAnchor, isCanvasViewState } from "./frame-contract";
 import { AnchorSchema, IdSchema, type Interaction } from "./contracts";
 const scope = { boardId: "board", sessionId: "session" };
 const message = (fields: object) => ({ channel: FRAME_CHANNEL, ...scope, ...fields });
 describe("frame bridge validation", () => {
+  it("treats only the browser's ResizeObserver loop notices as benign frame errors, with the runtime's own pattern", () => {
+    for (const text of ["ResizeObserver loop completed with undelivered notifications.", "ResizeObserver loop limit exceeded", "Uncaught ResizeObserver loop limit exceeded", " ResizeObserver loop completed with undelivered notifications. "]) expect(isBenignFrameError(text), text).toBe(true);
+    for (const text of ["", "TypeError: x is undefined", "ResizeObserver is not defined", "Error: ResizeObserver loop limit exceeded in my code", "ResizeObserver loop completed with undelivered notifications.. Later patches are paused until the document is republished."]) expect(isBenignFrameError(text), text).toBe(false);
+    // The frame runtime (a text asset) filters with the same pattern before anything is reported.
+    expect(runtime).toContain(`/${BENIGN_FRAME_ERROR.source}/.test(`);
+  });
   it("distinguishes internal work from user interaction while accepting legacy activity reports", () => {
     for (const fields of [{ busy: false }, { busy: true }, { busy: false, interacting: false }, { busy: true, interacting: false }, { busy: true, interacting: true }]) {
       const report = message({ type: "canvas-activity", ...fields });
