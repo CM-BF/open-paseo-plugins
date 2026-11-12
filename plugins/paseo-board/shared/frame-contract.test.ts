@@ -14,6 +14,16 @@ describe("frame bridge validation", () => {
     }
     expect(readFrameMessage(message({ type: "canvas-activity", busy: true, interacting: false, sessionId: "old" }), scope)).toBeNull();
   });
+  it("scopes liquid-glass key acknowledgements and focus returns to the exact session", () => {
+    for (const fields of [{ type: "preset-key-ack", opened: true }, { type: "preset-key-ack", opened: false }, { type: "preset-focus-return" }]) {
+      expect(readFrameMessage(message(fields), scope)).toEqual(message(fields));
+      expect(readFrameMessage(message({ ...fields, sessionId: "old" }), scope)).toBeNull();
+      expect(readFrameMessage(message({ ...fields, boardId: "other" }), scope)).toBeNull();
+    }
+    for (const opened of [undefined, "true", 1, null]) expect(readFrameMessage(message({ type: "preset-key-ack", opened }), scope)).toBeNull();
+    // The host never accepts its own forward type back from a frame.
+    expect(readFrameMessage(message({ type: "preset-key", key: "/" }), scope)).toBeNull();
+  });
   it("accepts only bounded reading positions and scopes both state and restore acknowledgements", () => {
     const view = { documentVersion: 2, canvasRevision: 8, x: -15, y: 800,
       anchor: { selector: "#section", offsetX: 10, offsetY: -50 }, scrolls: [{ selector: "#log", x: 20, y: 300 }] };
