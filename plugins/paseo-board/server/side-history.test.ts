@@ -183,9 +183,10 @@ describe("tool output excerpts", () => {
   it("caps each excerpt at about 600 characters with the head, the tail and an exact truncation marker", () => {
     const head = "HEAD-" + "h".repeat(2_000), tail = "t".repeat(2_000) + "-TAIL", full = head + "m".repeat(5_000) + tail;
     const [entry] = curateItems([shell("gh pr list", full)]);
-    const excerpt = outputOf(entry.text);
-    expect(excerpt.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_CHARS);
-    expect(excerpt.length).toBeGreaterThan(MAX_TOOL_OUTPUT_CHARS - 5);
+    const excerpt = outputOf(entry.text), block = entry.text.slice(entry.text.indexOf("\n") + 1);
+    // The cap covers the whole rendered block under the call: label, indentation and marker included.
+    expect(block.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_CHARS);
+    expect(block.length).toBeGreaterThan(MAX_TOOL_OUTPUT_CHARS - 5);
     expect(excerpt.startsWith("HEAD-")).toBe(true); expect(excerpt.endsWith("-TAIL")).toBe(true);
     const match = MARKER_PATTERN.exec(excerpt)!;
     const [kept, rest] = [excerpt.slice(0, match.index), excerpt.slice(match.index + match[0].length)];
@@ -324,5 +325,41 @@ describe("tool output excerpts", () => {
     expect(random.includes(0x1B)).toBe(true); expect(random.includes(0)).toBe(false);
     expect(sanitizeOutput(new TextDecoder().decode(random))).toBe("[binary data omitted]");
     expect(sanitizeOutput(Array.from(random, byte => String.fromCharCode(byte)).join(""))).toBe("[binary data omitted]");
+  });
+
+  it("caps one call's whole indented excerpt, label and indentation included, even for newline-heavy output", () => {
+    const lineBlock = (text: string) => text.slice(text.indexOf("\n") + 1);
+    // 2,000 one-character lines: before the fix the indent nearly doubled a 600-character excerpt.
+    const full = Array.from({ length: 2_000 }, (_, index) => String(index % 10)).join("\n");
+    const [entry] = curateItems([shell("seq", full)]);
+    const block = lineBlock(entry.text);
+    expect(block.startsWith("  Output: 0\n  1\n  2\n")).toBe(true);
+    expect(block.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_CHARS);
+    expect(block.length).toBeGreaterThan(MAX_TOOL_OUTPUT_CHARS - 10);
+    expect(block.split("\n").every(line => line.startsWith("  "))).toBe(true);
+    // Head and tail of the real output around an exact count of the raw characters left out.
+    const excerpt = outputOf(entry.text), match = MARKER_PATTERN.exec(excerpt)!;
+    const [kept, rest] = [excerpt.slice(0, match.index), excerpt.slice(match.index + match[0].length)];
+    expect(full.startsWith(kept)).toBe(true); expect(full.endsWith(rest)).toBe(true);
+    expect(kept.length + rest.length + Number(match[1])).toBe(full.length);
+    // Head and tail get about the same share of the rendered space.
+    const rendered = (text: string) => text.length + 2 * (text.match(/\n/g)?.length ?? 0);
+    expect(Math.abs(rendered(kept) - rendered(rest))).toBeLessThanOrEqual(3);
+    // An output whose rendered block is exactly at the cap stays whole; one more character gets the marker.
+    const fits = "x".repeat(MAX_TOOL_OUTPUT_CHARS - "  Output: ".length);
+    expect(lineBlock(curateItems([shell("cat", fits)])[0].text)).toBe(`  Output: ${fits}`);
+    const over = lineBlock(curateItems([shell("cat", `${fits}y`)])[0].text);
+    expect(over).toMatch(new RegExp(MARKER_PATTERN.source.replace(/\\n/g, "\\n {2}")));
+    expect(over.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_CHARS);
+    const lines = "a\n".repeat(294) + "a"; // 589 characters that render as 1,177
+    const lineEntry = lineBlock(curateItems([shell("cat", lines)])[0].text);
+    expect(lineEntry.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_CHARS); expect(lineEntry).toContain("characters of output omitted");
+    // Longer labels leave less room for the text, never more than the cap in total.
+    const failed = lineBlock(curateItems([shell("npm test", full, { status: "failed", error: null, detail: { type: "shell", command: "npm test", output: full, exitCode: 127 } })])[0].text);
+    expect(failed.startsWith("  Error (exit 127): ")).toBe(true); expect(failed.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_CHARS);
+    // The indent-aware excerpt never splits a surrogate pair either.
+    const emoji = excerptOutput("😀\n".repeat(400), 300, 2);
+    expect(emoji.length + 2 * (emoji.match(/\n/g)?.length ?? 0)).toBeLessThanOrEqual(300);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(emoji)).toBe(false);
   });
 });

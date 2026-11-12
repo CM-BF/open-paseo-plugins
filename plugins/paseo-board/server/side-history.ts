@@ -15,8 +15,13 @@ const MAX_PAGES = 20;
 const MAX_RECEIVED_CHARS = 8_000_000;
 const MAX_CAPTURE_MS = 8_000;
 const MAX_TOOL_SUMMARY_CHARS = 200;
-/** Per tool call: the output excerpt (head and tail around a marker) never exceeds this, before its two-space indent. */
+/**
+ * Per tool call: the whole rendered excerpt block under the call (`  Label: ` plus the head and tail around a
+ * marker, every line indented) never exceeds this.
+ */
 export const MAX_TOOL_OUTPUT_CHARS = 600;
+/** Each excerpt line is indented by this under its call. */
+const OUTPUT_INDENT = "  ";
 const MAX_METADATA_CHARS = 1_000;
 const OMITTED = "[Earlier chat history omitted]\n";
 const TRUNCATED = "\n[Message truncated]\n";
@@ -132,26 +137,44 @@ export function sanitizeOutput(raw: string): string | undefined {
   return cleaned || undefined;
 }
 const outputMarker = (omitted: number) => `\n[… ${omitted} characters of output omitted …]\n`;
-/** Head and tail around a marker, at most `max` characters in total; a surrogate pair is never split. */
-export function excerptOutput(text: string, max = MAX_TOOL_OUTPUT_CHARS): string {
-  if (text.length <= max) return text;
-  let marker = outputMarker(text.length - max), head = 0, tail = 0;
-  for (let pass = 0; pass < 3; pass++) {
-    const available = Math.max(0, max - marker.length);
-    head = Math.ceil(available / 2); tail = available - head;
-    if (head > 0 && /[\uD800-\uDBFF]/.test(text[head - 1])) head--;
-    if (tail > 0 && /[\uDC00-\uDFFF]/.test(text[text.length - tail])) tail--;
-    const next = outputMarker(text.length - head - tail);
-    if (next.length === marker.length) { marker = next; break; }
-    marker = next;
+const isHighSurrogate = (code: number) => code >= 0xD800 && code <= 0xDBFF;
+const isLowSurrogate = (code: number) => code >= 0xDC00 && code <= 0xDFFF;
+/**
+ * Head and tail around a marker naming exactly how many characters of `text` were left out. The result,
+ * rendered with `indent` characters after every line break (the marker's two included), is at most `max`
+ * characters; head and tail get about half each. A surrogate pair is never split.
+ */
+export function excerptOutput(text: string, max = MAX_TOOL_OUTPUT_CHARS, indent = 0): string {
+  const weight = (index: number) => text.charCodeAt(index) === 10 ? 1 + indent : 1;
+  let whole = 0;
+  for (let index = 0; index < text.length; index++) whole += weight(index);
+  if (whole <= max) return text;
+  // Budget the marker with the largest count it can show; the real count is never longer, so the result stays within max.
+  let marker = outputMarker(text.length), head = 0, tail = 0;
+  for (let pass = 0; pass < 2; pass++) {
+    const available = Math.max(0, max - marker.length - 2 * indent);
+    let used = 0;
+    for (head = 0; head < text.length && used + weight(head) <= Math.ceil(available / 2); head++) used += weight(head);
+    if (head > 0 && isHighSurrogate(text.charCodeAt(head - 1))) { head--; used -= weight(head); }
+    const room = available - used;
+    used = 0;
+    for (tail = 0; tail < text.length - head && used + weight(text.length - 1 - tail) <= room; tail++) used += weight(text.length - 1 - tail);
+    if (tail > 0 && isLowSurrogate(text.charCodeAt(text.length - tail))) tail--;
+    marker = outputMarker(text.length - head - tail);
   }
   return text.slice(0, head) + marker + text.slice(text.length - tail);
+}
+/** `  Label: excerpt`, every further line indented, so an output line can never pass for an `[User]` or `[Assistant]` entry. */
+function outputBlock(label: string, text: string): string {
+  const prefix = `${OUTPUT_INDENT}${label}: `;
+  const excerpt = excerptOutput(text, MAX_TOOL_OUTPUT_CHARS - prefix.length, OUTPUT_INDENT.length);
+  return prefix + excerpt.replace(/\n/g, `\n${OUTPUT_INDENT}`);
 }
 /**
  * The tool call's own result, never its input: edit/write bodies and plans are input, and plain_text
  * may carry the agent's thinking, so those have none. Failed calls show their error first.
  */
-function toolOutput(item: ToolCallItem): { label: string; text: string } | undefined {
+function toolOutput(item: ToolCallItem): string | undefined {
   const detail = item.detail as { type: string; [key: string]: unknown };
   let raw: unknown;
   switch (detail.type) {
@@ -176,7 +199,7 @@ function toolOutput(item: ToolCallItem): { label: string; text: string } | undef
   if (!unique.length) return undefined;
   const exit = detail.type === "shell" && typeof detail.exitCode === "number" && detail.exitCode !== 0 ? ` (exit ${detail.exitCode})` : "";
   const label = failed ? `Error${exit}` : item.status === "running" ? `Output so far${exit}` : item.status === "canceled" ? "Output (canceled)" : `Output${exit}`;
-  return { label, text: excerptOutput(unique.join("\n")) };
+  return outputBlock(label, unique.join("\n"));
 }
 function toolEntries(item: ToolCallItem): CuratedEntry[] {
   if (item.agentMessage) {
@@ -205,9 +228,8 @@ function toolEntries(item: ToolCallItem): CuratedEntry[] {
   const header = summary ? `[${name}] ${summary}` : `[${name}]`;
   const output = toolOutput(item);
   if (!output) return [{ text: header, message: false }];
-  // The excerpt stays in the same entry as its call (fitting keeps or drops both) and is indented, so an
-  // output line can never pass for an `[User]` or `[Assistant]` entry.
-  return [{ text: `${header}\n  ${output.label}: ${output.text.replace(/\n/g, "\n  ")}`, message: false, output: true }];
+  // The excerpt block stays in the same entry as its call, so fitting keeps or drops both.
+  return [{ text: `${header}\n${output}`, message: false, output: true }];
 }
 /** Keeps user and assistant messages and tool calls; drops reasoning, todo, errors, notifications, compaction and plugin rows. */
 export function curateItems(items: readonly TimelineItem[], expander?: Pick<BoardPromptExpander, "reduce">): CuratedEntry[] {
