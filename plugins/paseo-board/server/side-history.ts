@@ -188,6 +188,8 @@ function toolOutput(item: ToolCallItem): string | undefined {
     }
     case "fetch": raw = detail.result; break;
     case "worktree_setup": raw = detail.log; break;
+    // COMPAT(subagent-log): Paseo 0.15.x providers send this empty, so no sub-agent report is carried today;
+    // a non-empty log from a later runtime would be excerpted like any other output.
     case "sub_agent": raw = detail.log; break;
     case "unknown": raw = detail.output; break;
     default: raw = undefined;
