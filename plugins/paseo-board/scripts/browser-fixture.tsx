@@ -69,7 +69,8 @@ function App() {
   host.setTheme = (scheme: "light" | "dark") => setProps(p => ({ ...p, theme: frameThemeFromColors(scheme === "dark" ? DEFAULT_DARK_COLORS : DEFAULT_LIGHT_COLORS) }));
   host.replaceDocument = () => setProps((p) => ({ ...p, selectionMode: "off", boardRevision: p.boardRevision + 1, canvas: { ...p.canvas, patches: [], revision: p.canvas.revision + 1, documentVersion: p.canvas.documentVersion + 1 } }));
   // board-screen mirrors BoardView's root, so "/" forwarding can tell this Board's own
-  // controls (#board-toolbar) from other host UI (#host-ask).
+  // controls (#board-toolbar) from other host UI (#host-ask). The toolbar stand-in is
+  // focusable but off-screen, so the established page geometry is unchanged.
   return createElement(Fragment, null, createElement("div", { "data-testid": "board-screen" }, createElement(CanvasFrame, { ...props, key: mount,
     onComponentEdit: (request: any) => new Promise<ComponentEditResult>(resolve => { const index = host.results.componentEdits.length; host.results.componentEdits.push(structuredClone(request)); pendingComponentEdits.set(index, resolve); }),
     onAsk: async (request: any) => {
@@ -93,7 +94,7 @@ function App() {
     onReady: () => host.results.ready++,
     onSelectionEnd: () => setProps((p) => ({ ...p, selectionMode: "off" })),
     onSelectionClear: () => setSelectedAnchor(undefined),
-  }), createElement("button", { id: "board-toolbar", type: "button", style: { margin: 8 } }, "Board toolbar")), createElement("button", { id: "host-ask", type: "button", style: { margin: 8 }, onClick: () => host.results.hostAsks.push(selectedAnchor ?? null) }, "Host: ask about selection"), input === null ? null : createElement("div", { style: { position: "fixed", left: 200, top: 220, width: 380 } }, createElement(WebMessageInput, { value: input, onChange: setInput, onStage: () => {}, onSubmit: () => host.results.inputSubmits.push(input), onClose: () => { host.results.inputCloses++; setInput(null); } })), authoredAsk === null ? null : createElement("div", { id: "authored-comment-composer", style: { position: "fixed", left: 200, top: 350, width: 380 } }, createElement(WebMessageInput, {
+  }), createElement("button", { id: "board-toolbar", type: "button", style: { position: "fixed", left: -1000, top: 0 } }, "Board toolbar")), createElement("button", { id: "host-ask", type: "button", style: { margin: 8 }, onClick: () => host.results.hostAsks.push(selectedAnchor ?? null) }, "Host: ask about selection"), input === null ? null : createElement("div", { style: { position: "fixed", left: 200, top: 220, width: 380 } }, createElement(WebMessageInput, { value: input, onChange: setInput, onStage: () => {}, onSubmit: () => host.results.inputSubmits.push(input), onClose: () => { host.results.inputCloses++; setInput(null); } })), authoredAsk === null ? null : createElement("div", { id: "authored-comment-composer", style: { position: "fixed", left: 200, top: 350, width: 380 } }, createElement(WebMessageInput, {
     value: authoredAsk.text, onChange: (text: string) => setAuthoredAsk(previous => previous && { ...previous, text }),
     onStage: () => { authoredAsk.resolve({ status: "queued", outcome: "已加入待发送列表，尚未发送给 agent" }); setAuthoredAsk(null); },
     onSubmit: () => { host.results.inputSubmits.push(authoredAsk.text); authoredAsk.resolve(host.authoredSubmitStatus === "queued" ? { status: "queued", outcome: "已加入待发送列表，尚未发送给 agent" } : { status: "submitted", outcome: "saved" }); setAuthoredAsk(null); },

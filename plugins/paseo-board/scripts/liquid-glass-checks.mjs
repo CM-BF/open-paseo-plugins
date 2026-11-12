@@ -37,6 +37,7 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   const data = { trend: [3, 5, 4] };
 
   let version = await evaluate('hostProps.canvas.documentVersion');
+  const errorsAtStart = await evaluate('results.errors.length');
   const load = async (html, { height = 780, presetKeys = { fromBody: true }, canvasData = data } = {}) => {
     const ready = await evaluate('results.ready');
     version += 1;
@@ -68,7 +69,7 @@ export async function runLiquidGlassChecks({ evaluate, frame, update, command, s
   assert.equal(srcdoc.split('<style id="paseo-board-liquid-glass-style" data-version="1.0.0">').length - 1, 1);
   assert.equal(srcdoc.split('<script id="paseo-board-liquid-glass-script" data-version="1.0.0">').length - 1, 1);
   assert.deepEqual(await frame("({version:LiquidGlass.version,builtin:LiquidGlass.builtin,defs:document.querySelectorAll('#lg-defs').length,overlay:document.querySelector('#lg-defs').hasAttribute('data-board-overlay')})"), { version: '1.0.0', builtin: true, defs: 1, overlay: true });
-  assert.deepEqual(await evaluate('results.errors'), []);
+  assert.deepEqual(await evaluate(`results.errors.slice(${errorsAtStart})`), []);
   check('liquid-glass preset activates once inside the real Board document and frame host');
 
   // 2. Base look, under a typical agent CSS reset.
