@@ -8,14 +8,16 @@
 // - the Board's static release, exported by the real publishing path with visitor comments enabled and
 //   served from a different loopback origin (http://localhost:<port>), as GitHub Pages and an API host differ;
 // - the real plugin server (contributeServer) in this process: release creation with the backend check,
-//   inbox source, auto-sync, comment-assistant creation, wake deliveries and the reply outbox. A fake Paseo
-//   SDK stands in for the daemon; its comment assistant answers wakes through the plugin's own MCP server
-//   (bin/paseo-board-mcp → bridge socket → board_inbox_read / board_inbox_reply);
+//   inbox source, auto-sync, the sealed comment runner (lockdown preflight, one run per visitor batch) and the
+//   reply outbox. A fake Paseo SDK stands in for the daemon (config and model list only: no agent is created or
+//   messaged). A stand-in for `claude -p` is launched by the plugin's own SealedRunner with the exact lock
+//   argv; it reports init like the real CLI and acts through the single MCP server in its --mcp-config, the
+//   plugin's real launcher (bin/paseo-board-mcp → bridge socket → board_inbox_read / board_inbox_reply);
 // - two private Chromium contexts (two visitors) driven over the DevTools pipe with trusted input.
 // Nothing touches ~/.paseo, a daemon or any address beyond loopback, and nothing is installed.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { access, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -89,8 +91,8 @@ let token, backendOutput = '';
 try {
   // -------------------------------------------------------------------------------------------------------
   // The real plugin server, bundled from source for this process.
-  const { contributeServer, ReleaseRepository, PROMPT_MARKER } = await step('bundle the plugin server from source', async () => {
-    const core = await build({ stdin: { contents: "export {contributeServer} from './server/contribute';export {ReleaseRepository} from './server/static-release';export {PROMPT_MARKER} from './server/prompts';", resolveDir: root, loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', write: false, loader: { '.txt': 'text' }, logLevel: 'silent' });
+  const { contributeServer, ReleaseRepository, ALLOWED_TOOLS, PREFLIGHT_PROMPT, lockArgs, violationRefusal, assistantSystemPrompt, runnerActorId } = await step('bundle the plugin server from source', async () => {
+    const core = await build({ stdin: { contents: "export {contributeServer} from './server/contribute';export {ReleaseRepository} from './server/static-release';export {PROMPT_MARKER} from './server/prompts';export {ALLOWED_TOOLS,PREFLIGHT_PROMPT,lockArgs} from './server/inbox-lock';export {violationRefusal,assistantSystemPrompt} from './server/inbox-assistant';export {runnerActorId} from './server/inbox-runner';", resolveDir: root, loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', write: false, loader: { '.txt': 'text' }, logLevel: 'silent' });
     const file = join(temporary, 'plugin-server.cjs'); await writeFile(file, core.outputFiles[0].text);
     return createRequire(import.meta.url)(file);
   });
@@ -113,6 +115,59 @@ try {
   const pageOrigin = `http://localhost:${pageServer.address().port}`;
   const shareKey = 's0123456789abcdef0123', pagePath = `/pages/boards/${shareKey}/`, pageUrl = pageOrigin + pagePath;
 
+  // The stand-in for `claude -p` (see the file header). It is launched by the plugin's SealedRunner, never by this
+  // harness, and acts only through the MCP server the plugin put in its --mcp-config.
+  const runner = { calls: [], runs: [], toolCalls: [], toolResults: [], errors: [], next: null, attempt: null };
+  const replyFor = comment => comment.text.includes('第二步') ? '谢谢！第二步指的是先保存草稿，再点提交。' : `谢谢你的评论，我们会把「${(comment.anchor?.quote ?? '这段').slice(0, 20)}」写得更清楚。`;
+  function fakeClaude(argv, options) {
+    const call = { argv: [...argv], stdin: options.stdin, env: { ...options.env }, cwd: options.cwd, preflight: options.stdin === PREFLIGHT_PROMPT, killed: false };
+    runner.calls.push(call);
+    let killResolve;
+    const killed = new Promise(resolve => { killResolve = resolve; });
+    let bytes = 0;
+    const emit = value => { if (call.killed) return; const line = JSON.stringify(value); bytes += line.length + 1; options.onBytes(bytes); options.onLine(line); };
+    const flag = name => argv[argv.indexOf(name) + 1];
+    const config = JSON.parse(flag('--mcp-config')).mcpServers;
+    const init = servers => emit({ type: 'system', subtype: 'init', cwd: options.cwd, original_cwd: options.cwd, tools: flag('--tools') === '' ? flag('--allowedTools').split(',') : ['Bash', ...ALLOWED_TOOLS], mcp_servers: servers.map(name => ({ name, status: 'connected' })), model: flag('--model'), permissionMode: flag('--permission-mode'), slash_commands: [], skills: [], plugins: [], output_style: 'default', claude_code_version: '2.1.325' });
+    const script = runner.next; runner.next = null;
+    const work = (async () => {
+      if (script === 'violation') { init([...Object.keys(config), 'learning']); await killed; return { code: null, signal: 'SIGKILL' }; }
+      init(Object.keys(config));
+      if (call.preflight) { emit({ type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.0004, num_turns: 1, result: '好的' }); return { code: 0, signal: null }; }
+      const wake = JSON.parse(options.stdin.split('<board-inbox-wake-json>\n')[1].split('\n</board-inbox-wake-json>')[0]);
+      runner.runs.push({ call, wake });
+      const [[server, spec]] = Object.entries(config);
+      const client = new Client({ name: 'fake-claude', version: '1.0.0' });
+      const transport = new StdioClientTransport({ command: spec.command, args: spec.args ?? [], env: { ...options.env, ...spec.env }, stderr: 'pipe' });
+      transport.stderr?.on('data', chunk => logs.push(String(chunk)));
+      await client.connect(transport, { timeout: 5000 });
+      try {
+        call.listed = (await client.listTools()).tools.map(item => item.name);
+        const tool = async (name, args) => {
+          emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: `toolu_${runner.toolCalls.length}`, name: `mcp__${server}__${name}`, input: args }] } });
+          runner.toolCalls.push({ name, args });
+          const result = await client.callTool({ name, arguments: args });
+          runner.toolResults.push(JSON.stringify(result));
+          if (result.isError) throw new Error(result.content?.[0]?.text);
+          return JSON.parse(result.content[0].text);
+        };
+        if (runner.attempt) { const target = runner.attempt; runner.attempt = null; call.attempted = await tool('board_inbox_reply', target).then(() => 'sent', error => error.message); }
+        for (const item of wake.comments) {
+          const read = await tool('board_inbox_read', { boardId: wake.boardId, expectedCreatedAt: wake.expectedCreatedAt, commentId: item.commentId });
+          if (!item.canSeeReply) {
+            await tool('board_inbox_triage', { boardId: wake.boardId, expectedCreatedAt: wake.expectedCreatedAt, expectedRevision: wake.inboxRevision, eventId: `triage-${item.commentId}`, commentId: item.commentId, expectedCommentRevision: read.comment.revision, status: 'reviewing', labels: [], note: '访客看不到回复，请用户决定。' });
+            continue;
+          }
+          const reply = await tool('board_inbox_reply', { boardId: wake.boardId, expectedCreatedAt: wake.expectedCreatedAt, commentId: item.commentId, expectedCommentRevision: item.revision, eventId: `reply-${item.commentId}`, text: replyFor(read.comment) });
+          assert.equal(reply.status, 'published', JSON.stringify({ status: reply.status, message: reply.message }));
+        }
+      } finally { await client.close().catch(() => undefined); }
+      emit({ type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.003, num_turns: 3, result: '已处理' });
+      return { code: 0, signal: null };
+    })().catch(error => { runner.errors.push(String(error?.stack ?? error)); return { code: 1, signal: null }; });
+    return { kill: () => { call.killed = true; killResolve(); }, exited: Promise.race([work, killed.then(() => ({ code: null, signal: 'SIGKILL' }))]) };
+  }
+
   const clock = warpClock(); cleanup.push(() => clock.stop());
   const limits = { syncIntervalMs: 300, wakeDebounceMs: 400, wakeMaxDelayMs: 1_500, wakeMaxPerHour: 4 };
   const handlers = new Map(), befores = new Map(), listeners = new Map();
@@ -125,18 +180,16 @@ try {
     before: async (name, request) => (await befores.get(name)?.({ request }, { paseo: sdk.api })) ?? request,
     emit: async (name, event) => { await listeners.get(name)?.(event, { paseo: sdk.api }); },
   });
-  // As the installed daemon 0.16.0-beta.2 reports them: agent snapshot modes carry no colorTier; the provider list does.
-  const ownerModes = [{ id: 'plan', label: 'Plan Mode' }, { id: 'default', label: 'Always Ask' }, { id: 'acceptEdits', label: 'Accept File Edits' }, { id: 'auto', label: 'Auto mode' }, { id: 'bypassPermissions', label: 'Bypass' }];
-  const ownerTiers = { plan: 'planning', default: 'safe', acceptEdits: 'moderate', auto: 'moderate', bypassPermissions: 'dangerous' };
-  sdk.providerModes.set('claude', ownerModes.map(mode => ({ ...mode, colorTier: ownerTiers[mode.id] })));
-  sdk.addAgent('owner', { title: 'Board owner', provider: 'claude', model: 'sonnet', currentModeId: 'bypassPermissions', availableModes: ownerModes });
+  // The Claude provider's model list as daemon 0.16.0-beta.2 reports it (paseo.providers.listModels('claude')).
+  sdk.providerModels.set('claude', [{ provider: 'claude', id: 'claude-opus-5-5', label: 'Opus 5.5' }, { provider: 'claude', id: 'claude-sonnet-5-5', label: 'Sonnet 5.5' }, { provider: 'claude', id: 'claude-haiku-5-5', label: 'Haiku 5.5' }]);
+  sdk.addAgent('owner', { title: 'Board owner', provider: 'claude', model: 'sonnet', currentModeId: 'bypassPermissions' });
   /** A daemon-side RPC call: input and output are parsed with the shared contracts, as the host does. */
   const rpc = async (name, input) => {
     const entry = handlers.get(name); assert.ok(entry, `RPC ${name} is registered`);
     const parsed = await entry.contract.input.parseAsync(input);
     return entry.contract.output.parseAsync(await entry.handler(parsed, { paseo: sdk.api }));
   };
-  const dispose = contributeServer(server, { rootDir: paths.data, runtimeDir: paths.runtime, home: paths.home, linkSkills: false, inboxAutomation: { clock, limits } });
+  const dispose = contributeServer(server, { rootDir: paths.data, runtimeDir: paths.runtime, home: paths.home, linkSkills: false, inboxAutomation: { clock, limits }, inboxRunner: { exec: fakeClaude, env: { HOME: paths.home, PATH: process.env.PATH ?? '', PASEO_BOARD_BINDING: 'owner-session-token', PASEO_HOME: '/never/copied' } } });
   cleanup.push(() => dispose());
 
   // -------------------------------------------------------------------------------------------------------
@@ -202,76 +255,34 @@ try {
   });
 
   // -------------------------------------------------------------------------------------------------------
-  // The comment assistant: it reads only the wake JSON and acts only through its pre-approved MCP tools.
-  const assistant = { wakes: [], toolCalls: [], toolResults: [], clients: new Map() };
-  const replyFor = comment => comment.text.includes('第二步') ? '谢谢！第二步指的是先保存草稿，再点提交。' : `谢谢你的评论，我们会把「${(comment.anchor?.quote ?? '这段').slice(0, 20)}」写得更清楚。`;
-  async function mcpFor(record) {
-    if (assistant.clients.has(record.id)) return assistant.clients.get(record.id);
-    const config = record.config.mcpServers.paseo_board;
-    assert.equal(config.type, 'stdio'); assert.equal(config.command, join(paths.runtime, 'bin', 'paseo-board-mcp'));
-    const client = new Client({ name: 'fake-comment-assistant', version: '1.0.0' });
-    const transport = new StdioClientTransport({ command: config.command, args: config.args ?? [], env: { ...record.env, ...config.env }, stderr: 'pipe' });
-    transport.stderr?.on('data', chunk => logs.push(String(chunk)));
-    await client.connect(transport, { timeout: 5000 });
-    assistant.clients.set(record.id, client);
-    cleanup.push(() => client.close().catch(() => undefined));
-    return client;
-  }
-  async function tool(record, name, args) {
-    const allowed = record.config.toolPolicy.preapproved.map(entry => entry.tool);
-    assert.ok(allowed.includes(name), `${name} is pre-approved for the comment assistant`);
-    assistant.toolCalls.push({ name, args });
-    const result = await (await mcpFor(record)).callTool({ name, arguments: args });
-    assistant.toolResults.push(JSON.stringify(result));
-    if (result.isError) throw new Error(`${name}: ${result.content?.[0]?.text}`);
-    return JSON.parse(result.content[0].text);
-  }
-  sdk.behaviour = record => record.title?.startsWith('评论助手') ? async ({ text }) => {
-    const json = text.split('<board-inbox-wake-json>\n')[1]?.split('\n</board-inbox-wake-json>')[0];
-    assert.ok(json, 'The wake carries its JSON block');
-    const wake = JSON.parse(json);
-    assistant.wakes.push({ text, wake });
-    for (const item of wake.comments) {
-      const read = await tool(record, 'board_inbox_read', { boardId: wake.boardId, expectedCreatedAt: wake.expectedCreatedAt, commentId: item.commentId });
-      if (!item.canSeeReply) {
-        await tool(record, 'board_inbox_triage', { boardId: wake.boardId, expectedCreatedAt: wake.expectedCreatedAt, expectedRevision: wake.inboxRevision, eventId: `triage-${item.commentId}`, commentId: item.commentId, expectedCommentRevision: read.comment.revision, status: 'reviewing', labels: [], note: '访客看不到回复，请用户决定。' });
-        continue;
-      }
-      const reply = await tool(record, 'board_inbox_reply', { boardId: wake.boardId, expectedCreatedAt: wake.expectedCreatedAt, commentId: item.commentId, expectedCommentRevision: item.revision, eventId: `reply-${item.commentId}`, text: replyFor(read.comment) });
-      assert.equal(reply.status, 'published', JSON.stringify({ status: reply.status, message: reply.message }));
-    }
-  } : undefined;
-
-  const assistantId = await step('connect the backend source and confirm automatic handling: a dedicated comment assistant is created', async () => {
+  const runnerTimes = () => runner.runs.length;
+  await step('connect the backend source and confirm automatic handling: the sealed runner passes its lockdown preflight; no Paseo agent exists', async () => {
     await rpc('board.inbox.connect', { ...scope, expectedRevision: 0, eventId: 'connect-e2e', expectedConnectionEventId: null, sourceId: 'e2e-app', deploymentId: backend.deploymentId, label: '演示后端', endpoint, enabled: true, token });
     const options = await rpc('board.inbox.assistant-options', scope);
-    assert.equal(options.ownerMissing, false); assert.equal(options.providerSupported, true); assert.equal(options.recommendedModeId, 'default');
-    assert.deepEqual(options.modes.map(mode => `${mode.id}:${mode.tier}:${mode.selectable}:${mode.needsRiskAcceptance}`), ['plan:planning:false:false', 'default:safe:true:false', 'acceptEdits:moderate:true:true', 'auto:moderate:true:true', 'bypassPermissions:dangerous:false:false']);
-    assert.deepEqual(sdk.modeRequests, ['claude'], 'Tiers come from the provider mode list of the public SDK');
+    assert.equal(options.refusal, null); assert.equal(options.providerId, 'claude'); assert.equal(options.recommendedModelId, 'claude-haiku-5-5'); assert.equal(options.firstTime, true);
+    assert.deepEqual(options.models.map(model => model.id), ['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5']);
+    assert.deepEqual(sdk.modelRequests, ['claude'], 'Models come from the provider model list of the public SDK');
     const page = await rpc('board.inbox.list', { ...scope, limit: 10 });
-    await assert.rejects(rpc('board.inbox.auto-enable', { ...scope, expectedRevision: page.revision, eventId: 'enable-bypass', replyMode: 'publish', modeId: 'bypassPermissions', acceptRisk: true }), /不能用这个权限模式自动处理评论/);
-    await assert.rejects(rpc('board.inbox.auto-enable', { ...scope, expectedRevision: page.revision, eventId: 'enable-plan', replyMode: 'publish', modeId: 'plan', acceptRisk: true }), /不能用这个权限模式自动处理评论/);
-    const status = await rpc('board.inbox.auto-enable', { ...scope, expectedRevision: page.revision, eventId: 'enable-e2e', replyMode: 'publish', modeId: 'default', acceptRisk: false });
-    assert.equal(status.wake.state, 'idle'); assert.equal(status.assistant.modeLabel, 'Always Ask'); assert.equal(status.assistant.tier, 'safe');
-    assert.equal(sdk.created.length, 1);
-    const [spec] = sdk.created, record = sdk.records.get(status.assistant.agentId);
-    assert.equal(spec.title, '评论助手 · 页面评论演示'); assert.deepEqual(spec.labels, { 'paseo-board.id': board.id, 'paseo-board.role': 'inbox-assistant' });
-    assert.equal(spec.config.modeId, 'default'); assert.equal(spec.config.provider, 'claude/sonnet');
-    assert.deepEqual(spec.config.toolPolicy.preapproved.map(entry => `${entry.server}:${entry.tool}`), ['paseo_board:board_inbox_list', 'paseo_board:board_inbox_read', 'paseo_board:board_inbox_triage', 'paseo_board:board_inbox_reply']);
-    for (const absent of ['workspace', 'parent', 'worktree', 'git', 'prompt', 'images', 'attachments']) assert.equal(spec[absent], undefined, absent);
-    assert.ok(spec.cwd.startsWith(join(paths.data, 'inbox-assistants') + '/'));
-    assert.deepEqual(await readdir(spec.cwd), []); assert.equal((await lstat(spec.cwd)).mode & 0o777, 0o700);
-    // The plugin's own before("agent.create") injected its MCP server, a binding and the Board instructions; toolPolicy survived.
-    assert.match(record.config.systemPrompt, /^You are the comment assistant for the Paseo Board "页面评论演示"/);
-    assert.ok(record.config.systemPrompt.includes(PROMPT_MARKER), 'The Board instructions are appended');
-    assert.equal(record.config.mcpServers.paseo_board.env.PASEO_BOARD_BINDING, record.env.PASEO_BOARD_BINDING);
-    assert.deepEqual(record.config.toolPolicy, spec.config.toolPolicy);
-    assert.match(record.env.PASEO_BOARD_BINDING, /^[a-f0-9]{48}$/);
-    return status.assistant.agentId;
+    // A launch whose init reports a foreign MCP server is refused before anything is written.
+    runner.next = 'violation';
+    await assert.rejects(rpc('board.inbox.auto-enable', { ...scope, expectedRevision: page.revision, eventId: 'enable-refused', replyMode: 'publish', modelId: 'claude-haiku-5-5' }), new RegExp(violationRefusal(['MCP 服务 learning']).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.equal(runner.calls.at(-1).killed, true, 'The refused preflight was killed');
+    assert.equal(((await rpc('board.inbox.list', { ...scope, limit: 1 })).policy.auto ?? 'off'), 'off');
+    const status = await rpc('board.inbox.auto-enable', { ...scope, expectedRevision: page.revision, eventId: 'enable-e2e', replyMode: 'publish', modelId: 'claude-haiku-5-5' });
+    assert.equal(status.wake.state, 'idle'); assert.equal(status.assistant.kind, 'sealed'); assert.equal(status.assistant.modelLabel, 'Haiku 5.5');
+    assert.equal(status.assistant.lastCheck.ok, true); assert.equal(status.assistant.lastCheck.cliVersion, '2.1.325');
+    const preflight = runner.calls.at(-1);
+    assert.equal(preflight.preflight, true); assert.equal(preflight.stdin, PREFLIGHT_PROMPT);
+    const binding = JSON.parse(preflight.argv[preflight.argv.indexOf('--mcp-config') + 1]).mcpServers.paseo_board.env.PASEO_BOARD_BINDING;
+    assert.deepEqual(preflight.argv, ['claude', ...lockArgs({ model: 'claude-haiku-5-5', effort: 'low', maxBudgetUsd: 0.1, systemPrompt: assistantSystemPrompt(board), mcpCommand: join(paths.runtime, 'bin', 'paseo-board-mcp'), bindingToken: binding })]);
+    assert.equal(preflight.env.PASEO_BOARD_BINDING, undefined, 'The owner session binding is never copied'); assert.equal(preflight.env.PASEO_HOME, undefined);
+    assert.equal(preflight.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS, '1');
+    assert.match(preflight.cwd, /\/paseo-board-run-[^/]+$/); await assert.rejects(access(preflight.cwd), 'The temporary cwd is removed');
+    assert.equal(sdk.created.length, 0, 'No Paseo agent is created'); assert.deepEqual(sdk.sends, []);
   });
-  const assistantSends = () => sdk.sends.filter(send => send.id === assistantId);
   const inbox = (limit = 100) => rpc('board.inbox.list', { ...scope, limit });
   const autoStatus = () => rpc('board.inbox.auto-status', scope);
+  const RUNNER_ACTOR = runnerActorId(createHash('sha256').update(JSON.stringify({ boardId: scope.boardId, expectedCreatedAt: scope.expectedCreatedAt })).digest('hex'));
 
   // -------------------------------------------------------------------------------------------------------
   // Chromium over the DevTools pipe (same driver style as scripts/release-browser-test.mjs).
@@ -438,34 +449,41 @@ try {
     assert.equal(source.skipped, 0); assert.equal(source.sanitized, 0); assert.equal(source.repliesSupported === false, false);
   });
 
-  await step('one wake goes only to the comment assistant: IDs only, no Board interaction, nothing to the owner', async () => {
-    await until(() => assistant.wakes.length === 1 && sdk.idle().then(() => true), 'the first wake', 10_000);
-    const [send] = assistantSends();
-    assert.deepEqual(sdk.sends.map(item => item.id), [assistantId], 'Only the comment assistant was messaged');
-    assert.equal(send.options.activeTurnBehavior, 'steer');
-    assert.ok(send.text.startsWith(`[paseo-board board=${board.id} intent=inbox-`));
-    assert.equal(assistant.wakes[0].wake.comments.length, 1); assert.equal(assistant.wakes[0].wake.comments[0].canSeeReply, true);
-    for (const forbidden of ['第二步', '<img', firstText, pageOrigin, backend.apiBase, endpoint, token, '--json', 'PASEO_BOARD_CLI']) assert.equal(send.text.includes(forbidden), false, `The wake prompt contains no ${forbidden === token ? 'token' : JSON.stringify(forbidden)}`);
-    const journalText = await readFile(join(paths.data, 'service.json'), 'utf8'), journal = JSON.parse(journalText);
-    const deliveries = Object.values(journal.deliveries);
-    assert.equal(deliveries.length, 1, 'Exactly one journaled delivery');
-    assert.equal(deliveries[0].kind, 'inbox'); assert.equal(deliveries[0].targetAgentId, assistantId); assert.equal(deliveries[0].ownerAgentId, assistantId);
-    assert.equal(deliveries[0].inbox.commentIds.length, 1); assert.equal(deliveries[0].outcome, 'completed');
-    for (const forbidden of ['第二步看不懂', '<img', pageOrigin, token]) assert.equal(journalText.includes(forbidden), false, 'service.json holds no visitor text, page address or token');
+  await step('one sealed run handles the comment: IDs only on stdin, the lock argv, no Paseo agent, no Board interaction, nothing to the owner', async () => {
+    await until(async () => runner.runs.length === 1 && (await autoStatus()).runs[0]?.state === 'done', 'the first run', 10_000);
+    const [{ call, wake }] = runner.runs;
+    assert.deepEqual(sdk.sends, [], 'No agent was messaged'); assert.equal(sdk.created.length, 0);
+    assert.ok(call.stdin.startsWith(`[paseo-board board=${board.id} intent=inbox-`));
+    assert.equal(wake.comments.length, 1); assert.equal(wake.comments[0].canSeeReply, true);
+    for (const forbidden of ['第二步', '<img', firstText, pageOrigin, backend.apiBase, endpoint, token, '--json', 'PASEO_BOARD_CLI']) {
+      assert.equal(call.stdin.includes(forbidden), false, `The run prompt contains no ${forbidden === token ? 'token' : JSON.stringify(forbidden)}`);
+      assert.equal(call.argv.join('\u0000').includes(forbidden), false, `The run argv contains no ${forbidden === token ? 'token' : JSON.stringify(forbidden)}`);
+    }
+    const flag = name => call.argv[call.argv.indexOf(name) + 1];
+    assert.equal(flag('--tools'), ''); assert.equal(flag('--setting-sources'), ''); assert.equal(flag('--permission-mode'), 'dontAsk');
+    assert.ok(call.argv.includes('--strict-mcp-config') && call.argv.includes('--no-session-persistence') && call.argv.includes('--disable-slash-commands'));
+    assert.deepEqual(Object.keys(JSON.parse(flag('--mcp-config')).mcpServers), ['paseo_board']);
+    assert.deepEqual(call.listed, ['board_inbox_list', 'board_inbox_read', 'board_inbox_triage', 'board_inbox_reply'], 'The run\'s MCP server lists only the inbox tools');
+    // The service journal is only written for deliveries; a sealed run creates none.
+    const journalText = await readFile(join(paths.data, 'service.json'), 'utf8').catch(error => { if (error.code === 'ENOENT') return '{"deliveries":{}}'; throw error; });
+    assert.deepEqual(Object.values(JSON.parse(journalText).deliveries ?? {}).filter(delivery => delivery.kind === 'inbox'), [], 'No inbox wake is journaled');
     const current = await rpc('board.read', { boardId: board.id });
     assert.deepEqual(current.board.interactions, [], 'No Board interaction was created');
   });
 
-  await step('the assistant reads the comment and replies through its MCP tools; the ledger records the reply', async () => {
+  await step('the runner reads the comment and replies through its MCP tools; the ledger and the run log record it', async () => {
     const comment = await until(async () => { const found = (await inbox()).comments.find(item => item.externalId === firstComment.externalId); return found?.replies?.length && found; }, 'the recorded reply');
     assert.equal(comment.status, 'resolved');
-    assert.deepEqual(comment.replies.map(reply => ({ text: reply.text, authorKind: reply.authorKind, actor: reply.actor })), [{ text: '谢谢！第二步指的是先保存草稿，再点提交。', authorKind: 'agent', actor: { kind: 'agent', id: assistantId } }]);
-    assert.deepEqual(assistant.toolCalls.map(call => call.name), ['board_inbox_read', 'board_inbox_reply']);
-    assert.ok(assistant.toolResults[0].includes('第二步看不懂'), 'The assistant reads the text only as a tool result');
-    assert.ok(assistant.toolResults[0].includes('external-untrusted'));
+    assert.deepEqual(comment.replies.map(reply => ({ text: reply.text, authorKind: reply.authorKind, actor: reply.actor })), [{ text: '谢谢！第二步指的是先保存草稿，再点提交。', authorKind: 'agent', actor: { kind: 'agent', id: RUNNER_ACTOR } }]);
+    assert.deepEqual(runner.toolCalls.map(call => call.name), ['board_inbox_read', 'board_inbox_reply']);
+    assert.ok(runner.toolResults[0].includes('第二步看不懂'), 'The runner reads the text only as a tool result');
+    assert.ok(runner.toolResults[0].includes('external-untrusted'));
+    for (const hidden of ['"note"', '"labels"', '"sourceId"', '"deploymentId"', '"visitorTag"']) assert.equal(runner.toolResults[0].includes(hidden), false, `The runner view has no ${hidden}`);
     const status = await autoStatus();
-    assert.equal(status.wake.lastWakeResult, 'completed'); assert.equal(status.wake.state, 'idle'); assert.equal(status.wake.wakesLastHour, 1);
-    assert.deepEqual(sdk.errors, []);
+    assert.equal(status.wake.state, 'idle'); assert.equal(status.wake.wakesLastHour, 1);
+    assert.equal(status.runs[0].state, 'done'); assert.deepEqual(status.runs[0].actions, { replied: 1, drafted: 0, triaged: 0, dismissed: 0 });
+    assert.equal(status.runs[0].costUsd, 0.003); assert.deepEqual(status.runs[0].deniedAttempts, []);
+    assert.deepEqual(runner.errors, []);
   });
 
   await step('visitor 1 sees 1 条新回复 after a focus poll; the panel shows 作者的 AI 助手回复 and renders text literally', async () => {
@@ -505,7 +523,7 @@ try {
   });
 
   await step('visitor 2 gets their own reply; neither visitor sees the other\'s thread', async () => {
-    await until(() => assistant.wakes.length === 2 && sdk.idle().then(() => true), 'the second wake');
+    await until(async () => runner.runs.length === 2 && (await autoStatus()).runs[0]?.state === 'done', 'the second run');
     await visitor2.waitBadge('我的评论 1 · 1 条新回复');
     await visitor2.clickOuter('[data-pbc=badge]');
     const panel2 = await until(async () => (await visitor2.ui()).panel, 'visitor 2 panel');
@@ -536,10 +554,11 @@ try {
       'visitor 1 frame DOM': await visitor1.frame('document.documentElement.outerHTML'),
       'visitor 2 frame DOM': await visitor2.frame('document.documentElement.outerHTML'),
       'visitor 1 storage': await visitor1.storage(), 'visitor 2 storage': await visitor2.storage(),
-      'agent prompts': JSON.stringify(sdk.sends), 'tool results': assistant.toolResults.join('\n'),
+      'runner prompts and argv': JSON.stringify(runner.calls.map(call => [call.stdin, call.argv])), 'runner env': JSON.stringify(runner.calls.map(call => call.env)), 'tool results': runner.toolResults.join('\n'),
       'auto-status': JSON.stringify(await autoStatus()), 'inbox page': JSON.stringify(await inbox()),
       'plugin and MCP logs': logs.join('\n'), 'browser console': cdp.console.join('\n'), 'backend output': backendOutput,
-      'service.json': await readFile(join(paths.data, 'service.json'), 'utf8'),
+      'service.json': await readFile(join(paths.data, 'service.json'), 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; }),
+      'automation state': (await Promise.all((await readdir(join(paths.data, 'inbox-auto'))).map(name => readFile(join(paths.data, 'inbox-auto', name), 'utf8')))).join('\n'),
     };
     for (const [place, text] of Object.entries(places)) assert.equal(text.includes(token), false, `The token appears in ${place}`);
     for (const place of ['visitor 1 storage', 'visitor 2 storage']) {
@@ -561,7 +580,7 @@ try {
   await step('automatic handling off: a new comment is imported and nobody is woken', async () => {
     const page = await inbox();
     await rpc('board.inbox.policy', { ...scope, expectedRevision: page.revision, eventId: 'auto-off', policy: { read: true, triage: true, auto: 'off' } });
-    const wakes = assistant.wakes.length, sends = sdk.sends.length;
+    const wakes = runner.runs.length;
     const comment = await postAs('c'.repeat(64), 'pc-e2e-auto-off-0001', { text: '自动处理关闭时的评论', pageUrl, anchor: anchorFor('保存') });
     await until(async () => (await inbox()).comments.some(item => item.externalId === comment.externalId), 'the import with auto off', 3_000);
     // An odd but valid page normalizes on both sides and never blocks sync.
@@ -569,39 +588,44 @@ try {
     const imported = await until(async () => (await inbox()).comments.find(item => item.externalId === odd.externalId), 'the odd import', 3_000);
     assert.equal(imported.authorName, undefined); assert.equal(imported.pageUrl, pageUrl);
     await sleep(limits.wakeMaxDelayMs + 1_000);
-    assert.equal(assistant.wakes.length, wakes); assert.equal(sdk.sends.length, sends);
+    assert.equal(runner.runs.length, wakes); assert.deepEqual(sdk.sends, []);
     const status = await autoStatus();
     assert.equal(status.wake.state, 'legacy-internal'); assert.ok(['idle', 'syncing'].includes(status.sync.sources[0].state)); assert.equal(status.sync.sources[0].lastError, null);
     assert.equal(status.sync.sources[0].skipped, 0); assert.equal(status.sync.sources[0].sanitized, 0);
   });
 
-  await step('budget: the backlog stays out of the assistant\'s reach, two more wakes, then a visible budget pause; it resumes automatically and one wake lists every waiting comment', async () => {
+  await step('budget: re-enabling runs a fresh preflight, the backlog stays out of reach, two more runs, then a visible budget pause; it resumes automatically and one run lists both comments of the waiting visitor', async () => {
     const page = await inbox();
-    const enabled = await rpc('board.inbox.auto-enable', { ...scope, expectedRevision: page.revision, eventId: 'enable-again', replyMode: 'publish', modeId: 'default', acceptRisk: false });
-    assert.equal(enabled.assistant.agentId, assistantId, 'The same assistant is reused'); assert.equal(sdk.created.length, 1);
+    const preflights = runner.calls.filter(call => call.preflight).length;
+    const enabled = await rpc('board.inbox.auto-enable', { ...scope, expectedRevision: page.revision, eventId: 'enable-again', replyMode: 'publish', modelId: 'claude-haiku-5-5' });
+    assert.equal(enabled.assistant.kind, 'sealed'); assert.equal(runner.calls.filter(call => call.preflight).length, preflights + 1, 'A fresh lockdown preflight');
+    assert.equal(sdk.created.length, 0);
     await sleep(limits.wakeMaxDelayMs + 500);
-    assert.equal(assistant.wakes.length, 2, 'The backlog from while auto was off is not woken');
-    // Nor can the assistant reach it on its own: replies are limited to comments listed in its wakes.
+    assert.equal(runner.runs.length, 2, 'The backlog from while auto was off is not offered');
+    // Nor can a run reach it: a run may act only on the comments of its batch.
     const backlog = (await inbox()).comments.find(item => item.text === '自动处理关闭时的评论');
-    await assert.rejects(tool(sdk.records.get(assistantId), 'board_inbox_reply', { ...scope, commentId: backlog.id, expectedCommentRevision: backlog.revision, eventId: 'reply-not-woken', text: '谢谢。' }), /评论助手只能回复唤醒它时列出的评论。/);
+    runner.attempt = { ...scope, commentId: backlog.id, expectedCommentRevision: backlog.revision, eventId: 'reply-not-in-batch', text: '谢谢。' };
     const posted = [];
+    // Two visitors, then a third visitor who comments twice: each visitor's comments go to their own run.
+    const secrets = ['1'.repeat(64), '2'.repeat(64), '3'.repeat(64), '3'.repeat(64)];
     for (const [index, quote] of ['第二步', '保存', '提交'].entries()) {
-      posted.push(await postAs(String(index + 1).repeat(64).slice(0, 64).replace(/[^a-f0-9]/g, 'e'), `pc-e2e-budget-000${index}`, { text: `预算测试评论 ${index + 1}`, pageUrl, anchor: anchorFor(quote) }));
-      if (index < 2) await until(() => assistant.wakes.length === 3 + index && sdk.idle().then(() => true), `budget wake ${index + 1}`);
+      posted.push(await postAs(secrets[index], `pc-e2e-budget-000${index}`, { text: `预算测试评论 ${index + 1}`, pageUrl, anchor: anchorFor(quote) }));
+      if (index < 2) await until(async () => runner.runs.length === 3 + index && (await autoStatus()).runs[0]?.state === 'done', `budget run ${index + 1}`);
     }
+    assert.match(runner.runs[2].call.attempted, /评论助手只能处理这一批里的评论。/);
     const paused = await until(async () => { const status = await autoStatus(); return status.wake.state === 'paused' && status; }, 'the budget pause');
     assert.equal(paused.wake.pausedReason, 'budget'); assert.equal(paused.wake.wakesLastHour, 4); assert.equal(paused.wake.maxWakesPerHour, 4);
     assert.ok(paused.wake.resumesAt);
-    posted.push(await postAs('f'.repeat(64), 'pc-e2e-budget-0003', { text: '预算测试评论 4', pageUrl, anchor: anchorFor('先保存') }));
+    posted.push(await postAs(secrets[3], 'pc-e2e-budget-0003', { text: '预算测试评论 4', pageUrl, anchor: anchorFor('先保存') }));
     await until(async () => (await inbox()).comments.some(item => item.externalId === posted[3].externalId), 'the import while paused', 3_000);
     await sleep(limits.wakeMaxDelayMs);
-    assert.equal(assistant.wakes.length, 4);
+    assert.equal(runner.runs.length, 4);
     // Move the coordinator's clock past the hour window; it resumes by itself.
     clock.advance(Date.parse(paused.wake.resumesAt) - clock.now() + 1_000);
-    await until(() => assistant.wakes.length === 5 && sdk.idle().then(() => true), 'the automatic resume wake');
-    const last = assistant.wakes[4].wake.comments.map(item => item.commentId);
+    await until(async () => runner.runs.length === 5 && (await autoStatus()).runs[0]?.state === 'done', 'the automatic resume run');
+    const last = runner.runs[4].wake.comments.map(item => item.commentId);
     const ids = (await inbox()).comments.filter(item => posted.slice(2).some(row => row.externalId === item.externalId)).map(item => item.id);
-    assert.deepEqual(last.sort(), ids.sort(), 'One wake lists both waiting comments');
+    assert.deepEqual(last.sort(), ids.sort(), 'One run lists both comments of the waiting visitor');
     const status = await autoStatus();
     assert.ok(status.wake.lastBudgetPause, 'The panel can show the past pause'); assert.equal(status.wake.state, 'idle');
     for (const row of posted) {
@@ -619,10 +643,13 @@ try {
     try { assert.equal(replies.prepare('SELECT count(*) AS n FROM _board_comment_replies').get().n, 6); } finally { replies.close(); }
   });
 
-  await step('no browser errors and no failed fake-agent turns', async () => {
+  await step('no browser errors, no failed runs, no Paseo agent created or messaged, and no run process left', async () => {
     assert.deepEqual(cdp.errors, []);
-    assert.deepEqual(sdk.errors, []);
-    assert.deepEqual(sdk.sends.filter(send => send.id === 'owner'), []);
+    assert.deepEqual(runner.errors, []);
+    assert.deepEqual(sdk.errors, []); assert.deepEqual(sdk.sends, []); assert.equal(sdk.created.length, 0);
+    assert.ok(runner.calls.every(call => call.argv[0] === 'claude' && call.argv[call.argv.indexOf('--tools') + 1] === ''));
+    const status = await autoStatus();
+    assert.ok(status.runs.every(run => run.state === 'done'), JSON.stringify(status.runs.map(run => run.state)));
   });
 
   function backendRows() {

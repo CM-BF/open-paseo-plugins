@@ -18,6 +18,10 @@ export function createFakePaseo(host) {
     agents, records, sends, created, errors,
     /** provider ID → the daemon's provider mode list (`paseo.providers.listModes`), and the IDs asked for. */
     providerModes: new Map(), modeRequests: [],
+    /** provider ID → the daemon's model list (`paseo.providers.listModels`), and the IDs asked for. */
+    providerModels: new Map(), modelRequests: [],
+    /** The daemon config's `providers` record (`paseo.config.get()`); the default Claude route needs no entry. */
+    providers: {},
     /** (record) => (message) => Promise<void>: the scripted behaviour of a newly created agent. */
     behaviour: () => undefined,
     addAgent(id, fields = {}) {
@@ -97,7 +101,13 @@ export function createFakePaseo(host) {
   fake.api = {
     agents: { ref, create },
     workspaces: { ref: () => ({ agents: { create } }) },
+    config: { get: async () => ({ requestId: 'config-1', config: { providers: clone(fake.providers) } }) },
     providers: {
+      listModels: async provider => {
+        fake.modelRequests.push(provider);
+        const models = fake.providerModels.get(provider);
+        return { provider, ...(models ? { models: clone(models), error: null } : { error: `Unknown provider: ${provider}` }), fetchedAt: new Date().toISOString(), requestId: `models-${fake.modelRequests.length}` };
+      },
       listModes: async provider => {
         fake.modeRequests.push(provider);
         const modes = fake.providerModes.get(provider);
