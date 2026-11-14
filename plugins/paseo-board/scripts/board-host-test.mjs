@@ -309,6 +309,9 @@ try {
   } else if (inboxScope) {
     const { runInboxHostChecks } = await import('./inbox-host-checks.mjs');
     await runInboxHostChecks({ assert, command, evaluate, until, frame, untilFrame, key, click, hostClick, hostLocation, sendText, submitCount, canvasRect, check });
+    // Public comment threads: the 公开讨论 tab (public-threads DESIGN §12 A11).
+    const { runPublicThreadsHostChecks } = await import('./public-threads-host-checks.mjs');
+    await runPublicThreadsHostChecks({ assert, command, evaluate, until, hostClick, sendText, check });
   } else if (batchScope) {
     const { runBatchCommentChecks } = await import('./batch-comment-checks.mjs');
     await runBatchCommentChecks({ assert, send, command, evaluate, until, frame, untilFrame, key, click, clickPoint, rightClickPoint, location, hostClick, hostLocation, openAt, openAuthoredReference, sendText, submitCount, noPopover, closePopover, canvasRect, input, popover, railClick, check, origin: `http://127.0.0.1:${server.address().port}` });

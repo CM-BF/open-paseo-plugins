@@ -37,8 +37,8 @@ var __async = (__this, __arguments, generator) => {
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 
 // client/home.tsx
-import { useEffect as useEffect19, useRef as useRef18, useState as useState20 } from "react";
-import { Pressable as Pressable12, Text as Text15, View as View18 } from "react-native";
+import { useEffect as useEffect20, useRef as useRef19, useState as useState21 } from "react";
+import { Pressable as Pressable12, Text as Text15, View as View19 } from "react-native";
 import { useQuery as useQuery3 } from "@tanstack/react-query";
 
 // client/transport.tsx
@@ -1326,7 +1326,7 @@ function BoardInstallationProvider({
 }
 
 // client/home.tsx
-import { Modal as Modal3, ScrollView as ScrollView10, TextInput as TextInput10 } from "@getpaseo/plugin/client/ui";
+import { Modal as Modal3, ScrollView as ScrollView11, TextInput as TextInput11 } from "@getpaseo/plugin/client/ui";
 
 // client/ui.tsx
 import { createContext as createContext2, useContext as useContext2 } from "react";
@@ -1433,10 +1433,10 @@ function timeLabel(at) {
 }
 
 // client/board.tsx
-import { useCallback as useCallback10, useEffect as useEffect18, useMemo as useMemo9, useRef as useRef17, useState as useState19 } from "react";
-import { Image as Image2, Text as Text14, View as View17 } from "react-native";
+import { useCallback as useCallback10, useEffect as useEffect19, useMemo as useMemo9, useRef as useRef18, useState as useState20 } from "react";
+import { Image as Image2, Text as Text14, View as View18 } from "react-native";
 import { openExternalUrl as openExternalUrl2 } from "@getpaseo/plugin/client";
-import { Markdown, Modal as Modal2, ScrollView as ScrollView9, TextInput as TextInput9 } from "@getpaseo/plugin/client/ui";
+import { Markdown, Modal as Modal2, ScrollView as ScrollView10, TextInput as TextInput10 } from "@getpaseo/plugin/client/ui";
 
 // shared/frame-contract.ts
 var FRAME_CHANNEL = "paseo-board-frame-v1";
@@ -9531,7 +9531,9 @@ var PublicApiBaseSchema = z3.string().max(2048).refine(value => {
 var AppKeySchema = z3.string().regex(/^[a-f0-9]{16}$/);
 var VisitorCommentsReleaseSchema = z3.object({
   apiBase: PublicApiBaseSchema,
-  appKey: AppKeySchema
+  appKey: AppKeySchema,
+  /** Absent = 仅自己可见 (each visitor sees only their own comments; the 77ca22a bytes). "public" = every visitor sees all comments. */
+  visibility: z3.literal("public").optional()
 }).strict();
 var CommentsProbeInputSchema = z3.object({
   apiBase: PublicApiBaseSchema,
@@ -9544,17 +9546,23 @@ var CommentsProbeResultSchema = z3.object({
   appKey: AppKeySchema.nullable(),
   deploymentId: z3.string().max(200).nullable(),
   comments: z3.enum(["threads", "basic", "disabled", "unknown"]),
+  /** Public comment threads (health `publicThreads`): 1 available, 0 turned off, absent an older runtime. */
+  publicThreads: z3.enum(["available", "off", "unsupported", "unknown"]),
   clientIp: z3.enum(["socket", "forwarded", "proxied-unconfigured", "unknown"]),
   originProblems: z3.array(z3.string().max(300)).max(8),
   error: z3.string().max(500).nullable()
 }).strict();
 var commentsProbeText = result => result.comments === "threads" ? `\u540E\u7AEF\u53EF\u7528\uFF1A\u5E94\u7528 ${result.appId ?? "\u672A\u77E5"} \xB7 \u90E8\u7F72 ${result.deploymentId ?? "\u672A\u77E5"}` : result.comments === "disabled" ? "\u540E\u7AEF\u6CA1\u6709\u5F00\u542F\u8BC4\u8BBA\uFF1A\u628A board-app.json \u7684 comments.enabled \u8BBE\u4E3A true\uFF0C\u7136\u540E\u91CD\u65B0\u90E8\u7F72\u3002" : result.comments === "basic" ? "\u540E\u7AEF\u7248\u672C\u8FC7\u65E7\uFF0C\u4E0D\u652F\u6301\u8BBF\u5BA2\u8BC4\u8BBA\u7EBF\u7A0B\uFF1A\u5728\u5E94\u7528\u76EE\u5F55\u8FD0\u884C paseo-board-app update-runtime\uFF0C\u7136\u540E\u91CD\u65B0\u90E8\u7F72\u3002" : `\u8FDE\u63A5\u4E0D\u4E0A\u8FD9\u4E2A\u540E\u7AEF\uFF1A${result.error ?? "\u6CA1\u6709\u54CD\u5E94"}`;
 var COMMENTS_APP_CHANGED = "\u8FD9\u4E2A\u5730\u5740\u73B0\u5728\u6307\u5411\u53E6\u4E00\u4E2A\u8BC4\u8BBA\u540E\u7AEF\u5E94\u7528\uFF0C\u4E0E\u68C0\u67E5\u65F6\u4E0D\u540C";
-function commentsProbeRefusal(result, appKey) {
+var COMMENTS_PUBLIC_OFF = "\u540E\u7AEF\u5173\u95ED\u4E86\u516C\u5F00\u8BC4\u8BBA\uFF1A\u628A board-app.json \u91CC\u7684 comments.publicThreads \u5220\u6389\u6216\u8BBE\u4E3A true\uFF0C\u7136\u540E\u91CD\u65B0\u90E8\u7F72\u3002";
+var COMMENTS_PUBLIC_UNSUPPORTED = "\u540E\u7AEF\u7248\u672C\u8FC7\u65E7\uFF0C\u4E0D\u652F\u6301\u516C\u5F00\u8BC4\u8BBA\uFF1A\u5728\u5E94\u7528\u76EE\u5F55\u8FD0\u884C paseo-board-app update-runtime\uFF0C\u7136\u540E\u91CD\u65B0\u90E8\u7F72\u3002";
+var commentsPublicProbeText = result => result.publicThreads === "available" ? null : result.publicThreads === "off" ? COMMENTS_PUBLIC_OFF : result.publicThreads === "unsupported" ? COMMENTS_PUBLIC_UNSUPPORTED : "\u540E\u7AEF\u62A5\u544A\u4E86\u65E0\u6CD5\u8BC6\u522B\u7684\u516C\u5F00\u8BC4\u8BBA\u72B6\u6001\u3002";
+var COMMENTS_PUBLIC_NEEDS_INBOX = "\u516C\u5F00\u8BC4\u8BBA\u9700\u8981\u5148\u628A\u8FD9\u4E2A\u540E\u7AEF\u8FDE\u63A5\u5230\u672C Board \u7684\u8BC4\u8BBA\u6536\u4EF6\u7BB1\uFF08\u66F4\u591A \u2192 \u8BC4\u8BBA\u6536\u4EF6\u7BB1 \u2192 \u540E\u7AEF\u6765\u6E90\uFF09\uFF0C\u8FD9\u6837\u4F60\u624D\u80FD\u9690\u85CF\u4E0D\u5F53\u8BC4\u8BBA\u6216\u6807\u4E3A\u5DF2\u89E3\u51B3\u3002";
+function commentsProbeRefusal(result, appKey, visibility2) {
   var reason = result.comments !== "threads" ? commentsProbeText(result) : !result.appKey ? commentsProbeText({
     ...result,
     comments: "basic"
-  }) : appKey !== void 0 && result.appKey !== appKey ? COMMENTS_APP_CHANGED : null;
+  }) : appKey !== void 0 && result.appKey !== appKey ? COMMENTS_APP_CHANGED : visibility2 === "public" ? commentsPublicProbeText(result) : null;
   return reason === null ? null : `\u8BC4\u8BBA\u540E\u7AEF\u68C0\u67E5\u6CA1\u6709\u901A\u8FC7\uFF1A${reason.replace(/。$/, "")}\u3002\u8BF7\u5148\u70B9\u300C\u68C0\u67E5\u540E\u7AEF\u300D\u3002`;
 }
 function internalApiHost(apiBase) {
@@ -10115,7 +10123,7 @@ function inheritedSettingsText(share) {
     live,
     comments
   } = share.settings;
-  return [`\u540D\u79F0\u300C${share.title}\u300D`, network === "cdn" ? "\u5141\u8BB8 CDN \u5E93" : "\u4EC5\u5185\u7F6E\u8D44\u6E90", theme === "dark" ? "\u6DF1\u8272" : "\u6D45\u8272", apiOrigins.length ? `\u540E\u7AEF\u6765\u6E90\uFF1A${apiOrigins.join("\u3001")}` : "\u4E0D\u8FDE\u63A5\u540E\u7AEF", `\u516C\u5F00\u6570\u636E ${byteLabel(publicDataBytes)}`, ...(live ? [`\u5B9E\u65F6\u6570\u636E ${live.paths.length} \u4E2A\u8DEF\u5F84\uFF08${live.origin}\uFF09`] : []), ...(comments ? [`\u8BBF\u5BA2\u8BC4\u8BBA\uFF08${comments.apiBase}\uFF09`] : [])].join(" \xB7 ");
+  return [`\u540D\u79F0\u300C${share.title}\u300D`, network === "cdn" ? "\u5141\u8BB8 CDN \u5E93" : "\u4EC5\u5185\u7F6E\u8D44\u6E90", theme === "dark" ? "\u6DF1\u8272" : "\u6D45\u8272", apiOrigins.length ? `\u540E\u7AEF\u6765\u6E90\uFF1A${apiOrigins.join("\u3001")}` : "\u4E0D\u8FDE\u63A5\u540E\u7AEF", `\u516C\u5F00\u6570\u636E ${byteLabel(publicDataBytes)}`, ...(live ? [`\u5B9E\u65F6\u6570\u636E ${live.paths.length} \u4E2A\u8DEF\u5F84\uFF08${live.origin}\uFF09`] : []), ...(comments ? [`\u8BBF\u5BA2\u8BC4\u8BBA\uFF08${comments.apiBase}${comments.visibility === "public" ? "\uFF0C\u516C\u5F00" : ""}\uFF09`] : [])].join(" \xB7 ");
 }
 function shareLiveDrift(share, channel) {
   if (!share.settings) return void 0;
@@ -10204,6 +10212,16 @@ var InboxExternalCommentSchema = z4.object({
   anchor: InboxAnchorSchema.optional(),
   visitorTag: z4.string().regex(VISITOR_TAG).optional()
 }).strict();
+var UUID = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/;
+var InboxPublicRowSchema = z4.object({
+  externalId: z4.string().min(1).max(200),
+  visibility: z4.literal("public"),
+  parentId: z4.string().regex(UUID).optional(),
+  publicTag: z4.string().regex(VISITOR_TAG).optional(),
+  hidden: z4.literal(true).optional(),
+  resolved: z4.literal(true).optional(),
+  withdrawn: z4.literal(true).optional()
+}).strict();
 var ReplyKeySchema = z4.string().regex(/^ir-[a-f0-9]{48}$/);
 var ReplyActorSchema = z4.object({
   kind: z4.enum(["user", "agent"]),
@@ -10236,6 +10254,17 @@ var InboxReplySchema = z4.object({
   /** Host clock when the backend confirmed it; the assistant's hourly reply budget counts from this, never the backend clock. */
   confirmedAt: TimestampSchema.optional()
 }).strict();
+var InboxPublicStateSchema = z4.object({
+  hidden: z4.boolean(),
+  resolved: z4.boolean(),
+  hiddenBy: z4.enum(["hide", "dismiss"]).optional(),
+  withdrawn: z4.literal(true).optional(),
+  pending: z4.object({
+    hidden: z4.boolean().optional(),
+    resolved: z4.boolean().optional()
+  }).strict().optional(),
+  error: z4.string().max(300).optional()
+}).strict();
 var InboxCommentSchema = InboxExternalCommentSchema.extend({
   id: IdSchema,
   sourceId: IdSchema,
@@ -10251,7 +10280,12 @@ var InboxCommentSchema = InboxExternalCommentSchema.extend({
   replies: z4.array(InboxReplySchema).max(INBOX_LIMITS.replies).optional(),
   pendingReply: InboxPendingReplySchema.optional(),
   /** Agent list responses only: the text was clipped; board_inbox_read returns it in full. Never stored. */
-  truncated: z4.literal(true).optional()
+  truncated: z4.literal(true).optional(),
+  /** Public threads (read results only, from the public sidecar; never stored in the ledger). */
+  visibility: z4.literal("public").optional(),
+  parentCommentId: IdSchema.optional(),
+  publicTag: z4.string().regex(VISITOR_TAG).optional(),
+  publicState: InboxPublicStateSchema.optional()
 });
 var InboxSourceSchema = z4.object({
   sourceId: IdSchema,
@@ -10325,7 +10359,9 @@ var InboxImportInputSchema = z4.object({
   nextCursor: z4.string().min(1).max(500),
   comments: z4.array(InboxExternalCommentSchema).max(INBOX_LIMITS.importPage),
   quarantined: z4.array(QuarantineInputSchema).max(INBOX_LIMITS.importPage).optional(),
-  sanitized: z4.number().int().nonnegative().max(1e5).optional()
+  sanitized: z4.number().int().nonnegative().max(1e5).optional(),
+  /** Public-threads extension of rows in `comments` (same externalIds), kept in the public sidecar. */
+  publicRows: z4.array(InboxPublicRowSchema).max(INBOX_LIMITS.importPage).optional()
 }).strict().refine(value => value.comments.reduce((sum, item) => sum + JSON.stringify(item).length, 0) <= INBOX_LIMITS.importCharacters, "Import page is too large");
 var InboxTriageInputSchema = z4.object({
   ...MutationShape,
@@ -10922,7 +10958,15 @@ var COMMENTS_TEXT = {
   proxy: "\u540E\u7AEF\u5728\u4EE3\u7406\u540E\u9762\uFF0C\u4F46\u6CA1\u6709\u4FE1\u4EFB\u4EE3\u7406\u4F20\u6765\u7684\u8BBF\u5BA2\u5730\u5740\uFF1A\u6240\u6709\u8BBF\u5BA2\u4F1A\u5171\u4EAB\u540C\u4E00\u4E2A\u9891\u7387\u9650\u5236\u3002\u628A\u4EE3\u7406\u7684\u5730\u5740\u52A0\u5165 board-app.json \u7684 comments.trustedProxies\uFF0C\u7136\u540E\u91CD\u65B0\u90E8\u7F72\u3002",
   internalOk: "\u6211\u786E\u8BA4\u628A\u8FD9\u4E2A\u5730\u5740\u5199\u8FDB\u516C\u5F00\u7F51\u9875",
   appChanged: "\u6362\u6210\u4E86\u53E6\u4E00\u4E2A\u8BC4\u8BBA\u540E\u7AEF\u5E94\u7528\uFF1A\u8BBF\u5BA2\u5C06\u770B\u4E0D\u5230\u4E4B\u524D\u7684\u8BC4\u8BBA\u548C\u56DE\u590D\u3002",
-  update: "\u7528\u9762\u677F\u4E2D\u7684\u8BC4\u8BBA\u8BBE\u7F6E\u66F4\u65B0"
+  update: "\u7528\u9762\u677F\u4E2D\u7684\u8BC4\u8BBA\u8BBE\u7F6E\u66F4\u65B0",
+  // Public comment threads (public-threads §5.5.1, exact).
+  visibility: "\u8BC4\u8BBA\u53EF\u89C1\u8303\u56F4",
+  public: "\u516C\u5F00\uFF1A\u6240\u6709\u8BBF\u5BA2\u4E92\u76F8\u53EF\u89C1\uFF08\u50CF Google \u6587\u6863\uFF09",
+  private: "\u4EC5\u81EA\u5DF1\u53EF\u89C1",
+  privateHelp: "\u6BCF\u4F4D\u8BBF\u5BA2\u53EA\u770B\u5F97\u5230\u81EA\u5DF1\u7684\u8BC4\u8BBA\u548C\u4F60\u7684\u56DE\u590D\u3002",
+  publicWarning: "\u516C\u5F00\u8BC4\u8BBA\u4EFB\u4F55\u6253\u5F00\u8FD9\u4E2A\u9875\u9762\u7684\u4EBA\u90FD\u80FD\u770B\u5230\uFF0C\u5305\u62EC\u8BC4\u8BBA\u5185\u5BB9\u3001\u56DE\u590D\u548C\u8BBF\u5BA2\u81EA\u5DF1\u586B\u5199\u7684\u79F0\u547C\u3002\u9875\u9762\u6253\u5F00\u65F6\u5C31\u4F1A\u8FDE\u63A5\u8BC4\u8BBA\u540E\u7AEF\u8BFB\u53D6\u8BC4\u8BBA\u3002\u4E0D\u5F53\u5185\u5BB9\u9700\u8981\u4F60\u5728\u300C\u8BC4\u8BBA\u6536\u4EF6\u7BB1\u300D\u7684\u300C\u516C\u5F00\u8BA8\u8BBA\u300D\u91CC\u9690\u85CF\u3002",
+  toPublic: "\u6539\u4E3A\u516C\u5F00\u540E\uFF0C\u4E4B\u524D\u7684\u8BC4\u8BBA\u4ECD\u53EA\u5BF9\u5404\u81EA\u7684\u8BBF\u5BA2\u53EF\u89C1\uFF0C\u4E0D\u4F1A\u516C\u5F00\u3002",
+  toPrivate: "\u6539\u4E3A\u4EC5\u81EA\u5DF1\u53EF\u89C1\u540E\uFF0C\u9875\u9762\u4E0D\u518D\u663E\u793A\u516C\u5F00\u8BC4\u8BBA\uFF1B\u5DF2\u6709\u7684\u516C\u5F00\u8BC4\u8BBA\u4ECD\u4FDD\u5B58\u5728\u540E\u7AEF\uFF0C\u6536\u4EF6\u7BB1\u91CC\u7167\u5E38\u53EF\u89C1\u3002"
 };
 var internalHostText = host => `\u8FD9\u4E2A\u8BC4\u8BBA\u540E\u7AEF\u770B\u8D77\u6765\u662F\u5185\u90E8\u5730\u5740\uFF08${host}\uFF09\u3002\u5B83\u4F1A\u5199\u8FDB\u516C\u5F00\u7F51\u9875\u7684\u4EE3\u7801\u91CC\uFF0C\u4EFB\u4F55\u4EBA\u90FD\u80FD\u770B\u5230\uFF1B\u516C\u53F8\u7F51\u7EDC\u4EE5\u5916\u7684\u8BBF\u5BA2\u4E5F\u65E0\u6CD5\u53D1\u9001\u8BC4\u8BBA\u3002`;
 var sharedOriginText = pageOrigin => `\u540C\u4E00\u7F51\u7AD9\u5730\u5740\uFF08${pageOrigin}\uFF09\u4E0B\u7684\u5176\u4ED6\u9875\u9762\u80FD\u8BFB\u53D6\u8BBF\u5BA2\u6D4F\u89C8\u5668\u91CC\u7684\u533F\u540D\u8BC4\u8BBA\u7F16\u53F7\u3002GitHub \u7684 github.io \u5730\u5740\u7531\u540C\u4E00\u7528\u6237\u6216\u7EC4\u7EC7\u7684\u6240\u6709\u4ED3\u5E93\u5171\u4EAB\uFF1B\u4F01\u4E1A\u7248 Pages \u53EF\u80FD\u7531\u6240\u6709\u4EBA\u5171\u4EAB\u3002`;
@@ -10937,6 +10981,66 @@ var originOf = link => {
     return void 0;
   }
 };
+function Radio({
+  label,
+  checked,
+  disabled,
+  onPress,
+  testID
+}) {
+  var c = useColors();
+  return /* @__PURE__ */jsxs7(Pressable6, {
+    testID,
+    accessibilityRole: "radio",
+    accessibilityLabel: label,
+    accessibilityState: {
+      checked,
+      disabled
+    },
+    disabled,
+    onPress,
+    style: ({
+      pressed
+    }) => ({
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      padding: 6,
+      borderRadius: 6,
+      backgroundColor: pressed ? c.surface2 : "transparent",
+      opacity: disabled ? 0.5 : 1
+    }),
+    children: [/* @__PURE__ */jsx9(View7, {
+      style: {
+        width: 16,
+        height: 16,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: checked ? c.accent : c.border,
+        backgroundColor: c.surface1,
+        alignItems: "center",
+        justifyContent: "center"
+      },
+      children: checked ? /* @__PURE__ */jsx9(View7, {
+        style: {
+          width: 8,
+          height: 8,
+          borderRadius: 4,
+          backgroundColor: c.accent
+        }
+      }) : null
+    }), /* @__PURE__ */jsx9(Text7, {
+      style: {
+        color: c.foreground,
+        fontSize: 13,
+        lineHeight: 18,
+        flexShrink: 1
+      },
+      children: label
+    })]
+  });
+}
+var visibilityOf = value => value?.visibility === "public" ? "public" : "private";
 function Check({
   label,
   checked,
@@ -11001,6 +11105,7 @@ function useReleaseComments(board, context) {
     connections = useBoardRpc(inboxConnectionsRpc);
   var [on, setOn] = useState8(false),
     [apiBase, setApiBase] = useState8("");
+  var [visibility2, setVisibility] = useState8("private");
   var [sources, setSources] = useState8([]);
   var [probe, setProbe] = useState8();
   var [probing, setProbing] = useState8(false),
@@ -11052,20 +11157,27 @@ function useReleaseComments(board, context) {
       if (mounted.current) setProbing(false);
     }
   });
+  var sourceFor = result => !!result?.deploymentId && sources.some(source => source.state === "ready" && source.enabled && source.deploymentId === result.deploymentId);
   var resolve = () => __async(null, null, function* () {
     if (!on) return void 0;
     if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "\u8BC4\u8BBA\u540E\u7AEF\u5730\u5740\u65E0\u6548");
     if (needsConfirm && !internalOk) throw new Error(`\u8BF7\u5148\u52FE\u9009\u300C${COMMENTS_TEXT.internalOk}\u300D\u3002`);
+    var isPublic = visibility2 === "public";
     var result = current ?? (yield runProbe(base)),
-      refusal = commentsProbeRefusal(result, void 0);
+      refusal = commentsProbeRefusal(result, void 0, isPublic ? "public" : void 0);
     if (refusal || !result.appKey) throw new Error(refusal ?? "\u8BC4\u8BBA\u540E\u7AEF\u68C0\u67E5\u6CA1\u6709\u901A\u8FC7");
+    if (isPublic && !sourceFor(result)) throw new Error(COMMENTS_PUBLIC_NEEDS_INBOX);
     return {
       apiBase: base,
-      appKey: result.appKey
+      appKey: result.appKey,
+      ...(isPublic ? {
+        visibility: "public"
+      } : {})
     };
   });
   var panelSetting = on ? base : null;
-  var differs = share => !!share.settings && (on ? valid : true) && panelSetting !== (share.settings.comments?.apiBase ?? null);
+  var differs = share => !!share.settings && (on ? valid : true) && (panelSetting !== (share.settings.comments?.apiBase ?? null) || on && !!share.settings.comments && visibility2 !== visibilityOf(share.settings.comments));
+  var visibilityChange = share => on && !!share.settings?.comments && visibility2 !== visibilityOf(share.settings.comments) ? visibility2 === "public" ? COMMENTS_TEXT.toPublic : COMMENTS_TEXT.toPrivate : null;
   var appChanged = share => on && !!current?.appKey && !!share.settings?.comments && share.settings.comments.appKey !== current.appKey;
   var field = {
     color: c.foreground,
@@ -11127,6 +11239,46 @@ function useReleaseComments(board, context) {
         small: true,
         muted: true,
         children: sharedOriginText(sitesText)
+      }), /* @__PURE__ */jsxs7(View7, {
+        testID: "board-release-comments-visibility",
+        accessibilityRole: "radiogroup",
+        style: {
+          gap: 2
+        },
+        children: [/* @__PURE__ */jsx9(Copy, {
+          small: true,
+          children: COMMENTS_TEXT.visibility
+        }), /* @__PURE__ */jsx9(Radio, {
+          testID: "board-release-comments-visibility-public",
+          label: COMMENTS_TEXT.public,
+          checked: visibility2 === "public",
+          disabled: busy,
+          onPress: () => setVisibility("public")
+        }), /* @__PURE__ */jsx9(Radio, {
+          testID: "board-release-comments-visibility-private",
+          label: COMMENTS_TEXT.private,
+          checked: visibility2 === "private",
+          disabled: busy,
+          onPress: () => setVisibility("private")
+        }), visibility2 === "private" ? /* @__PURE__ */jsx9(Copy, {
+          small: true,
+          muted: true,
+          children: COMMENTS_TEXT.privateHelp
+        }) : /* @__PURE__ */jsx9(View7, {
+          testID: "board-release-comments-public-warning",
+          children: /* @__PURE__ */jsx9(Notice, {
+            text: COMMENTS_TEXT.publicWarning
+          })
+        }), visibility2 === "public" && (current ? !sourceFor(current) : !sources.some(source => source.state === "ready" && source.enabled)) ? /* @__PURE__ */jsx9(View7, {
+          testID: "board-release-comments-public-inbox",
+          children: /* @__PURE__ */jsx9(Notice, {
+            text: COMMENTS_PUBLIC_NEEDS_INBOX
+          })
+        }) : null, visibility2 === "public" && current?.clientIp === "proxied-unconfigured" ? /* @__PURE__ */jsx9(Copy, {
+          small: true,
+          muted: true,
+          children: COMMENTS_TEXT.proxy
+        }) : null]
       }), needsConfirm ? /* @__PURE__ */jsxs7(View7, {
         testID: "board-release-comments-internal",
         style: {
@@ -11159,7 +11311,10 @@ function useReleaseComments(board, context) {
         children: [/* @__PURE__ */jsx9(Copy, {
           small: true,
           children: commentsProbeText(current)
-        }), current.originProblems.map(problem => /* @__PURE__ */jsx9(Copy, {
+        }), visibility2 === "public" && current.comments === "threads" && commentsPublicProbeText(current) ? /* @__PURE__ */jsx9(Copy, {
+          small: true,
+          children: commentsPublicProbeText(current)
+        }) : null, current.originProblems.map(problem => /* @__PURE__ */jsx9(Copy, {
           small: true,
           muted: true,
           children: problem
@@ -11181,15 +11336,18 @@ function useReleaseComments(board, context) {
   var restore = value => {
     setOn(!!value);
     setApiBase(value?.apiBase ?? "");
+    setVisibility(visibilityOf(value));
     setInternalOk(false);
   };
   return {
     on,
     apiBase: base,
+    visibility: visibility2,
     view,
     resolve,
     forShare,
     differs,
+    visibilityChange,
     appChanged,
     restore
   };
@@ -11679,6 +11837,11 @@ ${share.link}${share.verified ? "" : "\uFF08\u5185\u5BB9\u5F85\u6838\u9A8C\uFF09
           }) : null]
         }), comments.appChanged(share) ? /* @__PURE__ */jsx10(Notice, {
           text: COMMENTS_TEXT.appChanged
+        }) : null, comments.visibilityChange(share) ? /* @__PURE__ */jsx10(View8, {
+          testID: "board-share-comments-visibility",
+          children: /* @__PURE__ */jsx10(Notice, {
+            text: comments.visibilityChange(share)
+          })
         }) : null, share.link && copied === share.link ? /* @__PURE__ */jsx10(Copy, {
           small: true,
           muted: true,
@@ -12012,7 +12175,7 @@ ${share.link}${share.verified ? "" : "\uFF08\u5185\u5BB9\u5F85\u6838\u9A8C\uFF09
     }) : null, selected.comments ? /* @__PURE__ */jsxs8(Copy, {
       small: true,
       muted: true,
-      children: ["\u8BBF\u5BA2\u8BC4\u8BBA\uFF1A", selected.comments.apiBase]
+      children: ["\u8BBF\u5BA2\u8BC4\u8BBA\uFF1A", selected.comments.apiBase, selected.comments.visibility === "public" ? " \xB7 \u516C\u5F00" : ""]
     }) : null, html ? /* @__PURE__ */jsx10(ReleasePreview, {
       html
     }) : null, confirming ? /* @__PURE__ */jsxs8(View8, {
@@ -12036,11 +12199,11 @@ ${share.link}${share.verified ? "" : "\uFF08\u5185\u5BB9\u5F85\u6838\u9A8C\uFF09
       }), /* @__PURE__ */jsx10(Copy, {
         small: true,
         muted: true,
-        children: confirming.recovered ? `\u672C\u6B21\u4F7F\u7528\u9762\u677F\u4E2D\u7684\u8BBE\u7F6E\uFF1A\u540D\u79F0\u300C${selected.title}\u300D \xB7 ${selected.network === "cdn" ? "\u5141\u8BB8 CDN \u5E93" : "\u4EC5\u5185\u7F6E\u8D44\u6E90"} \xB7 ${selected.apiOrigins?.length ? `\u540E\u7AEF\u6765\u6E90\uFF1A${selected.apiOrigins.join("\u3001")}` : "\u4E0D\u8FDE\u63A5\u540E\u7AEF"}${selected.comments ? ` \xB7 \u8BBF\u5BA2\u8BC4\u8BBA\uFF08${selected.comments.apiBase}\uFF09` : ""}` : `\u6CBF\u7528\u8BBE\u7F6E\uFF1A${inheritedSettingsText(confirming.share)}`
+        children: confirming.recovered ? `\u672C\u6B21\u4F7F\u7528\u9762\u677F\u4E2D\u7684\u8BBE\u7F6E\uFF1A\u540D\u79F0\u300C${selected.title}\u300D \xB7 ${selected.network === "cdn" ? "\u5141\u8BB8 CDN \u5E93" : "\u4EC5\u5185\u7F6E\u8D44\u6E90"} \xB7 ${selected.apiOrigins?.length ? `\u540E\u7AEF\u6765\u6E90\uFF1A${selected.apiOrigins.join("\u3001")}` : "\u4E0D\u8FDE\u63A5\u540E\u7AEF"}${selected.comments ? ` \xB7 \u8BBF\u5BA2\u8BC4\u8BBA\uFF08${selected.comments.apiBase}${selected.comments.visibility === "public" ? "\uFF0C\u516C\u5F00" : ""}\uFF09` : ""}` : `\u6CBF\u7528\u8BBE\u7F6E\uFF1A${inheritedSettingsText(confirming.share)}`
       }), confirming.comments !== void 0 ? /* @__PURE__ */jsxs8(Copy, {
         small: true,
         muted: true,
-        children: ["\u6B64\u6B21\u66F4\u65B0\u7684\u8BBF\u5BA2\u8BC4\u8BBA\uFF1A", confirming.comments ? confirming.comments.apiBase : "\u5173\u95ED"]
+        children: ["\u6B64\u6B21\u66F4\u65B0\u7684\u8BBF\u5BA2\u8BC4\u8BBA\uFF1A", confirming.comments ? `${confirming.comments.apiBase}${confirming.comments.visibility === "public" ? "\uFF08\u516C\u5F00\uFF09" : ""}` : "\u5173\u95ED"]
       }) : null, confirming.liveAdopted ? /* @__PURE__ */jsxs8(Copy, {
         small: true,
         muted: true,
@@ -13315,9 +13478,9 @@ ${path}\uFF1A${byteText(bytes)}`).join("")]
 }
 
 // client/inbox.tsx
-import { useEffect as useEffect15, useRef as useRef14, useState as useState15 } from "react";
-import { View as View11 } from "react-native";
-import { ScrollView as ScrollView5, TextInput as TextInput7 } from "@getpaseo/plugin/client/ui";
+import { useEffect as useEffect16, useRef as useRef15, useState as useState16 } from "react";
+import { View as View12 } from "react-native";
+import { ScrollView as ScrollView6, TextInput as TextInput8 } from "@getpaseo/plugin/client/ui";
 
 // client/inbox-panel.tsx
 import { useEffect as useEffect14, useRef as useRef13, useState as useState14 } from "react";
@@ -13326,7 +13489,7 @@ import { ScrollView as ScrollView4, TextInput as TextInput6 } from "@getpaseo/pl
 
 // shared/bidi.ts
 function showBidiControls(text) {
-  return text.replace(/[‪-‮⁦-⁩]/g, char => `[U+${char.charCodeAt(0).toString(16).toUpperCase()}]`);
+  return text.replace(/[\u061C\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g, char => `[U+${char.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")}]`);
 }
 
 // client/inbox-panel.tsx
@@ -13337,6 +13500,14 @@ var statuses = {
   resolved: "\u5DF2\u5904\u7406",
   dismissed: "\u4E0D\u5904\u7406"
 };
+var PUBLIC_PANEL_TEXT = {
+  dismiss: "\u4E0D\u5904\u7406\uFF08\u5728\u9875\u9762\u4E0A\u9690\u85CF\uFF09",
+  placeholder: "\u516C\u5F00\u56DE\u590D\uFF0C\u6240\u6709\u8BBF\u5BA2\u90FD\u80FD\u770B\u5230\uFF0C\u6700\u591A 2000 \u5B57",
+  dismissHelp: "\u628A\u516C\u5F00\u8BC4\u8BBA\u8BBE\u4E3A\u300C\u4E0D\u5904\u7406\u300D\u4F1A\u540C\u65F6\u5728\u9875\u9762\u4E0A\u9690\u85CF\u5B83\uFF1B\u6539\u56DE\u5176\u4ED6\u72B6\u6001\u4F1A\u91CD\u65B0\u663E\u793A\uFF08\u9664\u975E\u4F60\u53E6\u5916\u70B9\u4E86\u300C\u5728\u9875\u9762\u4E0A\u9690\u85CF\u300D\uFF09\u3002",
+  agentDismissed: "\u8BC4\u8BBA\u52A9\u624B\u628A\u5B83\u6807\u4E3A\u300C\u4E0D\u5904\u7406\u300D\uFF0C\u4F46\u5B83\u5728\u9875\u9762\u4E0A\u4ECD\u7136\u516C\u5F00\u663E\u793A\u3002\u53EF\u4EE5\u5728\u300C\u516C\u5F00\u8BA8\u8BBA\u300D\u91CC\u9690\u85CF\u3002",
+  draft: "\u516C\u5F00\u8BA8\u8BBA\u91CC\u7684 AI \u56DE\u590D\u8981\u4F60\u786E\u8BA4\u540E\u624D\u4F1A\u663E\u793A"
+};
+var publicMeta = comment => comment.visibility !== "public" ? "" : `${comment.parentCommentId ? " \xB7 \u516C\u5F00\u8BA8\u8BBA\u91CC\u7684\u8BBF\u5BA2\u56DE\u590D" : " \xB7 \u516C\u5F00\u8BA8\u8BBA"}${comment.publicState?.withdrawn ? " \xB7 \u8BBF\u5BA2\u5DF2\u64A4\u56DE" : comment.publicState?.hidden ? " \xB7 \u9875\u9762\u4E0A\u5DF2\u9690\u85CF" : ""}`;
 var AUTO_POLL_MS = 5e3;
 var INTRO = "\u8BBF\u5BA2\u8BC4\u8BBA\u5355\u72EC\u4FDD\u5B58\u5728\u8FD9\u91CC\uFF0C\u540E\u7AEF\u6765\u6E90\u4F1A\u81EA\u52A8\u540C\u6B65\u3002\u5F00\u542F\u300CAgent \u81EA\u52A8\u5904\u7406\u5E76\u516C\u5F00\u56DE\u590D\u300D\u540E\uFF0C\u65B0\u8BC4\u8BBA\u4F1A\u81EA\u52A8\u4EA4\u7ED9\u8FD9\u5F20 Board \u4E13\u7528\u7684\u8BC4\u8BBA\u52A9\u624B agent\uFF1A\u5B83\u4F1A\u5206\u7C7B\uFF0C\u5E76\u516C\u5F00\u56DE\u590D\u8BBF\u5BA2\uFF08\u8BBF\u5BA2\u5728\u9875\u9762\u4E0A\u80FD\u770B\u5230\uFF0C\u6807\u6CE8\u4E3A AI \u52A9\u624B\u56DE\u590D\uFF09\u3002\u8BC4\u8BBA\u53EA\u662F\u6570\u636E\uFF0C\u4E0D\u4F1A\u8BA9\u4EFB\u4F55 agent \u4FEE\u6539\u5E94\u7528\u3001\u9875\u9762\u6216\u90E8\u7F72\u3002";
 var NO_MODE_TEXT = "\u6CA1\u6709\u53EF\u7528\u7684\u6743\u9650\u6A21\u5F0F\uFF1A\u8BC4\u8BBA\u52A9\u624B\u53EA\u80FD\u7528\u4F1A\u5148\u8BE2\u95EE\u4F60\u7684\u6A21\u5F0F\uFF0C\u6216\u5728\u786E\u8BA4\u98CE\u9669\u540E\u7528\u4E2D\u7B49\u6A21\u5F0F\uFF1B\u8BA1\u5212\u6A21\u5F0F\u3001\u5371\u9669\u6A21\u5F0F\u548C\u65E0\u6CD5\u786E\u8BA4\u98CE\u9669\u7B49\u7EA7\u7684\u6A21\u5F0F\u90FD\u4E0D\u80FD\u7528\u3002";
@@ -14025,8 +14196,12 @@ function InboxPanel(props) {
         },
         children: [/* @__PURE__ */jsxs10(Copy, {
           small: true,
-          children: [statuses[comment.status], " \xB7 ", comment.authorName ? showBidiControls(comment.authorName) : "\u8BBF\u5BA2", " \xB7 ", new Date(comment.createdAt).toLocaleString(), comment.visitorTag ? ` \xB7 \u8BBF\u5BA2 ${comment.visitorTag}` : ""]
-        }), /* @__PURE__ */jsx12(Copy, {
+          children: [statuses[comment.status], " \xB7 ", comment.authorName ? showBidiControls(comment.authorName) : "\u8BBF\u5BA2", " \xB7 ", new Date(comment.createdAt).toLocaleString(), comment.visitorTag ? ` \xB7 \u8BBF\u5BA2 ${comment.visitorTag}` : "", publicMeta(comment)]
+        }), comment.visibility === "public" && comment.status === "dismissed" && comment.publicState && !comment.publicState.hidden ? /* @__PURE__ */jsx12(Copy, {
+          small: true,
+          muted: true,
+          children: PUBLIC_PANEL_TEXT.agentDismissed
+        }) : null, /* @__PURE__ */jsx12(Copy, {
           children: showBidiControls(comment.text)
         }), comment.anchor?.quote ? /* @__PURE__ */jsxs10(Copy, {
           muted: true,
@@ -14079,7 +14254,11 @@ function InboxPanel(props) {
             small: true,
             muted: true,
             children: "AI \u8349\u7A3F\uFF08\u5F85\u4F60\u5BA1\u6838\uFF09"
-          }), /* @__PURE__ */jsx12(Copy, {
+          }), comment.visibility === "public" ? /* @__PURE__ */jsx12(Copy, {
+            small: true,
+            muted: true,
+            children: PUBLIC_PANEL_TEXT.draft
+          }) : null, /* @__PURE__ */jsx12(Copy, {
             children: showBidiControls(pending.text)
           }), /* @__PURE__ */jsxs10(View10, {
             style: {
@@ -14148,7 +14327,7 @@ function InboxPanel(props) {
             editable: !busy && editor.phase === "editing",
             multiline: true,
             maxLength: 2e3,
-            placeholder: "\u516C\u5F00\u56DE\u590D\uFF0C\u8BBF\u5BA2\u53EF\u89C1\uFF0C\u6700\u591A 2000 \u5B57",
+            placeholder: comment.visibility === "public" ? PUBLIC_PANEL_TEXT.placeholder : "\u516C\u5F00\u56DE\u590D\uFF0C\u8BBF\u5BA2\u53EF\u89C1\uFF0C\u6700\u591A 2000 \u5B57",
             placeholderTextColor: c.foregroundMuted,
             style: field,
             accessibilityLabel: "\u516C\u5F00\u56DE\u590D"
@@ -14264,14 +14443,18 @@ function InboxPanel(props) {
             placeholderTextColor: c.foregroundMuted,
             style: field,
             accessibilityLabel: "\u5185\u90E8\u5907\u6CE8"
-          }), /* @__PURE__ */jsxs10(View10, {
+          }), comment.visibility === "public" ? /* @__PURE__ */jsx12(Copy, {
+            small: true,
+            muted: true,
+            children: PUBLIC_PANEL_TEXT.dismissHelp
+          }) : null, /* @__PURE__ */jsxs10(View10, {
             style: {
               flexDirection: "row",
               flexWrap: "wrap",
               gap: 8
             },
             children: [Object.keys(statuses).map(status => /* @__PURE__ */jsx12(Action, {
-              label: statuses[status],
+              label: status === "dismissed" && comment.visibility === "public" ? PUBLIC_PANEL_TEXT.dismiss : statuses[status],
               active: comment.status === status,
               disabled: busy,
               onPress: () => triage(comment, status)
@@ -14292,13 +14475,597 @@ function InboxPanel(props) {
   });
 }
 
+// client/inbox-threads.tsx
+import { useEffect as useEffect15, useRef as useRef14, useState as useState15 } from "react";
+import { View as View11 } from "react-native";
+import { ScrollView as ScrollView5, TextInput as TextInput7 } from "@getpaseo/plugin/client/ui";
+import { jsx as jsx13, jsxs as jsxs11 } from "react/jsx-runtime";
+var THREADS_TEXT = {
+  notice: "\u516C\u5F00\u8BA8\u8BBA\u91CC\u7684\u8BC4\u8BBA\u548C\u56DE\u590D\uFF0C\u6240\u6709\u6253\u5F00\u9875\u9762\u7684\u4EBA\u90FD\u80FD\u770B\u5230\u3002\u4F60\u53EF\u4EE5\u5728\u9875\u9762\u4E0A\u9690\u85CF\u4E0D\u5F53\u5185\u5BB9\uFF0C\u6216\u628A\u8BA8\u8BBA\u6807\u4E3A\u5DF2\u89E3\u51B3\u3002",
+  empty: "\u8FD8\u6CA1\u6709\u516C\u5F00\u8BA8\u8BBA\u3002\u53D1\u5E03\u65F6\u628A\u300C\u8BC4\u8BBA\u53EF\u89C1\u8303\u56F4\u300D\u8BBE\u4E3A\u300C\u516C\u5F00\u300D\u540E\uFF0C\u8BBF\u5BA2\u7684\u8BC4\u8BBA\u4F1A\u663E\u793A\u5728\u8FD9\u91CC\u3002",
+  shown: "\u9875\u9762\u4E0A\uFF1A\u516C\u5F00\u663E\u793A",
+  resolved: "\u9875\u9762\u4E0A\uFF1A\u5DF2\u89E3\u51B3\uFF08\u8BBF\u5BA2\u5728\u300C\u5168\u90E8\u300D\u91CC\u80FD\u770B\u5230\uFF09",
+  hiddenThread: "\u9875\u9762\u4E0A\uFF1A\u5DF2\u9690\u85CF\uFF08\u8BBF\u5BA2\u770B\u4E0D\u5230\u8FD9\u4E2A\u8BA8\u8BBA\uFF09",
+  hiddenReply: "\u9875\u9762\u4E0A\uFF1A\u5DF2\u9690\u85CF\uFF08\u8BBF\u5BA2\u770B\u4E0D\u5230\u8FD9\u6761\u56DE\u590D\uFF09",
+  withdrawn: "\u9875\u9762\u4E0A\uFF1A\u8BBF\u5BA2\u5DF2\u64A4\u56DE",
+  syncing: " \xB7 \u6B63\u5728\u540C\u6B65\u5230\u540E\u7AEF\u2026",
+  hide: "\u5728\u9875\u9762\u4E0A\u9690\u85CF",
+  show: "\u5728\u9875\u9762\u4E0A\u663E\u793A",
+  resolve: "\u6807\u4E3A\u5DF2\u89E3\u51B3",
+  reopen: "\u91CD\u65B0\u6253\u5F00",
+  hideVisitor: "\u9690\u85CF\u8FD9\u4F4D\u8BBF\u5BA2\u7684\u5168\u90E8\u516C\u5F00\u8BC4\u8BBA",
+  showVisitor: "\u91CD\u65B0\u663E\u793A\u8FD9\u4F4D\u8BBF\u5BA2\u7684\u516C\u5F00\u8BC4\u8BBA",
+  pause: "\u6682\u505C\u65B0\u7684\u516C\u5F00\u8BC4\u8BBA",
+  resume: "\u6062\u590D\u516C\u5F00\u8BC4\u8BBA",
+  paused: "\u5DF2\u6682\u505C\u65B0\u7684\u516C\u5F00\u8BC4\u8BBA\uFF1A\u8BBF\u5BA2\u73B0\u5728\u4E0D\u80FD\u5728\u8FD9\u4E2A\u9875\u9762\u53D1\u8868\u65B0\u7684\u516C\u5F00\u8BC4\u8BBA\u6216\u56DE\u590D\u3002",
+  replyThread: "\u56DE\u590D\u8FD9\u4E2A\u8BA8\u8BBA",
+  replyOne: "\u56DE\u590D\u8FD9\u6761",
+  placeholder: "\u516C\u5F00\u56DE\u590D\uFF0C\u6240\u6709\u8BBF\u5BA2\u90FD\u80FD\u770B\u5230\uFF0C\u6700\u591A 2000 \u5B57",
+  notImported: "\u8FD9\u6761\u8BC4\u8BBA\u8FD8\u6CA1\u6709\u540C\u6B65\u5230\u6536\u4EF6\u7BB1\uFF0C\u6682\u65F6\u4E0D\u80FD\u56DE\u590D\u3002"
+};
+var POLL_MS = 1e4;
+var labelOf = message => {
+  var tag = message.tag ? `\u8BBF\u5BA2\xB7${message.tag.slice(0, 6)}` : "\u8BBF\u5BA2";
+  return message.name ? `${showBidiControls(message.name)}\uFF08${tag}\uFF09` : tag;
+};
+var time = value => {
+  var at = Date.parse(value);
+  return Number.isNaN(at) ? "" : new Date(at).toLocaleString();
+};
+var stateLine = (state, root, resolved) => {
+  if (!state) return "";
+  var base = state.withdrawn ? THREADS_TEXT.withdrawn : state.hidden ? root ? THREADS_TEXT.hiddenThread : THREADS_TEXT.hiddenReply : resolved ? THREADS_TEXT.resolved : THREADS_TEXT.shown;
+  return base + (state.pending && Object.keys(state.pending).length && !state.error ? THREADS_TEXT.syncing : "");
+};
+function InboxThreads(props) {
+  var {
+    scope
+  } = props;
+  var c = useColors();
+  var [data, setData] = useState15();
+  var [failure, setFailure] = useState15(),
+    [notice, setNotice] = useState15();
+  var [busy, setBusy] = useState15(false),
+    [ask, setAsk] = useState15(null),
+    [editor, setEditor] = useState15(null);
+  var callbacks = useRef14(props);
+  callbacks.current = props;
+  var alive = useRef14(true),
+    flight = useRef14(false);
+  var load = () => __async(null, null, function* () {
+    var value = yield callbacks.current.onThreads(scope);
+    if (alive.current) setData(value);
+  });
+  var run = action => __async(null, null, function* () {
+    if (flight.current) return;
+    flight.current = true;
+    setBusy(true);
+    setFailure(void 0);
+    setNotice(void 0);
+    try {
+      var message = yield action();
+      yield load();
+      if (message && alive.current) setNotice(message);
+    } catch (error) {
+      if (alive.current) setFailure(errorMessage(error));
+    } finally {
+      flight.current = false;
+      if (alive.current) setBusy(false);
+    }
+  });
+  useEffect15(() => {
+    alive.current = true;
+    void run(() => __async(null, null, function* () {
+      return void 0;
+    }));
+    var timer = setInterval(() => {
+      if (!flight.current) void load().catch(() => void 0);
+    }, POLL_MS);
+    return () => {
+      alive.current = false;
+      clearInterval(timer);
+    };
+  }, [scope.boardId, scope.expectedCreatedAt]);
+  var setState = (source, message, change, parentId) => run(() => __async(null, null, function* () {
+    var result = yield callbacks.current.onPublicState({
+      ...scope,
+      eventId: localId("inbox-public"),
+      sourceId: source,
+      externalId: message.id,
+      ...change,
+      known: {
+        hidden: message.state?.hidden ?? false,
+        resolved: message.state?.resolved ?? false,
+        ...(message.state?.withdrawn ? {
+          withdrawn: true
+        } : {}),
+        ...(parentId ? {
+          parentId
+        } : {}),
+        ...(message.tag ? {
+          publicTag: message.tag
+        } : {})
+      }
+    });
+    return result.message;
+  }));
+  var setPage = (source, page, paused) => run(() => __async(null, null, function* () {
+    return (yield callbacks.current.onPublicPage({
+      ...scope,
+      eventId: localId("inbox-page"),
+      sourceId: source,
+      page,
+      paused
+    })).message;
+  }));
+  var setVisitor = (source, page, tag, hidden) => run(() => __async(null, null, function* () {
+    var result = yield callbacks.current.onPublicVisitor({
+      ...scope,
+      eventId: localId("inbox-visitor"),
+      sourceId: source,
+      page,
+      tag,
+      hidden
+    });
+    return result.status === "applied" && result.changed !== void 0 ? `${result.message}\uFF08${result.changed} \u6761\uFF09` : result.message;
+  }));
+  var sendReply = () => run(() => __async(null, null, function* () {
+    if (!editor) return;
+    var eventId = editor.eventId ?? localId("inbox-public-reply");
+    setEditor({
+      ...editor,
+      eventId,
+      phase: "sending"
+    });
+    var read = yield callbacks.current.onRead({
+      ...scope,
+      commentId: editor.commentId
+    });
+    var result = yield callbacks.current.onReply({
+      ...scope,
+      commentId: editor.commentId,
+      expectedCommentRevision: read.comment.revision,
+      eventId,
+      text: editor.text,
+      resolve: false
+    });
+    if (alive.current) setEditor(null);
+    return result.message;
+  }));
+  var field = {
+    color: c.foreground,
+    backgroundColor: c.surface1,
+    borderColor: c.border,
+    borderWidth: 1,
+    borderRadius: 6,
+    padding: 8,
+    fontSize: 13
+  };
+  var row = {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8
+  };
+  var replyEditor = commentId => editor?.commentId === commentId ? /* @__PURE__ */jsxs11(View11, {
+    style: {
+      gap: 8
+    },
+    children: [/* @__PURE__ */jsx13(TextInput7, {
+      value: editor.text,
+      onChangeText: text => setEditor({
+        ...editor,
+        text,
+        eventId: void 0
+      }),
+      editable: !busy && editor.phase === "editing",
+      multiline: true,
+      maxLength: 2e3,
+      placeholder: THREADS_TEXT.placeholder,
+      placeholderTextColor: c.foregroundMuted,
+      style: field,
+      accessibilityLabel: "\u516C\u5F00\u56DE\u590D"
+    }), /* @__PURE__ */jsxs11(View11, {
+      style: row,
+      children: [/* @__PURE__ */jsx13(Action, {
+        label: editor.phase === "sending" ? "\u53D1\u9001\u4E2D\u2026" : "\u53D1\u9001\u56DE\u590D",
+        primary: true,
+        disabled: busy || !editor.text.trim(),
+        onPress: () => void sendReply(),
+        testID: `board-inbox-thread-send-${commentId}`
+      }), /* @__PURE__ */jsx13(Action, {
+        label: "\u53D6\u6D88",
+        disabled: busy,
+        onPress: () => setEditor(null)
+      })]
+    })]
+  }) : null;
+  var stateView = (source, message, root, resolved, thread) => {
+    var state = message.state;
+    if (!state) return null;
+    return /* @__PURE__ */jsxs11(View11, {
+      style: {
+        gap: 6
+      },
+      children: [/* @__PURE__ */jsx13(View11, {
+        testID: `board-inbox-public-${message.id}`,
+        children: /* @__PURE__ */jsx13(Copy, {
+          small: true,
+          muted: true,
+          children: stateLine(state, root, resolved)
+        })
+      }), state.error ? /* @__PURE__ */jsxs11(View11, {
+        style: {
+          gap: 6
+        },
+        children: [/* @__PURE__ */jsx13(Copy, {
+          small: true,
+          children: `\u9875\u9762\u72B6\u6001\u6CA1\u80FD\u540C\u6B65\uFF1A${state.error}`
+        }), /* @__PURE__ */jsx13(Action, {
+          label: "\u91CD\u8BD5",
+          disabled: busy,
+          onPress: () => void setState(source, message, {
+            retry: true
+          }, root ? void 0 : thread.id),
+          testID: `board-inbox-public-retry-${message.id}`
+        })]
+      }) : null, /* @__PURE__ */jsxs11(View11, {
+        style: row,
+        children: [state.withdrawn ? null : state.hidden ? /* @__PURE__ */jsx13(Action, {
+          label: THREADS_TEXT.show,
+          disabled: busy,
+          onPress: () => void setState(source, message, {
+            hidden: false
+          }, root ? void 0 : thread.id),
+          testID: `board-inbox-hide-${message.id}`
+        }) : /* @__PURE__ */jsx13(Action, {
+          label: THREADS_TEXT.hide,
+          disabled: busy,
+          onPress: () => root && thread.replies.some(item => item.by === "visitor") ? setAsk({
+            kind: "hide",
+            source,
+            thread
+          }) : void setState(source, message, {
+            hidden: true
+          }, root ? void 0 : thread.id),
+          testID: `board-inbox-hide-${message.id}`
+        }), root ? /* @__PURE__ */jsx13(Action, {
+          label: resolved ? THREADS_TEXT.reopen : THREADS_TEXT.resolve,
+          disabled: busy,
+          onPress: () => void setState(source, message, {
+            resolved: !resolved
+          }),
+          testID: `board-inbox-resolve-${message.id}`
+        }) : null, message.tag ? /* @__PURE__ */jsx13(Action, {
+          label: THREADS_TEXT.hideVisitor,
+          disabled: busy,
+          onPress: () => setAsk({
+            kind: "visitor",
+            source,
+            page: thread.page,
+            tag: message.tag,
+            hidden: true,
+            count: [thread, ...thread.replies].filter(item => item.tag === message.tag).length
+          }),
+          testID: `board-inbox-hide-visitor-${message.id}`
+        }) : null, message.commentId && !state.withdrawn && editor?.commentId !== message.commentId ? /* @__PURE__ */jsx13(Action, {
+          label: root ? THREADS_TEXT.replyThread : THREADS_TEXT.replyOne,
+          disabled: busy,
+          onPress: () => setEditor({
+            commentId: message.commentId,
+            text: "",
+            phase: "editing"
+          }),
+          testID: `board-inbox-thread-reply-${message.id}`
+        }) : null]
+      }), message.commentId ? replyEditor(message.commentId) : null]
+    });
+  };
+  var threadView = (source, thread) => {
+    var visitorReplies = thread.replies.filter(item => item.by === "visitor").length;
+    return /* @__PURE__ */jsxs11(View11, {
+      testID: `board-inbox-thread-${thread.id}`,
+      style: {
+        borderWidth: 1,
+        borderColor: c.border,
+        borderRadius: 8,
+        padding: 12,
+        gap: 8,
+        backgroundColor: c.surface0
+      },
+      children: [/* @__PURE__ */jsx13(Copy, {
+        small: true,
+        children: `${labelOf(thread)} \xB7 ${time(thread.createdAt)} \xB7 \u516C\u5F00\u8BA8\u8BBA${visitorReplies ? ` \xB7 ${visitorReplies} \u6761\u8BBF\u5BA2\u56DE\u590D` : ""}`
+      }), thread.anchor?.quote ? /* @__PURE__ */jsxs11(Copy, {
+        muted: true,
+        small: true,
+        children: ["\u5F15\u7528\uFF1A\u300C", showBidiControls(thread.anchor.quote.length > 200 ? `${thread.anchor.quote.slice(0, 200)}\u2026` : thread.anchor.quote), "\u300D"]
+      }) : null, /* @__PURE__ */jsx13(Copy, {
+        children: showBidiControls(thread.text)
+      }), stateView(source.sourceId, thread, true, thread.resolved, thread), thread.omitted ? /* @__PURE__ */jsx13(Copy, {
+        small: true,
+        muted: true,
+        children: `\u8FD8\u6709 ${thread.omitted} \u6761\u8F83\u65E9\u7684\u56DE\u590D\u6CA1\u6709\u663E\u793A`
+      }) : null, thread.replies.map(message => {
+        var target = message.replyTo ? thread.replies.find(item => item.id === message.replyTo) : void 0;
+        if (message.by !== "visitor") return /* @__PURE__ */jsxs11(View11, {
+          style: {
+            gap: 4,
+            paddingLeft: 10,
+            borderLeftWidth: 2,
+            borderColor: c.accent
+          },
+          children: [/* @__PURE__ */jsx13(Copy, {
+            muted: true,
+            small: true,
+            children: `${message.by === "agent" ? "AI \u52A9\u624B\u56DE\u590D" : "\u4F5C\u8005\u56DE\u590D"}${target ? `\uFF08\u56DE\u590D ${labelOf(target)}\uFF09` : ""} \xB7 ${time(message.createdAt)}`
+          }), /* @__PURE__ */jsx13(Copy, {
+            children: showBidiControls(message.text)
+          })]
+        }, message.id);
+        return /* @__PURE__ */jsxs11(View11, {
+          testID: `board-inbox-visitor-reply-${message.id}`,
+          style: {
+            gap: 4,
+            marginLeft: 10,
+            padding: 10,
+            borderWidth: 1,
+            borderRadius: 8,
+            borderColor: c.border
+          },
+          children: [/* @__PURE__ */jsx13(Copy, {
+            small: true,
+            children: `\u8BBF\u5BA2\u56DE\u590D \xB7 ${labelOf(message)} \xB7 ${time(message.createdAt)}`
+          }), /* @__PURE__ */jsx13(Copy, {
+            children: showBidiControls(message.text)
+          }), stateView(source.sourceId, message, false, false, thread)]
+        }, message.id);
+      })]
+    }, thread.id);
+  };
+  var sources = data?.sources ?? [];
+  var any = sources.some(source => source.threads.length);
+  return /* @__PURE__ */jsxs11(ScrollView5, {
+    testID: "board-inbox-threads",
+    contentContainerStyle: {
+      padding: 16,
+      gap: 12
+    },
+    children: [/* @__PURE__ */jsx13(Copy, {
+      children: "\u516C\u5F00\u8BA8\u8BBA"
+    }), any ? /* @__PURE__ */jsx13(View11, {
+      testID: "board-inbox-public-notice",
+      children: /* @__PURE__ */jsx13(Notice, {
+        text: THREADS_TEXT.notice
+      })
+    }) : null, failure ? /* @__PURE__ */jsx13(Notice, {
+      error: true,
+      text: failure
+    }) : null, notice ? /* @__PURE__ */jsx13(Notice, {
+      text: notice
+    }) : null, /* @__PURE__ */jsx13(Action, {
+      label: "\u5237\u65B0",
+      disabled: busy,
+      onPress: () => void run(() => __async(null, null, function* () {
+        return void 0;
+      })),
+      testID: "board-inbox-threads-refresh"
+    }), ask ? /* @__PURE__ */jsxs11(View11, {
+      testID: "board-inbox-threads-confirm",
+      style: {
+        gap: 8,
+        padding: 10,
+        borderWidth: 1,
+        borderRadius: 8,
+        borderColor: c.accent
+      },
+      children: [/* @__PURE__ */jsx13(Copy, {
+        small: true,
+        children: ask.kind === "hide" ? `\u6574\u4E2A\u8BA8\u8BBA\uFF08\u542B ${ask.thread.replies.filter(item => item.by === "visitor").length} \u6761\u56DE\u590D\uFF09\u90FD\u4F1A\u4ECE\u9875\u9762\u4E0A\u9690\u85CF\u3002` : `\u8FD9\u4F4D\u8BBF\u5BA2\u5728\u8FD9\u4E2A\u9875\u9762\u4E0A\u7684\u5168\u90E8\u516C\u5F00\u8BC4\u8BBA\uFF08\u8FD9\u91CC\u80FD\u770B\u5230\u7684\u6709 ${ask.count} \u6761\uFF09\u90FD\u4F1A\u4ECE\u9875\u9762\u4E0A\u9690\u85CF\u3002`
+      }), /* @__PURE__ */jsxs11(View11, {
+        style: row,
+        children: [/* @__PURE__ */jsx13(Action, {
+          label: "\u9690\u85CF",
+          primary: true,
+          disabled: busy,
+          onPress: () => {
+            var current = ask;
+            setAsk(null);
+            if (current.kind === "hide") void setState(current.source, current.thread, {
+              hidden: true
+            });else void setVisitor(current.source, current.page, current.tag, current.hidden);
+          },
+          testID: "board-inbox-threads-confirm-hide"
+        }), /* @__PURE__ */jsx13(Action, {
+          label: "\u53D6\u6D88",
+          disabled: busy,
+          onPress: () => setAsk(null)
+        })]
+      })]
+    }) : null, data && !sources.length ? /* @__PURE__ */jsx13(Copy, {
+      small: true,
+      muted: true,
+      children: "\u8FD8\u6CA1\u6709\u8FDE\u63A5\u540E\u7AEF\u6765\u6E90\u3002"
+    }) : null, data && sources.length && !any ? /* @__PURE__ */jsx13(Copy, {
+      small: true,
+      muted: true,
+      children: THREADS_TEXT.empty
+    }) : null, sources.map(source => {
+      var pages = [... /* @__PURE__ */new Set([...source.pages.map(page => page.page), ...source.threads.map(thread => thread.page)])];
+      return /* @__PURE__ */jsxs11(View11, {
+        style: {
+          gap: 10
+        },
+        children: [/* @__PURE__ */jsx13(Copy, {
+          small: true,
+          muted: true,
+          children: `\u6765\u6E90\uFF1A${source.label}`
+        }), source.error ? /* @__PURE__ */jsx13(Notice, {
+          error: source.state === "error",
+          text: source.error
+        }) : null, source.truncated ? /* @__PURE__ */jsx13(Copy, {
+          small: true,
+          muted: true,
+          children: `\u53EA\u663E\u793A\u6700\u8FD1\u7684 ${source.threads.length} \u4E2A\u8BA8\u8BBA\uFF08\u5171 ${source.total} \u4E2A\uFF09\u3002`
+        }) : null, pages.map((page, index) => {
+          var info = source.pages.find(item => item.page === page),
+            threads = source.threads.filter(thread => thread.page === page);
+          if (!threads.length && !info?.paused) return null;
+          return /* @__PURE__ */jsxs11(View11, {
+            style: {
+              gap: 8
+            },
+            children: [/* @__PURE__ */jsx13(Copy, {
+              small: true,
+              children: `\u9875\u9762\uFF1A${page}`
+            }), info?.paused ? /* @__PURE__ */jsxs11(Copy, {
+              small: true,
+              muted: true,
+              children: [THREADS_TEXT.paused, info.pending ? THREADS_TEXT.syncing : ""]
+            }) : null, info?.error ? /* @__PURE__ */jsx13(Copy, {
+              small: true,
+              children: `\u9875\u9762\u8BBE\u7F6E\u6CA1\u80FD\u540C\u6B65\uFF1A${info.error}`
+            }) : null, /* @__PURE__ */jsx13(View11, {
+              style: row,
+              children: /* @__PURE__ */jsx13(Action, {
+                label: info?.paused ? THREADS_TEXT.resume : THREADS_TEXT.pause,
+                disabled: busy,
+                onPress: () => void setPage(source.sourceId, page, !info?.paused),
+                testID: `board-inbox-pause-${index}`
+              })
+            }), threads.map(thread => threadView(source, thread))]
+          }, page);
+        })]
+      }, source.sourceId);
+    })]
+  });
+}
+
+// shared/inbox-public.ts
+import { defineRpc as defineRpc7 } from "@getpaseo/plugin";
+import { z as z7 } from "zod";
+var UUID2 = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/;
+var TAG = /^[a-f0-9]{12}$/;
+var PageSchema = z7.string().max(2e3).refine(value => {
+  try {
+    return /^https?:$/.test(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}, "Expected an HTTP(S) page address");
+var AnchorSchema2 = z7.object({
+  selector: z7.string().max(500).optional(),
+  quote: z7.string().max(1e3).optional(),
+  prefix: z7.string().max(64).optional(),
+  suffix: z7.string().max(64).optional(),
+  start: z7.number().int().nonnegative().optional(),
+  end: z7.number().int().nonnegative().optional()
+}).strict();
+var InboxPublicMessageSchema = z7.object({
+  id: z7.string().min(1).max(200),
+  by: z7.enum(["visitor", "owner", "agent"]),
+  tag: z7.string().regex(TAG).optional(),
+  name: z7.string().max(160).optional(),
+  text: z7.string().max(8e3),
+  createdAt: z7.string().max(40),
+  hidden: z7.boolean().optional(),
+  withdrawn: z7.literal(true).optional(),
+  replyTo: z7.string().max(200).optional(),
+  /** Visitor messages imported into this inbox: the ledger comment (for replies and triage). */
+  commentId: IdSchema.optional(),
+  /** Visitor messages: what the inbox asked the page to show, and whether the backend has confirmed it. */
+  state: InboxPublicStateSchema.optional()
+}).strict();
+var InboxPublicThreadSchema = InboxPublicMessageSchema.extend({
+  page: z7.string().max(2e3),
+  resolved: z7.boolean(),
+  anchor: AnchorSchema2.optional(),
+  replies: z7.array(InboxPublicMessageSchema).max(100),
+  omitted: z7.number().int().nonnegative()
+}).strict();
+var InboxPublicSourceViewSchema = z7.object({
+  sourceId: IdSchema,
+  label: z7.string().max(200),
+  state: z7.enum(["ok", "error", "unsupported"]),
+  error: z7.string().max(300).nullable(),
+  publicThreads: z7.boolean(),
+  pages: z7.array(z7.object({
+    page: z7.string().max(2e3),
+    paused: z7.boolean(),
+    pending: z7.boolean(),
+    error: z7.string().max(300).nullable()
+  }).strict()).max(500),
+  threads: z7.array(InboxPublicThreadSchema).max(100),
+  total: z7.number().int().nonnegative(),
+  truncated: z7.boolean()
+}).strict();
+var InboxPublicThreadsSchema = z7.object({
+  revision: z7.number().int().nonnegative(),
+  sources: z7.array(InboxPublicSourceViewSchema).max(32)
+}).strict();
+var InboxPublicStateInputSchema = InboxScopeSchema.extend({
+  eventId: IdSchema,
+  sourceId: IdSchema,
+  externalId: z7.string().regex(UUID2),
+  hidden: z7.boolean().optional(),
+  resolved: z7.boolean().optional(),
+  retry: z7.literal(true).optional(),
+  /** The backend's state as the thread view showed it, for a comment the inbox has no record of yet. */
+  known: z7.object({
+    hidden: z7.boolean(),
+    resolved: z7.boolean(),
+    withdrawn: z7.literal(true).optional(),
+    parentId: z7.string().regex(UUID2).optional(),
+    publicTag: z7.string().regex(TAG).optional()
+  }).strict().optional()
+}).strict().refine(value => value.hidden !== void 0 || value.resolved !== void 0 || value.retry === true, "Nothing to change");
+var InboxPublicResultSchema = z7.object({
+  status: z7.enum(["applied", "syncing", "failed"]),
+  revision: z7.number().int().nonnegative(),
+  message: z7.string().max(300),
+  state: InboxPublicStateSchema.optional(),
+  changed: z7.number().int().nonnegative().optional()
+}).strict();
+var InboxPublicPageInputSchema = InboxScopeSchema.extend({
+  eventId: IdSchema,
+  sourceId: IdSchema,
+  page: PageSchema,
+  paused: z7.boolean()
+}).strict();
+var InboxPublicVisitorInputSchema = InboxScopeSchema.extend({
+  eventId: IdSchema,
+  sourceId: IdSchema,
+  page: PageSchema,
+  tag: z7.string().regex(TAG),
+  hidden: z7.boolean()
+}).strict();
+var inboxPublicThreadsRpc = defineRpc7({
+  name: "board.inbox.public-threads",
+  input: InboxScopeSchema,
+  output: InboxPublicThreadsSchema
+});
+var inboxPublicStateRpc = defineRpc7({
+  name: "board.inbox.public-state",
+  input: InboxPublicStateInputSchema,
+  output: InboxPublicResultSchema
+});
+var inboxPublicPageRpc = defineRpc7({
+  name: "board.inbox.public-page",
+  input: InboxPublicPageInputSchema,
+  output: InboxPublicResultSchema
+});
+var inboxPublicVisitorRpc = defineRpc7({
+  name: "board.inbox.public-hide-visitor",
+  input: InboxPublicVisitorInputSchema,
+  output: InboxPublicResultSchema
+});
+
 // client/inbox.tsx
-import { Fragment as Fragment8, jsx as jsx13, jsxs as jsxs11 } from "react/jsx-runtime";
+import { Fragment as Fragment8, jsx as jsx14, jsxs as jsxs12 } from "react/jsx-runtime";
 function BoardInbox({
   scope,
   hostId
 }) {
-  var [tab, setTab] = useState15("comments");
+  var [tab, setTab] = useState16("comments");
   var list = useBoardRpc(inboxListRpc, hostId),
     policy = useBoardRpc(inboxPolicyRpc, hostId),
     triage = useBoardRpc(inboxTriageRpc, hostId);
@@ -14309,28 +15076,37 @@ function BoardInbox({
     autoSet = useBoardRpc(inboxAutoSetRpc, hostId);
   var assistantOptions = useBoardRpc(inboxAssistantOptionsRpc, hostId),
     autoEnable = useBoardRpc(inboxAutoEnableRpc, hostId);
-  return /* @__PURE__ */jsxs11(View11, {
+  var publicThreads = useBoardRpc(inboxPublicThreadsRpc, hostId),
+    publicState = useBoardRpc(inboxPublicStateRpc, hostId),
+    read = useBoardRpc(inboxReadRpc, hostId);
+  var publicPage = useBoardRpc(inboxPublicPageRpc, hostId),
+    publicVisitor = useBoardRpc(inboxPublicVisitorRpc, hostId);
+  return /* @__PURE__ */jsxs12(View12, {
     style: {
       minHeight: 300,
       maxHeight: 760
     },
-    children: [/* @__PURE__ */jsxs11(View11, {
+    children: [/* @__PURE__ */jsxs12(View12, {
       style: {
         flexDirection: "row",
         flexWrap: "wrap",
         padding: 12,
         gap: 8
       },
-      children: [/* @__PURE__ */jsx13(Action, {
+      children: [/* @__PURE__ */jsx14(Action, {
         label: "\u8BC4\u8BBA\u4E0E\u6743\u9650",
         active: tab === "comments",
         onPress: () => setTab("comments")
-      }), /* @__PURE__ */jsx13(Action, {
+      }), /* @__PURE__ */jsx14(Action, {
+        label: "\u516C\u5F00\u8BA8\u8BBA",
+        active: tab === "threads",
+        onPress: () => setTab("threads")
+      }), /* @__PURE__ */jsx14(Action, {
         label: "\u540E\u7AEF\u6765\u6E90",
         active: tab === "sources",
         onPress: () => setTab("sources")
       })]
-    }), tab === "comments" ? /* @__PURE__ */jsx13(InboxPanel, {
+    }), tab === "comments" ? /* @__PURE__ */jsx14(InboxPanel, {
       scope,
       onList: list,
       onPolicy: policy,
@@ -14342,7 +15118,15 @@ function BoardInbox({
       onAutoSet: autoSet,
       onAssistantOptions: assistantOptions,
       onAutoEnable: autoEnable
-    }, JSON.stringify(scope)) : /* @__PURE__ */jsx13(InboxSources, {
+    }, JSON.stringify(scope)) : tab === "threads" ? /* @__PURE__ */jsx14(InboxThreads, {
+      scope,
+      onThreads: publicThreads,
+      onPublicState: publicState,
+      onPublicPage: publicPage,
+      onPublicVisitor: publicVisitor,
+      onRead: read,
+      onReply: reply
+    }, JSON.stringify(scope)) : /* @__PURE__ */jsx14(InboxSources, {
       scope,
       hostId
     })]
@@ -14359,20 +15143,20 @@ function InboxSources({
     sync = useBoardRpc(inboxSyncRpc, hostId),
     reconcile = useBoardRpc(inboxReconcileRpc, hostId);
   var autoStatus = useBoardRpc(inboxAutoStatusRpc, hostId);
-  var [auto, setAuto] = useState15();
-  var [sources, setSources] = useState15([]),
-    [error, setError] = useState15(),
-    [notice, setNotice] = useState15();
-  var [busy, setBusy] = useState15(false),
-    [editing, setEditing] = useState15();
-  var [sourceId, setSourceId] = useState15(""),
-    [deploymentId, setDeploymentId] = useState15(""),
-    [label, setLabel] = useState15(""),
-    [endpoint, setEndpoint] = useState15(""),
-    [token2, setToken] = useState15("");
-  var pending = useRef14(void 0),
-    flight = useRef14(false),
-    alive = useRef14(true);
+  var [auto, setAuto] = useState16();
+  var [sources, setSources] = useState16([]),
+    [error, setError] = useState16(),
+    [notice, setNotice] = useState16();
+  var [busy, setBusy] = useState16(false),
+    [editing, setEditing] = useState16();
+  var [sourceId, setSourceId] = useState16(""),
+    [deploymentId, setDeploymentId] = useState16(""),
+    [label, setLabel] = useState16(""),
+    [endpoint, setEndpoint] = useState16(""),
+    [token2, setToken] = useState16("");
+  var pending = useRef15(void 0),
+    flight = useRef15(false),
+    alive = useRef15(true);
   var field = {
     color: c.foreground,
     backgroundColor: c.surface1,
@@ -14403,7 +15187,7 @@ function InboxSources({
       }
     }
   });
-  useEffect15(() => {
+  useEffect16(() => {
     alive.current = true;
     void run(refresh);
     var poll = () => {
@@ -14505,28 +15289,28 @@ function InboxSources({
     }
     if (alive.current) yield refresh();
   }));
-  return /* @__PURE__ */jsxs11(ScrollView5, {
+  return /* @__PURE__ */jsxs12(ScrollView6, {
     testID: "board-inbox-sources",
     contentContainerStyle: {
       padding: 16,
       gap: 12
     },
-    children: [/* @__PURE__ */jsx13(Copy, {
+    children: [/* @__PURE__ */jsx14(Copy, {
       children: "\u8FDE\u63A5\u5E94\u7528\u7684\u8BC4\u8BBA\u5BFC\u51FA\u63A5\u53E3"
-    }), /* @__PURE__ */jsx13(Copy, {
+    }), /* @__PURE__ */jsx14(Copy, {
       small: true,
       muted: true,
       children: "\u4ECE\u5F53\u524D Paseo host \u901A\u8FC7 HTTPS \u8BFB\u53D6\u3002SSH \u7528\u4E8E\u90E8\u7F72\u548C\u7EF4\u62A4\uFF1B\u6B64\u5904\u4E0D\u586B\u5199 SSH \u5BC6\u94A5\u3002\u5BFC\u51FA\u4EE4\u724C\u53EA\u5B58\u4E8E\u8BE5 host\uFF0C\u4E0D\u4F1A\u63D0\u4F9B\u7ED9 agent \u6216\u653E\u5165\u7F51\u9875\u3002\u6765\u6E90\u4FDD\u5B58\u540E\u6BCF\u9694\u51E0\u79D2\u81EA\u52A8\u540C\u6B65\uFF1B\u4EE4\u724C\u53EA\u5B58\u5728\u8FD9\u53F0\u7535\u8111\u4E0A\uFF0C\u4E0D\u4F1A\u7ED9 agent \u6216\u7F51\u9875\u3002"
-    }), error ? /* @__PURE__ */jsx13(Notice, {
+    }), error ? /* @__PURE__ */jsx14(Notice, {
       error: true,
       text: error
-    }) : null, notice ? /* @__PURE__ */jsx13(Notice, {
+    }) : null, notice ? /* @__PURE__ */jsx14(Notice, {
       text: notice
-    }) : null, /* @__PURE__ */jsx13(Action, {
+    }) : null, /* @__PURE__ */jsx14(Action, {
       label: "\u5237\u65B0\u6765\u6E90\u72B6\u6001",
       disabled: busy,
       onPress: () => void run(refresh)
-    }), sources.map(source => /* @__PURE__ */jsxs11(View11, {
+    }), sources.map(source => /* @__PURE__ */jsxs12(View12, {
       style: {
         padding: 12,
         gap: 6,
@@ -14534,57 +15318,57 @@ function InboxSources({
         borderRadius: 8,
         borderColor: c.border
       },
-      children: [/* @__PURE__ */jsxs11(Copy, {
+      children: [/* @__PURE__ */jsxs12(Copy, {
         children: [source.label, " \xB7 ", source.state === "pending" ? "\u914D\u7F6E\u5F85\u6838\u5BF9" : source.enabled ? "\u5DF2\u542F\u7528" : "\u5DF2\u505C\u7528"]
-      }), /* @__PURE__ */jsx13(Copy, {
+      }), /* @__PURE__ */jsx14(Copy, {
         small: true,
         muted: true,
         children: source.endpoint
-      }), /* @__PURE__ */jsxs11(Copy, {
+      }), /* @__PURE__ */jsxs12(Copy, {
         small: true,
         muted: true,
         children: ["\u6765\u6E90 ", source.sourceId, " \xB7 \u90E8\u7F72 ", source.deploymentId]
       }), (() => {
         var status = auto?.sync.sources.find(item => item.sourceId === source.sourceId);
-        return status ? /* @__PURE__ */jsxs11(Fragment8, {
-          children: [/* @__PURE__ */jsx13(Copy, {
+        return status ? /* @__PURE__ */jsxs12(Fragment8, {
+          children: [/* @__PURE__ */jsx14(Copy, {
             small: true,
             children: `\u81EA\u52A8\u540C\u6B65\uFF1A${auto.sync.paused && status.state !== "off" ? "\u5DF2\u6682\u505C" : sourceStateText(status, Date.now(), auto.sync.intervalSeconds)}`
-          }), status.skipped ? /* @__PURE__ */jsx13(Copy, {
+          }), status.skipped ? /* @__PURE__ */jsx14(Copy, {
             small: true,
             muted: true,
             children: `\u5DF2\u8DF3\u8FC7 ${status.skipped} \u6761\u683C\u5F0F\u4E0D\u7B26\u7684\u8BC4\u8BBA`
           }) : null]
         }) : null;
-      })(), /* @__PURE__ */jsx13(View11, {
+      })(), /* @__PURE__ */jsx14(View12, {
         style: {
           flexDirection: "row",
           flexWrap: "wrap",
           gap: 8
         },
-        children: source.state === "pending" ? /* @__PURE__ */jsx13(Action, {
+        children: source.state === "pending" ? /* @__PURE__ */jsx14(Action, {
           label: "\u6838\u5BF9\u4E0A\u6B21\u914D\u7F6E",
           disabled: busy,
           onPress: () => update(source, "reconcile")
-        }) : /* @__PURE__ */jsxs11(Fragment8, {
-          children: [/* @__PURE__ */jsx13(Action, {
+        }) : /* @__PURE__ */jsxs12(Fragment8, {
+          children: [/* @__PURE__ */jsx14(Action, {
             label: "\u7ACB\u5373\u540C\u6B65",
             disabled: busy || !source.enabled,
             onPress: () => update(source, "sync")
-          }), /* @__PURE__ */jsx13(Action, {
+          }), /* @__PURE__ */jsx14(Action, {
             label: source.enabled ? "\u505C\u7528\u6765\u6E90" : "\u542F\u7528\u6765\u6E90",
             disabled: busy,
             onPress: () => update(source, "disable")
-          }), /* @__PURE__ */jsx13(Action, {
+          }), /* @__PURE__ */jsx14(Action, {
             label: "\u7F16\u8F91\u8FDE\u63A5",
             disabled: busy,
             onPress: () => edit(source)
           })]
         })
       })]
-    }, source.sourceId)), /* @__PURE__ */jsx13(Copy, {
+    }, source.sourceId)), /* @__PURE__ */jsx14(Copy, {
       children: editing ? "\u7F16\u8F91\u6765\u6E90\uFF08\u7559\u7A7A\u4EE4\u724C\u6CBF\u7528\u73B0\u6709\u4EE4\u724C\uFF09" : "\u6DFB\u52A0\u6765\u6E90"
-    }), /* @__PURE__ */jsx13(TextInput7, {
+    }), /* @__PURE__ */jsx14(TextInput8, {
       accessibilityLabel: "\u6765\u6E90 ID",
       value: sourceId,
       onChangeText: setSourceId,
@@ -14592,7 +15376,7 @@ function InboxSources({
       placeholder: "\u6765\u6E90 ID\uFF0C\u4F8B\u5982 team-app",
       placeholderTextColor: c.foregroundMuted,
       style: field
-    }), /* @__PURE__ */jsx13(TextInput7, {
+    }), /* @__PURE__ */jsx14(TextInput8, {
       accessibilityLabel: "\u90E8\u7F72 ID",
       value: deploymentId,
       onChangeText: setDeploymentId,
@@ -14600,7 +15384,7 @@ function InboxSources({
       placeholder: "\u540E\u7AEF\u7684 deploymentId",
       placeholderTextColor: c.foregroundMuted,
       style: field
-    }), /* @__PURE__ */jsx13(TextInput7, {
+    }), /* @__PURE__ */jsx14(TextInput8, {
       accessibilityLabel: "\u6765\u6E90\u540D\u79F0",
       value: label,
       onChangeText: setLabel,
@@ -14608,7 +15392,7 @@ function InboxSources({
       placeholder: "\u6765\u6E90\u540D\u79F0",
       placeholderTextColor: c.foregroundMuted,
       style: field
-    }), /* @__PURE__ */jsx13(TextInput7, {
+    }), /* @__PURE__ */jsx14(TextInput8, {
       accessibilityLabel: "\u8BC4\u8BBA\u5BFC\u51FA\u63A5\u53E3",
       value: endpoint,
       onChangeText: setEndpoint,
@@ -14617,7 +15401,7 @@ function InboxSources({
       placeholder: "https://app.example.com/_board/comments",
       placeholderTextColor: c.foregroundMuted,
       style: field
-    }), /* @__PURE__ */jsx13(TextInput7, {
+    }), /* @__PURE__ */jsx14(TextInput8, {
       accessibilityLabel: "\u8BC4\u8BBA\u5BFC\u51FA\u4EE4\u724C",
       value: token2,
       onChangeText: setToken,
@@ -14628,22 +15412,22 @@ function InboxSources({
       placeholder: "BOARD_INBOX_EXPORT_TOKEN",
       placeholderTextColor: c.foregroundMuted,
       style: field
-    }), /* @__PURE__ */jsxs11(View11, {
+    }), /* @__PURE__ */jsxs12(View12, {
       style: {
         flexDirection: "row",
         flexWrap: "wrap",
         gap: 8
       },
-      children: [/* @__PURE__ */jsx13(Action, {
+      children: [/* @__PURE__ */jsx14(Action, {
         label: pending.current ? "\u91CD\u8BD5\u539F\u914D\u7F6E" : "\u4FDD\u5B58\u6765\u6E90",
         disabled: busy || !sourceId.trim() || !deploymentId.trim() || !endpoint.trim() || !label.trim(),
         onPress: () => save(editing?.enabled ?? true)
-      }), /* @__PURE__ */jsx13(Action, {
+      }), /* @__PURE__ */jsx14(Action, {
         label: "\u6E05\u7A7A\u8868\u5355",
         disabled: busy,
         onPress: reset
       })]
-    }), /* @__PURE__ */jsx13(Copy, {
+    }), /* @__PURE__ */jsx14(Copy, {
       small: true,
       muted: true,
       children: "\u672C\u5730\u5F00\u53D1\u53EF\u4F7F\u7528 localhost / 127.0.0.1 \u7684 HTTP \u63A5\u53E3\u3002\u540C\u6B65\u6309\u6765\u6E90\u4FDD\u5B58\u6E38\u6807\uFF0C\u4E0D\u8986\u76D6\u5E94\u7528\u6570\u636E\u3002"
@@ -14652,8 +15436,8 @@ function InboxSources({
 }
 
 // client/connection-status.tsx
-import { View as View12 } from "react-native";
-import { jsx as jsx14, jsxs as jsxs12 } from "react/jsx-runtime";
+import { View as View13 } from "react-native";
+import { jsx as jsx15, jsxs as jsxs13 } from "react/jsx-runtime";
 var labels = {
   connecting: "\u72B6\u6001\u68C0\u67E5\u4E2D",
   checking: "\u5DF2\u540C\u6B65",
@@ -14667,7 +15451,7 @@ function BoardConnectionStatus({
 }) {
   var c = useColors();
   var color = status === "connected" || status === "checking" ? c.statusSuccess : status === "disconnected" || status === "unsupported" ? c.statusDanger : c.foregroundMuted;
-  return /* @__PURE__ */jsxs12(View12, {
+  return /* @__PURE__ */jsxs13(View13, {
     testID: "board-connection-status",
     accessibilityLabel: `\u5B9E\u65F6\u540C\u6B65\uFF1A${labels[status]}`,
     style: {
@@ -14675,14 +15459,14 @@ function BoardConnectionStatus({
       alignItems: "center",
       gap: 6
     },
-    children: [/* @__PURE__ */jsx14(View12, {
+    children: [/* @__PURE__ */jsx15(View13, {
       style: {
         width: 7,
         height: 7,
         borderRadius: 4,
         backgroundColor: color
       }
-    }), /* @__PURE__ */jsxs12(Copy, {
+    }), /* @__PURE__ */jsxs13(Copy, {
       muted: true,
       small: true,
       children: ["\u5B9E\u65F6\u540C\u6B65 \xB7 ", labels[status]]
@@ -14762,41 +15546,41 @@ function createStateWriter(save, onError) {
 }
 
 // client/draft-store.ts
-import { z as z7 } from "zod";
+import { z as z8 } from "zod";
 var DRAFT_STORAGE_PREFIX = "@paseo:board-drafts:v1:";
-var ComposeSchema = z7.object({
-  kind: z7.enum(["question", "change", "fork", "return", "reply"]),
+var ComposeSchema = z8.object({
+  kind: z8.enum(["question", "change", "fork", "return", "reply"]),
   // Keep an overlong unsent draft recoverable even if sending needs it shortened.
-  text: z7.string().max(24e4),
+  text: z8.string().max(24e4),
   sourceInteractionId: IdSchema.optional(),
   intentId: IdSchema.optional(),
-  expectedCreatedAt: z7.string().min(1).max(100).optional(),
-  destination: z7.enum(["main", "side", "new-side"]).optional(),
+  expectedCreatedAt: z8.string().min(1).max(100).optional(),
+  destination: z8.enum(["main", "side", "new-side"]).optional(),
   sideContext: SideContextSchema.optional(),
-  captureStatus: z7.enum(["ready", "failed", "omitted"]).optional(),
-  captureFailureReason: z7.enum(["content-changed", "too-complex", "unsupported-layout", "too-large", "timeout", "generation-failed"]).optional()
+  captureStatus: z8.enum(["ready", "failed", "omitted"]).optional(),
+  captureFailureReason: z8.enum(["content-changed", "too-complex", "unsupported-layout", "too-large", "timeout", "generation-failed"]).optional()
 }).refine(value => !value.intentId || Boolean(value.destination), "An uncertain send needs its immutable destination");
-var InputSchema = z7.object({
+var InputSchema = z8.object({
   id: IdSchema,
   compose: ComposeSchema,
-  open: z7.boolean(),
-  queuedAt: z7.number().finite().nonnegative().optional(),
-  position: z7.object({
-    x: z7.number().finite(),
-    y: z7.number().finite()
+  open: z8.boolean(),
+  queuedAt: z8.number().finite().nonnegative().optional(),
+  position: z8.object({
+    x: z8.number().finite(),
+    y: z8.number().finite()
   })
 });
 var RecordSchema = InputSchema.extend({
-  version: z7.literal(1),
+  version: z8.literal(1),
   revision: IdSchema,
   parent: IdSchema.optional(),
-  supersedes: z7.array(IdSchema).max(2e3).default([]),
-  deleted: z7.boolean().default(false),
-  updatedAt: z7.number().finite().nonnegative(),
+  supersedes: z8.array(IdSchema).max(2e3).default([]),
+  deleted: z8.boolean().default(false),
+  updatedAt: z8.number().finite().nonnegative(),
   context: IdSchema.optional()
 });
-var ContextSchema = z7.object({
-  version: z7.literal(1),
+var ContextSchema = z8.object({
+  version: z8.literal(1),
   anchor: AnchorSchema
 });
 var samePageListeners = /* @__PURE__ */new Set();
@@ -15136,7 +15920,7 @@ function createDraftStore(scope, storage = browserDraftStorage()) {
         }
         return {
           ok: false,
-          issue: error instanceof z7.ZodError ? issue("invalid") : storageIssue(error)
+          issue: error instanceof z8.ZodError ? issue("invalid") : storageIssue(error)
         };
       }
     },
@@ -15244,7 +16028,7 @@ function acceptedDraftInteraction(draft, interactions) {
 }
 
 // client/batch-store.ts
-import { z as z8 } from "zod";
+import { z as z9 } from "zod";
 
 // client/batch-lock-web.ts
 function browserLocks() {
@@ -15270,18 +16054,18 @@ function withBatchPreparationLock(_0, _1) {
 // client/batch-store.ts
 var PREFIX = "@paseo:board-comment-batches:v1:";
 var BATCH_READ_LIMIT = 12e6;
-var BatchSchema = z8.object({
+var BatchSchema = z9.object({
   intentId: IdSchema,
-  destination: z8.enum(["main", "side", "new-side"]),
+  destination: z9.enum(["main", "side", "new-side"]),
   sideContext: SideContextSchema.optional(),
-  expectedCreatedAt: z8.string().min(1).max(100).optional(),
-  text: z8.string().min(1).max(24e3),
+  expectedCreatedAt: z9.string().min(1).max(100).optional(),
+  text: z9.string().min(1).max(24e3),
   comments: CommentsSchema,
-  drafts: z8.array(z8.object({
+  drafts: z9.array(z9.object({
     id: IdSchema,
     revision: IdSchema
   })).min(1).max(COMMENT_LIMIT),
-  createdAt: z8.number().finite().nonnegative()
+  createdAt: z9.number().finite().nonnegative()
 }).refine(value => value.drafts.length === value.comments.length && value.drafts.every((draft, index) => draft.id === value.comments[index].id), "Batch sources must match every comment");
 var listeners = /* @__PURE__ */new Set();
 function batchContainsDraft(batch, draft) {
@@ -15847,8 +16631,8 @@ var retainBoardViewStore = store.retain;
 var flushBoardViewStore = store.flush;
 
 // client/discussion-rail.tsx
-import { Pressable as Pressable9, Text as Text10, View as View13 } from "react-native";
-import { ScrollView as ScrollView6 } from "@getpaseo/plugin/client/ui";
+import { Pressable as Pressable9, Text as Text10, View as View14 } from "react-native";
+import { ScrollView as ScrollView7 } from "@getpaseo/plugin/client/ui";
 
 // client/interaction-layout.ts
 function discussionGroups(markers) {
@@ -15936,7 +16720,7 @@ ${request.prompt ?? ""}`.slice(0, 24e3);
 }
 
 // client/discussion-rail.tsx
-import { jsx as jsx15, jsxs as jsxs13 } from "react/jsx-runtime";
+import { jsx as jsx16, jsxs as jsxs14 } from "react/jsx-runtime";
 function DiscussionRail({
   markers,
   tags,
@@ -15948,7 +16732,7 @@ function DiscussionRail({
 }) {
   var c = useColors();
   var groups = discussionGroups(markers);
-  return /* @__PURE__ */jsxs13(View13, {
+  return /* @__PURE__ */jsxs14(View14, {
     testID: "board-discussion-rail",
     accessibilityLabel: "\u753B\u5E03\u8BA8\u8BBA\u7D22\u5F15",
     style: {
@@ -15959,14 +16743,14 @@ function DiscussionRail({
       borderColor: c.border,
       backgroundColor: c.surface0
     },
-    children: [/* @__PURE__ */jsx15(View13, {
+    children: [/* @__PURE__ */jsx16(View14, {
       style: {
         paddingHorizontal: compact ? 4 : 12,
         paddingVertical: 12,
         borderBottomWidth: 1,
         borderColor: c.border
       },
-      children: /* @__PURE__ */jsx15(Text10, {
+      children: /* @__PURE__ */jsx16(Text10, {
         numberOfLines: 1,
         style: {
           color: c.foregroundMuted,
@@ -15975,7 +16759,7 @@ function DiscussionRail({
         },
         children: compact ? `${groups.length}` : `\u8BA8\u8BBA \xB7 ${groups.length}`
       })
-    }), /* @__PURE__ */jsxs13(ScrollView6, {
+    }), /* @__PURE__ */jsxs14(ScrollView7, {
       testID: "board-discussion-list",
       style: {
         flex: 1,
@@ -15986,7 +16770,7 @@ function DiscussionRail({
         gap: 4
       },
       keyboardShouldPersistTaps: "handled",
-      children: [!groups.length ? /* @__PURE__ */jsx15(Text10, {
+      children: [!groups.length ? /* @__PURE__ */jsx16(Text10, {
         style: {
           paddingVertical: 12,
           color: c.foregroundMuted,
@@ -16003,7 +16787,7 @@ function DiscussionRail({
         var side = tags?.get(marker.interactionId ?? marker.id);
         var tagLabel = side ? ` \xB7 ${side.tag}` : "";
         var label = `${marker.number}${countLabel} \xB7 ${statusNames3[marker.status]} \xB7 ${marker.text}${side ? ` \xB7 ${side.description}` : ""}`;
-        return /* @__PURE__ */jsxs13(Pressable9, {
+        return /* @__PURE__ */jsxs14(Pressable9, {
           testID: `board-discussion-${group.id}`,
           accessibilityRole: "button",
           accessibilityLabel: label,
@@ -16027,7 +16811,7 @@ function DiscussionRail({
             backgroundColor: selected || pressed ? c.surface2 : "transparent",
             opacity: disabled ? 0.5 : 1
           }),
-          children: [/* @__PURE__ */jsx15(View13, {
+          children: [/* @__PURE__ */jsx16(View14, {
             style: {
               width: 24,
               height: 24,
@@ -16039,7 +16823,7 @@ function DiscussionRail({
               borderRadius: 12,
               backgroundColor: c.surface1
             },
-            children: /* @__PURE__ */jsx15(Text10, {
+            children: /* @__PURE__ */jsx16(Text10, {
               style: {
                 fontSize: marker.number > 99 ? 9 : 11,
                 fontWeight: "600",
@@ -16047,13 +16831,13 @@ function DiscussionRail({
               },
               children: marker.number
             })
-          }), !compact ? /* @__PURE__ */jsxs13(View13, {
+          }), !compact ? /* @__PURE__ */jsxs14(View14, {
             style: {
               flex: 1,
               minWidth: 0,
               gap: 4
             },
-            children: [/* @__PURE__ */jsx15(Text10, {
+            children: [/* @__PURE__ */jsx16(Text10, {
               numberOfLines: 2,
               style: {
                 color: c.foreground,
@@ -16063,7 +16847,7 @@ function DiscussionRail({
                 overflow: "hidden"
               },
               children: marker.text.replace(/\s+/g, " ")
-            }), /* @__PURE__ */jsxs13(Text10, {
+            }), /* @__PURE__ */jsxs14(Text10, {
               numberOfLines: 1,
               style: {
                 color,
@@ -16079,9 +16863,9 @@ function DiscussionRail({
 }
 
 // client/side-agent-picker.tsx
-import { useMemo as useMemo6, useState as useState16 } from "react";
-import { Pressable as Pressable10, Text as Text11, View as View14 } from "react-native";
-import { ScrollView as ScrollView7 } from "@getpaseo/plugin/client/ui";
+import { useMemo as useMemo6, useState as useState17 } from "react";
+import { Pressable as Pressable10, Text as Text11, View as View15 } from "react-native";
+import { ScrollView as ScrollView8 } from "@getpaseo/plugin/client/ui";
 
 // client/side-context.ts
 var SIDE_CONTEXT_PREFIX = "@paseo:board-side-context:v1:";
@@ -16160,7 +16944,7 @@ function sideHistoryTag(item) {
 }
 
 // client/side-agent-picker.tsx
-import { jsx as jsx16, jsxs as jsxs14 } from "react/jsx-runtime";
+import { jsx as jsx17, jsxs as jsxs15 } from "react/jsx-runtime";
 function SideAgentPicker({
   interactions,
   selectedId,
@@ -16169,7 +16953,7 @@ function SideAgentPicker({
   onSelect
 }) {
   var c = useColors();
-  var [open, setOpen] = useState16(false);
+  var [open, setOpen] = useState17(false);
   var choices = useMemo6(() => {
     var agents = /* @__PURE__ */new Map();
     for (var item of interactions) if (item.kind === "fork" && item.agentId && !agents.has(item.agentId)) agents.set(item.agentId, {
@@ -16181,32 +16965,32 @@ function SideAgentPicker({
     return [...agents.values()];
   }, [interactions]);
   var current = choices.find(item => item.id === selectedId);
-  return /* @__PURE__ */jsxs14(View14, {
+  return /* @__PURE__ */jsxs15(View15, {
     testID: "board-side-agent-picker",
     style: {
       gap: 6
     },
-    children: [/* @__PURE__ */jsxs14(View14, {
+    children: [/* @__PURE__ */jsxs15(View15, {
       style: {
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
         flexWrap: "wrap"
       },
-      children: [/* @__PURE__ */jsx16(Copy, {
+      children: [/* @__PURE__ */jsx17(Copy, {
         small: true,
         muted: true,
         children: "Side \u76EE\u6807"
-      }), /* @__PURE__ */jsx16(Action, {
+      }), /* @__PURE__ */jsx17(Action, {
         label: `${pending ? "\u65C1\u652F\u5EFA\u7ACB\u4E2D" : selectedId ? current?.label ?? "\u5F53\u524D\u65C1\u652F" : "\u9996\u6B21\u53D1\u9001\u65F6\u65B0\u5EFA"} \u25BE`,
         disabled,
         onPress: () => setOpen(value => !value)
       })]
-    }), pending ? /* @__PURE__ */jsx16(Copy, {
+    }), pending ? /* @__PURE__ */jsx17(Copy, {
       small: true,
       muted: true,
       children: "Side \u53D1\u9001\u5C06\u7EE7\u7EED\u6B63\u5728\u5EFA\u7ACB\u7684\u65C1\u652F\uFF1B\u4E5F\u53EF\u6539\u9009\u4EE5\u524D\u7684\u65C1\u652F\u3002"
-    }) : null, open ? /* @__PURE__ */jsx16(View14, {
+    }) : null, open ? /* @__PURE__ */jsx17(View15, {
       testID: "board-side-agent-options",
       style: {
         borderWidth: 1,
@@ -16214,7 +16998,7 @@ function SideAgentPicker({
         borderRadius: 8,
         overflow: "hidden"
       },
-      children: /* @__PURE__ */jsxs14(ScrollView7, {
+      children: /* @__PURE__ */jsxs15(ScrollView8, {
         style: {
           maxHeight: 156
         },
@@ -16223,11 +17007,11 @@ function SideAgentPicker({
           gap: 3
         },
         keyboardShouldPersistTaps: "handled",
-        children: [!choices.length ? /* @__PURE__ */jsx16(Copy, {
+        children: [!choices.length ? /* @__PURE__ */jsx17(Copy, {
           small: true,
           muted: true,
           children: "\u8FD8\u6CA1\u6709\u65C1\u652F\u3002Side \u53D1\u9001\u4F1A\u5EFA\u7ACB\u4E00\u4E2A\uFF0C\u5E76\u5728\u4E4B\u540E\u7EE7\u7EED\u4F7F\u7528\u3002"
-        }) : null, choices.map(item => /* @__PURE__ */jsxs14(Pressable10, {
+        }) : null, choices.map(item => /* @__PURE__ */jsxs15(Pressable10, {
           testID: `board-side-agent-${item.id}`,
           accessibilityRole: "button",
           accessibilityLabel: `\u4F7F\u7528${item.label}\uFF1A${item.text}${item.provenance ? `\uFF08${item.provenance}\uFF09` : ""}`,
@@ -16249,14 +17033,14 @@ function SideAgentPicker({
             borderRadius: 5,
             backgroundColor: pressed || !pending && selectedId === item.id ? c.surface2 : c.surface0
           }),
-          children: [/* @__PURE__ */jsxs14(Text11, {
+          children: [/* @__PURE__ */jsxs15(Text11, {
             style: {
               color: c.foreground,
               fontSize: 12,
               fontWeight: "600"
             },
             children: [item.label, !pending && selectedId === item.id ? " \xB7 \u5F53\u524D" : ""]
-          }), /* @__PURE__ */jsx16(Text11, {
+          }), /* @__PURE__ */jsx17(Text11, {
             numberOfLines: 2,
             style: {
               color: c.foregroundMuted,
@@ -16264,7 +17048,7 @@ function SideAgentPicker({
               lineHeight: 17
             },
             children: item.text
-          }), item.provenance ? /* @__PURE__ */jsx16(Text11, {
+          }), item.provenance ? /* @__PURE__ */jsx17(Text11, {
             testID: `board-side-agent-provenance-${item.id}`,
             numberOfLines: 2,
             style: {
@@ -16281,9 +17065,9 @@ function SideAgentPicker({
 }
 
 // client/side-context-choice.tsx
-import { createElement as createElement4, useRef as useRef15 } from "react";
-import { Pressable as Pressable11, Text as Text12, View as View15 } from "react-native";
-import { jsx as jsx17, jsxs as jsxs15 } from "react/jsx-runtime";
+import { createElement as createElement4, useRef as useRef16 } from "react";
+import { Pressable as Pressable11, Text as Text12, View as View16 } from "react-native";
+import { jsx as jsx18, jsxs as jsxs16 } from "react/jsx-runtime";
 var CHOICES = ["blank", "owner-history"];
 function SideContextChoice({
   testID = "board-side-context",
@@ -16293,8 +17077,8 @@ function SideContextChoice({
   onChange
 }) {
   var c = useColors();
-  var options = useRef15({});
-  var caption = /* @__PURE__ */jsx17(Copy, {
+  var options = useRef16({});
+  var caption = /* @__PURE__ */jsx18(Copy, {
     small: true,
     muted: true,
     children: "\u65B0\u5EFA Side \u65F6"
@@ -16361,7 +17145,7 @@ function SideContextChoice({
         whiteSpace: "nowrap"
       }
     }, text(choice));
-  })) : /* @__PURE__ */jsxs15(View15, {
+  })) : /* @__PURE__ */jsxs16(View16, {
     testID,
     accessibilityRole: "radiogroup",
     accessibilityLabel: "\u65B0\u5EFA Side \u65F6",
@@ -16373,7 +17157,7 @@ function SideContextChoice({
     },
     children: [caption, CHOICES.map(choice => {
       var checked = value === choice;
-      return /* @__PURE__ */jsx17(Pressable11, {
+      return /* @__PURE__ */jsx18(Pressable11, {
         testID: `${testID}-${choice}`,
         accessibilityRole: "radio",
         accessibilityLabel: SIDE_CONTEXT_LABELS[choice],
@@ -16396,7 +17180,7 @@ function SideContextChoice({
           backgroundColor: checked || pressed ? c.surface2 : c.surface0,
           opacity: disabled ? 0.45 : 1
         }),
-        children: /* @__PURE__ */jsx17(Text12, {
+        children: /* @__PURE__ */jsx18(Text12, {
           style: {
             color: c.foreground,
             fontSize: 12,
@@ -16407,11 +17191,11 @@ function SideContextChoice({
       }, choice);
     })]
   });
-  return /* @__PURE__ */jsxs15(View15, {
+  return /* @__PURE__ */jsxs16(View16, {
     style: {
       gap: 4
     },
-    children: [group, notes.map(note => /* @__PURE__ */jsx17(Copy, {
+    children: [group, notes.map(note => /* @__PURE__ */jsx18(Copy, {
       small: true,
       muted: true,
       children: note
@@ -16420,145 +17204,145 @@ function SideContextChoice({
 }
 
 // client/composition-sources.tsx
-import { useCallback as useCallback8, useEffect as useEffect16, useMemo as useMemo7, useRef as useRef16, useState as useState17 } from "react";
-import { Text as Text13, View as View16 } from "react-native";
+import { useCallback as useCallback8, useEffect as useEffect17, useMemo as useMemo7, useRef as useRef17, useState as useState18 } from "react";
+import { Text as Text13, View as View17 } from "react-native";
 import { useQuery as useQuery2, useQueryClient as useQueryClient2 } from "@tanstack/react-query";
-import { ScrollView as ScrollView8, TextInput as TextInput8 } from "@getpaseo/plugin/client/ui";
+import { ScrollView as ScrollView9, TextInput as TextInput9 } from "@getpaseo/plugin/client/ui";
 
 // shared/composition.ts
-import { defineRpc as defineRpc7 } from "@getpaseo/plugin";
-import { z as z9 } from "zod";
+import { defineRpc as defineRpc8 } from "@getpaseo/plugin";
+import { z as z10 } from "zod";
 var COMPOSITION_SOURCE_LIMIT = 32;
-var BoardRefSchema = z9.object({
+var BoardRefSchema = z10.object({
   hostId: IdSchema,
   boardId: IdSchema
 }).strict();
 var boardRefKey = ref => JSON.stringify([ref.hostId, ref.boardId]);
-var Revision = z9.number().int().nonnegative();
-var Time = z9.string().datetime();
-var CoverageCount = z9.object({
+var Revision = z10.number().int().nonnegative();
+var Time = z10.string().datetime();
+var CoverageCount = z10.object({
   included: Revision,
   total: Revision,
-  truncated: z9.boolean()
+  truncated: z10.boolean()
 }).strict();
-var CompositionSnapshotSchema = z9.object({
+var CompositionSnapshotSchema = z10.object({
   sourceRef: BoardRefSchema,
   revision: Revision,
   canvasRevision: Revision,
   documentVersion: Revision,
   observedAt: Time,
-  title: z9.string().max(1e3),
-  createdAt: z9.string().max(100),
-  updatedAt: z9.string().max(100),
-  coverage: z9.object({
-    source: z9.literal("persistent-store"),
-    liveBrowserObserved: z9.literal(false),
-    historyComplete: z9.literal(false),
+  title: z10.string().max(1e3),
+  createdAt: z10.string().max(100),
+  updatedAt: z10.string().max(100),
+  coverage: z10.object({
+    source: z10.literal("persistent-store"),
+    liveBrowserObserved: z10.literal(false),
+    historyComplete: z10.literal(false),
     text: CoverageCount.extend({
-      replayComplete: z9.boolean()
+      replayComplete: z10.boolean()
     }).strict(),
     data: CoverageCount,
     updates: CoverageCount,
     interactions: CoverageCount,
-    note: z9.string().max(1e3)
+    note: z10.string().max(1e3)
   }).strict(),
-  text: z9.string().max(24e3),
-  data: z9.array(z9.object({
-    key: z9.string().max(500),
-    json: z9.string().max(16e3)
+  text: z10.string().max(24e3),
+  data: z10.array(z10.object({
+    key: z10.string().max(500),
+    json: z10.string().max(16e3)
   }).strict()).max(32),
-  updates: z9.array(z9.object({
+  updates: z10.array(z10.object({
     id: IdSchema,
-    at: z9.string().max(100),
-    kind: z9.enum(["data", "patch", "document"]),
+    at: z10.string().max(100),
+    kind: z10.enum(["data", "patch", "document"]),
     boardRevision: Revision,
     canvasRevision: Revision,
     documentVersion: Revision,
-    selectors: z9.array(z9.string().max(1e3)).max(12)
+    selectors: z10.array(z10.string().max(1e3)).max(12)
   }).strict()).max(12),
-  interactions: z9.array(z9.object({
+  interactions: z10.array(z10.object({
     id: IdSchema,
-    status: z9.enum(["saved", "sending", "delivered", "processing", "answered", "applied", "rejected", "failed"]),
-    question: z9.string().max(1200),
-    response: z9.string().max(2400).optional(),
-    updatedAt: z9.string().max(100)
+    status: z10.enum(["saved", "sending", "delivered", "processing", "answered", "applied", "rejected", "failed"]),
+    question: z10.string().max(1200),
+    response: z10.string().max(2400).optional(),
+    updatedAt: z10.string().max(100)
   }).strict()).max(8),
   unreadUpdateCount: Revision,
   pendingCount: Revision
 }).strict();
-var CompositionSnapshotReceiptSchema = z9.object({
-  sourceCreatedAt: z9.string().min(1).max(100),
+var CompositionSnapshotReceiptSchema = z10.object({
+  sourceCreatedAt: z10.string().min(1).max(100),
   revision: Revision,
   canvasRevision: Revision,
   documentVersion: Revision,
   observedAt: Time,
   receivedAt: Time
 }).strict();
-var CompositionSourcesStateSchema = z9.object({
+var CompositionSourcesStateSchema = z10.object({
   boardId: IdSchema,
-  boardCreatedAt: z9.string().max(100),
+  boardCreatedAt: z10.string().max(100),
   revision: Revision,
-  sources: z9.array(z9.object({
+  sources: z10.array(z10.object({
     ref: BoardRefSchema,
     grantedAt: Time,
-    sourceCreatedAt: z9.string().min(1).max(100).optional(),
+    sourceCreatedAt: z10.string().min(1).max(100).optional(),
     snapshot: CompositionSnapshotReceiptSchema.optional()
   }).strict()).max(COMPOSITION_SOURCE_LIMIT)
 }).strict();
-var SourcesInputSchema = z9.object({
+var SourcesInputSchema = z10.object({
   boardId: IdSchema
 }).strict();
-var ReadSourceInputSchema = z9.object({
+var ReadSourceInputSchema = z10.object({
   boardId: IdSchema,
   source: BoardRefSchema
 }).strict();
-var SourceReadResultSchema = z9.object({
+var SourceReadResultSchema = z10.object({
   boardId: IdSchema,
   sourceRef: BoardRefSchema,
   sourcesRevision: Revision,
-  availability: z9.enum(["available", "not-yet-observed", "source-missing"]),
-  provenance: z9.enum(["local-store", "client-observed-cache", "none"]),
+  availability: z10.enum(["available", "not-yet-observed", "source-missing"]),
+  provenance: z10.enum(["local-store", "client-observed-cache", "none"]),
   snapshot: CompositionSnapshotSchema.optional(),
   receivedAt: Time.optional(),
   ageMs: Revision.optional(),
-  stale: z9.boolean(),
-  freshness: z9.enum(["read-now", "cached-not-live", "unavailable"])
+  stale: z10.boolean(),
+  freshness: z10.enum(["read-now", "cached-not-live", "unavailable"])
 }).strict();
 var CompositionSourceSelectionSchema = BoardRefSchema.extend({
-  sourceCreatedAt: z9.string().min(1).max(100)
+  sourceCreatedAt: z10.string().min(1).max(100)
 }).strict();
-var SetCompositionSourcesInputSchema = z9.object({
+var SetCompositionSourcesInputSchema = z10.object({
   boardId: IdSchema,
   expectedRevision: Revision,
-  sources: z9.array(CompositionSourceSelectionSchema).max(COMPOSITION_SOURCE_LIMIT)
+  sources: z10.array(CompositionSourceSelectionSchema).max(COMPOSITION_SOURCE_LIMIT)
 }).strict();
-var SyncCompositionSourceInputSchema = z9.object({
+var SyncCompositionSourceInputSchema = z10.object({
   boardId: IdSchema,
   expectedSourcesRevision: Revision,
   ref: BoardRefSchema,
   snapshot: CompositionSnapshotSchema
 }).strict();
-var compositionSourcesRpc = defineRpc7({
+var compositionSourcesRpc = defineRpc8({
   name: "board.composition.sources",
   input: SourcesInputSchema,
   output: CompositionSourcesStateSchema
 });
-var setCompositionSourcesRpc = defineRpc7({
+var setCompositionSourcesRpc = defineRpc8({
   name: "board.composition.set-sources",
   input: SetCompositionSourcesInputSchema,
   output: CompositionSourcesStateSchema
 });
-var inspectCompositionSourceRpc = defineRpc7({
+var inspectCompositionSourceRpc = defineRpc8({
   name: "board.composition.inspect",
   input: SourcesInputSchema,
   output: CompositionSnapshotSchema
 });
-var syncCompositionSourceRpc = defineRpc7({
+var syncCompositionSourceRpc = defineRpc8({
   name: "board.composition.sync-source",
   input: SyncCompositionSourceInputSchema,
   output: CompositionSnapshotReceiptSchema
 });
-var readCompositionSourceRpc = defineRpc7({
+var readCompositionSourceRpc = defineRpc8({
   name: "board.composition.read-source",
   input: ReadSourceInputSchema,
   output: SourceReadResultSchema
@@ -16602,7 +17386,7 @@ function hasCompositionSource(state, revision, ref) {
 var compositionSourceSignal = summary => summary ? JSON.stringify(summary) : void 0;
 
 // client/composition-sources.tsx
-import { Fragment as Fragment9, jsx as jsx18, jsxs as jsxs16 } from "react/jsx-runtime";
+import { Fragment as Fragment9, jsx as jsx19, jsxs as jsxs17 } from "react/jsx-runtime";
 function useCompositionSources(parent, enabled = true) {
   var service = useBoardServices(parent.hostId);
   var read = useBoardRpc(compositionSourcesRpc, parent.hostId);
@@ -16610,11 +17394,11 @@ function useCompositionSources(parent, enabled = true) {
   var sendSnapshot = useBoardRpc(syncCompositionSourceRpc, parent.hostId);
   var cache = useQueryClient2();
   var scope = useMemo7(() => ({}), [parent.hostId, parent.boardId, service?.generation, enabled]);
-  var scopeRef = useRef16(scope);
+  var scopeRef = useRef17(scope);
   scopeRef.current = scope;
   var active = Boolean(enabled && service?.isCurrent());
   var current = useCallback8(() => enabled && scopeRef.current === scope && Boolean(service?.isCurrent()), [enabled, scope, service]);
-  useEffect16(() => {
+  useEffect17(() => {
     scopeRef.current = scope;
     return () => {
       if (scopeRef.current === scope) scopeRef.current = {};
@@ -16637,8 +17421,8 @@ function useCompositionSources(parent, enabled = true) {
     refetchInterval: active ? 1e4 : false,
     refetchIntervalInBackground: false
   });
-  var [problems, setProblems] = useState17({});
-  useEffect16(() => {
+  var [problems, setProblems] = useState18({});
+  useEffect17(() => {
     setProblems({});
   }, [scope, query.data?.revision]);
   var report = useCallback8((ref, error) => {
@@ -16701,15 +17485,15 @@ function CompositionSourceSync({
   controller
 }) {
   var services = useBoardTransports();
-  return /* @__PURE__ */jsx18(Fragment9, {
+  return /* @__PURE__ */jsx19(Fragment9, {
     children: controller.enabled ? controller.data?.sources.map(({
       ref
     }) => {
       if (ref.hostId === parent.hostId) return null;
       var service = services.find(item => item.hostId === ref.hostId);
-      return service ? /* @__PURE__ */jsx18(BoardServicesProvider, {
+      return service ? /* @__PURE__ */jsx19(BoardServicesProvider, {
         services: service,
-        children: /* @__PURE__ */jsx18(SourceObservation, {
+        children: /* @__PURE__ */jsx19(SourceObservation, {
           parent,
           source: ref,
           service,
@@ -16733,7 +17517,7 @@ function SourceObservation({
   var sourceSignal = compositionSourceSignal(summary);
   var sourceEpoch = list.data?.cursor.epoch;
   var connected = !list.liveError && list.liveStatus !== "disconnected";
-  useEffect16(() => {
+  useEffect17(() => {
     if (!available || !connected || !service.isCurrent() || !controller.canSynchronize(sourcesRevision, source)) return;
     var live = true,
       attempts = 0,
@@ -16778,14 +17562,14 @@ function CompositionSourcesPanel({
 }) {
   var c = useColors();
   var services = useBoardTransports();
-  var [filter, setFilter] = useState17("");
-  var [draft, setDraft] = useState17();
-  var [baseRevision, setBaseRevision] = useState17();
-  var [pending, setPending] = useState17(false);
-  var [failure, setFailure] = useState17();
-  var panelScope = useRef16(controller.scope);
+  var [filter, setFilter] = useState18("");
+  var [draft, setDraft] = useState18();
+  var [baseRevision, setBaseRevision] = useState18();
+  var [pending, setPending] = useState18(false);
+  var [failure, setFailure] = useState18();
+  var panelScope = useRef17(controller.scope);
   panelScope.current = controller.scope;
-  useEffect16(() => {
+  useEffect17(() => {
     setDraft(void 0);
     setBaseRevision(void 0);
     setPending(false);
@@ -16831,24 +17615,24 @@ function CompositionSourcesPanel({
       if (panelScope.current === scope) setPending(false);
     }
   });
-  return /* @__PURE__ */jsxs16(View16, {
+  return /* @__PURE__ */jsxs17(View17, {
     testID: "board-composition-sources",
     style: {
       gap: 14
     },
-    children: [/* @__PURE__ */jsx18(Copy, {
+    children: [/* @__PURE__ */jsx19(Copy, {
       children: "\u9009\u62E9\u8FD9\u5F20 Board \u7684 agent \u53EF\u4EE5\u8BFB\u53D6\u7684\u6765\u6E90\uFF0C\u7528\u4E8E\u6C47\u603B\u3001\u6BD4\u8F83\u6216\u751F\u6210\u7B80\u62A5\u3002\u6E90\u753B\u677F\u4ECD\u7531\u539F\u6765\u7684 agent \u8D1F\u8D23\u3002"
-    }), /* @__PURE__ */jsx18(Copy, {
+    }), /* @__PURE__ */jsx19(Copy, {
       small: true,
       muted: true,
       children: "\u4FDD\u5B58\u540E\uFF0C\u8BA9 agent \u4F7F\u7528\u8FD9\u4E9B\u6765\u6E90\u7EC4\u5408\u9875\u9762\u3002\u5B83\u53EF\u4EE5\u81EA\u7531\u5B89\u6392\u4EA4\u4E92\u753B\u677F\u548C\u7F29\u7565\u9884\u89C8\uFF1B\u6765\u6E90\u8BFB\u53D6\u4E0D\u4F1A\u53D1\u9001\u6D88\u606F\u3002"
-    }), controller.isPending ? /* @__PURE__ */jsx18(Copy, {
+    }), controller.isPending ? /* @__PURE__ */jsx19(Copy, {
       muted: true,
       children: "\u6B63\u5728\u8BFB\u53D6\u6765\u6E90\u2026"
-    }) : null, controller.error ? /* @__PURE__ */jsx18(Notice, {
+    }) : null, controller.error ? /* @__PURE__ */jsx19(Notice, {
       error: true,
       text: errorMessage(controller.error)
-    }) : null, /* @__PURE__ */jsx18(TextInput8, {
+    }) : null, /* @__PURE__ */jsx19(TextInput9, {
       accessibilityLabel: "\u67E5\u627E\u6765\u6E90 Board",
       value: filter,
       onChangeText: setFilter,
@@ -16861,16 +17645,16 @@ function CompositionSourcesPanel({
         borderRadius: 8,
         padding: 10
       }
-    }), /* @__PURE__ */jsxs16(ScrollView8, {
+    }), /* @__PURE__ */jsxs17(ScrollView9, {
       style: {
         maxHeight: 420
       },
       contentContainerStyle: {
         gap: 18
       },
-      children: [services.map(service => /* @__PURE__ */jsx18(BoardServicesProvider, {
+      children: [services.map(service => /* @__PURE__ */jsx19(BoardServicesProvider, {
         services: service,
-        children: /* @__PURE__ */jsx18(HostSourceChoices, {
+        children: /* @__PURE__ */jsx19(HostSourceChoices, {
           parent,
           service,
           filter,
@@ -16879,38 +17663,38 @@ function CompositionSourcesPanel({
           disabled: pending || !controller.data,
           toggle
         })
-      }, `${service.hostId}:${service.generation}`)), selected.filter(ref => !services.some(service => service.hostId === ref.hostId)).map(ref => /* @__PURE__ */jsxs16(View16, {
+      }, `${service.hostId}:${service.generation}`)), selected.filter(ref => !services.some(service => service.hostId === ref.hostId)).map(ref => /* @__PURE__ */jsxs17(View17, {
         style: {
           gap: 4
         },
-        children: [/* @__PURE__ */jsx18(Action, {
+        children: [/* @__PURE__ */jsx19(Action, {
           label: `${ref.boardId} \xB7 ${ref.hostId}`,
           active: true,
           disabled: pending,
           onPress: () => toggle(ref)
-        }), /* @__PURE__ */jsx18(Copy, {
+        }), /* @__PURE__ */jsx19(Copy, {
           small: true,
           muted: true,
           children: "\u8BE5 host \u5F53\u524D\u672A\u63D0\u4F9B\u517C\u5BB9\u7684 Board \u8FDE\u63A5\uFF0C\u5DF2\u4FDD\u5B58\u7684\u6765\u6E90\u4ECD\u4FDD\u7559\u3002"
         })]
-      }, boardRefKey(ref))), services.length === 0 ? /* @__PURE__ */jsx18(Copy, {
+      }, boardRefKey(ref))), services.length === 0 ? /* @__PURE__ */jsx19(Copy, {
         muted: true,
         children: "\u5C1A\u65E0\u53EF\u7528\u6765\u6E90\u3002\u8BF7\u5148\u8FDE\u63A5\u5B89\u88C5\u4E86\u517C\u5BB9 Board \u63D2\u4EF6\u7684 host\u3002"
       }) : null]
-    }), controller.data?.sources.map(source => controller.problems[boardRefKey(source.ref)] ? /* @__PURE__ */jsx18(Notice, {
+    }), controller.data?.sources.map(source => controller.problems[boardRefKey(source.ref)] ? /* @__PURE__ */jsx19(Notice, {
       error: true,
       text: `${source.ref.boardId}\uFF1A${controller.problems[boardRefKey(source.ref)]}`
-    }, boardRefKey(source.ref)) : null), controller.data?.sources.some(source => source.snapshot) ? /* @__PURE__ */jsx18(Copy, {
+    }, boardRefKey(source.ref)) : null), controller.data?.sources.some(source => source.snapshot) ? /* @__PURE__ */jsx19(Copy, {
       small: true,
       muted: true,
       children: "\u8FDC\u7AEF\u8D44\u6599\u4EE5\u5404\u6765\u6E90\u6700\u8FD1\u540C\u6B65\u7684\u7248\u672C\u63D0\u4F9B\uFF0Cagent \u4F1A\u770B\u5230\u91C7\u96C6\u65F6\u95F4\u548C\u8BB0\u5F55\u8303\u56F4\u3002"
-    }) : null, failure ? /* @__PURE__ */jsx18(Notice, {
+    }) : null, failure ? /* @__PURE__ */jsx19(Notice, {
       error: true,
       text: failure
-    }) : null, draft && controller.data && controller.data.revision !== baseRevision ? /* @__PURE__ */jsx18(Notice, {
+    }) : null, draft && controller.data && controller.data.revision !== baseRevision ? /* @__PURE__ */jsx19(Notice, {
       error: true,
       text: "\u6765\u6E90\u9009\u62E9\u5DF2\u5728\u522B\u5904\u4FEE\u6539\u3002\u8BF7\u91CD\u65B0\u8F7D\u5165\u540E\u518D\u9009\u62E9\uFF0C\u4EE5\u514D\u8986\u76D6\u53E6\u4E00\u5904\u4FEE\u6539\u3002"
-    }) : null, /* @__PURE__ */jsxs16(View16, {
+    }) : null, /* @__PURE__ */jsxs17(View17, {
       style: {
         flexDirection: "row",
         flexWrap: "wrap",
@@ -16918,11 +17702,11 @@ function CompositionSourcesPanel({
         alignItems: "center",
         justifyContent: "flex-end"
       },
-      children: [/* @__PURE__ */jsxs16(Copy, {
+      children: [/* @__PURE__ */jsxs17(Copy, {
         small: true,
         muted: true,
         children: ["\u5DF2\u9009 ", selected.length, " / ", COMPOSITION_SOURCE_LIMIT]
-      }), draft ? /* @__PURE__ */jsx18(Action, {
+      }), draft ? /* @__PURE__ */jsx19(Action, {
         label: "\u653E\u5F03\u8FD9\u6B21\u9009\u62E9",
         disabled: pending,
         onPress: () => {
@@ -16930,7 +17714,7 @@ function CompositionSourcesPanel({
           setBaseRevision(void 0);
           setFailure(void 0);
         }
-      }) : null, /* @__PURE__ */jsx18(Action, {
+      }) : null, /* @__PURE__ */jsx19(Action, {
         label: pending ? "\u4FDD\u5B58\u4E2D\u2026" : "\u4FDD\u5B58\u6765\u6E90",
         primary: true,
         disabled: pending || !draft || controller.data?.revision !== baseRevision,
@@ -16954,22 +17738,22 @@ function HostSourceChoices({
   var query = useBoardList(service.hostId);
   var text = filter.trim().toLocaleLowerCase();
   var boards = query.data?.boards.filter(board => !(parent.hostId === service.hostId && parent.boardId === board.id) && (!text || `${service.label} ${board.title} ${board.id}`.toLocaleLowerCase().includes(text))) ?? [];
-  return /* @__PURE__ */jsxs16(View16, {
+  return /* @__PURE__ */jsxs17(View17, {
     style: {
       gap: 7
     },
-    children: [/* @__PURE__ */jsx18(Text13, {
+    children: [/* @__PURE__ */jsx19(Text13, {
       style: {
         color: c.foreground,
         fontSize: 13,
         fontWeight: "600"
       },
       children: service.label
-    }), query.isPending ? /* @__PURE__ */jsx18(Copy, {
+    }), query.isPending ? /* @__PURE__ */jsx19(Copy, {
       small: true,
       muted: true,
       children: "\u6B63\u5728\u8BFB\u53D6\u2026"
-    }) : null, query.error ? /* @__PURE__ */jsx18(Notice, {
+    }) : null, query.error ? /* @__PURE__ */jsx19(Notice, {
       error: true,
       text: errorMessage(query.error)
     }) : null, boards.map(board => {
@@ -16978,38 +17762,38 @@ function HostSourceChoices({
         boardId: board.id,
         sourceCreatedAt: board.createdAt
       };
-      return /* @__PURE__ */jsxs16(View16, {
+      return /* @__PURE__ */jsxs17(View17, {
         style: {
           gap: 3
         },
-        children: [/* @__PURE__ */jsx18(Action, {
+        children: [/* @__PURE__ */jsx19(Action, {
           label: board.title,
           active: selected.has(boardRefKey(ref)),
           disabled,
           icon: selected.has(boardRefKey(ref)) ? "Check" : "Plus",
           onPress: () => toggle(ref)
-        }), /* @__PURE__ */jsxs16(Copy, {
+        }), /* @__PURE__ */jsxs17(Copy, {
           small: true,
           muted: true,
           children: [board.unreadUpdateCount ? `${board.unreadUpdateCount} \u5904\u672A\u770B\u66F4\u65B0 \xB7 ` : "", timeLabel(board.updatedAt)]
         })]
       }, board.id);
-    }), selectedRefs.filter(ref => ref.hostId === service.hostId && !query.data?.boards.some(board => board.id === ref.boardId)).map(ref => /* @__PURE__ */jsxs16(View16, {
+    }), selectedRefs.filter(ref => ref.hostId === service.hostId && !query.data?.boards.some(board => board.id === ref.boardId)).map(ref => /* @__PURE__ */jsxs17(View17, {
       style: {
         gap: 3
       },
-      children: [/* @__PURE__ */jsx18(Action, {
+      children: [/* @__PURE__ */jsx19(Action, {
         label: ref.boardId,
         active: true,
         disabled,
         icon: "Check",
         onPress: () => toggle(ref)
-      }), /* @__PURE__ */jsx18(Copy, {
+      }), /* @__PURE__ */jsx19(Copy, {
         small: true,
         muted: true,
         children: "\u8FD9\u4E2A\u5DF2\u9009\u6765\u6E90\u6682\u4E0D\u53EF\u8BFB\uFF0C\u4ECD\u53EF\u4ECE\u6765\u6E90\u4E2D\u79FB\u9664\u3002"
       })]
-    }, boardRefKey(ref))), !query.isPending && !query.error && !boards.length ? /* @__PURE__ */jsx18(Copy, {
+    }, boardRefKey(ref))), !query.isPending && !query.error && !boards.length ? /* @__PURE__ */jsx19(Copy, {
       small: true,
       muted: true,
       children: "\u6CA1\u6709\u7B26\u5408\u6761\u4EF6\u7684 Board\u3002"
@@ -17018,8 +17802,8 @@ function HostSourceChoices({
 }
 
 // client/composition-view.tsx
-import { useCallback as useCallback9, useEffect as useEffect17, useMemo as useMemo8, useState as useState18, useSyncExternalStore as useSyncExternalStore2 } from "react";
-import { Fragment as Fragment10, jsx as jsx19 } from "react/jsx-runtime";
+import { useCallback as useCallback9, useEffect as useEffect18, useMemo as useMemo8, useState as useState19, useSyncExternalStore as useSyncExternalStore2 } from "react";
+import { Fragment as Fragment10, jsx as jsx20 } from "react/jsx-runtime";
 var MAX_EMBEDS = 8;
 var mountKeys = /* @__PURE__ */new WeakMap();
 var nextMountKey = 0;
@@ -17040,8 +17824,8 @@ function CompositionEmbeds({
 }) {
   var services = useBoardTransports();
   var grants = useMemo8(() => new Map(sources?.boardCreatedAt === parentCreatedAt ? sources.sources.map(source => [boardRefKey(source.ref), source]) : []), [sources, parentCreatedAt]);
-  return /* @__PURE__ */jsx19(Fragment10, {
-    children: mounts.map((mount, index) => /* @__PURE__ */jsx19(CompositionEmbed, {
+  return /* @__PURE__ */jsx20(Fragment10, {
+    children: mounts.map((mount, index) => /* @__PURE__ */jsx20(CompositionEmbed, {
       mount,
       parent,
       grants,
@@ -17076,7 +17860,7 @@ function CompositionEmbed({
       }
     });
   }, [service, ref.boardId]);
-  useEffect17(() => {
+  useEffect18(() => {
     if (!failure) return;
     mount.setPresentation({
       title: ref.boardId,
@@ -17092,21 +17876,21 @@ function CompositionEmbed({
     onOpen: open
   }), [mount, parent.hostId, parent.boardId, slot.id, grant?.sourceCreatedAt, open]);
   if (failure || !service || !grant?.sourceCreatedAt) return null;
-  return /* @__PURE__ */jsx19(BoardServicesProvider, {
+  return /* @__PURE__ */jsx20(BoardServicesProvider, {
     services: service,
-    children: /* @__PURE__ */jsx19(AuthorizedSource, {
+    children: /* @__PURE__ */jsx20(AuthorizedSource, {
       mount,
       service,
       source: ref,
       createdAt: grant.sourceCreatedAt,
       open,
-      children: slot.view === "preview" ? /* @__PURE__ */jsx19(BoardPreview, {
+      children: slot.view === "preview" ? /* @__PURE__ */jsx20(BoardPreview, {
         mount,
         service,
         refValue: ref,
         open,
         ...surface
-      }, grant.sourceCreatedAt) : /* @__PURE__ */jsx19(BoardView, {
+      }, grant.sourceCreatedAt) : /* @__PURE__ */jsx20(BoardView, {
         ...surface,
         host: {
           id: service.hostId,
@@ -17138,7 +17922,7 @@ function AuthorizedSource({
   var board = query.data;
   var listed = index.data?.boards.find(item => item.id === source.boardId);
   var valid = board?.createdAt === createdAt && listed?.createdAt === createdAt;
-  useEffect17(() => {
+  useEffect18(() => {
     if (valid) return;
     mount.setPresentation({
       title: source.boardId,
@@ -17161,8 +17945,8 @@ function BoardPreview({
   var query = useBoard(service.hostId, refValue.boardId);
   var board = query.data;
   var frameTheme = useMemo8(() => frameThemeFromColors(theme.colors), [theme.colors]);
-  var [failure, setFailure] = useState18();
-  useEffect17(() => {
+  var [failure, setFailure] = useState19();
+  useEffect18(() => {
     mount.setPresentation({
       title: board ? `${board.title} \xB7 r${board.revision} \xB7 \u53EA\u8BFB\u9884\u89C8` : refValue.boardId,
       hostLabel: service.label,
@@ -17172,7 +17956,7 @@ function BoardPreview({
     mount.setStatus(failure ?? (!board ? query.isPending ? "\u6B63\u5728\u8BFB\u53D6\u9884\u89C8\u2026" : "\u9884\u89C8\u6682\u65F6\u65E0\u6CD5\u8FDE\u63A5" : query.error || query.liveError ? "\u8FDE\u63A5\u4E2D\u65AD \xB7 \u663E\u793A\u4E0A\u6B21\u6536\u5230\u7684\u9884\u89C8" : ""));
   }, [mount, board, service.label, refValue.boardId, query.isPending, query.error, query.liveError, failure, open]);
   if (!board) return null;
-  return /* @__PURE__ */jsx19(CanvasFrame, {
+  return /* @__PURE__ */jsx20(CanvasFrame, {
     embeddedMount: mount,
     boardId: board.id,
     title: board.title,
@@ -17195,7 +17979,7 @@ function BoardPreview({
 }
 
 // client/board.tsx
-import { Fragment as Fragment11, jsx as jsx20, jsxs as jsxs17 } from "react/jsx-runtime";
+import { Fragment as Fragment11, jsx as jsx21, jsxs as jsxs18 } from "react/jsx-runtime";
 var captureFailureNames = {
   "content-changed": "\u622A\u56FE\u8FC7\u7A0B\u4E2D\u753B\u5E03\u5185\u5BB9\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u6846\u9009\u3002",
   "too-complex": "\u9009\u533A\u5185\u5BB9\u8FC7\u4E8E\u590D\u6742\uFF0C\u8BF7\u7F29\u5C0F\u9009\u533A\u3002",
@@ -17222,9 +18006,9 @@ var kindNames = {
   reply: "Fork \u56DE\u590D"
 };
 function BoardView(props) {
-  return /* @__PURE__ */jsx20(ColorContext.Provider, {
+  return /* @__PURE__ */jsx21(ColorContext.Provider, {
     value: props.theme.colors,
-    children: /* @__PURE__ */jsx20(BoardContent, {
+    children: /* @__PURE__ */jsx21(BoardContent, {
       ...props
     }, JSON.stringify([props.host.id, props.boardId]))
   });
@@ -17247,8 +18031,8 @@ function BoardContent({
     boardId
   }), [host.id, boardId]);
   var sources = useCompositionSources(sourceRef, !embedded);
-  var [sourcesOpen, setSourcesOpen] = useState19(false);
-  var [compositionMounts, setCompositionMounts] = useState19([]);
+  var [sourcesOpen, setSourcesOpen] = useState20(false);
+  var [compositionMounts, setCompositionMounts] = useState20([]);
   var composition = useMemo9(() => embedded ? void 0 : {
     hostId: host.id,
     onSlots: setCompositionMounts
@@ -17256,7 +18040,7 @@ function BoardContent({
   var viewInstance = embedded?.viewScope;
   var query = useBoard(host.id, boardId);
   var board = query.data;
-  useEffect18(() => retainBoardViewStore(), []);
+  useEffect19(() => retainBoardViewStore(), []);
   var viewSession = useMemo9(() => {
     var saved = board?.canvas.documentVersion ? readBoardView(host.id, boardId, board.canvas.documentVersion, viewInstance) : void 0;
     return {
@@ -17264,9 +18048,9 @@ function BoardContent({
       latest: saved?.view
     };
   }, [host.id, boardId, board?.canvas.documentVersion, viewInstance]);
-  var [settledView, setSettledView] = useState19();
-  var [reconciledView, setReconciledView] = useState19();
-  useEffect18(() => {
+  var [settledView, setSettledView] = useState20();
+  var [reconciledView, setReconciledView] = useState20();
+  useEffect19(() => {
     if (board && !query.isFetching && !query.isError && (query.liveStatus === "connected" || query.liveStatus === "checking")) setReconciledView(viewSession);
   }, [viewSession, board, query.isFetching, query.isError, query.liveStatus]);
   var componentEditor = useComponentEditor(host.id, boardId, board, query.accept, query.refetch, viewInstance);
@@ -17275,25 +18059,25 @@ function BoardContent({
   var record2 = useBoardRpc(recordDecisionRpc);
   var selectSide = useBoardRpc(selectSideAgentRpc);
   var markUpdatesSeen = useBoardRpc(markUpdatesSeenRpc);
-  var [selectionMode, setSelectionMode] = useState19("off");
-  var [anchor, setAnchor] = useState19();
-  var [selectionClearToken, setSelectionClearToken] = useState19(0);
-  var [selectionCaptureCancelId, setSelectionCaptureCancelId] = useState19();
-  var [drawer, setDrawer] = useState19(null);
-  var [releaseOpen, setReleaseOpen] = useState19(false);
-  var [releaseIntent, setReleaseIntent] = useState19("publish");
+  var [selectionMode, setSelectionMode] = useState20("off");
+  var [anchor, setAnchor] = useState20();
+  var [selectionClearToken, setSelectionClearToken] = useState20(0);
+  var [selectionCaptureCancelId, setSelectionCaptureCancelId] = useState20();
+  var [drawer, setDrawer] = useState20(null);
+  var [releaseOpen, setReleaseOpen] = useState20(false);
+  var [releaseIntent, setReleaseIntent] = useState20("publish");
   var shareStatus = useShareStatus(board, !embedded);
-  var releaseWasOpen = useRef17(false);
-  useEffect18(() => {
+  var releaseWasOpen = useRef18(false);
+  useEffect19(() => {
     if (releaseWasOpen.current && !releaseOpen) shareStatus.refresh();
     releaseWasOpen.current = releaseOpen;
   }, [releaseOpen, shareStatus.refresh]);
-  var [inboxOpen, setInboxOpen] = useState19(false);
+  var [inboxOpen, setInboxOpen] = useState20(false);
   var liveStatus = useLiveStatus(board, !embedded);
   var inboxStatus = useInboxAutoStatus(board, !embedded);
-  var [liveOpen, setLiveOpen] = useState19(false);
-  var liveWasOpen = useRef17(false);
-  useEffect18(() => {
+  var [liveOpen, setLiveOpen] = useState20(false);
+  var liveWasOpen = useRef18(false);
+  useEffect19(() => {
     if (liveWasOpen.current && !liveOpen) liveStatus.refresh();
     liveWasOpen.current = liveOpen;
   }, [liveOpen, liveStatus.refresh]);
@@ -17301,53 +18085,53 @@ function BoardContent({
     hostId: host.id,
     boardId
   }), [host.id, boardId]);
-  var [draftSnapshot, setDraftSnapshot] = useState19(() => draftStore.list());
+  var [draftSnapshot, setDraftSnapshot] = useState20(() => draftStore.list());
   var batchStore = useMemo9(() => createBatchStore({
     hostId: host.id,
     boardId
   }), [host.id, boardId]);
-  var [batchSnapshot, setBatchSnapshot] = useState19(() => batchStore.list());
-  var [batchError, setBatchError] = useState19(null);
+  var [batchSnapshot, setBatchSnapshot] = useState20(() => batchStore.list());
+  var [batchError, setBatchError] = useState20(null);
   var acceptedBatchIds = useMemo9(() => new Set(batchSnapshot.batches.filter(batch => (!batch.expectedCreatedAt || batch.expectedCreatedAt === board?.createdAt) && acceptedBatchInteraction(batch, board?.interactions ?? [])).map(batch => batch.intentId)), [batchSnapshot.batches, board?.interactions, board?.createdAt]);
   var staged = useMemo9(() => queuedDrafts(draftSnapshot.drafts, batchSnapshot.batches), [draftSnapshot, batchSnapshot]);
   var availableDrafts = useMemo9(() => draftSnapshot.drafts.filter(draft => !batchSnapshot.batches.some(batch => batchContainsDraft(batch, draft))), [draftSnapshot, batchSnapshot]);
-  var [draftError, setDraftError] = useState19(null);
-  var restorationHandled = useRef17(false);
-  var [compose, setCompose] = useState19(null);
-  var composeRef = useRef17(compose);
+  var [draftError, setDraftError] = useState20(null);
+  var restorationHandled = useRef18(false);
+  var [compose, setCompose] = useState20(null);
+  var composeRef = useRef18(compose);
   composeRef.current = compose;
-  var [sending, setSending] = useState19(false);
-  var pending = useRef17(false);
-  var sideChoicePending = useRef17(false);
-  var [choosingSide, setChoosingSide] = useState19(false);
-  var [sideChoiceUncertain, setSideChoiceUncertain] = useState19(false);
+  var [sending, setSending] = useState20(false);
+  var pending = useRef18(false);
+  var sideChoicePending = useRef18(false);
+  var [choosingSide, setChoosingSide] = useState20(false);
+  var [sideChoiceUncertain, setSideChoiceUncertain] = useState20(false);
   var sideTargetBlocked = choosingSide || sideChoiceUncertain;
-  var [inputFocusToken, setInputFocusToken] = useState19(0);
+  var [inputFocusToken, setInputFocusToken] = useState20(0);
   var sideContexts = useMemo9(() => createSideContextStore({
     hostId: host.id,
     boardId
   }), [host.id, boardId]);
-  var [sideContext, setSideContext] = useState19(() => sideContexts.read());
+  var [sideContext, setSideContext] = useState20(() => sideContexts.read());
   var sideChoiceOpen = Boolean(compose) || drawer === "drafts";
-  useEffect18(() => {
+  useEffect19(() => {
     if (sideChoiceOpen) setSideContext(sideContexts.read());
   }, [sideChoiceOpen, sideContexts]);
-  var [message, setMessage] = useState19(null);
-  var [frameError, setFrameError] = useState19(null);
-  var [height, setHeight] = useState19(500);
-  var [width, setWidth] = useState19(900);
-  var [stageWidth, setStageWidth] = useState19(900);
-  var [popoverHeight, setPopoverHeight] = useState19(300);
-  var [popoverPoint, setPopoverPoint] = useState19({
+  var [message, setMessage] = useState20(null);
+  var [frameError, setFrameError] = useState20(null);
+  var [height, setHeight] = useState20(500);
+  var [width, setWidth] = useState20(900);
+  var [stageWidth, setStageWidth] = useState20(900);
+  var [popoverHeight, setPopoverHeight] = useState20(300);
+  var [popoverPoint, setPopoverPoint] = useState20({
     x: 24,
     y: 24
   });
-  var popoverPointRef = useRef17(popoverPoint);
+  var popoverPointRef = useRef18(popoverPoint);
   popoverPointRef.current = popoverPoint;
-  var [selectedInteractionId, setSelectedInteractionId] = useState19();
-  var [focusInteraction, setFocusInteraction] = useState19();
-  var [interactionLocation, setInteractionLocation] = useState19();
-  var [optimistic, setOptimistic] = useState19([]);
+  var [selectedInteractionId, setSelectedInteractionId] = useState20();
+  var [focusInteraction, setFocusInteraction] = useState20();
+  var [interactionLocation, setInteractionLocation] = useState20();
+  var [optimistic, setOptimistic] = useState20([]);
   var updatesBlocked = Boolean(componentEditor.draft || compose || selectedInteractionId || drawer || releaseOpen || liveOpen || sourcesOpen || sending || selectionMode !== "off");
   var updateNavigation = useUpdateNavigation(board, updatesBlocked, id2 => __async(null, null, function* () {
     if (!embedded) query.accept(yield markUpdatesSeen({
@@ -17363,7 +18147,7 @@ function BoardContent({
     restoring: settledView !== viewSession,
     reconciling: reconciledView !== viewSession
   } : void 0);
-  var followRef = useRef17(updateNavigation.follow);
+  var followRef = useRef18(updateNavigation.follow);
   followRef.current = updateNavigation.follow;
   var onViewState = useCallback10(view => {
     if (view.documentVersion !== board?.canvas.documentVersion) return;
@@ -17378,10 +18162,10 @@ function BoardContent({
   var onViewRestored = useCallback10(() => {
     setSettledView(viewSession);
   }, [viewSession]);
-  useEffect18(() => {
+  useEffect19(() => {
     if (viewSession.latest) writeBoardView(host.id, boardId, viewSession.latest, updateNavigation.follow, viewInstance);
   }, [host.id, boardId, viewSession, updateNavigation.follow, viewInstance]);
-  useEffect18(() => {
+  useEffect19(() => {
     if (!embedded) return;
     var unread = board?.updates.filter(item => !board.seenUpdateIds.includes(item.id)).length ?? 0;
     embedded.mount.setPresentation({
@@ -17404,15 +18188,15 @@ function BoardContent({
     width,
     height
   }, popoverHeight);
-  var stateWriter = useRef17(null);
+  var stateWriter = useRef18(null);
   var frameTheme = useMemo9(() => frameThemeFromColors(theme.colors), [theme.colors]);
-  useEffect18(() => {
+  useEffect19(() => {
     var refresh = () => setDraftSnapshot(draftStore.list());
     var unsubscribe = draftStore.subscribe(refresh);
     refresh();
     return unsubscribe;
   }, [draftStore]);
-  useEffect18(() => {
+  useEffect19(() => {
     var refresh = () => setBatchSnapshot(batchStore.list());
     var unsubscribe = batchStore.subscribe(refresh);
     refresh();
@@ -17505,7 +18289,7 @@ function BoardContent({
       text
     });
   };
-  useEffect18(() => {
+  useEffect19(() => {
     var batches = batchSnapshot.batches;
     if (!board) {
       if (!query.isPending && !restorationHandled.current) {
@@ -17549,7 +18333,7 @@ function BoardContent({
     }
     if (latest && !embedded) restoreDraft(latest);
   }, [board, draftStore, query.isPending, sending, batchSnapshot.batches]);
-  useEffect18(() => {
+  useEffect19(() => {
     if (!board || pending.current) return;
     for (var batch of batchSnapshot.batches) {
       if (!acceptedBatchIds.has(batch.intentId)) continue;
@@ -17611,7 +18395,7 @@ function BoardContent({
     setAnchor(capture.anchor);
   }, [changeCompose]);
   var onState = useCallback10(state => stateWriter.current?.schedule(state), []);
-  useEffect18(() => {
+  useEffect19(() => {
     var expectedCreatedAt = board?.createdAt;
     if (!expectedCreatedAt) return;
     var writer = createStateWriter(state => save({
@@ -17625,14 +18409,14 @@ function BoardContent({
       if (stateWriter.current === writer) stateWriter.current = null;
     };
   }, [save, boardId, board?.createdAt]);
-  useEffect18(() => {
+  useEffect19(() => {
     setFrameError(null);
   }, [board?.canvas.documentVersion]);
-  useEffect18(() => {
+  useEffect19(() => {
     var persisted = new Set(board?.interactions.map(item => item.id));
     setOptimistic(items => items.some(item => persisted.has(item.id)) ? items.filter(item => !persisted.has(item.id)) : items);
   }, [board?.interactions]);
-  useEffect18(() => () => {
+  useEffect19(() => () => {
     if (!pending.current) composeRef.current?.resolve?.({
       status: "cancelled"
     });
@@ -18140,33 +18924,33 @@ function BoardContent({
     text: "\u9009\u4E2D\u6587\u5B57"
   }[anchor.kind] : "\u6574\u4E2A\u753B\u5E03";
   if (!board && embedded) return null;
-  if (!board) return /* @__PURE__ */jsxs17(ScrollView9, {
+  if (!board) return /* @__PURE__ */jsxs18(ScrollView10, {
     contentContainerStyle: {
       padding: 24,
       gap: 16,
       backgroundColor: c.surface0
     },
-    children: [/* @__PURE__ */jsx20(Action, {
+    children: [/* @__PURE__ */jsx21(Action, {
       label: "\u6240\u6709 Boards",
       onPress: () => leaveBoard(onBack)
-    }), /* @__PURE__ */jsx20(Notice, {
+    }), /* @__PURE__ */jsx21(Notice, {
       text: query.isPending ? "\u6B63\u5728\u6253\u5F00\u2026" : query.error ? "\u6682\u65F6\u65E0\u6CD5\u8FDE\u63A5 Board\uFF1B\u672C\u673A\u8349\u7A3F\u4ECD\u53EF\u67E5\u770B\u548C\u7F16\u8F91\uFF0C\u6062\u590D\u8FDE\u63A5\u540E\u518D\u53D1\u9001\u3002" : "\u8FD9\u5757 Board \u4E0D\u5B58\u5728\uFF1B\u672C\u673A\u8349\u7A3F\u4ECD\u4FDD\u7559\u3002",
       error: !!query.error
-    }), query.error ? /* @__PURE__ */jsx20(Action, {
+    }), query.error ? /* @__PURE__ */jsx21(Action, {
       label: "\u91CD\u8BD5\u8FDE\u63A5",
       onPress: () => {
         void query.refetch();
       }
-    }) : null, compose ? /* @__PURE__ */jsxs17(View17, {
+    }) : null, compose ? /* @__PURE__ */jsxs18(View18, {
       testID: "board-offline-draft",
       style: {
         gap: 12
       },
-      children: [/* @__PURE__ */jsx20(AnchorPreview, {
+      children: [/* @__PURE__ */jsx21(AnchorPreview, {
         anchor: compose.anchor,
         compact: true,
         captureStatus: compose.captureStatus
-      }), canRenderFrames ? /* @__PURE__ */jsx20(WebMessageInput, {
+      }), canRenderFrames ? /* @__PURE__ */jsx21(WebMessageInput, {
         value: compose.text,
         disabled: false,
         onChange: changeDraftText,
@@ -18183,85 +18967,85 @@ function BoardContent({
           padding: 10,
           minHeight: 120
         }
-      }) : /* @__PURE__ */jsx20(TextInput9, {
+      }) : /* @__PURE__ */jsx21(TextInput10, {
         accessibilityLabel: "\u53D1\u7ED9 agent \u7684\u6D88\u606F",
         multiline: true,
         value: compose.text,
         onChangeText: changeDraftText
-      }), draftError || message ? /* @__PURE__ */jsx20(Notice, {
+      }), draftError || message ? /* @__PURE__ */jsx21(Notice, {
         error: true,
         text: draftError ?? message ?? ""
-      }) : null, /* @__PURE__ */jsxs17(View17, {
+      }) : null, /* @__PURE__ */jsxs18(View18, {
         style: {
           flexDirection: "row",
           gap: 8
         },
-        children: [/* @__PURE__ */jsx20(Action, {
+        children: [/* @__PURE__ */jsx21(Action, {
           label: "\u6536\u8D77",
           testID: "board-draft-dismiss",
           onPress: closePopover
-        }), /* @__PURE__ */jsx20(Action, {
+        }), /* @__PURE__ */jsx21(Action, {
           label: "\u4E22\u5F03\u8349\u7A3F",
           testID: "board-draft-discard",
           onPress: discardCompose
         })]
       })]
-    }) : /* @__PURE__ */jsxs17(View17, {
+    }) : /* @__PURE__ */jsxs18(View18, {
       testID: "board-offline-drafts",
       style: {
         gap: 16
       },
-      children: [availableDrafts.map(saved => /* @__PURE__ */jsxs17(View17, {
+      children: [availableDrafts.map(saved => /* @__PURE__ */jsxs18(View18, {
         testID: `board-draft-row-${saved.id}`,
         style: {
           gap: 6
         },
-        children: [/* @__PURE__ */jsx20(Copy, {
+        children: [/* @__PURE__ */jsx21(Copy, {
           children: saved.compose.text || "\u5C1A\u672A\u8F93\u5165\u6587\u5B57"
-        }), /* @__PURE__ */jsx20(Copy, {
+        }), /* @__PURE__ */jsx21(Copy, {
           small: true,
           muted: true,
           children: saved.compose.anchor?.selector ?? "\u6574\u4E2A\u753B\u5E03"
-        }), saved.queuedAt !== void 0 ? /* @__PURE__ */jsx20(Copy, {
+        }), saved.queuedAt !== void 0 ? /* @__PURE__ */jsx21(Copy, {
           small: true,
           muted: true,
           children: "\u5F85\u7EDF\u4E00\u53D1\u9001"
-        }) : null, /* @__PURE__ */jsx20(Action, {
+        }) : null, /* @__PURE__ */jsx21(Action, {
           label: "\u7EE7\u7EED\u7F16\u8F91",
           onPress: () => restoreDraft(saved)
         })]
-      }, saved.revision)), batchSnapshot.batches.map(batch => /* @__PURE__ */jsxs17(View17, {
+      }, saved.revision)), batchSnapshot.batches.map(batch => /* @__PURE__ */jsxs18(View18, {
         testID: `board-offline-batch-${batch.intentId}`,
         style: {
           gap: 8
         },
-        children: [/* @__PURE__ */jsxs17(Copy, {
+        children: [/* @__PURE__ */jsxs18(Copy, {
           children: ["\u53D1\u9001\u7ED3\u679C\u5F85\u6838\u5BF9 \xB7 ", batch.comments.length, " \u6761\u8BC4\u8BBA"]
-        }), batch.comments.map((comment, index) => /* @__PURE__ */jsxs17(View17, {
+        }), batch.comments.map((comment, index) => /* @__PURE__ */jsxs18(View18, {
           style: {
             gap: 4
           },
-          children: [/* @__PURE__ */jsxs17(Copy, {
+          children: [/* @__PURE__ */jsxs18(Copy, {
             children: [index + 1, ". ", comment.text]
-          }), /* @__PURE__ */jsx20(AnchorPreview, {
+          }), /* @__PURE__ */jsx21(AnchorPreview, {
             anchor: comment.anchor,
             compact: true
           })]
-        }, comment.id)), /* @__PURE__ */jsx20(Copy, {
+        }, comment.id)), /* @__PURE__ */jsx21(Copy, {
           small: true,
           muted: true,
           children: "\u6062\u590D\u8FDE\u63A5\u540E\u53EF\u6838\u5BF9\u6216\u91CD\u8BD5\u539F\u53D1\u9001\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u91CD\u53D1\u3002"
         })]
-      }, batch.intentId)), batchSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx20(Notice, {
+      }, batch.intentId)), batchSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx21(Notice, {
         error: true,
         text: issue2
-      }, `batch-${index}`)), draftSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx20(Notice, {
+      }, `batch-${index}`)), draftSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx21(Notice, {
         error: true,
         text: issue2.message
       }, index))]
     })]
   });
-  return /* @__PURE__ */jsxs17(View17, {
+  return /* @__PURE__ */jsxs18(View18, {
     testID: embedded ? void 0 : "board-screen",
     style: embedded ? {
       width: 0,
@@ -18272,7 +19056,7 @@ function BoardContent({
       minHeight: 0,
       backgroundColor: c.surface0
     },
-    children: [!embedded ? /* @__PURE__ */jsx20(BoardToolbar, {
+    children: [!embedded ? /* @__PURE__ */jsx21(BoardToolbar, {
       board,
       onAccepted: query.accept,
       onRefresh: query.refetch,
@@ -18333,7 +19117,7 @@ function BoardContent({
       },
       sourceCount: sources.data?.sources.length,
       onSources: sources.enabled ? () => setSourcesOpen(true) : void 0
-    }) : null, /* @__PURE__ */jsxs17(View17, {
+    }) : null, /* @__PURE__ */jsxs18(View18, {
       testID: "board-stage",
       style: embedded ? {
         width: 0,
@@ -18344,7 +19128,7 @@ function BoardContent({
         flexDirection: "row"
       },
       onLayout: event => setStageWidth(event.nativeEvent.layout.width),
-      children: [/* @__PURE__ */jsxs17(View17, {
+      children: [/* @__PURE__ */jsxs18(View18, {
         testID: "board-canvas-container",
         style: embedded ? {
           width: 0,
@@ -18361,7 +19145,7 @@ function BoardContent({
           setHeight(Math.max(180, event.nativeEvent.layout.height));
           setWidth(event.nativeEvent.layout.width);
         },
-        children: [canRenderFrames ? /* @__PURE__ */jsx20(CanvasFrame, {
+        children: [canRenderFrames ? /* @__PURE__ */jsx21(CanvasFrame, {
           composition,
           embeddedMount: embedded?.mount,
           viewScope: JSON.stringify([host.id, boardId, viewInstance]),
@@ -18425,53 +19209,53 @@ function BoardContent({
           onOpenLink: url => {
             void openExternalUrl2(url).catch(e => setMessage(errorMessage(e)));
           }
-        }, board.createdAt) : /* @__PURE__ */jsxs17(ScrollView9, {
+        }, board.createdAt) : /* @__PURE__ */jsxs18(ScrollView10, {
           contentContainerStyle: {
             padding: 24,
             gap: 16
           },
-          children: [/* @__PURE__ */jsx20(Notice, {
+          children: [/* @__PURE__ */jsx21(Notice, {
             text: "\u624B\u673A\u517C\u5BB9\u89C6\u56FE\u3002\u5B8C\u6574\u7684\u81EA\u7531\u753B\u5E03\u3001\u52A8\u753B\u548C\u9875\u9762\u4EA4\u4E92\u5728\u684C\u9762\u7248\u4F7F\u7528\uFF1B\u8FD9\u91CC\u53EF\u4EE5\u67E5\u770B\u6458\u8981\u3001\u51B3\u7B56\u5E76\u4E0E agent \u4EA4\u6D41\u3002"
-          }), /* @__PURE__ */jsx20(Markdown, {
+          }), /* @__PURE__ */jsx21(Markdown, {
             children: typeof board.canvas.data.summary === "string" ? board.canvas.data.summary : "Agent \u5C1A\u672A\u63D0\u4F9B\u6587\u5B57\u6458\u8981\u3002\u4F60\u53EF\u4EE5\u76F4\u63A5\u63D0\u95EE\uFF0C\u56DE\u590D\u4F1A\u51FA\u73B0\u5728\u8BA8\u8BBA\u91CC\u3002"
           })]
-        }), embedded ? /* @__PURE__ */jsx20(Modal2, {
+        }), embedded ? /* @__PURE__ */jsx21(Modal2, {
           title: `${board.title} \xB7 ${host.label} \xB7 \u7EC4\u4EF6\u4FEE\u6539`,
           open: Boolean(componentEditor.draft),
           onOpenChange: open => {
             if (!open) componentEditor.cancel();
           },
-          children: /* @__PURE__ */jsx20(Modal2.Content, {
-            children: /* @__PURE__ */jsx20(BoardServicesBoundary, {
+          children: /* @__PURE__ */jsx21(Modal2.Content, {
+            children: /* @__PURE__ */jsx21(BoardServicesBoundary, {
               services,
-              children: /* @__PURE__ */jsx20(ColorContext.Provider, {
+              children: /* @__PURE__ */jsx21(ColorContext.Provider, {
                 value: c,
-                children: /* @__PURE__ */jsx20(ComponentEditPanel, {
+                children: /* @__PURE__ */jsx21(ComponentEditPanel, {
                   editor: componentEditor,
                   inline: true
                 })
               })
             })
           })
-        }) : /* @__PURE__ */jsx20(ComponentEditPanel, {
+        }) : /* @__PURE__ */jsx21(ComponentEditPanel, {
           editor: componentEditor
-        }), !embedded && (query.error || query.liveError || frameError || message && !compose && !selectedInteractionId) ? /* @__PURE__ */jsx20(View17, {
+        }), !embedded && (query.error || query.liveError || frameError || message && !compose && !selectedInteractionId) ? /* @__PURE__ */jsx21(View18, {
           style: {
             position: "absolute",
             left: 8,
             right: 8,
             top: 8
           },
-          children: /* @__PURE__ */jsx20(Notice, {
+          children: /* @__PURE__ */jsx21(Notice, {
             error: true,
             text: query.error ? "\u8FDE\u63A5\u6682\u65F6\u4E2D\u65AD\u3002\u5F53\u524D\u662F\u4E0A\u6B21\u6536\u5230\u7684\u5185\u5BB9\uFF0C\u5C1A\u672A\u786E\u8BA4\u6700\u65B0\u72B6\u6001\u3002" : query.liveError ? errorMessage(query.liveError) : frameError || message || ""
           })
-        }) : null, compose || selectedInteractionId ? /* @__PURE__ */jsxs17(BoardComposerSurface, {
+        }) : null, compose || selectedInteractionId ? /* @__PURE__ */jsxs18(BoardComposerSurface, {
           embeddedTitle: embedded ? `${board.title} \xB7 ${host.label}` : void 0,
           onClose: closePopover,
           onHeight: setPopoverHeight,
           placement: popover,
-          children: [/* @__PURE__ */jsxs17(View17, {
+          children: [/* @__PURE__ */jsxs18(View18, {
             style: {
               flexDirection: "row",
               alignItems: "center",
@@ -18480,24 +19264,24 @@ function BoardContent({
               borderBottomWidth: 1,
               borderColor: c.border
             },
-            children: [/* @__PURE__ */jsx20(Text14, {
+            children: [/* @__PURE__ */jsx21(Text14, {
               style: {
                 color: c.foreground,
                 fontWeight: "600",
                 flex: 1
               },
               children: compose ? "\u53D1\u7ED9 agent" : "\u8FD9\u91CC\u7684\u8BA8\u8BBA"
-            }), compose ? /* @__PURE__ */jsx20(Action, {
+            }), compose ? /* @__PURE__ */jsx21(Action, {
               testID: "board-draft-dismiss",
               label: "\u6536\u8D77",
               disabled: sending,
               onPress: closePopover
-            }) : !canRenderFrames ? /* @__PURE__ */jsx20(Action, {
+            }) : !canRenderFrames ? /* @__PURE__ */jsx21(Action, {
               label: "\u5173\u95ED",
               disabled: sending,
               onPress: closePopover
             }) : null]
-          }), /* @__PURE__ */jsxs17(ScrollView9, {
+          }), /* @__PURE__ */jsxs18(ScrollView10, {
             style: {
               flexShrink: 1
             },
@@ -18506,14 +19290,14 @@ function BoardContent({
               gap: 16
             },
             keyboardShouldPersistTaps: "handled",
-            children: [locationNote ? /* @__PURE__ */jsx20(View17, {
+            children: [locationNote ? /* @__PURE__ */jsx21(View18, {
               testID: "board-interaction-location",
-              children: /* @__PURE__ */jsx20(Copy, {
+              children: /* @__PURE__ */jsx21(Copy, {
                 small: true,
                 muted: true,
                 children: locationNote
               })
-            }) : null, thread.map(item => /* @__PURE__ */jsx20(InteractionContent, {
+            }) : null, thread.map(item => /* @__PURE__ */jsx21(InteractionContent, {
               item,
               board,
               frameTheme,
@@ -18529,34 +19313,34 @@ function BoardContent({
                   serverId: host.id
                 });
               }
-            }, item.id)), compose ? /* @__PURE__ */jsxs17(View17, {
+            }, item.id)), compose ? /* @__PURE__ */jsxs18(View18, {
               style: {
                 gap: 10
               },
-              children: [!thread.length ? /* @__PURE__ */jsx20(AnchorPreview, {
+              children: [!thread.length ? /* @__PURE__ */jsx21(AnchorPreview, {
                 anchor: compose.anchor,
                 compact: true,
                 captureStatus: compose.captureStatus
-              }) : null, compose.captureStatus ? /* @__PURE__ */jsx20(View17, {
+              }) : null, compose.captureStatus ? /* @__PURE__ */jsx21(View18, {
                 style: {
                   minHeight: 36
                 },
-                children: /* @__PURE__ */jsx20(Copy, {
+                children: /* @__PURE__ */jsx21(Copy, {
                   small: true,
                   muted: true,
                   children: compose.captureStatus === "pending" ? "\u622A\u56FE\u51C6\u5907\u4E2D\uFF1B\u73B0\u5728\u53D1\u9001\u4F1A\u4FDD\u7559\u6587\u5B57\u548C\u4F4D\u7F6E\uFF0C\u4E0D\u9644\u56FE\u7247\u3002" : compose.captureStatus === "failed" ? `\u622A\u56FE\u5931\u8D25\uFF1A${captureFailureNames[compose.captureFailureReason ?? "generation-failed"]}\u6587\u5B57\u548C\u4F4D\u7F6E\u5DF2\u4FDD\u7559\u3002` : compose.captureStatus === "omitted" ? "\u6B64\u6B21\u53D1\u9001\u4E0D\u9644\u56FE\u7247\uFF0C\u4FDD\u7559\u539F\u6765\u7684\u6587\u5B57\u548C\u4F4D\u7F6E\u3002" : "\u5DF2\u9644\u9009\u533A\u622A\u56FE\u3002"
                 })
-              }) : null, compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsx20(Copy, {
+              }) : null, compose.anchor && compose.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsx21(Copy, {
                 small: true,
                 muted: true,
                 children: "\u5F15\u7528\u6765\u81EA\u65E7\u753B\u5E03\u7248\u672C\uFF1Bagent \u4F1A\u5BF9\u7167\u539F\u6765\u7684\u4F4D\u7F6E\u548C\u5FEB\u7167\u3002"
-              }) : null, /* @__PURE__ */jsx20(SideAgentPicker, {
+              }) : null, /* @__PURE__ */jsx21(SideAgentPicker, {
                 interactions: board.interactions,
                 selectedId: board.sideAgentId,
                 pending: Boolean(board.pendingSideInteractionId),
                 disabled: sending || sideTargetBlocked || Boolean(compose.intentId),
                 onSelect: chooseSideAgent
-              }), compose.intentId && compose.destination === "main" ? null : /* @__PURE__ */jsx20(SideContextChoice, {
+              }), compose.intentId && compose.destination === "main" ? null : /* @__PURE__ */jsx21(SideContextChoice, {
                 value: composeSideContext,
                 disabled: sending || sideTargetBlocked || Boolean(compose.intentId),
                 notes: sideContextNotes(composeSideContext, {
@@ -18564,7 +19348,7 @@ function BoardContent({
                   sideExists
                 }),
                 onChange: chooseSideContext
-              }), canRenderFrames ? /* @__PURE__ */jsx20(WebMessageInput, {
+              }), canRenderFrames ? /* @__PURE__ */jsx21(WebMessageInput, {
                 value: compose.text,
                 focusToken: inputFocusToken,
                 disabled: sending || sideTargetBlocked,
@@ -18584,7 +19368,7 @@ function BoardContent({
                   minHeight: 80,
                   fontSize: 14
                 }
-              }) : /* @__PURE__ */jsx20(TextInput9, {
+              }) : /* @__PURE__ */jsx21(TextInput10, {
                 autoFocus: true,
                 accessibilityLabel: "\u53D1\u7ED9 agent \u7684\u6D88\u606F",
                 value: compose.text,
@@ -18604,31 +19388,31 @@ function BoardContent({
                   minHeight: 80,
                   textAlignVertical: "top"
                 }
-              }), draftError ? /* @__PURE__ */jsx20(Notice, {
+              }), draftError ? /* @__PURE__ */jsx21(Notice, {
                 error: true,
                 text: `\u8349\u7A3F\u672A\u80FD\u4FDD\u5B58\u5728\u672C\u673A\uFF1A${draftError} \u5F53\u524D\u8F93\u5165\u4ECD\u4FDD\u7559\uFF0C\u8BF7\u5148\u590D\u5236\u6587\u5B57\u3002`
-              }) : /* @__PURE__ */jsx20(Copy, {
+              }) : /* @__PURE__ */jsx21(Copy, {
                 small: true,
                 muted: true,
                 children: "\u8349\u7A3F\u4FDD\u5B58\u5728\u672C\u673A\uFF1B\u6536\u8D77\u6216\u65AD\u7EBF\u540E\u53EF\u7EE7\u7EED\u7F16\u8F91\u3002"
-              }), !board.ownerAgentId ? /* @__PURE__ */jsx20(Notice, {
+              }), !board.ownerAgentId ? /* @__PURE__ */jsx21(Notice, {
                 error: true,
                 text: "\u8FD9\u5757 Board \u5C1A\u672A\u5173\u8054\u8D1F\u8D23\u7684 agent\u3002\u8BF7\u8BA9 agent \u63A5\u7BA1\u540E\u518D\u53D1\u9001\u3002"
-              }) : null, compose.intentId ? /* @__PURE__ */jsx20(Copy, {
+              }) : null, compose.intentId ? /* @__PURE__ */jsx21(Copy, {
                 small: true,
                 muted: true,
                 children: "\u91CD\u8BD5\u53EA\u6CBF\u539F\u76EE\u6807\u7EE7\u7EED\uFF0C\u4E0D\u5408\u5E76\u5F85\u53D1\u9001\u8BC4\u8BBA\uFF1BEnter \u4E0D\u4F1A\u91CD\u65B0\u6682\u5B58\u3002\u4FEE\u6539\u6587\u5B57\u4F1A\u53E6\u5B58\u65B0\u8349\u7A3F\uFF0C\u539F\u53D1\u9001\u4ECD\u4FDD\u7559\u5F85\u6838\u5BF9\u3002"
-              }) : null, !compose.intentId && !compose.sourceInteractionId ? /* @__PURE__ */jsxs17(Copy, {
+              }) : null, !compose.intentId && !compose.sourceInteractionId ? /* @__PURE__ */jsxs18(Copy, {
                 small: true,
                 muted: true,
                 children: ["\u52A0\u5165\u5F85\u53D1\u9001\u540E\u53EF\u7EE7\u7EED\u8BC4\u8BBA\u5176\u4ED6\u4F4D\u7F6E\uFF0C\u518D\u4ECE\u5F85\u53D1\u9001\u6E05\u5355\u4E00\u8D77\u53D1\u9001\u3002", compose.captureStatus === "pending" ? "\u73B0\u5728\u52A0\u5165\u4F1A\u4FDD\u7559\u6587\u5B57\u548C\u4F4D\u7F6E\uFF0C\u4E0D\u9644\u56FE\u7247\u3002" : ""]
-              }) : null, /* @__PURE__ */jsxs17(Copy, {
+              }) : null, /* @__PURE__ */jsxs18(Copy, {
                 small: true,
                 muted: true,
                 children: [compose.sourceInteractionId ? "Enter \u4FDD\u5B58\u8FFD\u95EE\u8349\u7A3F \xB7 \u2318 / Ctrl + Enter \u53D1\u9001\u8FFD\u95EE\uFF08\u987B\u5148\u5904\u7406\u5F85\u53D1\u9001\u8BC4\u8BBA\uFF09" : "Enter \u52A0\u5165\u5F85\u53D1\u9001 \xB7 \u2318 / Ctrl + Enter \u5F53\u524D\u8BC4\u8BBA\u548C\u5F85\u53D1\u9001\u8BC4\u8BBA\u4E00\u8D77\u53D1\u4E3B\u4F1A\u8BDD", "\n", "Option / Alt + Enter \u5F53\u524D\u8BC4\u8BBA\u53D1 Side \xB7 Option / Alt + Shift + Enter \u65B0 Side\uFF08", composeSideContext === "owner-history" ? "\u5E26\u4E3B agent \u8BB0\u5F55" : "\u7A7A\u767D", "\uFF09\xB7 Shift+Enter \u6362\u884C"]
               })]
             }) : null]
-          }), compose ? /* @__PURE__ */jsxs17(View17, {
+          }), compose ? /* @__PURE__ */jsxs18(View18, {
             testID: "board-compose-actions",
             style: {
               paddingHorizontal: 12,
@@ -18638,10 +19422,10 @@ function BoardContent({
               borderTopWidth: 1,
               borderColor: c.border
             },
-            children: [message ? /* @__PURE__ */jsx20(Notice, {
+            children: [message ? /* @__PURE__ */jsx21(Notice, {
               error: true,
               text: message
-            }) : null, sideChoiceUncertain ? /* @__PURE__ */jsx20(Action, {
+            }) : null, sideChoiceUncertain ? /* @__PURE__ */jsx21(Action, {
               label: choosingSide ? "\u6B63\u5728\u6838\u5BF9 Side \u76EE\u6807\u2026" : "\u6838\u5BF9 Side \u76EE\u6807",
               disabled: choosingSide,
               onPress: () => {
@@ -18649,7 +19433,7 @@ function BoardContent({
                   if (confirmed) setMessage(null);
                 });
               }
-            }) : null, /* @__PURE__ */jsxs17(View17, {
+            }) : null, /* @__PURE__ */jsxs18(View18, {
               style: {
                 flexDirection: "row",
                 alignItems: "center",
@@ -18657,7 +19441,7 @@ function BoardContent({
                 flexWrap: "wrap",
                 justifyContent: "flex-end"
               },
-              children: [/* @__PURE__ */jsxs17(View17, {
+              children: [/* @__PURE__ */jsxs18(View18, {
                 style: {
                   flexDirection: "row",
                   alignItems: "center",
@@ -18667,18 +19451,18 @@ function BoardContent({
                   flexShrink: 1,
                   maxWidth: "100%"
                 },
-                children: [/* @__PURE__ */jsx20(Action, {
+                children: [/* @__PURE__ */jsx21(Action, {
                   testID: "board-draft-discard",
                   label: "\u4E22\u5F03\u8349\u7A3F",
                   disabled: sending,
                   onPress: discardCompose
-                }), !compose.intentId && !compose.sourceInteractionId ? /* @__PURE__ */jsx20(Action, {
+                }), !compose.intentId && !compose.sourceInteractionId ? /* @__PURE__ */jsx21(Action, {
                   testID: "board-comment-stage",
                   label: compose.queuedAt !== void 0 ? "\u4FDD\u5B58\u5230\u5F85\u53D1\u9001" : "\u52A0\u5165\u5F85\u53D1\u9001",
                   disabled: sending || !compose.text.trim(),
                   onPress: stageCompose
                 }) : null]
-              }), /* @__PURE__ */jsx20(View17, {
+              }), /* @__PURE__ */jsx21(View18, {
                 testID: "board-compose-send",
                 style: {
                   flexDirection: "row",
@@ -18689,29 +19473,29 @@ function BoardContent({
                   flexShrink: 1,
                   maxWidth: "100%"
                 },
-                children: compose.intentId ? /* @__PURE__ */jsx20(Action, {
+                children: compose.intentId ? /* @__PURE__ */jsx21(Action, {
                   label: sending ? "\u53D1\u9001\u4E2D\u2026" : "\u91CD\u8BD5\u539F\u53D1\u9001",
                   disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                   primary: true,
                   onPress: () => {
                     void submit(compose.destination ?? "main");
                   }
-                }) : /* @__PURE__ */jsxs17(Fragment11, {
-                  children: [/* @__PURE__ */jsx20(Action, {
+                }) : /* @__PURE__ */jsxs18(Fragment11, {
+                  children: [/* @__PURE__ */jsx21(Action, {
                     label: board.sideAgentId || board.pendingSideInteractionId ? "Side \u53D1\u9001" : "\u65B0\u5EFA Side \u5E76\u53D1\u9001",
                     icon: "GitBranch",
                     disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                     onPress: () => {
                       void submit("side");
                     }
-                  }), board.sideAgentId || board.pendingSideInteractionId ? /* @__PURE__ */jsx20(Action, {
+                  }), board.sideAgentId || board.pendingSideInteractionId ? /* @__PURE__ */jsx21(Action, {
                     testID: "board-compose-new-side",
                     label: "\u65B0\u5EFA Side \u5E76\u53D1\u9001",
                     disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                     onPress: () => {
                       void submit("new-side");
                     }
-                  }) : null, /* @__PURE__ */jsx20(Action, {
+                  }) : null, /* @__PURE__ */jsx21(Action, {
                     label: staged.some(item => item.id !== compose.draftId) ? "\u4E3B\u4F1A\u8BDD\u7EDF\u4E00\u53D1\u9001" : "\u4E3B\u4F1A\u8BDD\u53D1\u9001",
                     disabled: sending || sideTargetBlocked || !compose.text.trim() || !board.ownerAgentId,
                     primary: true,
@@ -18724,7 +19508,7 @@ function BoardContent({
             })]
           }) : null]
         }) : null]
-      }), canRenderFrames && !embedded ? /* @__PURE__ */jsx20(DiscussionRail, {
+      }), canRenderFrames && !embedded ? /* @__PURE__ */jsx21(DiscussionRail, {
         markers,
         tags: sideTags,
         compact: stageWidth < 720,
@@ -18733,7 +19517,7 @@ function BoardContent({
         statusNames: statusNames2,
         onOpen: locateInteraction
       }) : null]
-    }), !embedded ? /* @__PURE__ */jsxs17(View17, {
+    }), !embedded ? /* @__PURE__ */jsxs18(View18, {
       style: {
         paddingHorizontal: 12,
         paddingVertical: 5,
@@ -18744,20 +19528,20 @@ function BoardContent({
         justifyContent: "space-between",
         gap: 8
       },
-      children: [/* @__PURE__ */jsxs17(View17, {
+      children: [/* @__PURE__ */jsxs18(View18, {
         style: {
           flexDirection: "row",
           alignItems: "center",
           gap: 12
         },
-        children: [/* @__PURE__ */jsx20(BoardConnectionStatus, {
+        children: [/* @__PURE__ */jsx21(BoardConnectionStatus, {
           status: query.error ? "disconnected" : query.liveStatus
-        }), /* @__PURE__ */jsxs17(Copy, {
+        }), /* @__PURE__ */jsxs18(Copy, {
           small: true,
           muted: true,
           children: ["r", board.revision, " \xB7 ", timeLabel(board.updatedAt)]
         })]
-      }), staged.length || batchSnapshot.batches.length || batchSnapshot.issues.length ? /* @__PURE__ */jsx20(Action, {
+      }), staged.length || batchSnapshot.batches.length || batchSnapshot.issues.length ? /* @__PURE__ */jsx21(Action, {
         testID: "board-comments-open",
         label: staged.length ? `\u5F85\u53D1\u9001 ${staged.length} \u6761` : "\u6838\u5BF9\u8BC4\u8BBA\u53D1\u9001",
         disabled: sending,
@@ -18766,11 +19550,11 @@ function BoardContent({
           if (!composeRef.current) setDrawer("drafts");
         }
       }) : null]
-    }) : null, !embedded ? /* @__PURE__ */jsxs17(Fragment11, {
-      children: [/* @__PURE__ */jsx20(CompositionSourceSync, {
+    }) : null, !embedded ? /* @__PURE__ */jsxs18(Fragment11, {
+      children: [/* @__PURE__ */jsx21(CompositionSourceSync, {
         parent: sourceRef,
         controller: sources
-      }), /* @__PURE__ */jsx20(CompositionEmbeds, {
+      }), /* @__PURE__ */jsx21(CompositionEmbeds, {
         parent: sourceRef,
         parentCreatedAt: board.createdAt,
         mounts: compositionMounts,
@@ -18778,16 +19562,16 @@ function BoardContent({
         theme,
         layout,
         navigation
-      }), /* @__PURE__ */jsx20(Modal2, {
+      }), /* @__PURE__ */jsx21(Modal2, {
         title: "\u7EC4\u5408\u6765\u6E90",
         open: sourcesOpen,
         onOpenChange: setSourcesOpen,
-        children: /* @__PURE__ */jsx20(Modal2.Content, {
-          children: /* @__PURE__ */jsx20(BoardServicesBoundary, {
+        children: /* @__PURE__ */jsx21(Modal2.Content, {
+          children: /* @__PURE__ */jsx21(BoardServicesBoundary, {
             services,
-            children: /* @__PURE__ */jsx20(ColorContext.Provider, {
+            children: /* @__PURE__ */jsx21(ColorContext.Provider, {
               value: c,
-              children: sourcesOpen ? /* @__PURE__ */jsx20(CompositionSourcesPanel, {
+              children: sourcesOpen ? /* @__PURE__ */jsx21(CompositionSourcesPanel, {
                 parent: sourceRef,
                 controller: sources
               }) : null
@@ -18795,19 +19579,19 @@ function BoardContent({
           })
         })
       })]
-    }) : null, /* @__PURE__ */jsx20(Modal2, {
+    }) : null, /* @__PURE__ */jsx21(Modal2, {
       title: "\u8BC4\u8BBA\u6536\u4EF6\u7BB1",
       open: inboxOpen,
       onOpenChange: open => {
         setInboxOpen(open);
         if (!open) inboxStatus.refresh();
       },
-      children: /* @__PURE__ */jsx20(Modal2.Content, {
-        children: /* @__PURE__ */jsx20(BoardServicesBoundary, {
+      children: /* @__PURE__ */jsx21(Modal2.Content, {
+        children: /* @__PURE__ */jsx21(BoardServicesBoundary, {
           services,
-          children: /* @__PURE__ */jsx20(ColorContext.Provider, {
+          children: /* @__PURE__ */jsx21(ColorContext.Provider, {
             value: c,
-            children: inboxOpen ? /* @__PURE__ */jsx20(BoardInbox, {
+            children: inboxOpen ? /* @__PURE__ */jsx21(BoardInbox, {
               hostId: host.id,
               scope: {
                 boardId: board.id,
@@ -18817,16 +19601,16 @@ function BoardContent({
           })
         })
       })
-    }), /* @__PURE__ */jsx20(Modal2, {
+    }), /* @__PURE__ */jsx21(Modal2, {
       title: "\u5B9E\u65F6\u516C\u5F00\u6570\u636E",
       open: liveOpen,
       onOpenChange: setLiveOpen,
-      children: /* @__PURE__ */jsx20(Modal2.Content, {
-        children: /* @__PURE__ */jsx20(BoardServicesBoundary, {
+      children: /* @__PURE__ */jsx21(Modal2.Content, {
+        children: /* @__PURE__ */jsx21(BoardServicesBoundary, {
           services,
-          children: /* @__PURE__ */jsx20(ColorContext.Provider, {
+          children: /* @__PURE__ */jsx21(ColorContext.Provider, {
             value: c,
-            children: liveOpen ? /* @__PURE__ */jsx20(LiveDataPanel, {
+            children: liveOpen ? /* @__PURE__ */jsx21(LiveDataPanel, {
               board,
               hostId: host.id,
               live: liveStatus,
@@ -18835,16 +19619,16 @@ function BoardContent({
           })
         })
       })
-    }), /* @__PURE__ */jsx20(Modal2, {
+    }), /* @__PURE__ */jsx21(Modal2, {
       title: "\u5BFC\u51FA\u4E0E\u53D1\u5E03",
       open: releaseOpen,
       onOpenChange: setReleaseOpen,
-      children: /* @__PURE__ */jsx20(Modal2.Content, {
-        children: /* @__PURE__ */jsx20(BoardServicesBoundary, {
+      children: /* @__PURE__ */jsx21(Modal2.Content, {
+        children: /* @__PURE__ */jsx21(BoardServicesBoundary, {
           services,
-          children: /* @__PURE__ */jsx20(ColorContext.Provider, {
+          children: /* @__PURE__ */jsx21(ColorContext.Provider, {
             value: c,
-            children: releaseOpen ? /* @__PURE__ */jsx20(ReleasePanel, {
+            children: releaseOpen ? /* @__PURE__ */jsx21(ReleasePanel, {
               board,
               hostId: host.id,
               intent: releaseIntent,
@@ -18858,18 +19642,18 @@ function BoardContent({
           })
         })
       })
-    }), /* @__PURE__ */jsx20(Modal2, {
+    }), /* @__PURE__ */jsx21(Modal2, {
       title: drawer === "decisions" ? "Agent \u505A\u8FC7\u7684\u9ED8\u8BA4\u51B3\u7B56" : drawer === "threads" ? "\u56F4\u7ED5\u753B\u5E03\u7684\u8BA8\u8BBA" : drawer === "drafts" ? "\u5F85\u53D1\u9001\u4E0E\u672C\u673A\u8349\u7A3F" : "\u53D1\u751F\u4E86\u4EC0\u4E48\u53D8\u5316",
       open: drawer !== null,
       onOpenChange: open => {
         if (!open) setDrawer(null);
       },
-      children: /* @__PURE__ */jsx20(Modal2.Content, {
-        children: /* @__PURE__ */jsx20(BoardServicesBoundary, {
+      children: /* @__PURE__ */jsx21(Modal2.Content, {
+        children: /* @__PURE__ */jsx21(BoardServicesBoundary, {
           services,
-          children: /* @__PURE__ */jsxs17(ColorContext.Provider, {
+          children: /* @__PURE__ */jsxs18(ColorContext.Provider, {
             value: c,
-            children: [drawer === "decisions" ? /* @__PURE__ */jsx20(DecisionList, {
+            children: [drawer === "decisions" ? /* @__PURE__ */jsx21(DecisionList, {
               board,
               onUpdate: updateDecision,
               onQuestion: decision => {
@@ -18893,37 +19677,37 @@ function BoardContent({
                 setPopoverPoint(anchorPoint(draft.anchor));
                 changeCompose(draft, anchorPoint(draft.anchor));
               }
-            }) : null, drawer === "drafts" ? /* @__PURE__ */jsxs17(View17, {
+            }) : null, drawer === "drafts" ? /* @__PURE__ */jsxs18(View18, {
               testID: "board-drafts",
               style: {
                 gap: 16
               },
-              children: [/* @__PURE__ */jsx20(Copy, {
+              children: [/* @__PURE__ */jsx21(Copy, {
                 small: true,
                 muted: true,
                 children: "\u53EA\u4FDD\u5B58\u5728\u5F53\u524D\u5BA2\u6237\u7AEF\uFF0C\u6309\u4E3B\u673A\u548C Board \u5206\u5F00\u3002\u7EE7\u7EED\u7F16\u8F91\u4F1A\u4FDD\u7559\u539F\u5F15\u7528\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u53D1\u9001\u3002"
-              }), batchSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx20(Notice, {
+              }), batchSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx21(Notice, {
                 error: true,
                 text: issue2
-              }, `batch-${index}`)), batchError ? /* @__PURE__ */jsx20(Notice, {
+              }, `batch-${index}`)), batchError ? /* @__PURE__ */jsx21(Notice, {
                 error: true,
                 text: batchError
-              }) : null, staged.length ? /* @__PURE__ */jsxs17(View17, {
+              }) : null, staged.length ? /* @__PURE__ */jsxs18(View18, {
                 testID: "board-comment-queue",
                 style: {
                   gap: 12
                 },
-                children: [/* @__PURE__ */jsxs17(Text14, {
+                children: [/* @__PURE__ */jsxs18(Text14, {
                   style: {
                     color: c.foreground,
                     fontWeight: "600"
                   },
                   children: ["\u5F85\u53D1\u9001 \xB7 ", staged.length, " \u6761\u8BC4\u8BBA"]
-                }), /* @__PURE__ */jsx20(Copy, {
+                }), /* @__PURE__ */jsx21(Copy, {
                   small: true,
                   muted: true,
                   children: "\u8FD9\u4E9B\u8BC4\u8BBA\u4F1A\u4F5C\u4E3A\u4E00\u7EC4\u4FEE\u6539\u8981\u6C42\u4E00\u8D77\u53D1\u9001\uFF0C\u4FDD\u7559\u5404\u81EA\u7684\u4F4D\u7F6E\u548C\u622A\u56FE\u3002"
-                }), staged.map((saved, index) => /* @__PURE__ */jsxs17(View17, {
+                }), staged.map((saved, index) => /* @__PURE__ */jsxs18(View18, {
                   testID: `board-queued-comment-${saved.id}`,
                   style: {
                     gap: 8,
@@ -18931,22 +19715,22 @@ function BoardContent({
                     borderBottomWidth: 1,
                     borderColor: c.border
                   },
-                  children: [/* @__PURE__ */jsxs17(Copy, {
+                  children: [/* @__PURE__ */jsxs18(Copy, {
                     children: [index + 1, ". ", saved.compose.text]
-                  }), /* @__PURE__ */jsx20(AnchorPreview, {
+                  }), /* @__PURE__ */jsx21(AnchorPreview, {
                     anchor: saved.compose.anchor,
                     compact: true,
                     captureStatus: saved.compose.captureStatus
-                  }), /* @__PURE__ */jsxs17(View17, {
+                  }), /* @__PURE__ */jsxs18(View18, {
                     style: {
                       flexDirection: "row",
                       gap: 8
                     },
-                    children: [/* @__PURE__ */jsx20(Action, {
+                    children: [/* @__PURE__ */jsx21(Action, {
                       label: "\u7F16\u8F91",
                       disabled: sending,
                       onPress: () => restoreDraft(saved)
-                    }), /* @__PURE__ */jsx20(Action, {
+                    }), /* @__PURE__ */jsx21(Action, {
                       label: "\u5220\u9664",
                       disabled: sending,
                       onPress: () => {
@@ -18955,13 +19739,13 @@ function BoardContent({
                       }
                     })]
                   })]
-                }, saved.revision)), /* @__PURE__ */jsx20(SideAgentPicker, {
+                }, saved.revision)), /* @__PURE__ */jsx21(SideAgentPicker, {
                   interactions: board.interactions,
                   selectedId: board.sideAgentId,
                   pending: Boolean(board.pendingSideInteractionId),
                   disabled: sending || sideTargetBlocked,
                   onSelect: chooseSideAgent
-                }), /* @__PURE__ */jsx20(SideContextChoice, {
+                }), /* @__PURE__ */jsx21(SideContextChoice, {
                   testID: "board-batch-side-context",
                   value: sideContext,
                   disabled: sending || sideTargetBlocked,
@@ -18970,19 +19754,19 @@ function BoardContent({
                     sideExists
                   }),
                   onChange: chooseSideContext
-                }), sideChoiceUncertain ? /* @__PURE__ */jsx20(Action, {
+                }), sideChoiceUncertain ? /* @__PURE__ */jsx21(Action, {
                   label: choosingSide ? "\u6B63\u5728\u6838\u5BF9 Side \u76EE\u6807\u2026" : "\u6838\u5BF9 Side \u76EE\u6807",
                   disabled: choosingSide,
                   onPress: () => {
                     void verifySideChoice();
                   }
-                }) : null, /* @__PURE__ */jsxs17(View17, {
+                }) : null, /* @__PURE__ */jsxs18(View18, {
                   style: {
                     flexDirection: "row",
                     flexWrap: "wrap",
                     gap: 8
                   },
-                  children: [/* @__PURE__ */jsx20(Action, {
+                  children: [/* @__PURE__ */jsx21(Action, {
                     testID: "board-comments-send-main",
                     label: "\u7EDF\u4E00\u53D1\u9001\u5230\u4E3B\u4F1A\u8BDD",
                     primary: true,
@@ -18990,14 +19774,14 @@ function BoardContent({
                     onPress: () => {
                       void submitBatch("main");
                     }
-                  }), /* @__PURE__ */jsx20(Action, {
+                  }), /* @__PURE__ */jsx21(Action, {
                     testID: "board-comments-send-side",
                     label: board.sideAgentId || board.pendingSideInteractionId ? "\u7EDF\u4E00\u53D1\u9001\u5230 Side" : "\u65B0\u5EFA Side \u5E76\u7EDF\u4E00\u53D1\u9001",
                     disabled: sending || sideTargetBlocked || !board.ownerAgentId,
                     onPress: () => {
                       void submitBatch("side");
                     }
-                  }), board.sideAgentId || board.pendingSideInteractionId ? /* @__PURE__ */jsx20(Action, {
+                  }), board.sideAgentId || board.pendingSideInteractionId ? /* @__PURE__ */jsx21(Action, {
                     testID: "board-comments-send-new-side",
                     label: "\u65B0\u5EFA Side \u5E76\u7EDF\u4E00\u53D1\u9001",
                     disabled: sending || sideTargetBlocked || !board.ownerAgentId,
@@ -19006,7 +19790,7 @@ function BoardContent({
                     }
                   }) : null]
                 })]
-              }) : null, batchSnapshot.batches.map(batch => /* @__PURE__ */jsxs17(View17, {
+              }) : null, batchSnapshot.batches.map(batch => /* @__PURE__ */jsxs18(View18, {
                 testID: `board-comment-batch-${batch.intentId}`,
                 style: {
                   gap: 10,
@@ -19014,18 +19798,18 @@ function BoardContent({
                   borderBottomWidth: 1,
                   borderColor: c.border
                 },
-                children: [/* @__PURE__ */jsxs17(Copy, {
+                children: [/* @__PURE__ */jsxs18(Copy, {
                   children: [acceptedBatchIds.has(batch.intentId) ? "\u8BC4\u8BBA\u5DF2\u63A5\u6536\uFF0C\u6B63\u5728\u6E05\u7406\u672C\u673A\u8BB0\u5F55" : "\u53D1\u9001\u7ED3\u679C\u5F85\u6838\u5BF9", " \xB7 ", batch.comments.length, " \u6761 \xB7 ", batch.destination === "main" ? "\u4E3B\u4F1A\u8BDD" : batch.destination === "new-side" ? "\u65B0 Side" : "Side", batch.sideContext ? ` \xB7 ${SIDE_CONTEXT_LABELS[batch.sideContext]}` : ""]
-                }), batch.comments.map((comment, index) => /* @__PURE__ */jsxs17(View17, {
+                }), batch.comments.map((comment, index) => /* @__PURE__ */jsxs18(View18, {
                   style: {
                     gap: 6
                   },
-                  children: [/* @__PURE__ */jsxs17(Copy, {
+                  children: [/* @__PURE__ */jsxs18(Copy, {
                     children: [index + 1, ". ", comment.text]
-                  }), /* @__PURE__ */jsx20(AnchorPreview, {
+                  }), /* @__PURE__ */jsx21(AnchorPreview, {
                     anchor: comment.anchor,
                     compact: true
-                  }), /* @__PURE__ */jsx20(Action, {
+                  }), /* @__PURE__ */jsx21(Action, {
                     label: "\u53E6\u5B58\u5E76\u7F16\u8F91",
                     disabled: sending,
                     onPress: () => {
@@ -19042,11 +19826,11 @@ function BoardContent({
                       changeCompose(next, anchorPoint(next.anchor));
                     }
                   })]
-                }, comment.id)), /* @__PURE__ */jsx20(Copy, {
+                }, comment.id)), /* @__PURE__ */jsx21(Copy, {
                   small: true,
                   muted: true,
                   children: "\u539F\u5185\u5BB9\u548C\u53D1\u9001\u76EE\u6807\u5DF2\u56FA\u5B9A\u3002\u53E6\u5B58\u7F16\u8F91\u4F1A\u5EFA\u7ACB\u65B0\u8349\u7A3F\uFF0C\u539F\u53D1\u9001\u4FDD\u7559\u5F85\u6838\u5BF9\u3002"
-                }), /* @__PURE__ */jsx20(Action, {
+                }), /* @__PURE__ */jsx21(Action, {
                   testID: `board-comments-retry-${batch.intentId}`,
                   label: sending ? "\u53D1\u9001\u4E2D\u2026" : acceptedBatchIds.has(batch.intentId) ? "\u6E05\u7406\u5DF2\u63A5\u6536\u8BB0\u5F55" : "\u91CD\u8BD5\u539F\u53D1\u9001",
                   disabled: sending || sideTargetBlocked || !board.ownerAgentId,
@@ -19054,16 +19838,16 @@ function BoardContent({
                     void submitBatch(batch.destination, batch);
                   }
                 })]
-              }, batch.intentId)), draftSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx20(Notice, {
+              }, batch.intentId)), draftSnapshot.issues.map((issue2, index) => /* @__PURE__ */jsx21(Notice, {
                 error: true,
                 text: issue2.message
-              }, `${issue2.code}-${index}`)), draftError ? /* @__PURE__ */jsx20(Notice, {
+              }, `${issue2.code}-${index}`)), draftError ? /* @__PURE__ */jsx21(Notice, {
                 error: true,
                 text: draftError
-              }) : null, !availableDrafts.length && !batchSnapshot.batches.length ? /* @__PURE__ */jsx20(Copy, {
+              }) : null, !availableDrafts.length && !batchSnapshot.batches.length ? /* @__PURE__ */jsx21(Copy, {
                 muted: true,
                 children: "\u6CA1\u6709\u5F85\u53D1\u9001\u7684\u8349\u7A3F\u3002"
-              }) : null, availableDrafts.filter(saved => !staged.some(item => item.revision === saved.revision)).map(saved => /* @__PURE__ */jsxs17(View17, {
+              }) : null, availableDrafts.filter(saved => !staged.some(item => item.revision === saved.revision)).map(saved => /* @__PURE__ */jsxs18(View18, {
                 testID: `board-draft-row-${saved.id}`,
                 style: {
                   borderBottomWidth: 1,
@@ -19071,31 +19855,31 @@ function BoardContent({
                   paddingBottom: 14,
                   gap: 8
                 },
-                children: [/* @__PURE__ */jsx20(Text14, {
+                children: [/* @__PURE__ */jsx21(Text14, {
                   numberOfLines: 2,
                   style: {
                     color: c.foreground
                   },
                   children: saved.compose.text || "\u5C1A\u672A\u8F93\u5165\u6587\u5B57"
-                }), /* @__PURE__ */jsxs17(Copy, {
+                }), /* @__PURE__ */jsxs18(Copy, {
                   small: true,
                   muted: true,
                   children: [saved.compose.anchor?.selector ?? saved.compose.anchor?.text ?? "\u6574\u4E2A\u753B\u5E03", " \xB7 ", timeLabel(new Date(saved.updatedAt).toISOString())]
-                }), saved.conflicted ? /* @__PURE__ */jsx20(Notice, {
+                }), saved.conflicted ? /* @__PURE__ */jsx21(Notice, {
                   text: "\u53E6\u4E00\u7A97\u53E3\u4E5F\u4FEE\u6539\u4E86\u8FD9\u4EFD\u8349\u7A3F\uFF1B\u4E24\u4E2A\u7248\u672C\u90FD\u5DF2\u4FDD\u7559\u3002"
-                }) : null, saved.compose.intentId ? /* @__PURE__ */jsx20(Copy, {
+                }) : null, saved.compose.intentId ? /* @__PURE__ */jsx21(Copy, {
                   small: true,
                   muted: true,
                   children: "\u4E0A\u6B21\u53D1\u9001\u7ED3\u679C\u5F85\u6838\u5BF9\uFF1B\u7EE7\u7EED\u65F6\u4FDD\u7559\u539F\u53D1\u9001\u7F16\u53F7\u548C\u76EE\u6807\u3002"
-                }) : null, /* @__PURE__ */jsxs17(View17, {
+                }) : null, /* @__PURE__ */jsxs18(View18, {
                   style: {
                     flexDirection: "row",
                     gap: 8
                   },
-                  children: [/* @__PURE__ */jsx20(Action, {
+                  children: [/* @__PURE__ */jsx21(Action, {
                     label: "\u7EE7\u7EED\u7F16\u8F91",
                     onPress: () => restoreDraft(saved)
-                  }), /* @__PURE__ */jsx20(Action, {
+                  }), /* @__PURE__ */jsx21(Action, {
                     label: "\u4E22\u5F03",
                     onPress: () => {
                       var result = draftStore.remove(saved.id, saved.revision);
@@ -19104,51 +19888,51 @@ function BoardContent({
                   })]
                 })]
               }, saved.revision))]
-            }) : null, drawer === "threads" ? /* @__PURE__ */jsxs17(View17, {
+            }) : null, drawer === "threads" ? /* @__PURE__ */jsxs18(View18, {
               style: {
                 gap: 20
               },
-              children: [!board.interactions.length ? /* @__PURE__ */jsx20(Copy, {
+              children: [!board.interactions.length ? /* @__PURE__ */jsx21(Copy, {
                 muted: true,
                 children: "\u6307\u7740\u753B\u5E03\u63D0\u95EE\u3001\u63D0\u51FA\u4FEE\u6539\uFF0C\u6216\u5F00\u4E00\u4E2A\u72EC\u7ACB\u8BA8\u8BBA\u3002\u4EA4\u6D41\u4F1A\u4FDD\u7559\u5F53\u65F6\u7684\u5F15\u7528\u548C\u7248\u672C\u3002"
-              }) : null, [...interactions].filter(item => interactionRoot(item.id, interactions) === item.id).reverse().map(interaction => /* @__PURE__ */jsxs17(View17, {
+              }) : null, [...interactions].filter(item => interactionRoot(item.id, interactions) === item.id).reverse().map(interaction => /* @__PURE__ */jsxs18(View18, {
                 style: {
                   borderBottomWidth: 1,
                   borderColor: c.border,
                   paddingBottom: 18,
                   gap: 10
                 },
-                children: [/* @__PURE__ */jsxs17(Copy, {
+                children: [/* @__PURE__ */jsxs18(Copy, {
                   small: true,
                   muted: true,
                   children: [kindNames[interaction.kind], " \xB7 ", statusNames2[interactionThread(interaction.id, interactions).at(-1)?.status ?? interaction.status], " \xB7 ", timeLabel(interaction.createdAt)]
-                }), sideProvenance(interaction) ? /* @__PURE__ */jsx20(Copy, {
+                }), sideProvenance(interaction) ? /* @__PURE__ */jsx21(Copy, {
                   small: true,
                   muted: true,
                   children: sideProvenance(interaction)
-                }) : null, /* @__PURE__ */jsx20(Copy, {
+                }) : null, /* @__PURE__ */jsx21(Copy, {
                   children: interaction.text
-                }), /* @__PURE__ */jsx20(Action, {
+                }), /* @__PURE__ */jsx21(Action, {
                   label: "\u539F\u4F4D\u67E5\u770B\u548C\u7EE7\u7EED\u4EA4\u6D41",
                   onPress: () => locateInteraction(interaction.id)
                 })]
               }, interaction.id))]
-            }) : null, drawer === "history" ? /* @__PURE__ */jsxs17(View17, {
+            }) : null, drawer === "history" ? /* @__PURE__ */jsxs18(View18, {
               style: {
                 gap: 14
               },
-              children: [[...board.events].reverse().slice(0, 100).map(event => /* @__PURE__ */jsxs17(View17, {
+              children: [[...board.events].reverse().slice(0, 100).map(event => /* @__PURE__ */jsxs18(View18, {
                 style: {
                   gap: 3
                 },
-                children: [/* @__PURE__ */jsx20(Copy, {
+                children: [/* @__PURE__ */jsx21(Copy, {
                   children: event.summary
-                }), /* @__PURE__ */jsxs17(Copy, {
+                }), /* @__PURE__ */jsxs18(Copy, {
                   muted: true,
                   small: true,
                   children: ["r", event.revision, " \xB7 ", event.source, " \xB7 ", timeLabel(event.at)]
                 })]
-              }, event.id)), !board.events.length ? /* @__PURE__ */jsx20(Copy, {
+              }, event.id)), !board.events.length ? /* @__PURE__ */jsx21(Copy, {
                 muted: true,
                 children: "\u8FD8\u6CA1\u6709\u53D8\u5316\u3002"
               }) : null]
@@ -19173,61 +19957,61 @@ function InteractionContent({
 }) {
   var c = useColors();
   var discussion = item.kind === "fork" || item.kind === "reply";
-  var [showSnapshot, setShowSnapshot] = useState19(false);
-  var [visualState, setVisualState] = useState19({});
-  var [visualError, setVisualError] = useState19();
+  var [showSnapshot, setShowSnapshot] = useState20(false);
+  var [visualState, setVisualState] = useState20({});
+  var [visualError, setVisualError] = useState20();
   var stale = item.anchor && item.anchor.canvasRevision !== board.canvas.revision;
   var follow = text => onFollow(discussion ? "reply" : "question", text);
   var provenance = sideProvenance(item);
-  return /* @__PURE__ */jsxs17(View17, {
+  return /* @__PURE__ */jsxs18(View18, {
     style: {
       gap: 10,
       paddingBottom: 14,
       borderBottomWidth: 1,
       borderColor: c.border
     },
-    children: [/* @__PURE__ */jsxs17(Copy, {
+    children: [/* @__PURE__ */jsxs18(Copy, {
       small: true,
       muted: true,
       children: [kindNames[item.kind], " \xB7 ", statusNames2[item.status], " \xB7 ", timeLabel(item.createdAt)]
-    }), provenance ? /* @__PURE__ */jsx20(View17, {
+    }), provenance ? /* @__PURE__ */jsx21(View18, {
       testID: `board-side-provenance-${item.id}`,
-      children: /* @__PURE__ */jsx20(Copy, {
+      children: /* @__PURE__ */jsx21(Copy, {
         small: true,
         muted: true,
         children: provenance
       })
-    }) : null, /* @__PURE__ */jsx20(Copy, {
+    }) : null, /* @__PURE__ */jsx21(Copy, {
       children: item.text
-    }), item.comments?.map((comment, index) => /* @__PURE__ */jsxs17(View17, {
+    }), item.comments?.map((comment, index) => /* @__PURE__ */jsxs18(View18, {
       testID: `board-sent-comment-${comment.id}`,
       style: {
         gap: 6,
         paddingBottom: 8
       },
-      children: [/* @__PURE__ */jsxs17(Copy, {
+      children: [/* @__PURE__ */jsxs18(Copy, {
         children: [index + 1, ". ", comment.text]
-      }), comment.anchor && comment.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsxs17(Copy, {
+      }), comment.anchor && comment.anchor.canvasRevision !== board.canvas.revision ? /* @__PURE__ */jsxs18(Copy, {
         small: true,
         muted: true,
         children: ["\u65E7\u5F15\u7528 \xB7 \u753B\u5E03 v", comment.anchor.canvasRevision, "\uFF1B\u4FDD\u7559\u8BC4\u8BBA\u65F6\u7684\u4F4D\u7F6E\u548C\u5FEB\u7167\u3002"]
-      }) : null, showSnapshot ? /* @__PURE__ */jsx20(AnchorPreview, {
+      }) : null, showSnapshot ? /* @__PURE__ */jsx21(AnchorPreview, {
         anchor: comment.anchor,
         compact: true
-      }) : null, comment.anchor ? /* @__PURE__ */jsx20(Action, {
+      }) : null, comment.anchor ? /* @__PURE__ */jsx21(Action, {
         testID: `board-locate-comment-${comment.id}`,
         label: `\u5B9A\u4F4D\u7B2C ${index + 1} \u6761`,
         onPress: () => onLocate(comment.id)
       }) : null]
-    }, comment.id)), stale ? /* @__PURE__ */jsxs17(Copy, {
+    }, comment.id)), stale ? /* @__PURE__ */jsxs18(Copy, {
       small: true,
       muted: true,
       children: ["\u65E7\u5F15\u7528 \xB7 \u753B\u5E03 v", item.anchor.canvasRevision, "\uFF0C\u5F53\u524D v", board.canvas.revision, "\u3002\u5F15\u7528\u4FDD\u7559\u63D0\u95EE\u65F6\u5185\u5BB9\uFF1B\u6807\u8BB0\u53EF\u8DDF\u968F\u4ECD\u80FD\u786E\u8BA4\u7684\u7EC4\u4EF6\uFF0C\u8BF7\u6838\u5BF9\u5F53\u524D\u5185\u5BB9\u3002"]
-    }) : null, showSnapshot ? /* @__PURE__ */jsx20(AnchorPreview, {
+    }) : null, showSnapshot ? /* @__PURE__ */jsx21(AnchorPreview, {
       anchor: item.anchor
-    }) : null, item.response ? /* @__PURE__ */jsx20(Markdown, {
+    }) : null, item.response ? /* @__PURE__ */jsx21(Markdown, {
       children: item.response
-    }) : null, item.responseCanvas && canRenderFrames ? /* @__PURE__ */jsx20(View17, {
+    }) : null, item.responseCanvas && canRenderFrames ? /* @__PURE__ */jsx21(View18, {
       style: {
         height: 260,
         borderWidth: 1,
@@ -19235,7 +20019,7 @@ function InteractionContent({
         borderRadius: 8,
         overflow: "hidden"
       },
-      children: /* @__PURE__ */jsx20(CanvasFrame, {
+      children: /* @__PURE__ */jsx21(CanvasFrame, {
         boardId: `${board.id}.response.${item.id}`,
         title: "Agent \u7684\u53EF\u4EA4\u4E92\u56DE\u7B54",
         canvas: item.responseCanvas,
@@ -19253,41 +20037,41 @@ function InteractionContent({
           void openExternalUrl2(url).catch(error => setVisualError(errorMessage(error)));
         }
       })
-    }) : null, item.responseCanvas && !canRenderFrames ? /* @__PURE__ */jsx20(Copy, {
+    }) : null, item.responseCanvas && !canRenderFrames ? /* @__PURE__ */jsx21(Copy, {
       small: true,
       muted: true,
       children: "\u8FD9\u6761\u56DE\u590D\u5305\u542B\u53EF\u4EA4\u4E92\u56FE\u89E3\uFF0C\u8BF7\u5728\u684C\u9762\u67E5\u770B\u3002"
-    }) : null, item.error || visualError ? /* @__PURE__ */jsx20(Notice, {
+    }) : null, item.error || visualError ? /* @__PURE__ */jsx21(Notice, {
       error: true,
       text: item.error || visualError || ""
-    }) : null, item.resultReferences.length ? /* @__PURE__ */jsxs17(Copy, {
+    }) : null, item.resultReferences.length ? /* @__PURE__ */jsxs18(Copy, {
       small: true,
       muted: true,
       children: ["\u4F9D\u636E\uFF1A", item.resultReferences.join(" \xB7 ")]
-    }) : null, /* @__PURE__ */jsxs17(View17, {
+    }) : null, /* @__PURE__ */jsxs18(View18, {
       style: {
         flexDirection: "row",
         flexWrap: "wrap",
         gap: 6
       },
-      children: [item.anchor || item.comments?.some(comment => comment.anchor) ? /* @__PURE__ */jsx20(Action, {
+      children: [item.anchor || item.comments?.some(comment => comment.anchor) ? /* @__PURE__ */jsx21(Action, {
         label: showSnapshot ? "\u6536\u8D77\u539F\u59CB\u5F15\u7528" : "\u539F\u59CB\u5F15\u7528",
         onPress: () => setShowSnapshot(value => !value)
-      }) : null, unconfirmed && item.status === "failed" ? /* @__PURE__ */jsx20(Action, {
+      }) : null, unconfirmed && item.status === "failed" ? /* @__PURE__ */jsx21(Action, {
         label: "\u91CD\u8BD5\u53D1\u9001",
         onPress: onRetry
-      }) : null, !unconfirmed && item.kind === "fork" && item.status === "failed" && !item.agentId && item.sideNotCreated ? item.comments ? /* @__PURE__ */jsx20(Action, {
+      }) : null, !unconfirmed && item.kind === "fork" && item.status === "failed" && !item.agentId && item.sideNotCreated ? item.comments ? /* @__PURE__ */jsx21(Action, {
         testID: `board-restore-comments-${item.id}`,
         label: "\u653E\u56DE\u5F85\u53D1\u9001",
         onPress: onRestoreComments
-      }) : /* @__PURE__ */jsx20(Action, {
+      }) : /* @__PURE__ */jsx21(Action, {
         testID: `board-resend-${item.id}`,
         label: "\u91CD\u65B0\u7F16\u8F91\u53D1\u9001",
         onPress: onResend
-      }) : null, !unconfirmed && (!discussion || item.agentId) ? /* @__PURE__ */jsx20(Action, {
+      }) : null, !unconfirmed && (!discussion || item.agentId) ? /* @__PURE__ */jsx21(Action, {
         label: "\u7EE7\u7EED\u4EA4\u6D41",
         onPress: () => follow()
-      }) : null, item.agentId ? /* @__PURE__ */jsx20(Action, {
+      }) : null, item.agentId ? /* @__PURE__ */jsx21(Action, {
         label: "\u4F1A\u8BDD",
         onPress: onOpenAgent
       }) : null]
@@ -19300,15 +20084,15 @@ function AnchorPreview({
   captureStatus
 }) {
   if (!anchor) return null;
-  return /* @__PURE__ */jsxs17(View17, {
+  return /* @__PURE__ */jsxs18(View18, {
     style: {
       gap: 6
     },
-    children: [/* @__PURE__ */jsxs17(Copy, {
+    children: [/* @__PURE__ */jsxs18(Copy, {
       muted: true,
       small: true,
       children: ["\u5F15\u7528 r", anchor.boardRevision, " \xB7 ", anchor.text || (anchor.kind === "point" ? "\u6307\u5B9A\u4F4D\u7F6E" : anchor.kind === "region" ? "\u6846\u9009\u533A\u57DF" : "\u753B\u5E03"), anchor.rect ? ` \xB7 (${Math.round(anchor.rect.x)}, ${Math.round(anchor.rect.y)})` : ""]
-    }), anchor.image ? /* @__PURE__ */jsx20(Image2, {
+    }), anchor.image ? /* @__PURE__ */jsx21(Image2, {
       source: {
         uri: `data:${anchor.image.mimeType};base64,${anchor.image.data}`
       },
@@ -19318,12 +20102,12 @@ function AnchorPreview({
         height: compact ? 72 : 150
       },
       accessibilityLabel: "\u63D0\u95EE\u65F6\u7684\u753B\u9762\u5FEB\u7167"
-    }) : captureStatus ? /* @__PURE__ */jsx20(View17, {
+    }) : captureStatus ? /* @__PURE__ */jsx21(View18, {
       style: {
         height: compact ? 72 : 150,
         justifyContent: "center"
       },
-      children: /* @__PURE__ */jsx20(Copy, {
+      children: /* @__PURE__ */jsx21(Copy, {
         small: true,
         muted: true,
         children: captureStatus === "pending" ? "\u622A\u56FE\u51C6\u5907\u4E2D\u2026" : "\u672A\u9644\u56FE\u7247"
@@ -19337,38 +20121,38 @@ function DecisionList({
   onQuestion
 }) {
   var c = useColors();
-  var [showDismissed, setShowDismissed] = useState19(false);
+  var [showDismissed, setShowDismissed] = useState20(false);
   var basisNames = {
     explicit: "Agent \u660E\u786E\u8BB0\u5F55",
     observed: "\u89C2\u5BDF\u5230\u7684\u884C\u4E3A\u53D8\u5316",
     inferred: "\u5F85\u6838\u5B9E\u7684\u53EF\u80FD\u51B3\u7B56"
   };
   var decisions = board.decisions.filter(d => showDismissed || !["dismissed", "superseded"].includes(d.status)).sort((a, b) => Number(b.status === "questioned") - Number(a.status === "questioned") || b.updatedAt.localeCompare(a.updatedAt));
-  return /* @__PURE__ */jsxs17(View17, {
+  return /* @__PURE__ */jsxs18(View18, {
     style: {
       gap: 18
     },
-    children: [/* @__PURE__ */jsx20(Copy, {
+    children: [/* @__PURE__ */jsx21(Copy, {
       muted: true,
       children: "\u8BB0\u5F55 agent \u5728\u5DE5\u4F5C\u9014\u4E2D\u81EA\u884C\u4F5C\u51FA\u7684\u9009\u62E9\u3002\u63A8\u65AD\u4E0E\u4E8B\u5B9E\u5206\u5F00\uFF1B\u6CA1\u6709\u8BF4\u51FA\u7684\u7406\u7531\u4F1A\u6807\u4E3A\u201C\u672A\u8BF4\u660E\u201D\u3002"
-    }), /* @__PURE__ */jsxs17(Copy, {
+    }), /* @__PURE__ */jsxs18(Copy, {
       small: true,
       muted: true,
       children: [board.extraction.lastCheckedAt ? `\u6700\u8FD1\u68C0\u67E5\uFF1A${timeLabel(board.extraction.lastCheckedAt)}` : "\u5C1A\u672A\u5B8C\u6210\u4F1A\u8BDD\u68C0\u67E5", board.extraction.note ? ` \xB7 ${board.extraction.note}` : ""]
-    }), !decisions.length ? /* @__PURE__ */jsx20(Copy, {
+    }), !decisions.length ? /* @__PURE__ */jsx21(Copy, {
       children: "\u5C1A\u65E0\u5DF2\u8BB0\u5F55\u7684\u51B3\u7B56\u3002\u8FD9\u4E0D\u4EE3\u8868 agent \u6CA1\u6709\u4F5C\u8FC7\u9ED8\u8BA4\u9009\u62E9\u3002"
-    }) : null, decisions.map(decision => /* @__PURE__ */jsxs17(View17, {
+    }) : null, decisions.map(decision => /* @__PURE__ */jsxs18(View18, {
       style: {
         gap: 8,
         paddingBottom: 16,
         borderBottomWidth: 1,
         borderColor: c.border
       },
-      children: [/* @__PURE__ */jsxs17(Copy, {
+      children: [/* @__PURE__ */jsxs18(Copy, {
         small: true,
         muted: true,
         children: [basisNames[decision.basis], decision.status === "questioned" ? " \xB7 \u5DF2\u8D28\u7591" : decision.status === "dismissed" ? " \xB7 \u5DF2\u6392\u9664" : decision.status === "superseded" ? " \xB7 \u5DF2\u53D6\u4EE3" : ""]
-      }), /* @__PURE__ */jsx20(Text14, {
+      }), /* @__PURE__ */jsx21(Text14, {
         selectable: true,
         style: {
           color: c.foreground,
@@ -19377,45 +20161,45 @@ function DecisionList({
           lineHeight: 23
         },
         children: decision.choice
-      }), /* @__PURE__ */jsx20(Copy, {
+      }), /* @__PURE__ */jsx21(Copy, {
         children: decision.rationale || "\u7406\u7531\u672A\u8BF4\u660E"
-      }), decision.impact ? /* @__PURE__ */jsxs17(Copy, {
+      }), decision.impact ? /* @__PURE__ */jsxs18(Copy, {
         muted: true,
         children: ["\u5F71\u54CD\uFF1A", decision.impact]
-      }) : null, decision.evidence.map((evidence, i) => /* @__PURE__ */jsxs17(View17, {
+      }) : null, decision.evidence.map((evidence, i) => /* @__PURE__ */jsxs18(View18, {
         style: {
           gap: 2
         },
-        children: [/* @__PURE__ */jsxs17(Copy, {
+        children: [/* @__PURE__ */jsxs18(Copy, {
           small: true,
           muted: true,
           children: [evidence.kind, " \xB7 ", evidence.reference]
-        }), evidence.excerpt ? /* @__PURE__ */jsx20(Copy, {
+        }), evidence.excerpt ? /* @__PURE__ */jsx21(Copy, {
           small: true,
           children: evidence.excerpt
         }) : null]
-      }, i)), /* @__PURE__ */jsxs17(View17, {
+      }, i)), /* @__PURE__ */jsxs18(View18, {
         style: {
           flexDirection: "row",
           gap: 8,
           flexWrap: "wrap"
         },
-        children: [/* @__PURE__ */jsx20(Action, {
+        children: [/* @__PURE__ */jsx21(Action, {
           label: "\u56F4\u7ED5\u8FD9\u6761\u51B3\u7B56\u63D0\u95EE",
           onPress: () => onQuestion(decision)
-        }), decision.status === "active" ? /* @__PURE__ */jsx20(Action, {
+        }), decision.status === "active" ? /* @__PURE__ */jsx21(Action, {
           label: "\u6807\u4E3A\u6709\u5F02\u8BAE",
           onPress: () => {
             void onUpdate(decision, "questioned");
           }
-        }) : null, decision.basis === "inferred" ? /* @__PURE__ */jsx20(Action, {
+        }) : null, decision.basis === "inferred" ? /* @__PURE__ */jsx21(Action, {
           label: "\u8FD9\u4E0D\u662F\u4E00\u4E2A\u51B3\u7B56",
           onPress: () => {
             void onUpdate(decision, "dismissed");
           }
         }) : null]
       })]
-    }, decision.id)), /* @__PURE__ */jsx20(Action, {
+    }, decision.id)), /* @__PURE__ */jsx21(Action, {
       label: showDismissed ? "\u9690\u85CF\u5DF2\u6392\u9664\u4E0E\u88AB\u53D6\u4EE3\u7684\u51B3\u7B56" : "\u67E5\u770B\u5DF2\u6392\u9664\u4E0E\u88AB\u53D6\u4EE3\u7684\u51B3\u7B56",
       onPress: () => setShowDismissed(value => !value)
     })]
@@ -19430,18 +20214,18 @@ function BoardComposerSurface({
 }) {
   var c = useColors();
   var services = useBoardServices();
-  if (embeddedTitle) return /* @__PURE__ */jsx20(Modal2, {
+  if (embeddedTitle) return /* @__PURE__ */jsx21(Modal2, {
     title: embeddedTitle,
     open: true,
     onOpenChange: open => {
       if (!open) onClose();
     },
-    children: /* @__PURE__ */jsx20(Modal2.Content, {
-      children: /* @__PURE__ */jsx20(BoardServicesBoundary, {
+    children: /* @__PURE__ */jsx21(Modal2.Content, {
+      children: /* @__PURE__ */jsx21(BoardServicesBoundary, {
         services,
-        children: /* @__PURE__ */jsx20(ColorContext.Provider, {
+        children: /* @__PURE__ */jsx21(ColorContext.Provider, {
           value: c,
-          children: /* @__PURE__ */jsx20(View17, {
+          children: /* @__PURE__ */jsx21(View18, {
             testID: "board-embedded-composer",
             style: {
               maxHeight: 700
@@ -19452,7 +20236,7 @@ function BoardComposerSurface({
       })
     })
   });
-  return /* @__PURE__ */jsx20(View17, {
+  return /* @__PURE__ */jsx21(View18, {
     testID: "board-local-popover",
     accessibilityLabel: "\u539F\u4F4D\u4EA4\u6D41",
     onLayout: event => onHeight(event.nativeEvent.layout.height),
@@ -19480,19 +20264,19 @@ function BoardServicesBoundary({
   services,
   children
 }) {
-  return services ? /* @__PURE__ */jsx20(BoardServicesProvider, {
+  return services ? /* @__PURE__ */jsx21(BoardServicesProvider, {
     services,
     children
-  }) : /* @__PURE__ */jsx20(Fragment11, {
+  }) : /* @__PURE__ */jsx21(Fragment11, {
     children
   });
 }
 
 // client/home.tsx
-import { jsx as jsx21, jsxs as jsxs18 } from "react/jsx-runtime";
+import { jsx as jsx22, jsxs as jsxs19 } from "react/jsx-runtime";
 var EMPTY_CANVAS = `<style>main{padding:clamp(24px,8vw,100px);max-width:760px;margin:auto}h1{font-size:clamp(30px,5vw,54px);letter-spacing:-.04em}p{line-height:1.8;opacity:.65}#content{min-height:30vh}</style><main><p>YOUR SHARED SURFACE</p><h1>\u4ECE\u4E00\u4E2A\u95EE\u9898\u5F00\u59CB\u3002</h1><p>\u8BA9 agent \u6839\u636E\u773C\u524D\u7684\u4EFB\u52A1\u7EC4\u7EC7\u8FD9\u91CC\u3002\u89E3\u91CA\u3001\u56FE\u8868\u3001\u52A8\u753B\u548C\u4E92\u52A8\u5DE5\u5177\uFF0C\u90FD\u53EF\u4EE5\u5728\u540C\u4E00\u5757\u753B\u5E03\u4E0A\u4E0D\u65AD\u751F\u957F\u3002</p><div id="content"></div></main>`;
 function BoardHome(props) {
-  useEffect19(retainBoardViewStore, []);
+  useEffect20(retainBoardViewStore, []);
   var scope = props.entryScope ? {
     ...props.entryScope,
     hostId: props.host.id
@@ -19503,24 +20287,24 @@ function BoardHome(props) {
     agentId: props.agentId
   };
   var key = JSON.stringify([scope.hostId, scope.surface, scope.workspaceId ?? null, scope.agentId ?? null, props.initialBoardId ?? null]);
-  return /* @__PURE__ */jsx21(RememberedBoardHome, {
+  return /* @__PURE__ */jsx22(RememberedBoardHome, {
     ...props,
     entryScope: scope
   }, key);
 }
 function RememberedBoardHome(props) {
-  var [selected, setSelected] = useState20(() => {
+  var [selected, setSelected] = useState21(() => {
     if (props.initialBoardId) return props.initialBoardId;
     var saved = readLastBoard(props.entryScope, props.tab);
     return saved?.kind === "board" ? saved.boardId : void 0;
   });
-  var navigated = useRef18(false);
+  var navigated = useRef19(false);
   var choose = selection => {
     navigated.current = true;
     writeLastBoard(props.entryScope, selection, props.tab);
     setSelected(selection.kind === "board" ? selection.boardId : void 0);
   };
-  useEffect19(() => {
+  useEffect20(() => {
     if (props.initialBoardId && !navigated.current) writeLastBoard(props.entryScope, {
       kind: "board",
       boardId: props.initialBoardId
@@ -19530,16 +20314,16 @@ function RememberedBoardHome(props) {
     kind: "board",
     boardId
   });
-  return selected ? /* @__PURE__ */jsx21(BoardView, {
+  return selected ? /* @__PURE__ */jsx22(BoardView, {
     ...props,
     boardId: selected,
     onBack: () => choose({
       kind: "index"
     }),
     onOpenBoard: open
-  }, `${props.host.id}:${selected}`) : /* @__PURE__ */jsx21(ColorContext.Provider, {
+  }, `${props.host.id}:${selected}`) : /* @__PURE__ */jsx22(ColorContext.Provider, {
     value: props.theme.colors,
-    children: /* @__PURE__ */jsx21(BoardIndex, {
+    children: /* @__PURE__ */jsx22(BoardIndex, {
       ...props,
       onSelect: open
     })
@@ -19556,12 +20340,12 @@ function BoardIndex({
   var paseo = useBoardPaseo(host.id);
   var services = useBoardServices(host.id);
   var boards = useBoardList(host.id, workspaceId);
-  var [creating, setCreating] = useState20(false);
-  var [title, setTitle] = useState20("");
-  var [owner, setOwner] = useState20(agentId);
-  var [pending, setPending] = useState20(false);
-  var [failure, setFailure] = useState20(null);
-  var [draftId, setDraftId] = useState20(() => localId("board"));
+  var [creating, setCreating] = useState21(false);
+  var [title, setTitle] = useState21("");
+  var [owner, setOwner] = useState21(agentId);
+  var [pending, setPending] = useState21(false);
+  var [failure, setFailure] = useState21(null);
+  var [draftId, setDraftId] = useState21(() => localId("board"));
   var agents = useQuery3({
     queryKey: ["paseo-board-owners", host.id, services?.generation ?? null],
     queryFn: () => __async(null, null, function* () {
@@ -19596,12 +20380,12 @@ function BoardIndex({
       setPending(false);
     }
   });
-  return /* @__PURE__ */jsxs18(View18, {
+  return /* @__PURE__ */jsxs19(View19, {
     style: {
       flex: 1,
       backgroundColor: c.surface0
     },
-    children: [/* @__PURE__ */jsxs18(ScrollView10, {
+    children: [/* @__PURE__ */jsxs19(ScrollView11, {
       contentContainerStyle: {
         padding: 28,
         gap: 24,
@@ -19609,18 +20393,18 @@ function BoardIndex({
         width: "100%",
         alignSelf: "center"
       },
-      children: [/* @__PURE__ */jsxs18(View18, {
+      children: [/* @__PURE__ */jsxs19(View19, {
         style: {
           flexDirection: "row",
           alignItems: "center",
           gap: 16
         },
-        children: [/* @__PURE__ */jsxs18(View18, {
+        children: [/* @__PURE__ */jsxs19(View19, {
           style: {
             flex: 1,
             gap: 7
           },
-          children: [/* @__PURE__ */jsx21(Text15, {
+          children: [/* @__PURE__ */jsx22(Text15, {
             style: {
               color: c.foreground,
               fontSize: 28,
@@ -19628,11 +20412,11 @@ function BoardIndex({
               letterSpacing: -0.7
             },
             children: "Boards"
-          }), /* @__PURE__ */jsx21(Copy, {
+          }), /* @__PURE__ */jsx22(Copy, {
             muted: true,
             children: "\u56DE\u5230\u9879\u76EE\u7684\u73B0\u72B6\uFF0C\u6307\u7740\u5185\u5BB9\u4E0E agent \u4EA4\u6D41\u3002"
           })]
-        }), /* @__PURE__ */jsx21(Action, {
+        }), /* @__PURE__ */jsx22(Action, {
           label: "\u65B0\u5EFA Board",
           icon: "Plus",
           primary: true,
@@ -19641,29 +20425,29 @@ function BoardIndex({
             setCreating(true);
           }
         })]
-      }), /* @__PURE__ */jsx21(BoardConnectionStatus, {
+      }), /* @__PURE__ */jsx22(BoardConnectionStatus, {
         status: boards.liveStatus
-      }), boards.error ? /* @__PURE__ */jsx21(Notice, {
+      }), boards.error ? /* @__PURE__ */jsx22(Notice, {
         error: true,
         text: errorMessage(boards.error)
-      }) : null, boards.liveError ? /* @__PURE__ */jsx21(Notice, {
+      }) : null, boards.liveError ? /* @__PURE__ */jsx22(Notice, {
         error: true,
         text: errorMessage(boards.liveError)
-      }) : null, boards.isPending ? /* @__PURE__ */jsx21(Copy, {
+      }) : null, boards.isPending ? /* @__PURE__ */jsx22(Copy, {
         muted: true,
         children: "\u6B63\u5728\u8BFB\u53D6\u2026"
-      }) : null, boards.data?.boards.length === 0 ? /* @__PURE__ */jsxs18(View18, {
+      }) : null, boards.data?.boards.length === 0 ? /* @__PURE__ */jsxs19(View19, {
         style: {
           paddingVertical: 60,
           gap: 14
         },
-        children: [/* @__PURE__ */jsx21(Copy, {
+        children: [/* @__PURE__ */jsx22(Copy, {
           children: "\u8FD8\u6CA1\u6709 Board\u3002"
-        }), /* @__PURE__ */jsx21(Copy, {
+        }), /* @__PURE__ */jsx22(Copy, {
           muted: true,
           children: "\u4F60\u53EF\u4EE5\u8BA9 agent \u4E3A\u5F53\u524D\u4EFB\u52A1\u5EFA\u7ACB\u4E00\u5757\u6301\u7EED\u66F4\u65B0\u7684\u81EA\u7531\u753B\u5E03\uFF0C\u6216\u5148\u5173\u8054\u4E00\u4E2A agent \u5F00\u59CB\u3002"
         })]
-      }) : null, boards.data?.boards.map(board => /* @__PURE__ */jsxs18(Pressable12, {
+      }) : null, boards.data?.boards.map(board => /* @__PURE__ */jsxs19(Pressable12, {
         accessibilityRole: "button",
         accessibilityLabel: `\u6253\u5F00 ${board.title}`,
         onPress: () => onSelect(board.id),
@@ -19678,13 +20462,13 @@ function BoardIndex({
           backgroundColor: pressed ? c.surface2 : c.surface1,
           gap: 10
         }),
-        children: [/* @__PURE__ */jsxs18(View18, {
+        children: [/* @__PURE__ */jsxs19(View19, {
           style: {
             flexDirection: "row",
             alignItems: "center",
             gap: 12
           },
-          children: [/* @__PURE__ */jsx21(Text15, {
+          children: [/* @__PURE__ */jsx22(Text15, {
             style: {
               color: c.foreground,
               fontSize: 19,
@@ -19692,7 +20476,7 @@ function BoardIndex({
               flex: 1
             },
             children: board.title
-          }), /* @__PURE__ */jsxs18(View18, {
+          }), /* @__PURE__ */jsxs19(View19, {
             testID: `board-status-${board.id}`,
             accessibilityLabel: board.status === "processing" ? "\u5DE5\u4F5C\uFF1A\u5904\u7406\u4E2D" : board.status === "error" ? "\u5DE5\u4F5C\uFF1A\u9700\u8981\u5173\u6CE8" : "\u5DE5\u4F5C\uFF1A\u7A7A\u95F2",
             style: {
@@ -19700,19 +20484,19 @@ function BoardIndex({
               alignItems: "center",
               gap: 6
             },
-            children: [/* @__PURE__ */jsx21(View18, {
+            children: [/* @__PURE__ */jsx22(View19, {
               style: {
                 width: 7,
                 height: 7,
                 borderRadius: 4,
                 backgroundColor: board.status === "processing" ? c.accent : board.status === "error" ? c.statusDanger : c.foregroundMuted
               }
-            }), /* @__PURE__ */jsxs18(Copy, {
+            }), /* @__PURE__ */jsxs19(Copy, {
               muted: true,
               small: true,
               children: ["\u5DE5\u4F5C \xB7 ", board.status === "processing" ? "\u5904\u7406\u4E2D" : board.status === "error" ? "\u9700\u8981\u5173\u6CE8" : "\u7A7A\u95F2"]
             })]
-          }), board.unreadUpdateCount > 0 ? /* @__PURE__ */jsx21(View18, {
+          }), board.unreadUpdateCount > 0 ? /* @__PURE__ */jsx22(View19, {
             testID: `board-unread-${board.id}`,
             accessibilityLabel: `${board.unreadUpdateCount} \u5904\u672A\u770B\u66F4\u65B0`,
             style: {
@@ -19721,7 +20505,7 @@ function BoardIndex({
               paddingVertical: 3,
               borderRadius: 12
             },
-            children: /* @__PURE__ */jsxs18(Text15, {
+            children: /* @__PURE__ */jsxs19(Text15, {
               style: {
                 color: c.accentForeground,
                 fontSize: 12,
@@ -19730,32 +20514,32 @@ function BoardIndex({
               children: [board.unreadUpdateCount, " \u66F4\u65B0"]
             })
           }) : null]
-        }), /* @__PURE__ */jsxs18(Copy, {
+        }), /* @__PURE__ */jsxs19(Copy, {
           muted: true,
           small: true,
           children: [board.decisionCount, " \u4E2A agent \u51B3\u7B56 \xB7 ", board.pendingCount, " \u4E2A\u5F85\u843D\u5B9E\u4EA4\u6D41"]
-        }), /* @__PURE__ */jsxs18(Copy, {
+        }), /* @__PURE__ */jsxs19(Copy, {
           muted: true,
           small: true,
           children: ["\u66F4\u65B0\u4E8E ", timeLabel(board.updatedAt)]
         })]
       }, board.id))]
-    }), /* @__PURE__ */jsx21(Modal3, {
+    }), /* @__PURE__ */jsx22(Modal3, {
       title: "\u65B0\u5EFA Board",
       open: creating,
       onOpenChange: open => {
         if (!pending) setCreating(open);
       },
-      children: /* @__PURE__ */jsx21(Modal3.Content, {
-        children: /* @__PURE__ */jsx21(ColorContext.Provider, {
+      children: /* @__PURE__ */jsx22(Modal3.Content, {
+        children: /* @__PURE__ */jsx22(ColorContext.Provider, {
           value: c,
-          children: /* @__PURE__ */jsxs18(View18, {
+          children: /* @__PURE__ */jsxs19(View19, {
             style: {
               gap: 16
             },
-            children: [/* @__PURE__ */jsx21(Copy, {
+            children: [/* @__PURE__ */jsx22(Copy, {
               children: "\u5173\u8054\u8D1F\u8D23\u7684 agent\u3002\u753B\u5E03\u5185\u5BB9\u548C\u5E03\u5C40\u7531\u5B83\u968F\u4EFB\u52A1\u81EA\u7531\u6784\u5EFA\u3002"
-            }), /* @__PURE__ */jsx21(TextInput10, {
+            }), /* @__PURE__ */jsx22(TextInput11, {
               value: title,
               onChangeText: setTitle,
               editable: !pending,
@@ -19770,17 +20554,17 @@ function BoardIndex({
                 borderRadius: 8,
                 padding: 12
               }
-            }), /* @__PURE__ */jsx21(Copy, {
+            }), /* @__PURE__ */jsx22(Copy, {
               muted: true,
               small: true,
               children: "\u8D1F\u8D23\u7684 agent"
-            }), agents.error ? /* @__PURE__ */jsx21(Notice, {
+            }), agents.error ? /* @__PURE__ */jsx22(Notice, {
               error: true,
               text: errorMessage(agents.error)
-            }) : null, agents.isPending ? /* @__PURE__ */jsx21(Copy, {
+            }) : null, agents.isPending ? /* @__PURE__ */jsx22(Copy, {
               muted: true,
               children: "\u8BFB\u53D6\u4F1A\u8BDD\u2026"
-            }) : null, /* @__PURE__ */jsx21(ScrollView10, {
+            }) : null, /* @__PURE__ */jsx22(ScrollView11, {
               style: {
                 maxHeight: 250
               },
@@ -19789,26 +20573,26 @@ function BoardIndex({
               },
               children: agents.data?.entries.filter(entry => entry.agent.status !== "closed" && (!workspaceId || entry.agent.workspaceId === workspaceId)).map(({
                 agent
-              }) => /* @__PURE__ */jsx21(Action, {
+              }) => /* @__PURE__ */jsx22(Action, {
                 label: agent.title || `Agent ${agent.id.slice(0, 8)}`,
                 active: owner === agent.id,
                 disabled: pending,
                 onPress: () => setOwner(agent.id)
               }, agent.id))
-            }), failure ? /* @__PURE__ */jsx21(Notice, {
+            }), failure ? /* @__PURE__ */jsx22(Notice, {
               error: true,
               text: failure
-            }) : null, /* @__PURE__ */jsxs18(View18, {
+            }) : null, /* @__PURE__ */jsxs19(View19, {
               style: {
                 flexDirection: "row",
                 justifyContent: "flex-end",
                 gap: 8
               },
-              children: [/* @__PURE__ */jsx21(Action, {
+              children: [/* @__PURE__ */jsx22(Action, {
                 label: "\u53D6\u6D88",
                 disabled: pending,
                 onPress: () => setCreating(false)
-              }), /* @__PURE__ */jsx21(Action, {
+              }), /* @__PURE__ */jsx22(Action, {
                 label: pending ? "\u521B\u5EFA\u4E2D\u2026" : "\u521B\u5EFA",
                 primary: true,
                 disabled: pending || !owner || !title.trim(),
@@ -19939,9 +20723,9 @@ function contributeBoardPill(client) {
 }
 
 // index.client.tsx
-import { jsx as jsx22 } from "react/jsx-runtime";
+import { jsx as jsx23 } from "react/jsx-runtime";
 function Screen(props) {
-  return /* @__PURE__ */jsx22(BoardHome, {
+  return /* @__PURE__ */jsx23(BoardHome, {
     ...props,
     initialBoardId: props.params.boardId,
     entryScope: {
@@ -19952,7 +20736,7 @@ function Screen(props) {
 }
 function AgentPanel(props) {
   var agentId = props.params?.agentId ?? props.agentId;
-  return /* @__PURE__ */jsx22(BoardHome, {
+  return /* @__PURE__ */jsx23(BoardHome, {
     ...props,
     agentId,
     entryScope: {
@@ -19964,7 +20748,7 @@ function AgentPanel(props) {
   });
 }
 function WorkspacePanel(props) {
-  return /* @__PURE__ */jsx22(BoardHome, {
+  return /* @__PURE__ */jsx23(BoardHome, {
     ...props,
     entryScope: {
       hostId: props.host.id,
@@ -19974,7 +20758,7 @@ function WorkspacePanel(props) {
   });
 }
 function Sidebar(props) {
-  return /* @__PURE__ */jsx22(SidebarRow, {
+  return /* @__PURE__ */jsx23(SidebarRow, {
     label: "Boards",
     icon: "PanelsTopLeft",
     active: props.currentScreen?.screenId === "boards",
@@ -19988,20 +20772,20 @@ function contribute(client) {
   var removers = [client.addScreen({
     id: "boards",
     title: "Boards",
-    Component: props => /* @__PURE__ */jsx22(BoardInstallationProvider, {
+    Component: props => /* @__PURE__ */jsx23(BoardInstallationProvider, {
       installation,
       host: props.host,
-      children: /* @__PURE__ */jsx22(Screen, {
+      children: /* @__PURE__ */jsx23(Screen, {
         ...props
       })
     })
   }), client.addSidebarHeaderItem({
     id: "boards",
     title: "Boards",
-    Component: props => /* @__PURE__ */jsx22(BoardInstallationProvider, {
+    Component: props => /* @__PURE__ */jsx23(BoardInstallationProvider, {
       installation,
       host: props.host,
-      children: /* @__PURE__ */jsx22(Sidebar, {
+      children: /* @__PURE__ */jsx23(Sidebar, {
         ...props
       })
     })
@@ -20010,10 +20794,10 @@ function contribute(client) {
     title: "Boards",
     icon: "PanelsTopLeft",
     locations: ["workspace", "explorer"],
-    Component: props => /* @__PURE__ */jsx22(BoardInstallationProvider, {
+    Component: props => /* @__PURE__ */jsx23(BoardInstallationProvider, {
       installation,
       host: props.host,
-      children: /* @__PURE__ */jsx22(AgentPanel, {
+      children: /* @__PURE__ */jsx23(AgentPanel, {
         ...props
       })
     })
@@ -20022,10 +20806,10 @@ function contribute(client) {
     title: "Boards",
     icon: "PanelsTopLeft",
     locations: ["workspace", "explorer"],
-    Component: props => /* @__PURE__ */jsx22(BoardInstallationProvider, {
+    Component: props => /* @__PURE__ */jsx23(BoardInstallationProvider, {
       installation,
       host: props.host,
-      children: /* @__PURE__ */jsx22(WorkspacePanel, {
+      children: /* @__PURE__ */jsx23(WorkspacePanel, {
         ...props
       })
     })

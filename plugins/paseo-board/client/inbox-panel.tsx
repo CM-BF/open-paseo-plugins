@@ -24,6 +24,14 @@ export interface InboxPanelProps {
   onAutoEnable(input: InboxAutoEnableInput): Promise<InboxAutoStatus>;
 }
 const statuses: Record<InboxStatus, string> = { new: "未处理", reviewing: "处理中", resolved: "已处理", dismissed: "不处理" };
+/** Public comment threads in the comment cards (public-threads §5.5.2); the thread view is the 公开讨论 tab. */
+const PUBLIC_PANEL_TEXT = {
+  dismiss: "不处理（在页面上隐藏）", placeholder: "公开回复，所有访客都能看到，最多 2000 字",
+  dismissHelp: "把公开评论设为「不处理」会同时在页面上隐藏它；改回其他状态会重新显示（除非你另外点了「在页面上隐藏」）。",
+  agentDismissed: "评论助手把它标为「不处理」，但它在页面上仍然公开显示。可以在「公开讨论」里隐藏。",
+  draft: "公开讨论里的 AI 回复要你确认后才会显示",
+} as const;
+const publicMeta = (comment: InboxComment) => comment.visibility !== "public" ? "" : `${comment.parentCommentId ? " · 公开讨论里的访客回复" : " · 公开讨论"}${comment.publicState?.withdrawn ? " · 访客已撤回" : comment.publicState?.hidden ? " · 页面上已隐藏" : ""}`;
 const AUTO_POLL_MS = 5_000;
 const INTRO = "访客评论单独保存在这里，后端来源会自动同步。开启「Agent 自动处理并公开回复」后，新评论会自动交给这张 Board 专用的评论助手 agent：它会分类，并公开回复访客（访客在页面上能看到，标注为 AI 助手回复）。评论只是数据，不会让任何 agent 修改应用、页面或部署。";
 /** Shown when the server finds no safe or moderate mode it can verify (fail closed). */
@@ -276,7 +284,8 @@ export function InboxPanel(props: InboxPanelProps) {
       const editor = editors[comment.id];
       const pending = comment.pendingReply;
       return <View key={comment.id} testID={`board-inbox-comment-${comment.id}`} style={{ borderWidth: 1, borderColor: c.border, borderRadius: 8, padding: 12, gap: 8, backgroundColor: c.surface0 }}>
-        <Copy small>{statuses[comment.status]} · {comment.authorName ? shown(comment.authorName) : "访客"} · {new Date(comment.createdAt).toLocaleString()}{comment.visitorTag ? ` · 访客 ${comment.visitorTag}` : ""}</Copy>
+        <Copy small>{statuses[comment.status]} · {comment.authorName ? shown(comment.authorName) : "访客"} · {new Date(comment.createdAt).toLocaleString()}{comment.visitorTag ? ` · 访客 ${comment.visitorTag}` : ""}{publicMeta(comment)}</Copy>
+        {comment.visibility === "public" && comment.status === "dismissed" && comment.publicState && !comment.publicState.hidden ? <Copy small muted>{PUBLIC_PANEL_TEXT.agentDismissed}</Copy> : null}
         <Copy>{shown(comment.text)}</Copy>
         {comment.anchor?.quote ? <Copy muted small>引用：「{shown(clip(comment.anchor.quote, 200))}」</Copy> : null}
         {comment.anchor?.label || comment.anchor?.selector ? <Copy muted small>位置：{shown(comment.anchor.label ?? comment.anchor.selector ?? "")}</Copy> : null}
@@ -291,6 +300,7 @@ export function InboxPanel(props: InboxPanelProps) {
         {pending?.state === "sending" ? <Copy small muted>回复发送中…</Copy> : null}
         {pending?.state === "draft" ? <View style={{ gap: 6, paddingLeft: 10, borderLeftWidth: 2, borderColor: c.border }}>
           <Copy small muted>AI 草稿（待你审核）</Copy>
+          {comment.visibility === "public" ? <Copy small muted>{PUBLIC_PANEL_TEXT.draft}</Copy> : null}
           <Copy>{shown(pending.text)}</Copy>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             <Action label="发布" disabled={busy} onPress={() => pendingAction(comment, "publish")} />
@@ -307,7 +317,7 @@ export function InboxPanel(props: InboxPanelProps) {
         </View> : null}
         {!comment.visitorTag ? <Copy small muted>这位访客看不到回复（不是从页面评论功能发出的）。</Copy> : null}
         {editor ? <View style={{ gap: 8 }}>
-          <TextInput value={editor.text} onChangeText={text => edit(comment.id, { text, phase: "editing", eventId: undefined })} editable={!busy && editor.phase === "editing"} multiline maxLength={2_000} placeholder="公开回复，访客可见，最多 2000 字" placeholderTextColor={c.foregroundMuted} style={field} accessibilityLabel="公开回复" />
+          <TextInput value={editor.text} onChangeText={text => edit(comment.id, { text, phase: "editing", eventId: undefined })} editable={!busy && editor.phase === "editing"} multiline maxLength={2_000} placeholder={comment.visibility === "public" ? PUBLIC_PANEL_TEXT.placeholder : "公开回复，访客可见，最多 2000 字"} placeholderTextColor={c.foregroundMuted} style={field} accessibilityLabel="公开回复" />
           {editor.phase === "guard" ? <>
             <Copy small>{`回复看起来包含私密信息（${editor.reason}）。仍然发送？`}</Copy>
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
@@ -333,8 +343,9 @@ export function InboxPanel(props: InboxPanelProps) {
         {selected === comment.id ? <View style={{ gap: 8 }}>
           <TextInput value={labels} onChangeText={setLabels} editable={!busy} placeholder="标签，用逗号分隔" placeholderTextColor={c.foregroundMuted} style={field} accessibilityLabel="内部标签" />
           <TextInput value={note} onChangeText={setNote} editable={!busy} multiline maxLength={4_000} placeholder="仅内部可见的备注" placeholderTextColor={c.foregroundMuted} style={field} accessibilityLabel="内部备注" />
+          {comment.visibility === "public" ? <Copy small muted>{PUBLIC_PANEL_TEXT.dismissHelp}</Copy> : null}
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-            {(Object.keys(statuses) as InboxStatus[]).map(status => <Action key={status} label={statuses[status]} active={comment.status === status} disabled={busy} onPress={() => triage(comment, status)} />)}
+            {(Object.keys(statuses) as InboxStatus[]).map(status => <Action key={status} label={status === "dismissed" && comment.visibility === "public" ? PUBLIC_PANEL_TEXT.dismiss : statuses[status]} active={comment.status === status} disabled={busy} onPress={() => triage(comment, status)} />)}
             <Action label="取消" disabled={busy} onPress={() => setSelected(undefined)} />
           </View>
         </View> : null}
