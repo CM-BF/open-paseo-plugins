@@ -12540,6 +12540,56 @@ function useInboxAutoStatus(board, enabled) {
   };
 }
 
+// shared/assistant-models.ts
+var PRICE_TABLE_DATE = "2026-11";
+var MODEL_PRICES = [{
+  id: "claude-haiku-5-5",
+  family: "haiku",
+  label: "Haiku 5.5",
+  inputPerMTok: 0.1,
+  outputPerMTok: 0.5,
+  effort: true,
+  dailyCapUsd: 0.5
+}, {
+  id: "claude-haiku-4-5",
+  family: "haiku",
+  label: "Haiku 4.5",
+  inputPerMTok: 1,
+  outputPerMTok: 5,
+  effort: false,
+  dailyCapUsd: 2
+}, {
+  id: "claude-sonnet-5-5",
+  family: "sonnet",
+  label: "Sonnet 5.5",
+  inputPerMTok: 2,
+  outputPerMTok: 10,
+  effort: true,
+  dailyCapUsd: 5
+}, {
+  id: "claude-opus-5-5",
+  family: "opus",
+  label: "Opus 5.5",
+  inputPerMTok: 4,
+  outputPerMTok: 20,
+  effort: true,
+  dailyCapUsd: 10
+}];
+var ALIAS_PRICES = [{
+  ...MODEL_PRICES[0],
+  id: "haiku",
+  label: "Haiku"
+}, {
+  ...MODEL_PRICES[2],
+  id: "sonnet",
+  label: "Sonnet"
+}, {
+  ...MODEL_PRICES[3],
+  id: "opus",
+  label: "Opus"
+}];
+var FALLBACK_PRICE = MODEL_PRICES[3];
+
 // client/inbox-status.ts
 var pad = value => String(value).padStart(2, "0");
 var clockTime = (iso, seconds = false) => {
@@ -12585,7 +12635,7 @@ function syncLine(status, now = Date.now()) {
   var last = sources.map(source => source.lastSuccessAt).filter(value => Boolean(value)).sort().at(-1);
   return `\u81EA\u52A8\u540C\u6B65\uFF1A\u6BCF ${status.sync.intervalSeconds} \u79D2\u68C0\u67E5\u4E00\u6B21${last ? ` \xB7 \u4E0A\u6B21\u6210\u529F ${clockTime(last, true)}` : ""}`;
 }
-var SETUP_LINE = "\u8BC4\u8BBA\u52A9\u624B\u7684\u65E7\u7248\u672C\u6CA1\u80FD\u628A\u6743\u9650\u9650\u5236\u5728\u8BC4\u8BBA\u5DE5\u5177\u4E0A\uFF0C\u81EA\u52A8\u5904\u7406\u6682\u65F6\u505C\u7528\u3002";
+var SETUP_LINE = "\u81EA\u52A8\u5904\u7406\uFF1A\u9700\u8981\u91CD\u65B0\u5F00\u542F\uFF08\u65B0\u7248\u4F1A\u5148\u505A\u9501\u5B9A\u68C0\u67E5\uFF09";
 function wakeLine(status, now = Date.now()) {
   var wake = status.wake;
   switch (wake.state) {
@@ -12620,6 +12670,57 @@ function usd(value) {
   if (value >= 1) return value.toFixed(2).replace(/\.00$/, "");
   return String(Number(value.toPrecision(2)));
 }
+function assistantLine(status) {
+  var assistant = status.assistant;
+  if (!assistant) return null;
+  var check = assistant.lastCheck;
+  var verdict = !check ? "\u9501\u5B9A\u68C0\u67E5\uFF1A\u8FD8\u6CA1\u6709\u8FD0\u884C" : check.ok ? `\u9501\u5B9A\u68C0\u67E5 ${clockTime(check.at)} \u901A\u8FC7\uFF08Claude Code ${check.cliVersion ?? "\u7248\u672C\u672A\u77E5"}\uFF09` : `\u9501\u5B9A\u68C0\u67E5 ${clockTime(check.at)} \u6CA1\u901A\u8FC7`;
+  return `\u8BC4\u8BBA\u52A9\u624B\uFF1A${assistant.modelLabel} \xB7 \u6BCF\u6279\u65B0\u4F1A\u8BDD \xB7 ${verdict}`;
+}
+function costLine(status) {
+  var assistant = status.assistant;
+  if (!assistant) return null;
+  var average = assistant.avgCostPerCommentUsd !== null ? ` \xB7 \u5E73\u5747\u6BCF\u6761 $${usd(assistant.avgCostPerCommentUsd)}` : "";
+  return `\u82B1\u8D39\uFF1A\u6700\u8FD1\u4E00\u5C0F\u65F6 $${usd(assistant.costLastHourUsd)} \xB7 \u4ECA\u5929 $${usd(assistant.costTodayUsd)} / \u4E0A\u9650 $${usd(assistant.dailyCapUsd)}\uFF08\u6309 API \u4EF7\u683C\u4F30\u7B97\uFF09${average}`;
+}
+var RUN_STATE_TEXT = {
+  starting: "\u6B63\u5728\u542F\u52A8",
+  running: "\u5904\u7406\u4E2D",
+  done: "\u5B8C\u6210",
+  failed: "\u5931\u8D25",
+  lockdown: "\u9501\u5B9A\u68C0\u67E5\u6CA1\u901A\u8FC7",
+  "not-ready": "\u6CA1\u80FD\u542F\u52A8",
+  unsupported: "\u6CA1\u80FD\u542F\u52A8",
+  timeout: "\u8D85\u65F6\u505C\u6B62",
+  interrupted: "\u4E2D\u65AD"
+};
+function runLines(status) {
+  return status.runs.map(run => {
+    var at = clockTime(run.at),
+      n = run.commentIds.length;
+    if (run.state === "starting" || run.state === "running") return `${at} ${RUN_STATE_TEXT[run.state]} ${n} \u6761`;
+    if (run.state === "done") {
+      var {
+        replied,
+        drafted,
+        triaged,
+        dismissed
+      } = run.actions;
+      return `${at} \u5904\u7406 ${n} \u6761\uFF08\u56DE\u590D ${replied}\uFF0C\u8349\u7A3F ${drafted}\uFF0C\u5206\u7C7B ${triaged + dismissed}\uFF09\xB7 ${run.costUsd === null ? "\u8D39\u7528\u672A\u77E5" : `$${usd(run.costUsd)}`} \xB7 ${Math.max(0, Math.round((run.durationMs ?? 0) / 1e3))} \u79D2`;
+    }
+    return `${at} ${RUN_STATE_TEXT[run.state]}\uFF1A${run.findings.length ? run.findings.join("\uFF1B") : run.error ?? "\u539F\u56E0\u672A\u77E5"}`;
+  });
+}
+function deniedNotice(status) {
+  var names = [...new Set(status.runs.flatMap(run => run.deniedAttempts))].slice(0, 8);
+  return names.length ? `\u8BC4\u8BBA\u52A9\u624B\u5728\u5904\u7406\u8FD9\u6279\u8BC4\u8BBA\u65F6\u8BD5\u56FE\u4F7F\u7528\u4E0D\u5B58\u5728\u7684\u5DE5\u5177\uFF08${names.join("\u3001")}\uFF09\uFF0C\u5DF2\u88AB\u62D2\u7EDD\u3002\u8FD9\u4E9B\u8BC4\u8BBA\u53EF\u80FD\u542B\u6709\u8BF1\u5BFC\u5185\u5BB9\uFF0C\u5EFA\u8BAE\u770B\u4E00\u4E0B\u3002` : null;
+}
+var COST_NOTE = `\u8D39\u7528\u6309 Claude API \u6807\u4EF7\u4F30\u7B97\uFF08\u4EF7\u683C\u8868 ${PRICE_TABLE_DATE}\uFF09\uFF1B\u4F7F\u7528 Claude \u8BA2\u9605\u65F6\u8BA1\u5165\u8BA2\u9605\u989D\u5EA6\u3002\u5B9E\u9645\u82B1\u8D39\u901A\u5E38\u66F4\u4F4E\uFF08\u6709\u7F13\u5B58\uFF09\u3002`;
+function modelButtonLabel(model, recommended) {
+  var cost = model.perComment ? `\u7EA6 $${usd(model.perComment.lo)}\u2013${usd(model.perComment.hi)}/\u6761` : "\u65E0\u6CD5\u4F30\u7B97";
+  return `${model.label}${recommended ? "\uFF08\u63A8\u8350\uFF0C\u6700\u4FBF\u5B9C\uFF09" : ""} \xB7 ${cost}`;
+}
+var capLine = cap => `\u6BCF\u5929\u6700\u591A $${usd(cap)}\uFF0C\u5230\u4E0A\u9650\u540E\u6682\u505C\u5230\u7B2C\u4E8C\u5929\u3002`;
 function wakeNotices(status, now = Date.now()) {
   var notices = [];
   var pause = status.wake.lastBudgetPause;
@@ -13449,7 +13550,8 @@ var statuses = {
   dismissed: "\u4E0D\u5904\u7406"
 };
 var AUTO_POLL_MS = 5e3;
-var INTRO = "\u8BBF\u5BA2\u8BC4\u8BBA\u5355\u72EC\u4FDD\u5B58\u5728\u8FD9\u91CC\uFF0C\u540E\u7AEF\u6765\u6E90\u4F1A\u81EA\u52A8\u540C\u6B65\u3002\u8BC4\u8BBA\u53EA\u662F\u6570\u636E\uFF0C\u4E0D\u4F1A\u8BA9\u4EFB\u4F55 agent \u4FEE\u6539\u5E94\u7528\u3001\u9875\u9762\u6216\u90E8\u7F72\u3002\u8BC4\u8BBA\u52A9\u624B\u7684\u65E7\u7248\u672C\u6CA1\u80FD\u628A\u6743\u9650\u9650\u5236\u5728\u8BC4\u8BBA\u5DE5\u5177\u4E0A\uFF0C\u81EA\u52A8\u5904\u7406\u6682\u65F6\u505C\u7528\u3002";
+var INTRO = "\u8BBF\u5BA2\u8BC4\u8BBA\u5355\u72EC\u4FDD\u5B58\u5728\u8FD9\u91CC\uFF0C\u540E\u7AEF\u6765\u6E90\u4F1A\u81EA\u52A8\u540C\u6B65\u3002\u5F00\u542F\u300CAgent \u81EA\u52A8\u5904\u7406\u5E76\u516C\u5F00\u56DE\u590D\u300D\u540E\uFF0C\u65B0\u8BC4\u8BBA\u4F1A\u81EA\u52A8\u4EA4\u7ED9\u8FD9\u5F20 Board \u4E13\u7528\u7684\u8BC4\u8BBA\u52A9\u624B\uFF08\u4E00\u4E2A\u53EA\u80FD\u8BFB\u53D6\u3001\u5206\u7C7B\u548C\u56DE\u590D\u8BC4\u8BBA\u7684\u5C01\u95ED\u8FDB\u7A0B\uFF09\uFF1A\u5B83\u4F1A\u5206\u7C7B\uFF0C\u5E76\u516C\u5F00\u56DE\u590D\u8BBF\u5BA2\uFF08\u8BBF\u5BA2\u5728\u9875\u9762\u4E0A\u80FD\u770B\u5230\uFF0C\u6807\u6CE8\u4E3A AI \u52A9\u624B\u56DE\u590D\uFF09\u3002\u8BC4\u8BBA\u53EA\u662F\u6570\u636E\uFF0C\u4E0D\u4F1A\u8BA9\u4EFB\u4F55 agent \u4FEE\u6539\u5E94\u7528\u3001\u9875\u9762\u6216\u90E8\u7F72\u3002";
+var CONFIRM_TEXT = ["\u5F00\u542F\u300CAgent \u81EA\u52A8\u5904\u7406\u5E76\u516C\u5F00\u56DE\u590D\u300D\uFF1F", "\u65B0\u8BC4\u8BBA\u4F1A\u4EA4\u7ED9\u8FD9\u5F20 Board \u4E13\u7528\u7684\u8BC4\u8BBA\u52A9\u624B\u3002\u5B83\u4E0D\u662F Paseo \u91CC\u7684 agent\uFF1A\u6BCF\u6279\u8BC4\u8BBA\u5355\u72EC\u542F\u52A8\u4E00\u6B21 Claude Code\uFF0C\u5904\u7406\u5B8C\u5C31\u7ED3\u675F\uFF0C\u4E0D\u4FDD\u7559\u5BF9\u8BDD\u3002\u56DE\u590D\u5728\u8BBF\u5BA2\u7684\u9875\u9762\u4E0A\u53EF\u89C1\uFF0C\u6807\u6CE8\u4E3A AI \u52A9\u624B\u56DE\u590D\u3002", "\u8BC4\u8BBA\u53EF\u80FD\u5305\u542B\u8BF1\u5BFC\u5185\u5BB9\u3002\u8BC4\u8BBA\u52A9\u624B\u53EA\u80FD\u8BFB\u53D6\u3001\u5206\u7C7B\u548C\u56DE\u590D\u8FD9\u4E00\u6279\u8BC4\u8BBA\uFF1A\u6CA1\u6709\u547D\u4EE4\u3001\u6587\u4EF6\u3001\u7F51\u7EDC\u548C\u5176\u4ED6\u63D2\u4EF6\u7684\u5DE5\u5177\uFF0C\u4E5F\u4E0D\u52A0\u8F7D\u4F60\u7684 Claude Code \u8BBE\u7F6E\u3001CLAUDE.md \u548C\u8BB0\u5FC6\u3002\u6BCF\u6B21\u542F\u52A8\u90FD\u4F1A\u5148\u68C0\u67E5\u8FD9\u4E00\u70B9\uFF0C\u68C0\u67E5\u4E0D\u901A\u8FC7\u5C31\u4E0D\u5904\u7406\u3002", "\u6BCF\u5F20 Board \u6BCF\u5C0F\u65F6\u6700\u591A\u5904\u7406 12 \u6279\uFF0C\u6BCF\u5929\u82B1\u8D39\u5230\u4E0A\u9650\u540E\u6682\u505C\u3002\u5F00\u542F\u524D\u5DF2\u6709\u7684\u8BC4\u8BBA\u4E0D\u4F1A\u81EA\u52A8\u5904\u7406\u3002"];
 var isConflict = error => error.code === "revision_conflict" || /Inbox changed/.test(errorMessage(error));
 var clip = (text, max) => text.length > max ? `${text.slice(0, max)}\u2026` : text;
 function InboxPanel(props) {
@@ -13584,18 +13686,56 @@ function InboxPanel(props) {
   var autoMode = policy?.auto ?? "off";
   var openDialog = () => {
     setDialog({
-      loading: true
+      loading: true,
+      replyMode: "review"
     });
     void callbacks.current.onAssistantOptions(scope).then(options2 => {
+      var modelId = options2.models.some(model => model.id === options2.current?.modelId) ? options2.current.modelId : options2.recommendedModelId ?? void 0;
       setDialog(previous => previous && {
         ...previous,
         loading: false,
-        options: options2
+        options: options2,
+        modelId,
+        replyMode: options2.firstTime ? "review" : autoMode === "publish" ? "publish" : "review"
       });
     }, error => setDialog(previous => previous && {
       ...previous,
       loading: false,
       error: errorMessage(error)
+    }));
+  };
+  var confirmEnable = () => {
+    if (!dialog?.modelId || dialog.options?.refusal) return;
+    var {
+      replyMode,
+      modelId
+    } = dialog;
+    setDialog(previous => previous && {
+      ...previous,
+      checking: true,
+      error: void 0
+    });
+    void run(current => __async(null, null, function* () {
+      try {
+        yield fresh((expectedRevision, eventId) => callbacks.current.onAutoEnable({
+          ...scope,
+          expectedRevision,
+          eventId,
+          replyMode,
+          modelId,
+          effort: "low"
+        }), "inbox-auto-enable");
+      } catch (error) {
+        setDialog(previous => previous && {
+          ...previous,
+          checking: false,
+          error: errorMessage(error)
+        });
+        return;
+      }
+      if (current !== generation.current) return;
+      setDialog(null);
+      yield after(current);
     }));
   };
   var autoSet = input => void run(current => __async(null, null, function* () {
@@ -13723,6 +13863,7 @@ function InboxPanel(props) {
     }));
   };
   var options = dialog?.options;
+  var chosen = options?.models.find(model => model.id === dialog?.modelId);
   var autoOn = autoMode !== "off";
   var wakeState = auto?.wake.state;
   var skipped = auto?.sync.sources.reduce((sum, source) => sum + source.skipped, 0) ?? 0;
@@ -13787,7 +13928,7 @@ function InboxPanel(props) {
     }), page?.permissions.configure ? /* @__PURE__ */jsx12(Copy, {
       muted: true,
       small: true,
-      children: "\u9700\u8981\u5148\u5141\u8BB8\u8BFB\u53D6\u3002"
+      children: "\u9700\u8981\u5148\u5141\u8BB8\u8BFB\u53D6\u3002\u5F00\u542F\u540E\uFF0C\u65B0\u8BC4\u8BBA\u4F1A\u4EA4\u7ED9\u8BC4\u8BBA\u52A9\u624B\uFF08\u5C01\u95ED\u8FDB\u7A0B\uFF09\uFF0C\u7531\u5B83\u5206\u7C7B\u5E76\u516C\u5F00\u56DE\u590D\u8BBF\u5BA2\u3002"
     }) : null, policy && policy.triage && !autoOn ? /* @__PURE__ */jsxs10(View10, {
       style: {
         gap: 8,
@@ -13839,29 +13980,90 @@ function InboxPanel(props) {
         borderRadius: 8,
         backgroundColor: c.surface1
       },
-      children: [/* @__PURE__ */jsx12(Copy, {
-        children: "\u5F00\u542F\u300CAgent \u81EA\u52A8\u5904\u7406\u5E76\u516C\u5F00\u56DE\u590D\u300D\uFF1F"
-      }), dialog.loading ? /* @__PURE__ */jsx12(Copy, {
-        small: true,
-        muted: true,
-        children: "\u6B63\u5728\u68C0\u67E5\u80FD\u5426\u5F00\u542F\u2026"
-      }) : null, options?.refusal ? /* @__PURE__ */jsx12(Notice, {
-        text: options.refusal,
-        error: true
-      }) : null, dialog.error ? /* @__PURE__ */jsx12(Notice, {
-        text: dialog.error,
-        error: true
-      }) : null, /* @__PURE__ */jsx12(View10, {
+      children: [CONFIRM_TEXT.map((line, index) => /* @__PURE__ */jsx12(Copy, {
+        small: index > 0,
+        children: line
+      }, index)), /* @__PURE__ */jsxs10(View10, {
         style: {
           flexDirection: "row",
           flexWrap: "wrap",
           gap: 8
         },
-        children: /* @__PURE__ */jsx12(Action, {
+        children: [/* @__PURE__ */jsx12(Action, {
+          label: "\u76F4\u63A5\u516C\u5F00\u56DE\u590D",
+          active: dialog.replyMode === "publish",
+          disabled: dialog.checking,
+          onPress: () => setDialog({
+            ...dialog,
+            replyMode: "publish"
+          }),
+          testID: "board-inbox-auto-mode-publish"
+        }), /* @__PURE__ */jsx12(Action, {
+          label: "\u56DE\u590D\u5148\u7ED9\u6211\u5BA1\u6838",
+          active: dialog.replyMode === "review",
+          disabled: dialog.checking,
+          onPress: () => setDialog({
+            ...dialog,
+            replyMode: "review"
+          }),
+          testID: "board-inbox-auto-mode-review"
+        })]
+      }), dialog.loading ? /* @__PURE__ */jsx12(Copy, {
+        small: true,
+        muted: true,
+        children: "\u6B63\u5728\u8BFB\u53D6\u53EF\u7528\u7684\u6A21\u578B\u2026"
+      }) : null, options?.refusal ? /* @__PURE__ */jsx12(Notice, {
+        text: options.refusal,
+        error: true
+      }) : null, options && !options.refusal ? /* @__PURE__ */jsxs10(Fragment7, {
+        children: [/* @__PURE__ */jsx12(Copy, {
+          small: true,
+          children: `\u8BC4\u8BBA\u52A9\u624B\u4F7F\u7528\u7684\u6A21\u578B\uFF08${options.providerLabel ?? options.providerId ?? "Claude"}\uFF09\uFF1A`
+        }), /* @__PURE__ */jsx12(View10, {
+          style: {
+            flexDirection: "row",
+            flexWrap: "wrap",
+            gap: 8
+          },
+          children: options.models.map(model => /* @__PURE__ */jsx12(Action, {
+            label: modelButtonLabel(model, model.id === options.recommendedModelId),
+            active: dialog.modelId === model.id,
+            disabled: dialog.checking,
+            onPress: () => setDialog({
+              ...dialog,
+              modelId: model.id
+            }),
+            testID: `board-inbox-auto-model-${model.id}`
+          }, model.id))
+        }), /* @__PURE__ */jsx12(Copy, {
+          small: true,
+          muted: true,
+          children: COST_NOTE
+        }), chosen ? /* @__PURE__ */jsx12(Copy, {
+          small: true,
+          muted: true,
+          children: capLine(chosen.dailyCapUsd)
+        }) : null]
+      }) : null, dialog.error ? /* @__PURE__ */jsx12(Notice, {
+        text: dialog.error,
+        error: true
+      }) : null, /* @__PURE__ */jsxs10(View10, {
+        style: {
+          flexDirection: "row",
+          flexWrap: "wrap",
+          gap: 8
+        },
+        children: [/* @__PURE__ */jsx12(Action, {
+          label: dialog.checking ? "\u6B63\u5728\u505A\u9501\u5B9A\u68C0\u67E5\u2026" : "\u786E\u8BA4\u5F00\u542F",
+          primary: true,
+          disabled: busy || dialog.loading || dialog.checking || !chosen || Boolean(options?.refusal),
+          onPress: confirmEnable,
+          testID: "board-inbox-triage-confirm"
+        }), /* @__PURE__ */jsx12(Action, {
           label: "\u53D6\u6D88",
           disabled: busy,
           onPress: () => setDialog(null)
-        })
+        })]
       })]
     }) : null, auto ? /* @__PURE__ */jsxs10(View10, {
       testID: "board-inbox-auto",
@@ -13889,7 +14091,31 @@ function InboxPanel(props) {
         small: true,
         muted: true,
         children: text
-      }, text)), auto.legacy ? /* @__PURE__ */jsxs10(View10, {
+      }, text)), autoOn && assistantLine(auto) ? /* @__PURE__ */jsx12(Copy, {
+        small: true,
+        muted: true,
+        children: assistantLine(auto)
+      }) : null, autoOn && costLine(auto) ? /* @__PURE__ */jsx12(Copy, {
+        small: true,
+        muted: true,
+        children: costLine(auto)
+      }) : null, autoOn && auto.assistant ? /* @__PURE__ */jsx12(Copy, {
+        small: true,
+        muted: true,
+        children: `\u6700\u8FD1\u4E00\u5C0F\u65F6\u5904\u7406 ${auto.wake.wakesLastHour}/${auto.wake.maxWakesPerHour} \u6279`
+      }) : null, deniedNotice(auto) ? /* @__PURE__ */jsx12(Notice, {
+        text: deniedNotice(auto)
+      }) : null, auto.runs.length ? /* @__PURE__ */jsx12(View10, {
+        testID: "board-inbox-runs",
+        style: {
+          gap: 2
+        },
+        children: runLines(auto).map((line, index) => /* @__PURE__ */jsx12(Copy, {
+          small: true,
+          muted: true,
+          children: line
+        }, `${auto.runs[index].runId}-${index}`))
+      }) : null, auto.legacy ? /* @__PURE__ */jsxs10(View10, {
         testID: "board-inbox-legacy",
         style: {
           gap: 6
@@ -13928,7 +14154,7 @@ function InboxPanel(props) {
           flexWrap: "wrap",
           gap: 8
         },
-        children: [autoOn && wakeState !== "setup" ? /* @__PURE__ */jsx12(Action, {
+        children: [autoOn && wakeState !== "setup" && !(wakeState === "paused" && auto.wake.pausedReason === "lockdown") ? /* @__PURE__ */jsx12(Action, {
           label: wakeState === "paused" ? "\u6062\u590D\u81EA\u52A8\u5904\u7406" : "\u6682\u505C\u81EA\u52A8\u5904\u7406",
           disabled: busy,
           onPress: () => autoSet(wakeState === "paused" ? {
@@ -13937,7 +14163,7 @@ function InboxPanel(props) {
             wakePaused: true
           }),
           testID: "board-inbox-auto-resume"
-        }) : null, autoOn && wakeState === "setup" ? /* @__PURE__ */jsx12(Action, {
+        }) : null, autoOn && (wakeState === "setup" || wakeState === "paused" && auto.wake.pausedReason === "lockdown") ? /* @__PURE__ */jsx12(Action, {
           label: "\u91CD\u65B0\u5F00\u542F\u2026",
           disabled: busy,
           onPress: openDialog,

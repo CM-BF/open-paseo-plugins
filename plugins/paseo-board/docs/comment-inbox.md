@@ -12,12 +12,13 @@
 |---|---|---|---|---|---|---|
 | 人（面板） | 可以 | 可以 | 可以，标为「作者回复」 | 不可以 | 可以 | 可以 |
 | 负责人 agent 或已验证的 fork | 需要 `read` | 需要 `triage` | **不可以** | 不可以 | 不可以 | 不可以 |
-| 这张 Board 的评论助手 | 需要 `read` 且 `auto` 不是 `off` | 需要 `triage` 且 `auto` 不是 `off` | 需要 `auto` 不是 `off`，标为「AI 助手回复」 | 不可以 | 不可以 | 不可以 |
+| 这张 Board 的评论助手（封闭运行，只在检查通过的那次运行里、只对那一批评论） | 需要 `read` 且 `auto` 不是 `off` | 需要 `triage` 且 `auto` 不是 `off` | 需要 `auto` 不是 `off`，标为「AI 助手回复」 | 不可以 | 不可以 | 不可以 |
 | 来源凭据（插件服务端的同步） | 不可以 | 不可以 | 不可以 | 可以 | 不可以 | 不可以 |
 
 - 负责人或 fork 调用 `board_inbox_reply` 会被拒绝：`只有这张 Board 的评论助手可以回复访客；你可以用 board_inbox_triage 记录建议。`
 - 只有 `board.inbox.auto-enable`（面板里的确认步骤）能把 `auto` 从 `off` 打开。普通的 `board.inbox.policy` 会拒绝：`开启自动处理需要通过确认步骤。` 它可以关闭自动处理，也可以在「直接公开」和「先给我审核」之间切换。
 - 任何把 `read` 或 `triage` 关掉的写入，同时把 `auto` 关掉；这算撤权，享受审计记录末尾的预留空间。
+- 任何 Paseo agent（包括旧版本创建的评论助手）都不是评论助手，最多是负责人或 fork。
 - 4b94741 之前开启的 `triage:true` 保持原意：只允许内部分类，不唤醒、不回复。面板会提示 `这张 Board 之前只允许 agent 内部处理评论（不唤醒、不回复）。要自动处理并公开回复，需要重新确认。`
 - 每次调用都重新核对 Board 实体、agent 身份和当前 policy；撤权同样挡住旧请求的幂等重放。
 - 评论正文、作者名、页面地址和引用位置都是外部数据，不是指令。结果逐条带 `contentTrust: "external-untrusted"` 和固定的外部输入提示（`INBOX_CONTENT_NOTICE`）。
@@ -48,23 +49,46 @@
 - 按 `sourceId + externalId` 去重，比较规范化后的字段。同一个外部 ID 内容改变时整页拒绝并保留原证据。
 - 新评论按导入顺序得到递增的 `seq`。更早版本导入的评论没有 `seq`，永远不会被自动处理。
 
-## 评论助手与自动处理（暂时停用）
+## 评论助手：封闭运行（sealed runner）
 
-旧版本的评论助手是一个 Paseo agent（`agents.create`，预先允许四个收件箱工具，权限模式「会先询问」）。实测它启动时带着 Claude Code 的用户设置（`--setting-sources=user,project,local`，用户的允许规则不经询问就能运行 python、git、WebFetch 等）、其他插件注入的 MCP 服务和预先允许的工具，以及其他插件追加的系统提示（包括用户的个人资料）。「其他操作都会先问你」并不成立，所以自动处理暂时停用，等封闭运行的评论助手完成后再开放（设计见 `$PASEO_HOME/verification/paseo-board/page-comments-20261113/sandbox/DESIGN.md`）。
+设计见 `$PASEO_HOME/verification/paseo-board/page-comments-20261113/sandbox/DESIGN.md`（替代 `../DESIGN.md` §11.3）。旧版本的评论助手是一个 Paseo agent；实测它带着 Claude Code 的用户设置（用户的允许规则不经询问就能运行 python、git、WebFetch 等）、其他插件注入的 MCP 服务和预先允许的工具、其他插件追加的系统提示（包括用户的个人资料）运行，所以改为由插件自己启动的封闭进程。
 
-- `board.inbox.assistant-options` 返回 `refusal`：`暂时不能开启自动处理：当前版本的评论助手会继承这台电脑上其他插件和 Claude Code 用户设置给的工具和权限，无法保证它只用评论工具。等插件更新后再开启。`；`board.inbox.auto-enable` 在写入或创建任何东西之前用同一句话拒绝。
-- 状态文件升级到版本 2：旧的评论助手记为 `legacyAssistant`（`reason: "unsafe-launch"`），`runner` 为空，自动处理暂停（原因 `setup`）；收件箱里的权限设置不变。面板显示一次性的说明（含 agent 编号前 8 位），点「知道了」后不再显示。插件不会自动归档旧助手：归档会让其他插件处理它的对话记录，是否归档由你决定。
-- 旧助手不再被当作评论助手：它的 `board_inbox_reply` 和以助手身份的分类都被拒绝；任何 Paseo agent 都只能以负责人或 fork 的身份读取和内部分类，不能回复访客。
-- 日志里旧版本留下的唤醒（`kind: "inbox"`，未发送或还在等那一轮结束的）一律标为 `评论助手已改为封闭运行，旧唤醒未发送。`，不再发送，也不再订阅旧助手的时间线。
-- 没有评论助手时不能「恢复自动处理」：`请先重新开启自动处理：等插件更新后再开启。`
+**一次运行**（`server/inbox-runner.ts`，参数和检查在 `server/inbox-lock.ts`）：
+
+- 每批评论启动一个 `claude -p`：命令取自 daemon 配置里的 Claude 提供方（`claude`，或 `extends: "claude"` 的提供方；路由逻辑是 learning-loop 套件 `server/kit/complete.ts` 的原样副本），不经过 shell，单独的进程组，标准输入只有评论编号，标准错误丢弃。
+- 固定参数：`--output-format stream-json --verbose --no-session-persistence --model <模型> [--effort low] --max-budget-usd <单次上限> --tools "" --strict-mcp-config --mcp-config <只有 paseo_board> --allowedTools <四个评论工具> --disallowedTools <内置工具清单> --setting-sources "" --settings <锁定设置> --disable-slash-commands --permission-mode dontAsk --system-prompt <评论助手提示>`。锁定设置：`disableAllHooks`、`disableClaudeAiConnectors`、`autoMemoryEnabled:false`、`allowedMcpServers` 按 `paseo-board-mcp` 的完整命令路径锁定、`denyInsteadOfPrompting`、禁止切到 bypass 模式、同一份禁用清单。
+- 环境：插件进程的环境去掉 Paseo 剥离的变量、所有 `PASEO_*`（角色变量除外）和 `*_BINDING`，加上提供方的环境（含凭据的提供方直接拒绝），再加 `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` 等几个保险变量。工作目录是新建的 0700 临时目录，运行完删除。
+- 唯一的 MCP 服务是插件自己的 `paseo-board-mcp`，带这次运行的令牌和 `PASEO_BOARD_TOOLSET=inbox-assistant`：只列出四个评论工具，别的名字在进程里直接拒绝。
+- 启动检查（`verifyInit`）：第一条 `system:init` 必须在 30 秒内出现；工具恰好是四个 `mcp__paseo_board__board_inbox_*`、MCP 服务只有已连接的 `paseo_board`、权限模式 `dontAsk`、没有技能和斜杠命令、插件只有 Claude Code 内置的、输出风格默认、工作目录就是这次的临时目录、Claude Code ≥ 2.1.319、模型是所选的。多出任何能力算「违规」（立即结束进程组，自动处理暂停，原因 `lockdown`）；服务没连上或模型不对算「未就绪」；版本旧或启动前就退出算「不支持」。init 之前出现模型输出也算违规；第二条 init 再检查一次。
+- 令牌只在内存里（`RunnerBindings`），检查通过后才「启用」，只能做四种收件箱操作、只限这张 Board 和这一批评论，进程结束或超时就作废；插件重启后旧进程什么也做不了。
+- 运行中：每条 `tool_use` 都记下；不在四个评论工具里的名字记为「试图使用不存在的工具」（面板提示可能有诱导内容）；超过 `6 + 4 × 条数` 次调用、5 分钟、4 MiB 输出时结束进程组。结束时记下 `total_cost_usd`；模型的最终文字不保存。整台电脑同时最多 2 个运行。
+- 运行看到的评论只有访客自己能看到的字段（`id`、修订号、状态、正文、称呼、时间、页面地址、引用原文和位置名、能否回复、公开回复）；内部备注、标签、来源、部署、发布版本和审计都不给。它可以写内部分类备注（保留作者原有的标签和备注，在后面追加）。回复和分类以 `paseo-board-inbox-runner:<哈希前 16 位>` 的身份记录，每张 Board 每小时 30 条回复的上限跨运行累计。
+
+**开启**（`board.inbox.assistant-options` / `auto-enable`）：
+
+- 选项：daemon 配置里第一个可用的 Claude 路由（没有：`自动处理需要本机的 Claude Code。Paseo 里没有可用的 Claude 提供方，所以不能开启。`；提供方环境里有凭据：`Claude 提供方的环境变量里有凭据。插件不会把凭据复制给评论助手进程，所以不能开启。`），以及 `paseo.providers.listModels` 里有标价的模型（`shared/assistant-models.ts`，价格表 2026-11：Haiku 5.5 $0.10/$0.50、Haiku 4.5 $1/$5、Sonnet 5.5 $2/$10、Opus 5.5 $4/$20 每百万 token），最便宜的推荐并预选；读不到列表时用 `haiku`/`sonnet`/`opus` 别名；没有标价的模型显示「无法估算」、不预选。
+- 确认后先做**预检**：同样的启动参数，标准输入 `预检：不要调用任何工具。`，令牌不启用、没有评论，检查 init 后让它答一轮（这样也能发现登录或模型问题）。不通过就什么都不写，用 §3.9 的原话拒绝（Claude Code 太旧、找不到 claude、违规、未就绪、无法登录或调用模型、模型不可用）。通过后写入策略和评论助手记录（模型、提供方、每天花费上限、这次检查的时间和版本）。开启前已有的评论不会处理。
+
+**批次和预算**（`server/inbox-auto.ts`）：
+
+- 新评论导入后等 3 秒没有新导入再处理，同一批最长等 10 秒。一批是 seq 顺序里连续的、同一位访客（`visitorTag`）的合格评论，最多 8 条；没有访客编号的评论单独成批（只能内部分类）。同一张 Board 同时只有一个运行。
+- 每张 Board 每小时 12 批，整台电脑每小时 30 批，超过时暂停并到时间自动恢复。每张 Board 每天的花费到上限（按 `total_cost_usd` 累计，预检也算）时暂停到当地 0 点。单次运行的 `--max-budget-usd` 是估算上限的两倍（至少 $0.02）。
+- 运行记录先写入（`starting`），检查通过后为 `running`，结束时记结果、费用、工具调用次数和被拒绝的工具名，保留最近 50 条，面板显示最近 10 条。插件崩溃后，还在 `starting`/`running` 的记录变成 `interrupted`，这批评论退回重新处理（已处理的评论不再是「未处理」，不会重复）。
+- 检查没通过（违规）时这批评论退回，不算交给了助手；未就绪或不支持时退回并在 1、5 分钟后重试，连续 3 次暂停（原因 `cli`）。人可以直接恢复 `cli`、预算和花费的暂停；`lockdown` 和升级后的 `setup` 只能通过对话框重新开启（会再做一次预检）：`请先重新开启自动处理：新版会先做锁定检查。`
+- 关闭自动处理、Board 被替换、插件关闭时结束正在运行的进程组。
+- 状态文件升级到版本 2：旧的评论助手记为 `legacyAssistant`（`reason: "unsafe-launch"`），自动处理暂停（原因 `setup`），收件箱权限不变；面板显示一次性的说明（含 agent 编号前 8 位），点「知道了」后不再显示。插件不自动归档旧助手（归档会让其他插件处理它的对话记录）。旧助手不再被当作评论助手：它的回复和以助手身份的分类都被拒绝。日志里旧版本留下的唤醒（`kind: "inbox"`）一律标为 `评论助手已改为封闭运行，旧唤醒未发送。`，不再发送。
+- 只处理属于这张 Board 的评论：带 `releaseId` 的评论要求这个发布版本来自这张 Board；不带的，要求这台电脑上只有这一张 Board 连着同一个后端部署。已经不是「未处理」状态的评论不再处理。
+- 插件还没拿到 Paseo 连接时，状态为「等待 Paseo 连接后交给评论助手」，每分钟再试一次，评论不会丢。
+
+**测试**：`server/inbox-lock.test.ts`（参数、设置、环境、`verifyInit` 用调查记录里的 init 样例）、`server/inbox-runner.test.ts`（假进程：启用时机、超时、退出、违规、调用上限、费用、关闭）、`server/inbox-auto.test.ts`、`server/service.test.ts`（运行令牌的权限）、`server/runtime.test.ts`（真实 MCP 启动器的工具清单）、`npm run test:page-comments`（端到端，`claude` 用替身）、`node scripts/inbox-runner-harness.mjs`（真实 `claude` 二进制 + 假 API + 恶意的用户设置、钩子、MCP 服务和 CLAUDE.md）。
 
 ## 回复
 
-`board_inbox_reply`（只有评论助手能用；暂时停用）、CLI `paseo-board inbox reply --file …` 和人类 RPC `board.inbox.reply` 走同一条路径：
+`board_inbox_reply`（只有评论助手的运行能用）、CLI `paseo-board inbox reply --file …` 和人类 RPC `board.inbox.reply` 走同一条路径：
 
 1. 文本统一换行、去首尾空白，必须是 1–2,000 字的纯文本。
 2. 拦截看起来含私密信息的回复：这张 Board 任一来源的令牌、环境变量里的密钥值、`PASEO_BOARD_BINDING`、后端导出地址或它的主机名（只匹配完整的、带点的主机名或 IP，`api`、`board` 这类单个词不算）、`-----BEGIN`、JWT、常见服务商密钥、32 位以上的十六进制串、32 位以上大小写字母加数字混合的长串、本机用户目录路径。提示 `回复看起来包含私密信息（原因），未发送。`；只有人能在面板确认后仍然发送。
-3. 先在收件箱写入「待发送回复」，它同时是这条评论的租约：同一评论有回复正在发送或待审核时，新的回复被拒绝。还要求评论有访客编号（`这位访客看不到回复（评论不是从页面评论功能发出的），只能内部处理。`）、少于 20 条回复、来源仍启用且部署没换；评论助手每张 Board 每小时最多 30 条（从收件箱记录计数，按这台电脑确认回复的时间算，不看后端时钟，重启不清零）。评论助手还只能回复唤醒它时列出的评论（`评论助手只能回复唤醒它时列出的评论。`），回复里也不能出现其他访客评论里连续 16 个字以上的原文，访客之间互相看不到评论。回复里不能有 Unicode 双向控制字符（U+202A–U+202E、U+2066–U+2069）；收件箱面板把评论里的这类字符显示成 `[U+202E]` 这样的标记。
+3. 先在收件箱写入「待发送回复」，它同时是这条评论的租约：同一评论有回复正在发送或待审核时，新的回复被拒绝。还要求评论有访客编号（`这位访客看不到回复（评论不是从页面评论功能发出的），只能内部处理。`）、少于 20 条回复、来源仍启用且部署没换；评论助手每张 Board 每小时最多 30 条（从收件箱记录计数，按这台电脑确认回复的时间算，不看后端时钟，重启不清零）。评论助手还只能回复这次运行的那批评论（`评论助手只能处理这一批里的评论。`；收件箱自己也检查：`评论助手只能回复唤醒它时列出的评论。`），回复里也不能出现其他访客评论里连续 16 个字以上的原文，访客之间互相看不到评论。回复里不能有 Unicode 双向控制字符（U+202A–U+202E、U+2066–U+2069）；收件箱面板把评论里的这类字符显示成 `[U+202E]` 这样的标记。
 4. 「先给我审核」模式下，助手的回复保存为草稿，人点「发布」（原文，仍标为 AI 助手回复）或「修改后发布」（改过的文字标为作者回复），或「丢弃」。
 5. 插件用来源的令牌 `POST …/_board/comments/<externalId>/replies`，幂等键 `ir-` + sha256(`boardId`, `expectedCreatedAt`, `commentId`, `eventId`) 的前 48 位。令牌只在插件服务端，不进入 agent、页面或任何结果。
 6. 结果：成功后记为正式回复（`resolve` 默认把评论标为已处理）；网络、超时、5xx、429、401/403、后端没设置收件箱令牌（`export_disabled`）或关闭了评论（`comments_disabled`）时保持「发送中」，系统用同一个键重试（30 秒、1、2、5、10 分钟，之后每 30 分钟），24 小时仍未确认则标为失败；后端明确拒绝（评论不存在、后端过旧、编号冲突、已满 20 条）则标为失败，可由人重试或丢弃。后端已收下但本地记录失败时返回「已发送」（`recorded:false`），之后自动补记，不要换新的 eventId 重试。
@@ -81,14 +105,16 @@
 
 ## 接入接口
 
-`shared/inbox.ts` 定义全部 Zod schema 和人类 RPC：`board.inbox.list`、`read`、`policy`、`source`、`triage`、`reply`、`reply-pending`、`archive`、`auto-status`、`auto-set`、`assistant-options`、`auto-enable`；`shared/inbox-connection.ts` 定义 `connect`、`connections`、`sync`、`reconcile`。这些只注册为人类 RPC。agent 只有 `board_inbox_list/read/triage/reply` 四个工具（CLI `inbox list/read/triage/reply --file`），没有改权限、改来源或开自动处理的工具。
+`shared/inbox.ts` 定义全部 Zod schema 和人类 RPC（`auto-enable` 的输入是 `replyMode`、`modelId`、`effort`、可选的 `dailyCapUsd`；`auto-status` 里有评论助手、最近 10 次运行、花费和交给你的评论数）：`board.inbox.list`、`read`、`policy`、`source`、`triage`、`reply`、`reply-pending`、`archive`、`auto-status`、`auto-set`、`assistant-options`、`auto-enable`；`shared/inbox-connection.ts` 定义 `connect`、`connections`、`sync`、`reconcile`。这些只注册为人类 RPC。agent 只有 `board_inbox_list/read/triage/reply` 四个工具（CLI `inbox list/read/triage/reply --file`），没有改权限、改来源或开自动处理的工具。
 
 ## 测试
 
 - `server/inbox-store.test.ts`：共享夹具的全部导入用例、旧收件箱和旧 `triage` 授权、权限矩阵、待发送回复的租约与结果、预算重启不清零、审核模式、隔离与 `seq`、最新优先与 agent 列表上限、归档、余量停止。
 - `server/inbox-sync.test.ts`：新旧导出格式、隔离、小页重试、回复请求头与幂等键、每种后端响应的映射、并发只发一次、本地记录失败后补记、私密信息拦截、24 小时失败（用模拟后端 `server/inbox-fake-backend.ts`）。
-- `server/inbox-auto.test.ts`：手动时钟下的间隔、退避、阻塞、配额、并发上限、暂停持久化、Board 替换、评论助手的创建参数与模式规则、防抖、只列 ID 的唤醒、跨 Board 过滤、预算暂停与自动恢复、整机预算、崩溃后不重复、模式暂停与恢复、卡住的唤醒、等待连接、回复重试与 24 小时失败；以及一条经过真实 `BoardService` 的端到端路径（主 agent 收不到任何消息，`service.json` 不含访客文字）。
-- `server/service.test.ts`、`server/runtime.test.ts`、`server/inbox-contribute.test.ts`：唤醒投递语义、MCP 与 CLI 的回复工具、`before("agent.create")` 保留 `toolPolicy`、RPC 注册。
-- `scripts/inbox-host-checks.mjs`（`BOARD_HOST_TEST_SCOPE=inbox npm run test:host`）：面板文字、确认流程、各状态的提示、暂停与恢复、回复的重试与拦截确认、草稿发布、归档、420 宽度、工具栏提示点。
+- `server/inbox-auto.test.ts`：手动时钟下的间隔、退避、阻塞、配额、并发上限、暂停持久化、Board 替换；模型选项和拒绝原话、预检失败什么都不写、按访客分批、运行令牌只够到自己那批、违规立即暂停、启动失败重试三次后暂停、12/30 批预算和每天花费上限、崩溃后中断并退回、关闭自动处理时结束运行、v1 文件迁移；回复重试与 24 小时失败。
+- `server/inbox-lock.test.ts`、`server/inbox-runner.test.ts`：锁定参数、设置和环境，`verifyInit` 各条规则，运行的启用时机、超时、违规、调用上限、费用和关闭。
+- `server/service.test.ts`、`server/runtime.test.ts`、`server/inbox-contribute.test.ts`：运行令牌只能做四种操作、只限自己的 Board 和那批评论、看不到内部备注；Paseo agent（含旧助手）不能回复；真实 MCP 启动器只列四个工具；旧唤醒不发送；RPC 注册。
+- `scripts/inbox-host-checks.mjs`（`BOARD_HOST_TEST_SCOPE=inbox npm run test:host`）：面板文字、确认对话框（模型、估算、锁定检查中、拒绝原话）、各状态的提示、运行记录、旧助手说明、暂停与恢复、回复的重试与拦截确认、草稿发布、归档、420 宽度、工具栏提示点。
+- `node scripts/inbox-runner-harness.mjs`：真实 `claude` 二进制、假 API、恶意的用户设置和 CLAUDE.md（见上文「测试」）。
 
 以上都是插件内的隔离测试。真实 daemon、真实发布页和用户自己部署的后端上的验收由整合者和用户另行完成。

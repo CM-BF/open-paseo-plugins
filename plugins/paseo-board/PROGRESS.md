@@ -1,3 +1,22 @@
+# 2026-11-14 — 评论助手锁定：第 1 阶段（封闭运行的评论助手），未安装
+
+分支 `sw/board-page-comments`，尚未推送、未安装、未重载插件，main 未改。设计见 `$PASEO_HOME/verification/paseo-board/page-comments-20261113/sandbox/DESIGN.md`；实现记录（步骤和退出码、截图、真实 claude 的测试结果）在同一目录的 `sandbox/implementer/`。测试 Board 的自动处理保持暂停，安装后它显示「需要重新开启」，要人重新开启（会先做锁定检查）。
+
+- 评论助手不再是 Paseo agent。每批评论（同一位访客的，最多 8 条）由插件启动一个 `claude -p`：命令来自 daemon 配置里的 Claude 提供方，参数固定（`--tools ""`、只有插件自己的 MCP 服务并按命令路径锁定、`--setting-sources ""`、关闭钩子/连接器/记忆、`dontAsk`、不保存对话），环境里去掉所有 Paseo 变量和绑定，空的 0700 临时目录。路由和环境处理是 learning-loop 套件 `server/kit/complete.ts` 的原样副本（有测试保持两份一致）。
+- 每次启动都核对 CLI 自己的 `system:init`：只有四个评论工具、只有已连接的 `paseo_board`、没有技能/斜杠命令/外部插件、权限模式 `dontAsk`、工作目录、Claude Code ≥ 2.1.319、模型。核对通过才启用这次运行的内存令牌；不通过立即结束进程组，这批评论退回，自动处理暂停（原因 `lockdown`）。运行令牌只能做四种收件箱操作、只限这张 Board 和这一批评论，看到的评论只有访客可见的字段；助手的分类保留作者原有的标签和备注。
+- 开启前先做预检（同样的启动方式，一轮「不要调用任何工具」）；不通过什么都不写，用设计 §3.9 的原话拒绝。对话框改为选模型（provider 的模型列表 × 价格表，最便宜的预选，显示每条估算和每天上限），第一次开启预选「回复先给我审核」，检查时显示「正在做锁定检查…」。
+- 预算：每张 Board 每小时 12 批、整台电脑 30 批、同时最多 2 批，每天花费上限（到上限暂停到 0 点）；启动失败 1、5 分钟后重试，连续 3 次暂停；插件崩溃后运行中的批次标为中断并退回；关闭自动处理或插件时结束进程。面板显示评论助手（模型、每批新会话、上次锁定检查）、花费、最近 10 次运行、试图使用不存在的工具的提示；工具栏提示点也计入交给你的评论。
+- 文档：`docs/page-comments.md`、`docs/comment-inbox.md`、`docs/app-backends-design.md`、`README.md`；`../DESIGN.md` §11.3 标为被替代。
+
+验证（2026-11-14，本机 claude 2.1.325，未连 daemon）：
+
+- 全套检查全部通过（提交 `25ee08d` 加上本次的文档和重建的客户端包，结果和输出在 `sandbox/implementer/suite/`）：typecheck；vitest 69 个文件 1005 个测试，`inbox-sync` 单独 30 个；`test:browser` 156 项、`test:host` 61 项、`BOARD_HOST_TEST_SCOPE=inbox test:host` 11 项（新的对话框、锁定检查中、拒绝原话、运行记录、旧助手说明；截图在 `sandbox/implementer/shots/`）、`test:release` 59 项、`test:release-host` 44 项、`node --test backend/checks.mjs` 65 个、`test:page-comments` 20/20。生成的资源重建两次字节一致，只有 `client/hermes-bundle.js` 变化。
+- `node scripts/inbox-runner-harness.mjs`（真实 claude 二进制 + 假 API + 恶意的用户设置、钩子、用户 MCP 服务和三处 CLAUDE.md）6/6：预检 1 个请求；一条恶意评论的运行里，脚本里的 Bash、Read、WebFetch、`mcp__learning__memory`、`mcp__paseo__create_agent` 和 CLI 的占位工具全部返回「No such tool available」，四个评论工具成功（分类 1、回复 1），没有钩子、python 或外部 MCP 服务运行，标记没有进入任何请求；`--mcp-config` 多加一个服务时被命令路径锁定过滤掉；去掉锁定后 init 报出外部服务，进程在启动后 222 ms 被结束，一个 API 请求都没发出。每个请求的 `tools` 里除了四个评论工具，还有 CLI 自带的 `DeferredToolPlaceholder`（`defer_loading`，“never call this tool”，init 里没有，调用会失败），测试把它列为允许的例外。
+- 新增和改写的 9 个测试文件放到 77ca22a 上全部失败（5 个找不到新模块，4 个断言失败；第 0 阶段的单独检查失败 22 个）。
+- 没有验证：真实 daemon 上的安装、真实 Claude 登录和计费（假 API 的费用只用来核对流程）、Web UI 截图。这些由主 agent 在审核后的安装里做（设计 §8「Live acceptance」）。
+
+已知差异：设计说预检「读完 init 就结束」；实现让预检答完一轮（单次上限 $0.1），因为 §3.9 的「无法登录或调用模型」只有发出请求才能发现。状态里评论助手和旧助手是两个字段（`assistant`、`legacy`），不是一个联合类型，因为升级后重新开启时两者会同时出现。
+
 # 2026-11-14 — 评论助手锁定：第 0 阶段（关闭自动处理，停用旧助手），未安装
 
 分支 `sw/board-page-comments`，尚未推送、未安装、未重载插件，main 未改。设计见 `$PASEO_HOME/verification/paseo-board/page-comments-20261113/sandbox/DESIGN.md`（替代 `../DESIGN.md` §11.3）。起因：实测旧的评论助手（Paseo agent）带着 Claude Code 用户设置、其他插件的 MCP 服务、预先允许的工具和其他插件追加的系统提示运行，访客评论可以诱导它运行命令、联网、读写文件。
