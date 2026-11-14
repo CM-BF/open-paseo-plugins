@@ -332,6 +332,19 @@ describe("contract export and reply outbox against a fake backend (DESIGN §11.5
     expect((await current()).comments[0].replies).toHaveLength(1);
   });
 
+  it("recovers a reply the backend stored before its pending expired: a human retry replays the same key", async () => {
+    await enable(); const comment = await visitorComment();
+    vi.spyOn(inbox, "confirmReply").mockRejectedValueOnce(new BoardStoreError("size_limit", "Inbox storage limit reached"));
+    expect(await reply(comment)).toMatchObject({ status: "published", recorded: false });
+    const key = replyKey(scope, comment.id, "reply-1");
+    await connections.expirePending(scope, comment.id, key, "后端返回 HTTP 500");
+    expect((await current()).comments[0].pendingReply).toMatchObject({ state: "failed" });
+    expect(await connections.replyPending({ ...scope, eventId: "retry-after-expiry", commentId: comment.id, key, action: "retry" })).toMatchObject({ status: "published", recorded: true });
+    expect(backend.replies.size).toBe(1); expect(new Set(posts().map(post => post.key))).toEqual(new Set([key]));
+    expect((await current()).comments[0]).toMatchObject({ replies: [{ key }] });
+    expect((await current()).comments[0].pendingReply).toBeUndefined();
+  });
+
   it("refuses replies that look like secrets; only the human may override", async () => {
     await enable(); const comment = await visitorComment();
     for (const text of [`token ${backend.token}`, `后端在 ${backend.endpoint}`, "-----BEGIN PRIVATE KEY-----", "看 /Users/me/.ssh", `hex ${"ab".repeat(20)}`]) {
