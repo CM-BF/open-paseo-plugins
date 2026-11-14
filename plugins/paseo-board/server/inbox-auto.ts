@@ -538,7 +538,7 @@ export class InboxAutomation {
   private upsertPending(rt: ScopeRuntime, commentId: string, pending: InboxPendingReply, lastError: string | null, attempted: boolean) {
     const current = rt.pendings.get(pending.key);
     // A refresh that observes the same state keeps the scheduled retry instead of postponing it.
-    if (current && !attempted && lastError === null && current.state === pending.state && current.createdAt === Date.parse(pending.createdAt)) return;
+    if (current && !attempted && lastError === null && current.state === pending.state && current.createdAt === Date.parse(pending.createdAt) && (current.state !== "sending" || current.timer !== undefined)) return;
     const entry: PendingRuntime = current ?? { commentId, key: pending.key, state: pending.state, createdAt: Date.parse(pending.createdAt), attempts: 0, nextAttemptAt: null, lastError: null };
     Object.assign(entry, { state: pending.state, createdAt: Date.parse(pending.createdAt), lastError: lastError ?? (pending.state === "failed" ? pending.failedReason : entry.lastError) });
     if (attempted) entry.attempts++;
@@ -567,6 +567,14 @@ export class InboxAutomation {
     if (this.stopped || rt.stale) return;
     if (this.clock.now() - entry.createdAt >= this.limits.replyGiveUpMs) { await this.o.connections.expirePending(rt.scope, entry.commentId, entry.key, entry.lastError ?? "原因未知"); return; }
     await this.o.connections.retryPending(rt.scope, entry.commentId, entry.key).catch(error => this.log(`reply retry: ${error instanceof Error ? error.message : String(error)}`));
+    // An attempt that ended without an outcome event (for example a ledger read error) is retried later.
+    const current = rt.pendings.get(entry.key);
+    if (current === entry && entry.state === "sending" && !entry.timer && !this.stopped && !rt.stale) {
+      entry.attempts++;
+      const delays = this.limits.replyRetryMs, delay = delays[Math.min(entry.attempts - 1, delays.length - 1)];
+      entry.nextAttemptAt = this.clock.now() + delay;
+      entry.timer = this.timer(() => { entry.timer = undefined; this.background("reply retry", () => this.retry(rt, entry)); }, delay);
+    }
   }
 
   /* ---------- RPCs ---------- */
