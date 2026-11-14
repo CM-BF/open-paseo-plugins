@@ -11,7 +11,7 @@ import { MemoryStore } from "../server/memory/store";
 import { statePaths, type StatePaths } from "../server/paths";
 import { installShim } from "../server/shim";
 import { SkillLibrary } from "../server/skills/library";
-import { callTool, TOOL_DEFINITIONS, TOOL_DEFINITIONS_V2, TOOL_DEFINITIONS_V3, bindingVersion, toolsForBinding, type CallContext, type ToolDeps } from "../server/tools";
+import { callTool, TOOL_DEFINITIONS, TOOL_DEFINITIONS_V2, TOOL_DEFINITIONS_V3, TOOL_DEFINITIONS_V4, bindingVersion, toolsForBinding, type CallContext, type ToolDeps } from "../server/tools";
 
 let root: string;
 let paths: StatePaths;
@@ -71,7 +71,7 @@ beforeEach(async () => {
     },
   });
   // Process's own Node runs the script (no Electron here).
-  await installShim(paths, TOOL_DEFINITIONS, { execPath: process.execPath, electron: false }, TOOL_DEFINITIONS_V2, TOOL_DEFINITIONS_V3);
+  await installShim(paths, TOOL_DEFINITIONS, { execPath: process.execPath, electron: false }, TOOL_DEFINITIONS_V2, TOOL_DEFINITIONS_V3, TOOL_DEFINITIONS_V4);
   await bridge.start(paths.socket);
 });
 
@@ -111,18 +111,31 @@ describe("stdio MCP shim ↔ bridge", () => {
   });
 
   it("serves new library-boundary descriptions only to new bindings over the real shim", async () => {
-    for (const binding of ["v2-old", "v3-new"]) {
+    for (const binding of ["v2-old", "v3-old", "v4-new", "review-new"]) {
       const { client, child } = startShim(binding);
       try {
         const reply = await client.request("tools/list");
         const skill = reply.result.tools.find((t: { name: string }) => t.name === "skill_view");
-        expect(skill.description.includes("provider's full skill catalog")).toBe(binding.startsWith("v3-"));
+        expect(skill.description.includes("provider's full skill catalog")).toBe(bindingVersion(binding) >= 3);
+        const manage = reply.result.tools.find((t: { name: string }) => t.name === "skill_manage");
+        expect(manage.description.includes("60-character skill index")).toBe(bindingVersion(binding) === 4);
         const missing = await client.tool("skill_view", { name: "native-only-fixture" });
         expect(missing.body).toMatchObject({ success: false, library: "learning-loop" });
         expect(missing.isError).toBe(true);
       } finally { child.kill(); }
     }
   });
+
+  it("keeps each session's catalog during a bridge outage", async () => {
+    await bridge.stop();
+    await Promise.all(["v3-existing", "v4-new", "review-new"].map(async binding => {
+      const { client, child } = startShim(binding);
+      try {
+        const reply = await client.request("tools/list");
+        expect(reply.result.tools).toEqual(toolsForBinding(binding));
+      } finally { child.kill(); }
+    }));
+  }, 30_000);
 
   it("reports a tool error without failing the protocol", async () => {
     const { client, child } = startShim("nonce-1");

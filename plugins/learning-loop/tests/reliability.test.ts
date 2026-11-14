@@ -282,12 +282,13 @@ it("does not approve a curator archive after the skill was used again", async ()
 
 
 describe("native skills and the learned library", () => {
-  it("keeps shipped v1/v2 catalogs byte-identical while new bindings describe library ownership", () => {
+  it("keeps shipped v1/v2/v3 catalogs byte-identical while new bindings describe library ownership", () => {
     // Captured from the deployed b6c63fc catalog: these prefixes belong to existing sessions.
     const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
     expect(digest(toolsForBinding("legacy-binding"))).toBe("763049a5c19b97f6679771aeb6947242710d6468462e658497ecf21b95b9d0a5");
     expect(digest(toolsForBinding("v2-existing"))).toBe("94861288e3d657f503a02355b34299f0e1be471faa509fa1a15378098370ceb0");
-    const newer = toolsForBinding("v3-new");
+    expect(digest(toolsForBinding("v3-existing"))).toBe("be80649ead5be22af53b6a8fc636633cdf267ab04aa93121d874f7eea1d329fe");
+    const newer = toolsForBinding("v4-new");
     expect(newer.map(t => t.inputSchema)).toEqual(TOOL_DEFINITIONS_V2.map(t => t.inputSchema));
     for (const name of ["skills_list", "skill_view", "skill_manage"]) {
       expect(newer.find(t => t.name === name)?.description).toContain("provider's full skill catalog");
@@ -300,7 +301,7 @@ describe("native skills and the learned library", () => {
     const nativeContent = "---\nname: native-fixture\ndescription: A native-only fixture.\n---\nRead the native catalog path.\n";
     await writeFile(join(nativeDir, "SKILL.md"), nativeContent);
     const deps: ToolDeps = { memory, skills, sessions: null, stage: () => false, onMemoryChange() {}, onSkillChange() {} };
-    for (const version of [2, 3]) {
+    for (const version of [2, 3, 4]) {
       const context = { actor: agent, reader: "fixture", project: null, selfAgentId: null, version };
       const response = await callTool("skill_view", { name: "native-fixture" }, context, deps);
       expect(response.isError).toBe(true);

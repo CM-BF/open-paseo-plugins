@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import { cleanSupportPath, parseOps, SkillLibrary, type SkillOp } from "../serve
 
 const agent: Actor = { kind: "agent", agentId: "a1", title: null, runId: null };
 const user: Actor = { kind: "user", agentId: null, title: null, runId: null };
+const writers = [{ actor: agent, reader: "r1" }, { actor: user, reader: null }];
 
 const skillMd = (name: string, description = "Use when deploying. Ships the app.", body = "# Deploy\n\n## Procedure\n1. Run make ship\n") =>
   `---\nname: ${name}\ndescription: ${description}\nversion: 0.1.0\n---\n${body}`;
@@ -161,9 +162,69 @@ describe("SkillLibrary", () => {
     expect(await lib.curate(14, 30)).toEqual(["deploy-app → archived"]);
   });
 
-  it("warns when the description is longer than the index shows", async () => {
-    const long = "Use when deploying the main application to production servers with blue green switching.";
-    const result = await lib.manage([{ action: "create", name: "deploy-app", content: skillMd("deploy-app", long) }], agent, "r1");
-    expect(result.warnings?.[0]).toMatch(/only the first 60/);
+  it.each(writers)("accepts 60-character descriptions and refuses 61 characters for $actor.kind", async ({ actor, reader }) => {
+    const result = await lib.manage([{ action: "create", name: "deploy-app", content: skillMd("deploy-app", "x".repeat(61)) }], actor, reader);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/description.*60/);
+    expect(await lib.list()).toEqual([]);
+
+    expect((await lib.manage([{ action: "create", name: "deploy-app", content: skillMd("deploy-app", "x".repeat(60)) }], actor, reader)).success).toBe(true);
+    expect((await lib.list())[0]!.description).toBe("x".repeat(60));
+  });
+
+  it.each(writers.flatMap(writer => ["patch", "rewrite"].map(action => ({ ...writer, action }))))(
+    "refuses an overlong description in a $actor.kind $action and leaves the whole batch untouched",
+    async ({ actor, reader, action }) => {
+      await create("deploy-app");
+      const before = (await lib.view("deploy-app", null, reader)).content!;
+      const long = "Use when deploying the main application to production servers with blue green switching.";
+      const change: SkillOp = action === "patch"
+        ? { action: "patch", name: "deploy-app", old_string: "Use when deploying. Ships the app.", new_string: long }
+        : { action: "rewrite", name: "deploy-app", content: skillMd("deploy-app", long) };
+      const result = await lib.manage([
+        { action: "write_file", name: "deploy-app", file_path: "references/flags.md", file_content: "# Flags\n" },
+        change,
+      ], actor, reader);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/Operation 2.*description.*60/);
+      expect((await lib.view("deploy-app", null, null)).content).toBe(before);
+      expect((await lib.view("deploy-app", "references/flags.md", null)).success).toBe(false);
+    },
+  );
+
+  it.each(writers)("keeps legacy long descriptions editable for $actor.kind while refusing a changed long description", async ({ actor, reader }) => {
+    const legacy = "Use when deploying the main application to production servers with blue green switching.";
+    const skillDir = join(dir, "skills", "deploy-app");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), skillMd("deploy-app", legacy));
+    await lib.view("deploy-app", null, reader);
+
+    const patched = await lib.manage([{ action: "patch", name: "deploy-app", old_string: "make ship", new_string: "make deploy" }], actor, reader);
+    expect(patched.success).toBe(true);
+    expect((await lib.view("deploy-app", null, null)).content).toContain("make deploy");
+
+    // YAML quoting does not change the description; a full-file editor can preserve it too.
+    const rewritten = skillMd("deploy-app", `"${legacy}"`, "# Deploy\n\nRun the verified deploy command.\n");
+    expect((await lib.manage([
+      { action: "rewrite", name: "deploy-app", content: rewritten },
+      { action: "write_file", name: "deploy-app", file_path: "references/flags.md", file_content: "# Flags\n" },
+    ], actor, reader)).success).toBe(true);
+    expect((await lib.view("deploy-app", null, null)).content).toBe(rewritten);
+    expect((await lib.view("deploy-app", "references/flags.md", null)).content).toBe("# Flags\n");
+
+    const changed = await lib.manage([{ action: "patch", name: "deploy-app", old_string: legacy, new_string: `${legacy} More detail.` }], actor, reader);
+    expect(changed.success).toBe(false);
+    expect(changed.error).toMatch(/description.*60/);
+    expect((await lib.view("deploy-app", null, null)).content).toBe(rewritten);
+    expect((await lib.manage([{ action: "patch", name: "deploy-app", old_string: legacy, new_string: "Use when deploying. Ships the app." }], actor, reader)).success).toBe(true);
+  });
+
+  it("rejects an overlong description before staging a proposal", async () => {
+    const result = await lib.manage([{ action: "create", name: "deploy-app", content: skillMd("deploy-app", "x".repeat(61)) }], agent, "r1", true);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/description.*60/);
+    expect(await lib.pending()).toEqual([]);
+    expect(await lib.list()).toEqual([]);
   });
 });

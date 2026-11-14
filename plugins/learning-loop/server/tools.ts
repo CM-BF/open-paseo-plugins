@@ -10,6 +10,8 @@ import {
   SKILL_VIEW_DESCRIPTION,
   SKILLS_LIST_DESCRIPTION,
   SKILL_LIBRARY_BOUNDARY,
+  MEMORY_EVIDENCE_GUIDANCE,
+  SKILL_DESCRIPTION_GUIDANCE,
 } from "./prompts";
 import type { SessionIndex } from "./sessions/index";
 import { parseOps, type SkillLibrary } from "./skills/library";
@@ -137,12 +139,26 @@ export const TOOL_DEFINITIONS_V3: ToolDefinition[] = TOOL_DEFINITIONS_V2.map(too
   return intro[tool.name] ? { ...tool, description: intro[tool.name] + SKILL_LIBRARY_BOUNDARY + "\n\n" + tool.description } : tool;
 });
 
+/** New sessions and short-lived reviews get current guidance; persisted v1-v3 catalogs stay frozen. */
+export const TOOL_DEFINITIONS_V4: ToolDefinition[] = TOOL_DEFINITIONS_V3.map(tool => {
+  if (tool.name === "memory") return { ...tool, description: tool.description + "\n\n" + MEMORY_EVIDENCE_GUIDANCE };
+  if (tool.name === "skill_manage") return {
+    ...tool,
+    description: tool.description.replace(
+      "Keep the description's first 57 chars a self-contained trigger: 'Use when <trigger>. <one-line behavior>.'",
+      SKILL_DESCRIPTION_GUIDANCE,
+    ),
+  };
+  return tool;
+});
+
 export function bindingVersion(binding?: string | null): number {
-  return binding?.startsWith("v3-") ? 3 : binding?.startsWith("v2-") || binding?.startsWith("review-") ? 2 : 1;
+  if (binding?.startsWith("v4-") || binding?.startsWith("review-")) return 4;
+  return binding?.startsWith("v3-") ? 3 : binding?.startsWith("v2-") ? 2 : 1;
 }
 export function toolsForBinding(binding?: string | null): ToolDefinition[] {
   const version = bindingVersion(binding);
-  return version === 3 ? TOOL_DEFINITIONS_V3 : version === 2 ? TOOL_DEFINITIONS_V2 : TOOL_DEFINITIONS;
+  return version === 4 ? TOOL_DEFINITIONS_V4 : version === 3 ? TOOL_DEFINITIONS_V3 : version === 2 ? TOOL_DEFINITIONS_V2 : TOOL_DEFINITIONS;
 }
 
 export const TOOL_NAMES = TOOL_DEFINITIONS.map((tool) => tool.name);

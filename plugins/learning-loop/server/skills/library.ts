@@ -179,7 +179,7 @@ function threatScopeFor(path: string): ThreatScope {
   return path === "SKILL.md" || path.endsWith(".md") ? "strict" : "all";
 }
 
-function validateSkillMd(name: string, content: string): { error?: string; warnings: string[] } {
+function validateSkillMd(name: string, content: string, before?: string | null): { error?: string; warnings: string[] } {
   const warnings: string[] = [];
   const fm = parseFrontmatter(content);
   if (!fm.present) return { error: "SKILL.md must start with YAML frontmatter (--- name: ... description: ... ---).", warnings };
@@ -188,6 +188,14 @@ function validateSkillMd(name: string, content: string): { error?: string; warni
   if (!description) return { error: "frontmatter needs a one-sentence 'description'.", warnings };
   if (description.length > 1024) return { error: "description is longer than 1024 characters.", warnings };
   if (description.length > SKILL_DESCRIPTION_INDEX_CHARS) {
+    // Existing long descriptions remain maintainable; only new or changed descriptions must fit.
+    const previousDescription = before == null ? null : (parseFrontmatter(before).fields.description ?? "").trim();
+    if (description !== previousDescription) {
+      return {
+        error: `description is ${description.length} chars; new or changed descriptions must fit the ${SKILL_DESCRIPTION_INDEX_CHARS}-character skills index. Move detail into the skill body.`,
+        warnings,
+      };
+    }
     warnings.push(
       `description is ${description.length} chars; the skills index shows only the first ${SKILL_DESCRIPTION_INDEX_CHARS}. ` +
         "Shorten it now with a patch: keep it a self-contained trigger within 60 chars, 'Use when <trigger>. <behavior>.'",
@@ -585,7 +593,7 @@ export class SkillLibrary {
           if (count > 1 && !op.replace_all) return fail(index, `old_string occurs ${count} times in ${clean.path}; add surrounding text or set replace_all.`);
           const next = op.replace_all ? text.split(op.old_string).join(op.new_string) : text.replace(op.old_string, () => op.new_string);
           if (clean.path === "SKILL.md") {
-            const check = validateSkillMd(op.name, next);
+            const check = validateSkillMd(op.name, next, text);
             if (check.error) return fail(index, `the patched SKILL.md is invalid: ${check.error}`);
           }
           const threat = firstThreatMessage(next, threatScopeFor(clean.path));
@@ -598,7 +606,7 @@ export class SkillLibrary {
         if (op.action === "rewrite") {
           const guard = await guardRead(op.name, "SKILL.md");
           if (guard) return fail(index, guard);
-          const check = validateSkillMd(op.name, op.content);
+          const check = validateSkillMd(op.name, op.content, await current(op.name, "SKILL.md"));
           if (check.error) return fail(index, check.error);
           const threat = firstThreatMessage(op.content, "strict");
           if (threat) return fail(index, threat);

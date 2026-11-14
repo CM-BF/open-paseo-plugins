@@ -1,6 +1,6 @@
 # learning-loop：进度记录
 
-当前交付：0.2.0 已在主 daemon 从稳定 commit `477bb9433ee27ab74783135682b3ffb3f8b5a559` 安装，82 tests + typecheck通过；真实验收与回退记录见文末及 `docs/verification/2026-10-22-v2-live.md`。
+当前交付：0.2.2 已从稳定 commit `b868d4aab8d836b7a324bf2ef6591929568d6bb1` 安装到主 daemon。132项常规测试、typecheck、2项真实Haiku复盘和真实新会话/桌面UI验证通过；窄屏未验。记录见 `docs/verification/2026-11-06-v022-live.md`。
 
 ## 目标
 
@@ -40,13 +40,13 @@
 
 ## 验证记录
 
-2026-10-22，daemon 0.12.0（`srv_BSheQn5lzdEE`，`127.0.0.1:6767`，home `~/.paseo`），插件目录 `open-paseo-plugins/plugins/learning-loop`（本 workspace 的 worktree），截图来自 `scripts/shot.mjs`（无头 Chrome 打开 app.paseo.sh，裁掉 320px 个人侧栏）。
+2026-10-22，daemon 0.12.0（`<host-id>`，`127.0.0.1:6767`，home `~/.paseo`），插件目录 `open-paseo-plugins/plugins/learning-loop`（本 workspace 的 worktree），截图来自 `scripts/shot.mjs`（无头 Chrome 打开 app.paseo.sh，裁掉 320px 个人侧栏）。
 
 | 场景 | 结果 | 证据 |
 | --- | --- | --- |
 | 安装 / reload 后 `plugin ls` running，日志无错误 | 通过（首次安装发现 state 目录未建时 SQLite 打不开，已修复） | `paseo plugin logs learning-loop` |
 | 已安装 shim 对真实插件进程：initialize / tools/list / skills_list / session_search | 通过 | 手工 JSON-RPC |
-| 新建测试 agent（claude / Haiku 4.5，fixture `/tmp/plugin-test-20261022-ll`，agent `61c2c274…`，workspace `wks_bcd94ab6bc99b018`）调用 memory(project) / skill_manage create / skill_view / session_search | 通过：项目记忆落到 git 根 `/private/tmp/...`，绑定记录正确，检索返回其他 agent 的历史 | `paseo logs`，`docs/verification/2026-10-22-overview-desktop.png` |
+| 新建测试 agent（claude / Haiku 4.5，fixture `/tmp/plugin-test-20261022-ll`，agent `<fixture-id>`，workspace `<fixture-id>`）调用 memory(project) / skill_manage create / skill_view / session_search | 通过：项目记忆落到 git 根 `/private/tmp/...`，绑定记录正确，检索返回其他 agent 的历史 | `paseo logs`，`docs/verification/2026-10-22-overview-desktop.png` |
 | 自动复盘（安装后用户另一个 agent 的回合触发） | 通过：Sonnet 写出 `paseo-plugin-live-testing` 类级技能（步骤 + 规则式 pitfalls），$0.18；同时暴露"首次见到的 agent 把安装前历史也算进阈值"的问题，已修复并加单测 | `2026-10-22-activity-desktop.png`、`2026-10-22-skill-detail-desktop.png` |
 | composer 里 `/remember project: …` | 通过：写入项目记忆，聊天里出现 "Remembered" 行 | `2026-10-22-slash-autocomplete-desktop.png`、`2026-10-22-remember-row-desktop.png` |
 | composer 里 `/review` | 通过："reviewing…" 行被结果替换；Sonnet 判断测试会话 "Nothing to save"（$0.018） | `2026-10-22-review-running-desktop.png`、`2026-10-22-review-result-desktop.png` |
@@ -54,13 +54,13 @@
 | 窄屏 420×860：Overview、Skills、技能详情（bottom sheet） | 通过 | `2026-10-22-*-compact.png` |
 | 设置屏：改"Approve writes"→刷新后仍是新值，文件 `~/.paseo/plugin-settings/learning-loop/preferences.json` 同步；随后改回 off | 通过 | `2026-10-22-settings-desktop.png` |
 | UI 里技能 History → Roll back（撤销 create）、Memory 里 Delete | 通过（同时作为 fixture 清理） | `2026-10-22-skill-history-desktop.png`、`2026-10-22-skill-rolled-back-desktop.png` |
-| 清理 | 测试 agent 已归档、workspace 已归档、Paseo 项目 `prj_4f4fa292a4902d0d` 已删除、fixture 目录已删；插件数据里的 fixture 项目、索引行、ledger 行、usage/counters/binding 已删 | |
+| 清理 | 测试 agent 已归档、workspace 已归档、Paseo 项目 `<fixture-id>` 已删除、fixture 目录已删；插件数据里的 fixture 项目、索引行、ledger 行、usage/counters/binding 已删 | |
 
 未验证：Codex / OpenCode agent 实际调用这些工具（只验证了 Claude Code）；手机原生 App（只验证了 Web 的窄屏布局）；curator 的 LLM 合并（`Consolidate with a model`）没有真实跑；`writeApproval` 开启时复盘写入进入待审批队列：存储层的暂存有单测，按调用方类型决定是否暂存的逻辑（`service.ts` 的 `stage`）没有单测也没有真实跑过。
 
 ## 已知问题 / 下一步
 
-- 2026-10-22 的后续源码审计与实施准备见 [Skills / Learning / OMH 准备方案](../../docs/skills-learning-workflows-prep.md)。这是静态核查，以下修补尚未实现或通过新增运行验收。
+- 2026-10-22 的后续源码审计与实施准备见 私有 Skills / Learning / OMH 准备方案。这是静态核查，以下修补尚未实现或通过新增运行验收。
 - [x] 修复 writeApproval 只控制 memory、不控制 skill_manage 的范围遗漏；覆盖 curator 等全部技能写入口。
 - [x] 复盘输入补当前 scope 的 memory 与 revision，避免盲 add；允许 Nothing to save。
 - [x] 明确 synthetic 多 repo 的 workspace/repo 归属；保留同 repo worktree 共享，避免不同 repo 混写。
@@ -121,20 +121,20 @@ New bindings use v3 descriptions with the same parameters as v2. The shipped v1 
 
 ### Main-daemon verification and stable delivery (2026-10-22)
 
-- [x] Main daemon 0.12.0 / `srv_BSheQn5lzdEE`; exact data/settings backup with online SQLite snapshot; original preferences preserved through v2 migration.
+- [x] Main daemon 0.12.0 / `<host-id>`; exact data/settings backup with online SQLite snapshot; original preferences preserved through v2 migration.
 - [x] Stable runtime: `~/.paseo/local-plugins/learning-loop/477bb9433ee27ab74783135682b3ffb3f8b5a559`, independent dependencies; running/ready logs. This no longer depends on the removable worktree.
 - [x] Real desktop+compact Web UI: seeded skill proposal diff/approval, stale conflict/rejection, skill/memory validity and due dates, workspace/repo retrieval, UTC budget, export on/off with real Skills Center consumption.
 - [x] New cheap Haiku fixture used v2 MCP scope/read/write; real test exposed `/tmp` alias bug, fixed and repeated successfully.
 - [x] Exact owned fixture agent/workspace archived, project deleted, UI content deleted, index/binding/owned metadata traces cleaned. Other agents and their fixtures unchanged.
 - [x] Final full suite after native-catalog boundary fix: 82 passed / 1 skipped; typecheck passed. Old v1/v2 catalogs frozen by output-hash contracts; v3 only for new bindings.
-- [x] Parent reports fresh Codex blind native-skill test `4cae8e14-5faf-43fc-b83a-7b0bbd44d131` passed after `477bb94`: native files loaded directly; no false Learning MCP miss. Parent owns screenshot/cleanup. Codex memory-write, OpenCode/native mobile and live model curator remain unverified.
+- [x] Parent reports fresh Codex blind native-skill test `<fixture-id>` passed after `477bb94`: native files loaded directly; no false Learning MCP miss. Parent owns screenshot/cleanup. Codex memory-write, OpenCode/native mobile and live model curator remain unverified.
 
 Complete evidence, fixture IDs, screenshots, backup location and old-code restore procedure: `docs/verification/2026-10-22-v2-live.md`. `paseo plugin remove` deletes plugin-settings as well as the registration; save/restore settings before reinstalling a directory source. Never restore the whole earlier memory/index backup over newer user work merely to revert code.
 
 
 ### Final shared-fixture cleanup (2026-10-22 local / 2026-10-23 UTC)
 
-Parent OMH fixture agents `74fb4edf…`, `7e68df10…`, `4cae8e14…` were archived before exact-ID Learning Loop cleanup. Removed 3 indexed sessions / 38 messages / 3 bindings; no matching review/counter records existed. Real UI idle gate (`running=0`, `queued=0`) preceded reload of stable `477bb94`; afterwards all fixture record counts were 0 and logs clean. Budget, original preferences, and real `paseo-plugin-live-testing` skill hashes were unchanged; export remains off. Exact IDs, backup location and counts are in `docs/verification/2026-10-22-v2-live.md` and its runtime JSON. No code changed after the 82-pass/typecheck verification.
+Parent OMH fixture agents `<fixture-id>`, `<fixture-id>`, `<fixture-id>` were archived before exact-ID Learning Loop cleanup. Removed 3 indexed sessions / 38 messages / 3 bindings; no matching review/counter records existed. Real UI idle gate (`running=0`, `queued=0`) preceded reload of stable `477bb94`; afterwards all fixture record counts were 0 and logs clean. Budget, original preferences, and real `paseo-plugin-live-testing` skill hashes were unchanged; export remains off. Exact IDs, backup location and counts are in `docs/verification/2026-10-22-v2-live.md` and its runtime JSON. No code changed after the 82-pass/typecheck verification.
 
 
 ### Upstream Watch provenance (2026-10-24)
@@ -150,17 +150,51 @@ Added packaged `UPSTREAM.json` for explicitly recorded reference commits and fea
 - UI now says “Index saved sessions”; version 0.2.1 and documented supported-provider/size limits. User preferences, memories and skills are preserved.
 - Regression baseline: 13 of the first 18 new safety tests fail against the original sync implementation; they pass with the queue/cancellation fix. Additional review caught and fixed clear-then-immediate-same-agent reindex ownership. Final isolated validation: Node 24 typecheck passed; 113 tests passed, 1 opt-in live-review skipped (no paid model execution needed for file-indexing changes).
 - Read-only real-corpus probe: 960 persisted non-internal records, 918 readable; 19 missing transcripts, 17 unsupported providers (13 Pi, 4 OpenCode), 6 missing session IDs. Final channel-filtered probe: 34,090 entries, sampled heap peak 104 MiB; no daemon APIs or provider processes used. Codex analysis/internal assistant channels are excluded.
-- Original runtime: `/Users/citrine/.paseo/local-plugins/learning-loop/477bb9433ee27ab74783135682b3ffb3f8b5a559`. Owner-only pre-fix data/settings backup: `/Users/citrine/Documents/Codex/2026-10-29/bang/work/paseo-memory/pre-fix-state/`. `plugin-data/learning-loop` does not exist; actual data is `~/.paseo/learning-loop` and settings `~/.paseo/plugin-settings/learning-loop`.
+- Original runtime: `~/.paseo/local-plugins/learning-loop/477bb9433ee27ab74783135682b3ffb3f8b5a559`. Owner-only pre-fix data/settings backup: `~/.paseo/verification/learning-loop/private-evidence`. `plugin-data/learning-loop` does not exist; actual data is `~/.paseo/learning-loop` and settings `~/.paseo/plugin-settings/learning-loop`.
 - Initial implementation commit preceded live deployment; completed results follow below. Never restore the whole data backup over newer user work to revert code.
 
 
 ### Live 0.2.1 acceptance (2026-10-29)
 
-- Main daemon 0.13.2 / `srv_BSheQn5lzdEE`, same supervisor 40554 and worker 40556 throughout plugin deployment. Runtime now `/Users/citrine/.paseo/local-plugins/learning-loop/ed7cca337021c32183d8ecf843b4ed199f9d1523`, independent copied dependencies, enabled/running, log confirms 0.2.1 ready.
+- Main daemon 0.13.2 / `<host-id>`, same supervisor 40554 and worker 40556 throughout plugin deployment. Runtime now `~/.paseo/local-plugins/learning-loop/ed7cca337021c32183d8ecf843b4ed199f9d1523`, independent copied dependencies, enabled/running, log confirms 0.2.1 ready.
 - CLI install rejected an existing runtime ID; removed the already-disabled registration, restored exact saved plugin-settings before install, and installed the stable new path. Settings SHA-256 stayed identical; all 467 backed-up memory/skill files stayed byte-identical. Source transcripts were never changed.
 - Startup backfill and manual “Index saved sessions” ran on the real daemon. Original enumeration scope remains unarchived agents; about 200 current sessions now have native-v1 epochs. Existing archived/unsupported index copies remain. Read-only corpus probe separately covered 960 records, 918 readable and 34,090 native entries at a sampled heap peak of 104 MiB.
-- Real desktop UI at `paseo://app/h/srv_BSheQn5lzdEE/plugin/learning-loop/surface/main`: new button visible; indexed session/message counts updated; search for quoted Learning Loop returned 11 matching sessions including archived records. No fixture agents or model calls were created for validation. Existing user activity and the unchanged background review settings continued.
+- Real desktop UI at `paseo://app/h/<host-id>/plugin/learning-loop/surface/main`: new button visible; indexed session/message counts updated; search for quoted Learning Loop returned 11 matching sessions including archived records. No fixture agents or model calls were created for validation. Existing user activity and the unchanged background review settings continued.
 - Web attempt at `https://app.paseo.sh` failed to connect to localhost from the available controlled browser. Desktop UI was verified instead; compact Web layout remains unverified. No security protections or daemon CORS settings were changed.
-- Screenshot: `/Users/citrine/Documents/Codex/2026-10-29/bang/outputs/learning-loop-fixed.png`. Detailed outcome, runtime source and rollback notes: `/Users/citrine/Documents/Codex/2026-10-29/bang/outputs/learning-loop-repair.md`. No credentials or conversation snippets are in the screenshot/report.
+- Screenshot: `~/.paseo/verification/learning-loop/private-evidence`. Detailed outcome, runtime source and rollback notes: `~/.paseo/verification/learning-loop/private-evidence`. No credentials or conversation snippets are in the screenshot/report.
 - Three-minute live observation: zero Learning Loop agent-resume records, health 200, no provider fan-out. Whole-app activity included other ongoing agents and normal reviews; RSS sums are not plugin-private memory. Daemon physical footprint measured ~1.31 GB, below its pre-repair recovery sample ~1.73 GB. Final monitoring summary is recorded in the delivery report.
 - Final code validation: Node 24 typecheck passed; 113 tests passed / 1 opt-in live-review skipped. No changes to code after that validation.
+
+## 2026-11-06：选择性上游升级（0.2.2，安装前）
+
+用户已批准三项增量：证据约束的记忆复盘、超限记忆可恢复清理、技能 description 60 字符强制。开发在独立 `sw/learning-loop-upstream-20261106` worktree；开发阶段没有发布到 main。
+
+- [x] 记忆：remove-only 即使最终仍超限也允许逐步清理；重复 add 无操作成功；删除或合法缩短超过整库容量的条目前，以独占 0600 文件备份原始字节。创建/写入备份失败则正文、metadata、待审提案均不变；审批时才备份。保留 CAS、审批与普通 batch 最终容量规则。
+- 验证：memory 25 + reliability 21 = 46/46，typecheck、diff check 通过；含真实文件、备份重名、部分写失败和审批路径。尚未安装，本轮 live 验收后更新状态。
+
+- [x] 技能：create 或本次修改 description 时强制 <=60 字符；未修改的旧长 description 允许继续维护正文/支持文件。错误在 staging 和落盘前返回，批次保持原子。
+- 验证：skills 22/22，通过 create/patch/rewrite、审批 staging、旧描述兼容和资源文件路径；typecheck 与 diff check 通过。
+
+- [x] 复盘和新会话提示：记忆须来自用户陈述或工具结果；不把话题、语气或 assistant 推测当成用户身份/长期偏好。一次性请求不升级成长期偏好。
+- [x] 新会话工具目录升级 v4；v1/v2/v3 catalog 与旧绑定保持原样，真实 shim 离线 fallback 同样按版本返回。后台 review 使用 v4。没有修改历史索引或增加旧 provider 恢复调用。
+- 验证：独立审查通过 setup/memory/skills/reliability/mcp 共86项；root补验 setup/reliability/mcp 39/39。固定三版旧目录 hash，验证新旧绑定的真实 MCP 协议和断桥 fallback。真实 Haiku 和完整测试正在另外执行，未将其记为通过。
+
+- [x] 版本标记统一为0.2.2；UPSTREAM新增三项选择性port记录，保留原81a基线，不声称完整跟进head。
+
+### 0.2.2 安装与验收完成
+
+- [x] 132项常规测试 + typecheck；两条真实Haiku复盘均通过（$0.0423955标价）。
+- [x] 安装前检查review idle，备份实际状态与设置，以SQLite backup保存索引；稳定snapshot安装后87文件逐字节核验、health0.2.2、settings原字节与daemon PID不变。
+- [x] 新建Haiku真实agent工具验证、主daemon超限逐步清理/重复add、桌面UI缩短超长条目与0600原始备份、技能正文显示。旧v3实际绑定目录hash保持冻结，新v4与shim一致。
+- [x] 清理专用fixture agent/workspace/project/目录以及插件内精确ID痕迹；重新启用相同snapshot，用户与环境记忆不变。
+- [ ] 精确窄屏/浏览器viewport验收：当前CUA无browser target且native resize不可用，未冒充通过；桌面UI已验证，客户端布局代码未改。
+- 详细证据、限制、备份与回退见 [0.2.2验收记录](docs/verification/2026-11-06-v022-live.md)。开发验收阶段仅本地提交；后续公开发布记录见下文。
+
+
+## 2026-11-13：公开发布准备
+
+- 用户已明确授权发布到 `CM-BF/open-paseo-plugins` 的 `main`。独立 `sw/learning-loop-publish-20261113` 工作区基于已同步的 `4b94741`，只导入 Learning Loop 的已验收 0.2.2；其他插件不变。
+- 运行代码与已安装验收的 `b868d4a` 保持一致；此前 132 项常规测试、两条真实 Haiku 和桌面验收结果仍如上。精确 compact viewport 仍未验证，不因发布而补记通过。
+- 原始截图、工具/测试日志、旧 runtime JSON 与未脱敏报告已保存在私有 `~/.paseo/verification/learning-loop/20261113-publication/`，并记录 SHA-256。公开树只留脱敏文字结果；历史截图也从当前树移除，但不重写此前公开 Git 历史。本文早期的截图文件名均指该私有证据归档。
+- 发布期间不安装、reload 或重启主 daemon；现有稳定安装保持不变。
+- 发布检查与远端提交确认将在完成后记录。
