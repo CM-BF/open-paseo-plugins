@@ -119,12 +119,12 @@ function quotesOtherVisitor(text: string, comment: InboxComment, comments: reado
 /** The assistant budget counts confirmed replies by the host's confirmation time (older ledgers: the backend time). */
 const replyTime = (reply: InboxReply) => Date.parse(reply.confirmedAt ?? reply.createdAt);
 
-/** A separate bounded ledger: importing a comment never creates a Board interaction or dispatches an agent. */
 /** Outbox items oldest first; at the same moment a page action goes before the record it changed. */
 export function chronological(entries: Array<{ at: string; rank: number; item: InboxPublicOutboxItem }>): InboxPublicOutboxItem[] {
   return entries.map((entry, index) => ({ ...entry, index })).sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.rank - b.rank || a.index - b.index)).map(entry => entry.item);
 }
 
+/** A separate bounded ledger: importing a comment never creates a Board interaction or dispatches an agent. */
 export class InboxStore {
   private readonly directory: string;
   private readonly publicListeners = new Set<(scope: InboxScope) => void>();
