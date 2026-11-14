@@ -6,13 +6,13 @@ import {
   INBOX_AUTO_LIMITS, InboxAutoEnableInputSchema, InboxAutoSetInputSchema, InboxEffortSchema, InboxRunRecordSchema, InboxRunnerCheckSchema, InboxScopeSchema,
   type InboxAssistantOptions, type InboxAutoMode, type InboxAutoSetInput, type InboxAutoSourceStatus, type InboxAutoStatus, type InboxPendingReply, type InboxPolicy, type InboxRunRecord, type InboxScope,
 } from "../shared/inbox";
-import { ALIAS_PRICES, MODEL_PRICES, PREFLIGHT_BUDGET_USD, PRICE_TABLE_DATE, UNPRICED_DAILY_CAP_USD, perComment, perRunCap, priceOf } from "../shared/assistant-models";
+import { PREFLIGHT_BUDGET_USD, PRICE_TABLE_DATE, perRunCap, priceOf } from "../shared/assistant-models";
 import type { Board } from "../shared/contracts";
 import { BoardStoreError, canonicalJson, ensureDirectory, parseInput } from "./store-format";
 import type { InboxStore } from "./inbox-store";
 import { AUTOMATION_ACTOR, IDENTITY_MISMATCH, InboxConnections, SyncFailure, type ReplyEvent, type RuntimeSource } from "./inbox-sync";
 import type { Paseo } from "./sdk";
-import { CHECKING_REFUSAL, ENV_SECRET_REFUSAL, NO_CLAUDE_REFUSAL, RESUME_REFUSAL, assistantSystemPrompt, legacyNotice, modelRefusal, preflightRefusal } from "./inbox-assistant";
+import { CHECKING_REFUSAL, ENV_SECRET_REFUSAL, NO_CLAUDE_REFUSAL, RESUME_REFUSAL, assistantModelChoices, assistantSystemPrompt, legacyNotice, modelRefusal, preflightRefusal, recommendedModelId } from "./inbox-assistant";
 import { MODEL_RE, routeErrorText, routeFrom, type ModelRoute } from "./kit/complete";
 import type { RunOutcome, RunnerBindings, SealedRunner } from "./inbox-runner";
 
@@ -846,13 +846,7 @@ export class InboxAutomation {
       });
       if (result && !result.error && Array.isArray(result.models)) listed = result.models.slice(0, 200).flatMap(model => typeof model?.id === "string" && MODEL_RE.test(model.id) && model.isSelectable !== false ? [{ id: model.id, label: (typeof model.label === "string" && model.label ? model.label : model.id).slice(0, 100) }] : []);
     } catch { listed = null; }
-    const choice = (price: (typeof MODEL_PRICES)[number], label = price.label) => ({ id: price.id, label, priced: true, perComment: perComment(price), dailyCapUsd: price.dailyCapUsd, effort: price.effort });
-    const cheapestFirst = <T extends { inputPerMTok: number; outputPerMTok: number }>(items: T[]) => [...items].sort((a, b) => a.inputPerMTok - b.inputPerMTok || a.outputPerMTok - b.outputPerMTok);
-    if (!listed?.length) return cheapestFirst([...ALIAS_PRICES]).map(price => choice(price));
-    const priced = cheapestFirst(MODEL_PRICES.filter(price => listed!.some(model => model.id === price.id)));
-    if (priced.length) return priced.map(price => choice(price, listed!.find(model => model.id === price.id)?.label ?? price.label));
-    // A provider whose models are not in the price table: shown as 无法估算 and never preselected.
-    return listed.slice(0, 12).map(model => ({ id: model.id, label: model.label, priced: false, perComment: null, dailyCapUsd: UNPRICED_DAILY_CAP_USD, effort: true }));
+    return assistantModelChoices(listed);
   }
   private async options(rt: ScopeRuntime, scope: InboxScope): Promise<{ options: InboxAssistantOptions; picked: Picked; board: Board }> {
     const board = await this.o.readBoard(scope.boardId);
@@ -864,7 +858,7 @@ export class InboxAutomation {
     const picked = await this.pickRoute(host);
     if (!picked.ok) return { picked, board, options: { ...base, refusal: picked.refusal, providerId: null, providerLabel: null, models: [], recommendedModelId: null } };
     const models = await this.modelChoices(host, picked.providerId);
-    return { picked, board, options: { ...base, refusal: null, providerId: picked.providerId, providerLabel: picked.label.slice(0, 200), models, recommendedModelId: models[0]?.priced ? models[0].id : null } };
+    return { picked, board, options: { ...base, refusal: null, providerId: picked.providerId, providerLabel: picked.label.slice(0, 200), models, recommendedModelId: recommendedModelId(models) } };
   }
   /** The dialog's choices: route, priced models and estimates, or the refusal (§3.5, §3.9). */
   async assistantOptions(scope: InboxScope): Promise<InboxAssistantOptions> {

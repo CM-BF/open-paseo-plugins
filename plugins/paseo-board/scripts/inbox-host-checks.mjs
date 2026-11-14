@@ -4,22 +4,20 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { installInboxHostFixture } from './inbox-host-fixture.mjs';
 
-// The owner as the installed daemon 0.16.0-beta.2 reports it: agent snapshot modes have no colorTier;
-// the provider mode list (paseo.providers.listModes('claude')) has them.
-const DAEMON_OWNER = { id: 'owner', provider: 'claude', model: 'sonnet', availableModes: [
-  { id: 'plan', label: 'Plan Mode', description: 'Analyze the codebase without executing tools or edits' },
-  { id: 'default', label: 'Always Ask', description: 'Prompts for permission the first time a tool is used' },
-  { id: 'acceptEdits', label: 'Accept File Edits', description: 'Automatically approves edit-focused tools without prompting' },
-  { id: 'auto', label: 'Auto mode', description: 'Uses a model classifier to review permission prompts automatically' },
-  { id: 'bypassPermissions', label: 'Bypass', description: 'Skip all permission prompts (use with caution)' },
-] };
-const DAEMON_TIERS = { plan: 'planning', default: 'safe', acceptEdits: 'moderate', auto: 'moderate', bypassPermissions: 'dangerous' };
-/** board.inbox.assistant-options as the server computes it (server/inbox-assistant.ts), checked against the RPC contract. */
-async function serverAssistantOptions(providerModes, owner = DAEMON_OWNER) {
+// The provider's model list as daemon 0.16.0-beta.2 reports it for `claude` (paseo.providers.listModels).
+const DAEMON_MODELS = [
+  { id: 'claude-opus-5-5', label: 'Opus 5.5' }, { id: 'claude-opus-5', label: 'Opus 5' }, { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5' },
+  { id: 'claude-sonnet-5', label: 'Sonnet 5' }, { id: 'claude-opus-4-6', label: 'Opus 4.6' }, { id: 'claude-haiku-5-5', label: 'Haiku 5.5' }, { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
+];
+/** The server's and the panel's own code (server/inbox-assistant.ts, client/inbox-status.ts), checked against the RPC contract. */
+async function serverCode() {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-  const bundle = await build({ stdin: { contents: "export { assistantOptions } from './server/inbox-assistant.ts'; export { InboxAssistantOptionsSchema } from './shared/inbox.ts';", resolveDir: root, loader: 'ts' }, bundle: true, platform: 'node', format: 'esm', target: 'node22', write: false, logLevel: 'silent' });
-  const { assistantOptions, InboxAssistantOptionsSchema } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
-  return InboxAssistantOptionsSchema.parse(assistantOptions(owner, null, providerModes));
+  const bundle = await build({ stdin: { contents: "export { assistantModelChoices, recommendedModelId, NO_CLAUDE_REFUSAL, violationRefusal } from './server/inbox-assistant.ts'; export { InboxAssistantOptionsSchema } from './shared/inbox.ts'; export { modelButtonLabel, capLine } from './client/inbox-status.ts';", resolveDir: root, loader: 'ts' }, bundle: true, platform: 'node', format: 'esm', target: 'node22', write: false, logLevel: 'silent' });
+  return import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
+}
+function assistantOptions(code, patch = {}) {
+  const models = code.assistantModelChoices(DAEMON_MODELS);
+  return code.InboxAssistantOptionsSchema.parse({ refusal: null, providerId: 'claude', providerLabel: 'claude', models, recommendedModelId: code.recommendedModelId(models), priceTableDate: '2026-11', firstTime: true, current: null, legacy: null, ...patch });
 }
 
 export async function runInboxHostChecks({ assert, command, evaluate, until, frame, untilFrame, key, click, hostClick, hostLocation, sendText, submitCount, canvasRect, check }) {
@@ -77,10 +75,10 @@ export async function runInboxHostChecks({ assert, command, evaluate, until, fra
   };
   let stage = 'setup';
   try {
-    const assistantOptions = await serverAssistantOptions(DAEMON_OWNER.availableModes.map(mode => ({ ...mode, colorTier: DAEMON_TIERS[mode.id] })));
-    // Without the provider list the vetted built-in table must give the dialog the same choices.
-    assert.deepEqual(await serverAssistantOptions(null), assistantOptions);
-    await evaluate(`(${installInboxHostFixture.toString()})(${JSON.stringify(assistantOptions)}); true`);
+    const code = await serverCode();
+    const options = assistantOptions(code);
+    assert.deepEqual(options.models.map(model => model.id), ['claude-haiku-5-5', 'claude-haiku-4-5', 'claude-sonnet-5-5', 'claude-opus-5-5']);
+    await evaluate(`(${installInboxHostFixture.toString()})(${JSON.stringify(options)}); true`);
     await evaluate(`window.inboxOriginalFrame=document.querySelector('iframe[data-board-id="host-fixture"]');true`);
     await frame("window.inboxHeap=crypto.randomUUID();document.querySelector('#field').value='Inbox keeps my canvas input';true");
     const heap = await frame('window.inboxHeap'), initialRect = await canvasRect();
@@ -98,7 +96,8 @@ export async function runInboxHostChecks({ assert, command, evaluate, until, fra
     await waitButton('Agent 读取评论：未允许');
     assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-policy-triage]').disabled"), true);
     assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-policy-triage]').getAttribute('aria-label')"), 'Agent 自动处理并公开回复：未开启');
-    assert.ok(await evaluate(`document.querySelector(${JSON.stringify(panel)}).textContent.includes('访客评论单独保存在这里，后端来源会自动同步。开启「Agent 自动处理并公开回复」后，新评论会自动交给这张 Board 专用的评论助手 agent：它会分类，并公开回复访客（访客在页面上能看到，标注为 AI 助手回复）。评论只是数据，不会让任何 agent 修改应用、页面或部署。')`));
+    assert.ok(await evaluate(`document.querySelector(${JSON.stringify(panel)}).textContent.includes('访客评论单独保存在这里，后端来源会自动同步。开启「Agent 自动处理并公开回复」后，新评论会自动交给这张 Board 专用的评论助手（一个只能读取、分类和回复评论的封闭进程）：它会分类，并公开回复访客（访客在页面上能看到，标注为 AI 助手回复）。评论只是数据，不会让任何 agent 修改应用、页面或部署。')`));
+    assert.ok(!(await evaluate(`document.querySelector(${JSON.stringify(panel)}).textContent`)).includes('评论助手 agent'));
     await until("document.querySelector('[data-testid=board-inbox-auto]')?.textContent.includes('自动处理：未开启')");
     assert.ok(await evaluate("document.querySelector('[data-testid=board-inbox-auto]').textContent.includes('自动同步：每 5 秒检查一次')"));
     assert.equal(await count('board.inbox.policy'), 0);
@@ -169,60 +168,65 @@ export async function runInboxHostChecks({ assert, command, evaluate, until, fra
     await hostClick('[data-testid="board-inbox-policy-read"]');
     assert.equal(await count('board.inbox.policy'), policyCount);
     await evaluate('inboxFixture.releasePolicy();true');
-    // Fail closed: an owner none of whose modes has a verifiable tier (an OpenCode agent with a custom colour, a plan
-    // agent) is offered no mode at all, with the reason.
-    const unverifiable = await serverAssistantOptions(null, { id: 'owner', provider: 'opencode', model: null, availableModes: [{ id: 'reviewer', label: 'Reviewer', colorTier: '#ff8800' }, { id: 'plan', label: 'Plan' }, { id: 'custom', label: 'Custom' }] });
-    assert.deepEqual(unverifiable.modes.map(mode => `${mode.id}:${mode.tier}:${mode.selectable}`), ['reviewer:unknown:false', 'plan:planning:false', 'custom:unknown:false']);
-    await evaluate(`inboxFixture.setAssistantOptions(${JSON.stringify(unverifiable)});true`);
+    // Fail closed: a host without a usable Claude route shows the server's refusal and cannot confirm.
+    await evaluate(`inboxFixture.setAssistantOptions(${JSON.stringify(assistantOptions(code, { refusal: code.NO_CLAUDE_REFUSAL, providerId: null, providerLabel: null, models: [], recommendedModelId: null }))});true`);
     await press('Agent 自动处理并公开回复：未开启');
-    await until("document.querySelector('[data-testid=board-inbox-auto-dialog]')?.textContent.includes('没有可用的权限模式：评论助手只能用会先询问你的模式，或在确认风险后用中等模式；计划模式、危险模式和无法确认风险等级的模式都不能用。')");
-    assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-testid=board-inbox-auto-dialog] [data-testid^=board-inbox-auto-mode-]')].map(node=>node.dataset.testid)"), ['board-inbox-auto-mode-publish', 'board-inbox-auto-mode-review']);
-    assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=board-inbox-auto-risk]'))"), false);
+    await until(`document.querySelector('[data-testid=board-inbox-auto-dialog]')?.textContent.includes(${JSON.stringify(code.NO_CLAUDE_REFUSAL)})`);
+    assert.equal(await evaluate("document.querySelectorAll('[data-testid=board-inbox-auto-dialog] [data-testid^=board-inbox-auto-model-]').length"), 0);
     assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-triage-confirm]').disabled"), true);
     await hostClick('[data-testid="board-inbox-auto-dialog"] button[aria-label="取消"]');
     await until("!document.querySelector('[data-testid=board-inbox-auto-dialog]')");
     assert.equal(await count('board.inbox.auto-enable'), 0);
-    await evaluate(`inboxFixture.setAssistantOptions(${JSON.stringify(assistantOptions)});true`);
+    await evaluate(`inboxFixture.setAssistantOptions(${JSON.stringify(options)});true`);
     await press('Agent 自动处理并公开回复：未开启');
-    await until("document.querySelector('[data-testid=board-inbox-auto-dialog]')?.textContent.includes('将创建一个新的评论助手 agent。')");
+    await until("document.querySelector('[data-testid=board-inbox-auto-model-claude-haiku-5-5]')");
     const dialog = await evaluate("document.querySelector('[data-testid=board-inbox-auto-dialog]').textContent");
-    for (const line of ['开启「Agent 自动处理并公开回复」？', '新评论会自动交给这张 Board 专用的「评论助手」agent（不是你正在用的主 agent）。它会分类评论并回复访客；回复在访客的页面上可见，标注为 AI 助手回复。', '评论可能包含诱导内容。评论助手只被预先允许使用评论工具；它想运行命令、读写文件或做别的事时，会先请你批准。不认识的请求请拒绝。', '每张 Board 每小时最多唤醒 6 次，超过后自动暂停，过后自动恢复。开启前已有的评论不会自动处理。', '评论助手使用 claude/sonnet，权限模式：']) assert.ok(dialog.includes(line), line);
-    assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=board-inbox-auto-mode-bypassPermissions]'))"), false);
-    assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=board-inbox-auto-mode-plan]'))"), false, 'Plan Mode is not selectable');
-    assert.ok(!dialog.includes('Plan Mode') && !dialog.includes('Bypass'), dialog);
-    assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-testid=board-inbox-auto-dialog] [data-testid^=board-inbox-auto-mode-]:not([data-testid=board-inbox-auto-mode-publish]):not([data-testid=board-inbox-auto-mode-review])')].map(node=>node.textContent)"), ['Always Ask（推荐）', 'Accept File Edits', 'Auto mode']);
-    // The recommended safe mode is preselected and needs no risk acceptance.
-    assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-auto-mode-default]').getAttribute('aria-selected')"), 'true');
-    assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=board-inbox-auto-risk]'))"), false);
-    assert.ok(!dialog.includes('我了解风险'), dialog);
+    for (const line of [
+      '开启「Agent 自动处理并公开回复」？',
+      '新评论会交给这张 Board 专用的评论助手。它不是 Paseo 里的 agent：每批评论单独启动一次 Claude Code，处理完就结束，不保留对话。回复在访客的页面上可见，标注为 AI 助手回复。',
+      '评论可能包含诱导内容。评论助手只能读取、分类和回复这一批评论：没有命令、文件、网络和其他插件的工具，也不加载你的 Claude Code 设置、CLAUDE.md 和记忆。每次启动都会先检查这一点，检查不通过就不处理。',
+      '每张 Board 每小时最多处理 12 批，每天花费到上限后暂停。开启前已有的评论不会自动处理。',
+      '费用按 Claude API 标价估算（价格表 2026-11）；使用 Claude 订阅时计入订阅额度。实际花费通常更低（有缓存）。',
+      code.capLine(0.5),
+    ]) assert.ok(dialog.includes(line), line);
+    for (const gone of ['权限模式', '我了解风险', '将创建一个新的评论助手 agent', '会先请你批准']) assert.ok(!dialog.includes(gone), gone);
+    assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-testid=board-inbox-auto-dialog] [data-testid^=board-inbox-auto-model-]')].map(node=>node.textContent)"), options.models.map(model => code.modelButtonLabel(model, model.id === options.recommendedModelId)));
+    assert.match(options.models.map(model => code.modelButtonLabel(model, model.id === options.recommendedModelId))[0], /^Haiku 5\.5（推荐，最便宜） · 约 \$0\.00\d\d–0\.00\d\d\/条$/);
+    // The cheapest priced model and, the first time, review mode are preselected.
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-auto-model-claude-haiku-5-5]').getAttribute('aria-selected')"), 'true');
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-auto-mode-review]').getAttribute('aria-selected')"), 'true');
     assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-triage-confirm]').disabled"), false);
     await snap('inbox-auto-dialog-recommended');
-    await hostClick('[data-testid="board-inbox-auto-mode-auto"]');
-    await until("document.querySelector('[data-testid=board-inbox-auto-risk]')");
+    // The server's preflight refuses: the check is shown while it runs, then its exact text; nothing is enabled.
+    const violation = code.violationRefusal(['工具 Bash', 'MCP 服务 learning']);
+    await evaluate(`inboxFixture.state.holdEnable=true;inboxFixture.state.nextEnableRefusal=${JSON.stringify(violation)};true`);
+    await press('确认开启');
+    await until("document.querySelector('[data-testid=board-inbox-triage-confirm]')?.getAttribute('aria-label')==='正在做锁定检查…'");
     assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-triage-confirm]').disabled"), true);
-    await hostClick('[data-testid="board-inbox-auto-mode-acceptEdits"]');
-    await until("document.querySelector('[data-testid=board-inbox-auto-dialog]').textContent.includes('这个模式下，评论助手可以不经询问运行命令或读取文件，诱导评论的风险更高。')");
-    assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-triage-confirm]').disabled"), true);
-    await hostClick('[data-testid="board-inbox-auto-risk"]');
-    await until("!document.querySelector('[data-testid=board-inbox-triage-confirm]').disabled");
-    await hostClick('[data-testid="board-inbox-auto-mode-default"]');
-    await hostClick('[data-testid="board-inbox-auto-mode-review"]');
-    assert.equal(await count('board.inbox.auto-enable'), 0);
+    await evaluate('inboxFixture.releaseEnable();true');
+    await until(`document.querySelector('[data-testid=board-inbox-auto-dialog]')?.textContent.includes(${JSON.stringify(violation)})`);
+    assert.equal(await evaluate("inboxFixture.state.policy.auto ?? 'off'"), 'off');
+    await snap('inbox-auto-dialog-lockdown-refused');
+    await hostClick('[data-testid="board-inbox-auto-model-claude-sonnet-5-5"]');
+    await until("document.querySelector('[data-testid=board-inbox-auto-dialog]').textContent.includes('每天最多 $5，到上限后暂停到第二天。')");
     await press('确认开启');
     await waitButton('Agent 自动处理并公开回复：已开启（回复需你审核）');
-    const enable = await evaluate("inboxFixture.state.calls.find(call=>call.name==='board.inbox.auto-enable').input");
-    assert.equal(enable.modeId, 'default'); assert.equal(enable.replyMode, 'review'); assert.equal(enable.acceptRisk, false);
-    await until("document.querySelector('[data-testid=board-inbox-auto]').textContent.includes('评论助手：评论助手 · Host fixture · Always Ask')");
+    const enable = await evaluate("inboxFixture.state.calls.filter(call=>call.name==='board.inbox.auto-enable').at(-1).input");
+    assert.equal(enable.modelId, 'claude-sonnet-5-5'); assert.equal(enable.replyMode, 'review'); assert.equal(enable.effort, 'low');
+    assert.ok(!('modeId' in enable) && !('acceptRisk' in enable), JSON.stringify(enable));
+    await until(`document.querySelector('[data-testid=board-inbox-auto]').textContent.includes('评论助手：Sonnet 5.5 · 每批新会话 · 锁定检查 ${String(new Date(2026, 10, 14, 9, 12).getHours()).padStart(2, '0')}:12 通过（Claude Code 2.1.325）')`);
+    assert.ok(await evaluate("document.querySelector('[data-testid=board-inbox-auto]').textContent.includes('花费：最近一小时 $0 · 今天 $0.0005 / 上限 $5（按 API 价格估算）')"));
     await press('回复方式：先给我审核'); await waitButton('回复方式：直接公开');
     assert.deepEqual(await evaluate('inboxFixture.state.policy'), { read: true, triage: true, auto: 'publish' });
     await press('Agent 自动处理并公开回复：已开启（直接回复）');
-    await until(`document.querySelector(${JSON.stringify(panel)}).textContent.includes('已关闭。评论助手 agent 还保留着，需要时可以在 Paseo 里归档它。')`);
+    await until(`document.querySelector(${JSON.stringify(panel)}).textContent.includes('已关闭。')`);
+    assert.ok(!(await evaluate(`document.querySelector(${JSON.stringify(panel)}).textContent`)).includes('归档它'));
     assert.deepEqual(await evaluate('inboxFixture.state.policy'), { read: true, triage: false, auto: 'off' });
     await press('Agent 读取评论：已允许'); await waitButton('Agent 读取评论：未允许');
     assert.deepEqual(await evaluate('inboxFixture.state.policy'), { read: false, triage: false, auto: 'off' });
     assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-policy-triage]').disabled"), true);
-    check('Policy toggles serialize; automatic handling turns on only through the confirm dialog with an approved mode, and turning read off revokes everything');
-    check('With the daemon\'s real mode shapes (no snapshot colorTier) the dialog recommends and preselects Always Ask without a risk checkbox, hides Plan Mode and Bypass, and asks for risk acceptance only for Accept File Edits and Auto mode');
+    check('Policy toggles serialize; automatic handling turns on only through the confirm dialog after the server\'s lockdown preflight, and turning read off revokes everything');
+    check('The dialog offers the provider\'s priced models cheapest first with estimates and the daily cap, preselects Haiku 5.5 and review mode, shows the check in progress and the exact refusal, and never offers a permission mode');
 
     stage = 'automation-lines-and-buttons';
     const auto = '[data-testid="board-inbox-auto"]';
@@ -232,16 +236,33 @@ export async function runInboxHostChecks({ assert, command, evaluate, until, fra
       await until(`document.querySelector(${JSON.stringify(auto)})?.textContent.includes(${JSON.stringify(text)})`);
     };
     await evaluate("inboxFixture.state.policy={read:true,triage:true,auto:'publish'};true");
-    await showAuto({ wake: { state: 'batching', pendingComments: 3, nextWakeAt: new Date(Date.now() + 2500).toISOString() } }, '自动处理：3 条新评论，约 ');
-    await showAuto({ wake: { state: 'waiting-permission' } }, '自动处理：评论助手在等你批准一个操作。它只应该使用评论工具；不是你预期的请求请拒绝。');
-    await showAuto({ wake: { state: 'paused', pausedReason: 'budget', resumesAt: '2026-11-08T13:42:00.000Z', pendingComments: 4 } }, '新评论仍会同步，4 条等待处理。');
-    await showAuto({ wake: { state: 'paused', pausedReason: 'agent', error: '评论助手不存在或已归档。' } }, '自动处理已暂停：评论助手不存在或已归档。');
-    await waitButton('重新创建评论助手');
-    await showAuto({ sync: { sources: [{ sourceId: 'seed-source', label: '访客反馈', state: 'blocked', lastAttemptAt: null, lastSuccessAt: null, nextAttemptAt: null, lastImportAt: null, failures: 1, lastError: '后端没有开启评论导出（HTTP 404）。', repliesSupported: null, skipped: 2, sanitized: 0 }] }, wake: { state: 'running', stale: true, skipped: { otherBoard: 1, unattributed: 1 } }, replies: { sending: 1, drafts: 0, failed: 1, items: [] } }, '自动同步需要处理：后端没有开启评论导出（HTTP 404）。');
-    for (const text of ['自动处理：评论助手正在处理', '回复：1 条发送中 · 0 条待审核 · 1 条失败', '已跳过 2 条格式不符的评论', '2 条评论来自其他 Board 的页面或无法确定来源，不会自动处理。']) assert.ok(await evaluate(`document.querySelector(${JSON.stringify(auto)}).textContent.includes(${JSON.stringify(text)})`), text);
-    await hostClick('[data-testid="board-inbox-auto-clear-stale"]');
-    await until(`document.querySelector(${JSON.stringify(auto)}).textContent.includes('上次唤醒没有确认结束，已解除等待。')`);
-    assert.equal(await evaluate("inboxFixture.state.calls.filter(call=>call.name==='board.inbox.auto-set').at(-1).input.clearStaleWake"), true);
+    const sealed = { kind: 'sealed', modelId: 'claude-haiku-5-5', modelLabel: 'Haiku 5.5', effort: 'low', providerId: 'claude', lastCheck: { at: '2026-11-14T01:12:00.000Z', ok: true, cliVersion: '2.1.325', findings: [] }, costLastHourUsd: 0.0031, costTodayUsd: 0.0125, dailyCapUsd: 0.5, avgCostPerCommentUsd: 0.0016 };
+    await showAuto({ assistant: sealed, wake: { state: 'batching', pendingComments: 3, nextWakeAt: new Date(Date.now() + 2500).toISOString() } }, '自动处理：3 条新评论，约 ');
+    await showAuto({ assistant: sealed, wake: { state: 'checking' } }, '正在做锁定检查…');
+    await showAuto({ assistant: sealed, wake: { state: 'paused', pausedReason: 'budget', resumesAt: '2026-11-08T13:42:00.000Z', pendingComments: 4 } }, '自动处理已暂停：一小时内已处理 12 批');
+    await showAuto({ assistant: sealed, wake: { state: 'paused', pausedReason: 'cost', resumesAt: '2026-11-15T00:00:00.000Z' } }, '自动处理已暂停：今天的花费已到上限 $0.5，明天 0 点自动恢复。');
+    // A lockdown pause is resumed only through the dialog (a fresh preflight).
+    await showAuto({ assistant: { ...sealed, lastCheck: { ...sealed.lastCheck, ok: false, findings: ['MCP 服务 paseo'] } }, wake: { state: 'paused', pausedReason: 'lockdown', findings: ['工具 mcp__paseo__create_agent', 'MCP 服务 paseo'] } }, '自动处理已暂停：评论助手启动时没通过锁定检查（工具 mcp__paseo__create_agent；MCP 服务 paseo），这批评论没有交给它。');
+    await waitButton('重新开启…');
+    assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=board-inbox-auto-resume]'))"), false);
+    // After the v1 migration: setup, the one-time legacy notice and its dismissal.
+    await showAuto({ assistant: null, legacy: { agentId: '7622667a-0000-4000-8000-000000000001', retiredAt: '2026-11-14T00:00:00.000Z' }, wake: { state: 'setup', pausedReason: 'setup' } }, '自动处理：需要重新开启（新版会先做锁定检查）');
+    assert.ok(await evaluate("document.querySelector('[data-testid=board-inbox-legacy]').textContent.includes('旧的评论助手（Paseo agent 7622667a）启动时会继承其他插件和 Claude Code 用户设置给的工具和权限，已停用，不会再收到评论，也不能再回复访客。要继续自动处理，请重新开启（会先做锁定检查）。旧助手还在 Paseo 里，是否归档由你决定。')"));
+    await waitButton('重新开启…');
+    assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=board-inbox-auto-resume]'))"), false);
+    await snap('inbox-auto-legacy-setup');
+    await hostClick('[data-testid="board-inbox-legacy-dismiss"]');
+    await until("!document.querySelector('[data-testid=board-inbox-legacy]')");
+    assert.equal(await evaluate("inboxFixture.state.calls.filter(call=>call.name==='board.inbox.auto-set').at(-1).input.dismissLegacyNotice"), true);
+    const runs = [
+      { runId: 'inbox-x-3-3', at: '2026-11-14T01:40:00.000Z', endedAt: null, state: 'running', model: 'claude-haiku-5-5', cliVersion: '2.1.325', commentIds: ['c3'], firstSeq: 3, lastSeq: 3, actions: { replied: 0, drafted: 0, triaged: 0, dismissed: 0 }, deniedAttempts: [], costUsd: null, durationMs: null, error: null, findings: [] },
+      { runId: 'inbox-x-1-2', at: '2026-11-14T01:30:00.000Z', endedAt: '2026-11-14T01:30:09.000Z', state: 'done', model: 'claude-haiku-5-5', cliVersion: '2.1.325', commentIds: ['c1', 'c2'], firstSeq: 1, lastSeq: 2, actions: { replied: 1, drafted: 0, triaged: 1, dismissed: 0 }, deniedAttempts: ['Bash', 'WebFetch'], costUsd: 0.0031, durationMs: 8600, error: null, findings: [] },
+    ];
+    await showAuto({ assistant: sealed, runs, reviewing: 1, sync: { sources: [{ sourceId: 'seed-source', label: '访客反馈', state: 'blocked', lastAttemptAt: null, lastSuccessAt: null, nextAttemptAt: null, lastImportAt: null, failures: 1, lastError: '后端没有开启评论导出（HTTP 404）。', repliesSupported: null, skipped: 2, sanitized: 0 }] }, wake: { state: 'running', runningComments: 1, skipped: { otherBoard: 1, unattributed: 1 } }, replies: { sending: 1, drafts: 0, failed: 1, items: [] } }, '自动同步需要处理：后端没有开启评论导出（HTTP 404）。');
+    for (const text of ['自动处理：评论助手正在处理 1 条评论', '评论助手：Haiku 5.5 · 每批新会话 · 锁定检查', '花费：最近一小时 $0.0031 · 今天 $0.013 / 上限 $0.5（按 API 价格估算） · 平均每条 $0.0016', '处理中 1 条', '处理 2 条（回复 1，草稿 0，分类 1）· $0.0031 · 9 秒', '评论助手在处理这批评论时试图使用不存在的工具（Bash、WebFetch），已被拒绝。这些评论可能含有诱导内容，建议看一下。', '回复：1 条发送中 · 0 条待审核 · 1 条失败', '已跳过 2 条格式不符的评论', '2 条评论来自其他 Board 的页面或无法确定来源，不会自动处理。']) assert.ok(await evaluate(`document.querySelector(${JSON.stringify(auto)}).textContent.includes(${JSON.stringify(text)})`), text);
+    for (const gone of ['清除卡住的唤醒', '重新创建评论助手', 'Always Ask']) assert.ok(!(await evaluate(`document.querySelector(${JSON.stringify(auto)}).textContent`)).includes(gone), gone);
+    await snap('inbox-auto-runs');
+    await showAuto({ assistant: sealed, wake: { state: 'idle' } }, '自动处理：等待新评论');
     await press('暂停自动处理');
     await until(`document.querySelector(${JSON.stringify(auto)}).textContent.includes('自动处理已暂停。新评论仍会同步。')`);
     await press('恢复自动处理'); await waitButton('暂停自动处理');
@@ -256,7 +277,7 @@ export async function runInboxHostChecks({ assert, command, evaluate, until, fra
     await until("!document.querySelector('[data-testid=board-inbox-comment-comment-4]')");
     await evaluate("inboxFixture.setAuto(null);inboxFixture.state.policy={read:false,triage:false,auto:'off'};true");
     await press('刷新收件箱'); await waitButton('Agent 读取评论：未允许');
-    check('The automation block shows each wake and sync state, pause/resume, stale clearing, sync pause and archive with exact Chinese text');
+    check('The automation block shows each sealed-runner state, the run log, cost, denied-tool notice, lockdown and setup re-enable, the legacy notice, sync pause and archive with exact Chinese text');
 
     stage = 'connect-failure-exact-retry';
     await press('后端来源'); await until(`document.querySelector(${JSON.stringify(sources)})`);

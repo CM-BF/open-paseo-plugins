@@ -1,4 +1,5 @@
-import type { InboxAutoSourceStatus, InboxAutoStatus, InboxPolicy } from "../shared/inbox";
+import type { InboxAssistantOptions, InboxAutoSourceStatus, InboxAutoStatus, InboxPolicy, InboxRunRecord } from "../shared/inbox";
+import { PRICE_TABLE_DATE } from "../shared/assistant-models";
 
 const pad = (value: number) => String(value).padStart(2, "0");
 export const clockTime = (iso: string, seconds = false) => { const at = new Date(iso); return `${pad(at.getHours())}:${pad(at.getMinutes())}${seconds ? `:${pad(at.getSeconds())}` : ""}`; };
@@ -38,8 +39,8 @@ export function syncLine(status: InboxAutoStatus, now = Date.now()): string {
   const last = sources.map(source => source.lastSuccessAt).filter((value): value is string => Boolean(value)).sort().at(-1);
   return `自动同步：每 ${status.sync.intervalSeconds} 秒检查一次${last ? ` · 上次成功 ${clockTime(last, true)}` : ""}`;
 }
-/** Phase 0 caption (lockdown design §4 item 5) until the sealed runner exists. */
-export const SETUP_LINE = "评论助手的旧版本没能把权限限制在评论工具上，自动处理暂时停用。";
+/** Automatic handling is on but has no verified sealed runner (after the v1 migration; lockdown design §3.8). */
+export const SETUP_LINE = "自动处理：需要重新开启（新版会先做锁定检查）";
 /** The wake line for each state (exact, DESIGN §11.12 and lockdown design §3.8). */
 export function wakeLine(status: InboxAutoStatus, now = Date.now()): string {
   const wake = status.wake;
@@ -68,6 +69,48 @@ export function usd(value: number): string {
   if (value >= 1) return value.toFixed(2).replace(/\.00$/, "");
   return String(Number(value.toPrecision(2)));
 }
+/** `评论助手：Haiku 5.5 · 每批新会话 · 锁定检查 09:12 通过（Claude Code 2.1.325）` (lockdown design §3.8). */
+export function assistantLine(status: InboxAutoStatus): string | null {
+  const assistant = status.assistant;
+  if (!assistant) return null;
+  const check = assistant.lastCheck;
+  const verdict = !check ? "锁定检查：还没有运行" : check.ok ? `锁定检查 ${clockTime(check.at)} 通过（Claude Code ${check.cliVersion ?? "版本未知"}）` : `锁定检查 ${clockTime(check.at)} 没通过`;
+  return `评论助手：${assistant.modelLabel} · 每批新会话 · ${verdict}`;
+}
+/** `花费：最近一小时 $0.004 · 今天 $0.012 / 上限 $0.5（按 API 价格估算）`. */
+export function costLine(status: InboxAutoStatus): string | null {
+  const assistant = status.assistant;
+  if (!assistant) return null;
+  const average = assistant.avgCostPerCommentUsd !== null ? ` · 平均每条 $${usd(assistant.avgCostPerCommentUsd)}` : "";
+  return `花费：最近一小时 $${usd(assistant.costLastHourUsd)} · 今天 $${usd(assistant.costTodayUsd)} / 上限 $${usd(assistant.dailyCapUsd)}（按 API 价格估算）${average}`;
+}
+const RUN_STATE_TEXT: Record<InboxRunRecord["state"], string> = {
+  starting: "正在启动", running: "处理中", done: "完成", failed: "失败", lockdown: "锁定检查没通过", "not-ready": "没能启动", unsupported: "没能启动", timeout: "超时停止", interrupted: "中断",
+};
+/** The run log, newest first (lockdown design §3.8). */
+export function runLines(status: InboxAutoStatus): string[] {
+  return status.runs.map(run => {
+    const at = clockTime(run.at), n = run.commentIds.length;
+    if (run.state === "starting" || run.state === "running") return `${at} ${RUN_STATE_TEXT[run.state]} ${n} 条`;
+    if (run.state === "done") {
+      const { replied, drafted, triaged, dismissed } = run.actions;
+      return `${at} 处理 ${n} 条（回复 ${replied}，草稿 ${drafted}，分类 ${triaged + dismissed}）· ${run.costUsd === null ? "费用未知" : `$${usd(run.costUsd)}`} · ${Math.max(0, Math.round((run.durationMs ?? 0) / 1000))} 秒`;
+    }
+    return `${at} ${RUN_STATE_TEXT[run.state]}：${run.findings.length ? run.findings.join("；") : run.error ?? "原因未知"}`;
+  });
+}
+/** Attempts at tools that do not exist in a run (lockdown design §3.3 auditEvent): a hint of injected comments. */
+export function deniedNotice(status: InboxAutoStatus): string | null {
+  const names = [...new Set(status.runs.flatMap(run => run.deniedAttempts))].slice(0, 8);
+  return names.length ? `评论助手在处理这批评论时试图使用不存在的工具（${names.join("、")}），已被拒绝。这些评论可能含有诱导内容，建议看一下。` : null;
+}
+/** Dialog texts (lockdown design §3.5). */
+export const COST_NOTE = `费用按 Claude API 标价估算（价格表 ${PRICE_TABLE_DATE}）；使用 Claude 订阅时计入订阅额度。实际花费通常更低（有缓存）。`;
+export function modelButtonLabel(model: InboxAssistantOptions["models"][number], recommended: boolean): string {
+  const cost = model.perComment ? `约 $${usd(model.perComment.lo)}–${usd(model.perComment.hi)}/条` : "无法估算";
+  return `${model.label}${recommended ? "（推荐，最便宜）" : ""} · ${cost}`;
+}
+export const capLine = (cap: number) => `每天最多 $${usd(cap)}，到上限后暂停到第二天。`;
 /** Notices after an automatic budget resume (the last day only). */
 export function wakeNotices(status: InboxAutoStatus, now = Date.now()): string[] {
   const notices: string[] = [];

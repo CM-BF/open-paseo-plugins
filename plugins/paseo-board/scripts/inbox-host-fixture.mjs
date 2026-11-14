@@ -1,7 +1,8 @@
 // Deliberately adapted transport for the real Board inbox UI. No fetch, daemon or agent calls.
 // Store/HTTP semantics have separate inbox-store/inbox-sync/inbox-auto tests; this fixture controls failures.
 // `assistantOptions` is the board.inbox.assistant-options answer; inbox-host-checks computes it with the
-// server's own code from the daemon's real mode shapes.
+// server's own code from the provider's model list. auto-enable stands in for the server's lockdown preflight:
+// it can be held (the dialog shows the check in progress) or refused with the server's exact text.
 export function installInboxHostFixture(assistantOptions) {
   const original = window.hostFixture.rpc;
   const board = window.hostFixture.board();
@@ -29,15 +30,18 @@ export function installInboxHostFixture(assistantOptions) {
   const autoStatus = () => ({
     revision: state.revision,
     sync: { paused: false, intervalSeconds: 5, sources: [{ sourceId: 'seed-source', label: '访客反馈' }, ...state.connections.map(({ sourceId, label, enabled, state: ready }) => ({ sourceId, label, off: !enabled || ready !== 'ready' }))].map(({ sourceId, label, off }) => ({ sourceId, label, state: off ? 'off' : 'idle', lastAttemptAt: now, lastSuccessAt: now, nextAttemptAt: null, lastImportAt: null, failures: 0, lastError: null, repliesSupported: true, skipped: 0, sanitized: 0 })) },
-    wake: { state: (state.policy.auto ?? 'off') === 'off' ? (state.policy.triage ? 'legacy-internal' : 'off') : 'idle', pausedReason: null, pausedAt: null, resumesAt: null, error: null, pendingComments: 0, nextWakeAt: null, wakesLastHour: 0, maxWakesPerHour: 6, hostWakesLastHour: 0, maxHostWakesPerHour: 20, lastWakeAt: null, lastWakeResult: null, lastBudgetPause: null, stale: false, staleSettledAt: null, skipped: { otherBoard: 0, unattributed: 0 } },
-    assistant: (state.policy.auto ?? 'off') === 'off' ? null : { agentId: 'assistant', title: '评论助手 · Host fixture', modeLabel: 'Always Ask', tier: 'safe' },
+    wake: { state: (state.policy.auto ?? 'off') === 'off' ? (state.policy.triage ? 'legacy-internal' : 'off') : 'idle', pausedReason: null, pausedAt: null, resumesAt: null, error: null, findings: [], pendingComments: 0, runningComments: 0, nextWakeAt: null, wakesLastHour: 0, maxWakesPerHour: 12, hostWakesLastHour: 0, maxHostWakesPerHour: 30, lastWakeAt: null, lastBudgetPause: null, cliFailures: 0, skipped: { otherBoard: 0, unattributed: 0 } },
+    assistant: state.runner,
+    legacy: null, runs: [], reviewing: 0,
     replies: { sending: 0, drafts: 1, failed: 0, items: [] },
   });
   const state = {
     scope, revision: 1, policy: { read: false, triage: false }, comments: [comment, draft, anonymous], calls: [],
     connections: [], nextConnectFailure: null, nextSyncFailure: false, holdPolicy: false,
     nextReplyFailure: null, autoOverride: null, replyEvents: new Map(),
+    runner: null, holdEnable: false, nextEnableRefusal: null,
   };
+  let releaseEnable;
   let releasePolicy;
   const events = new Map();
   const finish = () => ({ revision: ++state.revision, committedRevision: state.revision, replayed: false });
@@ -57,6 +61,7 @@ export function installInboxHostFixture(assistantOptions) {
   });
   window.inboxFixture = {
     state, attack, replyAttack, releasePolicy() { releasePolicy?.(); releasePolicy = undefined; },
+    releaseEnable() { releaseEnable?.(); releaseEnable = undefined; },
     replaceConnection() {
       const source = state.connections[0];
       Object.assign(source, { eventId: 'other-window-event', label: '另一窗口的新来源', endpoint: 'https://new.example.invalid/_board/comments' });
@@ -69,7 +74,7 @@ export function installInboxHostFixture(assistantOptions) {
     const base = autoStatus();
     const patch = state.autoOverride;
     if (!patch) return base;
-    return { ...base, ...patch, sync: { ...base.sync, ...(patch.sync ?? {}) }, wake: { ...base.wake, ...(patch.wake ?? {}) }, replies: { ...base.replies, ...(patch.replies ?? {}) } };
+    return { ...base, ...patch, sync: { ...base.sync, ...(patch.sync ?? {}) }, wake: { ...base.wake, ...(patch.wake ?? {}) }, replies: { ...base.replies, ...(patch.replies ?? {}) }, ...(patch.assistant === undefined ? {} : { assistant: patch.assistant }) };
   };
   window.hostFixture.rpc = async (name, input) => {
     if (!name.startsWith('board.inbox.')) return original(name, input);
@@ -82,7 +87,7 @@ export function installInboxHostFixture(assistantOptions) {
       const override = state.autoOverride ?? {};
       if (input.wakePaused === true) state.autoOverride = { ...override, wake: { ...(override.wake ?? {}), state: 'paused', pausedReason: 'human' } };
       if (input.resumeWake || input.wakePaused === false) state.autoOverride = { ...override, wake: { ...(override.wake ?? {}), state: 'idle', pausedReason: null, error: null } };
-      if (input.clearStaleWake) state.autoOverride = { ...override, wake: { ...(override.wake ?? {}), stale: false, staleSettledAt: new Date().toISOString(), lastWakeResult: 'settled', state: 'idle' } };
+      if (input.dismissLegacyNotice) state.autoOverride = { ...override, legacy: null };
       if (input.syncPaused !== undefined) state.autoOverride = { ...(state.autoOverride ?? {}), sync: { paused: input.syncPaused } };
       return status();
     }
@@ -92,7 +97,12 @@ export function installInboxHostFixture(assistantOptions) {
     }
     if (name === 'board.inbox.auto-enable') {
       checkRevision(input);
+      if (state.holdEnable) { state.holdEnable = false; await new Promise(resolve => { releaseEnable = resolve; }); }
+      if (state.nextEnableRefusal) { const refusal = state.nextEnableRefusal; state.nextEnableRefusal = null; throw new Error(refusal); }
+      const model = assistantOptions.models.find(item => item.id === input.modelId);
+      if (!model) throw new Error(`所选模型不可用：${input.modelId}。请换一个模型。`);
       state.policy = { read: true, triage: true, auto: input.replyMode }; finish(); state.autoOverride = null;
+      state.runner = { kind: 'sealed', modelId: model.id, modelLabel: model.label, effort: input.effort, providerId: assistantOptions.providerId, lastCheck: { at: new Date(2026, 10, 14, 9, 12).toISOString(), ok: true, cliVersion: '2.1.325', findings: [] }, costLastHourUsd: 0, costTodayUsd: 0.0005, dailyCapUsd: model.dailyCapUsd, avgCostPerCommentUsd: null };
       return status();
     }
     if (name === 'board.inbox.policy') {
