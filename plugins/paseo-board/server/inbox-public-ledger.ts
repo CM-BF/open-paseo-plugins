@@ -136,13 +136,16 @@ export function mirrorVisitorAction(ledger: PublicLedger, sourceId: string, tag:
  * True when visitors cannot see this public row on the page: it is hidden or withdrawn, or it is a visitor reply whose
  * thread root is (a hidden root takes its whole thread off the page). False for private comments and unknown roots.
  */
-export function publicHiddenOf(ledger: PublicLedger, sourceId: string, externalId: string): boolean {
-  const record = findRecord(ledger, sourceId, externalId);
+export function publicHiddenOf(ledger: PublicLedger | ReadonlyMap<string, PublicRecord>, sourceId: string, externalId: string): boolean {
+  const find = (id: string) => ledger instanceof Map ? ledger.get(recordKey(sourceId, id)) : findRecord(ledger as PublicLedger, sourceId, id);
+  const record = find(externalId);
   if (!record) return false;
   if (record.hidden || record.withdrawn) return true;
-  const root = record.parentId === undefined ? undefined : findRecord(ledger, sourceId, record.parentId);
+  const root = record.parentId === undefined ? undefined : find(record.parentId);
   return Boolean(root && (root.hidden || root.withdrawn));
 }
+/** Records by `recordKey`, for checks over every comment of a ledger (the quote rule). */
+export const recordIndex = (ledger: PublicLedger): ReadonlyMap<string, PublicRecord> => new Map(ledger.records.map(record => [recordKey(record.sourceId, record.externalId), record]));
 /**
  * What the waker needs to know about a comment's public side (merge of the sealed runner and public threads): its
  * visibility (a batch never mixes private and public comments), its thread, and whether it is off the page. Hidden

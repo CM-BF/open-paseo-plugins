@@ -12,7 +12,7 @@ import {
 } from "../shared/inbox";
 import { BoardStoreError, canonicalJson, ensureDirectory, fingerprint, parseInput, serialized } from "./store-format";
 import {
-  PUBLIC_LEDGER_BYTES, PublicLedgerSchema, audit, conflictingParent, decorate, emptyPublicLedger, findRecord, importPublicRow, makeRoom, mirrorVisitorAction, publicHiddenOf, publicStateOf, receipt, recordKey, setPending, stripPublic, wakeInfo,
+  PUBLIC_LEDGER_BYTES, PublicLedgerSchema, audit, conflictingParent, decorate, emptyPublicLedger, findRecord, importPublicRow, makeRoom, mirrorVisitorAction, publicHiddenOf, publicStateOf, receipt, recordIndex, recordKey, setPending, stripPublic, wakeInfo,
   type PublicAction, type PublicLedger, type PublicRecord,
 } from "./inbox-public-ledger";
 import { PUBLIC_TEXT, InboxPublicPageInputSchema, InboxPublicStateInputSchema, InboxPublicVisitorInputSchema, type InboxPublicPageInput, type InboxPublicStateInput, type InboxPublicVisitorInput } from "../shared/inbox-public";
@@ -416,7 +416,8 @@ export class InboxStore {
           if (publicHiddenOf(ledger, comment.sourceId, comment.externalId)) throw new BoardStoreError("invalid_input", HIDDEN_PUBLIC);
           // Everyone on the page reads a reply to a public comment: protect every private comment (the same visitor's
           // too) and every public one visitors cannot see (hidden, withdrawn, or in a hidden thread).
-          const notOnPage = (other: InboxComment) => !findRecord(ledger, other.sourceId, other.externalId) || publicHiddenOf(ledger, other.sourceId, other.externalId);
+          const index = recordIndex(ledger);
+          const notOnPage = (other: InboxComment) => !index.has(recordKey(other.sourceId, other.externalId)) || publicHiddenOf(index, other.sourceId, other.externalId);
           if (quotesOtherVisitor(input.text, comment, state.comments, notOnPage)) throw new BoardStoreError("invalid_input", PRIVATE_IN_PUBLIC);
         } else if (quotesOtherVisitor(input.text, comment, state.comments)) throw new BoardStoreError("invalid_input", OTHER_VISITOR);
       }
@@ -449,7 +450,7 @@ export class InboxStore {
       // An assistant reply to a public comment waits for the human (public-threads §12 A1) unless the owner turned on
       // 「公开讨论里的 AI 回复直接发布」 for this Board; in review mode every assistant reply is a draft anyway.
       // The opt-in is read only here and fails closed: an error or a missing callback means a draft.
-      const publicDirect = async () => this.options.assistantPublicDirect ? this.options.assistantPublicDirect(input).catch(() => false) : false;
+      const publicDirect = async () => this.options.assistantPublicDirect ? (await Promise.resolve().then(() => this.options.assistantPublicDirect!(input)).catch(() => false)) === true : false;
       const draft = role === "assistant" && (autoOf(state.policy) === "review" || record !== undefined && !(await publicDirect()));
       const pending: InboxPendingReply = {
         key: input.key, eventId: input.eventId, text: input.text, authorKind: role === "user" ? "owner" : "agent",
