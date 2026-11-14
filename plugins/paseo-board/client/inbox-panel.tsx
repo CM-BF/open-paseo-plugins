@@ -63,6 +63,8 @@ export function InboxPanel(props: InboxPanelProps) {
   const [note, setNote] = useState("");
   const [labels, setLabels] = useState("");
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  /** Turning on 「公开讨论里的 AI 回复直接发布」 from the automation block shows the warning first and needs a second click. */
+  const [directConfirm, setDirectConfirm] = useState(false);
   const [archiveConfirm, setArchiveConfirm] = useState(false);
   const [editors, setEditors] = useState<Record<string, Editor>>({});
   const flight = useRef(false), generation = useRef(0), revision = useRef<number | null>(null);
@@ -235,8 +237,12 @@ export function InboxPanel(props: InboxPanelProps) {
     {autoOn && policy ? <Action label={`回复方式：${autoMode === "review" ? "先给我审核" : "直接公开"}`} disabled={busy} onPress={() => setPolicy({ read: true, triage: true, auto: autoMode === "review" ? "publish" : "review" })} testID="board-inbox-auto-reply-mode" /> : null}
     {autoOn && policy && auto ? <View testID="board-inbox-public-direct" style={{ gap: 6 }}>
       {autoMode === "publish" ? <>
-        <Action label={PUBLIC_DIRECT_TEXT.label} active={auto.publicDirect} disabled={busy} onPress={() => autoSet({ publicDirect: !auto.publicDirect })} testID="board-inbox-public-direct-toggle" />
-        {auto.publicDirect ? <Notice text={PUBLIC_DIRECT_TEXT.warning} /> : null}
+        <Action label={PUBLIC_DIRECT_TEXT.label} active={auto.publicDirect} disabled={busy || directConfirm && !auto.publicDirect} onPress={() => { if (auto.publicDirect) autoSet({ publicDirect: false }); else setDirectConfirm(true); }} testID="board-inbox-public-direct-toggle" />
+        {auto.publicDirect || directConfirm ? <Notice text={PUBLIC_DIRECT_TEXT.warning} /> : null}
+        {directConfirm && !auto.publicDirect ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          <Action label={PUBLIC_DIRECT_TEXT.confirm} disabled={busy} onPress={() => { setDirectConfirm(false); autoSet({ publicDirect: true }); }} testID="board-inbox-public-direct-confirm" />
+          <Action label="取消" disabled={busy} onPress={() => setDirectConfirm(false)} testID="board-inbox-public-direct-cancel" />
+        </View> : null}
         <Copy small muted>{auto.publicDirect ? PUBLIC_DIRECT_TEXT.on : PUBLIC_DIRECT_TEXT.off}</Copy>
       </> : <Copy small muted>{PUBLIC_DIRECT_TEXT.reviewOnly}</Copy>}
     </View> : null}

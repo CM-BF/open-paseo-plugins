@@ -22,6 +22,8 @@ export const INBOX_AUTO_LIMITS = {
   agentRepliesPerHour: 30,
   /** A run that could not start (not-ready, unsupported) is rewound and retried after these delays; the third failure in a row pauses. */
   wakeRetryMs: [60_000, 300_000, 900_000], cliFailuresBeforePause: 3,
+  /** A public batch waits this long for the backend's current page state (retried each minute), then is left to the owner. */
+  publicCheckWaitMs: 600_000,
   /** Sealed runs: init within 30 s, the whole run within 5 min, 4 MiB of output, at most 2 runs on the host at once. */
   runInitTimeoutMs: 30_000, runTimeoutMs: 300_000, preflightTimeoutMs: 90_000, runOutputBytes: 4 * 1024 * 1024, maxConcurrentRuns: 2,
   replyRetryMs: [30_000, 60_000, 120_000, 300_000, 600_000, 1_800_000], replyGiveUpMs: 86_400_000,
@@ -84,11 +86,13 @@ export const InboxPublicRowSchema = z.object({
 }).strict();
 export type InboxPublicRow = z.infer<typeof InboxPublicRowSchema>;
 /**
- * Names other visitors would read may not contain the page's labels (作者, AI 助手, 访客), compared after NFKC with spaces
- * removed and case folded ("作 者", "ＡＩ助手" and "訪客" count too), nor invisible formatting characters. Other punctuation
- * is fine (迈克尔·杰克逊). The same rule as backend/threads.mjs forbiddenPublicName (§12 A5, review fix).
+ * Names other visitors would read may not contain the page's labels (作者, AI 助手, 访客), compared after NFKC with spaces,
+ * invisible characters (variation selectors included) and combining marks removed, case folded and Greek/Cyrillic
+ * look-alikes of a and i read as a and i ("作 者", "ＡＩ助手", "訪客", "АI 助手" and "作︀者" count too), nor invisible
+ * formatting characters. Other punctuation is fine (迈克尔·杰克逊). The same rule as backend/threads.mjs
+ * forbiddenPublicName (§12 A5, review fix; merge review: look-alikes and single variation selectors).
  */
-export const forbiddenPublicName = (name: string): boolean => /\p{Cf}/u.test(name) || /作者|ai助手|访客|訪客/.test(name.normalize("NFKC").replace(/[\s\p{Z}\p{Cf}]/gu, "").toLowerCase());
+export const forbiddenPublicName = (name: string): boolean => /\p{Cf}/u.test(name) || /作者|ai助手|访客|訪客/.test(name.normalize("NFKC").replace(/[\s\p{Z}\p{Cf}\p{Default_Ignorable_Code_Point}\p{Mn}]/gu, "").toLowerCase().replace(/[аαɑ⍺]/gu, "a").replace(/[іιɩӏǀı1l|!¡]/gu, "i"));
 
 const EXTERNAL_KEYS = ["externalId", "text", "authorName", "createdAt", "pageUrl", "anchor", "visitorTag"] as const;
 const PUBLIC_KEYS = ["visibility", "parentId", "publicTag", "hidden", "resolved", "withdrawn"] as const;
@@ -389,6 +393,8 @@ export const PUBLIC_DIRECT_TEXT = {
   on: "公开讨论里的 AI 回复：直接发布，不经你确认。",
   warning: "勾选后，评论助手对公开讨论的回复不经你确认就会显示给所有打开这个页面的人。评论可能包含诱导内容，AI 可能被带偏，写出错误或不妥的话。发出的回复不能撤回，只能在「公开讨论」里把它回复的那条评论连同回复一起从页面上隐藏。评论助手仍然只能看到这条评论所在讨论里公开显示的内容，看不到仅自己可见或已隐藏的评论。",
   reviewOnly: "「回复先给我审核」时，所有 AI 回复都先给你审核，包括公开讨论里的回复。",
+  /** The second click in the automation block: the warning is shown before anything changes. */
+  confirm: "我了解风险，直接发布",
 } as const;
 /** The panel notice for a retired Paseo-agent assistant of an older build (lockdown design §3.9, exact). */
 export const legacyNotice = (agentId: string) => `旧的评论助手（Paseo agent ${agentId.slice(0, 8)}）启动时会继承其他插件和 Claude Code 用户设置给的工具和权限，已停用，不会再收到评论，也不能再回复访客。要继续自动处理，请重新开启（会先做锁定检查）。旧助手还在 Paseo 里，是否归档由你决定。`;

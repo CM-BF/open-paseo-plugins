@@ -240,12 +240,27 @@ export async function runInboxHostChecks({ assert, command, evaluate, until, fra
     assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=board-inbox-public-direct-toggle]'))"), false);
     await press('回复方式：先给我审核'); await waitButton('回复方式：直接公开');
     assert.deepEqual(await evaluate('inboxFixture.state.policy'), { read: true, triage: true, auto: 'publish' });
-    // In 直接公开 mode the automation block offers the opt-in, off by default; turning it on shows the warning.
+    // In 直接公开 mode the automation block offers the opt-in, off by default. The first click only shows the warning
+    // with 我了解风险，直接发布 / 取消 (nothing is sent); 取消 leaves it off; the second click turns it on.
     await until(`document.querySelector(${JSON.stringify(directBlock)})?.textContent.includes(${JSON.stringify(direct.off)})`);
     assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-public-direct-toggle]').getAttribute('aria-selected')"), 'false');
+    const autoSets = () => evaluate("inboxFixture.state.calls.filter(call=>call.name==='board.inbox.auto-set').length");
+    const setsBefore = await autoSets();
     await hostClick('[data-testid="board-inbox-public-direct-toggle"]');
+    await until(`document.querySelector(${JSON.stringify(directBlock)})?.textContent.includes(${JSON.stringify(direct.warning)}) && Boolean(document.querySelector('[data-testid=board-inbox-public-direct-confirm]'))`);
+    assert.equal(await autoSets(), setsBefore, 'the first click sends nothing');
+    assert.ok((await evaluate(`document.querySelector(${JSON.stringify(directBlock)}).textContent`)).includes(direct.off));
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-public-direct-confirm]').getAttribute('aria-label')"), direct.confirm);
+    await snap('inbox-auto-public-direct-confirm');
+    await hostClick('[data-testid="board-inbox-public-direct-cancel"]');
+    await until(`!document.querySelector('[data-testid=board-inbox-public-direct-confirm]') && !document.querySelector(${JSON.stringify(directBlock)}).textContent.includes(${JSON.stringify(direct.warning)})`);
+    assert.equal(await autoSets(), setsBefore, '取消 sends nothing');
+    await hostClick('[data-testid="board-inbox-public-direct-toggle"]');
+    await until("Boolean(document.querySelector('[data-testid=board-inbox-public-direct-confirm]'))");
+    await hostClick('[data-testid="board-inbox-public-direct-confirm"]');
     await until(`document.querySelector(${JSON.stringify(directBlock)})?.textContent.includes(${JSON.stringify(direct.warning)}) && document.querySelector(${JSON.stringify(directBlock)}).textContent.includes(${JSON.stringify(direct.on)})`);
     assert.equal(await evaluate("inboxFixture.state.calls.filter(call=>call.name==='board.inbox.auto-set').at(-1).input.publicDirect"), true);
+    assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=board-inbox-public-direct-confirm]'))"), false);
     await snap('inbox-auto-public-direct-on');
     await hostClick('[data-testid="board-inbox-public-direct-toggle"]');
     await until(`document.querySelector(${JSON.stringify(directBlock)})?.textContent.includes(${JSON.stringify(direct.off)})`);
@@ -259,7 +274,7 @@ export async function runInboxHostChecks({ assert, command, evaluate, until, fra
     assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-policy-triage]').disabled"), true);
     check('Policy toggles serialize; automatic handling turns on only through the confirm dialog after the server\'s lockdown preflight, and turning read off revokes everything');
     check('The dialog offers the provider\'s priced models cheapest first with estimates and the daily cap, preselects Haiku 5.5 and review mode, shows the check in progress and the exact refusal, and never offers a permission mode');
-    check('「公开讨论里的 AI 回复直接发布（我了解风险）」 appears only with 直接公开, unticked, with its plain warning, is sent only when ticked in that mode, and toggles from the automation block');
+    check('「公开讨论里的 AI 回复直接发布（我了解风险）」 appears only with 直接公开, unticked, with its plain warning, is sent only when ticked in that mode, and in the automation block turns on only after the warning and 我了解风险，直接发布 (off at once)');
 
     stage = 'automation-lines-and-buttons';
     const auto = '[data-testid="board-inbox-auto"]';

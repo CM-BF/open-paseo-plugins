@@ -15,7 +15,7 @@ export interface FakeBackend {
   rows: FakeRow[]; replies: Map<string, { hash: string; reply: FakeReply }>;
   requests: Array<{ method: string; url: string; authorization?: string; key?: string; origin?: string; body?: unknown }>;
   /** Failures consumed one per matching request, in order. */
-  failExport: FakeFailure[]; failReply: FakeFailure[];
+  failExport: FakeFailure[]; failReply: FakeFailure[]; failModeration: FakeFailure[];
   /** Answer exports in the 4b94741 v1 shape regardless of `format`. */
   legacy: boolean;
   /** Optional raw override for the next export body (malformed envelopes, rows the fake would never store). */
@@ -35,7 +35,7 @@ export async function startFakeBackend(options: { token?: string; deploymentId?:
   const now = options.now ?? (() => new Date(Date.now() + backend.skewMs).toISOString());
   let seq = 0;
   const backend: FakeBackend = {
-    url: "", endpoint: "", token, deploymentId, rows: [], replies: new Map(), requests: [], failExport: [], failReply: [], legacy: false, rawExport: [], skewMs: 0,
+    url: "", endpoint: "", token, deploymentId, rows: [], replies: new Map(), requests: [], failExport: [], failReply: [], failModeration: [], legacy: false, rawExport: [], skewMs: 0,
     add(row) { const stored: FakeRow = { seq: ++seq, externalId: row.externalId ?? randomUUID(), createdAt: row.createdAt ?? now(), ...row } as FakeRow; backend.rows.push(stored); return stored; },
     async close() { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); },
   };
@@ -85,6 +85,28 @@ export async function startFakeBackend(options: { token?: string; deploymentId?:
         const { visibility: _v, parentId: _p, publicTag: _t, hidden: _h, resolved: _r, withdrawn: _w, ...rest } = row;
         return rest;
       }) });
+    }
+    if (req.method === "GET" && url.pathname === "/_board/comments/public/moderation") {
+      // The owner moderation listing (backend/threads.mjs `moderation`): every public thread of a page, hidden rows
+      // included, as the backend shows it now (a row's `hidden`/`withdrawn` may change after its export).
+      if (fail(res, backend.failModeration.shift())) return;
+      if (req.headers.origin) return json(res, 403, { error: "Owner reads are not accepted from browsers", code: "browser_forbidden" });
+      if (!authorized(req)) return json(res, 401, { error: "A valid comment-export token is required", code: "unauthorized" });
+      const keyOf = (href: string | undefined | null) => { try { const parsed = new URL(href ?? ""); return parsed.origin + parsed.pathname.replace(/\/index\.html$/, "/"); } catch { return null; } };
+      const page = url.searchParams.get("page"), pageKey = page === null ? null : keyOf(page);
+      const visible = backend.rows.filter(row => row.visibility === "public");
+      const roots = visible.filter(row => !row.parentId && (pageKey === null || keyOf(row.pageUrl) === pageKey)).sort((a, b) => Number(Boolean(a.hidden)) - Number(Boolean(b.hidden)) || b.seq - a.seq);
+      const owner = (externalId: string) => [...backend.replies.values()].map(item => item.reply).filter(reply => reply.commentExternalId === externalId);
+      const threads = roots.slice(0, 100).map(root => {
+        const children = visible.filter(row => row.parentId === root.externalId);
+        const messages = [
+          ...children.map(row => ({ id: row.externalId, by: "visitor", ...(row.publicTag ? { tag: row.publicTag } : {}), ...(row.authorName ? { name: row.authorName } : {}), text: row.text, createdAt: row.createdAt, hidden: Boolean(row.hidden), ...(row.withdrawn ? { withdrawn: true } : {}) })),
+          ...[root, ...children].flatMap(target => owner(target.externalId).map(reply => ({ id: reply.replyId, by: reply.authorKind, text: reply.text, createdAt: reply.createdAt, ...(target !== root ? { replyTo: target.externalId } : {}) }))),
+        ].sort((a, b) => a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0);
+        const kept = messages.slice(-100);
+        return { id: root.externalId, page: keyOf(root.pageUrl) ?? "", ...(root.publicTag ? { tag: root.publicTag } : {}), ...(root.authorName ? { name: root.authorName } : {}), text: root.text, createdAt: root.createdAt, hidden: Boolean(root.hidden), ...(root.withdrawn ? { withdrawn: true } : {}), resolved: Boolean(root.resolved), replies: kept, omitted: messages.length - kept.length };
+      });
+      return json(res, 200, { deploymentId, publicThreads: true, pages: [], releases: [], total: roots.length, truncated: roots.length > threads.length, threads });
     }
     const match = /^\/_board\/comments\/([^/]+)\/replies$/.exec(url.pathname);
     if (req.method === "POST" && match) {

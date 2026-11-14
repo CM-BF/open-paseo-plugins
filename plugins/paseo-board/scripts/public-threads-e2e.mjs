@@ -109,7 +109,7 @@ try {
           const read = (await tool('board_inbox_read', { ...base, commentId: item.commentId })).comment;
           run.reads.push(read);
           const reply = text => tool('board_inbox_reply', { ...base, commentId: item.commentId, expectedCommentRevision: read.revision, eventId: `reply-${item.commentId}-${text.length}`, text }).then(result => result.status, error => `refused: ${error.message}`);
-          if (item.visibility === 'public') run.outcomes.push(await reply(`有访客私下说：“${PRIVATE_SECRET}”`));
+          if (item.visibility === 'public') run.outcomes.push(await reply(runner.hostile ?? `有访客私下说：“${PRIVATE_SECRET}”`));
           const text = item.visibility === 'public' ? `AI 助手（第 ${runner.runs.length} 批）：第二步是指先保存草稿，之后还能修改。` : '谢谢，我们会单独联系你。';
           run.replies.push(text); run.outcomes.push(await reply(text));
         }
@@ -481,6 +481,32 @@ try {
     assert.equal(imported.status, 'new'); assert.equal(imported.publicState.hidden, true);
     const status = await autoStatus();
     assert.equal(status.wake.state, 'idle'); assert.equal(status.wake.pendingComments, 0);
+  });
+
+  await step('a visitor reply withdrawn after its import (the export never carries it again) is read from the backend before the next run: not in the runner\'s thread, not quotable, and shown as withdrawn in the inbox', async () => {
+    const WITHDRAWN = '我住在海淀区某某路 88 号，电话 13700000000，这条我待会儿撤回';
+    let before = runner.runs.length;
+    const mine = await visitorPost('6', 'pr-runner-withdraw-0001', { text: WITHDRAWN, pageUrl: publicUrl, visibility: 'public', parentId: thread.id, anchor: { releaseId: release.releaseId } });
+    await settled(before + 1, 'the run for the reply');
+    const withdrawn = await fetch(`${endpoint}/${mine.externalId}/withdraw`, { method: 'POST', headers: { 'x-board-visitor': '6'.repeat(64), origin: pageOrigin } });
+    assert.equal(withdrawn.status, 200, await withdrawn.text());
+    await syncNow();
+    assert.equal((await inboxComments()).find(item => item.externalId === mine.externalId).publicState.withdrawn, undefined, 'no export carries the withdrawal');
+    before = runner.runs.length;
+    runner.hostile = `有人提到：${WITHDRAWN}`;
+    try {
+      await visitorPost('5', 'pr-runner-after-withdraw-0001', { text: '第二步保存以后能撤销吗？', pageUrl: publicUrl, visibility: 'public', parentId: thread.id, anchor: { releaseId: release.releaseId } });
+      await settled(before + 1, 'the next run');
+    } finally { delete runner.hostile; }
+    const run = runner.runs.at(-1);
+    const texts = run.reads[0].thread.replies.map(item => item.text);
+    assert.ok(texts.includes('第二步保存以后能撤销吗？'), JSON.stringify(texts));
+    for (const result of run.results) assert.equal(result.includes('13700000000'), false, 'the runner never sees the withdrawn reply');
+    assert.ok(run.outcomes[0].includes(QUOTE_REFUSAL), run.outcomes[0]);
+    assert.equal(run.outcomes[1], 'draft');
+    const after = (await inboxComments()).find(item => item.externalId === mine.externalId);
+    assert.deepEqual(after.publicState, { hidden: true, resolved: false, withdrawn: true });
+    assert.deepEqual(runner.errors, []);
   });
 
   await step('with 「公开讨论里的 AI 回复直接发布（我了解风险）」 on, the runner\'s public reply reaches every visitor without the author\'s confirmation; turning automatic handling off stops further runs', async () => {

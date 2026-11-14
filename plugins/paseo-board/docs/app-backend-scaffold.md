@@ -150,7 +150,7 @@ Errors are JSON `{"error": "message", "code": "code"}`:
 | `reply_limit` | 409 | the thread (a comment and its visitor replies) already has 20 owner replies |
 | `public_disabled` | 403 on POST, 404 on the listing | `comments.publicThreads` is false, or the listing names a release that is not registered or a page the owner closed |
 | `public_not_allowed` | 403 | a public post names an unregistered release, its page origin is not in `origins`, or the owner closed that page |
-| `name_not_allowed` | 400 | a public comment's name contains 作者, AI 助手 or 访客 (after NFKC, spacing and case), or an invisible format character |
+| `name_not_allowed` | 400 | a public comment's name contains 作者, AI 助手 or 访客 (after NFKC, spacing, invisible characters, case and Greek/Cyrillic look-alikes), or an invisible format character |
 | `public_paused` | 403 | the owner paused new public comments on this page |
 | `thread_resolved` | 409 | a visitor reply to a thread the owner resolved |
 | `thread_full` | 409 | the thread already has `visitorRepliesPerThread` visible visitor replies |
@@ -432,8 +432,11 @@ allowed, because nothing is public until a registered release asks for it).
 `pageUrl` and an anchor with `quote` and `releaseId`; its selector must be `body`, one
 CSS-escaped id or a `body > tag:nth-of-type(n)` path of at most 12 steps. A reply's
 anchor holds only `releaseId`. Public names may not contain 作者, AI 助手 or 访客,
-compared after NFKC with spaces removed and case folded (so "作 者", "ＡＩ助手" and
-"訪客" count), nor invisible format characters (400 `name_not_allowed`); other
+compared after NFKC with spaces, invisible characters (variation selectors included)
+and combining marks removed, case folded, and Greek or Cyrillic look-alikes of a and i
+(and l, 1, |) read as a and i (so "作 者", "ＡＩ助手", "訪客", "АI 助手" with a Cyrillic
+А and "作︀者" with a variation selector count), nor invisible format characters
+(400 `name_not_allowed`); other
 punctuation such as 迈克尔·杰克逊 is fine, because pages always show the visitor's
 tag after the name. A reply to a missing, hidden, withdrawn, private or
 other-page parent gets 404 `comment_not_found` (nothing reveals that such a comment

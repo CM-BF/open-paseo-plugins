@@ -154,11 +154,12 @@ test('a share turned private closes its page to every release: posts and listing
 
 test('public names: the page labels are refused after NFKC, spacing and case (name_not_allowed); other punctuation is fine', async t => {
   const { base } = await publicApp(t);
-  for (const name of ['作者', '作 者', 'ＡＩ助手', 'ai 助手', '作 者的ＡＩ助手', '訪客・3f9a12', '访客小王', '小王 · 访客·3f9a1c', 'abc‏def', 'x\u{E0041}']) {
+  // Look-alikes and single variation selectors / combining marks count too (merge review): Cyrillic А, Greek Α Ι, l for I.
+  for (const name of ['作者', '作 者', 'ＡＩ助手', 'ai 助手', '作 者的ＡＩ助手', '訪客・3f9a12', '访客小王', '小王 · 访客·3f9a1c', 'abc‏def', 'x\u{E0041}', '\u0410I 助手', '\u0391\u0399 助手', '作\uFE00者', 'AI 助\uFE00手', '作\u034F者', 'Al 助手', 'A1 助手', '访\u{E0100}客']) {
     assert.equal(forbiddenPublicName(name), true, name);
     await failure(await post(base, V.a, root('名字测试', { authorName: name })), 400, 'name_not_allowed');
   }
-  for (const name of ['迈克尔·杰克逊', '列夫·托尔斯泰', 'Author', '博主', '小王']) {
+  for (const name of ['迈克尔·杰克逊', '列夫·托尔斯泰', 'Author', '博主', '小王', '小王\u2764\uFE0F', 'Ali', 'Alice 的助理']) {
     assert.equal(forbiddenPublicName(name), false, name);
     assert.equal((await created(await post(base, V.a, root(`名字 ${name}`, { authorName: name })))).authorName, name);
   }

@@ -16,8 +16,8 @@ import { inspectBoard } from "./inspection";
 import { BOARD_REPLY_ROUTING } from "./prompts";
 import { ReadSourceInputSchema, SourcesInputSchema } from "../shared/composition";
 import type { CompositionSources } from "./composition";
-import type { InboxStore } from "./inbox-store";
-import type { InboxConnections } from "./inbox-sync";
+import { HIDDEN_PUBLIC, isQuoteRefusal, type InboxStore } from "./inbox-store";
+import { PUBLIC_CHECK_FAILED, type InboxConnections } from "./inbox-sync";
 import { INBOX_CONTENT_NOTICE, InboxReadInputSchema, InboxListInputSchema, InboxTriageInputSchema, type InboxComment, type InboxScope } from "../shared/inbox";
 import { isRunnerActor, type RunnerBinding, type RunnerBindings } from "./inbox-runner";
 import type { PublicThreadContext, PublicThreadMessage } from "../shared/inbox-thread";
@@ -42,11 +42,20 @@ export const inboxWakeOutstanding = (delivery: Delivery) => ["saved", "creating"
  * Public comments (merge of the sealed runner and public threads) add `visibility: "public"`, the thread a visitor
  * reply belongs to, and `thread`: the thread's visible root, visible visitor replies and the confirmed owner and
  * assistant replies (shared/inbox-thread.ts), all of which every visitor of the page already sees. Private comments,
- * the same visitor's included, and hidden or withdrawn comments are never part of it; `thread` is null when visitors
- * cannot see the comment.
+ * the same visitor's included, and hidden or withdrawn comments are never part of it. What visitors see is read from
+ * the backend before each read (InboxConnections.publicOnPage), so a withdrawal after import counts too. A public
+ * comment visitors cannot see (`offPage`, for example hidden by the owner during the run) is shown without its text,
+ * name, anchor or replies, with `thread: null` and the HIDDEN_PUBLIC notice.
  */
-export function runnerView(comment: InboxComment, thread: PublicThreadContext | null = null) {
+export function runnerView(comment: InboxComment, thread: PublicThreadContext | null = null, offPage = false) {
   const mark = showBidiControls;
+  if (comment.visibility === "public" && offPage) {
+    return {
+      id: comment.id, revision: comment.revision, status: comment.status, contentTrust: comment.contentTrust, visibility: "public" as const,
+      ...(comment.parentCommentId ? { parentCommentId: comment.parentCommentId } : {}), offPage: true as const, notice: HIDDEN_PUBLIC,
+      text: "", createdAt: comment.createdAt, canSeeReply: Boolean(comment.visitorTag), replies: [], thread: null,
+    };
+  }
   const anchor = comment.anchor && (comment.anchor.quote !== undefined || comment.anchor.label !== undefined) ? { ...(comment.anchor.quote !== undefined ? { quote: mark(comment.anchor.quote) } : {}), ...(comment.anchor.label !== undefined ? { label: mark(comment.anchor.label) } : {}) } : undefined;
   const message = (item: PublicThreadMessage) => ({ ...item, text: mark(item.text), ...(item.authorName !== undefined ? { authorName: mark(item.authorName) } : {}) });
   const isPublic = comment.visibility === "public";
@@ -61,6 +70,12 @@ export function runnerView(comment: InboxComment, thread: PublicThreadContext | 
   };
 }
 const RUNNER_NOT_ARMED = "评论助手还没有通过启动检查。";
+/**
+ * Quote-rule refusals a run may receive before its replies stop (merge review fix): each refusal tells the model
+ * whether its text matched some other comment, so a prompt-injected run could otherwise probe other visitors' text.
+ */
+export const QUOTE_REFUSALS_PER_RUN = 2;
+export const RUNNER_REPLIES_STOPPED = "这次运行的回复已两次因为和其他评论的文字相同被拒绝，评论助手这次不能再回复；其余评论留给作者处理。";
 /** Settles every legacy inbox wake without sending it (lockdown design §3.4 service.ts). */
 export const LEGACY_WAKE_SETTLED = "评论助手已改为封闭运行，旧唤醒未发送。";
 /** Frozen into the first message of a Side created with the owner's history (never for blank Sides). */
@@ -148,8 +163,8 @@ export class BoardService {
   private composition?: CompositionSources;
   private inbox?: InboxStore;
   useInbox(inbox: InboxStore): void { this.inbox = inbox; }
-  private inboxConnections?: Pick<InboxConnections, "reply">;
-  useInboxConnections(connections: Pick<InboxConnections, "reply">): void { this.inboxConnections = connections; }
+  private inboxConnections?: Pick<InboxConnections, "reply" | "publicOnPage">;
+  useInboxConnections(connections: Pick<InboxConnections, "reply" | "publicOnPage">): void { this.inboxConnections = connections; }
   private runnerBindings?: RunnerBindings;
   /** Sealed comment runs' in-memory tokens (lockdown design §3.2). */
   useRunnerBindings(bindings: RunnerBindings): void { this.runnerBindings = bindings; }
@@ -288,23 +303,34 @@ export class BoardService {
     const identity = { kind: "agent" as const, agentId: live.actorId };
     if (operation === "inbox_list") {
       // Only this batch: one visitor's comments, never another visitor's (R8).
-      const comments: Array<ReturnType<typeof runnerView>> = [];
+      const reads: InboxComment[] = [];
       let revision = 0;
       for (const commentId of live.commentIds) {
-        try { const read = await this.inbox.read({ ...scope, commentId }, identity); revision = Math.max(revision, read.revision); comments.push(runnerView(read.comment, await this.runnerThread(read.comment, scope, identity))); }
+        try { const read = await this.inbox.read({ ...scope, commentId }, identity); revision = Math.max(revision, read.revision); reads.push(read.comment); }
         catch (error) { if (!(error instanceof BoardStoreError && error.code === "not_found")) throw error; }
       }
+      const onPage = await this.runnerOnPage(scope, reads);
+      const comments: Array<ReturnType<typeof runnerView>> = [];
+      for (const comment of reads) comments.push(await this.runnerComment(comment, scope, identity, onPage));
       return { revision, comments, total: comments.length, nextCursor: null, contentNotice: INBOX_CONTENT_NOTICE };
     }
     const commentId = typeof input.commentId === "string" ? input.commentId : "";
     if (!live.commentIds.has(commentId)) throw new BoardStoreError("forbidden", "评论助手只能处理这一批里的评论。");
     if (operation === "inbox_read") {
       const read = await this.inbox.read(InboxReadInputSchema.parse({ ...input, ...scope }), identity);
-      return { revision: read.revision, comment: runnerView(read.comment, await this.runnerThread(read.comment, scope, identity)), contentNotice: INBOX_CONTENT_NOTICE };
+      return { revision: read.revision, comment: await this.runnerComment(read.comment, scope, identity, await this.runnerOnPage(scope, [read.comment])), contentNotice: INBOX_CONTENT_NOTICE };
     }
     if (operation === "inbox_reply") {
       if (!this.inboxConnections) throw new BoardStoreError("unavailable", "Board inbox replies are unavailable");
-      const result = await this.inboxConnections.reply({ ...input, ...scope }, identity);
+      if (live.repliesStopped) throw new BoardStoreError("forbidden", RUNNER_REPLIES_STOPPED);
+      // A reply to a public comment is checked against what the page shows right now (fails closed).
+      const onPage = await this.runnerOnPage(scope, [(await this.inbox.read({ ...scope, commentId }, identity)).comment]);
+      let result: Awaited<ReturnType<InboxConnections["reply"]>>;
+      try { result = await this.inboxConnections.reply({ ...input, ...scope }, identity, onPage ? { onPage } : {}); }
+      catch (error) {
+        if (isQuoteRefusal(error) && (live.quoteRefusals = (live.quoteRefusals ?? 0) + 1) >= QUOTE_REFUSALS_PER_RUN) live.repliesStopped = true;
+        throw error;
+      }
       if (!result.replayed) { if (result.status === "draft") live.actions.drafted++; else if (result.status === "published" || result.status === "sending") live.actions.replied++; }
       return result;
     }
@@ -317,10 +343,21 @@ export class BoardService {
     if (!result.replayed) { if (triage.status === "dismissed") live.actions.dismissed++; else live.actions.triaged++; }
     return result;
   }
-  /** The visible thread of a public comment in the runner's batch (null for private comments and hidden ones). */
-  private async runnerThread(comment: InboxComment, scope: InboxScope, identity: { kind: "agent"; agentId: string }): Promise<PublicThreadContext | null> {
-    if (comment.visibility !== "public" || !this.inbox) return null;
-    return this.inbox.publicThread({ ...scope, commentId: comment.id }, identity);
+  /**
+   * What the page shows right now for the public comments among `comments` (null when none is public), read from the
+   * backend: the sidecar alone misses a withdrawal made after import. Throws when it cannot be read (fails closed).
+   */
+  private async runnerOnPage(scope: InboxScope, comments: readonly InboxComment[]): Promise<ReadonlySet<string> | null> {
+    const targets = comments.filter(comment => comment.visibility === "public");
+    if (!targets.length) return null;
+    if (!this.inboxConnections) throw new BoardStoreError("unavailable", PUBLIC_CHECK_FAILED);
+    return this.inboxConnections.publicOnPage(scope, targets);
+  }
+  /** A comment of the runner's batch as the runner sees it: a public one with its visible thread, or without its text when visitors cannot see it. */
+  private async runnerComment(comment: InboxComment, scope: InboxScope, identity: { kind: "agent"; agentId: string }, onPage: ReadonlySet<string> | null) {
+    if (comment.visibility !== "public" || !this.inbox) return runnerView(comment);
+    const view = await this.inbox.publicView({ ...scope, commentId: comment.id }, identity, onPage ?? new Set());
+    return runnerView(comment, view.thread, view.offPage);
   }
   private async withHtmlFile(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (input.htmlFile === undefined) return input;

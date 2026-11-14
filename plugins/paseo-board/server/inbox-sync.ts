@@ -10,6 +10,7 @@ import { InboxConnectInputSchema, InboxConnectionSchema, InboxSyncInputSchema, I
 import { IdSchema } from "../shared/contracts";
 import { BoardStoreError, ensureDirectory, fingerprint, parseInput, serialized } from "./store-format";
 import type { InboxPublicOutboxItem, InboxStore, PrepareReplyResult } from "./inbox-store";
+import { recordKey } from "./inbox-public-ledger";
 import type { InboxPublicRow } from "../shared/inbox";
 import { replyGuardMessage, replyGuardReason } from "./reply-guard";
 import { BIDI_CONTROL } from "../shared/bidi";
@@ -39,6 +40,27 @@ const ModerationSchema = z.object({
   threads: z.array(PublicMessageSchema.omit({ by: true }).extend({ page: z.string().max(2_000), resolved: z.boolean(), hidden: z.boolean(), anchor: z.record(z.string(), z.unknown()).optional(), replies: z.array(PublicMessageSchema).max(100), omitted: z.number().int().nonnegative() }).strict()).max(100),
 }).strict();
 export type ModerationListing = z.infer<typeof ModerationSchema>;
+/** The backend's current page state could not be read (unreachable, refused, too old or not the same deployment). */
+export const PUBLIC_CHECK_FAILED = "暂时无法向评论后端确认公开讨论现在在页面上的样子，评论助手这次不能读取或回复公开评论。";
+/**
+ * What one page shows now, from the owner moderation listing: `visible` holds the external IDs of visible roots and of
+ * the visible visitor replies of visible roots; `withdrawn` every row a visitor withdrew. A backend with public
+ * comments turned off shows nothing. A visitor message without an explicit `hidden: false` counts as not shown.
+ */
+export function pageVisibility(listing: ModerationListing): { visible: Set<string>; withdrawn: string[] } {
+  const visible = new Set<string>(), withdrawn: string[] = [];
+  for (const thread of listing.threads) {
+    if (thread.withdrawn) withdrawn.push(thread.id);
+    const rootShown = listing.publicThreads && !thread.hidden && !thread.withdrawn;
+    if (rootShown) visible.add(thread.id);
+    for (const message of thread.replies) {
+      if (message.by !== "visitor") continue;
+      if (message.withdrawn) withdrawn.push(message.id);
+      if (rootShown && message.hidden === false && !message.withdrawn) visible.add(message.id);
+    }
+  }
+  return { visible, withdrawn };
+}
 export type PublicPostOutcome = { kind: "ok"; echo: { hidden?: boolean; resolved?: boolean; withdrawn?: boolean; changed?: number } } | { kind: "transient"; error: string; retryAfterMs?: number } | { kind: "fail"; message: string; code?: string };
 const ReplyResponseSchema = z.object({
   deploymentId: z.string(), replayed: z.boolean().optional(),
@@ -281,7 +303,7 @@ export class InboxConnections {
   }
 
   /** Agent (`board_inbox_reply`) or human (`board.inbox.reply`) reply through the write-ahead outbox (DESIGN §11.7). */
-  async reply(raw: unknown, actor: InboxActor): Promise<InboxReplyResult> {
+  async reply(raw: unknown, actor: InboxActor, options: { onPage?: ReadonlySet<string> } = {}): Promise<InboxReplyResult> {
     const input = actor.kind === "user" ? parseInput(InboxHumanReplyInputSchema, raw) : parseInput(InboxReplyInputSchema, raw);
     if (actor.kind === "ingress") throw new BoardStoreError("forbidden", "Source credentials cannot reply");
     const scope = { boardId: input.boardId, expectedCreatedAt: input.expectedCreatedAt };
@@ -289,7 +311,7 @@ export class InboxConnections {
     const records = await this.load(this.path(scope));
     const allowSensitive = actor.kind === "user" && "allowSensitive" in input && input.allowSensitive === true;
     if (!allowSensitive) this.guard(text, records);
-    const prepared = await this.inbox.prepareReply({ ...scope, commentId: input.commentId, expectedCommentRevision: input.expectedCommentRevision, eventId: input.eventId, text, resolve: input.resolve, key: replyKey(scope, input.commentId, input.eventId), ...(allowSensitive ? { approvedSensitive: true } : {}) }, actor, { readySources: records.filter(record => record.state === "ready" && record.enabled).map(({ sourceId, deploymentId }) => ({ sourceId, deploymentId })) });
+    const prepared = await this.inbox.prepareReply({ ...scope, commentId: input.commentId, expectedCommentRevision: input.expectedCommentRevision, eventId: input.eventId, text, resolve: input.resolve, key: replyKey(scope, input.commentId, input.eventId), ...(allowSensitive ? { approvedSensitive: true } : {}) }, actor, { readySources: records.filter(record => record.state === "ready" && record.enabled).map(({ sourceId, deploymentId }) => ({ sourceId, deploymentId })), ...(options.onPage ? { onPage: options.onPage } : {}) });
     return this.continueReply(scope, input.commentId, prepared);
   }
   /** Human publish / retry / discard of a pending reply (`board.inbox.reply-pending`). */
@@ -476,6 +498,33 @@ export class InboxConnections {
     const reason = result.status === 404 && !result.code ? "后端版本过旧，不支持公开评论：在应用目录运行 paseo-board-app update-runtime，然后重新部署。"
       : result.status === 401 || result.status === 403 ? "后端拒绝了收件箱令牌，请在「后端来源」里更新。" : `HTTP ${result.status}${result.code ? `：${result.code}` : ""}`;
     throw new Error(`没能在评论后端${register ? "登记" : "取消"}公开评论：${reason}`);
+  }
+  /**
+   * What visitors see right now on the pages of these public comments, read fresh from each page's owner moderation
+   * listing (`?page=`). The export never re-delivers a row, so a withdrawal (or a hide made elsewhere) after import never
+   * reaches the sidecar by sync; the sealed runner therefore checks the backend before a run, before each read of a
+   * public comment and before each public reply (merge review fix). Returns the record keys (`sourceId\0externalId`) of
+   * the rows the page shows; rows the listing leaves out (older threads, trimmed messages), comments without a page
+   * address and comments of a disabled or replaced source are not in it. Withdrawals it sees are recorded in the
+   * sidecar. Throws PUBLIC_CHECK_FAILED when a page cannot be read; callers fail closed.
+   */
+  async publicOnPage(scope: InboxScope, targets: ReadonlyArray<{ sourceId: string; deploymentId: string; pageUrl?: string }>): Promise<Set<string>> {
+    const sources = await this.runtimeSources(scope), visible = new Set<string>(), pages = new Map<string, { source: RuntimeSource; pageUrl: string }>();
+    for (const target of targets) {
+      const source = sources.find(item => item.sourceId === target.sourceId && item.deploymentId === target.deploymentId && item.ready && item.enabled);
+      if (source && target.pageUrl) pages.set(`${source.sourceId}\0${target.pageUrl}`, { source, pageUrl: target.pageUrl });
+    }
+    for (const { source, pageUrl } of pages.values()) {
+      let result: Awaited<ReturnType<InboxConnections["ownerCall"]>>;
+      try { result = await this.ownerCall(source, "GET", `/public/moderation?page=${encodeURIComponent(pageUrl)}`); }
+      catch { throw new BoardStoreError("unavailable", PUBLIC_CHECK_FAILED); }
+      const listing = result.status === 200 ? ModerationSchema.safeParse(result.body) : undefined;
+      if (!listing?.success || listing.data.deploymentId !== source.deploymentId) throw new BoardStoreError("unavailable", PUBLIC_CHECK_FAILED);
+      const page = pageVisibility(listing.data);
+      for (const externalId of page.visible) visible.add(recordKey(source.sourceId, externalId));
+      if (page.withdrawn.length) await this.inbox.notePublicWithdrawn(scope, source.sourceId, page.withdrawn, { kind: "ingress", sourceId: source.sourceId, deploymentId: source.deploymentId, credential: source.credential });
+    }
+    return visible;
   }
   /** The owner moderation listing of every ready, enabled source (public threads including hidden ones). */
   async moderation(scope: InboxScope): Promise<Array<{ source: RuntimeSource; listing?: ModerationListing; error?: string; unsupported?: boolean }>> {

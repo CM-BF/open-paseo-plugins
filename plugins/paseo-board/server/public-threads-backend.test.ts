@@ -3,7 +3,7 @@ import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InboxStore } from "./inbox-store";
-import { InboxConnections, MODERATION_TOO_LARGE } from "./inbox-sync";
+import { InboxConnections, MODERATION_TOO_LARGE, PUBLIC_CHECK_FAILED } from "./inbox-sync";
 import { PublicStateOutbox } from "./inbox-public";
 import { publicThreads, shownState } from "./public-threads-rpc";
 
@@ -134,6 +134,32 @@ describe("public threads with the real backend runtime", () => {
     const record = (await inbox.publicLedger(scope, human)).records.find(item => item.externalId === thread.externalId)!;
     expect(record).toMatchObject({ withdrawn: true, hidden: true }); expect(record).not.toHaveProperty("error");
     expect(await listed()).toEqual([]);
+  });
+
+  it("the sealed runner's page check reads what the page shows now: a withdrawal after import (never re-exported) is learned; hidden rows and threads and other pages are not shown", async () => {
+    const PAGE_B = `${ORIGIN}/pages/b/`;
+    const thread = await posted(5, root("第二步看不懂"));
+    const reply = (text: string) => ({ text, pageUrl: PAGE, visibility: "public", parentId: thread.externalId, anchor: { releaseId: RELEASE } });
+    const withdrawn = await posted(6, reply("我的手机号是 13912345678，稍后撤回")), kept = await posted(7, reply("我也想知道第二步"));
+    const other = await posted(8, { ...root("另一个页面的讨论"), pageUrl: PAGE_B });
+    await sync("sync-check-1");
+    expect((await fetch(`${endpoint}/${withdrawn.externalId}/withdraw`, { method: "POST", headers: { "x-board-visitor": (7).toString(16).padStart(64, "0"), "x-forwarded-for": "198.51.100.7" } })).status).toBe(200);
+    await sync("sync-check-2");
+    const stateOf = async (externalId: string) => (await inbox.list({ ...scope, limit: 20 }, human)).comments.find(item => item.externalId === externalId)!.publicState;
+    // The root cause: the export only returns rows after the cursor, so sync never brings the withdrawal.
+    expect(await stateOf(withdrawn.externalId)).toEqual({ hidden: false, resolved: false });
+    const target = [{ sourceId: "app", deploymentId: running.deploymentId, pageUrl: PAGE }];
+    const key = (externalId: string) => `app\0${externalId}`;
+    expect([...await connections.publicOnPage(scope, target)].sort()).toEqual([key(thread.externalId), key(kept.externalId)].sort());
+    expect(await stateOf(withdrawn.externalId)).toEqual({ hidden: true, resolved: false, withdrawn: true });
+    expect([...await connections.publicOnPage(scope, [{ ...target[0], pageUrl: PAGE_B }])]).toEqual([key(other.externalId)]);
+    // Hidden on the backend by another route (here the owner API directly): the whole thread leaves the page.
+    expect((await fetch(`${endpoint}/${thread.externalId}/state`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` }, body: JSON.stringify({ hidden: true }) })).status).toBe(200);
+    expect([...await connections.publicOnPage(scope, target)]).toEqual([]);
+    // Another deployment or no page address: nothing is shown and nothing is fetched; an unreadable page fails closed.
+    expect([...await connections.publicOnPage(scope, [{ ...target[0], deploymentId: "00000000-0000-4000-8000-000000000000" }, { sourceId: "app", deploymentId: running.deploymentId }])]).toEqual([]);
+    failRoute = "/public/moderation";
+    await expect(connections.publicOnPage(scope, target)).rejects.toMatchObject({ code: "unavailable", message: PUBLIC_CHECK_FAILED });
   });
 
   it("a moderation listing full of long CJK comments stays readable: the 公开讨论 view loads", async () => {

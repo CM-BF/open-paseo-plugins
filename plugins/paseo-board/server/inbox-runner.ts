@@ -19,6 +19,8 @@ export interface RunnerBinding {
   token: string; scopeKey: string; scope: InboxScope; runId: string; actorId: string;
   commentIds: ReadonlySet<string>; armed: boolean; expiresAt: number;
   actions: InboxRunActions;
+  /** Quote-rule refusals so far; at QUOTE_REFUSALS_PER_RUN (service.ts) the run's replies stop (`repliesStopped`). */
+  quoteRefusals?: number; repliesStopped?: boolean;
 }
 /** The stable inbox identity of a Board's runner, so the per-Board reply limits count across runs. */
 export const runnerActorId = (scopeKey: string) => `paseo-board-inbox-runner:${scopeKey.slice(0, 16)}`;

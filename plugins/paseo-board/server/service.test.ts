@@ -1486,7 +1486,7 @@ describe("legacy comment-assistant wakes and inbox admission (lockdown design §
     const board = (await store.read("board"))!;
     const calls: unknown[] = [];
     service.useInbox({ list: async () => ({ ok: "list" }), read: async () => ({ ok: "read" }), triage: async () => ({ ok: "triage" }) } as never);
-    service.useInboxConnections({ reply: async (input, actor) => { calls.push({ input, actor }); return { status: "published" } as never; } });
+    service.useInboxConnections({ reply: async (input, actor) => { calls.push({ input, actor }); return { status: "published" } as never; }, publicOnPage: async () => new Set<string>() });
     const legacy = { agentId: "assistant", cwd: dir };
     for (const operation of ["inbox_list", "inbox_read", "inbox_triage", "inbox_reply"] as const) await expect(service.execute(operation, { boardId: "board", expectedCreatedAt: board.createdAt, commentId: "c", expectedCommentRevision: 1, eventId: "e", text: "hi" }, legacy)).rejects.toHaveProperty("code", "forbidden");
     expect(calls).toEqual([]);

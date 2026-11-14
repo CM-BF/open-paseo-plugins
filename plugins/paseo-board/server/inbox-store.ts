@@ -66,9 +66,10 @@ export interface InboxStoreOptions {
 /**
  * Snapshot row for the waker: identifiers and routing hints only, never visitor text. `visibility` keeps private and
  * public comments in separate batches; `publicHidden` marks a public comment visitors cannot see (hidden, withdrawn,
- * or in a hidden thread), which never wakes the runner. The status is the comment's own.
+ * or in a hidden thread), which never wakes the runner; public rows carry their `pageUrl`, a routing hint for the
+ * check of the backend's current page state before a public run. The status is the comment's own.
  */
-export interface InboxWakeRow { id: string; seq: number; revision: number; sourceId: string; deploymentId: string; status: InboxComment["status"]; visitorTag?: string; releaseId?: string; visibility?: "public"; parentCommentId?: string; publicHidden?: true }
+export interface InboxWakeRow { id: string; seq: number; revision: number; sourceId: string; deploymentId: string; status: InboxComment["status"]; visitorTag?: string; releaseId?: string; visibility?: "public"; parentCommentId?: string; publicHidden?: true; pageUrl?: string }
 export interface InboxPendingRow { commentId: string; sourceId: string; deploymentId: string; externalId: string; pending: InboxPendingReply }
 /** One public state change or page action the backend has not confirmed yet (public-threads §5.4.2). */
 export type InboxPublicOutboxItem =
@@ -91,6 +92,12 @@ export type PrepareReplyResult =
   | { kind: "pending"; pending: InboxPendingReply; comment: { sourceId: string; deploymentId: string; externalId: string }; revision: number; commentRevision: number; replayed: boolean }
   | { kind: "gone"; revision: number; commentRevision: number };
 export interface PrepareReplyInput extends InboxScope { commentId: string; expectedCommentRevision: number; eventId: string; text: string; resolve: boolean; key: string; approvedSensitive?: boolean }
+/**
+ * `onPage`: the record keys (`sourceId\0externalId`) of the public rows the backend shows right now, read fresh for this
+ * reply (InboxConnections.publicOnPage). Required for an assistant reply to a public comment: without it the reply is
+ * refused, because the sidecar alone can miss a withdrawal or hide made on the backend after import.
+ */
+export interface PrepareReplyContext { readySources: ReadonlyArray<{ sourceId: string; deploymentId: string }>; onPage?: ReadonlySet<string> }
 export interface PendingActionInput extends InboxScope { eventId: string; commentId: string; key: string; action: "publish" | "retry" | "discard"; text?: string; approvedSensitive?: boolean }
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -109,6 +116,10 @@ const OTHER_VISITOR = "回复里有一段和其他访客的评论相同（连续
 const PRIVATE_IN_PUBLIC = "回复里有一段和私密或已隐藏评论相同（连续 16 个字以上）。公开讨论里所有访客都能看到回复，请换一种说法。";
 /** The runner never answers a public comment visitors cannot see (hidden, withdrawn, or in a hidden thread). */
 export const HIDDEN_PUBLIC = "这条公开评论已经不在页面上显示（已隐藏、已撤回或所在讨论已隐藏），评论助手不能回复它。";
+/** An assistant reply to a public comment needs the backend's current page state, read just before it (fail closed). */
+export const PUBLIC_UNVERIFIED = "暂时无法向评论后端确认这条公开评论现在是否还在页面上显示，评论助手这次不能回复它。";
+/** True for the quote rule's refusals (the sealed runner counts them: each one tells the model something about other text). */
+export const isQuoteRefusal = (error: unknown) => error instanceof BoardStoreError && error.code === "invalid_input" && (error.message === OTHER_VISITOR || error.message === PRIVATE_IN_PUBLIC);
 const THREAD_REPLY_LIMIT = "这个讨论的作者回复已达 20 条上限。";
 const QUOTE_RUN = 16;
 /**
@@ -200,17 +211,28 @@ export class InboxStore {
    * replies and the confirmed owner and assistant replies attached to them (shared/inbox-thread.ts). Null for private
    * comments and for comments visitors cannot see. Never includes private, hidden or withdrawn comments, drafts or notes.
    */
-  async publicThread(raw: InboxReadInput, actor: InboxActor): Promise<PublicThreadContext | null> {
+  async publicThread(raw: InboxReadInput, actor: InboxActor, onPage?: ReadonlySet<string>): Promise<PublicThreadContext | null> {
+    return (await this.publicView(raw, actor, onPage)).thread;
+  }
+  /**
+   * The sealed runner's view of a comment's public side. `offPage` is true for a public comment visitors cannot see:
+   * hidden, withdrawn or in a hidden thread by the sidecar, or (with `onPage`, the backend's current page state read
+   * just before) not shown on the page right now. Its text is then withheld from the runner, and `thread` is null.
+   * Thread members are filtered the same way, so a row withdrawn on the backend after import never reaches the runner.
+   */
+  async publicView(raw: InboxReadInput, actor: InboxActor, onPage?: ReadonlySet<string>): Promise<{ offPage: boolean; thread: PublicThreadContext | null }> {
     const input = parseInput(InboxReadInputSchema, raw);
     return this.transact(input, actor, "read", async (state, _role, _commit, pub) => {
       const ledger = await pub.get();
       const comment = state.comments.find(item => item.id === input.commentId);
       if (!comment) throw new BoardStoreError("not_found", "Inbox comment does not exist");
       const record = findRecord(ledger, comment.sourceId, comment.externalId);
-      if (!record || publicHiddenOf(ledger, comment.sourceId, comment.externalId)) return null;
+      if (!record) return { offPage: false, thread: null };
+      const shown = (item: InboxComment) => !publicHiddenOf(ledger, item.sourceId, item.externalId) && (!onPage || onPage.has(recordKey(item.sourceId, item.externalId)));
+      if (!shown(comment)) return { offPage: true, thread: null };
       const rootExternal = record.parentId ?? comment.externalId;
-      const members = state.comments.filter(item => item.sourceId === comment.sourceId && (item.externalId === rootExternal || findRecord(ledger, item.sourceId, item.externalId)?.parentId === rootExternal));
-      return structuredClone(publicThreadContext(members.map(item => decorate(item, ledger)), comment.id));
+      const members = state.comments.filter(item => item.sourceId === comment.sourceId && (item.externalId === rootExternal || findRecord(ledger, item.sourceId, item.externalId)?.parentId === rootExternal) && shown(item));
+      return { offPage: false, thread: structuredClone(publicThreadContext(members.map(item => decorate(item, ledger)), comment.id)) };
     });
   }
 
@@ -355,7 +377,8 @@ export class InboxStore {
         if (comment.seq === undefined || comment.seq <= afterSeq) continue;
         // Public rows carry their visibility, thread and whether visitors can see them (the waker never wakes the
         // runner for a hidden one); visible visitor replies in public threads are ordinary new comments.
-        comments.push({ id: comment.id, seq: comment.seq, revision: comment.revision, sourceId: comment.sourceId, deploymentId: comment.deploymentId, status: comment.status, ...(comment.visitorTag ? { visitorTag: comment.visitorTag } : {}), ...(comment.anchor?.releaseId ? { releaseId: comment.anchor.releaseId } : {}), ...wakeInfo(ledger, comment) });
+        const info = wakeInfo(ledger, comment);
+        comments.push({ id: comment.id, seq: comment.seq, revision: comment.revision, sourceId: comment.sourceId, deploymentId: comment.deploymentId, status: comment.status, ...(comment.visitorTag ? { visitorTag: comment.visitorTag } : {}), ...(comment.anchor?.releaseId ? { releaseId: comment.anchor.releaseId } : {}), ...info, ...(info.visibility && comment.pageUrl ? { pageUrl: comment.pageUrl } : {}) });
         if (comments.length >= limit) break;
       }
       return { revision: state.revision, latestSeq: (state.nextSeq ?? 1) - 1, total: state.comments.length, policy: structuredClone(state.policy), reviewing: state.comments.filter(comment => comment.status === "reviewing").length, comments };
@@ -395,7 +418,7 @@ export class InboxStore {
    * Write-ahead pending reply, which is also the per-comment lease (DESIGN §11.7 step 2).
    * Text must already be normalized and guarded. A replay returns the current outcome of that eventId.
    */
-  async prepareReply(input: PrepareReplyInput, actor: InboxActor, context: { readySources: ReadonlyArray<{ sourceId: string; deploymentId: string }> }): Promise<PrepareReplyResult> {
+  async prepareReply(input: PrepareReplyInput, actor: InboxActor, context: PrepareReplyContext): Promise<PrepareReplyResult> {
     parseInput(InboxScopeSchema, { boardId: input.boardId, expectedCreatedAt: input.expectedCreatedAt });
     return this.transact(input, actor, "reply", async (state, role, commit, pub) => {
       const identity = actorId(actor);
@@ -412,12 +435,17 @@ export class InboxStore {
       const ledger = await pub.get(), record = findRecord(ledger, comment.sourceId, comment.externalId);
       if (role === "assistant" && actor.kind === "agent") {
         if (this.options.assistantComments && !(await this.options.assistantComments(input, actor.agentId)).has(comment.id)) deny(NOT_WOKEN);
+        // An open reply ends the attempt before the quote rule runs, so repeated attempts cannot probe other text.
+        if (comment.pendingReply && comment.pendingReply.state !== "failed") conflict("这条评论有一条回复正在发送或待审核。");
         if (record) {
-          if (publicHiddenOf(ledger, comment.sourceId, comment.externalId)) throw new BoardStoreError("invalid_input", HIDDEN_PUBLIC);
+          const onPage = context.onPage;
+          if (!onPage) throw new BoardStoreError("unavailable", PUBLIC_UNVERIFIED);
+          if (publicHiddenOf(ledger, comment.sourceId, comment.externalId) || !onPage.has(recordKey(comment.sourceId, comment.externalId))) throw new BoardStoreError("invalid_input", HIDDEN_PUBLIC);
           // Everyone on the page reads a reply to a public comment: protect every private comment (the same visitor's
-          // too) and every public one visitors cannot see (hidden, withdrawn, or in a hidden thread).
+          // too) and every public one visitors cannot see (hidden, withdrawn, or in a hidden thread), by the sidecar or
+          // by the backend's current page state.
           const index = recordIndex(ledger);
-          const notOnPage = (other: InboxComment) => !index.has(recordKey(other.sourceId, other.externalId)) || publicHiddenOf(index, other.sourceId, other.externalId);
+          const notOnPage = (other: InboxComment) => !index.has(recordKey(other.sourceId, other.externalId)) || publicHiddenOf(index, other.sourceId, other.externalId) || !onPage.has(recordKey(other.sourceId, other.externalId));
           if (quotesOtherVisitor(input.text, comment, state.comments, notOnPage)) throw new BoardStoreError("invalid_input", PRIVATE_IN_PUBLIC);
         } else if (quotesOtherVisitor(input.text, comment, state.comments)) throw new BoardStoreError("invalid_input", OTHER_VISITOR);
       }
@@ -646,6 +674,27 @@ export class InboxStore {
     const { removed, room } = makeRoom(ledger, inLedger, needed);
     if (removed) { audit(ledger, { at, actor, operation: "prune", subject: `${removed} settled records of comments no longer in the inbox` }); touch(); }
     if (!room) throw new BoardStoreError("size_limit", "公开评论记录已满：有太多公开评论的页面状态还在等后端确认。请先在「公开讨论」里处理同步失败的状态，再继续同步。");
+  }
+  /**
+   * Withdrawals the backend reports outside the export (its moderation listing, read before a runner run, read or
+   * reply). The export never re-delivers a row, so this is how a withdrawal made after import reaches the sidecar.
+   * Monotonic, like the import's upgrade: the record becomes withdrawn and hidden. Returns how many records changed.
+   */
+  async notePublicWithdrawn(scope: InboxScope, sourceId: string, externalIds: readonly string[], actor: InboxActor): Promise<number> {
+    return this.transact(scope, actor, "public-outcome", async (state, _role, _commit, pub) => {
+      const ingress = this.outcomeActor(state, actor);
+      if (ingress.sourceId !== sourceId) deny("Public state outcomes require the comment's own source");
+      const ledger = await pub.get(), at = new Date(this.now()).toISOString(), changed: string[] = [];
+      for (const externalId of new Set(externalIds)) {
+        const record = findRecord(ledger, sourceId, externalId);
+        if (!record || record.withdrawn) continue;
+        record.withdrawn = true; record.hidden = true; delete record.hiddenBy;
+        if (record.pending) { delete record.pending.hidden; if (!Object.keys(record.pending).length) delete record.pending; }
+        record.updatedAt = at; changed.push(externalId);
+      }
+      if (changed.length) await pub.commit({ actor, operation: "upgrade", subject: `withdrawn on the backend: ${changed.join(", ")}` }, at);
+      return changed.length;
+    });
   }
   /** The backend confirmed: each sent field leaves `pending` when the wanted value is still the one sent and the backend echoes it. */
   async confirmPublic(scope: InboxScope, item: InboxPublicOutboxItem, echo: { hidden?: boolean; resolved?: boolean; withdrawn?: boolean; changed?: number }, actor: InboxActor): Promise<void> {

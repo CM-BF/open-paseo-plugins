@@ -9,7 +9,7 @@ import {
 import { PREFLIGHT_BUDGET_USD, PRICE_TABLE_DATE, perRunCap, priceOf } from "../shared/assistant-models";
 import type { Board } from "../shared/contracts";
 import { BoardStoreError, canonicalJson, ensureDirectory, parseInput } from "./store-format";
-import type { InboxStore } from "./inbox-store";
+import { commentIdOf, type InboxStore } from "./inbox-store";
 import { AUTOMATION_ACTOR, IDENTITY_MISMATCH, InboxConnections, SyncFailure, type ReplyEvent, type RuntimeSource } from "./inbox-sync";
 import type { Paseo } from "./sdk";
 import { CHECKING_REFUSAL, ENV_SECRET_REFUSAL, NO_CLAUDE_REFUSAL, RESUME_REFUSAL, ROUTE_ARGS_REFUSAL, assistantModelChoices, assistantSystemPrompt, legacyNotice, modelRefusal, preflightRefusal, recommendedModelId } from "./inbox-assistant";
@@ -133,6 +133,8 @@ interface ScopeRuntime {
   checking: boolean;
   /** The scope's live run (at most one), or null. */
   run: { record: InboxRunRecord; abort: AbortController } | null;
+  /** A public batch waiting for the backend's page state since `since` (in memory; see considerWake). */
+  publicWait?: { firstSeq: number; since: number };
 }
 /**
  * The run message (exact, DESIGN §11.6): comment IDs only, never visitor text. Each comment says whether it is
@@ -586,6 +588,31 @@ export class InboxAutomation {
     if (rt.file.cost.dayUsd >= runner.dailyCapUsd) { await this.costPause(rt, now); return; }
     const board = await this.o.readBoard(rt.scope.boardId);
     if (!board || board.createdAt !== rt.scope.expectedCreatedAt) { this.markStale(rt); return; }
+    // A public batch (merge review fix): what the page shows right now, read from the backend, because the export never
+    // re-delivers a row and the sidecar alone misses a withdrawal or a hide made on the backend after import. Comments
+    // visitors cannot see leave the batch: they stay new for the owner and are never offered again. When the page cannot
+    // be read the batch waits without using the budget (maintenance retries every minute); after publicCheckWaitMs it is
+    // left to the owner, so later comments are not held up.
+    if (batch[0].visibility === "public") {
+      let onPage: ReadonlySet<string> = new Set();
+      try { onPage = await this.o.connections.publicOnPage(rt.scope, batch); }
+      catch (error) {
+        if (rt.publicWait?.firstSeq !== batch[0].seq) rt.publicWait = { firstSeq: batch[0].seq, since: now };
+        this.log(`public page check ${rt.scope.boardId}: ${error instanceof Error ? error.message : String(error)}`);
+        if (now - rt.publicWait.since < this.limits.publicCheckWaitMs) return;
+      }
+      rt.publicWait = undefined;
+      const shown = new Set([...onPage].map(key => { const [sourceId, externalId] = key.split("\0"); return commentIdOf(sourceId!, externalId!); }));
+      const kept = batch.filter(row => shown.has(row.id));
+      if (kept.length < batch.length) this.log(`public page check ${rt.scope.boardId}: ${batch.length - kept.length} comment(s) not shown on the page right now were left to the owner`);
+      if (!kept.length) {
+        rt.file.wake.seenSeq = through; rt.file.wake.skipped.otherBoard += otherBoard; rt.file.wake.skipped.unattributed += unattributed;
+        await this.save(rt);
+        this.queueWake(rt);
+        return;
+      }
+      batch.splice(0, batch.length, ...kept);
+    }
     const firstSeq = batch[0].seq, lastSeq = batch.at(-1)!.seq;
     const runId = wakeInteractionId(rt.scope, firstSeq, lastSeq, rt.file.wake.rewinds);
     const at = iso(now);
@@ -598,7 +625,7 @@ export class InboxAutomation {
     rt.file.runs.push(record);
     while (rt.file.runs.length > 50) { const index = rt.file.runs.findIndex(run => run.state !== "starting" && run.state !== "running"); rt.file.runs.splice(index < 0 ? 0 : index, 1); }
     rt.file.wake.history.push(at); this.host.history.push(at);
-    rt.file.wake.seenSeq = lastSeq; rt.file.wake.lastRunAt = at;
+    rt.file.wake.seenSeq = through; rt.file.wake.lastRunAt = at;
     rt.file.wake.skipped.otherBoard += otherBoard; rt.file.wake.skipped.unattributed += unattributed;
     const abort = new AbortController();
     rt.run = { record, abort };

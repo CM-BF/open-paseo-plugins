@@ -21,11 +21,13 @@ const DAY = 86_400_000;
 const releasePattern = /^release-[a-f0-9]{64}$/, externalIdPattern = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/, tagPattern = /^[a-f0-9]{12}$/;
 /**
  * Names other visitors read next to a comment may not contain the page's own labels (作者, AI 助手, 访客), compared
- * after NFKC with spaces removed and case folded, so "作 者", "ＡＩ助手" and "訪客" count too; nor invisible formatting
- * characters. Other punctuation is fine (迈克尔·杰克逊): the page always shows the visitor's tag after the name.
+ * after NFKC with spaces, invisible (default-ignorable, variation selectors included) and combining marks removed, case
+ * folded and Greek/Cyrillic look-alikes of a and i (and l, 1, |) read as a and i, so "作 者", "ＡＩ助手", "訪客", "АI 助手"
+ * and "作︀者" count too; nor invisible formatting characters. Other punctuation is fine (迈克尔·杰克逊): the page always
+ * shows the visitor's tag after the name.
  * The plugin applies the same rule at import (shared/inbox.ts forbiddenPublicName).
  */
-export const forbiddenPublicName = name => /\p{Cf}/u.test(name) || /作者|ai助手|访客|訪客/.test(name.normalize('NFKC').replace(/[\s\p{Z}\p{Cf}]/gu, '').toLowerCase());
+export const forbiddenPublicName = name => /\p{Cf}/u.test(name) || /作者|ai助手|访客|訪客/.test(name.normalize('NFKC').replace(/[\s\p{Z}\p{Cf}\p{Default_Ignorable_Code_Point}\p{Mn}]/gu, '').toLowerCase().replace(/[аαɑ⍺]/gu, 'a').replace(/[іιɩӏǀı1l|!¡]/gu, 'i'));
 export const NAME_NOT_ALLOWED = 'authorName of a public comment may not contain 作者, AI 助手 or 访客, or invisible formatting characters';
 /** The anchor selectors the page runtime itself produces: body, one escaped id, or a structural path of at most 12 steps. */
 const publicSelector = /^(?:body|#(?:[A-Za-z0-9_\-\u0080-￿]|\\[0-9a-fA-F]{1,6} |\\[^0-9a-fA-F\r\n\f])+|body(?: > [A-Za-z][A-Za-z0-9-]*:nth-of-type\([1-9]\d{0,4}\)){1,12})$/;

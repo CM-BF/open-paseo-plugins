@@ -3,10 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BoardStore } from "./store";
-import { BoardService } from "./service";
+import { BoardService, RUNNER_REPLIES_STOPPED } from "./service";
 import { ServiceJournal } from "./journal";
 import { HIDDEN_PUBLIC, InboxStore } from "./inbox-store";
-import { InboxConnections } from "./inbox-sync";
+import { InboxConnections, PUBLIC_CHECK_FAILED } from "./inbox-sync";
 import { InboxAutomation, type AutoClock } from "./inbox-auto";
 import { ALLOWED_TOOLS, PREFLIGHT_PROMPT } from "./inbox-lock";
 import { RunnerBindings, SealedRunner, type RunnerBinding, type StreamExec } from "./inbox-runner";
@@ -50,7 +50,7 @@ class ManualClock implements AutoClock {
 
 type WakeComment = { commentId: string; revision: number; visitorTag: string | null; canSeeReply: boolean; visibility: "public" | "private" };
 type Wake = { boardId: string; expectedCreatedAt: string; inboxRevision: number; comments: WakeComment[] };
-type View = { id: string; revision: number; text: string; visibility: "public" | "private"; parentCommentId?: string; thread?: { root: { commentId: string; text: string }; replies: Array<{ kind: string; text: string; commentId?: string }> } | null };
+type View = { id: string; revision: number; text: string; visibility: "public" | "private"; parentCommentId?: string; offPage?: true; notice?: string; authorName?: string; anchor?: unknown; replies?: unknown[]; thread?: { root: { commentId: string; text: string }; replies: Array<{ kind: string; text: string; commentId?: string }> } | null };
 type Run = { stdin: string; wake: Wake; binding: RunnerBinding; reads: View[]; outcomes: Array<{ commentId: string; status?: string; error?: { code: string; message: string } }> };
 type Model = (run: Run, call: (operation: "inbox_list" | "inbox_read" | "inbox_triage" | "inbox_reply", input: Record<string, unknown>) => Promise<unknown>) => Promise<void>;
 
@@ -183,8 +183,9 @@ describe("the sealed runner in public comment threads", () => {
       const item = run.wake.comments[0];
       const view = (await call("inbox_read", { boardId: run.wake.boardId, expectedCreatedAt: run.wake.expectedCreatedAt, commentId: item.commentId }) as { comment: View }).comment;
       run.reads.push(view);
-      // A private comment of the same visitor (or any hidden one) may not be quoted into a public reply.
-      for (const text of [`你说过“${PRIVATE_TEXT}”`, `关于“${HIDDEN_TEXT}”这件事`, "谢谢，第二步是指先保存草稿。"]) {
+      // A private comment of the same visitor (or any hidden one) may not be quoted into a public reply; the model
+      // rephrases once (a second refusal would end the run's replies, see the oracle test below).
+      for (const text of [runs.length === 3 ? `你说过“${PRIVATE_TEXT}”` : `关于“${HIDDEN_TEXT}”这件事`, "谢谢，第二步是指先保存草稿。"]) {
         await call("inbox_reply", { boardId: run.wake.boardId, expectedCreatedAt: run.wake.expectedCreatedAt, commentId: item.commentId, expectedCommentRevision: view.revision, eventId: `reply-${item.commentId}-${text.length}`, text }).then(
           result => run.outcomes.push({ commentId: item.commentId, status: (result as { status: string }).status }),
           error => run.outcomes.push({ commentId: item.commentId, error: { code: error.code, message: error.message } }));
@@ -206,7 +207,7 @@ describe("the sealed runner in public comment threads", () => {
     for (const read of runs[1].reads) expect(JSON.stringify(read)).not.toContain("不该公开的内容");
     // Quoting the visitor's own private comment or a hidden reply is refused with the exact text; the plain reply is a draft.
     const QUOTE_REFUSAL = "回复里有一段和私密或已隐藏评论相同（连续 16 个字以上）。公开讨论里所有访客都能看到回复，请换一种说法。";
-    for (const run of [mine, theirs]) expect(run.outcomes.map(outcome => outcome.status ?? outcome.error!.message)).toEqual([QUOTE_REFUSAL, QUOTE_REFUSAL, "draft"]);
+    for (const run of [mine, theirs]) expect(run.outcomes.map(outcome => outcome.status ?? outcome.error!.message)).toEqual([QUOTE_REFUSAL, "draft"]);
     expect(backend.requests.filter(request => request.method === "POST").map(request => JSON.stringify(request.body)).join("\n")).not.toContain("13800000000");
     // A private comment's view has no thread and says it is private.
     const privateRead = runs[1].reads[0];
@@ -277,5 +278,164 @@ describe("the sealed runner in public comment threads", () => {
     expect(HIDDEN_PUBLIC).toBe("这条公开评论已经不在页面上显示（已隐藏、已撤回或所在讨论已隐藏），评论助手不能回复它。");
     expect(backend.requests.some(request => request.method === "POST" && request.url.includes("/replies"))).toBe(false);
     expect(host.agents.create).not.toHaveBeenCalled();
+  }, 30_000);
+  /* ---------- merge review fixes: the backend's current page state, offPage views, the quote-rule oracle ---------- */
+  const QUOTE_REFUSAL = "回复里有一段和私密或已隐藏评论相同（连续 16 个字以上）。公开讨论里所有访客都能看到回复，请换一种说法。";
+  const SECRET = "我的手机号是 13912345678，住在朝阳区某某小区 5 号楼，请别外传";
+  const replyCalls = () => backend.requests.filter(request => request.method === "POST" && request.url.includes("/replies")).map(request => JSON.stringify(request.body)).join("\n");
+  /** Reads every comment of the batch, then replies to the first one with `text(views)`. */
+  const quoting = (text: (views: View[]) => string): Model => async (run, call) => {
+    const views: View[] = [];
+    for (const item of run.wake.comments) { const view = (await call("inbox_read", { boardId: run.wake.boardId, expectedCreatedAt: run.wake.expectedCreatedAt, commentId: item.commentId }) as { comment: View }).comment; run.reads.push(view); views.push(view); }
+    const target = views[0];
+    await call("inbox_reply", { boardId: run.wake.boardId, expectedCreatedAt: run.wake.expectedCreatedAt, commentId: target.id, expectedCommentRevision: target.revision, eventId: `q-${target.id}-${runs.length}`, text: text(views) }).then(
+      result => run.outcomes.push({ commentId: target.id, status: (result as { status: string }).status }),
+      error => run.outcomes.push({ commentId: target.id, error: { code: error.code, message: error.message } }));
+  };
+  const silent: Model = async (run, call) => {
+    for (const item of run.wake.comments) run.reads.push((await call("inbox_read", { boardId: run.wake.boardId, expectedCreatedAt: run.wake.expectedCreatedAt, commentId: item.commentId }) as { comment: View }).comment);
+  };
+
+  it("a visitor reply withdrawn after import never reaches the runner's thread and cannot be quoted, even with direct publishing on", async () => {
+    await enable("publish", { publicDirect: true });
+    model = silent;
+    const root1 = post(B, "第二步看不懂，能解释一下吗？");
+    const leaked = post(A, SECRET, { parentId: root1.externalId });
+    await settle();
+    expect(runs).toHaveLength(2);
+    // The visitor withdraws on the backend (hidden=1, hidden_by='author', seq unchanged): no export ever carries it again.
+    leaked.withdrawn = true; leaked.hidden = true;
+    await clock.advance(5_000, automation);
+    expect((await byText(SECRET)).publicState).toEqual({ hidden: false, resolved: false });
+    model = quoting(() => `有人提到：${SECRET.slice(0, 30)}`);
+    post(C, "我也想知道第二步", { parentId: root1.externalId });
+    await settle();
+    const run = runs.at(-1)!;
+    // The run read the page state from the backend: the withdrawn reply is not in the thread, and quoting it is refused.
+    expect(run.reads[0].thread!.replies.map(item => item.text)).toEqual(["我也想知道第二步"]);
+    expect(JSON.stringify(run.reads)).not.toContain("13912345678");
+    expect(run.outcomes).toEqual([{ commentId: run.wake.comments[0].commentId, error: { code: "invalid_input", message: QUOTE_REFUSAL } }]);
+    expect(replyCalls()).not.toContain("13912345678");
+    // The withdrawal reached the sidecar: the inbox shows it as withdrawn now.
+    expect((await byText(SECRET)).publicState).toEqual({ hidden: true, resolved: false, withdrawn: true });
+    expect(backend.requests.some(request => request.url.startsWith("/_board/comments/public/moderation?page=") && request.url.includes(encodeURIComponent(PAGE)))).toBe(true);
+  }, 30_000);
+
+  it("a public comment withdrawn, or hidden on the backend, after import never wakes the runner and leaves no run on the budget", async () => {
+    await enable("publish", { publicDirect: true });
+    model = quoting(() => "谢谢你的评论，我们会看看。");
+    const withdrawn = post(A, "这条我很快就撤回了");
+    await clock.advance(1_000, automation);
+    withdrawn.withdrawn = true; withdrawn.hidden = true;
+    await clock.advance(15_000, automation);
+    // Hidden on the backend by something this inbox did not see (another Board on the same backend, a restore).
+    const hidden = post(B, "这条在后端被隐藏了");
+    await clock.advance(1_000, automation);
+    hidden.hidden = true;
+    await clock.advance(15_000, automation);
+    expect(runs).toHaveLength(0);
+    expect((await byText("这条我很快就撤回了"))).toMatchObject({ status: "new", publicState: { hidden: true, withdrawn: true } });
+    expect((await byText("这条在后端被隐藏了")).status).toBe("new");
+    const status = await automation.status(scope);
+    expect(status.runs).toEqual([]); expect(status.wake).toMatchObject({ state: "idle", pendingComments: 0 });
+    // Later comments are not held up.
+    post(C, "第二步是什么意思？");
+    await settle();
+    expect(runs).toHaveLength(1);
+    expect(runs[0].outcomes[0].status).toBe("published");
+  }, 30_000);
+
+  it("fails closed when the backend's page state cannot be read: a public batch waits without a run, then is left to the owner", async () => {
+    await enable("publish");
+    model = replying();
+    backend.failModeration.push("500", "network", "404-old");
+    post(A, "公开问题：第二步是什么？");
+    await settle();
+    expect(runs).toHaveLength(0);
+    expect((await automation.status(scope)).runs).toEqual([]);
+    // Maintenance retries every minute; once the page state reads again the batch runs.
+    await clock.advance(60_000, automation); await clock.advance(60_000, automation);
+    expect(runs).toHaveLength(0);
+    await clock.advance(60_000, automation);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].outcomes.map(outcome => outcome.status)).toEqual(["draft"]);
+    // A backend that never answers: after publicCheckWaitMs the batch is left to the owner and a private comment after it runs.
+    for (let i = 0; i < 40; i++) backend.failModeration.push("500");
+    post(B, "公开问题：第三步呢？");
+    post(C, "私密问题", { public: false });
+    await settle();
+    expect(runs).toHaveLength(1);
+    for (let minute = 0; minute < 11; minute++) await clock.advance(60_000, automation);
+    expect(runs.map(run => run.wake.comments[0].visibility)).toEqual(["public", "private"]);
+    expect((await byText("公开问题：第三步呢？")).status).toBe("new");
+    // During a run, a read or reply of a public comment whose page state cannot be read is refused.
+    backend.failModeration.length = 0;
+    model = async (run, call) => {
+      backend.failModeration.push("network", "network");
+      const item = run.wake.comments[0];
+      const base = { boardId: run.wake.boardId, expectedCreatedAt: run.wake.expectedCreatedAt, commentId: item.commentId };
+      for (const [operation, input] of [["inbox_read", base], ["inbox_reply", { ...base, expectedCommentRevision: item.revision, eventId: "unverified", text: "谢谢。" }]] as const) await call(operation, input).then(
+        () => run.outcomes.push({ commentId: item.commentId, status: "ok" }),
+        error => run.outcomes.push({ commentId: item.commentId, error: { code: error.code, message: error.message } }));
+    };
+    post(D, "公开问题：第四步呢？");
+    await settle();
+    expect(runs.at(-1)!.outcomes.map(outcome => outcome.error)).toEqual([{ code: "unavailable", message: PUBLIC_CHECK_FAILED }, { code: "unavailable", message: PUBLIC_CHECK_FAILED }]);
+    expect(replyCalls()).not.toContain("谢谢。");
+  }, 30_000);
+
+  it("a comment hidden during the run is shown to the runner without its text, name, anchor or replies", async () => {
+    await enable("publish", { publicDirect: true });
+    const hiddenText = "我的身份证号是 110101199001011234，别让别人看到";
+    model = async (run, call) => {
+      const [first, second] = run.wake.comments;
+      const firstComment = (await inbox.read({ ...scope, commentId: first.commentId }, human)).comment;
+      await inbox.setPublicState({ ...scope, eventId: "human-hide-mid-run", sourceId: "app", externalId: firstComment.externalId, hidden: true }, human);
+      const view = (await call("inbox_read", { boardId: run.wake.boardId, expectedCreatedAt: run.wake.expectedCreatedAt, commentId: first.commentId }) as { comment: View }).comment;
+      run.reads.push(view);
+      const listed = (await call("inbox_list", { boardId: run.wake.boardId, expectedCreatedAt: run.wake.expectedCreatedAt }) as { comments: View[] }).comments;
+      run.reads.push(...listed);
+      const other = listed.find(item => item.id === second.commentId)!;
+      await call("inbox_reply", { boardId: run.wake.boardId, expectedCreatedAt: run.wake.expectedCreatedAt, commentId: second.commentId, expectedCommentRevision: other.revision, eventId: "mid-run", text: `你之前说${hiddenText}` }).then(
+        result => run.outcomes.push({ commentId: second.commentId, status: (result as { status: string }).status }),
+        error => run.outcomes.push({ commentId: second.commentId, error: { code: error.code, message: error.message } }));
+    };
+    post(A, hiddenText, { authorName: "小明" });
+    post(A, "另外第三步是什么意思？");
+    await settle();
+    const [run] = runs;
+    expect(run.wake.comments).toHaveLength(2);
+    const offPage = { offPage: true, notice: HIDDEN_PUBLIC, text: "", replies: [], thread: null, visibility: "public" };
+    expect(run.reads[0]).toMatchObject(offPage); expect(run.reads[0]).not.toHaveProperty("authorName"); expect(run.reads[0]).not.toHaveProperty("anchor");
+    expect(run.reads.slice(1).map(view => view.offPage ?? false)).toEqual([true, false]);
+    expect(JSON.stringify(run.reads)).not.toContain("110101199001011234"); expect(JSON.stringify(run.reads)).not.toContain("小明");
+    expect(run.outcomes[0].error).toEqual({ code: "invalid_input", message: QUOTE_REFUSAL });
+  }, 30_000);
+
+  it("the quote rule cannot be used as a repeated oracle: two refusals end a run's replies (public and private runs)", async () => {
+    await enable("publish", { publicDirect: true });
+    model = async () => undefined;
+    post(D, "我的订单号是 2026-1114-8848，收货人张三，电话保密", { public: false });
+    await settle();
+    const probes = (guesses: string[]): Model => async (run, call) => {
+      const item = run.wake.comments[0];
+      for (const [index, guess] of guesses.entries()) {
+        const current = (await call("inbox_read", { boardId: run.wake.boardId, expectedCreatedAt: run.wake.expectedCreatedAt, commentId: item.commentId }) as { comment: View }).comment;
+        await call("inbox_reply", { boardId: run.wake.boardId, expectedCreatedAt: run.wake.expectedCreatedAt, commentId: item.commentId, expectedCommentRevision: current.revision, eventId: `probe-${runs.length}-${index}`, text: `x：${guess}` }).then(
+          result => run.outcomes.push({ commentId: item.commentId, status: (result as { status: string }).status }),
+          error => run.outcomes.push({ commentId: item.commentId, error: { code: error.code, message: error.message } }));
+      }
+    };
+    model = probes(["是 2026-1114-8848", "是 2026-1114-8848", "是 2026-1114-8840", "是 2026-1114-8848"]);
+    post(A, "请帮我看看第二步");
+    await settle();
+    expect(runs.at(-1)!.outcomes.map(outcome => outcome.status ?? outcome.error!.message)).toEqual([QUOTE_REFUSAL, QUOTE_REFUSAL, RUNNER_REPLIES_STOPPED, RUNNER_REPLIES_STOPPED]);
+    // A private run's other-visitor refusals count the same way.
+    model = probes(["的订单号是 2026-1114-8848，", "的订单号是 2026-1114-8848，", "谢谢，我们会联系你。"]);
+    post(E, "私密：请帮我查订单", { public: false });
+    await settle();
+    expect(runs.at(-1)!.wake.comments[0].visibility).toBe("private");
+    expect(runs.at(-1)!.outcomes.map(outcome => outcome.error?.code === "invalid_input" ? "refused" : outcome.status ?? outcome.error!.message)).toEqual(["refused", "refused", RUNNER_REPLIES_STOPPED]);
+    expect(replyCalls()).not.toContain("8848");
   }, 30_000);
 });

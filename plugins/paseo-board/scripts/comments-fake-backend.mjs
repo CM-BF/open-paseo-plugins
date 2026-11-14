@@ -19,7 +19,7 @@ export const appKeyFor = owner => sha256('board-app-key\0' + owner).slice(0, 16)
 class InputError extends Error { constructor(code, message) { super(message); this.code = code; } }
 const invalid = message => { throw new InputError('invalid_input', message); };
 /** The backend's public name rule (backend/threads.mjs forbiddenPublicName). */
-export const forbiddenPublicName = name => /\p{Cf}/u.test(name) || /作者|ai助手|访客|訪客/.test(name.normalize('NFKC').replace(/[\s\p{Z}\p{Cf}]/gu, '').toLowerCase());
+export const forbiddenPublicName = name => /\p{Cf}/u.test(name) || /作者|ai助手|访客|訪客/.test(name.normalize('NFKC').replace(/[\s\p{Z}\p{Cf}\p{Default_Ignorable_Code_Point}\p{Mn}]/gu, '').toLowerCase().replace(/[аαɑ⍺]/gu, 'a').replace(/[іιɩӏǀı1l|!¡]/gu, 'i'));
 const ANCHOR_KEYS = ['label', 'selector', 'quote', 'prefix', 'suffix', 'start', 'end', 'releaseId'];
 const isObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
 export const normalizePageUrl = value => {

@@ -74,7 +74,9 @@ describe("public threads in the inbox ledger (public-threads §5.4, §12)", () =
   const ledgerFiles = async () => (await readdir(join(root, "inbox"))).filter(name => name.endsWith(".json"));
   const enable = async (auto: "publish" | "review" = "publish") => { const state = await list(); return store.setPolicy({ ...scope, expectedRevision: state.revision, eventId: `enable-${state.revision}`, policy: { read: true, triage: true, auto } }, human, { allowAutoEnable: true }); };
   const replyInput = (comment: { id: string; revision: number }, eventId: string, text: string) => ({ ...scope, commentId: comment.id, expectedCommentRevision: comment.revision, eventId, text, resolve: true, key: `ir-${createHash("sha256").update(eventId).digest("hex").slice(0, 48)}` });
-  const ready = { readySources: [{ sourceId: "source-1", deploymentId: "deployment-1" }] };
+  /** The backend's current page state as the runner path passes it (InboxConnections.publicOnPage): here every public row is shown. */
+  const shownOnPage = new Set(Array.from({ length: 30 }, (_, n) => `source-1\0${id(n + 1)}`));
+  const ready = { readySources: [{ sourceId: "source-1", deploymentId: "deployment-1" }], onPage: shownOnPage };
   const seedThread = () => seed([row(1, "第二步看不懂，能解释一下吗？"), row(2, "我也是，第二步写得太简略了"), row(3, "私密：我的手机号是 13800000000 请联系我"), row(4, "另一个公开讨论")], [pub(1), pub(2, { parentId: id(1) }), pub(4)]);
 
   it("imports public rows into a sidecar: the main ledger keeps only 77ca22a keys and operations; reads decorate comments", async () => {
@@ -204,7 +206,7 @@ describe("public threads in the inbox ledger (public-threads §5.4, §12)", () =
   it("the owner's opt-in decides public drafts and fails closed; hidden threads cannot be answered or quoted; the runner's thread reader shows only the page", async () => {
     let direct: boolean | "throw" = false;
     store = new InboxStore(root, { resolveBoard: async () => ({ createdAt, ownerAgentId: "owner" }), authorizeAssistant: async (_scope, agentId) => agentId === "assistant", assistantPublicDirect: async () => { if (direct === "throw") throw new Error("not loaded"); return direct; }, now: () => now });
-    await seed([row(1, "第二步看不懂，能解释一下吗？"), row(2, "我也是，第二步写得太简略了"), row(3, "私密：我的手机号是 13800000000 请联系我"), row(4, "另一个公开讨论"), row(5, "这个讨论后来整个被作者隐藏了，不能再引用"), row(6, "隐藏讨论里的一条回复，本身没有被隐藏过"), row(7, "第三个公开讨论")], [pub(1), pub(2, { parentId: id(1) }), pub(4), pub(5), pub(6, { parentId: id(5) }), pub(7)]);
+    await seed([row(1, "第二步看不懂，能解释一下吗？"), row(2, "我也是，第二步写得太简略了"), row(3, "私密：我的手机号是 13800000000 请联系我"), row(4, "另一个公开讨论"), row(5, "这个讨论后来整个被作者隐藏了，不能再引用"), row(6, "隐藏讨论里的一条回复，本身没有被隐藏过"), row(7, "第三个公开讨论"), row(8, "第四个公开讨论")], [pub(1), pub(2, { parentId: id(1) }), pub(4), pub(5), pub(6, { parentId: id(5) }), pub(7), pub(8)]);
     await enable("publish");
     const state = async (n: number, text: string) => { const prepared = await store.prepareReply(replyInput(await find(id(n)), `e-${n}-${text.length}-${now++}`, text), assistant, ready); return prepared.kind === "pending" ? prepared.pending.state : prepared.kind; };
     expect(await state(1, "第二步是先保存草稿。")).toBe("draft");
@@ -220,7 +222,10 @@ describe("public threads in the inbox ledger (public-threads §5.4, §12)", () =
     // A hidden root takes its replies off the page: neither can be answered, and the reply's text cannot be quoted.
     await store.setPublicState({ ...scope, eventId: "hide-5", sourceId: "source-1", externalId: id(5), hidden: true }, human);
     for (const n of [5, 6]) await expect(store.prepareReply(replyInput(await find(id(n)), `h-${n}`, "我们会看看。"), assistant, ready)).rejects.toMatchObject({ code: "invalid_input", message: HIDDEN_PUBLIC });
-    await expect(store.prepareReply(replyInput(await find(id(7)), "q-6", "有人说“隐藏讨论里的一条回复，本身没有被隐藏过”"), assistant, ready)).rejects.toMatchObject({ code: "invalid_input", message: "回复里有一段和私密或已隐藏评论相同（连续 16 个字以上）。公开讨论里所有访客都能看到回复，请换一种说法。" });
+    await expect(store.prepareReply(replyInput(await find(id(8)), "q-6", "有人说“隐藏讨论里的一条回复，本身没有被隐藏过”"), assistant, ready)).rejects.toMatchObject({ code: "invalid_input", message: "回复里有一段和私密或已隐藏评论相同（连续 16 个字以上）。公开讨论里所有访客都能看到回复，请换一种说法。" });
+    // A comment with an open reply answers every further attempt with the same conflict, before the quote rule runs:
+    // repeated attempts on it tell the model nothing about other text (merge review fix, quote-rule oracle).
+    await expect(store.prepareReply(replyInput(await find(id(7)), "q-7", "有人说“隐藏讨论里的一条回复，本身没有被隐藏过”"), assistant, ready)).rejects.toMatchObject({ code: "revision_conflict", message: "这条评论有一条回复正在发送或待审核。" });
     // The thread reader: the visible thread for a public comment, null for a private one and for one visitors cannot see.
     const context = (await store.publicThread({ ...scope, commentId: commentId(id(2)) }, assistant))!;
     expect([context.root.text, ...context.replies.map(item => item.text)]).toEqual(["第二步看不懂，能解释一下吗？", "我也是，第二步写得太简略了"]);
