@@ -303,7 +303,7 @@ export class InboxConnections {
   }
 
   /** Agent (`board_inbox_reply`) or human (`board.inbox.reply`) reply through the write-ahead outbox (DESIGN §11.7). */
-  async reply(raw: unknown, actor: InboxActor, options: { onPage?: ReadonlySet<string> } = {}): Promise<InboxReplyResult> {
+  async reply(raw: unknown, actor: InboxActor, options: { onPage?: ReadonlySet<string>; authorText?: readonly string[] } = {}): Promise<InboxReplyResult> {
     const input = actor.kind === "user" ? parseInput(InboxHumanReplyInputSchema, raw) : parseInput(InboxReplyInputSchema, raw);
     if (actor.kind === "ingress") throw new BoardStoreError("forbidden", "Source credentials cannot reply");
     const scope = { boardId: input.boardId, expectedCreatedAt: input.expectedCreatedAt };
@@ -311,7 +311,7 @@ export class InboxConnections {
     const records = await this.load(this.path(scope));
     const allowSensitive = actor.kind === "user" && "allowSensitive" in input && input.allowSensitive === true;
     if (!allowSensitive) this.guard(text, records);
-    const prepared = await this.inbox.prepareReply({ ...scope, commentId: input.commentId, expectedCommentRevision: input.expectedCommentRevision, eventId: input.eventId, text, resolve: input.resolve, key: replyKey(scope, input.commentId, input.eventId), ...(allowSensitive ? { approvedSensitive: true } : {}) }, actor, { readySources: records.filter(record => record.state === "ready" && record.enabled).map(({ sourceId, deploymentId }) => ({ sourceId, deploymentId })), ...(options.onPage ? { onPage: options.onPage } : {}) });
+    const prepared = await this.inbox.prepareReply({ ...scope, commentId: input.commentId, expectedCommentRevision: input.expectedCommentRevision, eventId: input.eventId, text, resolve: input.resolve, key: replyKey(scope, input.commentId, input.eventId), ...(allowSensitive ? { approvedSensitive: true } : {}) }, actor, { readySources: records.filter(record => record.state === "ready" && record.enabled).map(({ sourceId, deploymentId }) => ({ sourceId, deploymentId })), ...(options.onPage ? { onPage: options.onPage } : {}), ...(options.authorText?.length ? { authorText: options.authorText } : {}) });
     return this.continueReply(scope, input.commentId, prepared);
   }
   /** Human publish / retry / discard of a pending reply (`board.inbox.reply-pending`). */

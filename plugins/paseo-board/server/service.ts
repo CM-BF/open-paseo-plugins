@@ -76,6 +76,10 @@ export function runnerView(comment: InboxComment, thread: PublicThreadContext | 
   };
 }
 const RUNNER_NOT_ARMED = "评论助手还没有通过启动检查。";
+/** At most this many page-text fields per run are remembered for the quote rule (8 reads × 5 fields, with room). */
+const AUTHOR_TEXT_ENTRIES = 64;
+/** The author's own words in a page context: never the notice, and the passage was located, not copied, from the visitor. */
+const authorTextOf = (page: RunnerPageContext): string[] => page.passageFound ? [page.title, page.section ?? "", page.before, page.passage, page.after].filter(Boolean) : [page.title, page.section ?? "", page.opening].filter(Boolean);
 /**
  * Quote-rule refusals a run may receive before its replies stop (merge review fix): each refusal tells the model
  * whether its text matched some other comment, so a prompt-injected run could otherwise probe other visitors' text.
@@ -327,7 +331,10 @@ export class BoardService {
     if (!live.commentIds.has(commentId)) throw new BoardStoreError("forbidden", "评论助手只能处理这一批里的评论。");
     if (operation === "inbox_read") {
       const read = await this.inbox.read(InboxReadInputSchema.parse({ ...input, ...scope }), identity);
-      return { revision: read.revision, comment: await this.runnerComment(read.comment, scope, identity, await this.runnerOnPage(scope, [read.comment]), true), contentNotice: INBOX_CONTENT_NOTICE };
+      const comment = await this.runnerComment(read.comment, scope, identity, await this.runnerOnPage(scope, [read.comment]), true);
+      // The page text it was given may be quoted in its replies, even where a private comment repeats it (polish review).
+      if ("page" in comment && comment.page) live.authorText = [...live.authorText ?? [], ...authorTextOf(comment.page)].slice(-AUTHOR_TEXT_ENTRIES);
+      return { revision: read.revision, comment, contentNotice: INBOX_CONTENT_NOTICE };
     }
     if (operation === "inbox_reply") {
       if (!this.inboxConnections) throw new BoardStoreError("unavailable", "Board inbox replies are unavailable");
@@ -335,7 +342,7 @@ export class BoardService {
       // A reply to a public comment is checked against what the page shows right now (fails closed).
       const onPage = await this.runnerOnPage(scope, [(await this.inbox.read({ ...scope, commentId }, identity)).comment]);
       let result: Awaited<ReturnType<InboxConnections["reply"]>>;
-      try { result = await this.inboxConnections.reply({ ...input, ...scope }, identity, onPage ? { onPage } : {}); }
+      try { result = await this.inboxConnections.reply({ ...input, ...scope }, identity, { ...(onPage ? { onPage } : {}), ...(live.authorText?.length ? { authorText: live.authorText } : {}) }); }
       catch (error) {
         if (isQuoteRefusal(error) && (live.quoteRefusals = (live.quoteRefusals ?? 0) + 1) >= QUOTE_REFUSALS_PER_RUN) live.repliesStopped = true;
         throw error;
@@ -368,15 +375,15 @@ export class BoardService {
    * in a public thread is located by its thread root's anchor.
    */
   private async runnerComment(comment: InboxComment, scope: InboxScope, identity: { kind: "agent"; agentId: string }, onPage: ReadonlySet<string> | null, withPage = false) {
-    if (comment.visibility !== "public" || !this.inbox) return runnerView(comment, null, false, withPage ? await this.runnerPage(scope, [comment.anchor]) : null);
+    if (comment.visibility !== "public" || !this.inbox) return runnerView(comment, null, false, withPage ? await this.runnerPage(scope, [comment.anchor], comment.visibility) : null);
     const view = await this.inbox.publicView({ ...scope, commentId: comment.id }, identity, onPage ?? new Set());
-    const page = withPage && !view.offPage ? await this.runnerPage(scope, [comment.anchor, view.rootAnchor]) : null;
+    const page = withPage && !view.offPage ? await this.runnerPage(scope, [comment.anchor, view.rootAnchor], "public") : null;
     return runnerView(comment, view.thread, view.offPage, page);
   }
   /** Page context never blocks a read: an unreadable release simply gives none. */
-  private async runnerPage(scope: InboxScope, anchors: ReadonlyArray<InboxComment["anchor"]>): Promise<RunnerPageContext | null> {
+  private async runnerPage(scope: InboxScope, anchors: ReadonlyArray<InboxComment["anchor"]>, visibility: InboxComment["visibility"]): Promise<RunnerPageContext | null> {
     if (!this.pageContexts) return null;
-    try { return await this.pageContexts.forComment(scope, anchors); } catch { return null; }
+    try { return await this.pageContexts.forComment(scope, anchors, visibility); } catch { return null; }
   }
   private async withHtmlFile(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (input.htmlFile === undefined) return input;

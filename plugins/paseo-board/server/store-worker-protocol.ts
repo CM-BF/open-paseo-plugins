@@ -2,7 +2,7 @@ export const STORE_METHODS = ["read", "create", "publish", "respond", "emit", "f
 export type StoreMethod = typeof STORE_METHODS[number];
 
 /** Pure CPU work shares the same bounded queue without enlarging BoardStoreApi. */
-export const COMPUTE_METHODS = ["buildRelease", "releaseZip", "materializeAuthoredHtml"] as const;
+export const COMPUTE_METHODS = ["buildRelease", "releaseZip", "materializeAuthoredHtml", "pageText"] as const;
 export type ComputeMethod = typeof COMPUTE_METHODS[number];
 export type WorkerMethod = StoreMethod | ComputeMethod;
 export function isComputeMethod(method: unknown): method is ComputeMethod {

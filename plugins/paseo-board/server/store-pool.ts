@@ -13,6 +13,7 @@ import { BoardStoreError, assertId, ensureDirectory } from "./store-format";
 import { BoardEventHub } from "./board-events";
 import { boardPartition, isComputeMethod, type WorkerMethod } from "./store-worker-protocol";
 import type { LiveBoardProjection } from "./live-projection";
+import type { PageText } from "./inbox-page-context";
 
 interface Job { id: string; method: WorkerMethod; args: unknown[]; boardId: string; bytes: number; resolve(value: any): void; reject(error: Error): void }
 interface Slot { index: number; child?: ChildProcess; ready: boolean; queue: Job[]; bytes: number; active?: Job; timer?: ReturnType<typeof setTimeout>; starting?: Promise<void>; started: boolean; restarts: number[]; retryAt: number; recoveryTimer?: ReturnType<typeof setTimeout> }
@@ -248,6 +249,8 @@ export class BoardStorePool implements BoardStoreApi {
   buildRelease = (input: ReleaseCreateInput & { board: Board }): Promise<StaticRelease> => this.call("buildRelease", input.boardId, [input]);
   releaseZip = (releaseId: string, files: Record<string, string>): Promise<string> => this.call("releaseZip", releaseId, [releaseId, files]);
   materializeAuthoredHtml = (boardId: string, canvas: Board["canvas"]): Promise<string> => this.call("materializeAuthoredHtml", boardId, [boardId, canvas]);
+  /** The visible text of a release page for the sealed comment runner, computed in the Board's worker (never on this thread). */
+  pageText = (boardId: string, index: string, title: string): Promise<PageText | null> => this.call("pageText", boardId, [boardId, index, title]);
   diagnostics() { return this.slots.map(slot => ({ partition: slot.index, pid: slot.child?.pid, pending: slot.queue.length + Number(!!slot.active), bytes: slot.bytes, ready: slot.ready })); }
 
   close(): Promise<void> { return this.closing ??= this.closeNow(); }

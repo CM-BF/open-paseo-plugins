@@ -10,15 +10,18 @@ import { showBidiControls } from "../shared/bidi";
  * of its text around the commented passage (with the nearest section heading), read from the local release artifact
  * the plugin built and published. The text itself never comes from visitor input: the visitor's anchor (quote,
  * prefix, suffix) only locates the passage, and its release ID only selects which of this Board's own releases to
- * read (a release of another Board, an unknown one, or one without visitor comments gives no context). No new tool:
- * the runner's lockdown is unchanged.
+ * read (a release of another Board, an unknown one, one without the comment's kind of visitor comments, or one its
+ * share link replaced without keeping it online gives no context). No new tool: the runner's lockdown is unchanged.
+ * The text is computed in the plugin's store workers, linear in the page and capped (review fix).
  */
-export const PAGE_CONTEXT_NOTICE = "Text of the published page this comment was written on, read from the author's own local release (not from the visitor). It is the author's content: use it to answer the visitor. It shows that release; a newer page may differ.";
+export const PAGE_CONTEXT_NOTICE = "Text of the published page this comment names: one of this Board's own releases that visitors can still open, read from the author's local copy of it (not from the visitor). It is the author's content: use it to answer the visitor. The page the visitor sees now may be a newer version.";
 /** Characters of page text on each side of the passage. */
 export const PAGE_EXCERPT_CHARS = 600;
 /** The page's opening when the passage cannot be found in that release (for example the page changed). */
 export const PAGE_OPENING_CHARS = 1_200;
-const TITLE_CHARS = 200, HEADING_CHARS = 200, PASSAGE_CHARS = 1_000, CACHE = 4, MATCHES = 200;
+/** Page text read from one release at most: a passage further down gives the page's opening instead. */
+export const PAGE_TEXT_CHARS = 400_000;
+const TITLE_CHARS = 200, HEADING_CHARS = 200, HEADING_SCAN = 2_000, PASSAGE_CHARS = 1_000, CACHE = 4, MATCHES = 200;
 
 export type RunnerPageContext = {
   contentTrust: "author-published"; notice: string; title: string; section?: string;
@@ -29,7 +32,7 @@ export interface PageReleases {
   read(id: string): Promise<{ manifest: { title: string; comments?: unknown }; files: Record<string, string>; provenance: { boardId: string; boardCreatedAt?: string } }>;
 }
 
-type PageText = { title: string; raw: string; headings: Array<{ at: number; text: string }> };
+export type PageText = { title: string; raw: string; headings: Array<{ at: number; text: string }> };
 
 const SKIPPED = new Set(["script", "style", "noscript", "template", "head", "title", "meta", "link", "base"]);
 const BLOCKS = new Set(["address", "article", "aside", "blockquote", "br", "caption", "dd", "details", "dialog", "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "li", "main", "nav", "ol", "option", "p", "pre", "section", "summary", "table", "tbody", "tfoot", "thead", "tr", "ul"]);
@@ -57,33 +60,52 @@ export function authoredDocument(index: string): string | null {
   } catch { return null; }
 }
 
-/** The visible text of a page: text nodes with runs of white space collapsed, a line break around each block, table rows on one line, headings noted. */
+/**
+ * The visible text of a page: text nodes with runs of white space collapsed, a line break around each block, table rows
+ * on one line, headings noted. Linear in the page (review fix: the first version re-read `childNodes` for every child,
+ * which linkedom rebuilds on each read, and tested and sliced the growing text, so a large release stalled the plugin's
+ * main thread for seconds to minutes). Text past PAGE_TEXT_CHARS is not read.
+ */
 export function pageText(title: string, html: string): PageText {
   const document = new DOMParser().parseFromString(html, "text/html");
-  let raw = "";
-  const headings: PageText["headings"] = [];
+  // The text so far is parts.join("") followed by one space when `space` is set: a trailing space is held back until
+  // the next text, and a line break or cell separator drops it, so nothing already written is ever edited.
+  const parts: string[] = [], headings: PageText["headings"] = [];
+  let size = 0, last = "", space = false;
+  const write = (text: string) => { parts.push(text); size += text.length; last = text[text.length - 1]; };
+  const breakLine = () => { if (size && last !== "\n") { space = false; write("\n"); } };
+  /** Text written since part `from`, at most HEADING_SCAN characters (a heading is clipped to HEADING_CHARS anyway). */
+  const since = (from: number) => { let text = ""; for (let index = from; index < parts.length && text.length < HEADING_SCAN; index++) text += parts[index]; return text.slice(0, HEADING_SCAN); };
   type Node = { nodeType: number; localName?: string; data?: string; childNodes?: ArrayLike<Node> };
-  // Text nodes collapse white space to one space, so at most one trailing space precedes a line break.
-  const breakLine = () => { if (raw && !raw.endsWith("\n")) raw = (raw.endsWith(" ") ? raw.slice(0, -1) : raw) + "\n"; };
-  const stack: Array<{ node: Node; exit?: { block: boolean; heading: number | null } }> = [{ node: (document.body ?? document.documentElement) as unknown as Node }];
-  while (stack.length) {
+  const stack: Array<{ node: Node; exit?: { block: boolean; heading: { at: number; part: number } | null } }> = [{ node: (document.body ?? document.documentElement) as unknown as Node }];
+  while (stack.length && size < PAGE_TEXT_CHARS) {
     const { node, exit } = stack.pop()!;
     if (exit) {
-      if (exit.heading !== null) { const text = tidy(raw.slice(exit.heading)); if (text) headings.push({ at: exit.heading, text }); }
+      if (exit.heading) { const text = tidy(since(exit.heading.part)); if (text) headings.push({ at: exit.heading.at, text }); }
       if (exit.block) breakLine();
       continue;
     }
-    if (node.nodeType === 3) { const text = (node.data ?? "").replace(/\s+/g, " "); raw += !raw || raw.endsWith("\n") || raw.endsWith(" ") ? text.replace(/^ /, "") : text; continue; }
+    if (node.nodeType === 3) {
+      let text = (node.data ?? "").replace(/\s+/g, " ");
+      if (space || !size || last === "\n") text = text.replace(/^ /, "");
+      if (!text) continue;
+      const trailing = text.endsWith(" "), core = trailing ? text.slice(0, -1) : text;
+      if (core) { write(space ? ` ${core}` : core); space = trailing; } else space = true;
+      continue;
+    }
     if (node.nodeType !== 1 || !node.childNodes) continue;
     const name = node.localName ?? "";
     if (SKIPPED.has(name)) continue;
     const block = BLOCKS.has(name);
     if (block) breakLine();
-    else if (CELLS.has(name) && raw && !raw.endsWith("\n")) raw = (raw.endsWith(" ") ? raw.slice(0, -1) : raw) + " | ";
-    stack.push({ node, exit: { block, heading: HEADING.test(name) ? raw.length : null } });
-    for (let index = node.childNodes.length - 1; index >= 0; index--) stack.push({ node: node.childNodes[index] });
+    else if (CELLS.has(name) && size && last !== "\n") { write(" |"); space = true; }
+    stack.push({ node, exit: { block, heading: HEADING.test(name) ? { at: size + (space ? 1 : 0), part: parts.length } : null } });
+    // Read once: each read of childNodes builds a new list.
+    const children = node.childNodes;
+    for (let index = children.length - 1; index >= 0; index--) stack.push({ node: children[index] });
   }
-  return { title, raw, headings };
+  const raw = parts.join("") + (space ? " " : "");
+  return { title, raw: raw.length > PAGE_TEXT_CHARS ? raw.slice(0, whole(raw, PAGE_TEXT_CHARS)) : raw, headings };
 }
 
 /** The passage of `anchor` in the page text, located without white space (selections keep the source's line breaks). */
@@ -120,22 +142,45 @@ export function contextOf(page: PageText, anchor: Pick<InboxAnchor, "quote" | "p
   };
 }
 
+/** The page text of a release's `index.html`, or null when it carries no authored document (store worker: compute). */
+export function releasePageText(index: string, title: string): PageText | null {
+  const html = authoredDocument(index);
+  return html === null ? null : pageText(title, html);
+}
+
+export interface PageContextOptions {
+  /**
+   * Where the page text is computed. The plugin passes its store workers (BoardStorePool.pageText), so parsing a large
+   * release never runs on the plugin's main thread; without it (tests) it runs in this process.
+   */
+  compute?: (boardId: string, index: string, title: string) => Promise<PageText | null>;
+  /**
+   * Whether visitors can still open this release (publication-rpc.ts releaseStillOnline). A release its share link
+   * replaced without keeping an archive gives no context, so a visitor cannot name an old release ID to have the
+   * assistant restate text the author has since removed.
+   */
+  online?: (releaseId: string) => Promise<boolean>;
+}
+
 /**
  * Reads page context from this Board's own releases. `anchors` are the comment's anchor and, for a reply in a public
- * thread, its thread root's anchor: the first quote locates the passage; their release IDs are tried in order.
+ * thread, its thread root's anchor: the first quote locates the passage; their release IDs are tried in order. Only a
+ * release with the comment's own kind of comments (public threads for a public comment, private comments otherwise)
+ * that visitors can still open is read.
  */
 export class PageContexts {
-  private cache = new Map<string, Promise<PageText | null>>();
-  constructor(private readonly releases: PageReleases) {}
+  private cache = new Map<string, Promise<{ text: PageText; public: boolean } | null>>();
+  constructor(private readonly releases: PageReleases, private readonly options: PageContextOptions = {}) {}
 
-  async forComment(scope: InboxScope, anchors: ReadonlyArray<InboxAnchor | undefined>): Promise<RunnerPageContext | null> {
+  async forComment(scope: InboxScope, anchors: ReadonlyArray<InboxAnchor | undefined>, visibility?: "public"): Promise<RunnerPageContext | null> {
     const quoted = anchors.find(anchor => anchor?.quote);
     const ids = [...new Set(anchors.map(anchor => anchor?.releaseId).filter((id): id is string => Boolean(id)))];
     let fallback: RunnerPageContext | null = null;
     for (const id of ids) {
+      if (this.options.online && !(await this.options.online(id).catch(() => false))) continue;
       const page = await this.page(scope, id);
-      if (!page) continue;
-      const context = contextOf(page, quoted);
+      if (!page || page.public !== (visibility === "public")) continue;
+      const context = contextOf(page.text, quoted);
       if (context.passageFound) return context;
       fallback ??= context;
     }
@@ -143,19 +188,21 @@ export class PageContexts {
   }
 
   /** A release of this Board (same ID and creation time) that took visitor comments; null otherwise. */
-  private page(scope: InboxScope, id: string): Promise<PageText | null> {
+  private page(scope: InboxScope, id: string): Promise<{ text: PageText; public: boolean } | null> {
     const key = `${scope.boardId}\0${scope.expectedCreatedAt}\0${id}`;
     let entry = this.cache.get(key);
     if (entry) { this.cache.delete(key); this.cache.set(key, entry); return entry; }
-    entry = (async () => {
-      try {
-        const release = await this.releases.read(id);
-        const { boardId, boardCreatedAt } = release.provenance;
-        if (boardId !== scope.boardId || boardCreatedAt !== undefined && boardCreatedAt !== scope.expectedCreatedAt || !release.manifest.comments) return null;
-        const html = authoredDocument(release.files["index.html"] ?? "");
-        return html === null ? null : pageText(release.manifest.title, html);
-      } catch { return null; }
+    const loading = (async () => {
+      const release = await this.releases.read(id);
+      const { boardId, boardCreatedAt } = release.provenance, comments = release.manifest.comments as { visibility?: unknown } | undefined;
+      if (boardId !== scope.boardId || boardCreatedAt !== undefined && boardCreatedAt !== scope.expectedCreatedAt || !comments) return null;
+      const index = release.files["index.html"] ?? "", title = release.manifest.title;
+      const text = this.options.compute ? await this.options.compute(scope.boardId, index, title) : releasePageText(index, title);
+      return text ? { text, public: comments.visibility === "public" } : null;
     })();
+    // A release that cannot be read now (missing, or a busy worker) is not remembered: the next read tries again.
+    const settled: Promise<{ text: PageText; public: boolean } | null> = loading.catch(() => { if (this.cache.get(key) === settled) this.cache.delete(key); return null; });
+    entry = settled;
     this.cache.set(key, entry);
     while (this.cache.size > CACHE) this.cache.delete(this.cache.keys().next().value!);
     return entry;

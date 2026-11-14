@@ -97,7 +97,14 @@ export interface PrepareReplyInput extends InboxScope { commentId: string; expec
  * reply (InboxConnections.publicOnPage). Required for an assistant reply to a public comment: without it the reply is
  * refused, because the sidecar alone can miss a withdrawal or hide made on the backend after import.
  */
-export interface PrepareReplyContext { readySources: ReadonlyArray<{ sourceId: string; deploymentId: string }>; onPage?: ReadonlySet<string> }
+export interface PrepareReplyContext {
+  readySources: ReadonlyArray<{ sourceId: string; deploymentId: string }>; onPage?: ReadonlySet<string>;
+  /**
+   * The author's published page text the sealed run was given (board_inbox_read `page`). A reply may repeat it even
+   * where a private comment happens to contain the same words: they are on the public page already (polish review).
+   */
+  authorText?: readonly string[];
+}
 export interface PendingActionInput extends InboxScope { eventId: string; commentId: string; key: string; action: "publish" | "retry" | "discard"; text?: string; approvedSensitive?: boolean }
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -125,14 +132,18 @@ const QUOTE_RUN = 16;
 /**
  * True when the reply repeats a 16-character run of a comment written by another visitor (whitespace-insensitive).
  * For a reply to a public comment (`protect` given), any private or hidden comment is protected instead, including
- * the same visitor's: the reply is seen by every visitor of the page (public-threads §12 A1).
+ * the same visitor's: the reply is seen by every visitor of the page (public-threads §12 A1). Runs that also appear in
+ * `authorText` (the author's published page text the run was given, never visitor text) are not counted: quoting the
+ * page is what the assistant is asked to do, and a visitor who pastes page text into a private comment must not stop it.
  */
-function quotesOtherVisitor(text: string, comment: InboxComment, comments: readonly InboxComment[], protect?: (other: InboxComment) => boolean): boolean {
+function quotesOtherVisitor(text: string, comment: InboxComment, comments: readonly InboxComment[], protect?: (other: InboxComment) => boolean, authorText: readonly string[] = []): boolean {
   const squash = (value: string) => value.replace(/\s+/g, " ").trim();
   const reply = squash(text);
   if (reply.length < QUOTE_RUN) return false;
   const runs = new Set<string>();
   for (let index = 0; index + QUOTE_RUN <= reply.length; index++) runs.add(reply.slice(index, index + QUOTE_RUN));
+  for (const page of authorText) { const body = squash(page); for (let index = 0; index + QUOTE_RUN <= body.length && runs.size; index++) runs.delete(body.slice(index, index + QUOTE_RUN)); }
+  if (!runs.size) return false;
   for (const other of comments) {
     if (other.id === comment.id) continue;
     if (protect ? !protect(other) : other.visitorTag !== undefined && other.visitorTag === comment.visitorTag) continue;
@@ -449,8 +460,8 @@ export class InboxStore {
           // by the backend's current page state.
           const index = recordIndex(ledger);
           const notOnPage = (other: InboxComment) => !index.has(recordKey(other.sourceId, other.externalId)) || publicHiddenOf(index, other.sourceId, other.externalId) || !onPage.has(recordKey(other.sourceId, other.externalId));
-          if (quotesOtherVisitor(input.text, comment, state.comments, notOnPage)) throw new BoardStoreError("invalid_input", PRIVATE_IN_PUBLIC);
-        } else if (quotesOtherVisitor(input.text, comment, state.comments)) throw new BoardStoreError("invalid_input", OTHER_VISITOR);
+          if (quotesOtherVisitor(input.text, comment, state.comments, notOnPage, context.authorText)) throw new BoardStoreError("invalid_input", PRIVATE_IN_PUBLIC);
+        } else if (quotesOtherVisitor(input.text, comment, state.comments, undefined, context.authorText)) throw new BoardStoreError("invalid_input", OTHER_VISITOR);
       }
       if (record) {
         // At most 20 owner and assistant replies per public thread: the root plus its visitor replies (§12 A22).

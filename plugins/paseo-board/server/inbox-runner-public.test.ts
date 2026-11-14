@@ -152,7 +152,7 @@ describe("the sealed runner in public comment threads", () => {
     expect(runs.map(run => run.reads.map(view => view.text))).toEqual([["网页本身不保存评论，那评论存在哪里？"], ["我也想知道：作者的电脑没开，新评论会不会丢？"]]);
     // Both reads carry the author's text around the passage the thread is about (the reply via its root's anchor).
     for (const run of runs) expect(run.reads[0].page).toEqual({
-      contentTrust: "author-published", notice: expect.stringContaining("author's own local release"), title: "公开讨论", section: "评论存在哪里",
+      contentTrust: "author-published", notice: expect.stringContaining("author's local copy"), title: "公开讨论", section: "评论存在哪里",
       passageFound: true, before: "评论测试页\n评论存在哪里\n", passage: "网页本身不保存评论", after: "。评论存在作者自己部署的评论后端里，作者的电脑关机以后访客仍然可以发评论。",
     });
     expect(runs.map(run => run.outcomes.map(outcome => outcome.status))).toEqual([["draft"], ["draft"]]);
@@ -459,5 +459,71 @@ describe("the sealed runner in public comment threads", () => {
     expect(runs.at(-1)!.wake.comments[0].visibility).toBe("private");
     expect(runs.at(-1)!.outcomes.map(outcome => outcome.error?.code === "invalid_input" ? "refused" : outcome.status ?? outcome.error!.message)).toEqual(["refused", "refused", RUNNER_REPLIES_STOPPED]);
     expect(replyCalls()).not.toContain("8848");
+  }, 30_000);
+
+  /* ---------- P3 review fixes: quoting the page under the quote rule; which release a comment can name ---------- */
+
+  const PAGE_HTML = "<main><h1>评论测试页</h1><h2>评论存在哪里</h2><p>网页本身不保存评论。评论存在作者自己部署的评论后端里，作者的电脑关机以后访客仍然可以发评论。</p><h2>多久回复</h2><p>评论助手通常在一分钟左右写好回复，作者每天晚上会再看一遍所有评论。</p></main>";
+  const makeRelease = async (html: string, visibility?: "public", repository = new ReleaseRepository(join(root, "releases"))) => {
+    const board = (await store.read(scope.boardId))!;
+    const release = await repository.create({ board: { ...board, canvas: { ...board.canvas, html, patches: [] } }, boardId: board.id, expectedCanvasBase: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion }, publicData: {}, comments: { apiBase: "https://api.example.internal", appKey: "0123456789abcdef", ...(visibility ? { visibility } : {}) } });
+    ownReleases.add(release.manifest.releaseId);
+    return { repository, releaseId: release.manifest.releaseId };
+  };
+  /** The model answers from the page context, quoting the passage and the rest of its line, as the prompt asks. */
+  const quotingPage = (fallback = "谢谢，我们会补充。"): Model => replying(view => {
+    const page = view.page as { passageFound?: boolean; passage?: string; after?: string } | undefined;
+    return page?.passageFound ? `页面上写着：「${page.passage}${String(page.after).split("\n")[0]}」` : fallback;
+  });
+
+  it("a reply may quote the author's page even where another visitor's private comment pasted the same words (P3 review)", async () => {
+    const pub = await makeRelease(PAGE_HTML, "public"), priv = await makeRelease(PAGE_HTML, undefined, pub.repository);
+    service.usePageContexts(new PageContexts(pub.repository));
+    await enable("review");
+    model = async () => undefined;
+    // Visitor A pastes two page sentences into a private comment, with something of their own.
+    const secret = "我的手机号 13800001111，千万别公开给别人看";
+    post(A, `评论存在作者自己部署的评论后端里，作者的电脑关机以后访客仍然可以发评论。评论助手通常在一分钟左右写好回复，作者每天晚上会再看一遍所有评论。${secret}`, { public: false, anchor: { quote: "网页本身不保存评论", releaseId: priv.releaseId } });
+    await settle();
+    // Before the fix: two PRIVATE_IN_PUBLIC refusals, then RUNNER_REPLIES_STOPPED for an unrelated third question.
+    model = quotingPage();
+    post(B, "评论存在哪里？", { anchor: { quote: "网页本身不保存评论", suffix: "。评论存在", releaseId: pub.releaseId } });
+    post(B, "多久能收到回复？", { anchor: { quote: "评论助手通常", releaseId: pub.releaseId } });
+    post(B, "这页叫什么？", { anchor: { quote: "评论测试页", releaseId: pub.releaseId } });
+    await settle();
+    expect(runs.at(-1)!.reads.map(view => view.page?.passageFound)).toEqual([true, true, true]);
+    expect(runs.at(-1)!.outcomes.map(outcome => outcome.status ?? outcome.error!.message)).toEqual(["draft", "draft", "draft"]);
+    // The visitor's own words are still protected: only the page's text is exempt.
+    model = replying(() => `另一位访客说：${secret}`);
+    post(C, "有人留过手机号吗？", { anchor: { quote: "网页本身不保存评论", releaseId: pub.releaseId } });
+    await settle();
+    expect(runs.at(-1)!.outcomes.map(outcome => outcome.error?.message ?? outcome.status)).toEqual([QUOTE_REFUSAL]);
+    // A private run quoting the page is not refused either (the other-visitor rule).
+    model = quotingPage();
+    post(E, "私密：评论存在哪里？", { public: false, anchor: { quote: "网页本身不保存评论", suffix: "。评论存在", releaseId: priv.releaseId } });
+    await settle();
+    expect(runs.at(-1)!.wake.comments[0].visibility).toBe("private");
+    expect(runs.at(-1)!.outcomes.map(outcome => outcome.status ?? outcome.error!.message)).toEqual(["draft"]);
+    expect(replyCalls()).not.toContain("13800001111");
+  }, 30_000);
+
+  it("a comment that names an older release its share link replaced, or a release of the other kind, gets no page text (P3 review)", async () => {
+    const old = await makeRelease("<main><h2>价格</h2><p>旧版本：内部渠道报价每单 9800 元，只给合作伙伴。</p></main>", "public");
+    const current = await makeRelease("<main><h2>价格</h2><p>价格请联系作者。</p></main>", "public", old.repository);
+    const priv = await makeRelease("<main><h2>价格</h2><p>私密版本：内部渠道报价每单 9800 元。</p></main>", undefined, old.repository);
+    // The share link now shows `current`; `old` was not kept online (publication-rpc.ts releaseStillOnline).
+    service.usePageContexts(new PageContexts(old.repository, { online: async id => id !== old.releaseId }));
+    await enable("review");
+    model = async (run, call) => { for (const item of run.wake.comments) run.reads.push((await call("inbox_read", { boardId: run.wake.boardId, expectedCreatedAt: run.wake.expectedCreatedAt, commentId: item.commentId }) as { comment: View }).comment); };
+    // Posted on the current page, but the anchor names the old release (or a private one) and quotes its text.
+    post(B, "内部渠道报价是多少？", { anchor: { quote: "内部渠道报价", releaseId: old.releaseId } });
+    post(B, "私密版本写了什么？", { anchor: { quote: "内部渠道报价", releaseId: priv.releaseId } });
+    post(B, "价格怎么算？", { anchor: { quote: "价格请联系作者", releaseId: current.releaseId } });
+    await settle();
+    const reads = runs.at(-1)!.reads;
+    expect(reads.map(view => view.text)).toEqual(["内部渠道报价是多少？", "私密版本写了什么？", "价格怎么算？"]);
+    expect(reads[0].page).toBeUndefined(); expect(reads[1].page).toBeUndefined();
+    expect(reads[2].page).toMatchObject({ contentTrust: "author-published", passageFound: true, passage: "价格请联系作者" });
+    expect(JSON.stringify(reads)).not.toContain("9800");
   }, 30_000);
 });

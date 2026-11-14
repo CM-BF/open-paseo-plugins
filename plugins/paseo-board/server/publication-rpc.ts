@@ -70,6 +70,21 @@ const isInFlight = (job: PagesJob, now: number) => !isMerged(job) && job.status 
 const createdTime = (job: PagesJob) => { const time = job.createdAt ? Date.parse(job.createdAt) : NaN; return Number.isFinite(time) ? time : -Infinity; };
 // Missing createdAt (oldest journals) sorts first; NaN from -Infinity ties falls through to jobId.
 const byCreated = (a: Owned, b: Owned) => createdTime(a.job) - createdTime(b.job) || (a.job.jobId < b.job.jobId ? -1 : a.job.jobId > b.job.jobId ? 1 : 0);
+/**
+ * Whether visitors can still open this release, as far as the Pages journal knows (polish review, for the comment
+ * runner's page context): false only when every share publication of it is a Pages-root (workflow) deployment that a
+ * later one on the same repository has replaced. Branch-directory shares keep each version online (`v/<hex>/` or the
+ * release's own directory), and a release never published through Pages here is hosted elsewhere: both count as online.
+ */
+export async function releaseStillOnline(releaseId: string, pages: Pick<PagesGateway, "list">): Promise<boolean> {
+  const jobs = await pages.list(undefined, { skipInvalid: true });
+  const after = (other: PagesJob, job: PagesJob) => { const a = createdTime(other), b = createdTime(job); return a > b || a === b && other.jobId > job.jobId; };
+  const published = jobs.filter(job => job.releaseId === releaseId && isMerged(job));
+  return !published.length || published.some(job => isLegacyMode(job) || !jobs.some(other => other.releaseId !== releaseId && isMerged(other) && !isLegacyMode(other)
+    && hostOf(other) === hostOf(job) && other.repository === job.repository && after(other, job)));
+}
+/** A share's version link of one release: `<link>v/<hex>/` (the archive path the public viewer recognizes, P4). */
+export const versionPage = (link: string, releaseId: string) => `${link.endsWith("/") ? link : `${link}/`}v/${releaseId.slice(8)}/`;
 export const shareSeriesId = (githubHost: string, repository: string, key: string) => `share-${sha256(canonicalJson({ githubHost, repository, key })).slice(0, 40)}`;
 
 /** Share links of one Board, derived from the Pages journal joined with private release provenance. */
@@ -248,7 +263,9 @@ export function registerPublicationRpc(server: PluginServerContext, options: {
           if (!options.publicReleases) throw new Error(COMMENTS_PUBLIC_NEEDS_INBOX);
           const probe = await probeComments({ apiBase }, options.commentsFetcher);
           if (!probe.deploymentId) throw new Error(`连接不上 ${apiBase}`);
-          await options.publicReleases.register(board, probe.deploymentId, releaseId, false, sharePages);
+          // Also the release's version link: releases built before P4 keyed their archive copy's threads there, and
+          // another share's release could otherwise still read and post to it (polish review). Two pages per request.
+          await options.publicReleases.register(board, probe.deploymentId, releaseId, false, share.link ? [share.link, versionPage(share.link, releaseId)] : []);
         } catch (error) { problems.add((error instanceof Error ? error.message : String(error)).replace(/[。.]+$/, "").slice(0, 200)); }
       }
       if (problems.size) commentsWarning = commentsUnregisterWarning([...problems].join("；"));

@@ -5,6 +5,7 @@ import { buildRelease, releaseZip } from "./static-release";
 import { authoredSourceFailure, describeAuthoring } from "./authored-source";
 import { ReleaseIdSchema } from "../shared/release-contracts";
 import { BoardStoreError } from "./store-format";
+import { releasePageText } from "./inbox-page-context";
 
 let store: BoardStore | undefined;
 let initialized = false;
@@ -49,6 +50,10 @@ process.on("message", async (message: any) => {
       const authored = describeAuthoring(args[1]);
       if (!authored.replay.complete || authored.materializedAuthoredHtml === null) throw new BoardStoreError("edit_conflict", authoredSourceFailure("Cannot materialize current authored source", authored));
       value = authored.materializedAuthoredHtml;
+    } else if (method === "pageText") {
+      // The sealed comment runner's page context (inbox-page-context.ts): parsed here, off the plugin's main thread.
+      if (typeof args[1] !== "string" || typeof args[2] !== "string") throw new BoardStoreError("invalid_input", "Page text needs a release index and title");
+      value = releasePageText(args[1], args[2]);
     } else {
       const operation = store[method as StoreMethod] as (...input: any[]) => Promise<unknown>;
       value = await operation.apply(store, args);

@@ -9,7 +9,7 @@ import {
 } from "../shared/release-contracts";
 import type { InboxConnection } from "../shared/inbox-connection";
 import { probeComments } from "./comments-probe";
-import { registerPublicationRpc, type PagesGateway } from "./publication-rpc";
+import { registerPublicationRpc, releaseStillOnline, versionPage, type PagesGateway } from "./publication-rpc";
 import { ReleaseRepository, buildRelease } from "./static-release";
 import { BoardStore } from "./store";
 import { STATIC_VIEWER_PUBLIC_COMMENTS_VERSION, staticViewerRuntime, staticViewerShell } from "../shared/static-viewer";
@@ -160,13 +160,36 @@ describe("turning a public share off or private never depends on its backend (re
     f.register.mockRejectedValueOnce(new Error(COMMENTS_PUBLIC_NEEDS_INBOX));
     const toPrivate = await update(privateBlock); if (!("manifest" in toPrivate)) throw new Error("Expected a rebuild");
     expect(toPrivate.manifest.viewerVersion).toBe(4); expect(toPrivate.commentsWarning).toContain("公开评论需要先把这个后端连接到本 Board 的评论收件箱");
-    // Once it works, the release is withdrawn with the share's page, which closes that page on the backend.
+    // Once it works, the release is withdrawn with the share's page, which closes that page on the backend, and with
+    // the release's own version link, where releases built before P4 kept their archive copy's threads (polish review:
+    // another share's registered release could still read and post there).
     const done = await update(privateBlock);
     expect(done.commentsWarning).toBeUndefined();
-    expect(f.register).toHaveBeenLastCalledWith(expect.objectContaining({ id: "work" }), backend.deploymentId, original.releaseId, false, [link]);
+    expect(f.register).toHaveBeenLastCalledWith(expect.objectContaining({ id: "work" }), backend.deploymentId, original.releaseId, false, [link, `${link}v/${original.releaseId.slice(8)}/`]);
+    expect(versionPage(link.slice(0, -1), original.releaseId)).toBe(`${link}v/${original.releaseId.slice(8)}/`);
     // Back to 公开 through an update: the new release reopens the page.
     const reopened = await update(publicBlock);
     expect(f.register).toHaveBeenLastCalledWith(expect.anything(), backend.deploymentId, "manifest" in reopened ? reopened.manifest.releaseId : original.releaseId, true, [link]);
+  });
+});
+
+describe("which releases visitors can still open (polish review: the comment runner's page context)", () => {
+  it("a Pages-root release a later publication replaced is gone; branch-directory versions, unmerged attempts and other hosting stay", async () => {
+    const id = (char: string) => `release-${char.repeat(64)}`, R1 = id("1"), R2 = id("2"), R3 = id("3");
+    const job = (jobId: string, releaseId: string, at: string, extra: Record<string, unknown> = {}) => ({ eventId: jobId, jobId, releaseId, artifactHash: "a".repeat(64), account: "fixture", repository: "fixture/site", branch: "b", status: "live", mergedSha: "c".repeat(40), shareKey: "s" + "d".repeat(20), publicationMode: "workflow", createdAt: at, ...extra });
+    const online = (jobs: unknown[], releaseId: string) => releaseStillOnline(releaseId, { list: async () => jobs as never });
+    const replaced = [job("j1", R1, "2026-11-13T00:00:00.000Z"), job("j2", R2, "2026-11-13T01:00:00.000Z")];
+    expect(await online(replaced, R1)).toBe(false); expect(await online(replaced, R2)).toBe(true);
+    // Published again after the newer one: on the link again.
+    expect(await online([...replaced, job("j3", R1, "2026-11-13T02:00:00.000Z")], R1)).toBe(true);
+    // A later attempt that never merged, or a publication to another repository or host, replaces nothing.
+    expect(await online([replaced[0], job("j2", R2, "2026-11-13T01:00:00.000Z", { status: "failed", mergedSha: undefined })], R1)).toBe(true);
+    expect(await online([replaced[0], job("j2", R2, "2026-11-13T01:00:00.000Z", { repository: "fixture/other" })], R1)).toBe(true);
+    expect(await online([replaced[0], job("j2", R2, "2026-11-13T01:00:00.000Z", { githubHost: "github.example.com" })], R1)).toBe(true);
+    // Branch-directory shares keep every version online under v/<hex>/ (or the release's own directory).
+    expect(await online([job("j1", R1, "2026-11-13T00:00:00.000Z", { publicationMode: "legacy-branch" }), job("j2", R2, "2026-11-13T01:00:00.000Z", { publicationMode: "legacy-branch" })], R1)).toBe(true);
+    // Never published through Pages here: hosted elsewhere, so nothing says it is gone.
+    expect(await online(replaced, R3)).toBe(true); expect(await online([], R3)).toBe(true);
   });
 });
 

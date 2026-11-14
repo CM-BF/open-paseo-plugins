@@ -15,7 +15,7 @@ import { copyBoardRpc } from "../shared/board-copy";
 import { BoardCopies } from "./board-copy";
 import { ReleaseRepository } from "./static-release";
 import { GitHubPagesManager } from "./github-pages";
-import { registerPublicationRpc } from "./publication-rpc";
+import { registerPublicationRpc, releaseStillOnline } from "./publication-rpc";
 import { CompositionSources } from "./composition";
 import { compositionSourcesRpc, setCompositionSourcesRpc, inspectCompositionSourceRpc, syncCompositionSourceRpc, readCompositionSourceRpc } from "../shared/composition";
 import { InboxStore } from "./inbox-store";
@@ -62,8 +62,6 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   service.useLive(live);
   const copies = new BoardCopies(join(root, "copies"), store, board => store.materializeAuthoredHtml(board.id, board.canvas));
   const releases = new ReleaseRepository(join(root, "releases"), store);
-  // The sealed runner reads the page a comment was written on from this Board's own local releases (polish P3).
-  service.usePageContexts(new PageContexts(releases));
   // The sealed comment runner (lockdown design §3): in-memory run tokens shared by the bridge, the service and
   // the coordinator; one `claude -p` process per batch through the Board's stable MCP launcher.
   const runnerBindings = new RunnerBindings();
@@ -74,6 +72,9 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   automation = new InboxAutomation({ rootDir: root, inbox, connections: inboxConnections, service, readBoard: id => store.read(id), releases, log, runner, bindings: runnerBindings, ...options.inboxAutomation });
   const inboxAuto = automation;
   const pages = new GitHubPagesManager(join(root, "pages"), releases);
+  // The sealed runner reads the page a comment names from this Board's own local releases that visitors can still
+  // open (polish P3 and its review); the text is computed in the store workers, never on this thread.
+  service.usePageContexts(new PageContexts(releases, { compute: (boardId, index, title) => store.pageText(boardId, index, title), online: releaseId => releaseStillOnline(releaseId, pages) }));
   const bridge = new BoardBridge(service);
   const removers: Array<() => void> = [];
   let stopped = false;

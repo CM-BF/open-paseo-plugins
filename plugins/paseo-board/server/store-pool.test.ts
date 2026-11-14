@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url";
 import { DOMParser } from "linkedom";
 import { componentIdentityFor } from "../shared/component-identity";
 import { describeAuthoring } from "./authored-source";
-import { buildRelease, releaseZip } from "./static-release";
+import { ReleaseRepository, buildRelease, releaseZip } from "./static-release";
+import { PageContexts, releasePageText } from "./inbox-page-context";
 
 let currentWorkerSource: Promise<string> | undefined;
 function compileCurrentWorker() {
@@ -134,6 +135,30 @@ describe("bounded Board worker processes", () => {
     expect(store.diagnostics().every(slot => slot.pending === 0 && slot.bytes === 0)).toBe(true);
     console.log(`publication worker: ${html.length} source bytes; coordinator timer ${timerMs.toFixed(1)}ms; existing two children reused`);
   });
+
+  it("reads the comment runner's page text in the worker: a large release never stalls the coordinator (P3 review)", async () => {
+    const store = pool({ workers: 2, workerSource: await compileCurrentWorker() });
+    const id = "page-context-heavy", rows = Array.from({ length: 16_000 }, (_, index) => `<p>第 ${index} 段：这是一段用于测量的作者文字，内容没有意义，只是让页面变大一些。</p>`).join("");
+    const board = await store.create({ id, title: "大页面", html: `<main><h1>大页面</h1>${rows}<p>最后一句话。</p></main>` });
+    const repository = new ReleaseRepository(join(directory, "releases"), store);
+    const release = await repository.create({ board, boardId: id, expectedCanvasBase: { revision: 1, documentVersion: 1 }, publicData: {}, comments: { apiBase: "https://api.example.internal", appKey: "0123456789abcdef", visibility: "public" } });
+    expect(Buffer.byteLength(release.files["index.html"])).toBeGreaterThan(2_000_000);
+    // The worker's text is exactly the in-process one.
+    expect(await store.pageText(id, release.files["index.html"], release.manifest.title)).toEqual(releasePageText(release.files["index.html"], release.manifest.title));
+    let last = performance.now(), gap = 0;
+    const ticker = setInterval(() => { const now = performance.now(); gap = Math.max(gap, now - last); last = now; }, 10);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 50)); gap = 0; last = performance.now();
+      const contexts = new PageContexts(repository, { compute: (boardId, index, title) => store.pageText(boardId, index, title) });
+      const context = await contexts.forComment({ boardId: id, expectedCreatedAt: board.createdAt }, [{ quote: "第 5000 段", releaseId: release.manifest.releaseId }], "public");
+      expect(context).toMatchObject({ passageFound: true, passage: "第 5000 段", section: "大页面" });
+      await new Promise(resolve => setTimeout(resolve, 30));
+    } finally { clearInterval(ticker); }
+    // Before the fix one such read blocked this thread for about 8 s; reading the release file itself stays well under this.
+    expect(gap).toBeLessThan(400);
+    await expect(store.pageText(id, 42 as never, "t")).rejects.toMatchObject({ code: "invalid_input" });
+    console.log(`page text worker: ${release.files["index.html"].length} index chars; largest coordinator timer gap ${gap.toFixed(1)}ms`);
+  }, 60_000);
 
   it("applies shared queue/byte limits and safe pure-computation failure semantics", async () => {
     const source = await compileCurrentWorker();

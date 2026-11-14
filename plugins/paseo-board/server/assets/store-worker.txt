@@ -4108,9 +4108,9 @@ var require_parse = __commonJS({
         ancestorRules.push(rule);
       }
       function parseError(message, isNested) {
-        var lines = token.substring(0, i).split("\n");
-        var lineCount = lines.length;
-        var charCount = lines.pop().length + 1;
+        var lines2 = token.substring(0, i).split("\n");
+        var lineCount = lines2.length;
+        var charCount = lines2.pop().length + 1;
         var error62 = new Error(message + " (line " + lineCount + ", char " + charCount + ")");
         error62.line = lineCount;
         error62["char"] = charCount;
@@ -7248,14 +7248,14 @@ function toDotPath(_path) {
   return segs.join("");
 }
 function prettifyError(error62) {
-  const lines = [];
+  const lines2 = [];
   const issues = [...error62.issues].sort((a, b) => (a.path ?? []).length - (b.path ?? []).length);
   for (const issue2 of issues) {
-    lines.push(`\u2716 ${issue2.message}`);
+    lines2.push(`\u2716 ${issue2.message}`);
     if (issue2.path?.length)
-      lines.push(`  \u2192 at ${toDotPath(issue2.path)}`);
+      lines2.push(`  \u2192 at ${toDotPath(issue2.path)}`);
   }
-  return lines.join("\n");
+  return lines2.join("\n");
 }
 
 // node_modules/zod/v4/core/parse.js
@@ -8090,9 +8090,9 @@ var Doc = class {
       return;
     }
     const content = arg;
-    const lines = content.split("\n").filter((x) => x);
-    const minIndent = Math.min(...lines.map((x) => x.length - x.trimStart().length));
-    const dedented = lines.map((x) => x.slice(minIndent)).map((x) => " ".repeat(this.indent * 2) + x);
+    const lines2 = content.split("\n").filter((x) => x);
+    const minIndent = Math.min(...lines2.map((x) => x.length - x.trimStart().length));
+    const dedented = lines2.map((x) => x.slice(minIndent)).map((x) => " ".repeat(this.indent * 2) + x);
     for (const line of dedented) {
       this.content.push(line);
     }
@@ -37925,7 +37925,7 @@ var BoardStore = class {
 
 // server/store-worker-protocol.ts
 var STORE_METHODS = ["read", "create", "publish", "respond", "emit", "feed", "rename", "edit", "recordDecision", "saveState", "markUpdatesSeen", "addInteraction", "updateInteraction", "projectSideAgent", "updateExtraction", "projectPublic"];
-var COMPUTE_METHODS = ["buildRelease", "releaseZip", "materializeAuthoredHtml"];
+var COMPUTE_METHODS = ["buildRelease", "releaseZip", "materializeAuthoredHtml", "pageText"];
 function isComputeMethod(method) {
   return typeof method === "string" && COMPUTE_METHODS.includes(method);
 }
@@ -44105,6 +44105,91 @@ function releaseZip(files) {
   return Buffer.concat([...local, directory, end]);
 }
 
+// server/inbox-page-context.ts
+var PAGE_TEXT_CHARS = 4e5;
+var HEADING_SCAN = 2e3;
+var SKIPPED = /* @__PURE__ */ new Set(["script", "style", "noscript", "template", "head", "title", "meta", "link", "base"]);
+var BLOCKS = /* @__PURE__ */ new Set(["address", "article", "aside", "blockquote", "br", "caption", "dd", "details", "dialog", "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "li", "main", "nav", "ol", "option", "p", "pre", "section", "summary", "table", "tbody", "tfoot", "thead", "tr", "ul"]);
+var CELLS = /* @__PURE__ */ new Set(["td", "th"]);
+var HEADING = /^h[1-6]$/;
+var lines = (text) => text.replace(/[ \t]*\n[ \t\n]*/g, "\n").replace(/[ \t]{2,}/g, " ");
+var tidy = (text) => lines(text).trim();
+var whole = (text, at) => at > 0 && at < text.length && /[\uDC00-\uDFFF]/.test(text[at]) && /[\uD800-\uDBFF]/.test(text[at - 1]) ? at - 1 : at;
+function authoredDocument(index) {
+  const end = index.lastIndexOf(");</script>");
+  const start = end < 0 ? -1 : index.lastIndexOf(')({"', end);
+  if (start < 0) return null;
+  try {
+    const config2 = JSON.parse(index.slice(start + 2, end));
+    if (typeof config2.prefix !== "string" || typeof config2.html !== "string") return null;
+    return config2.prefix + config2.html + (typeof config2.suffix === "string" ? config2.suffix : "");
+  } catch {
+    return null;
+  }
+}
+function pageText(title, html) {
+  const document = new DOMParser().parseFromString(html, "text/html");
+  const parts = [], headings = [];
+  let size = 0, last = "", space = false;
+  const write = (text) => {
+    parts.push(text);
+    size += text.length;
+    last = text[text.length - 1];
+  };
+  const breakLine = () => {
+    if (size && last !== "\n") {
+      space = false;
+      write("\n");
+    }
+  };
+  const since = (from) => {
+    let text = "";
+    for (let index = from; index < parts.length && text.length < HEADING_SCAN; index++) text += parts[index];
+    return text.slice(0, HEADING_SCAN);
+  };
+  const stack = [{ node: document.body ?? document.documentElement }];
+  while (stack.length && size < PAGE_TEXT_CHARS) {
+    const { node: node2, exit } = stack.pop();
+    if (exit) {
+      if (exit.heading) {
+        const text = tidy(since(exit.heading.part));
+        if (text) headings.push({ at: exit.heading.at, text });
+      }
+      if (exit.block) breakLine();
+      continue;
+    }
+    if (node2.nodeType === 3) {
+      let text = (node2.data ?? "").replace(/\s+/g, " ");
+      if (space || !size || last === "\n") text = text.replace(/^ /, "");
+      if (!text) continue;
+      const trailing = text.endsWith(" "), core = trailing ? text.slice(0, -1) : text;
+      if (core) {
+        write(space ? ` ${core}` : core);
+        space = trailing;
+      } else space = true;
+      continue;
+    }
+    if (node2.nodeType !== 1 || !node2.childNodes) continue;
+    const name = node2.localName ?? "";
+    if (SKIPPED.has(name)) continue;
+    const block = BLOCKS.has(name);
+    if (block) breakLine();
+    else if (CELLS.has(name) && size && last !== "\n") {
+      write(" |");
+      space = true;
+    }
+    stack.push({ node: node2, exit: { block, heading: HEADING.test(name) ? { at: size + (space ? 1 : 0), part: parts.length } : null } });
+    const children = node2.childNodes;
+    for (let index = children.length - 1; index >= 0; index--) stack.push({ node: children[index] });
+  }
+  const raw = parts.join("") + (space ? " " : "");
+  return { title, raw: raw.length > PAGE_TEXT_CHARS ? raw.slice(0, whole(raw, PAGE_TEXT_CHARS)) : raw, headings };
+}
+function releasePageText(index, title) {
+  const html = authoredDocument(index);
+  return html === null ? null : pageText(title, html);
+}
+
 // server/store-worker.ts
 var store;
 var initialized = false;
@@ -44153,6 +44238,9 @@ process.on("message", async (message) => {
       const authored = describeAuthoring(args[1]);
       if (!authored.replay.complete || authored.materializedAuthoredHtml === null) throw new BoardStoreError("edit_conflict", authoredSourceFailure("Cannot materialize current authored source", authored));
       value = authored.materializedAuthoredHtml;
+    } else if (method === "pageText") {
+      if (typeof args[1] !== "string" || typeof args[2] !== "string") throw new BoardStoreError("invalid_input", "Page text needs a release index and title");
+      value = releasePageText(args[1], args[2]);
     } else {
       const operation = store[method];
       value = await operation.apply(store, args);
