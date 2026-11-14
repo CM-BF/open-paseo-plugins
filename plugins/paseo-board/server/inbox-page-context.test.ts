@@ -46,8 +46,8 @@ describe("page text of a release (polish P3)", () => {
     const html = authoredDocument(`<!doctype html><html><body><script>(function(config){})({"apiOrigins":[],"html":"<p>正文 \\"引号\\" )({\\"x\\":1}</p>","prefix":"<!doctype html><html><head><title>t</title></head><body>","suffix":"</body></html>"});</script></body></html>`);
     expect(html).toBe(`<!doctype html><html><head><title>t</title></head><body><p>正文 "引号" )({"x":1}</p></body></html>`);
     expect(authoredDocument("<html>no viewer</html>")).toBeNull();
-    const page = pageText("标题", `<html><head><title>不算</title><style>.a{}</style></head><body><h1>第一节</h1><p>甲  乙\n 丙</p><div>丁<span>戊</span></div><script>脚本</script><template>模板</template><noscript>无脚本</noscript></body></html>`);
-    expect(page.raw).toBe("第一节\n甲 乙 丙\n丁戊\n");
+    const page = pageText("标题", `<html><head><title>不算</title><style>.a{}</style></head><body><h1>第一节</h1><p>甲  乙\n 丙</p><div>丁<span>戊</span></div><table><tr><th>环节</th><th>时间</th></tr><tr><td>同步</td><td> 5 秒 </td></tr></table><script>脚本</script><template>模板</template><noscript>无脚本</noscript></body></html>`);
+    expect(page.raw).toBe("第一节\n甲 乙 丙\n丁戊\n环节 | 时间\n同步 | 5 秒\n");
     expect(page.headings).toEqual([{ at: 0, text: "第一节" }]);
   });
 

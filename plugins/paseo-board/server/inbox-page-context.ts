@@ -32,7 +32,9 @@ export interface PageReleases {
 type PageText = { title: string; raw: string; headings: Array<{ at: number; text: string }> };
 
 const SKIPPED = new Set(["script", "style", "noscript", "template", "head", "title", "meta", "link", "base"]);
-const BLOCKS = new Set(["address", "article", "aside", "blockquote", "br", "caption", "dd", "details", "dialog", "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "li", "main", "nav", "ol", "option", "p", "pre", "section", "summary", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul"]);
+const BLOCKS = new Set(["address", "article", "aside", "blockquote", "br", "caption", "dd", "details", "dialog", "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "li", "main", "nav", "ol", "option", "p", "pre", "section", "summary", "table", "tbody", "tfoot", "thead", "tr", "ul"]);
+/** Cells of one table row stay on its line: `环节 | 大约时间 | 说明`. */
+const CELLS = new Set(["td", "th"]);
 const HEADING = /^h[1-6]$/;
 const lines = (text: string) => text.replace(/[ \t]*\n[ \t\n]*/g, "\n").replace(/[ \t]{2,}/g, " ");
 const tidy = (text: string) => lines(text).trim();
@@ -55,7 +57,7 @@ export function authoredDocument(index: string): string | null {
   } catch { return null; }
 }
 
-/** The visible text of a page: text nodes with runs of white space collapsed, a line break around each block, headings noted. */
+/** The visible text of a page: text nodes with runs of white space collapsed, a line break around each block, table rows on one line, headings noted. */
 export function pageText(title: string, html: string): PageText {
   const document = new DOMParser().parseFromString(html, "text/html");
   let raw = "";
@@ -71,12 +73,13 @@ export function pageText(title: string, html: string): PageText {
       if (exit.block) breakLine();
       continue;
     }
-    if (node.nodeType === 3) { const text = (node.data ?? "").replace(/\s+/g, " "); raw += raw.endsWith("\n") || !raw ? text.replace(/^ /, "") : text; continue; }
+    if (node.nodeType === 3) { const text = (node.data ?? "").replace(/\s+/g, " "); raw += !raw || raw.endsWith("\n") || raw.endsWith(" ") ? text.replace(/^ /, "") : text; continue; }
     if (node.nodeType !== 1 || !node.childNodes) continue;
     const name = node.localName ?? "";
     if (SKIPPED.has(name)) continue;
     const block = BLOCKS.has(name);
     if (block) breakLine();
+    else if (CELLS.has(name) && raw && !raw.endsWith("\n")) raw = (raw.endsWith(" ") ? raw.slice(0, -1) : raw) + " | ";
     stack.push({ node, exit: { block, heading: HEADING.test(name) ? raw.length : null } });
     for (let index = node.childNodes.length - 1; index >= 0; index--) stack.push({ node: node.childNodes[index] });
   }
