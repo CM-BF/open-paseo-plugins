@@ -39105,8 +39105,10 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
   // Threads as the rail shows them: public threads, the visitor's private threads on this page, and unsent own comments.
   const pendingThreads=()=>pending.filter(p=>p.key.startsWith('pc-')).map(p=>({id:'pending:'+p.key,by:'visitor',tag:myTag(),...(p.payload.authorName?{name:p.payload.authorName}:{}),text:p.payload.text,createdAt:p.at,anchor:cleanAnchor(p.payload.anchor),replies:[],omitted:0,resolved:false,pendingKey:p.key})).filter(t=>t.anchor);
   const allThreads=()=>[...(listing?listing.threads:[]),...privateThreads,...pendingThreads()];
-  // Under 未解决 a thread resolved while it is open stays until it is closed, so the reader sees why they cannot reply.
-  const visibleThreads=()=>allThreads().filter(t=>filter==='all'||!t.resolved||t.id===active);
+  // Under 未解决 a thread resolved while the reader was writing a reply in it stays open until it is closed, so they see
+  // why the reply was not sent and can still copy their draft.
+  const kept=new Set();
+  const visibleThreads=()=>allThreads().filter(t=>filter==='all'||!t.resolved||t.id===active&&kept.has(t.id));
   const stateOf=t=>t.pendingKey?'pending':t.private?'private':t.resolved?'resolved':'open';
   const isMine=m=>m.by==='visitor'&&Boolean(myTag())&&m.tag===myTag();
   const involves=t=>isMine(t)||t.replies.some(isMine);
@@ -39161,7 +39163,7 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
     const before=listing?listing.threads:[];listing=next;rawListing=raw;stale=false;loaded=true;health=true;
     for(const old of before){
       const now=next.threads.find(t=>t.id===old.id),state=replies.get(old.id),draft=(drafts['r:'+old.id]||'').trim();
-      if(!old.resolved&&state&&state.open&&draft&&(!now||now.resolved)){state.open=false;state.version++;showToast(now?TEXT.resolvedWhileTyping:TEXT.gone)}
+      if(!old.resolved&&state&&state.open&&draft&&(!now||now.resolved)){state.open=false;state.version++;kept.add(old.id);showToast(now?TEXT.resolvedWhileTyping:TEXT.gone)}
     }
     const unread=next.threads.reduce((sum,t)=>sum+unreadOf(t),0),previous=before.reduce((sum,t)=>sum+unreadOf(t),0);
     if(unread>previous&&announced!==String(unread)){announced=String(unread);live.textContent='有 '+unread+' 条新回复'}
@@ -39511,6 +39513,7 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
   };
   const renderAll=animate=>{
     if(frameOff){rail.hidden=true;toggle.hidden=true;return}
+    for(const id of kept)if(id!==active)kept.delete(id);
     applyMode();
     const threads=allThreads(),visible=visibleThreads(),open=threads.filter(t=>!t.resolved).length;
     const unread=threads.reduce((sum,t)=>sum+unreadOf(t),0);

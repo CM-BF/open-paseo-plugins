@@ -33,7 +33,7 @@ const until = async (read, label, ms = 15_000, every = 60) => {
     await sleep(every);
   }
 };
-const results = [], measures = { visible: [], hidden: [] };
+const results = [], measures = { visible: [], hidden: [], natural: [] };
 async function step(name, work) {
   const started = Date.now();
   try { const value = await work(); results.push({ name, ok: true }); console.log(`PASS ${name} (${Date.now() - started} ms)`); return value; }
@@ -413,6 +413,19 @@ try {
     assert.deepEqual(cdp.dialogs, []);
   });
 
+  await step('without forced polls: a new comment reaches the other visitors on their regular 10-second poll (the honest delay)', async () => {
+    // The other steps dispatch focus events to poll at once (waitFor); here nothing does, so this is what a reader sees.
+    const toggleB = (await B.ui()).toggle;
+    const response = await fetch(`${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'pc-natural-0001', 'x-board-visitor': 'f'.repeat(64), origin: pageOrigin }, body: JSON.stringify({ text: '自然轮询看到的评论', pageUrl: publicUrl, visibility: 'public', anchor: { selector: '#risks', quote: '整体进度', releaseId: release.releaseId } }) });
+    assert.equal(response.status, 201);
+    const sentAt = Date.now();
+    await Promise.all([
+      until(async () => (await A.ui()).cards.some(card => card.text.includes('自然轮询看到的评论')), 'A on its regular poll', 20_000, 100).then(() => measures.natural.push(Date.now() - sentAt)),
+      until(async () => { const now = (await B.ui()).toggle; return now && now !== toggleB; }, 'B on its regular poll', 20_000, 100).then(() => measures.natural.push(Date.now() - sentAt)),
+    ]);
+    for (const ms of measures.natural) assert.ok(ms <= 15_000, `seen within one regular poll: ${ms} ms`);
+  });
+
   await step('a 30-post flood from one visitor: the owner pauses the page and hides that visitor in two calls; everyone loses the posts within one poll', async () => {
     let tag;
     for (let i = 0; i < 30; i++) {
@@ -495,7 +508,8 @@ try {
   await rm(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   const failed = results.filter(result => !result.ok).length;
   console.log(`\nPublic threads e2e: ${results.length - failed}/${results.length} steps passed${failed || process.exitCode ? ' (FAILED)' : ''}.`);
-  if (measures.visible.length) console.log(`MEASURE send → visible in another context (focus poll): ${measures.visible.join(', ')} ms; hide → gone: ${measures.hidden.join(', ')} ms.`);
+  if (measures.visible.length) console.log(`MEASURE send → visible in another context with a forced (focus) poll: ${measures.visible.join(', ')} ms; hide → gone (forced): ${measures.hidden.join(', ')} ms.`);
+  if (measures.natural.length) console.log(`MEASURE send → visible on the regular 10 s poll, nothing forced: ${measures.natural.join(', ')} ms.`);
 }
 
 function run(command, args, options) {
