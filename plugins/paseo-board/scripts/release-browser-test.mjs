@@ -14,6 +14,7 @@ import { componentLayoutHtml } from './component-layout-fixture.mjs';
 import { createReleaseApiFixture, runReleaseApiChecks } from './release-api-checks.mjs';
 import { createLiveFixture, runLiveChecks } from './release-live-checks.mjs';
 import { createReleaseGlassFixture, runReleaseGlassChecks } from './release-glass-checks.mjs';
+import { createCommentsFixture, runCommentsChecks, runCommentsExtraChecks } from './release-comments-checks.mjs';
 
 const directory = dirname(fileURLToPath(import.meta.url)), root = dirname(directory);
 const temporary = await mkdtemp(join(tmpdir(), 'paseo-release-browser-'));
@@ -73,7 +74,9 @@ assert.equal(JSON.stringify(layoutRelease.files).includes('PRIVATE_LAYOUT_VIEW')
 const previewBundle = await build({ stdin: { contents: `import React from 'react';import {createRoot} from 'react-dom/client';import {ReleasePreview} from './client/release-web';createRoot(document.getElementById('app')).render(React.createElement(ReleasePreview,{html:window.releaseHtml}));`, resolveDir: root, loader: 'tsx' }, bundle: true, platform: 'browser', format: 'iife', write: false, define: { 'process.env.NODE_ENV': '"test"' } });
 const files = new Map([['/', release.files['index.html']], ['/publication/nested/', release.files['index.html']], ['/second/', second.files['index.html']], ['/full/', fullDocument.files['index.html']], ['/copy/', copyRelease.files['index.html']], ['/layout/', layoutRelease.files['index.html']]]);
 const requests = [];
-let apiFixture, liveFixture;
+let apiFixture, liveFixture, commentsFixture;
+// BOARD_RELEASE_COMMENTS_ONLY=1 runs only the visitor-comment checks (for iterating on that feature).
+const commentsOnly = Boolean(process.env.BOARD_RELEASE_COMMENTS_ONLY);
 const glassFixture = await createReleaseGlassFixture({ buildRelease, store, directory });
 files.set('/glass/', glassFixture.release.files['index.html']);
 const server = createServer((request, response) => {
@@ -83,9 +86,11 @@ const server = createServer((request, response) => {
   if (request.url === '/preview') { response.end(`<!doctype html><div id="app"></div><script>window.releaseHtml=${JSON.stringify(release.files['index.html']).replace(/</g, '\\u003c')}</script><script src="/preview.js"></script>`); return; }
   if (request.url === '/api-preview') { response.end(`<!doctype html><div id="app"></div><script>window.releaseHtml=${JSON.stringify(apiFixture.release.files['index.html']).replace(/</g, '\\u003c')}</script><script src="/preview.js"></script>`); return; }
   if (request.url === '/live-preview') { response.end(`<!doctype html><div id="app"></div><script>window.releaseHtml=${JSON.stringify(liveFixture.release.files['index.html']).replace(/</g, '\\u003c')}</script><script src="/preview.js"></script>`); return; }
+  if (request.url === '/comments-preview') { response.end(`<!doctype html><div id="app"></div><script>window.releaseHtml=${JSON.stringify(commentsFixture.release.files['index.html']).replace(/</g, '\\u003c')}</script><script src="/preview.js"></script>`); return; }
   if (request.url === '/glass-preview') { response.end(`<!doctype html><div id="app"></div><script>window.releaseHtml=${JSON.stringify(glassFixture.release.files['index.html']).replace(/</g, '\\u003c')}</script><script src="/preview.js"></script>`); return; }
-  if (!files.has(request.url)) { response.writeHead(404).end(); return; }
-  response.end(files.get(request.url));
+  const path = request.url.split('?')[0];
+  if (!files.has(path)) { response.writeHead(404).end(); return; }
+  response.end(files.get(path));
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
@@ -96,6 +101,8 @@ apiFixture = await createReleaseApiFixture({ buildRelease, options, origin, temp
 files.set('/api/', apiFixture.release.files['index.html']);
 liveFixture = await createLiveFixture({ buildRelease, options, origin, temporary, LiveDataPublisher });
 files.set('/live/', liveFixture.release.files['index.html']); files.set('/live-unavailable/', liveFixture.unavailableRelease.files['index.html']);
+commentsFixture = await createCommentsFixture({ buildRelease, options, origin, live: liveFixture, directory });
+files.set('/comments/', commentsFixture.release.files['index.html']); files.set('/comments-live/', commentsFixture.liveRelease.files['index.html']);
 const chrome = spawn(process.env.BROWSER_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', ['--headless=new', '--remote-debugging-pipe', `--user-data-dir=${join(temporary, 'profile')}`, '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-extensions', '--use-mock-keychain', '--window-size=1000,800', 'about:blank'], { detached: true, stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] });
 let sequence = 0, buffer = '', passed = 0, contextEpoch = 0;
 const commands = new Map(), contexts = new Map(), errors = [], networkRequests = new Map(), blockedRequests = [];
@@ -155,6 +162,16 @@ try {
     const clicked = await frame("new Promise((resolve,reject)=>{const end=performance.now()+2000;const loop=()=>{if(window.releaseClick)return resolve(window.releaseClick);if(performance.now()>end)return reject(new Error('No trusted release click'));setTimeout(loop,20)};loop()})");
     assert.equal(clicked.trusted && clicked.hit, true, JSON.stringify({ selector, clicked, box }));
   };
+  const reload = async () => { const oldLoader = (await command('Page.getFrameTree')).frameTree.frame.loaderId, afterEpoch = contextEpoch; await command('Page.reload'); await ready(undefined, { notLoader: oldLoader, afterEpoch }); };
+  const contextWhere = async expression => { for (const context of [...contexts.values()]) { try { if (await evaluate(expression, context)) return context; } catch {} } return undefined; };
+  const runComments = async () => {
+    // The sandboxed canvas frame may be its own process (an attached child session).
+    const frameCommand = (method, params) => send(method, params, authoredContext?.sessionId ?? sessionId);
+    const helpers = await runCommentsChecks({ assert, command, frameCommand, evaluate, frame, open, reload, click, setHidden, files, origin, comments: commentsFixture, check });
+    await runCommentsExtraChecks({ assert, command, frameCommand, evaluate, frame, open, contextWhere, comments: commentsFixture, check, helpers });
+  };
+  if (commentsOnly) await runComments();
+  else {
   const publicFiles = JSON.stringify(release.files);
   for (const secret of ['PRIVATE_SOURCE_BOARD', 'PRIVATE_AGENT_ID', 'PRIVATE_CANVAS_DATA', 'PRIVATE_USER_STATE', 'PRIVATE_DISCUSSION', 'PRIVATE_PATCH_ID', 'PRIVATE_OLD_CONTENT']) assert.equal(publicFiles.includes(secret), false, secret);
   assert.equal((await store.read(source.id)).canvas.patches.at(-1).html.includes('Manually edited copy'), false);
@@ -246,8 +263,10 @@ try {
   check('the actual host ReleasePreview renders the nested opaque exported viewer and keeps local interaction available without private Board access');
   await runReleaseApiChecks({ assert, command, evaluate, frame, open, click, ready, api: apiFixture, rejectedUrl, rejectedRequests, check });
   await runReleaseGlassChecks({ assert, command, evaluate, frame, open, check, glass: glassFixture });
+  await runComments();
   const nestedBanner = async () => { for (const context of [...contexts.values()]) { try { const text = await evaluate("document.querySelector('[data-live]')?.textContent||''", context); if (text) return text; } catch {} } return ''; };
   await runLiveChecks({ assert, frame, evaluate, open, openAt, setHidden, nestedBanner, live: liveFixture, check, pagePort: server.address().port });
+  }
   assert.deepEqual(errors, [], 'Unexpected browser runtime exception');
   console.log(`Static release browser integration: ${passed} checks passed.`);
 } catch (error) { console.error('Release browser check failed:', error); console.error('Browser exceptions:', errors); process.exitCode = 1; }
@@ -255,5 +274,5 @@ finally {
   try { await send('Browser.close'); } catch { try { process.kill(-chrome.pid, 'SIGTERM'); } catch {} }
   if (chrome.exitCode === null) await new Promise(resolve => { const timer = setTimeout(() => { try { process.kill(-chrome.pid, 'SIGKILL'); } catch {} resolve(); }, 3000); chrome.once('exit', () => { clearTimeout(timer); resolve(); }); });
   for (const entry of commands.values()) { clearTimeout(entry.timer); entry.reject(new Error('Browser closed')); } commands.clear();
-  await Promise.all([new Promise(resolve => server.close(resolve)), new Promise(resolve => rejectedServer.close(resolve)), apiFixture.close(), liveFixture?.close()]); await rm(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  await Promise.all([new Promise(resolve => server.close(resolve)), new Promise(resolve => rejectedServer.close(resolve)), apiFixture.close(), liveFixture?.close(), commentsFixture?.close()]); await rm(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

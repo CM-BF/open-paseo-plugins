@@ -172,6 +172,52 @@ describe("fixed public releases", () => {
     expect(release.manifest).not.toHaveProperty("live"); expect(release.settings).not.toHaveProperty("live");
     for (const marker of ["data-live", "live-ready", "paseo-board-live:"]) expect(release.files["index.html"]).not.toContain(marker);
   });
+  it("keeps a live release without comments byte-identical to the build before visitor comments", async () => {
+    const pinned = await new BoardStore(join(root, "pin-live")).create({ id: "pin-board", title: "Pin fixture", ownerAgentId: "pin-agent", html: '<main><p id="pin">Pinned text</p></main>', data: { secret: "PRIVATE" } });
+    const release = buildRelease({ board: pinned, boardId: pinned.id, expectedCanvasBase: { revision: pinned.canvas.revision, documentVersion: pinned.canvas.documentVersion }, publicData: { label: "Pin", live: {} }, apiOrigins: [LIVE.origin], live: LIVE });
+    // Computed at 4b94741 before visitor comments were added.
+    expect(release.manifest.releaseId).toBe("release-bdcb1e37bb7ef3121ce3649a578ccca0ff7a49bb4236fb3d97d4f72b29a2c0c4");
+    expect(release.manifest.artifactHash).toBe("1010ce96e2c262b4ccf274cdcfcad944e3c02b434546dbca2dd6f8b05a8ce023");
+    expect(createHash("sha256").update(release.files["index.html"]).digest("hex")).toBe("a2b312b3e8e487f52a5cf486815e868ccb0af3e493064963bfe49eb8a5d69921");
+    expect(release.manifest).not.toHaveProperty("comments"); expect(release.settings).not.toHaveProperty("comments");
+    for (const marker of ["comment-target", "_board/comments", "paseo-board-visitor:"]) expect(release.files["index.html"]).not.toContain(marker);
+  });
+  const COMMENTS = { apiBase: "https://api.example.internal", appKey: "0123456789abcdef" };
+  it("adds visitor comments with viewer 4, the backend origin in the outer CSP only and an exact warning", () => {
+    const base = buildRelease(options()), release = buildRelease({ ...options(), comments: COMMENTS }), index = release.files["index.html"];
+    expect(release.manifest.viewerVersion).toBe(4); expect(release.manifest.comments).toEqual(COMMENTS); expect(release.manifest.apiOrigins).toEqual([]);
+    expect(release.settings?.comments).toEqual(COMMENTS); expect(release.manifest.releaseId).not.toBe(base.manifest.releaseId);
+    expect(index).toContain("connect-src https://api.example.internal;"); expect(index).toContain("connect-src 'none'");
+    expect(index).toContain("comment-target"); expect(index).toContain("paseo-board-visitor:v2:");
+    expect(index).not.toContain("allow-same-origin");
+    expect(release.manifest.warnings).toContain("此版本允许访客框选文字评论，评论发送到 https://api.example.internal。访客浏览器会保存一个匿名编号，用来查看自己的评论和回复。");
+    expect(validateRelease(release)).toBe(release);
+    expect(buildRelease({ ...options(), comments: { ...COMMENTS, apiBase: "https://other.example.internal" } }).manifest.releaseId).not.toBe(release.manifest.releaseId);
+    expect(buildRelease({ ...options(), comments: { ...COMMENTS, appKey: "fedcba9876543210" } }).manifest.releaseId).not.toBe(release.manifest.releaseId);
+  });
+  it("accepts a path prefix and loopback, adds only the origin to the CSP and never duplicates an API origin", () => {
+    const prefixed = buildRelease({ ...options(), comments: { ...COMMENTS, apiBase: "https://example.com/board-api" } });
+    expect(prefixed.files["index.html"]).toContain("connect-src https://example.com;"); expect(prefixed.manifest.comments?.apiBase).toBe("https://example.com/board-api");
+    const loopback = buildRelease({ ...options(), comments: { ...COMMENTS, apiBase: "http://127.0.0.1:8787" } });
+    expect(loopback.files["index.html"]).toContain("connect-src http://127.0.0.1:8787;");
+    const shared = buildRelease({ ...options(), apiOrigins: ["https://api.example.internal"], comments: COMMENTS });
+    expect(shared.files["index.html"]).toContain("connect-src https://api.example.internal;"); expect(shared.manifest.apiOrigins).toEqual(["https://api.example.internal"]);
+    for (const apiBase of ["https://api.example.internal/", "https://api.example.internal?x=1", "https://u:p@api.example.internal", "http://api.example.internal", "https://api.example.internal/a b", "https://api.example.internal#x", "ftp://api.example.internal"]) {
+      expect(() => buildRelease({ ...options(), comments: { ...COMMENTS, apiBase } }), apiBase).toThrow();
+    }
+    expect(() => buildRelease({ ...options(), comments: { ...COMMENTS, appKey: "XYZ" } })).toThrow();
+  });
+  it("combines live data and comments in one viewer 4 release", () => {
+    const release = buildRelease({ ...options(), apiOrigins: [LIVE.origin], live: LIVE, comments: COMMENTS }), index = release.files["index.html"];
+    expect(release.manifest.viewerVersion).toBe(4); expect(release.manifest.live).toEqual(LIVE); expect(release.manifest.comments).toEqual(COMMENTS);
+    expect(index).toContain("connect-src https://live.example.com https://api.example.internal;");
+    expect(index).toContain("live-ready"); expect(index).toContain("comment-runtime-ready"); expect(index).toContain('<aside data-live role="status" aria-live="polite" hidden></aside>');
+  });
+  it("carries the comments block through the settings sidecar", async () => {
+    const repository = new ReleaseRepository(join(root, "releases")), release = await repository.create({ ...options(), comments: COMMENTS });
+    expect((await repository.meta(release.manifest.releaseId))?.settings.comments).toEqual(COMMENTS);
+    expect((await repository.read(release.manifest.releaseId)).manifest.comments).toEqual(COMMENTS);
+  });
   it("embeds a frozen live block, uses the live viewer and changes the release identity", () => {
     const base = buildRelease(options()), release = buildRelease({ ...options(), apiOrigins: [LIVE.origin], live: LIVE });
     expect(release.manifest.viewerVersion).toBe(3); expect(release.manifest.live).toEqual(LIVE);

@@ -3,10 +3,11 @@ import type { Board } from "../shared/contracts";
 import {
   createReleaseRpc, listReleasesRpc, previewReleaseRpc, downloadReleaseRpc,
   githubAccountsRpc, githubRepositoriesRpc, preparePagesRpc, publishPagesRpc, mergePagesRpc,
-  refreshPagesRpc, listPagesJobsRpc, shareStatusRpc, shareUpdateRpc, LOOPBACK_LIVE_REFUSAL, loopbackLiveRefused, type PagesJob, type PagesPrepareInput,
+  refreshPagesRpc, listPagesJobsRpc, shareStatusRpc, shareUpdateRpc, commentsProbeRpc, LOOPBACK_LIVE_REFUSAL, loopbackLiveRefused, type PagesJob, type PagesPrepareInput,
   type GitHubAccount, type GitHubRepository, type LiveDrift, type LiveRelease, type ReleaseMeta, type ReleaseSettings, type Share, type ShareStatus, type ShareUpdateResult,
 } from "../shared/release-contracts";
 import type { LiveReleaseChannel } from "./live-data";
+import { probeComments, requireCommentsBackend, type CommentsFetcher } from "./comments-probe";
 import { sha256, type ReleaseRepository, type StaticRelease } from "./static-release";
 import { canonicalJson } from "./store-format";
 
@@ -133,7 +134,7 @@ async function boardShares(board: Board, releases: ReleaseRepository, pages: Pag
       verified: !!job.shareUrl || adoptable && job.status === "live" && !!job.url, state,
       releaseId: release.manifest.releaseId, title: release.manifest.title, publishedJobId: job.jobId, settingsAvailable: !!meta,
       source, ...(inFlight ? { inFlightJobId: inFlight.job.jobId } : {}), activity: latest,
-      ...(meta ? { settings: { network: meta.settings.network, theme: meta.settings.theme, apiOrigins: meta.settings.apiOrigins, publicDataBytes: Buffer.byteLength(canonicalJson(meta.settings.publicData)), ...(meta.settings.live ? { live: { origin: meta.settings.live.origin, paths: meta.settings.live.paths } } : {}) } } : {}),
+      ...(meta ? { settings: { network: meta.settings.network, theme: meta.settings.theme, apiOrigins: meta.settings.apiOrigins, publicDataBytes: Buffer.byteLength(canonicalJson(meta.settings.publicData)), ...(meta.settings.live ? { live: { origin: meta.settings.live.origin, paths: meta.settings.live.paths } } : {}), ...(meta.settings.comments ? { comments: meta.settings.comments } : {}) } } : {}),
     });
   }
   shares.sort((a, b) => byCreated(b.activity, a.activity));
@@ -153,6 +154,8 @@ function adoptCurrentLive(stored: Omit<ReleaseSettings, "title">, live: LiveRele
 export function registerPublicationRpc(server: PluginServerContext, options: {
   ready(): Promise<void>; requireBoard(id: string): Promise<Board>;
   releases: ReleaseRepository; pages: PagesGateway; live?: LiveReleaseSource;
+  /** Network for the comment backend's public health check; defaults to fetch. */
+  commentsFetcher?: CommentsFetcher;
 }): void {
   const { releases, pages } = options;
   /** Resolved on the server: a client can only ask for the Board's own channel, never name one. */
@@ -164,6 +167,8 @@ export function registerPublicationRpc(server: PluginServerContext, options: {
   server.handle(createReleaseRpc, async ({ liveData, ...input }) => {
     await options.ready();
     const board = await options.requireBoard(input.boardId);
+    // A page may only point visitors at a backend that serves this app's comment threads right now.
+    if (input.comments) await requireCommentsBackend(input.comments, options.commentsFetcher);
     if (!liveData) return (await releases.create({ ...input, board })).manifest;
     const live = await currentLive(board), apiOrigins = input.apiOrigins ?? [];
     return (await releases.create({ ...input, board, live, apiOrigins: withLiveOrigin(apiOrigins, live.origin), ...(apiOrigins.includes(live.origin) ? {} : { liveOriginAdded: true }) })).manifest;
@@ -201,7 +206,11 @@ export function registerPublicationRpc(server: PluginServerContext, options: {
     const meta = await releases.meta(share.releaseId);
     if (!meta || meta.source.boardId !== board.id || meta.source.boardCreatedAt !== board.createdAt) throw new Error("这个分享页没有保存发布设置，无法一键更新；请用「沿用上次分享页的设置」重新生成一次");
     if (input.expectedSource.documentVersion !== current.documentVersion || input.expectedSource.patchCount !== current.patchCount) throw new Error("Canvas changed; review the current Board before updating the share link");
-    const { title, ...stored } = meta.settings;
+    const { title, comments: storedComments, ...inherited } = meta.settings;
+    // undefined keeps the stored comments setting; false turns it off; a new block must pass the backend check.
+    if (input.comments) await requireCommentsBackend(input.comments, options.commentsFetcher);
+    const comments = input.comments === undefined ? storedComments : input.comments || undefined;
+    const stored = { ...inherited, ...(comments ? { comments } : {}) };
     const channel = options.live ? await options.live.releaseChannel(board) : null;
     const settings = input.liveMode === "current" ? adoptCurrentLive(stored, releaseBlock(channel)) : stored;
     refuseLoopbackLive(settings.live, share.githubHost);
@@ -216,6 +225,7 @@ export function registerPublicationRpc(server: PluginServerContext, options: {
       account: share.account, repository: share.repository, shareKey: share.shareKey ?? share.key,
     }, ...(drift ? { liveDrift: drift } : {}) };
   });
+  server.handle(commentsProbeRpc, async input => { await options.ready(); return probeComments(input, options.commentsFetcher); });
   server.handle(listPagesJobsRpc, async input => {
     await options.ready(); if (input.releaseId) await release(input.releaseId);
     return pages.list(input.releaseId);

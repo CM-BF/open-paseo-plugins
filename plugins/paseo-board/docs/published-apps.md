@@ -72,20 +72,115 @@ stays frozen until one confirmed share update adopts a new path set. A loopback
 backend cannot be published to a public site. See
 [live public data](live-data.md) for the owner's flow, limits and residual risks.
 
+## 访客框选评论 (visitor text-selection comments)
+
+A published page can let visitors select any text and comment on it, as on the
+working Board. The owner turns this on per release; pages without it are
+byte-identical to pages built before the feature.
+
+**What visitors see.** After a selection settles for a moment, a small **评论**
+button appears next to it (below it on touch screens). Right-clicking inside a
+selection that already existed opens the composer directly; Shift + right-click
+keeps the browser menu, and the ContextMenu key or Shift+F10 works from the
+keyboard. The composer quotes the passage and has an optional name (remembered),
+the comment text (at most 2,000 characters), **发送** and **取消**.
+⌘/Ctrl + Enter sends; Esc closes it and keeps the draft for this browser tab.
+After sending, **我的评论 n** appears at the bottom left and a numbered marker
+sits at the end of each passage the visitor commented on. The badge reports new
+replies (**我的评论 n · m 条新回复**); the panel lists the visitor's own threads
+with their status (**已发送，等待作者查看**, **作者已收到**, **已回复**) and
+replies labelled **作者回复** or **作者的 AI 助手回复**. **在页面中定位** scrolls
+back to the passage, **再评论这段** comments on it again, and a thread whose
+passage no longer exists is listed as **原文已修改，页面上找不到这段文字**.
+**清除本机的评论身份** forgets this browser's anonymous identity.
+
+**Where it never activates.** Inputs, textareas, selects, buttons,
+contenteditable regions and ARIA text boxes, menus, sliders, list boxes and
+combo boxes are excluded, as is anything inside `data-board-comments="off"`
+(on `<html>` or `<body>` it turns the feature off for the whole page). With
+nothing selected, links and controls keep their native menus, and an authored
+`contextmenu` handler that calls `preventDefault()` owns its region. Authored
+`board.request` calls and the scaffold's `mountComments` form keep working
+unchanged.
+
+**Owner setup.** The backend is a `paseo-board-app` application with
+`comments.enabled: true` and the publishing website's exact origin in `origins`.
+In the publishing panel turn on **访客可以框选评论** and enter the backend
+address: an HTTPS origin with an optional path prefix, such as
+`https://api.example.com` or `https://example.com/board-api` (no trailing slash).
+The panel prefills the first ready, enabled source from **更多 → 评论收件箱 →
+后端来源**. **检查后端** reads the backend's `/_board/health` from this computer
+and reports whether comment threads are available, which share-link origins are
+missing from `origins`, and whether a reverse proxy needs
+`comments.trustedProxies`. An older runtime reports **后端版本过旧**: run
+`paseo-board-app update-runtime --dir /absolute/app` and redeploy it through the
+reviewed SSH path. A release is created only when the check passes at that
+moment; the panel reads the app key from the backend. The address is the owner's
+deployment decision: a loopback address only works on the computer that runs the
+backend, and an internal hostname on a public github.com site is visible in the
+page code and unreachable from outside the company network, so the panel asks
+for **我确认把这个地址写进公开网页** first.
+
+The release CLI takes `--comments-api <api-base>` on `export` and fills the app
+key from the backend after the same check.
+
+**Release mechanics.** The release stores `comments: {apiBase, appKey}` in its
+hash input, manifest and private settings and uses viewer version 4 (with or
+without live data). Only the backend's origin is added to the outer page's
+`connect-src`; it is not added to `apiOrigins`, so authored code gains no new
+network access. Share updates inherit the setting; **用面板中的评论设置更新**
+applies the panel's setting (a new address, or 关闭) to an existing share link.
+The visitor identity is keyed by the app key, so moving the same app to a new
+address keeps visitors' threads; switching to another app does not, and the
+panel says so (**换成了另一个评论后端应用**).
+
+**Privacy and network behaviour.**
+
+- The trusted outer page owns the composer, the visitor secret and every request.
+  The authored canvas frame only reports selections and draws markers in a closed
+  shadow root; it never receives the secret, comment text or reply text, and a
+  frame message cannot open the composer without a real user gesture.
+- The visitor identity is a random 256-bit secret in `localStorage` under
+  `paseo-board-visitor:v2:<appKey>`, together with the remembered name and reply
+  counts. No comment text, reply text, quote or URL is kept there; the thread
+  cache and drafts live in `sessionStorage`. Other pages on the same site origin
+  (for example every repository of one `github.io` account) can read that
+  secret; the panel states this.
+- A first-time visitor's page makes no request until they send. Before the first
+  request of a page load the page checks `/_board/health` (same app key, comment
+  threads available). Visitors with threads on the page refresh them every
+  15 s ± 20 % while the page is visible and on focus, at least 10 s apart, with
+  backoff on errors and `Retry-After`. Requests omit cookies and referrer and do
+  not follow redirects. The host's preview never contacts the backend.
+- Comment text, names, URLs and anchors are untrusted visitor data. The page
+  renders every visitor and reply text as plain text.
+
+**Page ↔ backend contract.** `POST {apiBase}/_board/comments` with
+`Idempotency-Key` (`pc-<uuid>`, reused for retries) and `X-Board-Visitor`, body
+`{text, authorName?, pageUrl, anchor}`; `GET {apiBase}/_board/comments/mine?page=`
+with `X-Board-Visitor`; `GET {apiBase}/_board/health`. The anchor carries
+`label`, `selector`, `quote`, `prefix`, `suffix`, `start`, `end` and `releaseId`
+(DESIGN §4.1). The shared case list is `scripts/fixtures/page-comments-contract.json`.
+
 ## Visitor comments and the native inbox
 
-Enable the scaffold's optional comment intake, then use the optional editable
-comment form or submit `POST /_board/comments` from authored code through the
-same API transport. Preserve a stable `Idempotency-Key` and exact comment payload
-until acknowledged. In a published Board, `board.getState()` / `board.saveState()`
-provide visitor-local persistence; direct iframe session storage is unavailable.
-This visitor state is not the shared application database.
+Enable the scaffold's optional comment intake. Then either turn on
+**访客可以框选评论** when publishing, or use the optional editable comment form
+or submit `POST /_board/comments` from authored code through the same API
+transport. Authored code should preserve a stable `Idempotency-Key` and the exact
+comment payload until acknowledged. In a published Board, `board.getState()` /
+`board.saveState()` provide visitor-local persistence; direct iframe session
+storage is unavailable. This visitor state is not the shared application
+database.
 
 The Board owner privately registers the separate export URL and token under
-**More → Comment inbox → Backend sources** and explicitly syncs a page. Neither
-the export token nor the host's private data enters the published frontend.
-Read and triage grants are initially off. A visitor comment never becomes an
-owner instruction, triggers an agent, deploys code or publishes a response.
+**More → Comment inbox → Backend sources**; connected sources sync
+automatically. Neither the export token nor the host's private data enters the
+published frontend. Read and triage grants are initially off. A visitor comment
+never becomes an owner instruction or deploys code. Only after the owner
+confirms automatic handling in the inbox does the plugin hand new comments to
+that Board's dedicated comment assistant, whose replies the visitor sees on the
+page.
 
 See [backend operations](app-backend-scaffold.md) and
 [native inbox permissions](comment-inbox.md).

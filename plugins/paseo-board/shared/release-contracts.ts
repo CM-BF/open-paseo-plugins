@@ -12,6 +12,59 @@ export const PublicApiOriginSchema = z.string().max(2048).refine(value => {
   } catch { return false; }
 }, "API 地址应为 HTTPS 来源（例如 https://api.example.com），本机测试可用 HTTP loopback；不含路径或凭据");
 export const PublicApiOriginsSchema = z.array(PublicApiOriginSchema).max(8).refine(values => new Set(values).size === values.length, "API 来源不能重复");
+/** Visitor comment backend: an origin with an optional path prefix (DESIGN §11.9). */
+export const PublicApiBaseSchema = z.string().max(2048).refine(value => {
+  try {
+    const url = new URL(value);
+    const validHost = /^\[[a-f0-9:]+\]$/i.test(url.hostname) || url.hostname.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label));
+    const path = url.pathname === "/" ? "" : url.pathname;
+    return validHost && !url.username && !url.password && !url.search && !url.hash &&
+      /^(?:\/[A-Za-z0-9._~-]+){0,8}$/.test(path) && value === url.origin + path &&
+      (url.protocol === "https:" || url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname));
+  } catch { return false; }
+}, "评论后端地址应为 HTTPS（例如 https://api.example.com 或 https://example.com/board-api），本机测试可用 HTTP loopback；不含查询、片段、凭据或结尾斜杠");
+/** sha256("board-app-key\0" + owner).slice(0, 16): stable for one app across redeploys and address changes. */
+export const AppKeySchema = z.string().regex(/^[a-f0-9]{16}$/);
+export const VisitorCommentsReleaseSchema = z.object({ apiBase: PublicApiBaseSchema, appKey: AppKeySchema }).strict();
+export type VisitorCommentsRelease = z.infer<typeof VisitorCommentsReleaseSchema>;
+export const COMMENTS_HEALTH_TIMEOUT_MS = 5_000;
+export const CommentsProbeInputSchema = z.object({ apiBase: PublicApiBaseSchema, pageOrigins: z.array(PublicApiOriginSchema).max(8).default([]) }).strict();
+export const CommentsProbeResultSchema = z.object({
+  reachable: z.boolean(), httpStatus: z.number().int().nullable(),
+  appId: z.string().max(200).nullable(), appKey: AppKeySchema.nullable(), deploymentId: z.string().max(200).nullable(),
+  comments: z.enum(["threads", "basic", "disabled", "unknown"]),
+  clientIp: z.enum(["socket", "forwarded", "proxied-unconfigured", "unknown"]),
+  originProblems: z.array(z.string().max(300)).max(8), error: z.string().max(500).nullable(),
+}).strict();
+export type CommentsProbeResult = z.infer<typeof CommentsProbeResultSchema>;
+/** Exact panel texts for each probe outcome (DESIGN §4.11). */
+export const commentsProbeText = (result: CommentsProbeResult): string =>
+  result.comments === "threads" ? `后端可用：应用 ${result.appId ?? "未知"} · 部署 ${result.deploymentId ?? "未知"}`
+    : result.comments === "disabled" ? "后端没有开启评论：把 board-app.json 的 comments.enabled 设为 true，然后重新部署。"
+      : result.comments === "basic" ? "后端版本过旧，不支持访客评论线程：在应用目录运行 paseo-board-app update-runtime，然后重新部署。"
+        : `连接不上这个后端：${result.error ?? "没有响应"}`;
+export const COMMENTS_APP_CHANGED = "这个地址现在指向另一个评论后端应用，与检查时不同";
+/** Null when a release may use this backend; otherwise the refusal shown to the human. */
+export function commentsProbeRefusal(result: CommentsProbeResult, appKey: string | undefined): string | null {
+  // A thread runtime always reports its app key; without one the backend cannot keep visitor identity.
+  const reason = result.comments !== "threads" ? commentsProbeText(result) : !result.appKey ? commentsProbeText({ ...result, comments: "basic" })
+    : appKey !== undefined && result.appKey !== appKey ? COMMENTS_APP_CHANGED : null;
+  return reason === null ? null : `评论后端检查没有通过：${reason.replace(/。$/, "")}。请先点「检查后端」。`;
+}
+export const commentsOriginProblem = (pageOrigin: string) => `把 ${pageOrigin} 加入 board-app.json 的 origins，然后重新部署。`;
+export const commentsReleaseWarning = (apiBase: string) => `此版本允许访客框选文字评论，评论发送到 ${apiBase}。访客浏览器会保存一个匿名编号，用来查看自己的评论和回复。`;
+/** Hostnames a public page should not carry without the owner's confirmation (loopback, private, link-local, ULA, internal suffixes). */
+export function internalApiHost(apiBase: string): string | null {
+  let hostname: string;
+  try { hostname = new URL(apiBase).hostname.toLowerCase(); } catch { return null; }
+  const bare = hostname.replace(/^\[|\]$/g, "");
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(bare)?.slice(1).map(Number);
+  const internal = bare === "localhost" || bare.endsWith(".localhost") ||
+    (!!v4 && (v4[0] === 127 || v4[0] === 10 || v4[0] === 172 && v4[1] >= 16 && v4[1] <= 31 || v4[0] === 192 && v4[1] === 168 || v4[0] === 169 && v4[1] === 254)) ||
+    bare.includes(":") && (bare === "::1" || /^f[cd][0-9a-f]{2}:/.test(bare) || /^fe[89ab][0-9a-f]:/.test(bare)) ||
+    /\.(?:internal|corp|local|lan|intranet|home\.arpa)$/.test(bare);
+  return internal ? hostname : null;
+}
 /** A loopback origin resolves to each visitor's own machine, so it only makes sense for local testing. */
 export const isLoopbackOrigin = (origin: string) => { const { hostname } = new URL(origin); return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]"; };
 export const LOOPBACK_LIVE_REFUSAL = "本机测试用的实时数据不能发布到公开站点；请先连接访客能访问的后端";
@@ -51,6 +104,7 @@ export const ReleaseManifestSchema = z.object({
   title: z.string(), viewerVersion: z.number().int(), network: z.enum(["offline", "cdn"]),
   apiOrigins: PublicApiOriginsSchema.optional(),
   live: LiveReleaseSchema.optional(),
+  comments: VisitorCommentsReleaseSchema.optional(),
   dependencies: z.array(z.string()), warnings: z.array(z.string()),
   files: z.array(z.object({ path: z.string(), sha256: z.string(), bytes: z.number().int().nonnegative() })),
 });
@@ -63,6 +117,8 @@ export const ReleaseCreateBaseSchema = z.object({
   live: LiveReleaseSchema.optional(),
   // Private: the live origin was appended to apiOrigins by the server, so a later retarget may drop it.
   liveOriginAdded: z.boolean().optional(),
+  // Visitor text-selection comments; the backend origin goes to the outer page CSP only, never to apiOrigins.
+  comments: VisitorCommentsReleaseSchema.optional(),
 });
 /** The client asks for live data by flag only; the server resolves channel, origin and paths. */
 export const ReleaseCreateRpcSchema = ReleaseCreateBaseSchema.omit({ live: true, liveOriginAdded: true }).extend({ liveData: z.boolean().optional() });
@@ -74,6 +130,7 @@ export const ReleaseSettingsSchema = z.object({
   title: z.string(), network: z.enum(["offline", "cdn"]), theme: z.enum(["light", "dark"]),
   apiOrigins: PublicApiOriginsSchema, publicData: JsonDataSchema,
   live: LiveReleaseSchema.optional(), liveOriginAdded: z.boolean().optional(),
+  comments: VisitorCommentsReleaseSchema.optional(),
 });
 export const ReleaseSourceSchema = z.object({
   boardId: IdSchema, boardCreatedAt: z.string(), canvasBase: CanvasBaseSchema,
@@ -131,7 +188,7 @@ export const ShareSchema = z.object({
   // Branch-directory shares keep older versions online under <link>v/<hex>/; workflow (Pages root) shares do not.
   archivesOnline: z.boolean().optional(),
   // Summary of the stored settings an update inherits; public data is reported only by size.
-  settings: z.object({ network: z.enum(["offline", "cdn"]), theme: z.enum(["light", "dark"]), apiOrigins: PublicApiOriginsSchema, publicDataBytes: z.number().int().nonnegative(), live: z.object({ origin: PublicApiOriginSchema, paths: z.array(z.string()) }).optional() }).optional(),
+  settings: z.object({ network: z.enum(["offline", "cdn"]), theme: z.enum(["light", "dark"]), apiOrigins: PublicApiOriginsSchema, publicDataBytes: z.number().int().nonnegative(), live: z.object({ origin: PublicApiOriginSchema, paths: z.array(z.string()) }).optional(), comments: VisitorCommentsReleaseSchema.optional() }).optional(),
 });
 export const ShareStatusSchema = z.object({
   current: ShareSourceSchema.required(), shares: z.array(ShareSchema),
@@ -140,6 +197,8 @@ export const ShareUpdateSchema = z.object({
   boardId: IdSchema, seriesId: IdSchema,
   expectedSource: z.object({ documentVersion: z.number().int().nonnegative(), patchCount: z.number().int().nonnegative() }),
   liveMode: z.enum(["keep", "current"]).default("keep"),
+  // Absent keeps the stored setting; false turns visitor comments off; an object sets or changes the backend.
+  comments: z.union([VisitorCommentsReleaseSchema, z.literal(false)]).optional(),
 });
 export const ShareUpdateResultSchema = z.union([
   z.object({ upToDate: z.literal(true), liveDrift: LiveDriftSchema.optional() }),
@@ -173,4 +232,6 @@ export const refreshPagesRpc = defineRpc({ name: "board.pages.refresh", input: z
 // Host-user only, like every release/pages RPC: never on the agent bridge or MCP. Plugin RPC names are lowercase.
 export const shareStatusRpc = defineRpc({ name: "board.release.share-status", input: z.object({ boardId: IdSchema }), output: ShareStatusSchema });
 export const shareUpdateRpc = defineRpc({ name: "board.release.share-update", input: ShareUpdateSchema, output: ShareUpdateResultSchema });
+// Host-user only: reads the backend's public health with the host's network, never the visitor's.
+export const commentsProbeRpc = defineRpc({ name: "board.comments.probe", input: CommentsProbeInputSchema, output: CommentsProbeResultSchema });
 export const listPagesJobsRpc = defineRpc({ name: "board.pages.list", input: z.object({ releaseId: ReleaseIdSchema.optional() }), output: z.array(PagesJobSchema) });

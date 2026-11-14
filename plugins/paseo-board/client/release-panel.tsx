@@ -10,7 +10,7 @@ import {
   githubAccountsRpc, githubRepositoriesRpc, publishPagesRpc,
   refreshPagesRpc, listPagesJobsRpc, shareUpdateRpc, type ReleaseManifest, type PagesJob,
   PublicApiOriginsSchema,
-  type PagesPrepareInput, type GitHubAccount, type GitHubRepository,
+  type PagesPrepareInput, type GitHubAccount, type GitHubRepository, type VisitorCommentsRelease,
   LOOPBACK_LIVE_REFUSAL, loopbackLiveRefused,
 } from "../shared/release-contracts";
 import { Action, Copy, Notice, errorMessage, localId, useColors } from "./ui";
@@ -22,6 +22,7 @@ import { inheritedSettingsText, mintShareKey, refusedJob, reusableShareKey, shar
 import type { ShareStatusController } from "./use-share-status";
 import type { LiveStatusController } from "./use-live-status";
 import { liveIsLoopback, liveReleasable, publicDataAtLivePaths } from "./live-status";
+import { COMMENTS_TEXT, useReleaseComments } from "./release-comments";
 
 const statusNames: Record<PagesJob["status"], string> = {
   prepared: "准备发布文件", "pr-open": "PR 已创建，等待自动合并", merged: "已合并，等待部署", deploying: "部署并核对网页中",
@@ -36,7 +37,7 @@ const publicationRequest = (value: PagesPrepareInput): PagesPrepareInput => ({
 // Refusals a retry cannot change; series-busy may pass once the other update merges.
 const finalRefusal = (value: PagesJob) => refusedJob(value) && value.refusal?.code !== "series-busy";
 /** One share link being updated from this panel: built by share-update, or regenerated once from recovered settings. */
-type ShareTarget = { share: LiveShare; shareKey: string; releaseId?: string; upToDate?: boolean; recovered?: ReleaseManifest; liveAdopted?: boolean; drift?: ShareLiveDrift };
+type ShareTarget = { share: LiveShare; shareKey: string; releaseId?: string; upToDate?: boolean; recovered?: ReleaseManifest; liveAdopted?: boolean; drift?: ShareLiveDrift; comments?: VisitorCommentsRelease | false };
 const VISITOR_NOTICE = "访客本地保存的状态会从新版本重新开始；部分访客可能几分钟后才看到新版（缓存）。";
 const automaticallyPublishing = (value: PagesJob) => value.autoPublish === true &&
   !["live", "failed"].includes(value.status) && Boolean(value.autoPublishUntil && Date.parse(value.autoPublishUntil) > Date.now());
@@ -83,6 +84,7 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
   const shareList = shares?.shares ?? [];
   const liveChannel = live?.data?.channel ?? null, liveReady = liveReleasable(liveChannel), livePaths = liveChannel?.marks.map(mark => mark.path) ?? [];
   const field = { color: c.foreground, backgroundColor: c.surface1, borderWidth: 1, borderColor: c.border, borderRadius: 6, padding: 8, fontSize: 13 };
+  const comments = useReleaseComments(board, { shares: shareList, githubHost, account });
   useEffect(() => {
     mounted.current = true;
     void list({ boardId: board.id }).then(value => { if (mounted.current) setReleases(values => [...values.filter(item => !value.some(saved => saved.releaseId === item.releaseId)), ...value]); }).catch(error => { if (mounted.current) setFailure(errorMessage(error)); });
@@ -188,10 +190,12 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
     setGitHubHost(share.githubHost); setAccount(share.account); setRepository(share.repository); setCreateRepository(undefined); pageRequest.current = undefined;
   };
   /** Builds the update locally with the share's stored settings and shows its preview; never publishes. */
-  const startUpdate = (share: LiveShare, adoptLive = false) => run(async () => {
-    const next: ShareTarget = { share, shareKey: shareKeyOf(share), liveAdopted: adoptLive };
+  const startUpdate = (share: LiveShare, adoptLive = false, withComments = false) => run(async () => {
+    // The panel's comments setting replaces the stored one only when asked; otherwise the update inherits it.
+    const visitorComments = withComments ? await comments.forShare() : undefined;
+    const next: ShareTarget = { share, shareKey: shareKeyOf(share), liveAdopted: adoptLive, ...(visitorComments !== undefined ? { comments: visitorComments } : {}) };
     targetRef.current = next; setTarget(next);
-    const result = await shareUpdate({ boardId: board.id, seriesId: share.seriesId, expectedSource: { documentVersion: board.canvas.documentVersion, patchCount: board.canvas.patches.length }, ...(adoptLive ? { liveMode: "current" as const } : {}) });
+    const result = await shareUpdate({ boardId: board.id, seriesId: share.seriesId, expectedSource: { documentVersion: board.canvas.documentVersion, patchCount: board.canvas.patches.length }, ...(adoptLive ? { liveMode: "current" as const } : {}), ...(visitorComments !== undefined ? { comments: visitorComments } : {}) });
     if (!mounted.current || targetRef.current !== next) return;
     if ("upToDate" in result) { const done = { ...next, upToDate: true, drift: result.liveDrift }; targetRef.current = done; setTarget(done); return; }
     const built = { ...next, releaseId: result.manifest.releaseId, shareKey: result.request.shareKey ?? next.shareKey, drift: result.liveDrift };
@@ -205,7 +209,7 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
     const saved = await preview({ releaseId: share.releaseId });
     if (!mounted.current) return;
     const manifest = saved.manifest;
-    setTitle(manifest.title); setNetwork(manifest.network); setApiOriginsText((manifest.apiOrigins ?? []).join("\n")); copyRequest.current = undefined;
+    setTitle(manifest.title); setNetwork(manifest.network); setApiOriginsText((manifest.apiOrigins ?? []).join("\n")); comments.restore(manifest.comments); copyRequest.current = undefined;
     const next: ShareTarget = { share, shareKey: shareKeyOf(share), recovered: manifest };
     targetRef.current = next; setTarget(next);
   });
@@ -247,7 +251,9 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
           {share.link ? <Action label="复制链接" onPress={() => copyLink(share.link!)} /> : null}
           {desktop && stale && share.live !== "updating" && share.settingsAvailable ? <Action label="更新此分享页" primary={!active} disabled={busy} onPress={() => { void startUpdate(share); }} /> : null}
           {desktop && stale && share.live !== "updating" && !share.settingsAvailable ? <Action label="沿用上次分享页的设置" disabled={busy} onPress={() => { void recoverSettings(share); }} /> : null}
+          {desktop && share.settingsAvailable && share.live !== "updating" && comments.differs(share) ? <Action testID="board-share-comments-update" label={COMMENTS_TEXT.update} disabled={busy} onPress={() => { void startUpdate(share, false, true); }} /> : null}
         </View>
+        {comments.appChanged(share) ? <Notice text={COMMENTS_TEXT.appChanged} /> : null}
         {share.link && copied === share.link ? <Copy small muted>已复制链接</Copy> : null}
         {drift ? <View testID="board-share-live-drift" style={{ gap: 4 }}>
           <Copy small muted>这个分享页的实时配置与当前不同：{[...drift.addedPaths.map(path => `+${path}`), ...drift.removedPaths.map(path => `-${path}`), ...(drift.originChanged ? ["后端来源已变更"] : [])].join("  ")}</Copy>
@@ -296,11 +302,13 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
       <Copy>后端 API 来源（可选，每行一个）</Copy>
       <TextInput accessibilityLabel="后端 API 来源" placeholder="https://api.example.internal" multiline autoCapitalize="none" value={apiOriginsText} onChangeText={setApiOriginsText} editable={!busy} style={{ ...field, minHeight: 60, maxHeight: 140 }} />
       <Copy small muted>留空则不连接应用后端。填写后，发布页可向这些地址读写数据；这里不填写路径、密码或收件箱令牌。后端需允许发布网站的来源，预览不会调用后端。</Copy>
+      {comments.view(busy)}
       <Action label={busy ? "处理中…" : "生成固定版本并预览"} primary disabled={busy || !title.trim()} onPress={() => { void run(async () => {
         const parsed: unknown = JSON.parse(publicData);
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("公开数据须为 JSON 对象。");
         const apiOrigins = PublicApiOriginsSchema.parse(apiOriginsText.split(/\r?\n/).map(value => value.trim()).filter(Boolean));
-        const result = await create({ boardId: board.id, expectedCanvasBase: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion }, title: title.trim(), publicData: parsed as Board["canvas"]["data"], apiOrigins, network, theme, ...(liveData && liveReady ? { liveData: true } : {}) });
+        const visitorComments = await comments.resolve();
+        const result = await create({ boardId: board.id, expectedCanvasBase: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion }, title: title.trim(), publicData: parsed as Board["canvas"]["data"], apiOrigins, network, theme, ...(liveData && liveReady ? { liveData: true } : {}), ...(visitorComments ? { comments: visitorComments } : {}) });
         if (!mounted.current) return;
         setReleases(values => [result, ...values.filter(item => item.releaseId !== result.releaseId)]);
         // Recovered settings: this generation becomes the reviewed update for that share link.
@@ -332,12 +340,14 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
       <Copy>{selected.title} · 固定版本 {selected.artifactHash.slice(0, 12)}</Copy>
       {selected.apiOrigins?.length ? <Copy small muted>已固定的后端来源：{selected.apiOrigins.join("、")}</Copy> : null}
       {selected.live ? <Copy small muted>已固定的实时数据：{selected.live.origin} · {selected.live.paths.join("、")}</Copy> : null}
+      {selected.comments ? <Copy small muted>访客评论：{selected.comments.apiBase}</Copy> : null}
       {html ? <ReleasePreview html={html} /> : null}
       {confirming ? <View style={{ gap: 8, padding: 10, borderWidth: 1, borderRadius: 8, borderColor: c.accent }}>
         <Copy>确认后更新这个分享链接：{confirming.share.link ?? `${pagesGitHubHost(confirming.share)} · ${confirming.share.repository}`}</Copy>
         {confirming.share.archivesOnline ? confirming.share.adoptable ? <Copy small muted>链接保持不变；之前的版本另存在这个链接下的 v/ 目录，仍可打开。</Copy> : null
           : <Copy small muted>链接保持不变；之前的版本不会留在网上，可在「本机发布版本」中预览或下载 ZIP。</Copy>}
-        <Copy small muted>{confirming.recovered ? `本次使用面板中的设置：名称「${selected.title}」 · ${selected.network === "cdn" ? "允许 CDN 库" : "仅内置资源"} · ${selected.apiOrigins?.length ? `后端来源：${selected.apiOrigins.join("、")}` : "不连接后端"}` : `沿用设置：${inheritedSettingsText(confirming.share)}`}</Copy>
+        <Copy small muted>{confirming.recovered ? `本次使用面板中的设置：名称「${selected.title}」 · ${selected.network === "cdn" ? "允许 CDN 库" : "仅内置资源"} · ${selected.apiOrigins?.length ? `后端来源：${selected.apiOrigins.join("、")}` : "不连接后端"}${selected.comments ? ` · 访客评论（${selected.comments.apiBase}）` : ""}` : `沿用设置：${inheritedSettingsText(confirming.share)}`}</Copy>
+        {confirming.comments !== undefined ? <Copy small muted>此次更新的访客评论：{confirming.comments ? confirming.comments.apiBase : "关闭"}</Copy> : null}
         {confirming.liveAdopted ? <Copy small muted>此次更新采用当前实时配置：{selected.live ? `${selected.live.origin} · ${selected.live.paths.join("、")}` : "不连接实时数据"}</Copy> : null}
         <Copy small muted>{VISITOR_NOTICE}</Copy>
         {refusedConfirm ? <Notice error text={refusedConfirm.refusal!.message} /> : null}

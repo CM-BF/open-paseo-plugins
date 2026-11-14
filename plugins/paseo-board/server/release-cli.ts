@@ -3,14 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { BoardSchema } from "../shared/contracts";
+import { PublicApiBaseSchema, commentsProbeRefusal, type VisitorCommentsRelease } from "../shared/release-contracts";
 import { GitHubPagesManager } from "./github-pages";
 import { ReleaseRepository, serveRelease } from "./static-release";
+import { probeComments, type CommentsFetcher } from "./comments-probe";
 
 const HELP = `Board static release CLI (run after npm ci)
 
 export --board <board-read.json> --public-data <public.json> --out <new-directory>
        [--zip <new.zip>] [--store <private-release-directory>] [--network offline|cdn]
-       [--theme light|dark] [--title <title>] [--api-origins <json-array-file>] [--serve]
+       [--theme light|dark] [--title <title>] [--api-origins <json-array-file>]
+       [--comments-api <api-base>] [--serve]
 serve  --store <private-release-directory> --release <release-id>
 accounts [--github-host <hostname>]
 repositories --account <login> [--github-host <hostname>]
@@ -24,6 +27,9 @@ merge   --store <directory> --jobs <directory> --job <id> --head <exact-pr-sha>
 refresh --store <directory> --jobs <directory> --job <id>
 jobs    --store <directory> --jobs <directory> [--release <id>]
 
+--comments-api lets visitors select text and comment, using a paseo-board-app backend you
+already run with comments.enabled (for example https://api.example.com or https://example.com/board-api).
+It is checked first; its app key is read from /_board/health.
 export/serve operate locally. prepare uploads the reviewed public artifact and creates a PR.
 merge requires successful exact-head validation before merging and enabling Pages.
 publish authorizes and automatically completes PR, merge and deployment verification.
@@ -32,7 +38,7 @@ Repository and publication commands default to github.com for old requests.
 Account discovery lists configured GitHub hosts unless --github-host selects one.
 `;
 
-export async function releaseMain(argv: string[]): Promise<void> {
+export async function releaseMain(argv: string[], options: { commentsFetcher?: CommentsFetcher } = {}): Promise<void> {
   if (!argv.length || argv.includes("--help")) { process.stdout.write(HELP); return; }
   const [command, ...rest] = argv, flags: Record<string, string> = {};
   for (let index = 0; index < rest.length; index++) {
@@ -42,7 +48,7 @@ export async function releaseMain(argv: string[]): Promise<void> {
   }
   const publicationFlags = ["--store", "--jobs", "--release", "--hash", "--account", "--repo", "--event", "--github-host", "--create-repository"];
   const allowed: Record<string, string[]> = {
-    export: ["--board", "--public-data", "--out", "--zip", "--store", "--network", "--theme", "--title", "--api-origins", "--serve"],
+    export: ["--board", "--public-data", "--out", "--zip", "--store", "--network", "--theme", "--title", "--api-origins", "--comments-api", "--serve"],
     serve: ["--store", "--release"], accounts: ["--github-host"], repositories: ["--account", "--github-host"],
     prepare: publicationFlags, publish: publicationFlags,
     merge: ["--store", "--jobs", "--job", "--head"], refresh: ["--store", "--jobs", "--job"],
@@ -60,10 +66,17 @@ export async function releaseMain(argv: string[]): Promise<void> {
     const raw = JSON.parse(await readFile(required("--board"), "utf8")), board = BoardSchema.parse(raw.board ?? raw);
     const publicData = JSON.parse(await readFile(required("--public-data"), "utf8"));
     const apiOrigins = flags["--api-origins"] ? JSON.parse(await readFile(flags["--api-origins"], "utf8")) : [];
+    // The app key comes from the backend itself, so the page and the backend always name the same app.
+    let comments: VisitorCommentsRelease | undefined;
+    if (flags["--comments-api"]) {
+      const apiBase = PublicApiBaseSchema.parse(flags["--comments-api"]), probe = await probeComments({ apiBase }, options.commentsFetcher), refusal = commentsProbeRefusal(probe, undefined);
+      if (refusal || !probe.appKey) throw new Error(refusal ?? "评论后端检查没有通过");
+      comments = { apiBase, appKey: probe.appKey };
+    }
     const temporary = flags["--store"] ? undefined : await mkdtemp(join(tmpdir(), "board-release-export-"));
     const repository = new ReleaseRepository(flags["--store"] ?? temporary!);
     try {
-      const release = await repository.create({ board, boardId: board.id, expectedCanvasBase: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion }, publicData, apiOrigins, network: flags["--network"] as "offline" | "cdn" | undefined, theme: flags["--theme"] as "light" | "dark" | undefined, title: flags["--title"] });
+      const release = await repository.create({ board, boardId: board.id, expectedCanvasBase: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion }, publicData, apiOrigins, network: flags["--network"] as "offline" | "cdn" | undefined, theme: flags["--theme"] as "light" | "dark" | undefined, title: flags["--title"], ...(comments ? { comments } : {}) });
       await repository.export(release.manifest.releaseId, { directory: required("--out"), zipPath: flags["--zip"] });
       output({ status: "exported", manifest: release.manifest, directory: flags["--out"], zip: flags["--zip"] });
       if (flags["--serve"]) await serve(repository, release.manifest.releaseId);

@@ -1,9 +1,12 @@
 import layoutState from "./assets/component-layout-state.txt";
 import { PUBLIC_API_CLIENT, PUBLIC_API_HOST } from "./public-api";
+import { COMMENTS_RUNTIME, COMMENTS_SHELL } from "./visitor-comments";
 
 /** Non-live releases keep this version and exact bytes; see the SHA pin in static-release.test.ts. */
 export const STATIC_VIEWER_VERSION = 2;
 export const STATIC_VIEWER_LIVE_VERSION = 3;
+/** Releases with visitor text-selection comments, with or without live data. */
+export const STATIC_VIEWER_COMMENTS_VERSION = 4;
 
 const FROZEN_DATA_API = String.raw`const context=Object.freeze({boardId:initial.releaseId,releaseId:initial.releaseId,documentVersion:1,boardRevision:1,canvasRevision:1,published:true});
   const watch=(path,fn,options)=>{
@@ -175,7 +178,8 @@ const LIVE_BOOT = String.raw`if(location.origin==='null'){setStatus('preview');b
 
 const FROZEN_BOOT = String.raw`frame.srcdoc=config.prefix+'<script>('+config.runtime+')('+json(initial)+');<\/script>'+config.html+config.suffix;`;
 
-export const staticViewerRuntime = (live = false): string => String.raw`function(initial) {
+/** With comments off the output is byte-identical to the viewer before visitor comments, for both live values. */
+export const staticViewerRuntime = (live = false, comments = false): string => String.raw`function(initial) {
   'use strict';
   const clone=value=>structuredClone(value), listeners=new Set();
   let state=clone(initial.state||{});
@@ -206,12 +210,12 @@ export const staticViewerRuntime = (live = false): string => String.raw`function
   window.openai=Object.freeze({sendFollowUpMessage:ask});
   (${layoutState})({getState:()=>clone(state),saveState:writeState,onState:fn=>subscribe(listeners,fn)},1);
   document.addEventListener('submit',event=>event.preventDefault(),true);
-  document.addEventListener('click',event=>{const link=event.target?.closest?.('a[href]');if(!link)return;const href=link.getAttribute('href');if(href?.startsWith('#'))return;event.preventDefault();if(!event.isTrusted)return;try{const url=new URL(href,initial.siteUrl);if(['https:','http:'].includes(url.protocol))send({type:'link',url:url.href})}catch{}},true);${live ? LIVE_RUNTIME_LISTENER : ""}
+  document.addEventListener('click',event=>{const link=event.target?.closest?.('a[href]');if(!link)return;const href=link.getAttribute('href');if(href?.startsWith('#'))return;event.preventDefault();if(!event.isTrusted)return;try{const url=new URL(href,initial.siteUrl);if(['https:','http:'].includes(url.protocol))send({type:'link',url:url.href})}catch{}},true);${live ? LIVE_RUNTIME_LISTENER : ""}${comments ? COMMENTS_RUNTIME : ""}
 }`;
 export const STATIC_VIEWER_RUNTIME = staticViewerRuntime();
 
 /** Parent owns visitor storage; authored scripts remain in an opaque-origin iframe. */
-export const staticViewerShell = (live = false): string => String.raw`function(config) {
+export const staticViewerShell = (live = false, comments = false): string => String.raw`function(config) {
   'use strict';
   const frame=document.querySelector('iframe'),notice=document.querySelector('[role=status]');
   const announce=text=>{notice.textContent=text;notice.hidden=!text};
@@ -229,6 +233,6 @@ export const staticViewerShell = (live = false): string => String.raw`function(c
     else if(m.type==='unavailable')announce('此发布版本保留页面交互，不连接 agent。');
     else if(m.type==='link'&&navigator.userActivation?.isActive&&typeof m.url==='string'&&m.url.length<8000){try{const url=new URL(m.url);if(['https:','http:'].includes(url.protocol))window.open(url.href,'_blank','noopener,noreferrer')}catch{}}${live ? "\n    else if(m.type==='live-ready'){frameReady=true;postLive()}" : ""}
   });
-  ${live ? LIVE_BOOT : FROZEN_BOOT}
+  ${live ? LIVE_BOOT : FROZEN_BOOT}${comments ? COMMENTS_SHELL : ""}
 }`;
 export const STATIC_VIEWER_SHELL = staticViewerShell();

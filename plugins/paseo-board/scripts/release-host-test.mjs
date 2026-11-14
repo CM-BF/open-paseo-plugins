@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { build } from 'esbuild';
 import { createLiveHostBackend, runLiveHostChecks } from './live-host-checks.mjs';
+import { createCommentsHostBackend, runCommentsHostChecks } from './release-comments-host-checks.mjs';
 const directory=dirname(fileURLToPath(import.meta.url)), root=dirname(directory);
 const temporary=await mkdtemp(join(tmpdir(),'paseo-release-host-'));
 const downloads=join(temporary,'downloads'); await mkdir(downloads);
@@ -27,17 +28,19 @@ const calls=[], jobs=new Map(), prepareReceipts=new Map(), copiedBoards=[];
 const enterpriseHost='github.enterprise.example';
 let configuredAccounts=[{login:'fixture-alice',host:'github.com',active:true},{login:'fixture-bob',host:'github.com',active:false},{login:'fixture-alice',host:enterpriseHost,active:true}];
 // Share status/update run the actual server handlers over this adapter's job journal.
-const shareHandlers=new Map();
+const shareHandlers=new Map(), commentsHost=await createCommentsHostBackend();
 registerPublicationRpc({handle:(contract,handler)=>shareHandlers.set(contract.name,handler)},{ready:async()=>{},requireBoard:async id=>{assert.equal(sourceBoard?.id,id);return sourceBoard},releases:repository,
   pages:{list:async()=>structuredClone([...jobs.values()]),read:async id=>structuredClone(jobs.get(id))},
-  live:{releaseChannel:board=>liveHost.publisher.releaseChannel(board.id,board.createdAt)}});
+  live:{releaseChannel:board=>liveHost.publisher.releaseChannel(board.id,board.createdAt)},commentsFetcher:commentsHost.fetcher});
 const pagesRoot=input=>(input.githubHost===enterpriseHost?'https://pages.enterprise.example/'+input.account+'/':'https://'+input.account+'.github.io/')+input.repository.split('/')[1]+'/';
 const copies=new BoardCopies(join(temporary,'copies'),{read:async id=>sourceBoard?.id===id?sourceBoard:boardStore.read(id),create:input=>boardStore.create(input)});
 const rpc=async(name,input,board)=>{
   const recorded=structuredClone(input);if(name==='board.live.set'&&recorded.token){delete recorded.token;recorded.tokenSent=true}
   calls.push({name,input:recorded});sourceBoard=board;
   if(name.startsWith('board.live.'))return liveHost.rpc(name,input);
-  if(name==='board.release.create'&&input.liveData)return shareHandlers.get(name)(input);
+  if(name==='board.release.create'&&(input.liveData||input.comments))return shareHandlers.get(name)(input);
+  if(name==='board.comments.probe')return shareHandlers.get(name)(input);
+  if(name==='board.inbox.connections')return structuredClone(commentsHost.connections);
   if(name==='board.copy'){const copied=await copies.copy(input);copiedBoards.push(copied);return copied}
   if(name==='board.release.create')return (await repository.create({...input,board})).manifest;
   if(name==='board.release.list')return (await repository.list(input.boardId)).map(r=>r.manifest);
@@ -544,6 +547,7 @@ try {
   }
   if(!process.env.BOARD_RELEASE_PREVIEW_SWITCH_ONLY){
     const loadPage=async load=>{const id=await evaluate('hostFixture.pageInstance');await load();await until(`window.hostFixture&&hostFixture.pageInstance!==${JSON.stringify(id)}&&hostFixture.mainReady()?.ready`)};
+    await runCommentsHostChecks({assert,command,evaluate,until,click,replace,button,check,pageOrigin:origin,comments:commentsHost,calls,repository,loadPage});
     await runLiveHostChecks({assert,command,evaluate,until,click,replace,button,check,pageOrigin:origin,live:liveHost,calls,repository,jobs,loadPage});
   }
   console.log(`Release host integration: ${passed} checks passed (actual static/copy core; adapted GitHub and Paseo transport, no external publication).`);
@@ -553,6 +557,6 @@ finally{
   try{process.kill(-chrome.pid,'SIGKILL')}catch{}
   chrome.stdio[3].destroy();chrome.stdio[4].destroy();chrome.stderr.destroy();
   for(const entry of commands.values()){clearTimeout(entry.timer);entry.reject(new Error('browser closed'))}
-  await liveHost.close().catch(()=>{});
+  await liveHost.close().catch(()=>{});await commentsHost.close().catch(()=>{});
   server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await rm(temporary,{recursive:true,force:true,maxRetries:5,retryDelay:100});
 }

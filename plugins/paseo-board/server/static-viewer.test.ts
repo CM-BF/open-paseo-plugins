@@ -1,7 +1,8 @@
 import { createHash, webcrypto } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
-import { STATIC_VIEWER_LIVE_VERSION, STATIC_VIEWER_RUNTIME, STATIC_VIEWER_SHELL, STATIC_VIEWER_VERSION, staticViewerRuntime, staticViewerShell } from "../shared/static-viewer";
+import { STATIC_VIEWER_COMMENTS_VERSION, STATIC_VIEWER_LIVE_VERSION, STATIC_VIEWER_RUNTIME, STATIC_VIEWER_SHELL, STATIC_VIEWER_VERSION, staticViewerRuntime, staticViewerShell } from "../shared/static-viewer";
+import { COMMENTS_RUNTIME, COMMENTS_SHELL, SHA256_JS } from "../shared/visitor-comments";
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 const CHANNEL = "c" + "a".repeat(32), ORIGIN = "https://live.example.com";
@@ -12,6 +13,34 @@ describe("viewer byte identity", () => {
     expect(sha256(STATIC_VIEWER_SHELL)).toBe("b68f2146790fbc3ca27d8ae8bd11f3663d4616d702a797520972e003005fb059");
     expect(staticViewerRuntime()).toBe(STATIC_VIEWER_RUNTIME); expect(staticViewerShell()).toBe(STATIC_VIEWER_SHELL);
     expect(STATIC_VIEWER_VERSION).toBe(2); expect(STATIC_VIEWER_LIVE_VERSION).toBe(3);
+  });
+  it("keeps the live viewer and every viewer without comments exactly as published before visitor comments", () => {
+    // Computed at 4b94741 before visitor comments were added.
+    expect(sha256(staticViewerRuntime(true))).toBe("5604867784097a36b28ebfa157f3ae2dbb3cb35782783f1b51235b85b2692223");
+    expect(sha256(staticViewerShell(true))).toBe("317a89ffe4adc3dc02f348293ca784470f5f3dc4a8319134c64796d458d822ee");
+    for (const live of [false, true]) {
+      expect(staticViewerRuntime(live, false)).toBe(staticViewerRuntime(live));
+      expect(staticViewerShell(live, false)).toBe(staticViewerShell(live));
+      for (const text of [staticViewerRuntime(live), staticViewerShell(live)]) for (const marker of ["comment-target", "_board/comments", "paseo-board-visitor:", "comment-threads"]) expect(text).not.toContain(marker);
+    }
+    expect(STATIC_VIEWER_COMMENTS_VERSION).toBe(4);
+  });
+  it("splices the comment blocks as self-contained IIFEs after any live code", () => {
+    for (const live of [false, true]) {
+      const runtime = staticViewerRuntime(live, true), shell = staticViewerShell(live, true);
+      expect(runtime).toBe(staticViewerRuntime(live).replace(/\n\}$/, COMMENTS_RUNTIME + "\n}"));
+      expect(shell).toBe(staticViewerShell(live).replace(/\n\}$/, COMMENTS_SHELL + "\n}"));
+      expect(runtime.indexOf(COMMENTS_RUNTIME)).toBeGreaterThan(live ? runtime.indexOf("live-ready") : 0);
+      // Both parse as functions, and neither can close the script element that carries it.
+      expect(() => new Function(`return (${runtime})`)).not.toThrow(); expect(() => new Function(`return (${shell})`)).not.toThrow();
+      for (const text of [runtime, shell]) { expect(text).not.toMatch(/<\/script/i); expect(text).not.toContain("<!--"); }
+    }
+    for (const block of [COMMENTS_RUNTIME, COMMENTS_SHELL]) { expect(block.trim()).toMatch(/^;\(\(\)=>\{[\s\S]*\}\)\(\);$/); }
+    expect(COMMENTS_SHELL).toContain("paseo-board-visitor:v2:"); expect(COMMENTS_RUNTIME).not.toContain("paseo-board-visitor"); expect(COMMENTS_RUNTIME).not.toContain("localStorage");
+  });
+  it("hashes page keys with the shell's synchronous SHA-256 exactly like node:crypto", () => {
+    const hash = runInNewContext(SHA256_JS, { TextEncoder, Uint32Array, Math }) as (text: string) => string;
+    for (const text of ["", "abc", "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/", "评论".repeat(40), "x".repeat(55), "y".repeat(56), "z".repeat(64), "w".repeat(1000)]) expect(hash(text)).toBe(sha256(text));
   });
   it("keeps live-only code out of the non-live viewer", () => {
     for (const text of [STATIC_VIEWER_RUNTIME, STATIC_VIEWER_SHELL]) for (const marker of ["live-ready", "_board/live", "data-live", "paseo-board-live:"]) expect(text).not.toContain(marker);

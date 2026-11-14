@@ -70,6 +70,8 @@ describe("share keys and stale requests", () => {
     expect(inheritedSettingsText(share({ settings: { network: "cdn", theme: "dark", apiOrigins: ["https://api.example.com"], publicDataBytes: 2048 } })))
       .toBe("名称「Work」 · 允许 CDN 库 · 深色 · 后端来源：https://api.example.com · 公开数据 2.0 KB");
     expect(inheritedSettingsText(share({ settingsAvailable: false }))).toContain("没有保存");
+    expect(inheritedSettingsText(share({ settings: { network: "offline", theme: "light", apiOrigins: [], publicDataBytes: 2, comments: { apiBase: "https://example.com/board-api", appKey: "0123456789abcdef" } } })))
+      .toBe("名称「Work」 · 仅内置资源 · 浅色 · 不连接后端 · 公开数据 2 字节 · 访客评论（https://example.com/board-api）");
   });
 });
 
