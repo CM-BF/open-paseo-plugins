@@ -38,7 +38,7 @@ export async function probeComments(raw: unknown, fetcher: CommentsFetcher = fet
       return { status: response.status, allowOrigin: response.headers.get("access-control-allow-origin"), text: await readLimited(response), error: undefined };
     } catch (error) { return { status: 0, allowOrigin: null, text: null, error: failure(error) }; }
   };
-  const result: CommentsProbeResult = { reachable: false, httpStatus: null, appId: null, appKey: null, deploymentId: null, comments: "unknown", clientIp: "unknown", originProblems: [], error: null };
+  const result: CommentsProbeResult = { reachable: false, httpStatus: null, appId: null, appKey: null, deploymentId: null, comments: "unknown", publicThreads: "unknown", clientIp: "unknown", originProblems: [], error: null };
   const health = await get();
   if (health.error !== undefined) return { ...result, error: health.error };
   result.httpStatus = health.status;
@@ -51,6 +51,7 @@ export async function probeComments(raw: unknown, fetcher: CommentsFetcher = fet
   result.appKey = AppKeySchema.safeParse(body.appKey).success ? body.appKey as string : null;
   result.comments = body.comments === 2 ? "threads" : body.comments === 0 ? "disabled" : body.comments === undefined ? "basic" : "unknown";
   if (result.comments === "unknown") result.error = "后端报告了无法识别的评论版本";
+  result.publicThreads = body.publicThreads === 1 ? "available" : body.publicThreads === 0 ? "off" : body.publicThreads === undefined ? "unsupported" : "unknown";
   result.clientIp = body.clientIp === "socket" || body.clientIp === "forwarded" || body.clientIp === "proxied-unconfigured" ? body.clientIp : "unknown";
   for (const pageOrigin of pageOrigins) {
     const seen = await get(pageOrigin);
@@ -59,9 +60,9 @@ export async function probeComments(raw: unknown, fetcher: CommentsFetcher = fet
   return CommentsProbeResultSchema.parse(result);
 }
 
-/** Release creation needs the thread runtime of exactly the app the human checked; throws the refusal otherwise. */
+/** Release creation needs the thread runtime of exactly the app the human checked (and public threads for 公开); throws the refusal otherwise. */
 export async function requireCommentsBackend(comments: VisitorCommentsRelease, fetcher: CommentsFetcher = fetch): Promise<CommentsProbeResult> {
-  const result = await probeComments({ apiBase: comments.apiBase }, fetcher), refusal = commentsProbeRefusal(result, comments.appKey);
+  const result = await probeComments({ apiBase: comments.apiBase }, fetcher), refusal = commentsProbeRefusal(result, comments.appKey, comments.visibility);
   if (refusal) throw new Error(refusal);
   return result;
 }

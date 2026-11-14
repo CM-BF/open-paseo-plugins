@@ -54,8 +54,8 @@ export async function startApp(app) {
         const origin = request.headers.origin;
         if (origin && !app.config.origins.includes(origin)) throw httpError(403, 'Origin is not allowed');
         if (origin) { response.setHeader('access-control-allow-origin', origin); response.setHeader('vary', 'Origin'); }
-        if (request.method === 'OPTIONS') { comments.preflight(request, url.pathname); response.writeHead(204, { 'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS', 'access-control-allow-headers': 'Content-Type, Idempotency-Key, Authorization, X-Board-Visitor', 'access-control-max-age': '600' }); response.end(); return; }
-        if (url.pathname === '/_board/health' && request.method === 'GET') { json(200, { status: 'ok', id: app.owner.id, appKey: comments.appKey, deploymentId, instanceId, live: live.enabled ? 1 : 0, comments: comments.enabled ? 2 : 0, clientIp: comments.client(request).mode }); return; }
+        if (request.method === 'OPTIONS') { comments.preflight(request, url.pathname); response.writeHead(204, { 'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS', 'access-control-allow-headers': 'Content-Type, Idempotency-Key, Authorization, X-Board-Visitor, If-None-Match', 'access-control-max-age': '600' }); response.end(); return; }
+        if (url.pathname === '/_board/health' && request.method === 'GET') { json(200, { status: 'ok', id: app.owner.id, appKey: comments.appKey, deploymentId, instanceId, live: live.enabled ? 1 : 0, comments: comments.enabled ? 2 : 0, publicThreads: comments.publicThreads ? 1 : 0, clientIp: comments.client(request).mode }); return; }
         if (url.pathname === '/_board/shutdown' && request.method === 'POST') {
           const supplied = Buffer.from(request.headers['x-board-control'] || ''), expected = Buffer.from(controlToken);
           if (origin || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress) || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw httpError(403, 'Control denied');
@@ -83,7 +83,7 @@ export async function startApp(app) {
     const state = { pid: process.pid, instanceId, controlToken, host: app.config.host, port: address.port, startedAt: new Date().toISOString() };
     await fs.rm(path.join(app.dataDir, 'server.json'), { force: true });
     await writeJson(path.join(app.dataDir, 'server.json'), state);
-    return { server, db, close, port: address.port, deploymentId, instanceId };
+    return { server, db, close, port: address.port, deploymentId, instanceId, stats: comments.threads.stats };
   } catch (error) { if (server?.listening) await new Promise(resolve => server.close(resolve)); db?.close(); await releaseRuntime?.(); throw error; }
   finally { await unlock(); }
 }

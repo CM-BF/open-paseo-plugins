@@ -13,6 +13,7 @@ import { createRequire } from 'node:module';
 import { build } from 'esbuild';
 import { createLiveHostBackend, runLiveHostChecks } from './live-host-checks.mjs';
 import { createCommentsHostBackend, runCommentsHostChecks } from './release-comments-host-checks.mjs';
+import { runPublicReleaseHostChecks } from './public-release-host-checks.mjs';
 const directory=dirname(fileURLToPath(import.meta.url)), root=dirname(directory);
 const temporary=await mkdtemp(join(tmpdir(),'paseo-release-host-'));
 const downloads=join(temporary,'downloads'); await mkdir(downloads);
@@ -31,7 +32,7 @@ let configuredAccounts=[{login:'fixture-alice',host:'github.com',active:true},{l
 const shareHandlers=new Map(), commentsHost=await createCommentsHostBackend();
 registerPublicationRpc({handle:(contract,handler)=>shareHandlers.set(contract.name,handler)},{ready:async()=>{},requireBoard:async id=>{assert.equal(sourceBoard?.id,id);return sourceBoard},releases:repository,
   pages:{list:async()=>structuredClone([...jobs.values()]),read:async id=>structuredClone(jobs.get(id))},
-  live:{releaseChannel:board=>liveHost.publisher.releaseChannel(board.id,board.createdAt)},commentsFetcher:commentsHost.fetcher});
+  live:{releaseChannel:board=>liveHost.publisher.releaseChannel(board.id,board.createdAt)},commentsFetcher:commentsHost.fetcher,publicReleases:commentsHost.publicReleases});
 const pagesRoot=input=>(input.githubHost===enterpriseHost?'https://pages.enterprise.example/'+input.account+'/':'https://'+input.account+'.github.io/')+input.repository.split('/')[1]+'/';
 const copies=new BoardCopies(join(temporary,'copies'),{read:async id=>sourceBoard?.id===id?sourceBoard:boardStore.read(id),create:input=>boardStore.create(input)});
 const rpc=async(name,input,board)=>{
@@ -548,6 +549,7 @@ try {
   if(!process.env.BOARD_RELEASE_PREVIEW_SWITCH_ONLY){
     const loadPage=async load=>{const id=await evaluate('hostFixture.pageInstance');await load();await until(`window.hostFixture&&hostFixture.pageInstance!==${JSON.stringify(id)}&&hostFixture.mainReady()?.ready`)};
     await runCommentsHostChecks({assert,command,evaluate,until,click,replace,button,check,pageOrigin:origin,comments:commentsHost,calls,repository,loadPage});
+    await runPublicReleaseHostChecks({assert,command,evaluate,until,click,replace,button,check,pageOrigin:origin,comments:commentsHost,calls,repository,loadPage});
     await runLiveHostChecks({assert,command,evaluate,until,click,replace,button,check,pageOrigin:origin,live:liveHost,calls,repository,jobs,loadPage});
   }
   console.log(`Release host integration: ${passed} checks passed (actual static/copy core; adapted GitHub and Paseo transport, no external publication).`);

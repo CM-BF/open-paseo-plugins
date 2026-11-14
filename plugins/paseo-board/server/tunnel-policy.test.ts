@@ -64,7 +64,7 @@ describe("tunnel policy", () => {
     expect(texts[3][1]).toContain("inbox reply");
     for (const file of execFileSync("git", ["ls-files", "client"], { cwd: root, encoding: "utf8" }).split("\n").filter(name => name.endsWith(".tsx")))
       texts.push([file, await readFile(join(root, file), "utf8")]);
-    for (const file of ["shared/visitor-comments.ts", "backend/visitor.mjs", "docs/page-comments.md", "docs/comment-inbox.md"])
+    for (const file of ["shared/visitor-comments.ts", "backend/visitor.mjs", "docs/page-comments.md", "docs/comment-inbox.md", "shared/public-threads.ts", "shared/inbox-public.ts", "docs/published-apps.md", "docs/app-backend-scaffold.md"])
       texts.push([file, await readFile(join(root, file), "utf8")]);
     const directory = await realpath(await mkdtemp(join(tmpdir(), "board-tunnel-policy-")));
     try {

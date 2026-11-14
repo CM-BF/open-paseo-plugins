@@ -4,8 +4,8 @@ import { join, resolve } from "node:path";
 import { createServer } from "node:http";
 import { DOMParser } from "linkedom";
 import { IdSchema, type Board, type CanvasBase } from "../shared/contracts";
-import { ReleaseCreateSchema, ReleaseIdSchema, ReleaseManifestSchema, ReleaseMetaSchema, commentsReleaseWarning, livePathSegments, type LiveRelease, type ReleaseCreateInput, type ReleaseManifest, type ReleaseMeta, type ReleaseSettings } from "../shared/release-contracts";
-import { STATIC_VIEWER_COMMENTS_VERSION, STATIC_VIEWER_LIVE_VERSION, STATIC_VIEWER_VERSION, staticViewerRuntime, staticViewerShell } from "../shared/static-viewer";
+import { ReleaseCreateSchema, ReleaseIdSchema, ReleaseManifestSchema, ReleaseMetaSchema, commentsPublicReleaseWarning, commentsReleaseWarning, livePathSegments, type LiveRelease, type ReleaseCreateInput, type ReleaseManifest, type ReleaseMeta, type ReleaseSettings } from "../shared/release-contracts";
+import { STATIC_VIEWER_COMMENTS_VERSION, STATIC_VIEWER_LIVE_VERSION, STATIC_VIEWER_PUBLIC_COMMENTS_VERSION, STATIC_VIEWER_VERSION, staticViewerRuntime, staticViewerShell } from "../shared/static-viewer";
 import { DEFAULT_DARK_COLORS, DEFAULT_LIGHT_COLORS, frameThemeFromColors } from "../shared/frame-theme";
 import { liquidGlassHead, liquidGlassUsage } from "../shared/liquid-glass";
 import stylesheet from "../shared/assets/visualize.css.txt";
@@ -124,9 +124,11 @@ export function buildRelease(input: ReleaseCreateInput & { board: Board }): Stat
   if (resources.dependencies.length) warnings.push("源码含外部地址；CDN 资源需要联网，其他地址可能是普通链接或会被阻止的请求。");
   if (options.apiOrigins.length) warnings.push(`此版本可通过 board.request 连接以下后端：${options.apiOrigins.join("、")}。请求不附带浏览器 Cookie；应用身份验证由后端实现，预览页不发起这些请求。`);
   if (options.live) warnings.push(`此版本会定时从 ${options.live.origin} 读取实时公开数据，只接受这些路径：${options.live.paths.join("、")}。访客会看到后端最新的内容；访客浏览器也可能保留最后读到的一份。`);
-  if (options.comments) warnings.push(commentsReleaseWarning(options.comments.apiBase));
-  const { live, comments } = options, runtime = staticViewerRuntime(!!live, !!comments), shell = staticViewerShell(!!live, !!comments);
-  const viewerVersion = comments ? STATIC_VIEWER_COMMENTS_VERSION : live ? STATIC_VIEWER_LIVE_VERSION : STATIC_VIEWER_VERSION;
+  if (options.comments) warnings.push(options.comments.visibility === "public" ? commentsPublicReleaseWarning(options.comments.apiBase) : commentsReleaseWarning(options.comments.apiBase));
+  // Private comments keep the viewer-4 bytes; public threads use viewer 5 (public-threads §5.1.2).
+  const { live, comments } = options, mode = comments ? (comments.visibility === "public" ? "public" as const : true) : false;
+  const runtime = staticViewerRuntime(!!live, mode), shell = staticViewerShell(!!live, mode);
+  const viewerVersion = mode === "public" ? STATIC_VIEWER_PUBLIC_COMMENTS_VERSION : comments ? STATIC_VIEWER_COMMENTS_VERSION : live ? STATIC_VIEWER_LIVE_VERSION : STATIC_VIEWER_VERSION;
   const content = { viewerVersion, title, network: options.network, apiOrigins: options.apiOrigins, data: options.publicData, html, prefix, suffix, runtime, shell, notice: NOTICE, license, ...(live ? { live } : {}), ...(comments ? { comments } : {}) };
   // The opaque digest scopes the private provenance to one source, without exposing its ID.
   const releaseId = `release-${sha256(canonicalJson({ content, source: { boardId: board.id, canvasBase: authored.canvasBase } }))}`;

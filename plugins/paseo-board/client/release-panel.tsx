@@ -37,7 +37,7 @@ const publicationRequest = (value: PagesPrepareInput): PagesPrepareInput => ({
 // Refusals a retry cannot change; series-busy may pass once the other update merges.
 const finalRefusal = (value: PagesJob) => refusedJob(value) && value.refusal?.code !== "series-busy";
 /** One share link being updated from this panel: built by share-update, or regenerated once from recovered settings. */
-type ShareTarget = { share: LiveShare; shareKey: string; releaseId?: string; upToDate?: boolean; recovered?: ReleaseManifest; liveAdopted?: boolean; drift?: ShareLiveDrift; comments?: VisitorCommentsRelease | false };
+type ShareTarget = { share: LiveShare; shareKey: string; releaseId?: string; upToDate?: boolean; recovered?: ReleaseManifest; liveAdopted?: boolean; drift?: ShareLiveDrift; comments?: VisitorCommentsRelease | false; commentsWarning?: string };
 const VISITOR_NOTICE = "访客本地保存的状态会从新版本重新开始；部分访客可能几分钟后才看到新版（缓存）。";
 const automaticallyPublishing = (value: PagesJob) => value.autoPublish === true &&
   !["live", "failed"].includes(value.status) && Boolean(value.autoPublishUntil && Date.parse(value.autoPublishUntil) > Date.now());
@@ -197,8 +197,8 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
     targetRef.current = next; setTarget(next);
     const result = await shareUpdate({ boardId: board.id, seriesId: share.seriesId, expectedSource: { documentVersion: board.canvas.documentVersion, patchCount: board.canvas.patches.length }, ...(adoptLive ? { liveMode: "current" as const } : {}), ...(visitorComments !== undefined ? { comments: visitorComments } : {}) });
     if (!mounted.current || targetRef.current !== next) return;
-    if ("upToDate" in result) { const done = { ...next, upToDate: true, drift: result.liveDrift }; targetRef.current = done; setTarget(done); return; }
-    const built = { ...next, releaseId: result.manifest.releaseId, shareKey: result.request.shareKey ?? next.shareKey, drift: result.liveDrift };
+    if ("upToDate" in result) { const done = { ...next, upToDate: true, drift: result.liveDrift, commentsWarning: result.commentsWarning }; targetRef.current = done; setTarget(done); return; }
+    const built = { ...next, releaseId: result.manifest.releaseId, shareKey: result.request.shareKey ?? next.shareKey, drift: result.liveDrift, commentsWarning: result.commentsWarning };
     targetRef.current = built; setTarget(built);
     setReleases(values => [result.manifest, ...values.filter(item => item.releaseId !== result.manifest.releaseId)]);
     await showRelease(result.manifest);
@@ -254,11 +254,13 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
           {desktop && share.settingsAvailable && share.live !== "updating" && comments.differs(share) ? <Action testID="board-share-comments-update" label={COMMENTS_TEXT.update} disabled={busy} onPress={() => { void startUpdate(share, false, true); }} /> : null}
         </View>
         {comments.appChanged(share) ? <Notice text={COMMENTS_TEXT.appChanged} /> : null}
+        {comments.visibilityChange(share) ? <View testID="board-share-comments-visibility"><Notice text={comments.visibilityChange(share)!} /></View> : null}
         {share.link && copied === share.link ? <Copy small muted>已复制链接</Copy> : null}
         {drift ? <View testID="board-share-live-drift" style={{ gap: 4 }}>
           <Copy small muted>这个分享页的实时配置与当前不同：{[...drift.addedPaths.map(path => `+${path}`), ...drift.removedPaths.map(path => `-${path}`), ...(drift.originChanged ? ["后端来源已变更"] : [])].join("  ")}</Copy>
           {desktop && liveReady && share.settingsAvailable && share.live !== "updating" ? <Action testID="board-share-live-adopt" label="采用当前实时配置并更新" disabled={busy} onPress={() => { void startUpdate(share, true); }} /> : null}
         </View> : null}
+        {active && target?.commentsWarning ? <View testID="board-share-comments-warning"><Notice text={target.commentsWarning} /></View> : null}
         {active && target?.upToDate ? <Notice text="分享页已是当前内容，无需更新。" /> : null}
         {active && target?.recovered ? <Copy small muted>已沿用上次分享页的设置：名称「{target.recovered.title}」 · {target.recovered.network === "cdn" ? "允许 CDN 库" : "仅内置资源"} · {target.recovered.apiOrigins?.length ? `后端来源：${target.recovered.apiOrigins.join("、")}` : "不连接后端"}。主题和公开数据没有保存，请在下方重新选择，再点「生成固定版本并预览」。</Copy> : null}
       </View>;
@@ -340,14 +342,14 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
       <Copy>{selected.title} · 固定版本 {selected.artifactHash.slice(0, 12)}</Copy>
       {selected.apiOrigins?.length ? <Copy small muted>已固定的后端来源：{selected.apiOrigins.join("、")}</Copy> : null}
       {selected.live ? <Copy small muted>已固定的实时数据：{selected.live.origin} · {selected.live.paths.join("、")}</Copy> : null}
-      {selected.comments ? <Copy small muted>访客评论：{selected.comments.apiBase}</Copy> : null}
+      {selected.comments ? <Copy small muted>访客评论：{selected.comments.apiBase}{selected.comments.visibility === "public" ? " · 公开" : ""}</Copy> : null}
       {html ? <ReleasePreview html={html} /> : null}
       {confirming ? <View style={{ gap: 8, padding: 10, borderWidth: 1, borderRadius: 8, borderColor: c.accent }}>
         <Copy>确认后更新这个分享链接：{confirming.share.link ?? `${pagesGitHubHost(confirming.share)} · ${confirming.share.repository}`}</Copy>
         {confirming.share.archivesOnline ? confirming.share.adoptable ? <Copy small muted>链接保持不变；之前的版本另存在这个链接下的 v/ 目录，仍可打开。</Copy> : null
           : <Copy small muted>链接保持不变；之前的版本不会留在网上，可在「本机发布版本」中预览或下载 ZIP。</Copy>}
-        <Copy small muted>{confirming.recovered ? `本次使用面板中的设置：名称「${selected.title}」 · ${selected.network === "cdn" ? "允许 CDN 库" : "仅内置资源"} · ${selected.apiOrigins?.length ? `后端来源：${selected.apiOrigins.join("、")}` : "不连接后端"}${selected.comments ? ` · 访客评论（${selected.comments.apiBase}）` : ""}` : `沿用设置：${inheritedSettingsText(confirming.share)}`}</Copy>
-        {confirming.comments !== undefined ? <Copy small muted>此次更新的访客评论：{confirming.comments ? confirming.comments.apiBase : "关闭"}</Copy> : null}
+        <Copy small muted>{confirming.recovered ? `本次使用面板中的设置：名称「${selected.title}」 · ${selected.network === "cdn" ? "允许 CDN 库" : "仅内置资源"} · ${selected.apiOrigins?.length ? `后端来源：${selected.apiOrigins.join("、")}` : "不连接后端"}${selected.comments ? ` · 访客评论（${selected.comments.apiBase}${selected.comments.visibility === "public" ? "，公开" : ""}）` : ""}` : `沿用设置：${inheritedSettingsText(confirming.share)}`}</Copy>
+        {confirming.comments !== undefined ? <Copy small muted>此次更新的访客评论：{confirming.comments ? `${confirming.comments.apiBase}${confirming.comments.visibility === "public" ? "（公开）" : ""}` : "关闭"}</Copy> : null}
         {confirming.liveAdopted ? <Copy small muted>此次更新采用当前实时配置：{selected.live ? `${selected.live.origin} · ${selected.live.paths.join("、")}` : "不连接实时数据"}</Copy> : null}
         <Copy small muted>{VISITOR_NOTICE}</Copy>
         {refusedConfirm ? <Notice error text={refusedConfirm.refusal!.message} /> : null}

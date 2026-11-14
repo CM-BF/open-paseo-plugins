@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { loadApp, noSymlinks, ownerFile, writeJson } from './files.mjs';
 
-const runtimeFiles = ['cli.mjs', 'files.mjs', 'storage.mjs', 'comments.mjs', 'live.mjs', 'server.mjs', 'scaffold.mjs', 'ssh.mjs', 'remote.mjs', 'visitor.mjs'];
+const runtimeFiles = ['cli.mjs', 'files.mjs', 'storage.mjs', 'comments.mjs', 'threads.mjs', 'live.mjs', 'server.mjs', 'scaffold.mjs', 'ssh.mjs', 'remote.mjs', 'visitor.mjs'];
 
 export async function updateRuntime(directory) {
   const app = await loadApp(directory, { createData: false });

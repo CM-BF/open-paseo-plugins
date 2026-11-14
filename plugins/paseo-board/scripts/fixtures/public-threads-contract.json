@@ -1,0 +1,733 @@
+{
+ "version": 1,
+ "about": "Public comment threads contract cases (public-threads DESIGN §9.1 as amended by §12). Same conventions as page-comments-contract.json: replace every <<repeat:C:N>> with C repeated N times, and every <<parent>> with the externalId of the first accepted root. Every post case is sent with visibility public by a visitor (X-Board-Visitor = visitorSecret) unless 'visitor' is false; the backend must have releaseId registered and the page origin in config.origins.",
+ "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000",
+ "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+ "visitorSecret": "<<repeat:a:64>>",
+ "post": {
+  "accepted": [
+   {
+    "name": "public root with a rich anchor",
+    "body": {
+     "text": "第二步看不懂",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "label": "结果",
+      "selector": "#result",
+      "quote": "第二步",
+      "prefix": "首先，",
+      "suffix": "的意思",
+      "start": 3,
+      "end": 6,
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "stored": {
+     "text": "第二步看不懂",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "label": "结果",
+      "selector": "#result",
+      "quote": "第二步",
+      "prefix": "首先，",
+      "suffix": "的意思",
+      "start": 3,
+      "end": 6,
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    }
+   },
+   {
+    "name": "public root with a name and a structural selector",
+    "body": {
+     "text": "  这里写得很好  ",
+     "authorName": " 小王 ",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "selector": "body > main:nth-of-type(1) > p:nth-of-type(2)",
+      "quote": "写得",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "stored": {
+     "text": "这里写得很好",
+     "authorName": "小王",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "selector": "body > main:nth-of-type(1) > p:nth-of-type(2)",
+      "quote": "写得",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    }
+   },
+   {
+    "name": "public root with a transliterated name (a middle dot is fine)",
+    "body": {
+     "text": "名字里有间隔号",
+     "authorName": "迈克尔·杰克逊",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "selector": "body > main:nth-of-type(1) > p:nth-of-type(2)",
+      "quote": "写得",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "stored": {
+     "text": "名字里有间隔号",
+     "authorName": "迈克尔·杰克逊",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "selector": "body > main:nth-of-type(1) > p:nth-of-type(2)",
+      "quote": "写得",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    }
+   },
+   {
+    "name": "public root with an escaped id selector",
+    "body": {
+     "text": "数字开头的编号",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "selector": "#\\31 23",
+      "quote": "编号",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "stored": {
+     "text": "数字开头的编号",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "selector": "#\\31 23",
+      "quote": "编号",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    }
+   },
+   {
+    "name": "public reply with only the release in its anchor",
+    "body": {
+     "text": "我也是",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "parentId": "<<parent>>",
+     "anchor": {
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "stored": {
+     "text": "我也是",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "parentId": "<<parent>>",
+     "anchor": {
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    }
+   },
+   {
+    "name": "public reply with a name",
+    "body": {
+     "text": "同意楼上",
+     "authorName": "小李",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "parentId": "<<parent>>",
+     "anchor": {
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "stored": {
+     "text": "同意楼上",
+     "authorName": "小李",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "parentId": "<<parent>>",
+     "anchor": {
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    }
+   }
+  ],
+  "rejected": [
+   {
+    "name": "visibility without a visitor",
+    "visitor": false,
+    "body": {
+     "text": "x",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "visitor_invalid"
+   },
+   {
+    "name": "visibility private",
+    "body": {
+     "text": "x",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "private",
+     "anchor": {
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "invalid_input"
+   },
+   {
+    "name": "visibility true",
+    "body": {
+     "text": "x",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": true,
+     "anchor": {
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "invalid_input"
+   },
+   {
+    "name": "parentId without visibility",
+    "body": {
+     "text": "x",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "parentId": "<<parent>>",
+     "anchor": {
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "invalid_input"
+   },
+   {
+    "name": "malformed parentId",
+    "body": {
+     "text": "x",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "parentId": "nope",
+     "anchor": {
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "invalid_input"
+   },
+   {
+    "name": "public root without anchor.quote",
+    "body": {
+     "text": "x",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "selector": "#result",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "invalid_input"
+   },
+   {
+    "name": "public root without pageUrl",
+    "body": {
+     "text": "x",
+     "visibility": "public",
+     "anchor": {
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "invalid_input"
+   },
+   {
+    "name": "public root without releaseId",
+    "body": {
+     "text": "x",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "quote": "x"
+     }
+    },
+    "code": "invalid_input"
+   },
+   {
+    "name": "public reply quoting page text",
+    "body": {
+     "text": "x",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "parentId": "<<parent>>",
+     "anchor": {
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "invalid_input"
+   },
+   {
+    "name": "public reply without an anchor",
+    "body": {
+     "text": "x",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "parentId": "<<parent>>"
+    },
+    "code": "invalid_input"
+   },
+   {
+    "name": "unknown key",
+    "body": {
+     "text": "x",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     "pinned": true
+    },
+    "code": "invalid_input"
+   },
+   {
+    "name": "public name pretending to be the owner",
+    "body": {
+     "text": "x",
+     "authorName": "作者",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "name_not_allowed"
+   },
+   {
+    "name": "public name imitating a visitor label",
+    "body": {
+     "text": "x",
+     "authorName": "小王 · 访客·3f9a1c",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "name_not_allowed"
+   },
+   {
+    "name": "public name with a right-to-left mark",
+    "body": {
+     "text": "x",
+     "authorName": "abc‏def",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "name_not_allowed"
+   },
+   {
+    "name": "public name with spaces inside 作者",
+    "body": {
+     "text": "x",
+     "authorName": "作 者",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "name_not_allowed"
+   },
+   {
+    "name": "public name with full-width AI 助手",
+    "body": {
+     "text": "x",
+     "authorName": "ＡＩ助手",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "name_not_allowed"
+   },
+   {
+    "name": "public name with the traditional 訪客 and another dot",
+    "body": {
+     "text": "x",
+     "authorName": "訪客・3f9a12",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "name_not_allowed"
+   },
+   {
+    "name": "public root with a selector the runtime never produces",
+    "body": {
+     "text": "x",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "selector": "main:has(p:has(span))",
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "invalid_input"
+   },
+   {
+    "name": "public root with a structural path deeper than 12 steps",
+    "body": {
+     "text": "x",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "selector": "body > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1)",
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "invalid_input"
+   }
+  ]
+ },
+ "import": {
+  "accepted": [
+   {
+    "name": "public root keeps visibility and its page tag",
+    "row": {
+     "externalId": "00000000-0000-4000-8000-000000000101",
+     "text": "第二步看不懂",
+     "createdAt": "2026-11-14T08:00:00.000Z",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "anchor": {
+      "selector": "#result",
+      "quote": "第二步",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     "visitorTag": "a1b2c3d4e5f6",
+     "visibility": "public",
+     "publicTag": "0f1e2d3c4b5a"
+    },
+    "expected": {
+     "externalId": "00000000-0000-4000-8000-000000000101",
+     "text": "第二步看不懂",
+     "createdAt": "2026-11-14T08:00:00.000Z",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "anchor": {
+      "selector": "#result",
+      "quote": "第二步",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     "visitorTag": "a1b2c3d4e5f6"
+    },
+    "public": {
+     "visibility": "public",
+     "publicTag": "0f1e2d3c4b5a"
+    }
+   },
+   {
+    "name": "a transliterated public name with a middle dot is kept",
+    "row": {
+     "externalId": "00000000-0000-4000-8000-000000000118",
+     "text": "第二步看不懂",
+     "createdAt": "2026-11-14T08:00:00.000Z",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "anchor": {
+      "selector": "#result",
+      "quote": "第二步",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     "visitorTag": "a1b2c3d4e5f6",
+     "visibility": "public",
+     "publicTag": "0f1e2d3c4b5a",
+     "authorName": "列夫·托尔斯泰"
+    },
+    "expected": {
+     "externalId": "00000000-0000-4000-8000-000000000118",
+     "text": "第二步看不懂",
+     "createdAt": "2026-11-14T08:00:00.000Z",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "anchor": {
+      "selector": "#result",
+      "quote": "第二步",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     "visitorTag": "a1b2c3d4e5f6",
+     "authorName": "列夫·托尔斯泰"
+    },
+    "public": {
+     "visibility": "public",
+     "publicTag": "0f1e2d3c4b5a"
+    }
+   },
+   {
+    "name": "visitor reply keeps its parent",
+    "row": {
+     "externalId": "00000000-0000-4000-8000-000000000102",
+     "text": "我也是",
+     "createdAt": "2026-11-14T08:01:00.000Z",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "anchor": {
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     "visitorTag": "b1b2c3d4e5f6",
+     "visibility": "public",
+     "parentId": "00000000-0000-4000-8000-000000000101",
+     "publicTag": "1f1e2d3c4b5a"
+    },
+    "expected": {
+     "externalId": "00000000-0000-4000-8000-000000000102",
+     "text": "我也是",
+     "createdAt": "2026-11-14T08:01:00.000Z",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "anchor": {
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     "visitorTag": "b1b2c3d4e5f6"
+    },
+    "public": {
+     "visibility": "public",
+     "parentId": "00000000-0000-4000-8000-000000000101",
+     "publicTag": "1f1e2d3c4b5a"
+    }
+   },
+   {
+    "name": "hidden, resolved and withdrawn snapshots become the initial state",
+    "row": {
+     "externalId": "00000000-0000-4000-8000-000000000103",
+     "text": "已撤回",
+     "createdAt": "2026-11-14T08:02:00.000Z",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "anchor": {
+      "quote": "第二步",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     "visitorTag": "c1b2c3d4e5f6",
+     "visibility": "public",
+     "hidden": true,
+     "resolved": true,
+     "withdrawn": true
+    },
+    "expected": {
+     "externalId": "00000000-0000-4000-8000-000000000103",
+     "text": "已撤回",
+     "createdAt": "2026-11-14T08:02:00.000Z",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "anchor": {
+      "quote": "第二步",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     "visitorTag": "c1b2c3d4e5f6"
+    },
+    "public": {
+     "visibility": "public",
+     "hidden": true,
+     "resolved": true,
+     "withdrawn": true
+    }
+   }
+  ],
+  "sanitized": [
+   {
+    "name": "unknown visibility is dropped",
+    "row": {
+     "externalId": "00000000-0000-4000-8000-000000000104",
+     "text": "x",
+     "createdAt": "2026-11-14T08:03:00.000Z",
+     "visibility": "x"
+    },
+    "dropped": [
+     "visibility"
+    ],
+    "public": null
+   },
+   {
+    "name": "a non-boolean hidden is dropped",
+    "row": {
+     "externalId": "00000000-0000-4000-8000-000000000105",
+     "text": "x",
+     "createdAt": "2026-11-14T08:03:00.000Z",
+     "visibility": "public",
+     "hidden": "yes"
+    },
+    "dropped": [
+     "hidden"
+    ],
+    "public": {
+     "visibility": "public"
+    }
+   },
+   {
+    "name": "a malformed page tag is dropped",
+    "row": {
+     "externalId": "00000000-0000-4000-8000-000000000106",
+     "text": "x",
+     "createdAt": "2026-11-14T08:03:00.000Z",
+     "visibility": "public",
+     "publicTag": "XYZ"
+    },
+    "dropped": [
+     "publicTag"
+    ],
+    "public": {
+     "visibility": "public"
+    }
+   },
+   {
+    "name": "a public name pretending to be the owner is dropped",
+    "row": {
+     "externalId": "00000000-0000-4000-8000-000000000107",
+     "text": "x",
+     "authorName": "作者",
+     "createdAt": "2026-11-14T08:03:00.000Z",
+     "visibility": "public"
+    },
+    "dropped": [
+     "authorName"
+    ],
+    "public": {
+     "visibility": "public"
+    }
+   },
+   {
+    "name": "a full-width AI 助手 name is dropped",
+    "row": {
+     "externalId": "00000000-0000-4000-8000-000000000117",
+     "text": "x",
+     "authorName": "ＡＩ 助手",
+     "createdAt": "2026-11-14T08:03:00.000Z",
+     "visibility": "public"
+    },
+    "dropped": [
+     "authorName"
+    ],
+    "public": {
+     "visibility": "public"
+    }
+   },
+   {
+    "name": "public keys on a private row are dropped",
+    "row": {
+     "externalId": "00000000-0000-4000-8000-000000000108",
+     "text": "x",
+     "createdAt": "2026-11-14T08:03:00.000Z",
+     "hidden": true,
+     "publicTag": "0f1e2d3c4b5a"
+    },
+    "dropped": [
+     "hidden",
+     "publicTag"
+    ],
+    "public": null
+   }
+  ],
+  "quarantined": [
+   {
+    "name": "a malformed parentId quarantines the row",
+    "row": {
+     "externalId": "00000000-0000-4000-8000-000000000109",
+     "text": "x",
+     "createdAt": "2026-11-14T08:04:00.000Z",
+     "visibility": "public",
+     "parentId": "nope"
+    },
+    "field": "parentId"
+   },
+   {
+    "name": "a reply without public visibility quarantines the row",
+    "row": {
+     "externalId": "00000000-0000-4000-8000-000000000110",
+     "text": "x",
+     "createdAt": "2026-11-14T08:04:00.000Z",
+     "parentId": "00000000-0000-4000-8000-000000000101"
+    },
+    "field": "visibility"
+   }
+  ]
+ },
+ "listing": {
+  "valid": {
+   "format": 1,
+   "appKey": "0123456789abcdef",
+   "deploymentId": "00000000-0000-4000-8000-0000000000aa",
+   "page": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+   "version": 3,
+   "paused": false,
+   "total": 1,
+   "truncated": false,
+   "threads": [
+    {
+     "id": "00000000-0000-4000-8000-000000000101",
+     "by": "visitor",
+     "tag": "0f1e2d3c4b5a",
+     "name": "小王",
+     "text": "第二步看不懂",
+     "createdAt": "2026-11-14T08:00:00.000Z",
+     "resolved": false,
+     "anchor": {
+      "selector": "#result",
+      "quote": "第二步",
+      "prefix": "首先，",
+      "suffix": "的意思",
+      "start": 3,
+      "end": 6
+     },
+     "replies": [
+      {
+       "id": "00000000-0000-4000-8000-000000000102",
+       "by": "visitor",
+       "tag": "1f1e2d3c4b5a",
+       "text": "我也是",
+       "createdAt": "2026-11-14T08:01:00.000Z"
+      },
+      {
+       "id": "00000000-0000-4000-8000-0000000000f1",
+       "by": "agent",
+       "text": "第二步是指先保存。",
+       "createdAt": "2026-11-14T08:02:00.000Z",
+       "replyTo": "00000000-0000-4000-8000-000000000102"
+      },
+      {
+       "id": "00000000-0000-4000-8000-0000000000f2",
+       "by": "owner",
+       "text": "已改写这一段。",
+       "createdAt": "2026-11-14T08:03:00.000Z"
+      }
+     ],
+     "omitted": 0
+    }
+   ]
+  },
+  "forbiddenKeys": [
+   "visitorHash",
+   "visitor_hash",
+   "pageUrl",
+   "secret",
+   "ip",
+   "intentKey",
+   "payloadHash"
+  ]
+ }
+}

@@ -40,7 +40,7 @@ describe("human-configured inbox pull", () => {
     const configured = await connections.connect(input());
     expect(configured.state).toBe("ready"); expect(JSON.stringify(configured)).not.toContain(secret);
     expect(await sync()).toMatchObject({ revision: 2, imported: 1, cursor: "1" });
-    expect(requests).toEqual([{ url: "/_board/comments?cursor=0&limit=50&format=2", token: `Bearer ${secret}` }]);
+    expect(requests).toEqual([{ url: "/_board/comments?cursor=0&limit=50&format=2&threads=1", token: `Bearer ${secret}` }]);
     expect((await state()).comments[0]).toMatchObject({ text: comment.text, contentTrust: "external-untrusted" });
     await expect(inbox.list(scope, agent)).rejects.toHaveProperty("code", "forbidden");
     const recovered = new InboxConnections(root, inbox);
@@ -70,7 +70,7 @@ describe("human-configured inbox pull", () => {
     // Both run one after the other under the source lock; the second reads the advanced cursor.
     const results = await Promise.allSettled([sync(), sync(1, "another-sync")]);
     expect(results.map(result => result.status).sort()).toEqual(["fulfilled", "rejected"]);
-    expect(requests.map(request => request.url)).toEqual(["/_board/comments?cursor=0&limit=50&format=2", "/_board/comments?cursor=1&limit=50&format=2"]);
+    expect(requests.map(request => request.url)).toEqual(["/_board/comments?cursor=0&limit=50&format=2&threads=1", "/_board/comments?cursor=1&limit=50&format=2&threads=1"]);
     expect((await state()).total).toBe(1);
     await connections.connect({ ...input(), expectedRevision: 2, expectedConnectionEventId: "source-connect", eventId: "disable", enabled: false, token: undefined });
     await expect(sync(3)).rejects.toThrow("enabled"); expect(requests).toHaveLength(2);
@@ -123,7 +123,7 @@ describe("human-configured inbox pull", () => {
     await expect(connections.connect({ ...input(), expectedRevision: 2, expectedConnectionEventId: "source-connect", eventId: "stale-disable", enabled: false, token: undefined })).rejects.toHaveProperty("code", "revision_conflict");
     expect(await connections.list(scope)).toEqual([expect.objectContaining({ endpoint: endpoint + "/new", label: "Updated", enabled: true, eventId: "new-settings" })]);
     await sync(2);
-    expect(requests[0]).toEqual({ url: "/_board/comments/new?cursor=0&limit=50&format=2", token: "Bearer new-private-token-0123456789abcdef01234567" });
+    expect(requests[0]).toEqual({ url: "/_board/comments/new?cursor=0&limit=50&format=2&threads=1", token: "Bearer new-private-token-0123456789abcdef01234567" });
   });
 
   it("preserves all 32 maximum UTF-8 endpoints through pending replacement, disable and reload", async () => {

@@ -5,22 +5,31 @@ import { inboxArchiveRpc, inboxAssistantOptionsRpc, inboxAutoEnableRpc, inboxAut
 import { inboxConnectRpc, inboxConnectionsRpc, inboxSyncRpc, inboxReconcileRpc, type InboxConnectInput, type InboxConnection } from "../shared/inbox-connection";
 import { useBoardRpc } from "./transport";
 import { InboxPanel } from "./inbox-panel";
+import { InboxThreads } from "./inbox-threads";
+import { inboxPublicPageRpc, inboxPublicStateRpc, inboxPublicThreadsRpc, inboxPublicVisitorRpc } from "../shared/inbox-public";
+import { inboxReadRpc } from "../shared/inbox";
 import { sourceStateText } from "./inbox-status";
 import { Action, Copy, Notice, errorMessage, localId, useColors } from "./ui";
 
 /** Mounted only in a trusted Board modal, never in authored canvas HTML. */
 export function BoardInbox({ scope, hostId }: { scope: InboxScope; hostId: string }) {
-  const [tab, setTab] = useState<"comments" | "sources">("comments");
+  const [tab, setTab] = useState<"comments" | "threads" | "sources">("comments");
   const list = useBoardRpc(inboxListRpc, hostId), policy = useBoardRpc(inboxPolicyRpc, hostId), triage = useBoardRpc(inboxTriageRpc, hostId);
   const reply = useBoardRpc(inboxReplyRpc, hostId), replyPending = useBoardRpc(inboxReplyPendingRpc, hostId), archive = useBoardRpc(inboxArchiveRpc, hostId);
   const autoStatus = useBoardRpc(inboxAutoStatusRpc, hostId), autoSet = useBoardRpc(inboxAutoSetRpc, hostId);
   const assistantOptions = useBoardRpc(inboxAssistantOptionsRpc, hostId), autoEnable = useBoardRpc(inboxAutoEnableRpc, hostId);
+  // Public comment threads (public-threads §5.5.2): a separate tab, so the comments panel keeps its shape.
+  const publicThreads = useBoardRpc(inboxPublicThreadsRpc, hostId), publicState = useBoardRpc(inboxPublicStateRpc, hostId), read = useBoardRpc(inboxReadRpc, hostId);
+  const publicPage = useBoardRpc(inboxPublicPageRpc, hostId), publicVisitor = useBoardRpc(inboxPublicVisitorRpc, hostId);
   return <View style={{ minHeight: 300, maxHeight: 760 }}>
     <View style={{ flexDirection: "row", flexWrap: "wrap", padding: 12, gap: 8 }}>
       <Action label="评论与权限" active={tab === "comments"} onPress={() => setTab("comments")} />
+      <Action label="公开讨论" active={tab === "threads"} onPress={() => setTab("threads")} />
       <Action label="后端来源" active={tab === "sources"} onPress={() => setTab("sources")} />
     </View>
-    {tab === "comments" ? <InboxPanel key={JSON.stringify(scope)} scope={scope} onList={list} onPolicy={policy} onTriage={triage} onReply={reply} onReplyPending={replyPending} onArchive={archive} onAutoStatus={autoStatus} onAutoSet={autoSet} onAssistantOptions={assistantOptions} onAutoEnable={autoEnable} /> : <InboxSources scope={scope} hostId={hostId} />}
+    {tab === "comments" ? <InboxPanel key={JSON.stringify(scope)} scope={scope} onList={list} onPolicy={policy} onTriage={triage} onReply={reply} onReplyPending={replyPending} onArchive={archive} onAutoStatus={autoStatus} onAutoSet={autoSet} onAssistantOptions={assistantOptions} onAutoEnable={autoEnable} />
+      : tab === "threads" ? <InboxThreads key={JSON.stringify(scope)} scope={scope} onThreads={publicThreads} onPublicState={publicState} onPublicPage={publicPage} onPublicVisitor={publicVisitor} onRead={read} onReply={reply} />
+      : <InboxSources scope={scope} hostId={hostId} />}
   </View>;
 }
 

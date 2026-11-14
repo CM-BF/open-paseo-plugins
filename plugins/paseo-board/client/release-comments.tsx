@@ -4,7 +4,7 @@ import { TextInput } from "@getpaseo/plugin/client/ui";
 import type { Board } from "../shared/contracts";
 import { inboxConnectionsRpc, type InboxConnection } from "../shared/inbox-connection";
 import {
-  PublicApiBaseSchema, commentsProbeRefusal, commentsProbeRpc, commentsProbeText, internalApiHost, isLoopbackOrigin,
+  COMMENTS_PUBLIC_NEEDS_INBOX, PublicApiBaseSchema, commentsProbeRefusal, commentsProbeRpc, commentsProbeText, commentsPublicProbeText, internalApiHost, isLoopbackOrigin,
   type CommentsProbeResult, type Share, type VisitorCommentsRelease,
 } from "../shared/release-contracts";
 import { useBoardRpc } from "./transport";
@@ -22,6 +22,14 @@ export const COMMENTS_TEXT = {
   internalOk: "我确认把这个地址写进公开网页",
   appChanged: "换成了另一个评论后端应用：访客将看不到之前的评论和回复。",
   update: "用面板中的评论设置更新",
+  // Public comment threads (public-threads §5.5.1, exact).
+  visibility: "评论可见范围",
+  public: "公开：所有访客互相可见（像 Google 文档）",
+  private: "仅自己可见",
+  privateHelp: "每位访客只看得到自己的评论和你的回复。",
+  publicWarning: "公开评论任何打开这个页面的人都能看到，包括评论内容、回复和访客自己填写的称呼。页面打开时就会连接评论后端读取评论。不当内容需要你在「评论收件箱」的「公开讨论」里隐藏。",
+  toPublic: "改为公开后，之前的评论仍只对各自的访客可见，不会公开。",
+  toPrivate: "改为仅自己可见后，页面不再显示公开评论；已有的公开评论仍保存在后端，收件箱里照常可见。",
 } as const;
 export const internalHostText = (host: string) => `这个评论后端看起来是内部地址（${host}）。它会写进公开网页的代码里，任何人都能看到；公司网络以外的访客也无法发送评论。`;
 export const sharedOriginText = (pageOrigin: string) => `同一网站地址（${pageOrigin}）下的其他页面能读取访客浏览器里的匿名评论编号。GitHub 的 github.io 地址由同一用户或组织的所有仓库共享；企业版 Pages 可能由所有人共享。`;
@@ -31,6 +39,15 @@ export const prefillApiBase = (sources: readonly InboxConnection[]) => {
   return source ? source.endpoint.slice(0, -EXPORT_SUFFIX.length) : "";
 };
 const originOf = (link: string | undefined) => { try { return link ? new URL(link).origin : undefined; } catch { return undefined; } };
+
+function Radio({ label, checked, disabled, onPress, testID }: { label: string; checked: boolean; disabled?: boolean; onPress(): void; testID: string }) {
+  const c = useColors();
+  return <Pressable testID={testID} accessibilityRole="radio" accessibilityLabel={label} accessibilityState={{ checked, disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 8, padding: 6, borderRadius: 6, backgroundColor: pressed ? c.surface2 : "transparent", opacity: disabled ? 0.5 : 1 })}>
+    <View style={{ width: 16, height: 16, borderRadius: 8, borderWidth: 1, borderColor: checked ? c.accent : c.border, backgroundColor: c.surface1, alignItems: "center", justifyContent: "center" }}>{checked ? <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: c.accent }} /> : null}</View>
+    <Text style={{ color: c.foreground, fontSize: 13, lineHeight: 18, flexShrink: 1 }}>{label}</Text>
+  </Pressable>;
+}
+const visibilityOf = (value: VisitorCommentsRelease | undefined) => value?.visibility === "public" ? "public" : "private";
 
 function Check({ label, checked, disabled, onPress, testID }: { label: string; checked: boolean; disabled?: boolean; onPress(): void; testID?: string }) {
   const c = useColors();
@@ -48,6 +65,8 @@ export function useReleaseComments(board: Board, context: { shares: readonly Sha
   const c = useColors();
   const probeRpc = useBoardRpc(commentsProbeRpc), connections = useBoardRpc(inboxConnectionsRpc);
   const [on, setOn] = useState(false), [apiBase, setApiBase] = useState("");
+  // Default 仅自己可见: visitors' words become public only when the owner chooses it for a page (public-threads §4.1).
+  const [visibility, setVisibility] = useState<"private" | "public">("private");
   const [sources, setSources] = useState<InboxConnection[]>([]);
   const [probe, setProbe] = useState<{ apiBase: string; pageOrigins: string[]; result: CommentsProbeResult }>();
   const [probing, setProbing] = useState(false), [failure, setFailure] = useState<string>(), [internalOk, setInternalOk] = useState(false);
@@ -72,18 +91,24 @@ export function useReleaseComments(board: Board, context: { shares: readonly Sha
     } catch (error) { if (mounted.current) setFailure(errorMessage(error)); throw error; }
     finally { if (mounted.current) setProbing(false); }
   };
+  /** Public mode needs a ready, enabled inbox source of the checked deployment (identity, not URL: §12 A10). */
+  const sourceFor = (result: CommentsProbeResult | undefined) => !!result?.deploymentId && sources.some(source => source.state === "ready" && source.enabled && source.deploymentId === result.deploymentId);
   /** The block a new release carries; throws the refusal the human has to resolve first. */
   const resolve = async (): Promise<VisitorCommentsRelease | undefined> => {
     if (!on) return undefined;
     if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "评论后端地址无效");
     if (needsConfirm && !internalOk) throw new Error(`请先勾选「${COMMENTS_TEXT.internalOk}」。`);
-    const result = current ?? await runProbe(base), refusal = commentsProbeRefusal(result, undefined);
+    const isPublic = visibility === "public";
+    const result = current ?? await runProbe(base), refusal = commentsProbeRefusal(result, undefined, isPublic ? "public" : undefined);
     if (refusal || !result.appKey) throw new Error(refusal ?? "评论后端检查没有通过");
-    return { apiBase: base, appKey: result.appKey };
+    if (isPublic && !sourceFor(result)) throw new Error(COMMENTS_PUBLIC_NEEDS_INBOX);
+    return { apiBase: base, appKey: result.appKey, ...(isPublic ? { visibility: "public" as const } : {}) };
   };
   const panelSetting = on ? base : null;
-  /** The panel's setting differs from what this share link was built with (on/off, or address). */
-  const differs = (share: Share) => !!share.settings && (on ? valid : true) && panelSetting !== (share.settings.comments?.apiBase ?? null);
+  /** The panel's setting differs from what this share link was built with (on/off, address or 可见范围). */
+  const differs = (share: Share) => !!share.settings && (on ? valid : true) && (panelSetting !== (share.settings.comments?.apiBase ?? null) || on && !!share.settings.comments && visibility !== visibilityOf(share.settings.comments));
+  /** The notice for a share whose 可见范围 the panel would change. */
+  const visibilityChange = (share: Share) => on && !!share.settings?.comments && visibility !== visibilityOf(share.settings.comments) ? (visibility === "public" ? COMMENTS_TEXT.toPublic : COMMENTS_TEXT.toPrivate) : null;
   /** A different backend app means visitors lose their earlier threads; the same app at a new address keeps them. */
   const appChanged = (share: Share) => on && !!current?.appKey && !!share.settings?.comments && share.settings.comments.appKey !== current.appKey;
   const field = { color: c.foreground, backgroundColor: c.surface1, borderWidth: 1, borderColor: c.border, borderRadius: 6, padding: 8, fontSize: 13 };
@@ -99,6 +124,14 @@ export function useReleaseComments(board: Board, context: { shares: readonly Sha
       {valid && isLoopbackOrigin(new URL(base).origin) ? <Copy small muted>{COMMENTS_TEXT.loopback}</Copy> : null}
       {valid && !sources.some(source => source.endpoint === base + EXPORT_SUFFIX) ? <Copy small muted>{COMMENTS_TEXT.notConnected}</Copy> : null}
       <Copy small muted>{sharedOriginText(sitesText)}</Copy>
+      <View testID="board-release-comments-visibility" accessibilityRole="radiogroup" style={{ gap: 2 }}>
+        <Copy small>{COMMENTS_TEXT.visibility}</Copy>
+        <Radio testID="board-release-comments-visibility-public" label={COMMENTS_TEXT.public} checked={visibility === "public"} disabled={busy} onPress={() => setVisibility("public")} />
+        <Radio testID="board-release-comments-visibility-private" label={COMMENTS_TEXT.private} checked={visibility === "private"} disabled={busy} onPress={() => setVisibility("private")} />
+        {visibility === "private" ? <Copy small muted>{COMMENTS_TEXT.privateHelp}</Copy> : <View testID="board-release-comments-public-warning"><Notice text={COMMENTS_TEXT.publicWarning} /></View>}
+        {visibility === "public" && (current ? !sourceFor(current) : !sources.some(source => source.state === "ready" && source.enabled)) ? <View testID="board-release-comments-public-inbox"><Notice text={COMMENTS_PUBLIC_NEEDS_INBOX} /></View> : null}
+        {visibility === "public" && current?.clientIp === "proxied-unconfigured" ? <Copy small muted>{COMMENTS_TEXT.proxy}</Copy> : null}
+      </View>
       {needsConfirm ? <View testID="board-release-comments-internal" style={{ gap: 4 }}>
         <Notice text={internalHostText(internal!)} />
         <Check testID="board-release-comments-internal-ok" label={COMMENTS_TEXT.internalOk} checked={internalOk} disabled={busy} onPress={() => setInternalOk(value => !value)} />
@@ -107,6 +140,7 @@ export function useReleaseComments(board: Board, context: { shares: readonly Sha
       {failure ? <Notice error text={failure} /> : null}
       {current ? <View testID="board-release-comments-probe" style={{ gap: 4 }}>
         <Copy small>{commentsProbeText(current)}</Copy>
+        {visibility === "public" && current.comments === "threads" && commentsPublicProbeText(current) ? <Copy small>{commentsPublicProbeText(current)}</Copy> : null}
         {current.originProblems.map(problem => <Copy key={problem} small muted>{problem}</Copy>)}
         {current.reachable && !probe!.pageOrigins.length ? <Copy small muted>{COMMENTS_TEXT.noShares}</Copy> : null}
         {current.clientIp === "proxied-unconfigured" ? <Copy small muted>{COMMENTS_TEXT.proxy}</Copy> : null}
@@ -116,7 +150,7 @@ export function useReleaseComments(board: Board, context: { shares: readonly Sha
   /** The block for a share update from the panel's setting: the checked backend, or false to turn comments off. */
   const forShare = async (): Promise<VisitorCommentsRelease | false> => (await resolve()) ?? false;
   /** Recovered settings of an old share: show what its manifest recorded. */
-  const restore = (value: VisitorCommentsRelease | undefined) => { setOn(!!value); setApiBase(value?.apiBase ?? ""); setInternalOk(false); };
-  return { on, apiBase: base, view, resolve, forShare, differs, appChanged, restore };
+  const restore = (value: VisitorCommentsRelease | undefined) => { setOn(!!value); setApiBase(value?.apiBase ?? ""); setVisibility(visibilityOf(value)); setInternalOk(false); };
+  return { on, apiBase: base, visibility, view, resolve, forShare, differs, visibilityChange, appChanged, restore };
 }
 export type ReleaseComments = ReturnType<typeof useReleaseComments>;

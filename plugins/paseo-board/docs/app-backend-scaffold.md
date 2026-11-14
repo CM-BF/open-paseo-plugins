@@ -125,6 +125,12 @@ page can also use them through `mountComments` (below) or its own code.
 | `GET /_board/comments/mine?page=URL` | the visitor (`X-Board-Visitor`) | that visitor's threads and replies |
 | `GET /_board/comments?cursor=&limit=[&format=2]` | owner token | export for the Board inbox |
 | `POST /_board/comments/<externalId>/replies` | owner token, never a browser | public reply to one comment |
+| `GET /_board/comments/public?page=URL&release=ID` | anyone | public threads of one page ([public threads](#public-comment-threads-schema-3)) |
+| `POST /_board/comments/<externalId>/withdraw` | the visitor who posted it | withdraw one's own public comment |
+| `POST /_board/comments/<externalId>/state` | owner token, never a browser | hide, show, resolve or reopen a public comment |
+| `PUT` / `DELETE /_board/comments/public-releases/<releaseId>` | owner token, never a browser | allow or stop public comments for one release |
+| `GET /_board/comments/public/moderation[?page=URL]` | owner token, never a browser | public threads including hidden ones |
+| `POST /_board/comments/public/pause` / `…/hide-visitor` | owner token, never a browser | pause new public comments on a page; hide one visitor's public comments on it |
 | `GET /_board/health` | anyone | identity and capabilities |
 
 Errors are JSON `{"error": "message", "code": "code"}`:
@@ -141,7 +147,16 @@ Errors are JSON `{"error": "message", "code": "code"}`:
 | `not_found` | 404 | any other `/_board/comments/*` path |
 | `method_not_allowed` | 405 | wrong method on a comment route |
 | `idempotency_conflict` | 409 | the `Idempotency-Key` already belongs to another payload or visitor |
-| `reply_limit` | 409 | the comment already has 20 replies |
+| `reply_limit` | 409 | the thread (a comment and its visitor replies) already has 20 owner replies |
+| `public_disabled` | 403 on POST, 404 on the listing | `comments.publicThreads` is false, or the listing names a release that is not registered or a page the owner closed |
+| `public_not_allowed` | 403 | a public post names an unregistered release, its page origin is not in `origins`, or the owner closed that page |
+| `name_not_allowed` | 400 | a public comment's name contains 作者, AI 助手 or 访客 (after NFKC, spacing and case), or an invisible format character |
+| `public_paused` | 403 | the owner paused new public comments on this page |
+| `thread_resolved` | 409 | a visitor reply to a thread the owner resolved |
+| `thread_full` | 409 | the thread already has `visitorRepliesPerThread` visible visitor replies |
+| `not_public` | 409 | a state change on a private comment |
+| `withdrawn` | 409 | the owner tried to show a comment its visitor withdrew |
+| `release_limit` | 409 | 1,000 public releases are already registered |
 | `payload_too_large` / `unsupported_media_type` | 413 / 415 | body over 64 KiB, or not `application/json` |
 | `rate_limited` | 429 | a limit below was reached; `Retry-After` gives the seconds to wait |
 | `storage_full` | 507 | the stored-bytes cap or 200,000 replies were reached |
@@ -285,7 +300,7 @@ separate from the export token, and nothing a visitor posts changes the app.
 ### Health
 
 `GET /_board/health` returns
-`{status, id, appKey, deploymentId, instanceId, live, comments, clientIp}`:
+`{status, id, appKey, deploymentId, instanceId, live, comments, publicThreads, clientIp}`:
 
 - `appKey` is `sha256("board-app-key\0" + owner)` cut to 16 hex characters, where
   `owner` is the UUID in `.board-app-owner.json`. It stays the same across
@@ -294,6 +309,8 @@ separate from the export token, and nothing a visitor posts changes the app.
   request.
 - `comments` is `2` when comment threads are enabled with this runtime and `0`
   when comments are disabled; older runtimes omit it.
+- `publicThreads` is `1` when public comment threads are available (comments on and
+  `comments.publicThreads` not false) and `0` otherwise; runtimes before schema 3 omit it.
 - `clientIp` describes how this request's address was found: `socket`,
   `forwarded` (from a trusted proxy) or `proxied-unconfigured` (forwarded headers
   arrived from a peer that is not listed in `comments.trustedProxies`, so they were
@@ -314,8 +331,13 @@ memory, so a restart resets them. A refused request gets 429 `rate_limited` with
 | `postPerIpMinute` / `postPerIpHour` | 10 / 60 | new comments per address |
 | `postPerVisitorMinute` / `postPerVisitorHour` | 5 / 30 | new comments per visitor secret |
 | `postGlobalMinute` / `postGlobalHour` | 120 / 1,000 | new comments in total |
-| `postPerPageDay` | 500 | new comments for one page since 00:00 UTC |
+| `postPerPageDay` | 500 | new comments for one page since 00:00 UTC (hidden comments do not count) |
 | `minePerVisitorMinute` / `minePerIpMinute` | 12 / 600 | `mine` requests |
+| `listPerIpMinute` | 600 | public listing requests per address (they do not count toward `requestsPerIpMinute`) |
+| `visitorRepliesPerThread` | 40 | visible visitor replies in one public thread |
+| `publicPostsPerPageDay` | 100 | visible public comments and replies for one page since 00:00 UTC |
+| `publicPostsGlobalHour` | 150 | public comments and replies in total |
+| `publicRootsPerVisitorPageDay` | 10 | public discussions one visitor starts on one page per day |
 | `maxStoredBytes` | 268,435,456 | UTF-8 bytes of stored comment text, names, URLs and anchors (507 when full) |
 
 Each value must be a positive integer of at most ten times its default; an
@@ -348,8 +370,8 @@ reverse proxy on another machine, list that proxy's address:
 
 Browsers reach comment routes with exact-origin CORS as for any route: add each
 page origin to `origins`. The preflight allows `Content-Type`, `Idempotency-Key`,
-`Authorization` and `X-Board-Visitor`, and comment responses let the page read
-`Retry-After`. The runtime does not answer browser private-network permission
+`Authorization`, `X-Board-Visitor` and `If-None-Match`, and comment responses let the
+page read `Retry-After` and `ETag`. The runtime does not answer browser private-network permission
 requests; reachability is decided by where the owner deploys the app.
 
 ### Schema upgrade and existing deployments
@@ -378,6 +400,98 @@ The upgrade happens when the deployed app starts. Comment intake must already be
 on (`comments.enabled: true`) and every page origin listed in `origins`.
 `update-runtime` changes only `.board/runtime`; it does not refresh the app's own
 copy of the visitor helper in `public/board-comments.js`.
+
+### Public comment threads (schema 3)
+
+A release published with 评论可见范围「公开」 shows every visitor's comments and
+replies to everyone who opens the page. The runtime keeps visibility per comment:
+only a comment posted with `visibility: "public"` is ever served publicly, so
+switching a page to public never exposes earlier private comments.
+
+**Who may post and read.** The host registers each public release with
+`PUT /_board/comments/public-releases/<releaseId>` (owner token; the Board does this
+when it creates the release, and `DELETE`s the releases of a share that turns
+private or off). A public post must name a registered release in `anchor.releaseId`,
+and its `pageUrl` origin must be one of `origins`; otherwise 403 `public_not_allowed`.
+The listing needs `release=<registered id>` and answers 404 `public_disabled`
+otherwise. Releases are not bound to one page, so any registered release can be used
+on any address of an allowed origin; the owner closes a share's page instead: both
+routes take an optional body `{pages: [url, …]}` (at most 8). `DELETE` with `pages`
+closes those page keys to every release (posts 403 `public_not_allowed`, listing 404
+`public_disabled`, the page version moves so cached listings end), and `PUT` with
+`pages` reopens them. The Board sends the share's link with both, so a share turned
+private cannot keep receiving or serving public comments through another share's
+release. `DELETE` without a body is still accepted. Posts to never-published addresses
+of an allowed origin remain possible through the API; they appear on no real page,
+count toward every limit and can be hidden or paused like any other.
+`comments.publicThreads: false` in `board-app.json` turns all of it off (default
+allowed, because nothing is public until a registered release asks for it).
+
+**Posting.** The body adds `visibility: "public"` and, for a reply,
+`parentId: "<root externalId>"`; both require `X-Board-Visitor`. A root needs
+`pageUrl` and an anchor with `quote` and `releaseId`; its selector must be `body`, one
+CSS-escaped id or a `body > tag:nth-of-type(n)` path of at most 12 steps. A reply's
+anchor holds only `releaseId`. Public names may not contain 作者, AI 助手 or 访客,
+compared after NFKC with spaces removed and case folded (so "作 者", "ＡＩ助手" and
+"訪客" count), nor invisible format characters (400 `name_not_allowed`); other
+punctuation such as 迈克尔·杰克逊 is fine, because pages always show the visitor's
+tag after the name. A reply to a missing, hidden, withdrawn, private or
+other-page parent gets 404 `comment_not_found` (nothing reveals that such a comment
+exists); a resolved thread gets 409 `thread_resolved`. Replies count toward every
+post limit. The 201 body adds `comment.tag`: the visitor's tag on this page,
+HMAC-SHA256 of the page and the visitor hash under a random key kept in
+`_board_runtime_meta` (never exported). The same visitor has a different tag on
+every page.
+
+**Listing.** `GET /_board/comments/public?page=URL&release=ID` returns
+`{format: 1, appKey, deploymentId, page, version, paused, total, truncated, threads}`.
+Each thread is `{id, by: "visitor", tag, name?, text, createdAt, resolved, anchor,
+replies, omitted}`; replies are visitor replies (`by: "visitor"`, `tag`, `name?`) and
+owner or assistant replies (`by: "owner" | "agent"`, `replyTo` when they answer a
+visitor reply), newest 60 per thread. At most 100 threads (unresolved first, then
+newest) and 400,000 bytes, always at least one thread. Hidden comments, hidden
+threads and replies attached to hidden comments are never included, nor are page
+URLs, visitor hashes, secrets or addresses. The response carries
+`ETag: "p1.<process epoch>.<page version>"` and `Cache-Control: no-store`; a matching
+`If-None-Match` gets 304 with no body. The body is built once per page version and
+cached, gzip when `Accept-Encoding` allows.
+
+**Owner state.** `POST /_board/comments/<externalId>/state` with
+`{hidden?: boolean, resolved?: boolean}` (owner token, any `Origin` refused) returns
+`{deploymentId, state: {externalId, hidden, resolved, withdrawn, updatedAt}, changed}`;
+values are absolute, so resending is harmless. Only a thread can be resolved.
+`POST /_board/comments/public/pause` `{page, paused}` stops new public comments and
+replies on one page (403 `public_paused`) and shows the pause to visitors;
+`POST /_board/comments/public/hide-visitor` `{page, tag, hidden?}` hides (or shows
+again) every public comment of one page tag. `GET /_board/comments/public/moderation`
+lists public threads with hidden ones, the pages and their pauses and the registered
+releases, for the inbox's 公开讨论 view. It is budgeted in UTF-8 bytes so the body stays
+below 900,000 bytes (the plugin reads at most 1,000,000): the pages list (paused
+pages first) takes at most 150,000, each thread at most 300,000 with its newest
+messages (older ones counted in `omitted`), and threads visitors can see come before
+hidden ones, newest first, at most 100.
+
+**Withdrawal.** `POST /_board/comments/<externalId>/withdraw` with the poster's
+`X-Board-Visitor` hides that public comment for good (the owner cannot show it again);
+it counts as a post for the limits.
+
+**Export.** Without `threads=1` an export skips visitor replies and still moves its
+cursor past them (a page can be empty with an advanced cursor), so an older plugin
+sees public roots as ordinary comments. With `format=2&threads=1` the envelope adds
+`threads: 1` and every row; public rows add `visibility: "public"`, `parentId`,
+`publicTag`, and `hidden`, `withdrawn` and `resolved` when true. `mine` lists the
+caller's private comments and own public thread roots (marked
+`visibility: "public"`), never other visitors' replies.
+
+**Schema 3.** At start, in the same transaction as earlier upgrades, the runtime adds
+`visibility`, `parent_seq`, `hidden`, `hidden_by`, `resolved`, `state_at` and
+`public_tag` to `_board_comments`, the page-version and release tables, and the tag
+key. Every existing comment becomes a private, visible, open root; replies, counters
+and identity are unchanged. The step is idempotent and runs at every start, so a
+schema-3 database from an earlier build of this runtime gains later columns (the page
+`closed` flag) without another marker. A runtime before schema 3 refuses to start on an upgraded
+database; the way back is the backup taken before the upgrade (`ssh deploy` takes one
+automatically; for a local app run `board-app.mjs backup` first).
 
 ### Optional visitor form
 

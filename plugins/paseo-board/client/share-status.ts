@@ -72,7 +72,7 @@ export function inheritedSettingsText(share: Share): string {
   const { network, theme, apiOrigins, publicDataBytes, live, comments } = share.settings;
   return [`名称「${share.title}」`, network === "cdn" ? "允许 CDN 库" : "仅内置资源", theme === "dark" ? "深色" : "浅色",
     apiOrigins.length ? `后端来源：${apiOrigins.join("、")}` : "不连接后端", `公开数据 ${byteLabel(publicDataBytes)}`,
-    ...(live ? [`实时数据 ${live.paths.length} 个路径（${live.origin}）`] : []), ...(comments ? [`访客评论（${comments.apiBase}）`] : [])].join(" · ");
+    ...(live ? [`实时数据 ${live.paths.length} 个路径（${live.origin}）`] : []), ...(comments ? [`访客评论（${comments.apiBase}${comments.visibility === "public" ? "，公开" : ""}）`] : [])].join(" · ");
 }
 export type ShareLiveDrift = { addedPaths: string[]; removedPaths: string[]; originChanged: boolean };
 /** How the Board's current channel differs from what the share was built with; the server reports the same on update. */

@@ -71,10 +71,29 @@ export const InboxExternalCommentSchema = z.object({
   visitorTag: z.string().regex(VISITOR_TAG).optional(),
 }).strict();
 export type InboxExternalComment = z.infer<typeof InboxExternalCommentSchema>;
+/**
+ * The public-threads export extension of one row (`format=2&threads=1`, public-threads DESIGN §12 A4). It is kept
+ * out of InboxExternalComment and stored only in the inbox's public sidecar, so the main ledger stays readable by
+ * older builds. hidden/resolved/withdrawn are the backend's state when the row was exported.
+ */
+const UUID = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/;
+export const InboxPublicRowSchema = z.object({
+  externalId: z.string().min(1).max(200), visibility: z.literal("public"),
+  parentId: z.string().regex(UUID).optional(), publicTag: z.string().regex(VISITOR_TAG).optional(),
+  hidden: z.literal(true).optional(), resolved: z.literal(true).optional(), withdrawn: z.literal(true).optional(),
+}).strict();
+export type InboxPublicRow = z.infer<typeof InboxPublicRowSchema>;
+/**
+ * Names other visitors would read may not contain the page's labels (作者, AI 助手, 访客), compared after NFKC with spaces
+ * removed and case folded ("作 者", "ＡＩ助手" and "訪客" count too), nor invisible formatting characters. Other punctuation
+ * is fine (迈克尔·杰克逊). The same rule as backend/threads.mjs forbiddenPublicName (§12 A5, review fix).
+ */
+export const forbiddenPublicName = (name: string): boolean => /\p{Cf}/u.test(name) || /作者|ai助手|访客|訪客/.test(name.normalize("NFKC").replace(/[\s\p{Z}\p{Cf}]/gu, "").toLowerCase());
 
 const EXTERNAL_KEYS = ["externalId", "text", "authorName", "createdAt", "pageUrl", "anchor", "visitorTag"] as const;
+const PUBLIC_KEYS = ["visibility", "parentId", "publicTag", "hidden", "resolved", "withdrawn"] as const;
 export type InboxNormalizedRow =
-  | { ok: true; comment: InboxExternalComment; dropped: string[] }
+  | { ok: true; comment: InboxExternalComment; dropped: string[]; public?: InboxPublicRow }
   | { ok: false; externalId: string; field: string; reason: string };
 /**
  * The one normalization rule set (DESIGN §11.5), shared with the backend's POST and export.
@@ -111,8 +130,20 @@ export function normalizeExternalComment(row: unknown, index: number): InboxNorm
   if (value.visitorTag !== undefined) {
     if (typeof value.visitorTag === "string" && VISITOR_TAG.test(value.visitorTag)) comment.visitorTag = value.visitorTag; else dropped.push("visitorTag");
   }
-  for (const key of Object.keys(value)) if (!(EXTERNAL_KEYS as readonly string[]).includes(key)) dropped.push(key);
-  return { ok: true, comment, dropped };
+  // Public threads: a reply never becomes a root, so a bad parentId (or a parent without public visibility) quarantines the row.
+  let extension: InboxPublicRow | undefined;
+  if (value.parentId !== undefined) {
+    if (typeof value.parentId !== "string" || !UUID.test(value.parentId)) return { ok: false, externalId, field: "parentId", reason: "parentId: invalid_format" };
+    if (value.visibility !== "public") return { ok: false, externalId, field: "visibility", reason: "visibility: reply_without_public_visibility" };
+  }
+  if (value.visibility === "public") {
+    extension = { externalId, visibility: "public", ...(typeof value.parentId === "string" ? { parentId: value.parentId } : {}) };
+    if (value.publicTag !== undefined) { if (typeof value.publicTag === "string" && VISITOR_TAG.test(value.publicTag)) extension.publicTag = value.publicTag; else dropped.push("publicTag"); }
+    for (const key of ["hidden", "resolved", "withdrawn"] as const) if (value[key] !== undefined) { if (value[key] === true) extension[key] = true; else dropped.push(key); }
+    if (comment.authorName !== undefined && forbiddenPublicName(comment.authorName)) { delete comment.authorName; dropped.push("authorName"); }
+  } else for (const key of PUBLIC_KEYS) if (key !== "parentId" && value[key] !== undefined) dropped.push(key);
+  for (const key of Object.keys(value)) if (!(EXTERNAL_KEYS as readonly string[]).includes(key) && !(PUBLIC_KEYS as readonly string[]).includes(key)) dropped.push(key);
+  return { ok: true, comment, dropped, ...(extension ? { public: extension } : {}) };
 }
 function normalizePageUrl(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length > 2_000) return undefined;
@@ -142,6 +173,14 @@ export const InboxReplySchema = z.object({
   confirmedAt: TimestampSchema.optional(),
 }).strict();
 export type InboxReply = z.infer<typeof InboxReplySchema>;
+/** A public comment's page state as the inbox wants it (desired) and how far the backend has confirmed it (`pending`). */
+export const InboxPublicStateSchema = z.object({
+  hidden: z.boolean(), resolved: z.boolean(),
+  hiddenBy: z.enum(["hide", "dismiss"]).optional(), withdrawn: z.literal(true).optional(),
+  pending: z.object({ hidden: z.boolean().optional(), resolved: z.boolean().optional() }).strict().optional(),
+  error: z.string().max(300).optional(),
+}).strict();
+export type InboxPublicState = z.infer<typeof InboxPublicStateSchema>;
 export const InboxCommentSchema = InboxExternalCommentSchema.extend({
   id: IdSchema, sourceId: IdSchema, deploymentId: IdSchema,
   contentTrust: z.literal("external-untrusted"), importedAt: TimestampSchema,
@@ -153,6 +192,9 @@ export const InboxCommentSchema = InboxExternalCommentSchema.extend({
   pendingReply: InboxPendingReplySchema.optional(),
   /** Agent list responses only: the text was clipped; board_inbox_read returns it in full. Never stored. */
   truncated: z.literal(true).optional(),
+  /** Public threads (read results only, from the public sidecar; never stored in the ledger). */
+  visibility: z.literal("public").optional(), parentCommentId: IdSchema.optional(), publicTag: z.string().regex(VISITOR_TAG).optional(),
+  publicState: InboxPublicStateSchema.optional(),
 });
 export type InboxComment = z.infer<typeof InboxCommentSchema>;
 export const InboxSourceSchema = z.object({
@@ -194,6 +236,8 @@ export const InboxImportInputSchema = z.object({
   comments: z.array(InboxExternalCommentSchema).max(INBOX_LIMITS.importPage),
   quarantined: z.array(QuarantineInputSchema).max(INBOX_LIMITS.importPage).optional(),
   sanitized: z.number().int().nonnegative().max(100_000).optional(),
+  /** Public-threads extension of rows in `comments` (same externalIds), kept in the public sidecar. */
+  publicRows: z.array(InboxPublicRowSchema).max(INBOX_LIMITS.importPage).optional(),
 }).strict().refine(value => value.comments.reduce((sum, item) => sum + JSON.stringify(item).length, 0) <= INBOX_LIMITS.importCharacters, "Import page is too large");
 export const InboxTriageInputSchema = z.object({
   ...MutationShape, commentId: IdSchema, expectedCommentRevision: z.number().int().positive(),
