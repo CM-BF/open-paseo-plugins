@@ -32,7 +32,11 @@ export function registerPublicThreads(server: Pick<PluginServerContext, "handle"
   const { inbox, connections } = options;
   const outbox = new PublicStateOutbox({ inbox, connections, log: options.log, clock: options.clock });
   void options.ready().then(() => outbox.start()).catch(error => options.log(`public outbox failed to start: ${String(error)}`));
-  const settle = async (scope: InboxScope) => { await Promise.race([outbox.flush(scope), new Promise(resolve => setTimeout(resolve, FLUSH_BUDGET_MS))]); };
+  const settle = async (scope: InboxScope) => {
+    let cancel = () => {};
+    try { await Promise.race([outbox.flush(scope), new Promise(resolve => { const timer = setTimeout(resolve, FLUSH_BUDGET_MS); cancel = () => clearTimeout(timer); })]); }
+    finally { cancel(); }
+  };
   const enter = async (paseo: Paseo) => { options.capture(paseo); await options.ready(); };
 
   server.handle(inboxPublicThreadsRpc, async (input, { paseo }) => { await enter(paseo); return publicThreads(inbox, connections, scopeOf(input)); });
