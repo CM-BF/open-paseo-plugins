@@ -15,7 +15,8 @@ import { deliveryKey } from "./journal";
 import { inboxWakeOutstanding, type InboxWakeHooks } from "./service";
 import type { Paseo, Snapshot } from "./sdk";
 import {
-  AssistantRecordSchema, assistantCreateOptions, assistantDirectory, assistantIdempotencyKey, assistantOptions, checkAssistantChoice, modeLabel, modeTier, prepareAssistantDirectory, type AssistantRecord,
+  AssistantRecordSchema, assistantCreateOptions, assistantDirectory, assistantIdempotencyKey, assistantOptions, checkAssistantChoice, modeLabel, needsProviderModes, prepareAssistantDirectory, providerFamily,
+  type AssistantRecord, type ModeDescription,
 } from "./inbox-assistant";
 import { providerSelection } from "./sdk";
 
@@ -38,6 +39,8 @@ const AutoFileSchema = z.object({
 type AutoFile = z.infer<typeof AutoFileSchema>;
 const HostFileSchema = z.object({ version: z.literal(1), history: z.array(z.string().datetime()).max(500) }).strict();
 const STALE_TEXT = "评论助手没有确认这轮处理结束；已解除等待。";
+/** The daemon's provider mode list is static per daemon; a dialog and its enable share one answer. */
+const PROVIDER_MODES_TTL_MS = 60_000, PROVIDER_MODES_FAILED_TTL_MS = 10_000, PROVIDER_MODES_TIMEOUT_MS = 5_000;
 
 export interface AutoClock { now(): number; setTimer(callback: () => void, ms: number): unknown; clearTimer(handle: unknown): void }
 const realClock: AutoClock = {
@@ -104,6 +107,7 @@ export class InboxAutomation {
   private readonly limits: Limits;
   private readonly directory: string;
   private readonly releaseMemo = new Map<string, { boardId: string; boardCreatedAt?: string } | null>();
+  private readonly providerModeCache = new Map<string, { at: number; modes: Promise<ModeDescription[] | null>; failed?: boolean }>();
   private readonly work = new Set<Promise<unknown>>();
   private host: { history: string[] } = { history: [] };
   private hostLoaded?: Promise<void>;
@@ -711,7 +715,26 @@ export class InboxAutomation {
       const fresh = await host.agents.ref(record.agentId).refresh().catch(() => null);
       existing = { agentId: record.agentId, title: (fresh?.agent.title ?? "评论助手").slice(0, 200), modeId: (fresh?.agent.currentModeId ?? record.modeId).slice(0, 200), modeLabel: fresh ? modeLabel(fresh.agent, fresh.agent.currentModeId) : record.modeLabel, archived: !fresh || Boolean(fresh.agent.archivedAt) };
     }
-    return assistantOptions(owner, existing);
+    const providerModes = owner && needsProviderModes(owner) ? await this.providerModes(host, providerFamily(owner.provider)) : null;
+    return assistantOptions(owner, existing, providerModes);
+  }
+  /**
+   * `paseo.providers.listModes` (public SDK), cached per provider for a minute (a failure for ten seconds).
+   * A failure, timeout or error payload is null: tiers then come from the snapshot and KNOWN_MODE_TIERS.
+   */
+  private providerModes(host: Paseo, provider: string): Promise<ModeDescription[] | null> {
+    const now = this.clock.now(), cached = this.providerModeCache.get(provider);
+    if (cached && now - cached.at < (cached.failed ? PROVIDER_MODES_FAILED_TTL_MS : PROVIDER_MODES_TTL_MS)) return cached.modes;
+    const entry: { at: number; modes: Promise<ModeDescription[] | null>; failed?: boolean } = { at: now, modes: Promise.resolve(null) };
+    entry.modes = new Promise<ModeDescription[] | null>(resolve => {
+      const timer = this.clock.setTimer(() => resolve(null), PROVIDER_MODES_TIMEOUT_MS);
+      Promise.resolve().then(() => host.providers.listModes(provider)).then(
+        result => resolve(!result || result.error || !Array.isArray(result.modes) ? null : result.modes.slice(0, 100).flatMap(mode => typeof mode?.id === "string" ? [{ id: mode.id, colorTier: typeof mode.colorTier === "string" ? mode.colorTier : undefined }] : [])),
+        error => { this.log(`provider modes for ${provider}: ${error instanceof Error ? error.message : String(error)}`); resolve(null); },
+      ).finally(() => this.clock.clearTimer(timer));
+    }).then(modes => { if (!modes) entry.failed = true; return modes; });
+    this.providerModeCache.set(provider, entry);
+    return entry.modes;
   }
   /** `board.inbox.auto-enable` (DESIGN §11.3 steps 1–4). */
   async enable(raw: unknown): Promise<InboxAutoStatus> {
@@ -730,7 +753,7 @@ export class InboxAutomation {
     if (!reusable && !resumable) {
       rt.file.assistant = {
         generation: (current?.generation ?? 0) + 1, idempotencyKey: assistantIdempotencyKey(scope, (current?.generation ?? 0) + 1),
-        modeId: mode.id, modeLabel: mode.label, tier: modeTier({ id: mode.id, colorTier: mode.tier }), riskAccepted: input.acceptRisk && mode.needsRiskAcceptance,
+        modeId: mode.id, modeLabel: mode.label, tier: mode.tier, riskAccepted: input.acceptRisk && mode.needsRiskAcceptance,
         provider: providerSelection(owner), thinkingOptionId: owner.thinkingOptionId ?? null, agentId: null, createdAt: iso(this.clock.now()),
       };
       await this.save(rt);

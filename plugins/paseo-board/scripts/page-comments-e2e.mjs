@@ -125,7 +125,10 @@ try {
     before: async (name, request) => (await befores.get(name)?.({ request }, { paseo: sdk.api })) ?? request,
     emit: async (name, event) => { await listeners.get(name)?.(event, { paseo: sdk.api }); },
   });
-  const ownerModes = [{ id: 'default', label: 'Always Ask', colorTier: 'safe' }, { id: 'acceptEdits', label: 'Accept edits', colorTier: 'moderate' }, { id: 'plan', label: 'Plan', colorTier: 'planning' }, { id: 'bypassPermissions', label: 'Bypass permissions', colorTier: 'dangerous' }];
+  // As the installed daemon 0.16.0-beta.2 reports them: agent snapshot modes carry no colorTier; the provider list does.
+  const ownerModes = [{ id: 'plan', label: 'Plan Mode' }, { id: 'default', label: 'Always Ask' }, { id: 'acceptEdits', label: 'Accept File Edits' }, { id: 'auto', label: 'Auto mode' }, { id: 'bypassPermissions', label: 'Bypass' }];
+  const ownerTiers = { plan: 'planning', default: 'safe', acceptEdits: 'moderate', auto: 'moderate', bypassPermissions: 'dangerous' };
+  sdk.providerModes.set('claude', ownerModes.map(mode => ({ ...mode, colorTier: ownerTiers[mode.id] })));
   sdk.addAgent('owner', { title: 'Board owner', provider: 'claude', model: 'sonnet', currentModeId: 'bypassPermissions', availableModes: ownerModes });
   /** A daemon-side RPC call: input and output are parsed with the shared contracts, as the host does. */
   const rpc = async (name, input) => {
@@ -243,9 +246,11 @@ try {
     await rpc('board.inbox.connect', { ...scope, expectedRevision: 0, eventId: 'connect-e2e', expectedConnectionEventId: null, sourceId: 'e2e-app', deploymentId: backend.deploymentId, label: '演示后端', endpoint, enabled: true, token });
     const options = await rpc('board.inbox.assistant-options', scope);
     assert.equal(options.ownerMissing, false); assert.equal(options.providerSupported, true); assert.equal(options.recommendedModeId, 'default');
-    assert.deepEqual(options.modes.filter(mode => mode.selectable).map(mode => mode.id), ['default', 'acceptEdits']);
+    assert.deepEqual(options.modes.map(mode => `${mode.id}:${mode.tier}:${mode.selectable}:${mode.needsRiskAcceptance}`), ['plan:planning:false:false', 'default:safe:true:false', 'acceptEdits:moderate:true:true', 'auto:moderate:true:true', 'bypassPermissions:dangerous:false:false']);
+    assert.deepEqual(sdk.modeRequests, ['claude'], 'Tiers come from the provider mode list of the public SDK');
     const page = await rpc('board.inbox.list', { ...scope, limit: 10 });
     await assert.rejects(rpc('board.inbox.auto-enable', { ...scope, expectedRevision: page.revision, eventId: 'enable-bypass', replyMode: 'publish', modeId: 'bypassPermissions', acceptRisk: true }), /不能用这个权限模式自动处理评论/);
+    await assert.rejects(rpc('board.inbox.auto-enable', { ...scope, expectedRevision: page.revision, eventId: 'enable-plan', replyMode: 'publish', modeId: 'plan', acceptRisk: true }), /不能用这个权限模式自动处理评论/);
     const status = await rpc('board.inbox.auto-enable', { ...scope, expectedRevision: page.revision, eventId: 'enable-e2e', replyMode: 'publish', modeId: 'default', acceptRisk: false });
     assert.equal(status.wake.state, 'idle'); assert.equal(status.assistant.modeLabel, 'Always Ask'); assert.equal(status.assistant.tier, 'safe');
     assert.equal(sdk.created.length, 1);

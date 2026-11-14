@@ -45,7 +45,10 @@ function fakeHost() {
   const created: Array<Record<string, unknown>> = [];
   const modes = [{ id: "default", label: "Always Ask", colorTier: "safe" }, { id: "acceptEdits", label: "Accept edits", colorTier: "moderate" }, { id: "plan", label: "Plan", colorTier: "planning" }, { id: "bypassPermissions", label: "Bypass", colorTier: "dangerous" }, { id: "custom", label: "Custom" }];
   agents.set("owner", { id: "owner", title: "Owner", provider: "claude", model: "sonnet", currentModeId: "bypassPermissions", thinkingOptionId: "high", availableModes: modes, status: "idle", activeTurn: null, pendingPermissions: [], archivedAt: null });
+  // The daemon's provider mode list (`paseo.providers.listModes`); tests swap the implementation.
+  const listModes = vi.fn(async (provider: string): Promise<{ provider: string; modes?: Array<{ id: string; label: string; colorTier?: string }>; error?: string | null }> => ({ provider, modes: [], error: null }));
   const paseo = {
+    providers: { listModes },
     agents: {
       ref: (id: string) => ({ id, refresh: async () => agents.has(id) ? { agent: agents.get(id), project: null } : null, current: () => agents.get(id) ?? null }),
       create: vi.fn(async (options: { config: { modeId: string }; title: string; idempotencyKey: string }) => {
@@ -58,7 +61,7 @@ function fakeHost() {
       }),
     },
   };
-  return { paseo, agents, created };
+  return { paseo, agents, created, listModes };
 }
 function fakeService(host: ReturnType<typeof fakeHost>) {
   const deliveries: Delivery[] = [];
@@ -237,8 +240,9 @@ describe("inbox automation coordinator (DESIGN §4.8, §11.6–§11.8)", () => {
       { id: "acceptEdits", label: "Accept edits", tier: "moderate", selectable: true, needsRiskAcceptance: true },
       { id: "plan", label: "Plan", tier: "planning", selectable: false, needsRiskAcceptance: false },
       { id: "bypassPermissions", label: "Bypass", tier: "dangerous", selectable: false, needsRiskAcceptance: false },
-      { id: "custom", label: "Custom", tier: "unknown", selectable: true, needsRiskAcceptance: true },
+      { id: "custom", label: "Custom", tier: "unknown", selectable: false, needsRiskAcceptance: false },
     ]);
+    await expect(enable("publish", "custom", true)).rejects.toMatchObject({ code: "invalid_input", message: "不能用这个权限模式自动处理评论；请选一个会先询问你的模式。" });
     await expect(enable("publish", "bypassPermissions")).rejects.toMatchObject({ code: "invalid_input", message: "不能用这个权限模式自动处理评论；请选一个会先询问你的模式。" });
     await expect(enable("publish", "plan")).rejects.toMatchObject({ message: "不能用这个权限模式自动处理评论；请选一个会先询问你的模式。" });
     await expect(enable("publish", "acceptEdits")).rejects.toMatchObject({ message: "这个权限模式需要你先确认风险。" });
@@ -262,6 +266,62 @@ describe("inbox automation coordinator (DESIGN §4.8, §11.6–§11.8)", () => {
     boards.set("board-a", { ...boards.get("board-a")!, ownerAgentId: undefined } as Board);
     expect(await automation.assistantOptions(scope)).toMatchObject({ ownerMissing: true, providerSupported: false });
     await expect(enable()).rejects.toMatchObject({ message: "这张 Board 还没有负责的 agent，无法确定评论助手使用的模型。" });
+  });
+
+  it("takes mode tiers from the daemon's provider list when the owner's snapshot modes have none (daemon 0.16.0-beta.2)", async () => {
+    // The real snapshot shape: id/label/description only. The provider list of the same daemon has the tiers.
+    const snapshotModes = [
+      { id: "plan", label: "Plan Mode", description: "Analyze the codebase without executing tools or edits" },
+      { id: "default", label: "Always Ask", description: "Prompts for permission the first time a tool is used" },
+      { id: "acceptEdits", label: "Accept File Edits", description: "Automatically approves edit-focused tools without prompting" },
+      { id: "auto", label: "Auto mode", description: "Uses a model classifier to review permission prompts automatically" },
+      { id: "bypassPermissions", label: "Bypass", description: "Skip all permission prompts (use with caution)" },
+    ];
+    const tiers: Record<string, string> = { plan: "planning", default: "safe", acceptEdits: "moderate", auto: "moderate", bypassPermissions: "dangerous" };
+    host.agents.set("owner", { ...host.agents.get("owner")!, model: "claude-opus-5-5", availableModes: snapshotModes });
+    host.listModes.mockImplementation(async provider => ({ provider, modes: snapshotModes.map(mode => ({ ...mode, icon: "Shield", colorTier: tiers[mode.id] })), error: null }));
+    await automation.start();
+    const expected = [
+      { id: "plan", label: "Plan Mode", tier: "planning", selectable: false, needsRiskAcceptance: false },
+      { id: "default", label: "Always Ask", tier: "safe", selectable: true, needsRiskAcceptance: false },
+      { id: "acceptEdits", label: "Accept File Edits", tier: "moderate", selectable: true, needsRiskAcceptance: true },
+      { id: "auto", label: "Auto mode", tier: "moderate", selectable: true, needsRiskAcceptance: true },
+      { id: "bypassPermissions", label: "Bypass", tier: "dangerous", selectable: false, needsRiskAcceptance: false },
+    ];
+    const options = await automation.assistantOptions(scope);
+    expect(options).toMatchObject({ provider: "claude/claude-opus-5-5", providerSupported: true, recommendedModeId: "default" });
+    expect(options.modes).toEqual(expected);
+    // Asked by provider ID through the public SDK, once for the dialog and the enable that follows it.
+    expect(host.listModes.mock.calls).toEqual([["claude"]]);
+    await expect(enable("publish", "plan", true)).rejects.toMatchObject({ code: "invalid_input", message: "不能用这个权限模式自动处理评论；请选一个会先询问你的模式。" });
+    await expect(enable("publish", "auto")).rejects.toMatchObject({ message: "这个权限模式需要你先确认风险。" });
+    expect(host.created).toHaveLength(0);
+    expect(await enable()).toMatchObject({ assistant: { modeLabel: "Always Ask", tier: "safe" } });
+    expect(host.created[0]).toMatchObject({ config: { provider: "claude/claude-opus-5-5", modeId: "default" } });
+    const file = JSON.parse(await readFile(join(root, "inbox-auto", (await readdir(join(root, "inbox-auto"))).find(name => name !== "host.json")!), "utf8"));
+    expect(file.assistant).toMatchObject({ modeId: "default", tier: "safe", riskAccepted: false });
+    expect(host.listModes).toHaveBeenCalledTimes(1);
+
+    // After the cache expires the list is asked again; an error payload, a rejection or a hang falls back to
+    // the vetted built-in table, which gives the same answer for Claude.
+    const failures = [async (provider: string) => ({ provider, error: "Provider claude is not available" }), async () => { throw new Error("socket closed"); }, () => new Promise<never>(() => undefined)];
+    for (const [index, failure] of failures.entries()) {
+      clock.time += 61_000; host.listModes.mockImplementationOnce(failure as never);
+      const pending = automation.assistantOptions(scope);
+      await vi.waitFor(() => expect(host.listModes).toHaveBeenCalledTimes(2 + index));
+      await clock.advance(5_000, automation);
+      const fallback = await pending;
+      expect(fallback.modes).toEqual(expected); expect(fallback.recommendedModeId).toBe("default");
+    }
+    expect(host.listModes).toHaveBeenCalledTimes(4);
+    // A failure is retried after ten seconds rather than a minute.
+    clock.time += 11_000; await automation.assistantOptions(scope);
+    expect(host.listModes).toHaveBeenCalledTimes(5);
+
+    // A snapshot whose modes all declare their tier needs no provider list.
+    host.agents.set("owner", { ...host.agents.get("owner")!, availableModes: snapshotModes.map(mode => ({ ...mode, colorTier: tiers[mode.id] })) });
+    clock.time += 61_000; await automation.assistantOptions(scope);
+    expect(host.listModes).toHaveBeenCalledTimes(5);
   });
 
   it("completes an interrupted assistant creation with the same idempotency key", async () => {

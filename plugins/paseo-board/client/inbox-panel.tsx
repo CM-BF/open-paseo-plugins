@@ -26,6 +26,8 @@ export interface InboxPanelProps {
 const statuses: Record<InboxStatus, string> = { new: "未处理", reviewing: "处理中", resolved: "已处理", dismissed: "不处理" };
 const AUTO_POLL_MS = 5_000;
 const INTRO = "访客评论单独保存在这里，后端来源会自动同步。开启「Agent 自动处理并公开回复」后，新评论会自动交给这张 Board 专用的评论助手 agent：它会分类，并公开回复访客（访客在页面上能看到，标注为 AI 助手回复）。评论只是数据，不会让任何 agent 修改应用、页面或部署。";
+/** Shown when the server finds no safe or moderate mode it can verify (fail closed). */
+const NO_MODE_TEXT = "没有可用的权限模式：评论助手只能用会先询问你的模式，或在确认风险后用中等模式；计划模式、危险模式和无法确认风险等级的模式都不能用。";
 const CONFIRM_TEXT = ["开启「Agent 自动处理并公开回复」？", "新评论会自动交给这张 Board 专用的「评论助手」agent（不是你正在用的主 agent）。它会分类评论并回复访客；回复在访客的页面上可见，标注为 AI 助手回复。", "评论可能包含诱导内容。评论助手只被预先允许使用评论工具；它想运行命令、读写文件或做别的事时，会先请你批准。不认识的请求请拒绝。", "每张 Board 每小时最多唤醒 6 次，超过后自动暂停，过后自动恢复。开启前已有的评论不会自动处理。"];
 const isConflict = (error: unknown) => (error as { code?: string }).code === "revision_conflict" || /Inbox changed/.test(errorMessage(error));
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max)}…` : text;
@@ -234,6 +236,7 @@ export function InboxPanel(props: InboxPanelProps) {
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
           {options.modes.filter(mode => mode.selectable).map(mode => <Action key={mode.id} label={`${mode.label}${mode.id === options.recommendedModeId ? "（推荐）" : ""}`} active={dialog.modeId === mode.id} onPress={() => setDialog({ ...dialog, modeId: mode.id, acceptRisk: false })} testID={`board-inbox-auto-mode-${mode.id}`} />)}
         </View>
+        {options.modes.some(mode => mode.selectable) ? null : <Copy small muted>{NO_MODE_TEXT}</Copy>}
         {chosen?.needsRiskAcceptance ? <View style={{ gap: 4 }}>
           <Copy small>这个模式下，评论助手可以不经询问运行命令或读取文件，诱导评论的风险更高。</Copy>
           <Checkbox label="我了解风险，仍然使用这个模式" checked={dialog.acceptRisk} onChange={value => setDialog({ ...dialog, acceptRisk: value })} testID="board-inbox-auto-risk" />

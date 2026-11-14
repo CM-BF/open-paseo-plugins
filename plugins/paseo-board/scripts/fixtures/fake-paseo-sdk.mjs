@@ -16,6 +16,8 @@ export function createFakePaseo(host) {
   let turns = 0;
   const fake = {
     agents, records, sends, created, errors,
+    /** provider ID → the daemon's provider mode list (`paseo.providers.listModes`), and the IDs asked for. */
+    providerModes: new Map(), modeRequests: [],
     /** (record) => (message) => Promise<void>: the scripted behaviour of a newly created agent. */
     behaviour: () => undefined,
     addAgent(id, fields = {}) {
@@ -95,7 +97,13 @@ export function createFakePaseo(host) {
   fake.api = {
     agents: { ref, create },
     workspaces: { ref: () => ({ agents: { create } }) },
-    providers: { listModes: async () => ({ modes: [] }) },
+    providers: {
+      listModes: async provider => {
+        fake.modeRequests.push(provider);
+        const modes = fake.providerModes.get(provider);
+        return { provider, ...(modes ? { modes: clone(modes), error: null } : { error: `Unknown provider: ${provider}` }), fetchedAt: new Date().toISOString(), requestId: `modes-${fake.modeRequests.length}` };
+      },
+    },
   };
   return fake;
 }

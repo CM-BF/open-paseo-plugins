@@ -21,30 +21,61 @@ export const AssistantRecordSchema = z.object({
 }).strict();
 export type AssistantRecord = z.infer<typeof AssistantRecordSchema>;
 type Mode = NonNullable<Snapshot["availableModes"]>[number];
+/** A mode as the daemon describes it: the owner's snapshot or `paseo.providers.listModes`. */
+export type ModeDescription = Pick<Mode, "id"> & { colorTier?: string | null };
 
-export function modeTier(mode: Pick<Mode, "id" | "colorTier">): InboxModeTier {
+/**
+ * Tiers of the built-in providers' modes, for daemons whose agent snapshots and provider list carry no
+ * colorTier. Copied from the provider manifest (`@getpaseo/protocol` provider-manifest) of the installed
+ * daemon 0.16.0-beta.2, identical upstream. Copilot, Pi and OMP are left out: they cannot get the
+ * comment tools (ASSISTANT_PROVIDER_FAMILIES).
+ */
+export const KNOWN_MODE_TIERS: ReadonlyMap<string, ReadonlyMap<string, InboxModeTier>> = new Map([
+  ["claude", new Map<string, InboxModeTier>([["plan", "planning"], ["default", "safe"], ["acceptEdits", "moderate"], ["auto", "moderate"], ["bypassPermissions", "dangerous"]])],
+  ["codex", new Map<string, InboxModeTier>([["auto", "moderate"], ["auto-review", "moderate"], ["full-access", "dangerous"]])],
+  ["opencode", new Map<string, InboxModeTier>([["build", "moderate"], ["plan", "planning"]])],
+]);
+const DECLARED_TIER = z.enum(["safe", "planning", "moderate", "dangerous"]);
+/** The provider ID of a snapshot (`claude`), without the model. */
+export const providerFamily = (provider: string) => provider.split("/")[0];
+
+/**
+ * A mode's tier from the best public source, in order: the owner's snapshot colorTier, the daemon's
+ * provider mode list, KNOWN_MODE_TIERS. The first source that gives the mode a colorTier decides; a value
+ * that is not a tier (an OpenCode agent's hex colour) leaves it "unknown". Names that read as dangerous
+ * are always "dangerous".
+ */
+export function modeTier(mode: ModeDescription, provider: string, providerModes?: readonly ModeDescription[] | null): InboxModeTier {
   if (DANGEROUS_MODE.test(mode.id)) return "dangerous";
-  const parsed = InboxModeTierSchema.safeParse(mode.colorTier);
-  return parsed.success ? parsed.data : "unknown";
+  const declared = mode.colorTier || providerModes?.find(item => item.id === mode.id)?.colorTier;
+  if (declared) { const parsed = DECLARED_TIER.safeParse(declared); return parsed.success ? parsed.data : "unknown"; }
+  return KNOWN_MODE_TIERS.get(providerFamily(provider))?.get(mode.id) ?? "unknown";
 }
-export function modeChoices(agent: Pick<Snapshot, "availableModes">): InboxAssistantOptions["modes"] {
+/** Fail closed: only safe and moderate modes can run the assistant, and moderate needs risk acceptance. */
+export function modeChoices(agent: Pick<Snapshot, "availableModes" | "provider">, providerModes?: readonly ModeDescription[] | null): InboxAssistantOptions["modes"] {
   return (agent.availableModes ?? []).slice(0, 20).map(mode => {
-    const tier = modeTier(mode);
-    return { id: mode.id.slice(0, 200), label: (mode.label || mode.id).slice(0, 200), tier, selectable: tier === "safe" || tier === "moderate" || tier === "unknown", needsRiskAcceptance: tier === "moderate" || tier === "unknown" };
+    const tier = modeTier(mode, agent.provider, providerModes);
+    return { id: mode.id.slice(0, 200), label: (mode.label || mode.id).slice(0, 200), tier, selectable: tier === "safe" || tier === "moderate", needsRiskAcceptance: tier === "moderate" };
   });
 }
+/** Whether a snapshot leaves any mode's tier to the provider list (most daemons give agent modes no colorTier). */
+export const needsProviderModes = (agent: Pick<Snapshot, "availableModes">) => (agent.availableModes ?? []).slice(0, 20).some(mode => !mode.colorTier && !DANGEROUS_MODE.test(mode.id));
 export function modeLabel(agent: Pick<Snapshot, "availableModes"> | null | undefined, id: string | null | undefined): string {
   return (agent?.availableModes?.find(mode => mode.id === id)?.label ?? id ?? "未知").slice(0, 200);
 }
-/** Options for the confirm dialog, computed from the owner's current session (never from agent input). */
-export function assistantOptions(owner: Snapshot | null, existing: InboxAssistantOptions["existing"]): InboxAssistantOptions {
+/**
+ * Options for the confirm dialog, computed from the owner's current session and the daemon's provider mode
+ * list (never from agent input). The recommendation is the first safe mode; with none (Codex) nothing is
+ * recommended or preselected.
+ */
+export function assistantOptions(owner: Snapshot | null, existing: InboxAssistantOptions["existing"], providerModes?: readonly ModeDescription[] | null): InboxAssistantOptions {
   if (!owner) return { ownerMissing: true, providerSupported: false, provider: null, modes: [], recommendedModeId: null, existing };
   const provider = providerSelection(owner).slice(0, 200);
-  const modes = modeChoices(owner);
+  const modes = modeChoices(owner, providerModes);
   return {
     ownerMissing: false, provider, modes, existing,
-    providerSupported: (ASSISTANT_PROVIDER_FAMILIES as readonly string[]).includes(provider.split("/")[0]),
-    recommendedModeId: modes.find(mode => mode.tier === "safe")?.id ?? null,
+    providerSupported: (ASSISTANT_PROVIDER_FAMILIES as readonly string[]).includes(providerFamily(provider)),
+    recommendedModeId: modes.find(mode => mode.selectable && mode.tier === "safe")?.id ?? null,
   };
 }
 /** Refusals of `board.inbox.auto-enable` step 1, with the exact texts of DESIGN §11.3. */
@@ -52,7 +83,7 @@ export function checkAssistantChoice(options: InboxAssistantOptions, modeId: str
   if (options.ownerMissing) throw new BoardStoreError("invalid_input", "这张 Board 还没有负责的 agent，无法确定评论助手使用的模型。");
   if (!options.providerSupported) throw new BoardStoreError("invalid_input", "这个模型提供方不支持评论工具，无法创建评论助手。");
   const mode = options.modes.find(item => item.id === modeId);
-  if (!mode || !mode.selectable) throw new BoardStoreError("invalid_input", "不能用这个权限模式自动处理评论；请选一个会先询问你的模式。");
+  if (!mode || !mode.selectable || (mode.tier !== "safe" && mode.tier !== "moderate")) throw new BoardStoreError("invalid_input", "不能用这个权限模式自动处理评论；请选一个会先询问你的模式。");
   if (mode.needsRiskAcceptance && !acceptRisk) throw new BoardStoreError("invalid_input", "这个权限模式需要你先确认风险。");
   return mode;
 }

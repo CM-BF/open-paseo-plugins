@@ -1,6 +1,8 @@
 // Deliberately adapted transport for the real Board inbox UI. No fetch, daemon or agent calls.
 // Store/HTTP semantics have separate inbox-store/inbox-sync/inbox-auto tests; this fixture controls failures.
-export function installInboxHostFixture() {
+// `assistantOptions` is the board.inbox.assistant-options answer; inbox-host-checks computes it with the
+// server's own code from the daemon's real mode shapes.
+export function installInboxHostFixture(assistantOptions) {
   const original = window.hostFixture.rpc;
   const board = window.hostFixture.board();
   const scope = { boardId: board.id, expectedCreatedAt: board.createdAt };
@@ -61,6 +63,7 @@ export function installInboxHostFixture() {
       finish();
     },
     setAuto(patch) { state.autoOverride = patch; },
+    setAssistantOptions(options) { assistantOptions = options; },
   };
   const status = () => {
     const base = autoStatus();
@@ -83,10 +86,10 @@ export function installInboxHostFixture() {
       if (input.syncPaused !== undefined) state.autoOverride = { ...(state.autoOverride ?? {}), sync: { paused: input.syncPaused } };
       return status();
     }
-    if (name === 'board.inbox.assistant-options') return {
-      ownerMissing: false, providerSupported: true, provider: 'claude/sonnet', recommendedModeId: 'default', existing: null,
-      modes: [{ id: 'default', label: 'Always Ask', tier: 'safe', selectable: true, needsRiskAcceptance: false }, { id: 'acceptEdits', label: 'Accept edits', tier: 'moderate', selectable: true, needsRiskAcceptance: true }, { id: 'bypassPermissions', label: 'Bypass', tier: 'dangerous', selectable: false, needsRiskAcceptance: false }],
-    };
+    if (name === 'board.inbox.assistant-options') {
+      if (!assistantOptions) throw new Error('fixture has no assistant options');
+      return clone(assistantOptions);
+    }
     if (name === 'board.inbox.auto-enable') {
       checkRevision(input);
       state.policy = { read: true, triage: true, auto: input.replyMode }; finish(); state.autoOverride = null;

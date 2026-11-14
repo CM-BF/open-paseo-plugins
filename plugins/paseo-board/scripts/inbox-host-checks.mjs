@@ -1,6 +1,26 @@
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 import { installInboxHostFixture } from './inbox-host-fixture.mjs';
+
+// The owner as the installed daemon 0.16.0-beta.2 reports it: agent snapshot modes have no colorTier;
+// the provider mode list (paseo.providers.listModes('claude')) has them.
+const DAEMON_OWNER = { id: 'owner', provider: 'claude', model: 'sonnet', availableModes: [
+  { id: 'plan', label: 'Plan Mode', description: 'Analyze the codebase without executing tools or edits' },
+  { id: 'default', label: 'Always Ask', description: 'Prompts for permission the first time a tool is used' },
+  { id: 'acceptEdits', label: 'Accept File Edits', description: 'Automatically approves edit-focused tools without prompting' },
+  { id: 'auto', label: 'Auto mode', description: 'Uses a model classifier to review permission prompts automatically' },
+  { id: 'bypassPermissions', label: 'Bypass', description: 'Skip all permission prompts (use with caution)' },
+] };
+const DAEMON_TIERS = { plan: 'planning', default: 'safe', acceptEdits: 'moderate', auto: 'moderate', bypassPermissions: 'dangerous' };
+/** board.inbox.assistant-options as the server computes it (server/inbox-assistant.ts), checked against the RPC contract. */
+async function serverAssistantOptions(providerModes, owner = DAEMON_OWNER) {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const bundle = await build({ stdin: { contents: "export { assistantOptions } from './server/inbox-assistant.ts'; export { InboxAssistantOptionsSchema } from './shared/inbox.ts';", resolveDir: root, loader: 'ts' }, bundle: true, platform: 'node', format: 'esm', target: 'node22', write: false, logLevel: 'silent' });
+  const { assistantOptions, InboxAssistantOptionsSchema } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
+  return InboxAssistantOptionsSchema.parse(assistantOptions(owner, null, providerModes));
+}
 
 export async function runInboxHostChecks({ assert, command, evaluate, until, frame, untilFrame, key, click, hostClick, hostLocation, sendText, submitCount, canvasRect, check }) {
   const modal = '[data-fixture-modal]', panel = '[data-testid="board-inbox-panel"]', sources = '[data-testid="board-inbox-sources"]';
@@ -57,7 +77,10 @@ export async function runInboxHostChecks({ assert, command, evaluate, until, fra
   };
   let stage = 'setup';
   try {
-    await evaluate(`(${installInboxHostFixture.toString()})(); true`);
+    const assistantOptions = await serverAssistantOptions(DAEMON_OWNER.availableModes.map(mode => ({ ...mode, colorTier: DAEMON_TIERS[mode.id] })));
+    // Without the provider list the vetted built-in table must give the dialog the same choices.
+    assert.deepEqual(await serverAssistantOptions(null), assistantOptions);
+    await evaluate(`(${installInboxHostFixture.toString()})(${JSON.stringify(assistantOptions)}); true`);
     await evaluate(`window.inboxOriginalFrame=document.querySelector('iframe[data-board-id="host-fixture"]');true`);
     await frame("window.inboxHeap=crypto.randomUUID();document.querySelector('#field').value='Inbox keeps my canvas input';true");
     const heap = await frame('window.inboxHeap'), initialRect = await canvasRect();
@@ -146,12 +169,37 @@ export async function runInboxHostChecks({ assert, command, evaluate, until, fra
     await hostClick('[data-testid="board-inbox-policy-read"]');
     assert.equal(await count('board.inbox.policy'), policyCount);
     await evaluate('inboxFixture.releasePolicy();true');
+    // Fail closed: an owner none of whose modes has a verifiable tier (an OpenCode agent with a custom colour, a plan
+    // agent) is offered no mode at all, with the reason.
+    const unverifiable = await serverAssistantOptions(null, { id: 'owner', provider: 'opencode', model: null, availableModes: [{ id: 'reviewer', label: 'Reviewer', colorTier: '#ff8800' }, { id: 'plan', label: 'Plan' }, { id: 'custom', label: 'Custom' }] });
+    assert.deepEqual(unverifiable.modes.map(mode => `${mode.id}:${mode.tier}:${mode.selectable}`), ['reviewer:unknown:false', 'plan:planning:false', 'custom:unknown:false']);
+    await evaluate(`inboxFixture.setAssistantOptions(${JSON.stringify(unverifiable)});true`);
+    await press('Agent 自动处理并公开回复：未开启');
+    await until("document.querySelector('[data-testid=board-inbox-auto-dialog]')?.textContent.includes('没有可用的权限模式：评论助手只能用会先询问你的模式，或在确认风险后用中等模式；计划模式、危险模式和无法确认风险等级的模式都不能用。')");
+    assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-testid=board-inbox-auto-dialog] [data-testid^=board-inbox-auto-mode-]')].map(node=>node.dataset.testid)"), ['board-inbox-auto-mode-publish', 'board-inbox-auto-mode-review']);
+    assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=board-inbox-auto-risk]'))"), false);
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-triage-confirm]').disabled"), true);
+    await hostClick('[data-testid="board-inbox-auto-dialog"] button[aria-label="取消"]');
+    await until("!document.querySelector('[data-testid=board-inbox-auto-dialog]')");
+    assert.equal(await count('board.inbox.auto-enable'), 0);
+    await evaluate(`inboxFixture.setAssistantOptions(${JSON.stringify(assistantOptions)});true`);
     await press('Agent 自动处理并公开回复：未开启');
     await until("document.querySelector('[data-testid=board-inbox-auto-dialog]')?.textContent.includes('将创建一个新的评论助手 agent。')");
     const dialog = await evaluate("document.querySelector('[data-testid=board-inbox-auto-dialog]').textContent");
     for (const line of ['开启「Agent 自动处理并公开回复」？', '新评论会自动交给这张 Board 专用的「评论助手」agent（不是你正在用的主 agent）。它会分类评论并回复访客；回复在访客的页面上可见，标注为 AI 助手回复。', '评论可能包含诱导内容。评论助手只被预先允许使用评论工具；它想运行命令、读写文件或做别的事时，会先请你批准。不认识的请求请拒绝。', '每张 Board 每小时最多唤醒 6 次，超过后自动暂停，过后自动恢复。开启前已有的评论不会自动处理。', '评论助手使用 claude/sonnet，权限模式：']) assert.ok(dialog.includes(line), line);
     assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=board-inbox-auto-mode-bypassPermissions]'))"), false);
-    assert.ok(await evaluate("document.querySelector('[data-testid=board-inbox-auto-mode-default]').textContent.includes('Always Ask（推荐）')"));
+    assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=board-inbox-auto-mode-plan]'))"), false, 'Plan Mode is not selectable');
+    assert.ok(!dialog.includes('Plan Mode') && !dialog.includes('Bypass'), dialog);
+    assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-testid=board-inbox-auto-dialog] [data-testid^=board-inbox-auto-mode-]:not([data-testid=board-inbox-auto-mode-publish]):not([data-testid=board-inbox-auto-mode-review])')].map(node=>node.textContent)"), ['Always Ask（推荐）', 'Accept File Edits', 'Auto mode']);
+    // The recommended safe mode is preselected and needs no risk acceptance.
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-auto-mode-default]').getAttribute('aria-selected')"), 'true');
+    assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=board-inbox-auto-risk]'))"), false);
+    assert.ok(!dialog.includes('我了解风险'), dialog);
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-triage-confirm]').disabled"), false);
+    await snap('inbox-auto-dialog-recommended');
+    await hostClick('[data-testid="board-inbox-auto-mode-auto"]');
+    await until("document.querySelector('[data-testid=board-inbox-auto-risk]')");
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-triage-confirm]').disabled"), true);
     await hostClick('[data-testid="board-inbox-auto-mode-acceptEdits"]');
     await until("document.querySelector('[data-testid=board-inbox-auto-dialog]').textContent.includes('这个模式下，评论助手可以不经询问运行命令或读取文件，诱导评论的风险更高。')");
     assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-triage-confirm]').disabled"), true);
@@ -174,6 +222,7 @@ export async function runInboxHostChecks({ assert, command, evaluate, until, fra
     assert.deepEqual(await evaluate('inboxFixture.state.policy'), { read: false, triage: false, auto: 'off' });
     assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-policy-triage]').disabled"), true);
     check('Policy toggles serialize; automatic handling turns on only through the confirm dialog with an approved mode, and turning read off revokes everything');
+    check('With the daemon\'s real mode shapes (no snapshot colorTier) the dialog recommends and preselects Always Ask without a risk checkbox, hides Plan Mode and Bypass, and asks for risk acceptance only for Accept File Edits and Auto mode');
 
     stage = 'automation-lines-and-buttons';
     const auto = '[data-testid="board-inbox-auto"]';

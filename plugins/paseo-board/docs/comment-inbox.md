@@ -52,7 +52,8 @@
 
 开启：人点「Agent 自动处理并公开回复」，面板读取 `board.inbox.assistant-options`，显示确认文字、回复方式（直接公开 / 先给我审核）和负责人当前模型下可选的权限模式。
 
-- 「安全」模式（会先询问的模式）直接可选并推荐；「中等」或未知模式需要勾选 `我了解风险，仍然使用这个模式`；计划模式和危险模式（名字含 bypass、full-access、allow-all、yolo、danger、unattended）不能选。
+- 「安全」模式（会先询问的模式）直接可选，第一个安全模式标「（推荐）」并预先选中；没有安全模式（如 Codex）时不推荐、不预选。「中等」模式需要勾选 `我了解风险，仍然使用这个模式`。计划模式、危险模式（名字含 bypass、full-access、allow-all、yolo、danger、unattended 的一律算危险）和无法确认等级的模式都不能选；一个可选的都没有时，对话框说明原因，不能开启。`board.inbox.auto-enable` 用同一份结果再检查一遍，对话框里不能选的模式在服务端同样被拒绝。
+- 模式等级依次取自：负责人会话快照里模式的 `colorTier`；daemon 的提供方模式列表（公开 SDK 的 `paseo.providers.listModes`，按提供方缓存一分钟，失败缓存十秒，5 秒超时）；最后是内置表（与 daemon 0.16.0-beta.2 的提供方清单一致：Claude `default` 安全、`plan` 计划、`acceptEdits`/`auto` 中等、`bypassPermissions` 危险；Codex `auto`/`auto-review` 中等、`full-access` 危险；OpenCode `build` 中等、`plan` 计划）。第一个给出 `colorTier` 的来源说了算；不是这四种等级的值（例如 OpenCode 自定义 agent 的颜色）算无法确认。daemon 0.16.0-beta.2 的会话快照不带 `colorTier`，等级来自提供方列表。
 - 确认后（`board.inbox.auto-enable`）：若已有同一模式、未归档的评论助手就继续用，否则新建下一代，旧的不动。新建前先把创建参数写入 `inbox-auto/` 下的状态文件（`agentId: null`），创建结果丢失时用同一个幂等键补完。
 - 评论助手：标题 `评论助手 · Board 标题`，工作目录是插件数据目录下 `inbox-assistants/` 里一个空的 0700 目录，使用负责人的模型和思考设置、人选的权限模式，只有 `board_inbox_list/read/triage/reply` 四个工具被预先允许。它不是 Board 的负责人或 fork，读不了、也改不了 Board。
 - 开启时已有的评论不会自动处理。关闭自动处理不会删除评论助手，面板提示可以在 Paseo 里归档它。
