@@ -49,6 +49,16 @@ describe("viewer byte identity", () => {
     const hash = runInNewContext(SHA256_JS, { TextEncoder, Uint32Array, Math }) as (text: string) => string;
     for (const text of ["", "abc", "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/", "评论".repeat(40), "x".repeat(55), "y".repeat(56), "z".repeat(64), "w".repeat(1000)]) expect(hash(text)).toBe(sha256(text));
   });
+  it("never reads navigator.serviceWorker in any published viewer or helper (polish P5)", async () => {
+    // The canvas frame is sandboxed without allow-same-origin, where Chrome throws a SecurityError on any read of
+    // navigator.serviceWorker. The two errors seen per page load in the live acceptance run came from the test
+    // browser's own init script (Playwright's serviceWorkers: "block"), which runs in every frame before page code;
+    // a bare sandboxed iframe with no script at all logs it too. Published code must never be a third source.
+    const { readFile } = await import("node:fs/promises");
+    const helpers = await Promise.all(["runtime-tooltips.txt", "runtime-icons.txt", "liquid-glass.js.txt", "component-layout-state.txt"].map(name => readFile(new URL(`../shared/assets/${name}`, import.meta.url), "utf8")));
+    const viewers = [false, true].flatMap(live => ([false, true, "public"] as const).flatMap(comments => [staticViewerRuntime(live, comments), staticViewerShell(live, comments)]));
+    for (const code of [...viewers, ...helpers]) expect(code).not.toMatch(/serviceWorker/i);
+  });
   it("keeps live-only code out of the non-live viewer", () => {
     for (const text of [STATIC_VIEWER_RUNTIME, STATIC_VIEWER_SHELL]) for (const marker of ["live-ready", "_board/live", "data-live", "paseo-board-live:"]) expect(text).not.toContain(marker);
     expect(staticViewerRuntime(true)).toContain("live-ready"); expect(staticViewerShell(true)).toContain("_board/live");
