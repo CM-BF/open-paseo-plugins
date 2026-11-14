@@ -162,6 +162,50 @@ with `X-Board-Visitor`; `GET {apiBase}/_board/health`. The anchor carries
 `label`, `selector`, `quote`, `prefix`, `suffix`, `start`, `end` and `releaseId`
 (DESIGN §4.1). The shared case list is `scripts/fixtures/page-comments-contract.json`.
 
+### 公开评论 (public comment threads, viewer 5)
+
+With **评论可见范围** set to **公开：所有访客互相可见（像 Google 文档）** (the default
+stays **仅自己可见**), every visitor sees every visible public comment and reply on
+the page and can reply in any thread. The release carries
+`comments: {apiBase, appKey, visibility: "public"}` and uses viewer 5; private
+releases keep the viewer-4 bytes. The Board refuses a public release unless the
+backend reports `publicThreads: 1` and a ready inbox source of the same deployment
+is connected, and it registers the release on that backend (see
+[public comment threads](app-backend-scaffold.md#public-comment-threads-schema-3)).
+
+- **Layout.** At 1056 px and wider the outer page narrows the canvas iframe by
+  336 px and shows a comment rail beside it; the authored page reflows as in a
+  narrower window and nothing covers it. The choice is made before the first frame
+  and changes only when the window crosses a threshold or the visitor chooses
+  **收起** / **展开** (the reading position is kept). Between 600 and 1055 px the
+  rail is an overlay opened from **评论 n**; below 800 px the overlay is a plain
+  list. On phones (narrower than 600 px, lower than 500 px, or a coarse pointer
+  below 1056 px) **评论 n** opens a bottom sheet.
+- **Highlights and alignment.** The canvas frame receives only anchors and thread
+  IDs (`comment-highlights`, `comment-emphasis`, `comment-reveal`), paints the
+  passages with the CSS Custom Highlight API (a closed-shadow-root overlay where it
+  is missing), and reports document-relative passage tops once per re-anchoring
+  pass (`comment-positions`) plus one scroll value per frame (`comment-scroll`).
+  The rail lays the cards out once (the active card at its passage, earlier cards
+  moved up, later cards down, the pile lifted so the last card can be reached) and
+  follows scrolling with one transform. Anchors from other visitors are accepted
+  only in the selector forms the runtime itself produces, and re-anchoring reads
+  the page text once per pass in 8 ms slices, skipping changes outside anchored
+  elements. Hit-testing happens only on pointer events.
+- **Data.** One listing request at load (no health call), then every 10 s while
+  the page is visible, with `If-None-Match` (304 when nothing changed), at once
+  after the visitor's own send, 60 s after 15 minutes without input, and backing
+  off on errors and `Retry-After`. The last listing is cached for the tab and shown
+  as **正在更新…** until the first poll answers (dropped after 30 s without one).
+  Visitors who wrote private comments on this page before it became public still
+  see them, marked **仅你和作者可见**.
+- **Identity.** The visitor secret is shared with private pages of the same app;
+  the tag shown for the visitor on this page comes from the backend in the reply to
+  their first post and is kept per page. localStorage keeps only the secret, the
+  public name, tags and read counts; never comment text.
+- Everything visitors wrote renders as text; bidi controls, directional marks and
+  zero-width characters are shown as `[U+XXXX]` markers.
+
 ## Visitor comments and the native inbox
 
 Enable the scaffold's optional comment intake. Then either turn on
