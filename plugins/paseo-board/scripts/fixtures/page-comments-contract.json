@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "about": "Page comments contract cases (DESIGN.md §11.13). Copy byte-identically to plugins/paseo-board/scripts/fixtures/page-comments-contract.json in every branch. Before use, replace every occurrence of <<repeat:C:N>> inside any string with the character C repeated N times.",
+  "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000",
+  "visitorSecret": "<<repeat:a:64>>",
+  "post": {
+    "accepted": [
+      { "name": "text is trimmed", "visitor": false, "body": { "text": "  你好  " }, "stored": { "text": "你好" } },
+      { "name": "blank authorName is dropped", "visitor": false, "body": { "text": "a", "authorName": "   " }, "stored": { "text": "a" } },
+      { "name": "ideographic-space authorName is dropped", "visitor": false, "body": { "text": "a", "authorName": "　" }, "stored": { "text": "a" } },
+      { "name": "empty authorName is dropped", "visitor": false, "body": { "text": "a", "authorName": "" }, "stored": { "text": "a" } },
+      { "name": "authorName is trimmed", "visitor": false, "body": { "text": "a", "authorName": " 小王　" }, "stored": { "text": "a", "authorName": "小王" } },
+      { "name": "upper-case URL is normalized", "visitor": false, "body": { "text": "a", "pageUrl": "HTTPS://Example.COM/p" }, "stored": { "text": "a", "pageUrl": "https://example.com/p" } },
+      { "name": "URL without slashes is normalized", "visitor": false, "body": { "text": "a", "pageUrl": "https:example.com/p" }, "stored": { "text": "a", "pageUrl": "https://example.com/p" } },
+      { "name": "backslash URL is normalized", "visitor": false, "body": { "text": "a", "pageUrl": "http:/\\example.com" }, "stored": { "text": "a", "pageUrl": "http://example.com/" } },
+      { "name": "bare origin gets a slash", "visitor": false, "body": { "text": "a", "pageUrl": "https://example.com" }, "stored": { "text": "a", "pageUrl": "https://example.com/" } },
+      { "name": "legacy anchor", "visitor": false, "body": { "text": "a", "anchor": { "label": "结果", "selector": "#result" } }, "stored": { "text": "a", "anchor": { "label": "结果", "selector": "#result" } } },
+      { "name": "anchor with only quote", "visitor": true, "body": { "text": "a", "anchor": { "quote": "a" } }, "stored": { "text": "a", "anchor": { "quote": "a" } } },
+      { "name": "rich anchor from a page", "visitor": true, "body": { "text": "第二步看不懂", "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/", "anchor": { "label": "结果", "selector": "#result", "quote": "第二步", "prefix": "首先，", "suffix": "的意思", "start": 3, "end": 6, "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000" } }, "stored": { "text": "第二步看不懂", "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/", "anchor": { "label": "结果", "selector": "#result", "quote": "第二步", "prefix": "首先，", "suffix": "的意思", "start": 3, "end": 6, "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000" } } },
+      { "name": "anchor at 1997 serialized characters", "visitor": true, "body": { "text": "a", "anchor": { "label": "<<repeat:l:200>>", "selector": "<<repeat:s:500>>", "quote": "<<repeat:q:1000>>", "prefix": "<<repeat:p:64>>", "suffix": "<<repeat:x:64>>", "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000", "start": 0, "end": 1000 } }, "stored": { "text": "a", "anchor": { "label": "<<repeat:l:200>>", "selector": "<<repeat:s:500>>", "quote": "<<repeat:q:1000>>", "prefix": "<<repeat:p:64>>", "suffix": "<<repeat:x:64>>", "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000", "start": 0, "end": 1000 } } },
+      { "name": "visitor text at its limit", "visitor": true, "body": { "text": "<<repeat:字:2000>>" }, "stored": { "text": "<<repeat:字:2000>>" } },
+      { "name": "anonymous text at its limit", "visitor": false, "body": { "text": "<<repeat:a:8000>>" }, "stored": { "text": "<<repeat:a:8000>>" } }
+    ],
+    "rejected": [
+      { "name": "blank text", "visitor": false, "body": { "text": " 　 " }, "code": "invalid_input" },
+      { "name": "missing text", "visitor": false, "body": { "authorName": "a" }, "code": "invalid_input" },
+      { "name": "visitor text over its limit", "visitor": true, "body": { "text": "<<repeat:字:2001>>" }, "code": "invalid_input" },
+      { "name": "anonymous text over its limit", "visitor": false, "body": { "text": "<<repeat:a:8001>>" }, "code": "invalid_input" },
+      { "name": "authorName too long", "visitor": false, "body": { "text": "a", "authorName": "<<repeat:名:161>>" }, "code": "invalid_input" },
+      { "name": "authorName with a control character", "visitor": false, "body": { "text": "a", "authorName": "a\u0007" }, "code": "invalid_input" },
+      { "name": "authorName not a string", "visitor": false, "body": { "text": "a", "authorName": 5 }, "code": "invalid_input" },
+      { "name": "ftp pageUrl", "visitor": false, "body": { "text": "a", "pageUrl": "ftp://example.com/" }, "code": "invalid_input" },
+      { "name": "pageUrl with credentials", "visitor": false, "body": { "text": "a", "pageUrl": "https://u:p@example.com/" }, "code": "invalid_input" },
+      { "name": "javascript pageUrl", "visitor": false, "body": { "text": "a", "pageUrl": "javascript:alert(1)" }, "code": "invalid_input" },
+      { "name": "pageUrl not a URL", "visitor": false, "body": { "text": "a", "pageUrl": "not a url" }, "code": "invalid_input" },
+      { "name": "pageUrl too long", "visitor": false, "body": { "text": "a", "pageUrl": "https://example.com/<<repeat:a:1990>>" }, "code": "invalid_input" },
+      { "name": "unknown body key", "visitor": false, "body": { "text": "a", "extra": 1 }, "code": "invalid_input" },
+      { "name": "anchor not an object", "visitor": false, "body": { "text": "a", "anchor": "x" }, "code": "invalid_input" },
+      { "name": "unknown anchor key", "visitor": true, "body": { "text": "a", "anchor": { "quote": "a", "x": 1 } }, "code": "invalid_input" },
+      { "name": "empty quote", "visitor": true, "body": { "text": "a", "anchor": { "quote": "" } }, "code": "invalid_input" },
+      { "name": "offsets without quote", "visitor": true, "body": { "text": "a", "anchor": { "start": 0, "end": 1 } }, "code": "invalid_input" },
+      { "name": "offsets disagree with quote length", "visitor": true, "body": { "text": "a", "anchor": { "quote": "ab", "start": 0, "end": 3 } }, "code": "invalid_input" },
+      { "name": "start without end", "visitor": true, "body": { "text": "a", "anchor": { "quote": "a", "start": 0 } }, "code": "invalid_input" },
+      { "name": "negative start", "visitor": true, "body": { "text": "a", "anchor": { "quote": "a", "start": -1, "end": 0 } }, "code": "invalid_input" },
+      { "name": "malformed releaseId", "visitor": true, "body": { "text": "a", "anchor": { "quote": "a", "releaseId": "release-XYZ" } }, "code": "invalid_input" },
+      { "name": "prefix too long", "visitor": true, "body": { "text": "a", "anchor": { "quote": "a", "prefix": "<<repeat:p:65>>" } }, "code": "invalid_input" },
+      { "name": "anchor over 2000 serialized characters", "visitor": true, "body": { "text": "a", "anchor": { "label": "<<repeat:l:200>>", "selector": "<<repeat:s:500>>", "quote": "<<repeat:q:1000>>", "prefix": "<<repeat:p:64>>", "suffix": "<<repeat:x:64>>", "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000", "start": 1000000, "end": 1001000 } }, "code": "invalid_input" },
+      { "name": "malformed visitor header", "visitor": "ABC", "body": { "text": "a" }, "code": "visitor_invalid" },
+      { "name": "upper-case visitor header", "visitor": "<<repeat:A:64>>", "body": { "text": "a" }, "code": "visitor_invalid" }
+    ]
+  },
+  "import": {
+    "accepted": [
+      { "name": "v2 row with rich anchor and visitorTag", "row": { "externalId": "00000000-0000-4000-8000-000000000001", "text": "第二步看不懂", "createdAt": "2026-11-13T08:00:00.000Z", "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/", "anchor": { "label": "结果", "selector": "#result", "quote": "第二步", "prefix": "首先，", "suffix": "的意思", "start": 3, "end": 6, "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000" }, "visitorTag": "a1b2c3d4e5f6" }, "expected": { "externalId": "00000000-0000-4000-8000-000000000001", "text": "第二步看不懂", "createdAt": "2026-11-13T08:00:00.000Z", "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/", "anchor": { "label": "结果", "selector": "#result", "quote": "第二步", "prefix": "首先，", "suffix": "的意思", "start": 3, "end": 6, "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000" }, "visitorTag": "a1b2c3d4e5f6" } },
+      { "name": "old row with untrimmed authorName", "row": { "externalId": "00000000-0000-4000-8000-000000000002", "text": "a", "createdAt": "2026-11-13T08:00:00.000Z", "authorName": " 小王　" }, "expected": { "externalId": "00000000-0000-4000-8000-000000000002", "text": "a", "createdAt": "2026-11-13T08:00:00.000Z", "authorName": "小王" } },
+      { "name": "old row with blank authorName", "row": { "externalId": "00000000-0000-4000-8000-000000000003", "text": "a", "createdAt": "2026-11-13T08:00:00.000Z", "authorName": "   " }, "expected": { "externalId": "00000000-0000-4000-8000-000000000003", "text": "a", "createdAt": "2026-11-13T08:00:00.000Z" } },
+      { "name": "old row with upper-case pageUrl", "row": { "externalId": "00000000-0000-4000-8000-000000000004", "text": "a", "createdAt": "2026-11-13T08:00:00.000Z", "pageUrl": "HTTPS://Example.COM/p" }, "expected": { "externalId": "00000000-0000-4000-8000-000000000004", "text": "a", "createdAt": "2026-11-13T08:00:00.000Z", "pageUrl": "https://example.com/p" } },
+      { "name": "row with untrimmed text", "row": { "externalId": "00000000-0000-4000-8000-000000000005", "text": "  hi ", "createdAt": "2026-11-13T08:00:00.000Z" }, "expected": { "externalId": "00000000-0000-4000-8000-000000000005", "text": "hi", "createdAt": "2026-11-13T08:00:00.000Z" } }
+    ],
+    "sanitized": [
+      { "name": "ftp pageUrl is dropped", "row": { "externalId": "00000000-0000-4000-8000-000000000011", "text": "a", "createdAt": "2026-11-13T08:00:00.000Z", "pageUrl": "ftp://example.com/" }, "expected": { "externalId": "00000000-0000-4000-8000-000000000011", "text": "a", "createdAt": "2026-11-13T08:00:00.000Z" }, "dropped": ["pageUrl"] },
+      { "name": "invalid anchor is dropped", "row": { "externalId": "00000000-0000-4000-8000-000000000012", "text": "a", "createdAt": "2026-11-13T08:00:00.000Z", "anchor": { "quote": "", "x": 1 } }, "expected": { "externalId": "00000000-0000-4000-8000-000000000012", "text": "a", "createdAt": "2026-11-13T08:00:00.000Z" }, "dropped": ["anchor"] },
+      { "name": "malformed visitorTag is dropped", "row": { "externalId": "00000000-0000-4000-8000-000000000013", "text": "a", "createdAt": "2026-11-13T08:00:00.000Z", "visitorTag": "XYZ" }, "expected": { "externalId": "00000000-0000-4000-8000-000000000013", "text": "a", "createdAt": "2026-11-13T08:00:00.000Z" }, "dropped": ["visitorTag"] },
+      { "name": "overlong authorName is dropped", "row": { "externalId": "00000000-0000-4000-8000-000000000014", "text": "a", "createdAt": "2026-11-13T08:00:00.000Z", "authorName": "<<repeat:名:161>>" }, "expected": { "externalId": "00000000-0000-4000-8000-000000000014", "text": "a", "createdAt": "2026-11-13T08:00:00.000Z" }, "dropped": ["authorName"] },
+      { "name": "unknown row key is dropped", "row": { "externalId": "00000000-0000-4000-8000-000000000015", "text": "a", "createdAt": "2026-11-13T08:00:00.000Z", "mood": "happy" }, "expected": { "externalId": "00000000-0000-4000-8000-000000000015", "text": "a", "createdAt": "2026-11-13T08:00:00.000Z" }, "dropped": ["mood"] }
+    ],
+    "quarantined": [
+      { "name": "blank text", "row": { "externalId": "00000000-0000-4000-8000-000000000021", "text": "   ", "createdAt": "2026-11-13T08:00:00.000Z" }, "externalId": "00000000-0000-4000-8000-000000000021", "field": "text" },
+      { "name": "text over 8000", "row": { "externalId": "00000000-0000-4000-8000-000000000022", "text": "<<repeat:a:8001>>", "createdAt": "2026-11-13T08:00:00.000Z" }, "externalId": "00000000-0000-4000-8000-000000000022", "field": "text" },
+      { "name": "missing externalId", "row": { "text": "a", "createdAt": "2026-11-13T08:00:00.000Z" }, "externalId": "#0", "field": "externalId" },
+      { "name": "bad createdAt", "row": { "externalId": "00000000-0000-4000-8000-000000000024", "text": "a", "createdAt": "yesterday" }, "externalId": "00000000-0000-4000-8000-000000000024", "field": "createdAt" },
+      { "name": "row is not an object", "row": "oops", "externalId": "#0", "field": "row" }
+    ]
+  }
+}
