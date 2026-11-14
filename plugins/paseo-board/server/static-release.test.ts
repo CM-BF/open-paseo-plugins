@@ -10,6 +10,8 @@ import type { Board } from "../shared/contracts";
 import { ReleaseManifestSchema } from "../shared/release-contracts";
 import { LIQUID_GLASS_STYLE_ID, LIQUID_GLASS_VERSION } from "../shared/liquid-glass";
 
+/** Release ID, artifact hash and index.html SHA-256 of a private comments release at 77ca22a. */
+const PRIVATE_COMMENTS_PIN = ["release-4250323e511128bbe3e29d63bbddd69f439b6d30aab0b1b23ccc30c2db9e657d", "ccf8e7e905c2eb528403c269db94ead90d32dd4fb19c1173cd11015e7360eabd", "877b35d52f890fce3f926df21ebe5852796eeb91624d604c70be51f2558607b6"];
 describe("fixed public releases", () => {
   let root: string, board: Board;
   beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "board-release-test-")); board = await new BoardStore(join(root, "boards")).create({ id: "private-board-id", title: "Public fixture", ownerAgentId: "private-agent", html: '<main><p id="replace">DELETED_PRIVATE_TEXT</p><button onclick="this.textContent=board.getData().label">Go</button></main>', data: { secret: "PRIVATE_DATA" } }); });
@@ -183,6 +185,13 @@ describe("fixed public releases", () => {
     for (const marker of ["comment-target", "_board/comments", "paseo-board-visitor:"]) expect(release.files["index.html"]).not.toContain(marker);
   });
   const COMMENTS = { apiBase: "https://api.example.internal", appKey: "0123456789abcdef" };
+  it("keeps a private comments release (viewer 4) byte-identical to the 77ca22a build", async () => {
+    const pinned = await new BoardStore(join(root, "pin-comments")).create({ id: "pin-board", title: "Pin fixture", ownerAgentId: "pin-agent", html: '<main><p id="pin">Pinned text</p></main>', data: { secret: "PRIVATE" } });
+    const release = buildRelease({ board: pinned, boardId: pinned.id, expectedCanvasBase: { revision: pinned.canvas.revision, documentVersion: pinned.canvas.documentVersion }, publicData: { label: "Pin" }, apiOrigins: ["https://api.example.com"], comments: { apiBase: "https://api.example.internal", appKey: "0123456789abcdef" } });
+    // Computed at 77ca22a, before public comment threads.
+    expect(release.manifest.viewerVersion).toBe(4);
+    expect([release.manifest.releaseId, release.manifest.artifactHash, createHash("sha256").update(release.files["index.html"]).digest("hex")]).toEqual(PRIVATE_COMMENTS_PIN);
+  });
   it("adds visitor comments with viewer 4, the backend origin in the outer CSP only and an exact warning", () => {
     const base = buildRelease(options()), release = buildRelease({ ...options(), comments: COMMENTS }), index = release.files["index.html"];
     expect(release.manifest.viewerVersion).toBe(4); expect(release.manifest.comments).toEqual(COMMENTS); expect(release.manifest.apiOrigins).toEqual([]);

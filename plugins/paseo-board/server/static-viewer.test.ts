@@ -25,6 +25,13 @@ describe("viewer byte identity", () => {
     }
     expect(STATIC_VIEWER_COMMENTS_VERSION).toBe(4);
   });
+  it("keeps the private comments viewer (4) byte-identical to the 77ca22a build", () => {
+    // Computed at 77ca22a, before public comment threads; private comment releases must never change.
+    expect(sha256(staticViewerRuntime(false, true))).toBe("3411c4e3b38d18650e548a1903190109096a359c6bc8fc283be7e070e4cc5749");
+    expect(sha256(staticViewerShell(false, true))).toBe("d44240db16c0556b3058c3e7915188d0c3cd303ec9df3a4910744da83501953b");
+    expect(sha256(staticViewerRuntime(true, true))).toBe("048cd71b520ecda2240175a4c5c3c9fce91f13049e9d95688750f320bfdd1825");
+    expect(sha256(staticViewerShell(true, true))).toBe("636a028755524f8323bfec0ef7f58fc3f80c5d215790993389a58c2e1893f51b");
+  });
   it("splices the comment blocks as self-contained IIFEs after any live code", () => {
     for (const live of [false, true]) {
       const runtime = staticViewerRuntime(live, true), shell = staticViewerShell(live, true);
