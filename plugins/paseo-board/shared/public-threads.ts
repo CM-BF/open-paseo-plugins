@@ -298,6 +298,9 @@ export const PUBLIC_COMMENTS_RUNTIME = String.raw`
     // The wheel over the rail scrolls the page, as in Google Docs; the shell also uses it to lift a passage above its sheet.
     else if(m.type==='comment-scroll-by'&&typeof m.dy==='number'&&Number.isFinite(m.dy)&&Math.abs(m.dy)<1e6)window.scrollBy(0,m.dy);
     else if(m.type==='comment-pointer-up')release();
+    // The shell closed its composer: after a send the selection goes (the passage is highlighted now); after a cancel it
+    // stays, but scrolling or a click no longer offers 「评论」 for it until the selection changes.
+    else if(m.type==='comment-target-done'){clearTimeout(idle);posted=false;if(m.clear===true){if(validRange())getSelection().removeAllRanges()}else quiet=signature(getSelection())}
     else if(m.type==='comment-keep-position'){const el=document.elementFromPoint(Math.round(innerWidth/2),Math.min(innerHeight-1,40));if(el&&el!==root&&el!==document.body)keep={el,top:el.getBoundingClientRect().top,at:performance.now()};else keep=null}
   });
   // Images and fonts move passages without DOM changes: re-measure when the body's size changes.
@@ -314,7 +317,10 @@ export const PUBLIC_COMMENTS_RUNTIME = String.raw`
 export const PUBLIC_COMMENTS_SHELL = String.raw`
   ;(()=>{
   const settings=config.comments,apiBase=settings.apiBase,appKey=settings.appKey,CHANNEL='paseo-board-release-v1';
-  const preview=location.origin==='null',pageUrl=location.origin+location.pathname,pageKey=location.origin+location.pathname.replace(/\/index\.html$/,'/');
+  // Threads belong to the share's stable page: this release's version archive <stable>/v/<its own hex>/ (GitHub Pages
+  // series) and an explicit index.html show the stable page's discussion. Only the release's own hex is stripped.
+  const preview=location.origin==='null',pagePath=(()=>{const path=location.pathname.replace(/\/index\.html$/,'/'),archive='/v/'+String(config.releaseId).slice(8)+'/';return path.length>archive.length&&path.endsWith(archive)?path.slice(0,path.length-archive.length+1):path})();
+  const pageUrl=location.origin+pagePath,pageKey=pageUrl;
   const sha256=${SHA256_JS};
   const layout=${RAIL_LAYOUT_JS};
   const visitorKey='paseo-board-visitor:v2:'+appKey,publicKey='paseo-board-public:v1:'+appKey,hintKey='paseo-board-comments-hint:v1',railKey='paseo-board-comments-rail:v1';
@@ -487,6 +493,12 @@ export const PUBLIC_COMMENTS_SHELL = String.raw`
   const countOf=t=>1+t.replies.length+t.omitted;
   const unreadOf=t=>t.private||t.pendingKey||!involves(t)||mine.seen[t.id]===undefined?0:Math.max(0,countOf(t)-mine.seen[t.id]);
   const markSeen=t=>{if(t&&!t.pendingKey&&!t.private&&involves(t)){bump(mine.seen,t.id,countOf(t),300);savePublic()}newIds.delete(t&&t.id)};
+  // The open card is being read: replies that arrive in it while the page is visible are seen where they appear.
+  const openShown=()=>{
+    if(!active||document.hidden||!railVisible())return null;
+    const t=visibleThreads().find(x=>x.id===active);return t&&(!orphans.has(t.id)||orphanOpen||!aligned())?t:null;
+  };
+  const seeOpen=()=>{const t=openShown();if(t&&(unreadOf(t)||newIds.has(t.id)))markSeen(t)};
   const label=m=>{
     if(m.by==='owner')return{text:TEXT.owner,kind:'owner'};if(m.by==='agent')return{text:TEXT.agent,kind:'agent'};
     const tag=m.tag?'访客·'+m.tag.slice(0,6):'';return{text:m.name?shown(m.name)+(tag?' · '+tag:''):tag||TEXT.anonymous,kind:'visitor'};
@@ -537,11 +549,12 @@ export const PUBLIC_COMMENTS_SHELL = String.raw`
       const now=next.threads.find(t=>t.id===old.id),state=replies.get(old.id),draft=(drafts['r:'+old.id]||'').trim();
       if(!old.resolved&&state&&state.open&&draft&&(!now||now.resolved)){state.open=false;state.version++;kept.add(old.id);showToast(now?TEXT.resolvedWhileTyping:TEXT.gone)}
     }
+    if(active&&!allThreads().some(t=>t.id===active))active=null;
+    seeOpen();
     const unread=next.threads.reduce((sum,t)=>sum+unreadOf(t),0),previous=before.reduce((sum,t)=>sum+unreadOf(t),0);
     if(unread>previous&&announced!==String(unread)){announced=String(unread);live.textContent='有 '+unread+' 条新回复'}
     for(const t of next.threads)if(involves(t)&&mine.seen[t.id]===undefined){bump(mine.seen,t.id,countOf(t),300)}
     savePublic();saveCache();
-    if(active&&!allThreads().some(t=>t.id===active))active=null;
     renderAll();
   };
   const poll=async()=>{
@@ -568,7 +581,8 @@ export const PUBLIC_COMMENTS_SHELL = String.raw`
     try{const r=await request('/_board/comments/mine?page='+encodeURIComponent(pageUrl),{headers:{'X-Board-Visitor':secret}});if(r.status===200&&r.body&&Array.isArray(r.body.threads)){privateThreads=r.body.threads.slice(0,30).map(cleanPrivate).filter(Boolean);renderAll()}}catch{}
   };
   const pollSoon=(minimum)=>{if(inFlight||preview)return;const since=performance.now()-lastPoll;schedule(Math.max(0,(minimum===undefined?3000:minimum)-since))};
-  document.addEventListener('visibilitychange',()=>{if(document.hidden){clearTimeout(timer);timer=0}else pollSoon()});
+  // Back on the page: the open card's replies that arrived while it was hidden are seen now.
+  document.addEventListener('visibilitychange',()=>{if(document.hidden){clearTimeout(timer);timer=0}else{pollSoon();if(active)renderAll()}});
   window.addEventListener('focus',()=>pollSoon());
   // Input in this shell or in the page (the frame reports clicks, keys, wheels and scrolls) keeps the 10 s cadence.
   const noteInput=()=>{const idle=performance.now()-lastInput>900000;lastInput=performance.now();if(idle)pollSoon()};
@@ -648,10 +662,14 @@ export const PUBLIC_COMMENTS_SHELL = String.raw`
     c.identity.textContent=bad?TEXT.badName:identityLine(nameOf(c.name.value));if(bad)c.identity.setAttribute('data-tone','error');else c.identity.removeAttribute('data-tone');
     if(!bad&&c.status.textContent===TEXT.badName)c.status.textContent='';c.status.hidden=!c.status.textContent;
   };
-  const closeComposer=(keepDraft,returnFocus)=>{
+  /**
+   * done: 'sent' clears the page selection (its passage is highlighted now), 'closed' keeps it but the page offers no
+   * 「评论」 button for it again until the selection changes, 'replaced' (another composer opens) tells the page nothing.
+   */
+  const closeComposer=(keepDraft,returnFocus,done)=>{
     if(!composer)return;const c=composer;composer=null;
     if(keepDraft&&!c.item)saveDraft(c.key,c.textarea.value);
-    c.node.remove();if(returnFocus!==false)focusFrame();
+    c.node.remove();if(done!=='replaced')post({type:'comment-target-done',clear:done==='sent'});if(returnFocus!==false)focusFrame();
   };
   const submit=async event=>{
     if(!trusted(event)||!composer||composer.busy||blocked())return;
@@ -671,13 +689,13 @@ export const PUBLIC_COMMENTS_SHELL = String.raw`
     const result=await deliver(item);
     if(composer!==c)return;
     c.busy=false;c.status.removeAttribute('data-tone');
-    if(result.ok){closeComposer(false,false);showToast(TEXT.sent);dismissHint();openRail(false);revealCard(result.id,true);return}
+    if(result.ok){closeComposer(false,false,'sent');showToast(TEXT.sent);dismissHint();openRail(false);revealCard(result.id,true);return}
     if(!result.keep){pending=pending.filter(p=>p!==item);c.item=null;savePending()}
     if(result.badName){mine.name='';savePublic()}
     c.retry=Boolean(result.retry&&c.item);c.status.textContent=result.error;updateComposer();
   };
   const openComposer=(t,trigger)=>{
-    if(composer)closeComposer(true,false);
+    if(composer)closeComposer(true,false,'replaced');
     hideFloat();const anchor=cleanAnchor(t.anchor);if(!anchor)return;
     const key=draftKey(anchor),quote=clip(anchor.quote,120);
     const textarea=el('textarea',{'aria-label':'公开评论','placeholder':'写下你的评论…',maxlength:'2000'});textarea.value=drafts[key]||'';
@@ -886,7 +904,7 @@ export const PUBLIC_COMMENTS_SHELL = String.raw`
   const renderAll=animate=>{
     if(frameOff){rail.hidden=true;toggle.hidden=true;return}
     for(const id of kept)if(id!==active)kept.delete(id);
-    applyMode();
+    applyMode();seeOpen();
     const threads=allThreads(),visible=visibleThreads(),open=threads.filter(t=>!t.resolved).length;
     const unread=threads.reduce((sum,t)=>sum+unreadOf(t),0);
     toggle.hidden=preview?false:mode==='docked';

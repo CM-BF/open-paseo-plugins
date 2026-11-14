@@ -503,5 +503,98 @@ export async function runPublicChecks({ assert, command, frameCommand, evaluate,
   await mouse(somewhere.x, somewhere.y);
   await until(() => evaluate('window.activityMessages>=1'), 'an activity message from the page');
   check('activity: clicks inside the page reach the shell, so a reader is not treated as idle');
+
+  // 25. Polish P4: the share's version archive <stable>/v/<this release's hex>/ and an explicit index.html show the
+  // stable page's discussion (same listing key, same cards); an archive of another release keeps its own address.
+  const pageParam = request => new URLSearchParams(request.search).get('page');
+  const archivePath = `${pagePath}v/${releaseId.slice(8)}/`, otherArchive = `${pagePath}v/${'0'.repeat(64)}/`;
+  for (const path of [archivePath, `${pagePath}index.html`, otherArchive]) files.set(path, release.files['index.html']);
+  const cardIds = async () => (await ui()).cards.map(card => card.id).sort().join(',');
+  await open(pagePath);
+  await until(async () => (await ui()).cards.length >= 3, 'the stable page cards');
+  await sleep(300);
+  const stableCards = await cardIds();
+  for (const path of [archivePath, `${pagePath}index.html`]) {
+    backend.requests.length = 0;
+    await open(path);
+    await until(async () => (await cardIds()) === stableCards, `the stable discussion at ${path}`);
+    assert.equal(pageParam(listings()[0]), pageUrl, `${path} lists the stable page's threads`);
+  }
+  backend.requests.length = 0;
+  await open(otherArchive);
+  await until(() => Promise.resolve(listings().length >= 1), 'the listing of an unrelated archive');
+  assert.equal(pageParam(listings()[0]), origin + otherArchive, 'only this release\'s own version archive maps to the stable page');
+  check('version archive: <stable>/v/<own release hex>/ and index.html list and show the stable page\'s threads; another hex keeps its own address');
+
+  // 26. Polish P2 + P4: a comment sent from the version archive is filed under the stable page, its selection is cleared,
+  // and scrolling never offers 「评论」 again for the passage just commented.
+  await open(archivePath);
+  await until(async () => (await cardIds()) === stableCards, 'the archive cards');
+  const select = (selector, text) => frame(`(()=>{const el=document.querySelector(${JSON.stringify(selector)}),node=el.firstChild,i=node.data.indexOf(${JSON.stringify(text)});getSelection().setBaseAndExtent(node,i,node,i+${text.length});return true})()`);
+  const floatShown = () => evaluate("(()=>{const f=document.querySelector('[data-pbc=float]');return Boolean(f)&&!f.hidden})()");
+  const wheel = async (deltaY = 120) => { await command('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 400, y: 400, deltaX: 0, deltaY }); };
+  await frame('scrollTo(0,0),true'); await sleep(200);
+  await select('#second', '足够多的文字');
+  await until(floatShown, 'the 评论 button for the selection');
+  await clickOuter('[data-pbc=float]');
+  await until(() => evaluate("Boolean(document.querySelector('[data-pbc=composer]'))"), 'the composer from the 评论 button');
+  await typeText('从版本页发出的评论');
+  const archivePosts = backend.requests.length;
+  await key('Enter', 'Enter', 13, 4);
+  await until(() => evaluate("!document.querySelector('[data-pbc=composer]')"), 'the archive comment to be sent');
+  const archivePost = backend.requests.slice(archivePosts).find(request => request.method === 'POST' && request.path.endsWith('/_board/comments'));
+  assert.equal(JSON.parse(archivePost.body).pageUrl, pageUrl, 'a comment from the version archive is filed under the stable page');
+  await until(async () => (await frame('getSelection().toString()')) === '', 'the page selection to be cleared after sending');
+  for (let i = 0; i < 3; i++) { await wheel(i % 2 ? -120 : 120); await sleep(120); }
+  await sleep(700);
+  assert.equal(await floatShown(), false, 'after sending, scrolling does not offer 评论 for the commented passage again');
+  const archiveRow = backend.publicRows().find(row => row.text === '从版本页发出的评论');
+  await open(pagePath);
+  await until(async () => (await ui()).cards.some(card => card.id === archiveRow.externalId), 'the archive comment on the stable page');
+  check('send: a comment from the version archive is posted for the stable page and appears there; the selection is cleared and scrolling shows no 评论 button for it');
+
+  // 27. Polish P2: after 取消 the selection stays, but scrolling does not bring 「评论」 back for it; a new selection does.
+  await frame('scrollTo(0,0),true'); await sleep(200);
+  await select('#lead', '最后第四步');
+  await until(floatShown, 'the 评论 button for a second selection');
+  await clickOuter('[data-pbc=float]');
+  await until(() => evaluate("Boolean(document.querySelector('[data-pbc=composer]'))"), 'the composer for the second selection');
+  await clickOuter('[data-pbc=cancel]');
+  await until(() => evaluate("!document.querySelector('[data-pbc=composer]')"), 'the composer to close on 取消');
+  assert.equal(await frame('getSelection().toString()'), '最后第四步', 'cancelling keeps the selection');
+  for (let i = 0; i < 3; i++) { await wheel(i % 2 ? -120 : 120); await sleep(120); }
+  await sleep(700);
+  assert.equal(await floatShown(), false, 'after 取消, scrolling does not offer 评论 for the same selection');
+  await select('#lead', '第三步再提交');
+  await until(floatShown, 'the 评论 button for a new selection');
+  await frame('getSelection().removeAllRanges(),true');
+  await until(async () => !(await floatShown()), 'the button to go with the selection');
+  check('cancel: the selection stays but scrolling never brings the 评论 button back for it; selecting other text offers it again');
+
+  // 28. Polish P1: a reply that arrives while its thread's card is open is read there: no 新 chip, and no unread count
+  // on 评论 n once the card and the overlay are closed (also after a reload).
+  await viewport(900, 800);
+  await open(pagePath);
+  await until(async () => (await ui()).toggle?.startsWith('评论 '), 'the overlay toggle');
+  await clickOuter('[data-pbc=toggle]');
+  await until(async () => (await ui()).cards.some(card => card.id === t1.externalId), 'the own thread in the overlay');
+  await clickOuter(`[data-pbc=card][data-thread="${t1.externalId}"] .pbc-text`);
+  await until(async () => (await ui()).cards.find(card => card.id === t1.externalId)?.active, 'the own thread to open');
+  await seed(backend, pageUrl, releaseId, SECRETS.d, { text: '打开着的讨论里来了新回复', parentId: t1.externalId, anchor: {} }, 'open-card-reply');
+  await sleep(3100); await evaluate("window.dispatchEvent(new Event('focus'))");
+  await until(async () => (await ui()).cards.find(card => card.id === t1.externalId)?.text.includes('打开着的讨论里来了新回复'), 'the reply in the open card', 12000);
+  await sleep(200);
+  assert.equal(await evaluate(`Boolean(document.querySelector('[data-pbc=card][data-thread="${t1.externalId}"] .pbc-chip[data-kind=new]'))`), false, 'no 新 chip in the open card');
+  await key('Escape', 'Escape', 27);
+  await until(async () => !(await ui()).cards.some(card => card.active), 'Esc to close the card');
+  await key('Escape', 'Escape', 27);
+  await until(async () => !(await ui()).rail, 'Esc to close the overlay');
+  const afterClose = (await ui()).toggle;
+  assert.ok(afterClose.startsWith('评论 ') && !afterClose.includes('新回复'), `the toggle counts no new reply: ${afterClose}`);
+  await open(pagePath);
+  await until(async () => (await ui()).toggle?.startsWith('评论 '), 'the toggle after a reload');
+  assert.equal((await ui()).toggle.includes('新回复'), false, `still read after a reload: ${(await ui()).toggle}`);
+  await viewport(1280, 800);
+  check('a reply that arrives in the open card is read there: no 新 chip, and 评论 n shows no new reply after closing or reloading');
   return { ids: { t1, t2, t3: t3b, t4, r1 } };
 }
