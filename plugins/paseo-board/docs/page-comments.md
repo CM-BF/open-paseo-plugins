@@ -192,13 +192,13 @@ node /绝对路径/你的应用/board-app.mjs ssh deploy --plan ../plan.json --c
 4. 按平时的方式重新启动或部署（新运行时第一次启动时升级数据库，失败会整体回滚）。
 5. 确认 `node <应用>/board-app.mjs status --dir <应用>` 里有 `"publicThreads": 1`，并且收件箱仍在正常同步。
 
-以本机的测试后端为例（在你自己的终端里运行，agent 不会替你做）：
+例如应用目录是 `/绝对路径/my-app`（在你自己的终端里运行，agent 不会替你做）：
 
 ```sh
-node /Users/citrine/Projects/board-comment-page/app/board-app.mjs backup --dir /Users/citrine/Projects/board-comment-page/app --out /Users/citrine/Projects/board-comment-page/backups/before-public-threads.sqlite
-paseo-board-app update-runtime --dir /Users/citrine/Projects/board-comment-page/app
+node /绝对路径/my-app/board-app.mjs backup --dir /绝对路径/my-app --out /绝对路径/backups/before-public-threads.sqlite
+paseo-board-app update-runtime --dir /绝对路径/my-app
 # 然后按平时的方式重新启动这个应用，再检查：
-node /Users/citrine/Projects/board-comment-page/app/board-app.mjs status --dir /Users/citrine/Projects/board-comment-page/app
+node /绝对路径/my-app/board-app.mjs status --dir /绝对路径/my-app
 ```
 
 升级后的数据库不能再用旧运行时启动；要退回旧运行时，只能恢复第 2 步的备份。部署在服务器上的后端用审核过的 `ssh plan` / `ssh deploy`，部署前会自动备份。
