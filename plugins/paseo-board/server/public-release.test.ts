@@ -190,11 +190,30 @@ describe("rail layout (public-threads §5.6.4, §12 A6)", () => {
         expect(top[active]).toBe(expected);
         if (h <= o.viewBottom - o.viewTop - o.floor - o.gap) { expect(top[active]).toBeGreaterThanOrEqual(o.viewTop + o.floor); expect(top[active] + h).toBeLessThanOrEqual(o.viewBottom - o.gap); }
       } else if (n) {
-        const total = items.reduce((sum, item) => sum + item.h + o.gap, 0);
-        if (total + o.floor <= o.limit) expect(top[n - 1] + items[n - 1].h).toBeLessThanOrEqual(o.limit);
+        const total = items.reduce((sum, item) => sum + item.h + o.gap, 0) - o.gap;
+        const natural: number[] = []; items.forEach((item, i) => { natural.push(i ? Math.max(item.y - o.lift, natural[i - 1] + items[i - 1].h + o.gap) : Math.max(o.floor, item.y - o.lift)); });
         expect(top[0]).toBeGreaterThanOrEqual(o.floor);
+        for (let i = 0; i < n; i++) expect(top[i], "a card never sits below its natural place").toBeLessThanOrEqual(natural[i]);
+        if (natural[n - 1] + items[n - 1].h <= o.limit) expect(top, "a pile that ends in time is not lifted").toEqual(natural);
+        else if (total + o.floor <= o.limit) expect(top[n - 1] + items[n - 1].h, "a pile that fits is lifted to end in time").toBe(o.limit);
+        else expect(top, "a pile that cannot fit keeps its first cards at their passages; the rail scrolls for the rest").toEqual(natural);
       }
     }
+  });
+  it("review cases: with more cards than the page can hold the first card stays at its passage (60 threads; a one-screen page)", () => {
+    // 60 threads, two per paragraph, 80 px cards: the pile is taller than the page, so it is not pinned or reflowed.
+    const many = Array.from({ length: 60 }, (_, i) => ({ y: 340 + Math.floor(i / 2) * 110, h: 80 }));
+    const o = { gap: 8, lift: 4, floor: 8, viewTop: 0, viewBottom: 900, limit: 3600 + 900 - 8 };
+    const tops = layout(many, -1, o);
+    expect(tops[0]).toBe(336); expect(tops[1]).toBe(424);
+    for (let i = 1; i < 60; i++) expect(tops[i]).toBe(tops[i - 1] + 88);
+    // One screen (no page scroll), 13 threads on 3 lines: the first card sits at its passage, the rest run on below.
+    const short = Array.from({ length: 13 }, (_, i) => ({ y: [130, 170, 210][i % 3], h: 70 })).sort((a, b) => a.y - b.y);
+    const shortTops = layout(short, -1, { gap: 8, lift: 4, floor: 8, viewTop: 0, viewBottom: 900, limit: 892 });
+    expect(shortTops[0]).toBe(126);
+    // When the cards fit once lifted, they end exactly at the limit and the first one never goes above the floor.
+    const fits = layout(Array.from({ length: 8 }, () => ({ y: 600, h: 90 })), -1, { gap: 8, lift: 4, floor: 8, viewTop: 0, viewBottom: 900, limit: 892 });
+    expect(fits[7] + 90).toBe(892); expect(fits[0]).toBeGreaterThanOrEqual(8);
   });
   it("leaves a lone card at its passage and stacks a crowded line downwards", () => {
     const o = { gap: 8, lift: 4, floor: 8, viewTop: 0, viewBottom: 800, limit: 3000 };

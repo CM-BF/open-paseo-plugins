@@ -9804,14 +9804,16 @@ var ShareUpdateSchema = z3.object({
 });
 var ShareUpdateResultSchema = z3.union([z3.object({
   upToDate: z3.literal(true),
-  liveDrift: LiveDriftSchema.optional()
+  liveDrift: LiveDriftSchema.optional(),
+  commentsWarning: z3.string().max(500).optional()
 }), z3.object({
   manifest: ReleaseManifestSchema,
   request: PagesPrepareSchema.omit({
     eventId: true,
     createRepository: true
   }),
-  liveDrift: LiveDriftSchema.optional()
+  liveDrift: LiveDriftSchema.optional(),
+  commentsWarning: z3.string().max(500).optional()
 })]);
 var releaseInput = z3.object({
   releaseId: ReleaseIdSchema
@@ -11692,7 +11694,8 @@ function ReleasePanel({
       var done = {
         ...next,
         upToDate: true,
-        drift: result.liveDrift
+        drift: result.liveDrift,
+        commentsWarning: result.commentsWarning
       };
       targetRef.current = done;
       setTarget(done);
@@ -11702,7 +11705,8 @@ function ReleasePanel({
       ...next,
       releaseId: result.manifest.releaseId,
       shareKey: result.request.shareKey ?? next.shareKey,
-      drift: result.liveDrift
+      drift: result.liveDrift,
+      commentsWarning: result.commentsWarning
     };
     targetRef.current = built;
     setTarget(built);
@@ -11863,6 +11867,11 @@ ${share.link}${share.verified ? "" : "\uFF08\u5185\u5BB9\u5F85\u6838\u9A8C\uFF09
               void startUpdate(share, true);
             }
           }) : null]
+        }) : null, active && target?.commentsWarning ? /* @__PURE__ */jsx10(View8, {
+          testID: "board-share-comments-warning",
+          children: /* @__PURE__ */jsx10(Notice, {
+            text: target.commentsWarning
+          })
         }) : null, active && target?.upToDate ? /* @__PURE__ */jsx10(Notice, {
           text: "\u5206\u4EAB\u9875\u5DF2\u662F\u5F53\u524D\u5185\u5BB9\uFF0C\u65E0\u9700\u66F4\u65B0\u3002"
         }) : null, active && target?.recovered ? /* @__PURE__ */jsxs8(Copy, {
@@ -13488,8 +13497,10 @@ import { Pressable as Pressable8, Text as Text9, View as View10 } from "react-na
 import { ScrollView as ScrollView4, TextInput as TextInput6 } from "@getpaseo/plugin/client/ui";
 
 // shared/bidi.ts
+var INVISIBLE_SOURCE = String.raw`[­͏؜ᅟᅠ឴឵᠋-᠏​-‏‪-‮⁠-⁤⁦-⁯ㅤ﻿ﾠ￹-￻]|\uDB40[\uDC00-\uDC7F]|\uD82F[\uDCA0-\uDCA3]|\uD834[\uDD73-\uDD7A]|(?:[︀-️]|\uDB40[\uDD00-\uDDEF]){2,}`;
+var INVISIBLE = new RegExp(INVISIBLE_SOURCE, "g");
 function showBidiControls(text) {
-  return text.replace(/[\u061C\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g, char => `[U+${char.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")}]`);
+  return text.replace(INVISIBLE, run => Array.from(run, char => `[U+${char.codePointAt(0).toString(16).toUpperCase().padStart(4, "0")}]`).join(""));
 }
 
 // client/inbox-panel.tsx

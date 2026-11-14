@@ -31,7 +31,9 @@ ${Array.from({ length: many }, (_, i) => `<p id="p${i}">段落 ${i} 的内容文
   const release = buildRelease({ ...options, board: source(page('首先，第二步的意思是先保存，然后第三步再提交，最后第四步检查结果。')), publicData: {}, apiOrigins: [], comments });
   const changed = buildRelease({ ...options, board: source(page('这一段已经改写，不再包含原来的引用。')), publicData: {}, apiOrigins: [], comments });
   const heavy = buildRelease({ ...options, board: source(page('首先，第二步的意思是先保存。', true, 200)), publicData: {}, apiOrigins: [], comments });
-  return { backend, appKey, release, changed, heavy, close: () => backend.close() };
+  // 30 short paragraphs with two threads each: more cards than the page can hold next to their passages.
+  const crowded = buildRelease({ ...options, board: source(page('首先，第二步的意思是先保存。', false, 30)), publicData: {}, apiOrigins: [], comments });
+  return { backend, appKey, release, changed, heavy, crowded, close: () => backend.close() };
 }
 
 /** Seeds through the real HTTP contract, as visitors would. */
@@ -305,8 +307,32 @@ export async function runPublicChecks({ assert, command, frameCommand, evaluate,
   await key('Escape', 'Escape', 27);
   await key('Escape', 'Escape', 27);
   await until(async () => { const value = await ui(); return !value.rail && value.focus === 'toggle'; }, 'Esc to close the sheet');
-  await command('Emulation.setTouchEmulationEnabled', { enabled: false });
   check('390 × 844 touch: no rail, a 评论 n button, tapping a highlight opens the bottom sheet at that thread, Esc closes it and returns focus');
+  // Review fix: a passage low on the screen is not covered by the sheet its tap opens (the page scrolls it up).
+  backend.publicState(t4.externalId, { resolved: false });
+  await open(pagePath);
+  await until(async () => (await frameHighlights())?.['pbc-open'] >= 4, 'the far highlight on the phone');
+  await frame("(()=>{const el=document.querySelector('#far');scrollTo(0,el.getBoundingClientRect().top+scrollY-560);return true})()");
+  await sleep(300);
+  const low = await passage('#far', '很靠后的一段文字');
+  assert.ok(low.top > 844 * 0.3, `the passage starts where a 75vh sheet would cover it: ${JSON.stringify(low)}`);
+  const farOpened = async () => { const value = await ui(); return value.rail && value.mode === 'sheet' && value.cards.find(card => card.id === t4.externalId)?.active; };
+  for (let attempt = 0; attempt < 3 && !(await farOpened()); attempt++) {
+    const at = await passage('#far', '很靠后的一段文字');
+    await command('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: at.x + 2, y: at.y }] });
+    await command('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await until(farOpened, 'the sheet open at the far thread', 2500).catch(() => undefined);
+  }
+  if (!(await farOpened())) throw new Error(`The sheet did not open at the far thread: ${JSON.stringify(await ui())}`);
+  await sleep(500);
+  const sheetTop = await evaluate("document.querySelector('[data-pbc=rail]').getBoundingClientRect().top"), lifted = await passage('#far', '很靠后的一段文字');
+  assert.ok(lifted.top >= 0 && lifted.bottom <= sheetTop, `the tapped passage stays visible above the sheet: ${JSON.stringify({ lifted, sheetTop })}`);
+  await shot('sheet-390-far');
+  await key('Escape', 'Escape', 27); await key('Escape', 'Escape', 27);
+  await until(async () => !(await ui()).rail, 'the sheet to close');
+  backend.publicState(t4.externalId, { resolved: true });
+  await command('Emulation.setTouchEmulationEnabled', { enabled: false });
+  check('390 × 844 touch: tapping a highlight low on the screen scrolls its passage above the bottom sheet instead of covering it');
 
   // 16. Errors: busy with Retry-After, and a backend that turned public comments off.
   await viewport(1280, 800);
@@ -334,5 +360,148 @@ export async function runPublicChecks({ assert, command, frameCommand, evaluate,
   for (let i = 1; i < framesSeen.length; i++) assert.ok(framesSeen[i] - framesSeen[i - 1] > 4, 'at most one position message per frame');
   console.log(`MEASURE public-heavy ${JSON.stringify({ threads: 200, longTasks, positionMessages: framesSeen.length })}`);
   check('performance: 200 threads with a live element scroll without long tasks and with at most one position message per frame');
+
+  // 18. Review fixes on a crowded page: 60 threads, two per paragraph, more than fit beside their passages.
+  files.set('/public-crowded/', fixture.crowded.files['index.html']);
+  const crowdedUrl = origin + '/public-crowded/', crowdedRelease = fixture.crowded.manifest.releaseId;
+  for (let i = 0; i < 30; i++) for (const [k, quote] of [[0, `段落 ${i} 的内容`], [1, '定位使用']]) await seed(backend, crowdedUrl, crowdedRelease, (300 + i * 2 + k).toString(16).padStart(64, '0'), { text: `拥挤 ${i}-${k}`, anchor: { selector: `#p${i}`, quote } }, `crowded-${i}-${k}`);
+  await viewport(1280, 800);
+  await open('/public-crowded/');
+  await until(async () => (await evaluate("document.querySelectorAll('[data-pbc=card]').length")) >= 60, 'the crowded cards', 15000);
+  await sleep(700);
+  const cardRect = text => evaluate(`(()=>{const n=[...document.querySelectorAll('[data-pbc=card]')].find(c=>c.querySelector('.pbc-text')?.textContent===${JSON.stringify(text)});if(!n)return null;const r=n.getBoundingClientRect();return{top:Math.round(r.top),bottom:Math.round(r.bottom),id:n.getAttribute('data-thread')}})()`);
+  const bodyScroll = () => evaluate("document.querySelector('[data-pbc=body]').scrollTop");
+  const firstPassage = await passage('#p0', '段落 0 的内容'), firstCrowded = await cardRect('拥挤 0-0');
+  assert.ok(firstCrowded && Math.abs(firstCrowded.top - (firstPassage.top - 4)) <= 8, `the first card sits at its passage: ${JSON.stringify({ firstCrowded, firstPassage })}`);
+  await shot('crowded-1280-top');
+  const railMiddle = await evaluate("(()=>{const r=document.querySelector('[data-pbc=body]').getBoundingClientRect();return{x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()");
+  let pageMoved = false, lastCrowded = null;
+  for (let i = 0; i < 80; i++) {
+    await command('Input.dispatchMouseEvent', { type: 'mouseWheel', x: railMiddle.x, y: railMiddle.y, deltaX: 0, deltaY: 300 });
+    await sleep(40);
+    if (!pageMoved && await frame('scrollY') > 0) pageMoved = true;
+    lastCrowded = await cardRect('拥挤 29-1');
+    if (lastCrowded && lastCrowded.bottom <= 800 && lastCrowded.top >= 44 && await frame('Math.round(scrollY)>=Math.round(document.documentElement.scrollHeight-innerHeight)-1')) break;
+  }
+  await sleep(300); lastCrowded = await cardRect('拥挤 29-1');
+  assert.ok(pageMoved, 'the wheel over the rail scrolls the page');
+  assert.ok(lastCrowded && lastCrowded.bottom <= 800 && lastCrowded.top >= 44, `the last card can be reached: ${JSON.stringify(lastCrowded)}`);
+  assert.equal(await bodyScroll(), 0, 'the rail body itself never scrolls');
+  await shot('crowded-1280-end');
+  for (let i = 0; i < 80 && (await frame('scrollY')) > 0; i++) { await command('Input.dispatchMouseEvent', { type: 'mouseWheel', x: railMiddle.x, y: railMiddle.y, deltaX: 0, deltaY: -600 }); await sleep(30); }
+  for (let i = 0; i < 10; i++) { await command('Input.dispatchMouseEvent', { type: 'mouseWheel', x: railMiddle.x, y: railMiddle.y, deltaX: 0, deltaY: -600 }); await sleep(20); }
+  await sleep(400);
+  assert.equal(await frame('scrollY'), 0);
+  const backFirst = await cardRect('拥挤 0-0'), backPassage = await passage('#p0', '段落 0 的内容');
+  assert.ok(Math.abs(backFirst.top - (backPassage.top - 4)) <= 8, `back at the top the first card is at its passage again: ${JSON.stringify({ backFirst, backPassage })}`);
+  check('crowded page: the first card stays at its passage; the wheel over the rail scrolls the page and then the rail past its end, so the last of 60 cards is reachable; scrolling back realigns');
+
+  // Keyboard focus moves the rail with the page instead of scrolling the rail body (which would separate cards from passages).
+  await evaluate("document.querySelector('[data-pbc=card][tabindex=\"0\"]').focus(),true");
+  await key('End', 'End', 35);
+  await sleep(500);
+  const focusedState = () => evaluate("(()=>{const n=document.activeElement,r=n.getBoundingClientRect();return{pbc:n.getAttribute('data-pbc'),text:n.querySelector('.pbc-text')?.textContent,top:Math.round(r.top),bottom:Math.round(r.bottom)}})()");
+  const atEnd = await focusedState();
+  assert.equal(atEnd.text, '拥挤 29-1'); assert.ok(atEnd.top >= 44 && atEnd.bottom <= 800, JSON.stringify(atEnd)); assert.equal(await bodyScroll(), 0);
+  await key('Home', 'Home', 36);
+  await sleep(600);
+  const atHome = await focusedState(), homePassage = await passage('#p0', '段落 0 的内容');
+  assert.equal(atHome.text, '拥挤 0-0'); assert.equal(await bodyScroll(), 0);
+  assert.ok(Math.abs(atHome.top - (homePassage.top - 4)) <= 8, `the first card is visible beside its passage: ${JSON.stringify({ atHome, homePassage })}`);
+  // Arrow keys through the middle: every focused card is on screen and the rail body stays put.
+  for (let i = 0; i < 25; i++) await key('ArrowDown', 'ArrowDown', 40);
+  await sleep(500);
+  const midway = await focusedState();
+  assert.ok(midway.top >= 44 && midway.bottom <= 800, JSON.stringify(midway)); assert.equal(await bodyScroll(), 0);
+  check('keyboard: End, Home and the arrows move focus over 60 cards without scrolling the rail body; the page and rail follow so the focused card is visible and stays beside its passage');
+
+  // 19. A long thread: the open card fits the rail and scrolls inside, so 回复 can always be reached.
+  await open(pagePath);
+  for (let i = 0; i < 30; i++) await seed(backend, pageUrl, releaseId, (500 + i).toString(16).padStart(64, '0'), { text: `长讨论回复 ${i}：${'很长的内容'.repeat(12)}`, parentId: t2.externalId, anchor: {} }, `long-thread-${i}`);
+  await open(pagePath);
+  await until(async () => (await ui()).cards.some(card => card.id === t2.externalId), 'the long thread');
+  await clickOuter(`[data-pbc=card][data-thread="${t2.externalId}"] .pbc-text`);
+  await until(async () => (await ui()).cards.find(card => card.id === t2.externalId)?.active, 'the long thread to open');
+  await sleep(400);
+  const longCard = await evaluate(`(()=>{const n=document.querySelector('[data-pbc=card][data-thread="${t2.externalId}"]');n.scrollTop=n.scrollHeight;const r=n.getBoundingClientRect(),b=n.querySelector('[data-pbc=reply-open]').getBoundingClientRect();return{top:Math.round(r.top),bottom:Math.round(r.bottom),button:Math.round(b.bottom),scrolls:n.scrollHeight>n.clientHeight}})()`);
+  assert.ok(longCard.scrolls && longCard.top >= 44 && longCard.bottom <= 800 && longCard.button <= 800, JSON.stringify(longCard));
+  await shot('long-thread-1280');
+  check('a long thread: the open card stays inside the rail and scrolls on its own, so 回复 is always reachable');
+
+  // 20. A click on plain page text, or on the rail's empty space, closes the open card.
+  const plain = await passage('#second', '第二段落用来');
+  await mouse(plain.x, plain.y);
+  await until(async () => !(await ui()).cards.some(card => card.active), 'a click in the page to close the open card');
+  await clickOuter(`[data-pbc=card][data-thread="${t1.externalId}"] .pbc-text`);
+  await until(async () => (await ui()).cards.find(card => card.id === t1.externalId)?.active, 'the first card to open again');
+  await sleep(300);
+  const empty = await evaluate("(()=>{const b=document.querySelector('[data-pbc=body]').getBoundingClientRect();for(let y=b.bottom-12;y>b.top+12;y-=10){const e=document.elementFromPoint(b.left+b.width/2,y);if(e&&!e.closest('[data-pbc=card],[data-pbc=group],button,textarea,input'))return{x:Math.round(b.left+b.width/2),y:Math.round(y)}}return null})()");
+  assert.ok(empty, 'the rail has empty space');
+  await mouse(empty.x, empty.y);
+  await until(async () => !(await ui()).cards.some(card => card.active), 'a click on empty rail space to close the open card');
+  check('a click on plain page text or on empty rail space closes the open card, as in Google Docs');
+
+  // 21. Replying from the keyboard keeps focus in the thread.
+  await clickOuter(`[data-pbc=card][data-thread="${t1.externalId}"] .pbc-text`);
+  await until(async () => (await ui()).cards.find(card => card.id === t1.externalId)?.active, 'the first card to open');
+  await clickOuter(`[data-pbc=card][data-thread="${t1.externalId}"] [data-pbc=reply-open]`);
+  await until(() => evaluate("document.activeElement?.getAttribute('data-pbc')==='reply-text'"), 'the reply box');
+  await typeText('键盘发送的回复');
+  await key('Enter', 'Enter', 13, 4);
+  await until(async () => (await ui()).cards.find(card => card.id === t1.externalId)?.text.includes('键盘发送的回复'), 'the keyboard reply');
+  await sleep(200);
+  assert.equal(await evaluate("document.activeElement?.getAttribute('data-pbc')"), 'reply-open', 'focus returns to the thread\'s 回复 button, not the page body');
+  check('a reply sent with ⌘/Ctrl+Enter returns focus to the thread\'s 回复 button');
+
+  // 22. The owner resolves a thread while a reply is being written: the card stays, says why, and keeps the draft.
+  await clickOuter(`[data-pbc=card][data-thread="${t1.externalId}"] [data-pbc=reply-open]`);
+  await until(() => evaluate("document.activeElement?.getAttribute('data-pbc')==='reply-text'"), 'the reply box again');
+  await typeText('我正在写一条很长的回复');
+  backend.publicState(t1.externalId, { resolved: true });
+  await sleep(3100); await evaluate("window.dispatchEvent(new Event('focus'))");
+  await until(() => evaluate(`document.querySelector('[data-pbc=card][data-thread="${t1.externalId}"] [data-pbc=unsent-draft]')?.textContent==='我正在写一条很长的回复'`), 'the unsent draft in the resolved card', 12000);
+  const resolvedOpen = (await ui()).cards.find(card => card.id === t1.externalId);
+  assert.ok(resolvedOpen.active && resolvedOpen.text.includes("作者已把这条讨论标为已解决。") && resolvedOpen.text.includes("你还没发送的回复"), resolvedOpen.text);
+  assert.equal(await evaluate("document.querySelector('[data-pbc=toast]').textContent"), '作者刚把这条讨论标为已解决，你的回复没有发送；草稿还留在卡片里。');
+  assert.equal(await evaluate("document.activeElement?.getAttribute('data-pbc')"), 'card', 'focus stays on the card, not the page body');
+  await shot('resolved-while-typing');
+  await clickOuter(`[data-pbc=card][data-thread="${t1.externalId}"] [data-pbc=drop-draft]`);
+  await until(() => evaluate(`!document.querySelector('[data-pbc=card][data-thread="${t1.externalId}"] [data-pbc=unsent-draft]')`), 'the draft to go');
+  await key('Escape', 'Escape', 27);
+  await until(async () => !(await ui()).cards.some(card => card.id === t1.externalId), 'the resolved card to leave 未解决 once closed');
+  backend.publicState(t1.externalId, { resolved: false });
+  check('resolved while typing: the open card stays under 未解决 until closed, says the thread was resolved, keeps the unsent reply visible and focus on the card');
+
+  // 23. Names: the page labels are refused before anything is sent or saved; a transliterated name with · is fine.
+  await sleep(3100); await evaluate("window.dispatchEvent(new Event('focus'))");
+  await until(async () => (await ui()).cards.some(card => card.id === t1.externalId), 'the reopened thread');
+  await clickOuter(`[data-pbc=card][data-thread="${t1.externalId}"] .pbc-text`);
+  await until(async () => (await ui()).cards.find(card => card.id === t1.externalId)?.active, 'the thread to open for a name check');
+  await clickOuter(`[data-pbc=card][data-thread="${t1.externalId}"] [data-pbc=reply-open]`);
+  await until(() => evaluate("document.activeElement?.getAttribute('data-pbc')==='reply-text'"), 'the reply box for a name check');
+  await typeText('名字测试');
+  await clickOuter(`[data-pbc=card][data-thread="${t1.externalId}"] [data-pbc=rename]`);
+  await until(() => evaluate("document.activeElement?.getAttribute('data-pbc')==='reply-name'"), 'the name field');
+  await typeText('访 客小王');
+  assert.equal(await evaluate("document.querySelector('[data-pbc=reply-identity]').textContent"), '称呼里不能有「作者」「AI 助手」「访客」这些字样，也不能有看不见的格式字符。');
+  const postsBeforeName = backend.requests.filter(request => request.method === 'POST').length;
+  await evaluate("document.querySelector('[data-pbc=reply-text]').focus(),true");
+  await key('Enter', 'Enter', 13, 4);
+  await sleep(300);
+  assert.equal(backend.requests.filter(request => request.method === 'POST').length, postsBeforeName, 'nothing is sent');
+  assert.notEqual(JSON.parse(await evaluate(`localStorage.getItem(${JSON.stringify('paseo-board-public:v1:' + fixture.appKey)})`) || '{}').name, '访 客小王', 'the refused name is not saved');
+  await evaluate("(()=>{const i=document.querySelector('[data-pbc=reply-name]');i.value='迈克尔·杰克逊';i.dispatchEvent(new Event('input'));document.querySelector('[data-pbc=reply-text]').focus();return true})()");
+  assert.ok((await evaluate("document.querySelector('[data-pbc=reply-identity]').textContent")).startsWith('显示为：迈克尔·杰克逊 · 访客·'));
+  await key('Enter', 'Enter', 13, 4);
+  await until(async () => (await ui()).cards.find(card => card.id === t1.externalId)?.text.includes('迈克尔·杰克逊'), 'the reply with a transliterated name');
+  check('names: a name with 作者, AI 助手 or 访客 (even spaced) is refused in Chinese before sending or saving; 迈克尔·杰克逊 is accepted');
+
+  // 24. Reading the page counts as activity: a click in the page tells the shell (it keeps polling every 10 s).
+  await open(pagePath);
+  await evaluate("window.activityMessages=0;window.addEventListener('message',e=>{if(e.data&&e.data.type==='comment-activity')activityMessages++});true");
+  const somewhere = await passage('#title', '公开讨论演示');
+  await mouse(somewhere.x, somewhere.y);
+  await until(() => evaluate('window.activityMessages>=1'), 'an activity message from the page');
+  check('activity: clicks inside the page reach the shell, so a reader is not treated as idle');
   return { ids: { t1, t2, t3: t3b, t4, r1 } };
 }

@@ -26506,8 +26506,8 @@ var ShareUpdateSchema = external_exports.object({
   comments: external_exports.union([VisitorCommentsReleaseSchema, external_exports.literal(false)]).optional()
 });
 var ShareUpdateResultSchema = external_exports.union([
-  external_exports.object({ upToDate: external_exports.literal(true), liveDrift: LiveDriftSchema.optional() }),
-  external_exports.object({ manifest: ReleaseManifestSchema, request: PagesPrepareSchema.omit({ eventId: true, createRepository: true }), liveDrift: LiveDriftSchema.optional() })
+  external_exports.object({ upToDate: external_exports.literal(true), liveDrift: LiveDriftSchema.optional(), commentsWarning: external_exports.string().max(500).optional() }),
+  external_exports.object({ manifest: ReleaseManifestSchema, request: PagesPrepareSchema.omit({ eventId: true, createRepository: true }), liveDrift: LiveDriftSchema.optional(), commentsWarning: external_exports.string().max(500).optional() })
 ]);
 var releaseInput = external_exports.object({ releaseId: ReleaseIdSchema });
 var createReleaseRpc = defineRpc({ name: "board.release.create", input: ReleaseCreateRpcSchema, output: ReleaseManifestSchema });
@@ -38650,6 +38650,10 @@ var COMMENTS_SHELL = String.raw`
   if(shouldPoll())schedule(0);
   })();`;
 
+// shared/bidi.ts
+var INVISIBLE_SOURCE = String.raw`[­͏؜ᅟᅠ឴឵᠋-᠏​-‏‪-‮⁠-⁤⁦-⁯ㅤ﻿ﾠ￹-￻]|\uDB40[\uDC00-\uDC7F]|\uD82F[\uDCA0-\uDCA3]|\uD834[\uDD73-\uDD7A]|(?:[︀-️]|\uDB40[\uDD00-\uDDEF]){2,}`;
+var INVISIBLE = new RegExp(INVISIBLE_SOURCE, "g");
+
 // shared/public-threads.ts
 var RAIL_LAYOUT_JS = String.raw`((items,active,o)=>{
     const n=items.length,top=new Array(n),gap=o.gap,lift=o.lift;
@@ -38663,9 +38667,11 @@ var RAIL_LAYOUT_JS = String.raw`((items,active,o)=>{
       down(active+1);
     }else{
       top[0]=Math.max(o.floor,items[0].y-lift);down(1);
-      let limit=o.limit;
-      for(let i=n-1;i>=0;i--){top[i]=Math.min(top[i],limit-items[i].h);limit=top[i]-gap}
-      if(top[0]<o.floor){top[0]=o.floor;down(1)}
+      let total=gap*(n-1);for(let i=0;i<n;i++)total+=items[i].h;
+      if(top[n-1]+items[n-1].h>o.limit&&o.floor+total<=o.limit){
+        let limit=o.limit;
+        for(let i=n-1;i>=0;i--){top[i]=Math.min(top[i],limit-items[i].h);limit=top[i]-gap}
+      }
     }
     return top;
   })`;
@@ -38879,12 +38885,17 @@ var PUBLIC_COMMENTS_RUNTIME = String.raw`
     if(hoverFrame)return;hoverFrame=requestAnimationFrame(()=>{hoverFrame=0;const id=lastPoint?threadAt(lastPoint.x,lastPoint.y):null;if(id!==hover){hover=id;paint();send({type:'comment-highlight-hover',id})}});
   },true);
   document.addEventListener('pointerleave',()=>{if(hover!==null){hover=null;paint();send({type:'comment-highlight-hover',id:null})}});
+  // A click on a highlight opens its thread; a click anywhere else in the page lets the shell deactivate the open card.
   window.addEventListener('click',event=>{
     if(!event.isTrusted||event.button!==0||!threads.length)return;
-    const target=elementOf(event.target);if(target&&target.closest(NATIVE))return;
     const selection=getSelection();if(selection&&!selection.isCollapsed&&selection.toString().trim())return;
-    const id=threadAt(event.clientX,event.clientY);if(id)send({type:'comment-highlight-click',id});
+    const target=elementOf(event.target),id=target&&target.closest(NATIVE)?null:threadAt(event.clientX,event.clientY);
+    send(id?{type:'comment-highlight-click',id}:{type:'comment-page-click'});
   });
+  // Reading the page counts as activity for the shell's polling (at most one message per 20 s).
+  let activityAt=-1e9;
+  const noteActivity=()=>{const now=performance.now();if(now-activityAt>20000){activityAt=now;send({type:'comment-activity'})}};
+  for(const type of ['pointerdown','keydown','wheel','touchstart'])window.addEventListener(type,noteActivity,{capture:true,passive:true});
   const reveal=id=>{
     const f=found.get(id);if(!f)return;
     const el=elementOf(f.range.startContainer);if(el)el.scrollIntoView({block:'center',inline:'nearest'});
@@ -38913,6 +38924,8 @@ var PUBLIC_COMMENTS_RUNTIME = String.raw`
     if(m.type==='comment-highlights'&&Array.isArray(m.threads))render(m.threads.slice(0,200).filter(valid));
     else if(m.type==='comment-emphasis'){const h=typeof m.hover==='string'?m.hover:null,a=typeof m.active==='string'?m.active:null;if(h!==hover||a!==active){hover=h;active=a;paint()}}
     else if(m.type==='comment-reveal'&&typeof m.id==='string')reveal(m.id);
+    // The wheel over the rail scrolls the page, as in Google Docs; the shell also uses it to lift a passage above its sheet.
+    else if(m.type==='comment-scroll-by'&&typeof m.dy==='number'&&Number.isFinite(m.dy)&&Math.abs(m.dy)<1e6)window.scrollBy(0,m.dy);
     else if(m.type==='comment-pointer-up')release();
     else if(m.type==='comment-keep-position'){const el=document.elementFromPoint(Math.round(innerWidth/2),Math.min(innerHeight-1,40));if(el&&el!==root&&el!==document.body)keep={el,top:el.getBoundingClientRect().top,at:performance.now()};else keep=null}
   });
@@ -38946,6 +38959,8 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
     disabled:'评论服务关闭了公开评论。',paused:'作者暂停了新的公开评论。',
     forget:'清除后，这个浏览器不再把之前的评论标为「我」，之后发送会显示为新的匿名编号。已经公开的评论不会删除。确定清除？',
     withdraw:'撤回后，其他人不会再看到这条评论；已经看到的人可能保留了副本。确定撤回？',withdrawn:'已撤回。',anonymous:'匿名访客（发送后显示编号）',
+    badName:'称呼里不能有「作者」「AI 助手」「访客」这些字样，也不能有看不见的格式字符。',refused:'评论没有发送：内容不符合评论服务的要求。',
+    resolvedDraft:'你还没发送的回复（这条讨论已解决，不能再回复）：',resolvedWhileTyping:'作者刚把这条讨论标为已解决，你的回复没有发送；草稿还留在卡片里。',dropDraft:'删除草稿',
   };
   const store=kind=>{try{const s=window[kind];s.getItem(hintKey);return s}catch{return null}};
   const local=preview?null:store('localStorage'),session=preview?null:store('sessionStorage');
@@ -38966,7 +38981,10 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
   const hex=n=>Array.from(crypto.getRandomValues(new Uint8Array(n)),b=>b.toString(16).padStart(2,'0')).join('');
   const uuid=()=>{try{if(crypto.randomUUID)return crypto.randomUUID()}catch{}const h=hex(16);return h.slice(0,8)+'-'+h.slice(8,12)+'-4'+h.slice(13,16)+'-'+(8|parseInt(h[16],16)&3).toString(16)+h.slice(17,20)+'-'+h.slice(20,32)};
   // Everything visitors wrote is text; bidi, zero-width and other invisible format characters are shown as markers.
-  const shown=text=>String(text).replace(/[؜​-‏‪-‮⁠⁦-⁩﻿]/g,c=>'[U+'+c.charCodeAt(0).toString(16).toUpperCase().padStart(4,'0')+']');
+  const INVISIBLE=new RegExp(${JSON.stringify(INVISIBLE_SOURCE)},'g');
+  const shown=text=>String(text).replace(INVISIBLE,run=>Array.from(run,c=>'[U+'+c.codePointAt(0).toString(16).toUpperCase().padStart(4,'0')+']').join(''));
+  // The backend's public name rule (backend/threads.mjs forbiddenPublicName), checked before anything is sent or saved.
+  const badName=name=>Boolean(name)&&(/\p{Cf}/u.test(name)||/作者|ai助手|访客|訪客/.test(name.normalize('NFKC').replace(/[\s\p{Z}\p{Cf}]/gu,'').toLowerCase()));
   const clip=(text,max)=>{const t=shown(text).replace(/\s+/g,' ').trim();return t.length>max?t.slice(0,max)+'…':t};
   const when=value=>{const time=Date.parse(value);if(Number.isNaN(time))return'';try{return new Date(time).toLocaleString([],{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}catch{return new Date(time).toLocaleString()}};
   // Validation of everything the backend or the cache returns: unknown keys are dropped, never rendered.
@@ -39010,7 +39028,8 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
   let drafts=cached.drafts&&typeof cached.drafts==='object'&&!Array.isArray(cached.drafts)?Object.fromEntries(Object.entries(cached.drafts).filter(([k,v])=>k.length<=400&&typeof v==='string'&&v.length<=2000).slice(-8)):{};
   let rawListing=stale?cached.listing:null;
   const saveCache=()=>{if(!session)return;try{let raw=JSON.stringify({etag,listing:rawListing,pending,drafts});if(raw.length>262144)raw=JSON.stringify({etag:'',listing:null,pending,drafts});session.setItem(cacheKey,raw)}catch{}};
-  let privateThreads=[],orphans=new Set(),positions=new Map(),scrollTop=0,docHeight=0,frameHeight=innerHeight,frameReady=false,frameOff=false,highlighted='';
+  // scrollTop: the page's scroll; extra: how far the rail scrolled past the page's top or end to show cards that do not fit.
+  let privateThreads=[],orphans=new Set(),positions=new Map(),scrollTop=0,extra=0,railRange={min:0,max:0},docHeight=0,frameHeight=innerHeight,frameReady=false,frameOff=false,highlighted='';
   let health=null,healthCheck=null,timer=0,lastPoll=-1e9,failures=0,notBefore=0,inFlight=false,problem='',loaded=false,lastInput=performance.now(),polls=0,firstPollAt=performance.now();
   let target=null,composer=null,toastTimer=0,filter='open',active=null,hover=null,focusId=null,expandedGroups=new Set(),forgetAsk=false,orphanOpen=false,newIds=new Set(),knownIds=null,announced='';
   const replies=new Map();
@@ -39026,7 +39045,7 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
     '.pbc-quote{padding:4px 8px;border-left:3px solid #e6aa00;background:#fff8dc;border-radius:4px;color:#3a3a3c;max-height:4.4em;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}'+
     '.pbc input,.pbc textarea{display:block;width:100%;padding:8px 10px;border:1px solid #c7c7cc;border-radius:8px;background:#fff;color:#1d1d1f;font-size:16px}'+
     '.pbc textarea{min-height:72px;max-height:40vh;resize:vertical}.pbc-small{font-size:12px;color:#6e6e73}'+
-    '.pbc-status{font-size:13px;color:#b42318;white-space:pre-wrap}.pbc-status[data-tone=info]{color:#3a3a3c}.pbc-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}'+
+    '.pbc-small[data-tone=error]{color:#b42318}.pbc-status{font-size:13px;color:#b42318;white-space:pre-wrap}.pbc-status[data-tone=info]{color:#3a3a3c}.pbc-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}'+
     '.pbc-btn{padding:5px 12px;border-radius:8px;border:1px solid #c7c7cc;background:#fff;font-weight:500}.pbc-btn:disabled,.pbc-btn[aria-disabled=true]{opacity:.45;cursor:default}'+
     '.pbc-primary{background:#2f6feb;border-color:#2f6feb;color:#fff}.pbc-link{padding:2px 0;border:0;background:none;color:#2f6feb;font-size:13px}'+
     '.pbc-toggle{left:12px;bottom:12px;padding:7px 14px;border-radius:999px;border:1px solid rgba(0,0,0,.14);background:#fff;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.16)}'+
@@ -39037,12 +39056,12 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
     '.pbc-head{flex:none;min-height:44px;display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid rgba(0,0,0,.08);background:inherit;position:relative;z-index:2;flex-wrap:wrap}'+
     '.pbc-title{font-weight:700;margin-right:auto}.pbc-seg{display:inline-flex;border:1px solid #c7c7cc;border-radius:8px;overflow:hidden}.pbc-seg button{border:0;background:#fff;padding:3px 8px;font-size:12px}.pbc-seg button[aria-pressed=true]{background:#1d1d1f;color:#fff}'+
     '.pbc-icon{border:0;background:none;padding:3px 6px;font-size:12px;color:#2f6feb}'+
-    '.pbc-body{flex:1;position:relative;overflow:hidden}.pbc-body[data-list]{overflow:auto;padding:8px 10px}'+
+    '.pbc-body{flex:1;position:relative;overflow:hidden;overflow:clip}.pbc-body[data-list]{overflow:auto;padding:8px 10px}'+
     '.pbc-column{position:absolute;left:0;right:0;top:0;will-change:transform}'+
     '.pbc-card{position:absolute;left:12px;right:12px;padding:9px 11px;background:#fff;border:1px solid rgba(0,0,0,.1);border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.08);display:flex;flex-direction:column;gap:6px;cursor:default}'+
     '.pbc-body[data-list] .pbc-card,.pbc-orphans .pbc-card{position:relative;left:0;right:0;top:auto!important;margin-bottom:8px}'+
     '.pbc-rail[data-animate] .pbc-column .pbc-card{transition:top .15s ease}@media (prefers-reduced-motion:reduce){.pbc-rail[data-animate] .pbc-column .pbc-card{transition:none}}'+
-    '.pbc-card[data-hover]{border-color:#e6aa00}.pbc-card[data-active]{border-color:#e6aa00;box-shadow:0 4px 18px rgba(0,0,0,.16);z-index:1;max-height:calc(100vh - 68px);overflow:auto}'+
+    '.pbc-card[data-hover]{border-color:#e6aa00}.pbc-card[data-active]{border-color:#e6aa00;box-shadow:0 4px 18px rgba(0,0,0,.16);z-index:1;overflow:auto}'+
     '.pbc-card[data-resolved]{background:#fbfbfb}.pbc-card[data-private]{border-left:3px solid #2f6feb}.pbc-card[data-stale]{opacity:.7}'+
     '.pbc-meta{display:flex;flex-wrap:wrap;gap:4px 6px;align-items:center;font-size:12px;color:#6e6e73}.pbc-who{font-weight:600;color:#1d1d1f}.pbc-tag{color:#6e6e73}'+
     '.pbc-swatch{display:inline-block;width:8px;height:8px;border-radius:4px}'+
@@ -39086,7 +39105,8 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
   // Threads as the rail shows them: public threads, the visitor's private threads on this page, and unsent own comments.
   const pendingThreads=()=>pending.filter(p=>p.key.startsWith('pc-')).map(p=>({id:'pending:'+p.key,by:'visitor',tag:myTag(),...(p.payload.authorName?{name:p.payload.authorName}:{}),text:p.payload.text,createdAt:p.at,anchor:cleanAnchor(p.payload.anchor),replies:[],omitted:0,resolved:false,pendingKey:p.key})).filter(t=>t.anchor);
   const allThreads=()=>[...(listing?listing.threads:[]),...privateThreads,...pendingThreads()];
-  const visibleThreads=()=>allThreads().filter(t=>filter==='all'||!t.resolved);
+  // Under 未解决 a thread resolved while it is open stays until it is closed, so the reader sees why they cannot reply.
+  const visibleThreads=()=>allThreads().filter(t=>filter==='all'||!t.resolved||t.id===active);
   const stateOf=t=>t.pendingKey?'pending':t.private?'private':t.resolved?'resolved':'open';
   const isMine=m=>m.by==='visitor'&&Boolean(myTag())&&m.tag===myTag();
   const involves=t=>isMine(t)||t.replies.some(isMine);
@@ -39139,6 +39159,10 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
     knownIds=ids;
     // Unread replies in threads I wrote, announced once per poll.
     const before=listing?listing.threads:[];listing=next;rawListing=raw;stale=false;loaded=true;health=true;
+    for(const old of before){
+      const now=next.threads.find(t=>t.id===old.id),state=replies.get(old.id),draft=(drafts['r:'+old.id]||'').trim();
+      if(!old.resolved&&state&&state.open&&draft&&(!now||now.resolved)){state.open=false;state.version++;showToast(now?TEXT.resolvedWhileTyping:TEXT.gone)}
+    }
     const unread=next.threads.reduce((sum,t)=>sum+unreadOf(t),0),previous=before.reduce((sum,t)=>sum+unreadOf(t),0);
     if(unread>previous&&announced!==String(unread)){announced=String(unread);live.textContent='有 '+unread+' 条新回复'}
     for(const t of next.threads)if(involves(t)&&mine.seen[t.id]===undefined){bump(mine.seen,t.id,countOf(t),300)}
@@ -39172,7 +39196,9 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
   const pollSoon=(minimum)=>{if(inFlight||preview)return;const since=performance.now()-lastPoll;schedule(Math.max(0,(minimum===undefined?3000:minimum)-since))};
   document.addEventListener('visibilitychange',()=>{if(document.hidden){clearTimeout(timer);timer=0}else pollSoon()});
   window.addEventListener('focus',()=>pollSoon());
-  for(const type of ['pointerdown','keydown'])document.addEventListener(type,()=>{const idle=performance.now()-lastInput>900000;lastInput=performance.now();if(idle)pollSoon()},true);
+  // Input in this shell or in the page (the frame reports clicks, keys, wheels and scrolls) keeps the 10 s cadence.
+  const noteInput=()=>{const idle=performance.now()-lastInput>900000;lastInput=performance.now();if(idle)pollSoon()};
+  for(const type of ['pointerdown','keydown','wheel'])document.addEventListener(type,noteInput,{capture:true,passive:true});
   // Sending: frozen before the request, retried with the same key and payload (as the private viewer).
   const savePending=()=>{saveCache();renderAll()};
   const deliver=async item=>{
@@ -39193,16 +39219,16 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
         if(!item.payload.parentId)active=c.externalId;
         renderAll();pollSoon(1000);return{ok:true,id:c.externalId};
       }
-      const message=r.body&&typeof r.body.error==='string'?r.body.error.slice(0,300):'HTTP '+r.status;
       if(r.status===429)return{error:'发送太频繁，请'+waitText(retryAfter(r.headers)||60)+'后再试。',keep:true};
       if(r.status===409&&code==='thread_full')return{error:TEXT.full,keep:false,gone:false};
       if(r.status===409&&code==='thread_resolved')return{error:TEXT.threadResolved,keep:false,gone:true};
       if(r.status===404&&code==='comment_not_found')return{error:TEXT.gone,keep:false,gone:true};
       if(r.status===403&&code==='public_paused')return{error:TEXT.paused,keep:false};
       if(r.status===403||r.status===404&&code==='public_disabled')return{error:TEXT.disabled,keep:false};
-      if(r.status===400)return{error:'评论内容不符合要求：'+message,keep:false};
+      if(r.status===400&&code==='name_not_allowed')return{error:TEXT.badName,keep:false,badName:true};
+      if(r.status===400)return{error:TEXT.refused,keep:false};
       if(r.status>=500&&r.status!==507)return{error:TEXT.unconfirmed,keep:true,retry:true};
-      return{error:'评论没有发送：'+message,keep:false};
+      return{error:'评论没有发送（HTTP '+r.status+'）。',keep:false};
     }catch(error){return{error:(error instanceof TypeError?TEXT.network+'\n':'')+TEXT.unconfirmed,keep:true,retry:true}}
   };
   const ensureSecret=()=>{if(!secret){secret=hex(32);saveSecret()}};
@@ -39240,11 +39266,13 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
   const blocked=()=>preview||health===false||Boolean(listing&&listing.paused);
   const updateComposer=()=>{
     if(!composer)return;const c=composer,stop=blocked();
-    c.send.disabled=stop;c.send.setAttribute('aria-disabled',stop||c.busy?'true':'false');c.send.textContent=c.busy?TEXT.sending:c.retry?'重试':'发送';
+    const bad=!c.item&&badName(nameOf(c.name.value));
+    c.send.disabled=stop||bad;c.send.setAttribute('aria-disabled',stop||bad||c.busy?'true':'false');c.send.textContent=c.busy?TEXT.sending:c.retry?'重试':'发送';
     c.cancel.setAttribute('aria-disabled',c.busy?'true':'false');c.textarea.readOnly=Boolean(c.item);c.name.readOnly=Boolean(c.item);
     const notice=preview?TEXT.preview:health===false?TEXT.unavailable:listing&&listing.paused?TEXT.paused:'';
     c.notice.textContent=notice||(storageNotice?TEXT.storage:'');c.notice.hidden=!c.notice.textContent;
-    c.identity.textContent=identityLine(nameOf(c.name.value));c.status.hidden=!c.status.textContent;
+    c.identity.textContent=bad?TEXT.badName:identityLine(nameOf(c.name.value));if(bad)c.identity.setAttribute('data-tone','error');else c.identity.removeAttribute('data-tone');
+    if(!bad&&c.status.textContent===TEXT.badName)c.status.textContent='';c.status.hidden=!c.status.textContent;
   };
   const closeComposer=(keepDraft,returnFocus)=>{
     if(!composer)return;const c=composer;composer=null;
@@ -39259,7 +39287,9 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
       if(!text){c.status.textContent='请先写下评论。';updateComposer();c.textarea.focus();return}
       if(text.length>2000){c.status.textContent='评论最多 2000 字。';updateComposer();return}
       if(pending.length>=5){c.status.textContent='有 5 条评论还没确认送达，请先在评论栏里重试或放弃。';updateComposer();return}
-      const name=nameOf(c.name.value);ensureSecret();mine.name=name;savePublic();
+      const name=nameOf(c.name.value);
+      if(badName(name)){c.status.textContent=TEXT.badName;updateComposer();c.name.focus();return}
+      ensureSecret();mine.name=name;savePublic();
       item={key:'pc-'+uuid(),payload:{text,...(name?{authorName:name}:{}),pageUrl,anchor:{...c.anchor,releaseId:config.releaseId},visibility:'public'},at:new Date().toISOString(),draft:c.key};
       pending=[...pending,item];c.item=item;delete drafts[c.key];savePending();
     }
@@ -39269,6 +39299,7 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
     c.busy=false;c.status.removeAttribute('data-tone');
     if(result.ok){closeComposer(false,false);showToast(TEXT.sent);dismissHint();openRail(false);revealCard(result.id,true);return}
     if(!result.keep){pending=pending.filter(p=>p!==item);c.item=null;savePending()}
+    if(result.badName){mine.name='';savePublic()}
     c.retry=Boolean(result.retry&&c.item);c.status.textContent=result.error;updateComposer();
   };
   const openComposer=(t,trigger)=>{
@@ -39308,10 +39339,10 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
     if(mode==='sheet'){rail.setAttribute('role','dialog');rail.setAttribute('aria-modal','true')}else{rail.setAttribute('role','complementary');rail.removeAttribute('aria-modal')}
     rail.setAttribute('aria-label','评论');
   };
-  const openRail=focus=>{if(mode==='docked'||frameOff)return;railOpen=true;renderAll();if(focus){const first=rail.querySelector('[data-pbc=card][tabindex="0"]')||rail.querySelector('[data-pbc=close]');if(first)first.focus()}pollSoon()};
-  const closeRail=returnFocus=>{if(mode==='docked'||!railOpen)return;railOpen=false;active=null;sendEmphasis();renderAll();if(returnFocus)toggle.focus()};
+  const openRail=focus=>{if(mode==='docked'||frameOff)return;railOpen=true;rail.style.maxHeight='';renderAll();if(focus){const first=rail.querySelector('[data-pbc=card][tabindex="0"]')||rail.querySelector('[data-pbc=close]');if(first)first.focus({preventScroll:true})}pollSoon()};
+  const closeRail=returnFocus=>{if(mode==='docked'||!railOpen)return;railOpen=false;active=null;rail.style.maxHeight='';sendEmphasis();renderAll();if(returnFocus)toggle.focus()};
   const collapse=()=>{post({type:'comment-keep-position'});setRailPref('closed');mode='overlay';railOpen=false;applyMode();renderAll();toggle.focus()};
-  const expand=()=>{post({type:'comment-keep-position'});setRailPref('open');mode=pickMode();railOpen=false;applyMode();renderAll();const first=rail.querySelector('[data-pbc=card][tabindex="0"]');if(first)first.focus()};
+  const expand=()=>{post({type:'comment-keep-position'});setRailPref('open');mode=pickMode();railOpen=false;applyMode();renderAll();const first=rail.querySelector('[data-pbc=card][tabindex="0"]');if(first)first.focus({preventScroll:true})};
   toggle.addEventListener('click',event=>{if(!trusted(event))return;if(railOpen)closeRail(true);else openRail(true)});
   const sendEmphasis=()=>post({type:'comment-emphasis',hover,active});
   const sorted=threads=>threads.slice().sort((a,b)=>{const pa=positions.get(a.id),pb=positions.get(b.id),ya=pa?pa.top:1e9,yb=pb?pb.top:1e9;return ya-yb||(a.createdAt<b.createdAt?-1:a.createdAt>b.createdAt?1:0)||(a.id<b.id?-1:1)});
@@ -39340,25 +39371,36 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
   };
   const replyBox=t=>{
     let state=replies.get(t.id);if(!state){state={open:false,editing:false,busy:false,status:'',version:0};replies.set(t.id,state)}
-    if(!state.open)return el('button',{type:'button',class:'pbc-link','data-pbc':'reply-open',text:'回复',on:{click:event=>{if(!trusted(event))return;state.open=true;state.version++;renderAll();const area=cards.get(t.id)&&cards.get(t.id).node.querySelector('textarea');if(area)area.focus()}}});
-    const area=el('textarea',{'aria-label':'回复这条讨论',placeholder:'回复…',maxlength:'2000'});area.value=drafts['r:'+t.id]||'';
-    const name=el('input',{type:'text','aria-label':'称呼（可选，会公开显示）',placeholder:'称呼（可选，会公开显示）',maxlength:'80',hidden:!state.editing});name.value=mine.name;
-    const identity=el('span',{class:'pbc-small',text:identityLine(mine.name).replace('将公开显示为：','显示为：')});
+    if(!state.open)return el('button',{type:'button',class:'pbc-link','data-pbc':'reply-open',text:'回复',on:{click:event=>{if(!trusted(event))return;state.open=true;state.version++;renderAll();const area=cards.get(t.id)&&cards.get(t.id).node.querySelector('textarea');if(area)area.focus({preventScroll:true})}}});
+    const area=el('textarea',{'data-pbc':'reply-text','aria-label':'回复这条讨论',placeholder:'回复…',maxlength:'2000'});area.value=drafts['r:'+t.id]||'';
+    const name=el('input',{type:'text','data-pbc':'reply-name','aria-label':'称呼（可选，会公开显示）',placeholder:'称呼（可选，会公开显示）',maxlength:'80',hidden:!state.editing});name.value=state.name===undefined?mine.name:state.name;
+    const identity=el('span',{class:'pbc-small','data-pbc':'reply-identity'});
+    const showIdentity=()=>{const chosen=nameOf(name.value),bad=badName(chosen);identity.textContent=bad?TEXT.badName:identityLine(chosen).replace('将公开显示为：','显示为：');if(bad)identity.setAttribute('data-tone','error');else identity.removeAttribute('data-tone')};
+    showIdentity();
     const send=el('button',{type:'button',class:'pbc-btn pbc-primary','data-pbc':'reply-send',text:state.busy?TEXT.sending:'回复','aria-disabled':state.busy||blocked()?'true':'false'});
     const cancel=el('button',{type:'button',class:'pbc-btn','data-pbc':'reply-cancel',text:'取消'});
     const line=el('div',{class:'pbc-status',role:'status',text:state.status,hidden:!state.status});
     area.addEventListener('input',()=>saveDraft('r:'+t.id,area.value));
-    name.addEventListener('input',()=>{identity.textContent=identityLine(nameOf(name.value)).replace('将公开显示为：','显示为：')});
+    name.addEventListener('input',()=>{state.name=name.value;showIdentity()});
     const doSend=async()=>{
       if(state.busy||blocked())return;const text=area.value.trim();if(!text){line.textContent='请先写下回复。';line.hidden=false;return}
-      const chosen=nameOf(name.value);ensureSecret();mine.name=chosen;savePublic();
+      const chosen=nameOf(name.value);delete state.name;
+      if(!state.item&&badName(chosen)){state.editing=true;name.hidden=false;line.textContent=TEXT.badName;line.hidden=false;name.focus({preventScroll:true});return}
+      ensureSecret();mine.name=chosen;savePublic();
       let item=state.item;
       if(!item){item={key:'pr-'+uuid(),payload:{text,...(chosen?{authorName:chosen}:{}),pageUrl,anchor:{releaseId:config.releaseId},visibility:'public',parentId:t.id},at:new Date().toISOString(),draft:'r:'+t.id};state.item=item;pending=[...pending,item];saveCache()}
       state.busy=true;state.status='';state.version++;renderAll();
       const result=await deliver(item);
       state.busy=false;
-      if(result.ok){state.item=null;state.open=false;state.status='';delete drafts['r:'+t.id];saveCache();state.version++;renderAll();return}
+      if(result.ok){
+        state.item=null;state.open=false;state.status='';delete drafts['r:'+t.id];saveCache();state.version++;renderAll();
+        // Sent from the keyboard: focus stays in this thread (its 回复 button), not on the page body.
+        const card=cards.get(t.id),focused=document.activeElement;
+        if(card&&(!focused||focused===document.body||card.node.contains(focused))){const again=card.node.querySelector('[data-pbc=reply-open]');(again||card.node).focus({preventScroll:true})}
+        return;
+      }
       if(!result.keep){pending=pending.filter(p=>p!==item);state.item=null;saveCache()}
+      if(result.badName){mine.name='';savePublic();state.editing=true}
       state.status=result.error;state.version++;
       if(result.gone){state.open=false;pollSoon(0)}
       renderAll();
@@ -39387,7 +39429,11 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
     }
     if(t.omitted)node.append(el('div',{class:'pbc-small',text:'还有 '+t.omitted+' 条较早的回复没有显示'}));
     for(const m of t.replies)node.append(messageNode(m,t,false));
-    if(t.resolved)node.append(el('div',{class:'pbc-small',text:TEXT.resolvedNote}));
+    if(t.resolved){
+      node.append(el('div',{class:'pbc-small',text:TEXT.resolvedNote}));
+      const draft=(drafts['r:'+t.id]||'').trim();
+      if(draft&&!t.private)node.append(el('div',{class:'pbc-small',text:TEXT.resolvedDraft}),el('div',{class:'pbc-quote','data-pbc':'unsent-draft',text:draft}),el('button',{type:'button',class:'pbc-link','data-pbc':'drop-draft',text:TEXT.dropDraft,on:{click:event=>{if(!trusted(event))return;saveDraft('r:'+t.id,'');const r=replies.get(t.id);if(r)r.version++;renderAll();const card=cards.get(t.id);if(card)card.node.focus({preventScroll:true})}}}));
+    }
     else if(!t.private&&!t.pendingKey&&!preview)node.append(listing&&listing.paused?el('div',{class:'pbc-small',text:TEXT.paused}):replyBox(t));
     return node;
   };
@@ -39400,7 +39446,7 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
     }catch(error){showToast(error instanceof TypeError?TEXT.network:TEXT.poll)}
   };
   // The aligned column: cards follow their passages; one transform follows the page scroll (§12 A6).
-  const HEADER=44,GAP=8,LIFT=4,GROUP=3;
+  const HEADER=44,GAP=8,LIFT=4,GROUP=3,FLOOR=8;
   let layoutFrame=0;
   const relayout=()=>{
     layoutFrame=0;if(!railVisible()||!aligned())return;
@@ -39413,11 +39459,31 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
     for(const child of Array.from(column.children))if(!nodes.includes(child))child.remove();
     // Column coordinates: document-relative passage tops shifted by where the rail body starts against the frame.
     const offset=frame.getBoundingClientRect().top-body.getBoundingClientRect().top,railHeight=body.clientHeight;
+    // The open card always fits the rail (its own content scrolls), so its reply box can be reached.
+    const cap=Math.max(160,railHeight-2*FLOOR-GAP);
+    for(const node of nodes)node.style.maxHeight=node.hasAttribute('data-active')?cap+'px':'';
     const input=items.map((item,i)=>({y:(item.group?item.top:positions.get(item.id).top)+offset,h:nodes[i].offsetHeight||40}));
-    const index=items.findIndex(item=>!item.group&&item.id===active);
-    const tops=layout(input,index,{gap:GAP,lift:LIFT,floor:8,viewTop:scrollTop,viewBottom:scrollTop+railHeight,limit:Math.max(0,docHeight-frameHeight)+railHeight-GAP});
+    const index=items.findIndex(item=>!item.group&&item.id===active),v=view();
+    const tops=layout(input,index,{gap:GAP,lift:LIFT,floor:FLOOR,viewTop:v,viewBottom:v+railHeight,limit:maxScroll()+railHeight-GAP});
     nodes.forEach((node,i)=>{node.style.top=Math.round(tops[i])+'px'});
-    column.style.transform='translateY('+Math.round(-scrollTop)+'px)';
+    // How far the rail may scroll past the page's top or end: enough to show every card.
+    let minTop=0,maxBottom=0;tops.forEach((top,i)=>{minTop=Math.min(minTop,top-FLOOR);maxBottom=Math.max(maxBottom,top+input[i].h+FLOOR)});
+    railRange={min:Math.min(0,minTop),max:Math.max(maxScroll(),maxBottom-railHeight)};
+    clampExtra();applyColumn();
+  };
+  // The rail's own scroll beyond the page (extra) exists only at the page's ends; the column follows page + extra.
+  let expected=null;
+  const maxScroll=()=>Math.max(0,docHeight-frameHeight);
+  const pageTop=()=>expected?expected.top:scrollTop;
+  const view=()=>pageTop()+extra;
+  const applyColumn=()=>{column.style.transform='translateY('+Math.round(-view())+'px)'};
+  const clampExtra=()=>{const top=pageTop(),end=maxScroll();extra=extra<0?(top<=0.5?Math.max(extra,railRange.min):0):extra>0?(top>=end-0.5?Math.min(extra,railRange.max-end):0):0};
+  /** Scrolls the aligned rail by dy: the page scrolls (the rail follows it), and past its ends the rail moves on its own. */
+  const scrollRail=dy=>{
+    const end=maxScroll(),target=Math.min(Math.max(view()+dy,railRange.min),railRange.max),page=Math.min(Math.max(target,0),end),from=pageTop();
+    extra=target-page;
+    if(Math.abs(page-from)>0.5){post({type:'comment-scroll-by',dy:page-from});expected={top:page,until:performance.now()+400}}
+    applyColumn();
   };
   const groups=new Map();
   const groupCard=item=>{let node=groups.get(item.group);if(!node){node=el('button',{type:'button',class:'pbc-card pbc-link','data-pbc':'group',on:{click:event=>{if(!trusted(event))return;expandedGroups.add(item.group);renderAll()}}});groups.set(item.group,node)}node.textContent='这里还有 '+item.count+' 条评论';return node};
@@ -39454,7 +39520,13 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
     rail.hidden=!railVisible();
     if(!hint.hidden){if(toggle.hidden)hint.removeAttribute('data-raised');else hint.setAttribute('data-raised','')}
     postHighlights();
-    for(const t of threads){const key=cardKey(t),entry=cards.get(t.id);if(!entry||entry.key!==key){const node=buildCard(t),old=entry&&entry.node,refocus=old&&old.contains(document.activeElement)&&document.activeElement===old;if(old&&old.parentNode)old.replaceWith(node);cards.set(t.id,{key,node});if(refocus)node.focus({preventScroll:true})}}
+    // A rebuilt card keeps the focus where it was: the same control (and caret) if it still exists, else the card.
+    for(const t of threads){const key=cardKey(t),entry=cards.get(t.id);if(!entry||entry.key!==key){
+      const node=buildCard(t),old=entry&&entry.node,focused=document.activeElement,inside=Boolean(old&&focused&&old.contains(focused));
+      const marker=inside&&focused!==old?focused.getAttribute('data-pbc'):null,caret=inside&&typeof focused.selectionStart==='number'?[focused.selectionStart,focused.selectionEnd]:null;
+      if(old&&old.parentNode)old.replaceWith(node);cards.set(t.id,{key,node});
+      if(inside){const same=marker&&node.querySelector('[data-pbc="'+marker+'"]'),target=same&&!same.hidden?same:node;target.focus({preventScroll:true});if(target===same&&caret&&typeof same.setSelectionRange==='function'){try{same.setSelectionRange(caret[0],caret[1])}catch{}}}
+    }}
     for(const [id,entry] of cards)if(!threads.some(t=>t.id===id)){entry.node.remove();cards.delete(id)}
     if(rail.hidden)return;
     renderHead();
@@ -39479,7 +39551,7 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
   const roving=()=>{const order=cardOrder(),current=focusId&&order.includes(focusId)?focusId:active&&order.includes(active)?active:order[0];for(const [id,entry] of cards)entry.node.setAttribute('tabindex',id===current?'0':'-1')};
   const activate=(id,reveal)=>{
     const t=allThreads().find(x=>x.id===id);if(!t)return;
-    active=id;focusId=id;markSeen(t);sendEmphasis();renderAll(true);
+    active=id;focusId=id;extra=0;markSeen(t);sendEmphasis();renderAll(true);
     if(reveal&&!orphans.has(id))post({type:'comment-reveal',id});
   };
   const revealCard=(id,reveal)=>{if(!railVisible())openRail(false);activate(id,reveal);requestAnimationFrame(()=>{const card=cards.get(id);if(card&&card.node.isConnected){if(!aligned())card.node.scrollIntoView({block:'nearest'});card.node.focus({preventScroll:true})}})};
@@ -39496,17 +39568,35 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
     const order=cardOrder(),id=card.getAttribute('data-thread'),index=order.indexOf(id);
     if(event.key==='ArrowDown'||event.key==='ArrowUp'||event.key==='Home'||event.key==='End'){
       event.preventDefault();const next=order[event.key==='Home'?0:event.key==='End'?order.length-1:Math.min(order.length-1,Math.max(0,index+(event.key==='ArrowDown'?1:-1)))];
-      focusId=next;roving();const node=cards.get(next);if(node){node.node.focus();if(!aligned())node.node.scrollIntoView({block:'nearest'})}
+      focusId=next;roving();const node=cards.get(next);if(node){node.node.focus({preventScroll:true});if(!aligned())node.node.scrollIntoView({block:'nearest'})}
     }
     else if(event.key==='Enter'||event.key===' '){event.preventDefault();if(id===active){const area=card.querySelector('textarea');if(area)area.focus();else{const open=card.querySelector('[data-pbc=reply-open]');if(open)open.focus()}}else activate(id,true)}
   });
+  const deactivate=()=>{if(!active)return;active=null;sendEmphasis();renderAll(true)};
   rail.addEventListener('click',event=>{
-    if(!trusted(event))return;const card=event.target.closest&&event.target.closest('[data-pbc=card]');if(!card)return;
+    if(!trusted(event))return;const card=event.target.closest&&event.target.closest('[data-pbc=card]');
+    // A click on the rail's empty space closes the open card, as a click elsewhere in the page does.
+    if(!card){if(body.contains(event.target)&&!event.target.closest('button,textarea,input,a'))deactivate();return}
     if(event.target.closest('button,textarea,input,a'))return;
     const id=card.getAttribute('data-thread');if(id!==active)activate(id,true);
   });
   rail.addEventListener('pointerover',event=>{const card=event.target.closest&&event.target.closest('[data-pbc=card]'),id=card?card.getAttribute('data-thread'):null;if(id!==hover){hover=id;for(const [key,entry] of cards){if(key===hover)entry.node.setAttribute('data-hover','');else entry.node.removeAttribute('data-hover')}sendEmphasis()}});
   rail.addEventListener('pointerleave',()=>{if(hover!==null){hover=null;for(const entry of cards.values())entry.node.removeAttribute('data-hover');sendEmphasis()}});
+  // The wheel over the aligned rail scrolls the page (the cards follow their passages), then the rail past the page's ends.
+  body.addEventListener('wheel',event=>{
+    if(!aligned()||!railVisible()||body.hasAttribute('data-list'))return;
+    const target=event.target&&event.target.closest&&event.target.closest('[data-pbc=card][data-active]');
+    if(target&&target.scrollHeight>target.clientHeight+1){const down=event.deltaY>0;if(down?target.scrollTop+target.clientHeight<target.scrollHeight-1:target.scrollTop>0)return}
+    const dy=event.deltaMode===1?event.deltaY*16:event.deltaMode===2?event.deltaY*body.clientHeight:event.deltaY;
+    if(!dy)return;event.preventDefault();scrollRail(dy);
+  },{passive:false});
+  // Focus never scrolls the aligned rail body (that would separate cards from their passages): the rail moves instead.
+  body.addEventListener('scroll',()=>{if(!body.hasAttribute('data-list')&&(body.scrollTop||body.scrollLeft)){body.scrollTop=0;body.scrollLeft=0}});
+  rail.addEventListener('focusin',event=>{
+    if(!aligned()||body.hasAttribute('data-list')||!column.contains(event.target))return;
+    const r=event.target.getBoundingClientRect(),b=body.getBoundingClientRect();
+    if(r.top<b.top+FLOOR)scrollRail(r.top-b.top-FLOOR);else if(r.bottom>b.bottom-FLOOR)scrollRail(Math.min(r.bottom-b.bottom+FLOOR,r.top-b.top-FLOOR));
+  });
   document.addEventListener('keydown',event=>{
     if(event.key!=='Escape'||!event.isTrusted||event.defaultPrevented)return;
     if(composer&&!composer.node.contains(event.target)){if(!composer.busy){event.preventDefault();closeComposer(true)}}
@@ -39529,18 +39619,31 @@ var PUBLIC_COMMENTS_SHELL = String.raw`
   const number=v=>typeof v==='number'&&Number.isFinite(v)&&Math.abs(v)<1e7;
   const rect=r=>r&&number(r.x)&&number(r.y)&&number(r.width)&&number(r.height)?{x:r.x,y:r.y,width:r.width,height:r.height}:null;
   const known=id=>typeof id==='string'&&allThreads().some(t=>t.id===id);
+  /** The tapped passage stays visible above the bottom sheet: scroll the page, and shorten the sheet if that is not enough. */
+  const keepAboveSheet=id=>{
+    const p=positions.get(id);if(!p||mode!=='sheet'||!railOpen)return;
+    const height=Math.max(p.height,20),top=p.top-scrollTop,sheetTop=rail.getBoundingClientRect().top;
+    if(top>=8&&top+height+8<=sheetTop)return;
+    const page=Math.min(Math.max(p.top-12,0),maxScroll()),after=p.top-page;
+    if(Math.abs(page-scrollTop)>0.5)post({type:'comment-scroll-by',dy:page-scrollTop});
+    const room=Math.round(innerHeight-(after+height+12));
+    rail.style.maxHeight=Math.max(Math.round(innerHeight*0.4),Math.min(Math.round(innerHeight*0.75),room))+'px';
+  };
   window.addEventListener('message',event=>{
     const m=event.data;if(event.source!==frame.contentWindow||!m||m.channel!==CHANNEL||m.releaseId!==config.releaseId||m.sessionId!==sessionId)return;
     if(m.type==='comment-runtime-ready'){frameReady=true;frameOff=m.off===true;highlighted='';if(frameOff){clearTimeout(timer);renderAll();return}if(!preview&&!allThreads().length&&!(local&&local.getItem(hintKey))&&mode!=='docked')hint.hidden=false;renderAll();return}
-    if(m.type==='comment-scroll'&&number(m.scrollY)){scrollTop=m.scrollY;column.style.transform='translateY('+Math.round(-scrollTop)+'px)';return}
+    if(m.type==='comment-scroll'&&number(m.scrollY)){noteInput();scrollTop=m.scrollY;if(expected&&(Math.abs(scrollTop-expected.top)<1||performance.now()>expected.until))expected=null;clampExtra();applyColumn();return}
+    if(m.type==='comment-activity'){noteInput();return}
+    // A click in the page outside every highlight closes the open card (or the bottom sheet), as in Google Docs.
+    if(m.type==='comment-page-click'){if(composer)return;if(mode==='sheet'&&railOpen)closeRail(false);else deactivate();return}
     if(m.type==='comment-positions'){
       if(!Array.isArray(m.items)||m.items.length>200||!Array.isArray(m.orphans)||m.orphans.length>200||!number(m.scrollY)||!number(m.docHeight)||!m.viewport||!number(m.viewport.height))return;
       const next=new Map();for(const item of m.items){if(!item||!known(item.id)||!number(item.top)||!number(item.height))continue;next.set(item.id,{top:item.top,height:item.height,folded:item.folded===true})}
-      positions=next;orphans=new Set(m.orphans.filter(known));scrollTop=m.scrollY;docHeight=m.docHeight;frameHeight=m.viewport.height;renderAll();return;
+      positions=next;orphans=new Set(m.orphans.filter(known));scrollTop=m.scrollY;if(expected&&Math.abs(scrollTop-expected.top)<1)expected=null;docHeight=m.docHeight;frameHeight=m.viewport.height;renderAll();return;
     }
     if(m.type==='comment-highlight-hover'){const id=m.id===null||known(m.id)?m.id:undefined;if(id===undefined)return;hover=id;for(const [key,entry] of cards){if(key===id)entry.node.setAttribute('data-hover','');else entry.node.removeAttribute('data-hover')}return}
     // Opens or activates inside this UI only; nothing outside the page opens, so no user activation is needed.
-    if(m.type==='comment-highlight-click'&&known(m.id)){if(mode==='sheet'){openRail(false);activate(m.id,false);requestAnimationFrame(()=>{const card=cards.get(m.id);if(card){card.node.scrollIntoView({block:'nearest'});card.node.focus({preventScroll:true})}})}else{if(!railVisible())openRail(false);activate(m.id,false)}return}
+    if(m.type==='comment-highlight-click'&&known(m.id)){if(mode==='sheet'){openRail(false);activate(m.id,false);requestAnimationFrame(()=>{const card=cards.get(m.id);if(card){card.node.scrollIntoView({block:'nearest'});card.node.focus({preventScroll:true})}keepAboveSheet(m.id)})}else{if(!railVisible())openRail(false);activate(m.id,false)}return}
     if(m.type==='comment-target-clear'){if(!composer)hideFloat();return}
     if(m.type==='comment-escape'){if(composer){if(!composer.busy)closeComposer(true,false)}else if(railOpen&&mode!=='docked')closeRail(false);else if(active){active=null;sendEmphasis();renderAll(true)}return}
     if(m.type!=='comment-target'||!['menu','key','select'].includes(m.trigger))return;
