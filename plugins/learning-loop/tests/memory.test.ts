@@ -1,7 +1,8 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { promises as fs } from "node:fs";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Actor, ProjectRef } from "../shared/contracts";
 import { applyBatch, findUniqueMatch, MemoryStore } from "../server/memory/store";
 import { statePaths } from "../server/paths";
@@ -18,6 +19,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -74,6 +76,27 @@ describe("batch semantics", () => {
 });
 
 describe("MemoryStore", () => {
+  it("can prune in steps after the configured limit was lowered, preserving remaining metadata", async () => {
+    let limit = 400;
+    store = new MemoryStore(statePaths(dir), () => ({ user: limit, memory: limit, project: limit }));
+    const entries = ["a".repeat(90), "b".repeat(90), "c".repeat(90)];
+    await store.write("memory", null, entries.map(content => ({ action: "add", content })), { actor: agent, stage: false });
+    const before = await store.inspect("memory", null);
+    limit = 120;
+
+    const first = await store.write("memory", null, [{ action: "remove", old_text: entries[0] }], { actor: agent, stage: false, expectedRevision: before.revision });
+    expect(first.result.success).toBe(true);
+    expect(first.result.usage).toBe("153% — 183/120 chars");
+    const remaining = await store.inspect("memory", null);
+    expect(remaining.entries).toEqual(entries.slice(1));
+    expect(remaining.metadata).toEqual(before.metadata.slice(1));
+
+    const last = await store.write("memory", null, [{ action: "remove", old_text: entries[1] }], { actor: agent, stage: false, expectedRevision: remaining.revision });
+    expect(last.result.success).toBe(true);
+    expect(last.result.usage).toBe("75% — 90/120 chars");
+    expect(await store.entries("memory")).toEqual([entries[2]]);
+  });
+
   it("persists entries with the § delimiter and dedupes exact duplicates", async () => {
     const first = await store.write("memory", null, [{ action: "add", content: "Repo uses pnpm" }], { actor: agent, stage: false });
     expect(first.result.success).toBe(true);
@@ -81,6 +104,166 @@ describe("MemoryStore", () => {
     expect(again.result.message).toMatch(/already exists/);
     await store.write("memory", null, [{ action: "add", content: "CI runs on GitHub Actions" }], { actor: agent, stage: false });
     expect(await readFile(join(dir, "memory", "MEMORY.md"), "utf8")).toBe("Repo uses pnpm\n§\nCI runs on GitHub Actions\n");
+  });
+
+  it("accepts a duplicate add while over budget without rewriting files or staging a proposal", async () => {
+    let limit = 400;
+    store = new MemoryStore(statePaths(dir), () => ({ user: limit, memory: limit, project: limit }));
+    const content = "a".repeat(180);
+    await store.write("memory", null, [{ action: "add", content }], { actor: agent, stage: false });
+    const file = join(dir, "memory", "MEMORY.md");
+    const raw = Buffer.from(`\uFEFF  ${content} \r\n`, "utf8");
+    await writeFile(file, raw);
+    const before = await store.inspect("memory", null);
+    limit = 120;
+
+    const duplicate = await store.write("memory", null, [{ action: "add", content }], { actor: agent, stage: true, expectedRevision: before.revision });
+    expect(duplicate.result.success).toBe(true);
+    expect(duplicate.result.message).toMatch(/already exists/);
+    expect(duplicate.changes).toEqual([]);
+    expect(await store.pending()).toEqual([]);
+    expect(await store.inspect("memory", null)).toEqual(before);
+    expect(await readFile(file)).toEqual(raw);
+  });
+
+  it("backs up the exact original bytes before removing an oversized entry", async () => {
+    const oversized = "Legacy note: " + "x".repeat(210);
+    const raw = Buffer.from(`\uFEFF  ${oversized}  \n§\n Keep me \r\n`, "utf8");
+    await mkdir(join(dir, "memory"), { recursive: true });
+    await writeFile(join(dir, "memory", "MEMORY.md"), raw);
+
+    const removed = await store.write("memory", null, [{ action: "remove", old_text: "Legacy note:" }], { actor: agent, stage: false });
+    expect(removed.result.success).toBe(true);
+    expect(removed.result.drift_backup).toBeTruthy();
+    expect(removed.result.message).toContain(removed.result.drift_backup);
+    expect(await readFile(removed.result.drift_backup!)).toEqual(raw);
+    expect((await stat(removed.result.drift_backup!)).mode & 0o777).toBe(0o600);
+    expect(await store.entries("memory")).toEqual(["Keep me"]);
+  });
+
+  it("backs up an oversized project entry only when its staged removal is approved", async () => {
+    let limit = 400;
+    store = new MemoryStore(statePaths(dir), () => ({ user: limit, memory: limit, project: limit }));
+    const oversized = "Project history: " + "x".repeat(180);
+    await store.write("project", project, [{ action: "add", content: oversized }, { action: "add", content: "Keep" }], { actor: agent, stage: false });
+    const file = join(dir, "memory", "projects", `${project.key}.md`);
+    const raw = await readFile(file);
+    limit = 120;
+
+    const staged = await store.write("project", project, [{ action: "remove", old_text: "Project history:" }], { actor: agent, stage: true });
+    expect(staged.result.staged).toBe(true);
+    expect((await readdir(join(dir, "memory", "projects"))).filter(name => name.includes(".bak."))).toEqual([]);
+    expect(await readFile(file)).toEqual(raw);
+
+    const approved = await store.resolvePending(staged.result.pending_id!, true);
+    expect(approved.ok).toBe(true);
+    expect(approved.drift_backup).toBeTruthy();
+    expect(await readFile(approved.drift_backup!)).toEqual(raw);
+    expect(await store.entries("project", project)).toEqual(["Keep"]);
+    expect(await store.pending()).toEqual([]);
+  });
+
+  it("never overwrites an existing recovery backup, including two deletions in the same millisecond", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+    const firstEntry = "First: " + "a".repeat(210);
+    const secondEntry = "Second: " + "b".repeat(210);
+    const file = join(dir, "memory", "MEMORY.md");
+    await mkdir(join(dir, "memory"), { recursive: true });
+    await writeFile(file, `${firstEntry}\n§\n${secondEntry}\n§\nKeep\n`);
+    const existingBackup = `${file}.bak.1800000000000`;
+    await writeFile(existingBackup, "earlier recovery snapshot");
+    const original = await readFile(file);
+
+    const first = await store.write("memory", null, [{ action: "remove", old_text: "First:" }], { actor: agent, stage: false });
+    expect(first.result.success).toBe(true);
+    expect(await readFile(first.result.drift_backup!)).toEqual(original);
+    const intermediate = await readFile(file);
+    const second = await store.write("memory", null, [{ action: "remove", old_text: "Second:" }], { actor: agent, stage: false });
+    expect(second.result.success).toBe(true);
+    expect(second.result.drift_backup).not.toBe(first.result.drift_backup);
+    expect(await readFile(second.result.drift_backup!)).toEqual(intermediate);
+    expect(await readFile(first.result.drift_backup!)).toEqual(original);
+    expect(await readFile(existingBackup, "utf8")).toBe("earlier recovery snapshot");
+  });
+
+  it.each([false, true])("preserves memory, metadata and pending work when recovery backup creation fails (approval=%s)", async stage => {
+    let limit = 400;
+    store = new MemoryStore(statePaths(dir), () => ({ user: limit, memory: limit, project: limit }));
+    await store.write("memory", null, [{ action: "add", content: "Long: " + "x".repeat(210) }], { actor: agent, stage: false });
+    const file = join(dir, "memory", "MEMORY.md");
+    const original = await readFile(file);
+    const metadata = await readFile(file + ".meta.json");
+    limit = 120;
+    const ops = [{ action: "remove" as const, old_text: "Long:" }];
+    const staged = stage ? await store.write("memory", null, ops, { actor: agent, stage: true }) : null;
+    const pending = await store.pending();
+    vi.spyOn(fs, "open").mockRejectedValueOnce(Object.assign(new Error("backup access denied"), { code: "EACCES" }));
+
+    if (staged) {
+      const result = await store.resolvePending(staged.result.pending_id!, true);
+      expect(result.ok).toBe(false);
+      expect(result.message).toMatch(/recovery backup/);
+      expect(result.changes).toEqual([]);
+    } else {
+      const { result, changes } = await store.write("memory", null, ops, { actor: agent, stage: false });
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/recovery backup/);
+      expect(changes).toEqual([]);
+    }
+    expect(await readFile(file)).toEqual(original);
+    expect(await readFile(file + ".meta.json")).toEqual(metadata);
+    expect(await store.pending()).toEqual(pending);
+    expect((await readdir(join(dir, "memory"))).filter(name => name.includes(".bak."))).toEqual([]);
+  });
+
+  it("does not delete memory or leave an incomplete backup when the backup write fails", async () => {
+    const file = join(dir, "memory", "MEMORY.md");
+    await mkdir(join(dir, "memory"), { recursive: true });
+    const raw = Buffer.from("Long: " + "x".repeat(210) + "\n");
+    await writeFile(file, raw);
+    const open = fs.open.bind(fs);
+    vi.spyOn(fs, "open").mockImplementationOnce(async (path, flags, mode) => {
+      const file = await open(path, flags, mode);
+      vi.spyOn(file, "writeFile").mockImplementationOnce(async () => {
+        await file.write(Buffer.from("partial"));
+        throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+      });
+      return file;
+    });
+
+    const { result, changes } = await store.write("memory", null, [{ action: "remove", old_text: "Long:" }], { actor: agent, stage: false });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/recovery backup/);
+    expect(changes).toEqual([]);
+    expect(await readFile(file)).toEqual(raw);
+    expect(await readdir(join(dir, "memory"))).toEqual(["MEMORY.md"]);
+  });
+
+  it("preserves a backup while allowing a legal shortening of an oversized entry", async () => {
+    const file = join(dir, "memory", "MEMORY.md");
+    await mkdir(join(dir, "memory"), { recursive: true });
+    const oversized = "Original: " + "x".repeat(210);
+    const raw = Buffer.from(` ${oversized} \n`);
+    await writeFile(file, raw);
+
+    const patched = await store.write("memory", null, [{ action: "patch", old_text: oversized, content: "Shorter durable fact" }], { actor: agent, stage: false });
+    expect(patched.result.success).toBe(true);
+    expect(await readFile(patched.result.drift_backup!)).toEqual(raw);
+    expect(await store.entries("memory")).toEqual(["Shorter durable fact"]);
+  });
+
+  it("keeps the final budget guard for a mixed batch even if it reduces an over-budget store", async () => {
+    let limit = 400;
+    store = new MemoryStore(statePaths(dir), () => ({ user: limit, memory: limit, project: limit }));
+    const entries = ["a".repeat(90), "b".repeat(90), "c".repeat(90)];
+    await store.write("memory", null, entries.map(content => ({ action: "add", content })), { actor: agent, stage: false });
+    const before = await store.inspect("memory", null);
+    limit = 120;
+
+    const mixed = await store.write("memory", null, [{ action: "remove", old_text: entries[0] }, { action: "add", content: "New" }], { actor: agent, stage: false });
+    expect(mixed.result.success).toBe(false);
+    expect(mixed.result.error).toMatch(/limit/);
+    expect(await store.inspect("memory", null)).toEqual(before);
   });
 
   it("returns current entries when a write would overflow", async () => {

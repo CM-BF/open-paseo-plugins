@@ -70,6 +70,7 @@ const SERVER_NAME = '__SERVER__';
 const FALLBACK_TOOLS = __TOOLS_JSON__;
 const FALLBACK_TOOLS_V2 = __TOOLS_V2_JSON__;
 const FALLBACK_TOOLS_V3 = __TOOLS_V3_JSON__;
+const FALLBACK_TOOLS_V4 = __TOOLS_V4_JSON__;
 const BINDING_ENV = '__BINDING_ENV__';
 const PROTOCOL_VERSIONS = ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'];
 const env = process.env;
@@ -155,7 +156,9 @@ async function handle(message) {
       return reply({});
     case 'tools/list': {
       const outcome = await call('GET', '/v1/tools');
-      const tools = outcome.body && Array.isArray(outcome.body.tools) ? outcome.body.tools : (String(env[BINDING_ENV] || '').startsWith('v3-') ? FALLBACK_TOOLS_V3 : String(env[BINDING_ENV] || '').startsWith('v2-') || String(env[BINDING_ENV] || '').startsWith('review-') ? FALLBACK_TOOLS_V2 : FALLBACK_TOOLS);
+      const binding = String(env[BINDING_ENV] || '');
+      const fallback = binding.startsWith('v4-') || binding.startsWith('review-') ? FALLBACK_TOOLS_V4 : binding.startsWith('v3-') ? FALLBACK_TOOLS_V3 : binding.startsWith('v2-') ? FALLBACK_TOOLS_V2 : FALLBACK_TOOLS;
+      const tools = outcome.body && Array.isArray(outcome.body.tools) ? outcome.body.tools : fallback;
       return reply({ tools });
     }
     case 'tools/call': {
@@ -194,19 +197,20 @@ lines.on('line', (line) => {
 process.stdout.on('error', () => process.exit(0));
 `;
 
-export function renderMcpScript(tools: readonly ToolDefinition[], toolsV2: readonly ToolDefinition[] = tools, toolsV3: readonly ToolDefinition[] = toolsV2): string {
+export function renderMcpScript(tools: readonly ToolDefinition[], toolsV2: readonly ToolDefinition[] = tools, toolsV3: readonly ToolDefinition[] = toolsV2, toolsV4: readonly ToolDefinition[] = toolsV3): string {
   return MCP_SOURCE.replace("__VERSION__", PLUGIN_VERSION)
     .replace("__SERVER__", MCP_SERVER)
     .replace("__BINDING_ENV__", BINDING_ENV)
     .replace("__TOOLS_JSON__", () => JSON.stringify(tools))
     .replace("__TOOLS_V2_JSON__", () => JSON.stringify(toolsV2))
-    .replace("__TOOLS_V3_JSON__", () => JSON.stringify(toolsV3));
+    .replace("__TOOLS_V3_JSON__", () => JSON.stringify(toolsV3))
+    .replace("__TOOLS_V4_JSON__", () => JSON.stringify(toolsV4));
 }
 
-export async function installShim(paths: StatePaths, tools: readonly ToolDefinition[], node: NodeRuntime = currentNode(), toolsV2: readonly ToolDefinition[] = tools, toolsV3: readonly ToolDefinition[] = toolsV2): Promise<void> {
+export async function installShim(paths: StatePaths, tools: readonly ToolDefinition[], node: NodeRuntime = currentNode(), toolsV2: readonly ToolDefinition[] = tools, toolsV3: readonly ToolDefinition[] = toolsV2, toolsV4: readonly ToolDefinition[] = toolsV3): Promise<void> {
   await mkdir(paths.bin, { recursive: true });
   await mkdir(paths.lib, { recursive: true });
-  await writeAtomic(paths.mcpScript, renderMcpScript(tools, toolsV2, toolsV3));
+  await writeAtomic(paths.mcpScript, renderMcpScript(tools, toolsV2, toolsV3, toolsV4));
   await writeAtomic(paths.mcp, renderLauncher(paths.root, node), 0o755);
   await chmod(paths.mcp, 0o755);
 }

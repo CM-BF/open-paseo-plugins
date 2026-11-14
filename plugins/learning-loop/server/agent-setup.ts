@@ -79,7 +79,7 @@ export async function transformCreate(input: TransformInput): Promise<CreateRequ
   }
   const addServer = mcpFamily && settings.injectTools && (existing === undefined || inherited);
   if (addServer) {
-    const binding = `v3-${(input.nonce ?? (() => randomBytes(16).toString("hex")))()}`;
+    const binding = `v4-${(input.nonce ?? (() => randomBytes(16).toString("hex")))()}`;
     config.mcpServers = { ...(config.mcpServers ?? {}), [MCP_SERVER]: { type: "stdio", command: paths.mcp, args: [], env: { [BINDING_ENV]: binding } } };
     env = { ...request.env, [BINDING_ENV]: binding };
     config.toolPolicy = withoutOwnGrants(config.toolPolicy);

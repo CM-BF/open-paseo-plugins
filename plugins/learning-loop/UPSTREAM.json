@@ -18,6 +18,18 @@
         "tools/skill_manager_tool.py"
       ],
       "notes": "参考有界记忆、技能沉淀、会话搜索和后台复盘。保留 Paseo 原生 provider、权限与上下文缓存行为，逐项评估差异。来源版本见 docs/hermes-to-paseo-converter-feasibility.md。"
+    },
+    {
+      "name": "Hermes learning safety selective ports (2026-11-06)",
+      "repository": "https://github.com/NousResearch/hermes-agent",
+      "commit": "b7736eca98cc6919b7b7f1d52dc1c45946793648",
+      "relationship": "feature",
+      "paths": [
+        "agent/background_review.py",
+        "tools/memory_tool_store.py",
+        "tools/skill_manager_tool.py"
+      ],
+      "notes": "仅选择性适配三项：有用户陈述/工具结果依据的记忆复盘；超限存储的remove-only与重复add恢复、超长条目变更前原始字节备份；新建或改动的description限制60字符并兼容未改的旧描述。不是对该head完整同步；保留上一条81a基线以及Paseo自己的审批、CAS、scope、旧会话catalog和安全历史索引。"
     }
   ]
 }

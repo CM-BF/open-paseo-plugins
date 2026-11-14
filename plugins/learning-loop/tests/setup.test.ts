@@ -18,8 +18,8 @@ const request = (provider: string, extra: Partial<CreateRequest["config"]> = {})
 describe("transformCreate", () => {
   it("adds the MCP server, a binding, preapprovals and the prompt block for Claude", async () => {
     const out = await transformCreate({ request: request("claude"), family: "claude", settings: DEFAULT_PREFERENCES, paths, block, nonce: () => "n1" });
-    expect(out!.config.mcpServers!.learning).toEqual({ type: "stdio", command: paths.mcp, args: [], env: { LEARNING_LOOP_BINDING: "v3-n1" } });
-    expect(out!.env).toEqual({ LEARNING_LOOP_BINDING: "v3-n1" });
+    expect(out!.config.mcpServers!.learning).toEqual({ type: "stdio", command: paths.mcp, args: [], env: { LEARNING_LOOP_BINDING: "v4-n1" } });
+    expect(out!.env).toEqual({ LEARNING_LOOP_BINDING: "v4-n1" });
     expect(out!.config.toolPolicy!.preapproved.map((g) => g.tool)).toEqual(["memory", "skills_list", "skill_view", "skill_manage", "session_search"]);
     expect(out!.config.systemPrompt).toContain("<learning_loop_skills>");
     expect(out!.config.systemPrompt).toContain("not the provider's full skill catalog");
@@ -32,7 +32,7 @@ describe("transformCreate", () => {
       systemPrompt: "Be terse.\n\n<learning-loop>\nOLD-BLOCK-7f3\n</learning-loop>",
     });
     const out = await transformCreate({ request: copied, family: "codex", settings: DEFAULT_PREFERENCES, paths, block, nonce: () => "new" });
-    expect((out!.config.mcpServers!.learning as { env: Record<string, string> }).env.LEARNING_LOOP_BINDING).toBe("v3-new");
+    expect((out!.config.mcpServers!.learning as { env: Record<string, string> }).env.LEARNING_LOOP_BINDING).toBe("v4-new");
     expect(out!.config.systemPrompt!.startsWith("Be terse.\n\n<learning-loop>")).toBe(true);
     expect(out!.config.systemPrompt).not.toContain("OLD-BLOCK-7f3");
   });

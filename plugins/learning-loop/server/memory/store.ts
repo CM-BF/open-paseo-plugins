@@ -1,13 +1,14 @@
 // Bounded, curated memory in the shape of Hermes tools/memory_tool_store.py: entries separated by
 // "\n§\n", a character budget per store checked on the FINAL state of a batch, unique-substring
-// matching for patch/remove, exact duplicates refused, and a threat scan on everything written.
+// matching for patch/remove, duplicate additions ignored, and a threat scan on everything written.
 // One process owns the files (the plugin), so a serial queue is the only lock needed.
 
 import { createHash } from "node:crypto";
+import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { ENTRY_DELIMITER } from "../../shared/constants";
 import type { Actor, MemoryOp, MemoryStoreView, MemoryTarget, PendingWrite, ProjectRef, MemoryEntryMeta } from "../../shared/contracts";
-import { newId, readJson, readText, SerialQueue, writeAtomic, writeJson } from "../files";
+import { describeError, newId, readJson, readText, SerialQueue, writeAtomic, writeJson } from "../files";
 import type { StatePaths } from "../paths";
 import { firstThreatMessage } from "../threats";
 
@@ -30,6 +31,8 @@ export interface MemoryResult {
   pending_id?: string;
   /** Full text of entries a patch overwrote or a remove deleted. */
   replaced?: string[];
+  /** Original file bytes saved before removing or rewriting an entry larger than the store limit. */
+  drift_backup?: string;
   note?: string;
 }
 
@@ -219,7 +222,7 @@ export interface BatchOutcome {
   closest?: string[];
 }
 
-/** All operations or none; the budget is checked only on the final state (Hermes semantics). */
+/** All operations or none; final-state budget, with remove-only and duplicate-add recovery. */
 export function applyBatch(
   entries: readonly string[],
   ops: readonly MemoryOp[],
@@ -243,7 +246,10 @@ export function applyBatch(
     if (outcome.message) messages.push(outcome.message);
   }
   const total = joinedLength(working);
-  if (total > limit) {
+  // Lowering a configured limit must not make it impossible to prune the old store in steps.
+  const removesOnly = ops.length > 0 && ops.every(op => op.action === "remove");
+  const duplicateAdd = ops.length === 1 && ops[0]!.action === "add" && changes.length === 0;
+  if (total > limit && !removesOnly && !duplicateAdd) {
     const current = joinedLength(entries);
     const what =
       ops.length === 1 && ops[0]!.action === "add"
@@ -316,6 +322,43 @@ export class MemoryStore {
   private async entriesUnlocked(target: MemoryTarget, project: ProjectRef | null = null): Promise<string[]> {
     if (target === "project" && !project) return [];
     return splitEntries(await readText(this.filePath(target, project)));
+  }
+
+  private async rawUnlocked(target: MemoryTarget, project: ProjectRef | null): Promise<Buffer | null> {
+    try {
+      return await fs.readFile(this.filePath(target, project));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+  }
+
+  /** Oversized entries may be hand-appended text; preserve the raw file before discarding any. */
+  private async backupOversizedChange(target: MemoryTarget, project: ProjectRef | null, raw: Buffer | null, before: string[], after: string[], limit: number): Promise<{ path?: string; error?: string }> {
+    if (!raw || !before.some(entry => entry.length > limit && !after.includes(entry))) return {};
+    const stem = `${this.filePath(target, project)}.bak.${Date.now()}`;
+    for (let suffix = 0; ; suffix += 1) {
+      const path = stem + (suffix ? `.${suffix}` : "");
+      let file;
+      try {
+        file = await fs.open(path, "wx", 0o600);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+        return { error: `Could not create recovery backup: ${describeError(error)}. Nothing was changed.` };
+      }
+      try {
+        try {
+          await file.writeFile(raw);
+          await file.sync();
+        } finally {
+          await file.close();
+        }
+        return { path };
+      } catch (error) {
+        await fs.rm(path, { force: true }).catch(() => undefined);
+        return { error: `Could not save recovery backup: ${describeError(error)}. Nothing was changed.` };
+      }
+    }
   }
 
   async projects(): Promise<ProjectRef[]> {
@@ -432,7 +475,8 @@ export class MemoryStore {
       }
       if (ops.length === 0) return { result: { success: false, target, error: "No operations given." }, changes: [] };
       const limit = this.limitOf(target);
-      const entries = await this.entriesUnlocked(target, project);
+      const raw = await this.rawUnlocked(target, project);
+      const entries = splitEntries(raw?.toString("utf8") ?? null);
       if (options.expectedRevision && options.expectedRevision !== await this.revisionFor(target, project, entries)) return { result: { success: false, target, error: "Conflict: memory changed since the review/read snapshot. Read it again before writing.", current_entries: entries }, changes: [] };
       const batch = applyBatch(entries, ops, target, project, limit);
       if (!batch.ok) {
@@ -479,18 +523,22 @@ export class MemoryStore {
           changes: batch.changes,
         };
       }
+      const backup = await this.backupOversizedChange(target, project, raw, entries, batch.entries, limit);
+      if (backup.error) return { result: { success: false, target, error: backup.error }, changes: [] };
       if (project) await this.rememberProject(project);
       await this.saveMetadata(target, project, entries, batch.entries, batch.changes, options.actor);
       await writeAtomic(this.filePath(target, project), batch.entries.join(ENTRY_DELIMITER) + "\n");
       const replaced = batch.changes.flatMap((change) => (change.before ? [change.before] : []));
+      const messages = [...batch.messages, ...(backup.path ? [`Write saved. Recovery backup: ${backup.path}`] : [])];
       return {
         result: {
           success: true,
           target,
           usage: usageText(joinedLength(batch.entries), limit),
           entry_count: batch.entries.length,
-          ...(batch.messages.length ? { message: batch.messages.join(" ") } : {}),
+          ...(messages.length ? { message: messages.join(" ") } : {}),
           ...(replaced.length ? { replaced } : {}),
+          ...(backup.path ? { drift_backup: backup.path } : {}),
           note: "Write saved. This update is complete — do not repeat it. New agents see it in their system prompt; this session keeps its starting snapshot.",
         },
         changes: batch.changes,
@@ -503,7 +551,7 @@ export class MemoryStore {
   }
 
   /** Approve applies the staged batch only if every entry it targeted is still there unchanged. */
-  resolvePending(id: string, approve: boolean): Promise<{ ok: boolean; message: string; changes: MemoryChange[] }> {
+  resolvePending(id: string, approve: boolean): Promise<{ ok: boolean; message: string; changes: MemoryChange[]; drift_backup?: string }> {
     return this.queue.run(async () => {
       const all = await this.pending();
       const item = all.find((entry) => entry.id === id);
@@ -513,19 +561,23 @@ export class MemoryStore {
         await writeJson(this.paths.pending, { pending: rest });
         return { ok: true, message: "Rejected.", changes: [] };
       }
-      const entries = await this.entriesUnlocked(item.target, item.project);
+      const raw = await this.rawUnlocked(item.target, item.project);
+      const entries = splitEntries(raw?.toString("utf8") ?? null);
       if (item.revision && item.revision !== await this.revisionFor(item.target, item.project, entries)) return { ok: false, message: "Conflict: this memory store changed since the proposal was staged. Reject it and generate a new proposal.", changes: [] };
       const missing = item.pinned.filter((text) => !entries.includes(text));
       if (missing.length > 0) {
         return { ok: false, message: `An entry this write targets changed since it was staged: "${missing[0]!.slice(0, 80)}". Reject it and make the change again.`, changes: [] };
       }
-      const batch = applyBatch(entries, item.operations, item.target, item.project, this.limitOf(item.target));
+      const limit = this.limitOf(item.target);
+      const batch = applyBatch(entries, item.operations, item.target, item.project, limit);
       if (!batch.ok) return { ok: false, message: batch.error ?? "The staged write no longer applies.", changes: [] };
+      const backup = await this.backupOversizedChange(item.target, item.project, raw, entries, batch.entries, limit);
+      if (backup.error) return { ok: false, message: backup.error, changes: [] };
       if (item.project) await this.rememberProject(item.project);
       await this.saveMetadata(item.target, item.project, entries, batch.entries, batch.changes, item.actor);
       await writeAtomic(this.filePath(item.target, item.project), batch.entries.join(ENTRY_DELIMITER) + "\n");
       await writeJson(this.paths.pending, { pending: rest });
-      return { ok: true, message: "Approved and saved.", changes: batch.changes };
+      return { ok: true, message: `Approved and saved.${backup.path ? ` Recovery backup: ${backup.path}` : ""}`, changes: batch.changes, ...(backup.path ? { drift_backup: backup.path } : {}) };
     });
   }
 

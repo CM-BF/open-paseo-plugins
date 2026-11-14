@@ -51,7 +51,7 @@ import { installShim } from "./shim";
 import { shouldStage } from "./approval";
 import { LearnedCatalog } from "./skills/catalog";
 import { SkillLibrary } from "./skills/library";
-import { callTool, TOOL_DEFINITIONS, TOOL_DEFINITIONS_V2, TOOL_DEFINITIONS_V3, bindingVersion, toolsForBinding, type CallContext, type ToolDeps } from "./tools";
+import { callTool, TOOL_DEFINITIONS, TOOL_DEFINITIONS_V2, TOOL_DEFINITIONS_V3, TOOL_DEFINITIONS_V4, bindingVersion, toolsForBinding, type CallContext, type ToolDeps } from "./tools";
 
 type PaseoApi = PluginHookContext["paseo"];
 
@@ -234,7 +234,7 @@ export function contributeServer(server: PluginServerContext): () => Promise<voi
         reader: binding,
         project: run?.project ?? null,
         selfAgentId: null,
-        version: 2,
+        version: bindingVersion(binding),
         memoryRevisions: run?.memoryRevisions,
       };
     }
@@ -266,7 +266,7 @@ export function contributeServer(server: PluginServerContext): () => Promise<voi
     await settingsReady;
     await mkdir(paths.memoryDir, { recursive: true });
     await mkdir(paths.skillsDir, { recursive: true });
-    await installShim(paths, TOOL_DEFINITIONS, undefined, TOOL_DEFINITIONS_V2, TOOL_DEFINITIONS_V3);
+    await installShim(paths, TOOL_DEFINITIONS, undefined, TOOL_DEFINITIONS_V2, TOOL_DEFINITIONS_V3, TOOL_DEFINITIONS_V4);
     if (abort.signal.aborted) return;
     await bridge.start(paths.socket);
     await catalog.publish();

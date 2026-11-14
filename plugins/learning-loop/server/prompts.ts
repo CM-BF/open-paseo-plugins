@@ -63,6 +63,17 @@ export const SESSION_SEARCH_DESCRIPTION =
 
 // ── System prompt block ──────────────────────────────────────────────────────────────────────────
 
+export const MEMORY_EVIDENCE_GUIDANCE =
+  "Save only facts grounded in a user message or tool result you can point to. Never infer the user's traits, " +
+  "skill level, role, mood or preferences from the topic, tone, tools used or an assistant's guess. Do not turn " +
+  "a one-off request into a standing preference in any store unless the user marked it general ('always', " +
+  "'from now on', 'remember') or stated a standing like/dislike ('I hate X', 'stop doing Y'). If unsure, leave " +
+  "it out: a wrong fact misleads every future session.";
+
+export const SKILL_DESCRIPTION_GUIDANCE =
+  "New or changed descriptions must fit the 60-character skill index: 'Use when <trigger>. <behavior>.' " +
+  "Move detail into the body. An unchanged legacy long description does not block body or supporting-file edits.";
+
 const MEMORY_GUIDANCE =
   "You have persistent memory, carried across sessions and loaded into each new session's context; the memory " +
   "tool's schema defines what belongs there. Skills come first: when you learn something while doing a task — a " +
@@ -74,7 +85,7 @@ const MEMORY_GUIDANCE =
   "save. Write entries as declarative facts, not instructions to yourself: 'User prefers concise responses' ✓ — " +
   "'Always respond concisely' ✗ (imperative phrasing gets re-read as a directive in later sessions and can override " +
   "the user's current request). A fact stale within a week belongs in session history; procedures and workflows " +
-  "belong in skills.";
+  "belong in skills.\n\n" + MEMORY_EVIDENCE_GUIDANCE;
 
 const MEMORY_SNAPSHOT_NOTE =
   "The memory below was captured when this session started. Writes you make now are saved at once but reach the " +
@@ -171,7 +182,8 @@ const MEMORY_ROUTING_BLOCK =
   "— how to build/test/run it, layout quirks, project-specific gotchas. Skip what its AGENTS.md / CLAUDE.md already " +
   "says.\n\n" +
   "One fact goes to ONE store, never two — writing it twice bloats both until they hit their size limits and " +
-  "crowds out the facts that matter; misrouting it puts it where the next session won't look.\n\n";
+  "crowds out the facts that matter; misrouting it puts it where the next session won't look.\n\n" +
+  MEMORY_EVIDENCE_GUIDANCE + "\n\n";
 
 const LESSON_LAYER_BLOCK =
   "What a skill IS: the instructions for doing a class of task the most efficient and correct way, to THIS user's " +
