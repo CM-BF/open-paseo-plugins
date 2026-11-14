@@ -12,10 +12,11 @@ import {
 } from "../shared/inbox";
 import { BoardStoreError, canonicalJson, ensureDirectory, fingerprint, parseInput, serialized } from "./store-format";
 import {
-  PUBLIC_LEDGER_BYTES, PublicLedgerSchema, audit, conflictingParent, decorate, emptyPublicLedger, findRecord, importPublicRow, makeRoom, mirrorVisitorAction, notNewForWaker, publicStateOf, receipt, recordKey, setPending, stripPublic,
+  PUBLIC_LEDGER_BYTES, PublicLedgerSchema, audit, conflictingParent, decorate, emptyPublicLedger, findRecord, importPublicRow, makeRoom, mirrorVisitorAction, publicHiddenOf, publicStateOf, receipt, recordKey, setPending, stripPublic, wakeInfo,
   type PublicAction, type PublicLedger, type PublicRecord,
 } from "./inbox-public-ledger";
 import { PUBLIC_TEXT, InboxPublicPageInputSchema, InboxPublicStateInputSchema, InboxPublicVisitorInputSchema, type InboxPublicPageInput, type InboxPublicStateInput, type InboxPublicVisitorInput } from "../shared/inbox-public";
+import { publicThreadContext, type PublicThreadContext } from "../shared/inbox-thread";
 
 const SourceRecordSchema = InboxSourceSchema.extend({ credentialHash: z.string().regex(/^[a-f0-9]{64}$/) });
 const ReceiptSchema = z.object({
@@ -55,10 +56,19 @@ export interface InboxStoreOptions {
    * it; without it (store unit tests) replies are not restricted by wake.
    */
   assistantComments?(scope: InboxScope, agentId: string): Promise<ReadonlySet<string>>;
+  /**
+   * The owner's opt-in 「公开讨论里的 AI 回复直接发布（我了解风险）」 for the scope (stored per Board by the automation,
+   * human-only). Without it, or when it is off, every assistant reply to a public comment is a draft the human confirms.
+   */
+  assistantPublicDirect?(scope: InboxScope): Promise<boolean>;
   now?: () => number;
 }
-/** Snapshot row for the waker: identifiers and routing hints only, never visitor text. */
-export interface InboxWakeRow { id: string; seq: number; revision: number; sourceId: string; deploymentId: string; status: InboxComment["status"]; visitorTag?: string; releaseId?: string }
+/**
+ * Snapshot row for the waker: identifiers and routing hints only, never visitor text. `visibility` keeps private and
+ * public comments in separate batches; `publicHidden` marks a public comment visitors cannot see (hidden, withdrawn,
+ * or in a hidden thread), which never wakes the runner. The status is the comment's own.
+ */
+export interface InboxWakeRow { id: string; seq: number; revision: number; sourceId: string; deploymentId: string; status: InboxComment["status"]; visitorTag?: string; releaseId?: string; visibility?: "public"; parentCommentId?: string; publicHidden?: true }
 export interface InboxPendingRow { commentId: string; sourceId: string; deploymentId: string; externalId: string; pending: InboxPendingReply }
 /** One public state change or page action the backend has not confirmed yet (public-threads §5.4.2). */
 export type InboxPublicOutboxItem =
@@ -97,6 +107,8 @@ const ONLY_ASSISTANT = "只有这张 Board 的评论助手可以回复访客；�
 const NOT_WOKEN = "评论助手只能回复唤醒它时列出的评论。";
 const OTHER_VISITOR = "回复里有一段和其他访客的评论相同（连续 16 个字以上）。访客之间互相看不到评论，请换一种说法。";
 const PRIVATE_IN_PUBLIC = "回复里有一段和私密或已隐藏评论相同（连续 16 个字以上）。公开讨论里所有访客都能看到回复，请换一种说法。";
+/** The runner never answers a public comment visitors cannot see (hidden, withdrawn, or in a hidden thread). */
+export const HIDDEN_PUBLIC = "这条公开评论已经不在页面上显示（已隐藏、已撤回或所在讨论已隐藏），评论助手不能回复它。";
 const THREAD_REPLY_LIMIT = "这个讨论的作者回复已达 20 条上限。";
 const QUOTE_RUN = 16;
 /**
@@ -180,6 +192,25 @@ export class InboxStore {
       const comment = state.comments.find(item => item.id === input.commentId);
       if (!comment) throw new BoardStoreError("not_found", "Inbox comment does not exist");
       return structuredClone({ revision: state.revision, comment: decorate(comment, await pub.get()), contentNotice: INBOX_CONTENT_NOTICE });
+    });
+  }
+
+  /**
+   * The already public context of a public comment for the sealed runner: its thread's visible root, visible visitor
+   * replies and the confirmed owner and assistant replies attached to them (shared/inbox-thread.ts). Null for private
+   * comments and for comments visitors cannot see. Never includes private, hidden or withdrawn comments, drafts or notes.
+   */
+  async publicThread(raw: InboxReadInput, actor: InboxActor): Promise<PublicThreadContext | null> {
+    const input = parseInput(InboxReadInputSchema, raw);
+    return this.transact(input, actor, "read", async (state, _role, _commit, pub) => {
+      const ledger = await pub.get();
+      const comment = state.comments.find(item => item.id === input.commentId);
+      if (!comment) throw new BoardStoreError("not_found", "Inbox comment does not exist");
+      const record = findRecord(ledger, comment.sourceId, comment.externalId);
+      if (!record || publicHiddenOf(ledger, comment.sourceId, comment.externalId)) return null;
+      const rootExternal = record.parentId ?? comment.externalId;
+      const members = state.comments.filter(item => item.sourceId === comment.sourceId && (item.externalId === rootExternal || findRecord(ledger, item.sourceId, item.externalId)?.parentId === rootExternal));
+      return structuredClone(publicThreadContext(members.map(item => decorate(item, ledger)), comment.id));
     });
   }
 
@@ -322,8 +353,9 @@ export class InboxStore {
       const comments: InboxWakeRow[] = [], ledger = await pub.get();
       for (const comment of state.comments) {
         if (comment.seq === undefined || comment.seq <= afterSeq) continue;
-        // Public visitor replies and hidden public comments are never new for the waker (public-threads §12 A1).
-        comments.push({ id: comment.id, seq: comment.seq, revision: comment.revision, sourceId: comment.sourceId, deploymentId: comment.deploymentId, status: notNewForWaker(ledger, comment) ? "dismissed" : comment.status, ...(comment.visitorTag ? { visitorTag: comment.visitorTag } : {}), ...(comment.anchor?.releaseId ? { releaseId: comment.anchor.releaseId } : {}) });
+        // Public rows carry their visibility, thread and whether visitors can see them (the waker never wakes the
+        // runner for a hidden one); visible visitor replies in public threads are ordinary new comments.
+        comments.push({ id: comment.id, seq: comment.seq, revision: comment.revision, sourceId: comment.sourceId, deploymentId: comment.deploymentId, status: comment.status, ...(comment.visitorTag ? { visitorTag: comment.visitorTag } : {}), ...(comment.anchor?.releaseId ? { releaseId: comment.anchor.releaseId } : {}), ...wakeInfo(ledger, comment) });
         if (comments.length >= limit) break;
       }
       return { revision: state.revision, latestSeq: (state.nextSeq ?? 1) - 1, total: state.comments.length, policy: structuredClone(state.policy), reviewing: state.comments.filter(comment => comment.status === "reviewing").length, comments };
@@ -381,9 +413,11 @@ export class InboxStore {
       if (role === "assistant" && actor.kind === "agent") {
         if (this.options.assistantComments && !(await this.options.assistantComments(input, actor.agentId)).has(comment.id)) deny(NOT_WOKEN);
         if (record) {
-          // Everyone on the page reads a reply to a public comment: protect every private or hidden comment.
-          const visiblePublic = (other: InboxComment) => { const found = findRecord(ledger, other.sourceId, other.externalId); return !found || found.hidden || Boolean(found.withdrawn); };
-          if (quotesOtherVisitor(input.text, comment, state.comments, visiblePublic)) throw new BoardStoreError("invalid_input", PRIVATE_IN_PUBLIC);
+          if (publicHiddenOf(ledger, comment.sourceId, comment.externalId)) throw new BoardStoreError("invalid_input", HIDDEN_PUBLIC);
+          // Everyone on the page reads a reply to a public comment: protect every private comment (the same visitor's
+          // too) and every public one visitors cannot see (hidden, withdrawn, or in a hidden thread).
+          const notOnPage = (other: InboxComment) => !findRecord(ledger, other.sourceId, other.externalId) || publicHiddenOf(ledger, other.sourceId, other.externalId);
+          if (quotesOtherVisitor(input.text, comment, state.comments, notOnPage)) throw new BoardStoreError("invalid_input", PRIVATE_IN_PUBLIC);
         } else if (quotesOtherVisitor(input.text, comment, state.comments)) throw new BoardStoreError("invalid_input", OTHER_VISITOR);
       }
       if (record) {
@@ -412,11 +446,15 @@ export class InboxStore {
         if (recent >= INBOX_AUTO_LIMITS.agentRepliesPerHour) throw new BoardStoreError("rate_limited", "回复过于频繁：每张 Board 每小时最多 30 条 AI 助手回复。");
       }
       const at = new Date(now).toISOString();
+      // An assistant reply to a public comment waits for the human (public-threads §12 A1) unless the owner turned on
+      // 「公开讨论里的 AI 回复直接发布」 for this Board; in review mode every assistant reply is a draft anyway.
+      // The opt-in is read only here and fails closed: an error or a missing callback means a draft.
+      const publicDirect = async () => this.options.assistantPublicDirect ? this.options.assistantPublicDirect(input).catch(() => false) : false;
+      const draft = role === "assistant" && (autoOf(state.policy) === "review" || record !== undefined && !(await publicDirect()));
       const pending: InboxPendingReply = {
         key: input.key, eventId: input.eventId, text: input.text, authorKind: role === "user" ? "owner" : "agent",
         actor: { kind: actor.kind === "user" ? "user" : "agent", id: identity },
-        // An assistant reply to a public comment waits for the human, whatever the mode (public-threads §12 A1).
-        state: role === "assistant" && (autoOf(state.policy) === "review" || record !== undefined) ? "draft" : "sending",
+        state: draft ? "draft" : "sending",
         resolveOnConfirm: input.resolve, createdAt: at, failedReason: null,
         ...(input.approvedSensitive ? { approvedSensitive: true as const } : {}),
       };

@@ -20,6 +20,8 @@ import type { InboxStore } from "./inbox-store";
 import type { InboxConnections } from "./inbox-sync";
 import { INBOX_CONTENT_NOTICE, InboxReadInputSchema, InboxListInputSchema, InboxTriageInputSchema, type InboxComment, type InboxScope } from "../shared/inbox";
 import { isRunnerActor, type RunnerBinding, type RunnerBindings } from "./inbox-runner";
+import type { PublicThreadContext, PublicThreadMessage } from "../shared/inbox-thread";
+import { showBidiControls } from "../shared/bidi";
 import type { LiveDataPublisher } from "./live-data";
 import { captureOwnerHistory, chatHistoryAttachment, clip, parseBoardMarker, stripInheritedHistory, type BoardPromptExpander, type CuratedEntry } from "./side-history";
 
@@ -33,15 +35,29 @@ export const INBOX_OPERATIONS = new Set<Operation>(["inbox_list", "inbox_read", 
 export const inboxWakeOutstanding = (delivery: Delivery) => ["saved", "creating", "sending"].includes(delivery.state) || ["delivered", "unknown"].includes(delivery.state) && Boolean(delivery.awaitingTurn) && !delivery.outcome;
 /**
  * What a sealed comment run may see of a comment (lockdown design §3.2, R8): only fields the visitor can see.
- * Owner notes, labels, sources, deployments, releases, pending-reply internals and the audit stay out.
+ * Owner notes, labels, sources, deployments, releases, pending-reply internals, public moderation state and the
+ * audit stay out. Visitor text is shown with `[U+202E]`-style markers for invisible and bidi characters
+ * (public-threads §13 R7), so hidden text reads as markers, not instructions.
+ *
+ * Public comments (merge of the sealed runner and public threads) add `visibility: "public"`, the thread a visitor
+ * reply belongs to, and `thread`: the thread's visible root, visible visitor replies and the confirmed owner and
+ * assistant replies (shared/inbox-thread.ts), all of which every visitor of the page already sees. Private comments,
+ * the same visitor's included, and hidden or withdrawn comments are never part of it; `thread` is null when visitors
+ * cannot see the comment.
  */
-export function runnerView(comment: InboxComment) {
-  const anchor = comment.anchor && (comment.anchor.quote !== undefined || comment.anchor.label !== undefined) ? { ...(comment.anchor.quote !== undefined ? { quote: comment.anchor.quote } : {}), ...(comment.anchor.label !== undefined ? { label: comment.anchor.label } : {}) } : undefined;
+export function runnerView(comment: InboxComment, thread: PublicThreadContext | null = null) {
+  const mark = showBidiControls;
+  const anchor = comment.anchor && (comment.anchor.quote !== undefined || comment.anchor.label !== undefined) ? { ...(comment.anchor.quote !== undefined ? { quote: mark(comment.anchor.quote) } : {}), ...(comment.anchor.label !== undefined ? { label: mark(comment.anchor.label) } : {}) } : undefined;
+  const message = (item: PublicThreadMessage) => ({ ...item, text: mark(item.text), ...(item.authorName !== undefined ? { authorName: mark(item.authorName) } : {}) });
+  const isPublic = comment.visibility === "public";
   return {
-    id: comment.id, revision: comment.revision, status: comment.status, contentTrust: comment.contentTrust, text: comment.text,
-    ...(comment.authorName ? { authorName: comment.authorName } : {}), createdAt: comment.createdAt, ...(comment.pageUrl ? { pageUrl: comment.pageUrl } : {}),
+    id: comment.id, revision: comment.revision, status: comment.status, contentTrust: comment.contentTrust,
+    visibility: isPublic ? "public" as const : "private" as const, ...(isPublic && comment.parentCommentId ? { parentCommentId: comment.parentCommentId } : {}),
+    text: mark(comment.text),
+    ...(comment.authorName ? { authorName: mark(comment.authorName) } : {}), createdAt: comment.createdAt, ...(comment.pageUrl ? { pageUrl: comment.pageUrl } : {}),
     ...(anchor ? { anchor } : {}), canSeeReply: Boolean(comment.visitorTag),
-    replies: (comment.replies ?? []).map(reply => ({ authorKind: reply.authorKind, text: reply.text, createdAt: reply.createdAt })),
+    replies: (comment.replies ?? []).map(reply => ({ authorKind: reply.authorKind, text: mark(reply.text), createdAt: reply.createdAt })),
+    ...(isPublic ? { thread: thread ? { root: message(thread.root), replies: thread.replies.map(message) } : null } : {}),
   };
 }
 const RUNNER_NOT_ARMED = "评论助手还没有通过启动检查。";
@@ -275,7 +291,7 @@ export class BoardService {
       const comments: Array<ReturnType<typeof runnerView>> = [];
       let revision = 0;
       for (const commentId of live.commentIds) {
-        try { const read = await this.inbox.read({ ...scope, commentId }, identity); revision = Math.max(revision, read.revision); comments.push(runnerView(read.comment)); }
+        try { const read = await this.inbox.read({ ...scope, commentId }, identity); revision = Math.max(revision, read.revision); comments.push(runnerView(read.comment, await this.runnerThread(read.comment, scope, identity))); }
         catch (error) { if (!(error instanceof BoardStoreError && error.code === "not_found")) throw error; }
       }
       return { revision, comments, total: comments.length, nextCursor: null, contentNotice: INBOX_CONTENT_NOTICE };
@@ -284,7 +300,7 @@ export class BoardService {
     if (!live.commentIds.has(commentId)) throw new BoardStoreError("forbidden", "评论助手只能处理这一批里的评论。");
     if (operation === "inbox_read") {
       const read = await this.inbox.read(InboxReadInputSchema.parse({ ...input, ...scope }), identity);
-      return { revision: read.revision, comment: runnerView(read.comment), contentNotice: INBOX_CONTENT_NOTICE };
+      return { revision: read.revision, comment: runnerView(read.comment, await this.runnerThread(read.comment, scope, identity)), contentNotice: INBOX_CONTENT_NOTICE };
     }
     if (operation === "inbox_reply") {
       if (!this.inboxConnections) throw new BoardStoreError("unavailable", "Board inbox replies are unavailable");
@@ -300,6 +316,11 @@ export class BoardService {
     const result = await this.inbox.triage({ ...triage, labels, note }, identity);
     if (!result.replayed) { if (triage.status === "dismissed") live.actions.dismissed++; else live.actions.triaged++; }
     return result;
+  }
+  /** The visible thread of a public comment in the runner's batch (null for private comments and hidden ones). */
+  private async runnerThread(comment: InboxComment, scope: InboxScope, identity: { kind: "agent"; agentId: string }): Promise<PublicThreadContext | null> {
+    if (comment.visibility !== "public" || !this.inbox) return null;
+    return this.inbox.publicThread({ ...scope, commentId: comment.id }, identity);
   }
   private async withHtmlFile(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (input.htmlFile === undefined) return input;

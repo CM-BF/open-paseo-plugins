@@ -1536,7 +1536,7 @@ describe("sealed comment runner calls (lockdown design §3.2)", () => {
     // The list is the batch only; the view has only what the visitor can see.
     const list = await service.executeRunner("inbox_list", scope, binding) as { comments: Array<Record<string, unknown>>; total: number };
     expect(list.total).toBe(1);
-    expect(list.comments).toEqual([{ id: mine.id, revision: mine.revision, status: "new", contentTrust: "external-untrusted", text: "第二步看不懂", authorName: "小王", createdAt: mine.createdAt, pageUrl: "https://example.com/p/", anchor: { quote: "第二步", label: "步骤" }, canSeeReply: true, replies: [] }]);
+    expect(list.comments).toEqual([{ id: mine.id, revision: mine.revision, status: "new", contentTrust: "external-untrusted", visibility: "private", text: "第二步看不懂", authorName: "小王", createdAt: mine.createdAt, pageUrl: "https://example.com/p/", anchor: { quote: "第二步", label: "步骤" }, canSeeReply: true, replies: [] }]);
     const read = await service.executeRunner("inbox_read", { ...scope, commentId: mine.id }, binding) as { comment: Record<string, unknown> };
     for (const field of ["note", "labels", "sourceId", "deploymentId", "importedAt", "visitorTag", "pendingReply", "seq", "externalId"]) expect(read.comment).not.toHaveProperty(field);
     expect(JSON.stringify(list) + JSON.stringify(read)).not.toContain("作者私下的备注");

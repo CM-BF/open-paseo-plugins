@@ -10583,6 +10583,8 @@ var InboxAutoStatusSchema = z4.object({
   runs: z4.array(InboxRunRecordSchema).max(10),
   /** Comments with status reviewing (handed to the user). */
   reviewing: z4.number().int().nonnegative(),
+  /** 「公开讨论里的 AI 回复直接发布（我了解风险）」: off by default; applies in 直接公开 mode only. */
+  publicDirect: z4.boolean(),
   replies: z4.object({
     sending: z4.number().int().nonnegative(),
     drafts: z4.number().int().nonnegative(),
@@ -10600,8 +10602,17 @@ var InboxAutoSetInputSchema = InboxScopeSchema.extend({
   syncPaused: z4.boolean().optional(),
   wakePaused: z4.boolean().optional(),
   resumeWake: z4.literal(true).optional(),
-  dismissLegacyNotice: z4.literal(true).optional()
+  dismissLegacyNotice: z4.literal(true).optional(),
+  /** The owner's opt-in for public discussions (human RPC only; agents have no tool for it). */
+  publicDirect: z4.boolean().optional()
 }).strict();
+var PUBLIC_DIRECT_TEXT = {
+  label: "\u516C\u5F00\u8BA8\u8BBA\u91CC\u7684 AI \u56DE\u590D\u76F4\u63A5\u53D1\u5E03\uFF08\u6211\u4E86\u89E3\u98CE\u9669\uFF09",
+  off: "\u516C\u5F00\u8BA8\u8BBA\u91CC\u7684 AI \u56DE\u590D\uFF1A\u5148\u7ED9\u4F60\u786E\u8BA4\uFF0C\u786E\u8BA4\u540E\u624D\u5728\u9875\u9762\u4E0A\u663E\u793A\u3002",
+  on: "\u516C\u5F00\u8BA8\u8BBA\u91CC\u7684 AI \u56DE\u590D\uFF1A\u76F4\u63A5\u53D1\u5E03\uFF0C\u4E0D\u7ECF\u4F60\u786E\u8BA4\u3002",
+  warning: "\u52FE\u9009\u540E\uFF0C\u8BC4\u8BBA\u52A9\u624B\u5BF9\u516C\u5F00\u8BA8\u8BBA\u7684\u56DE\u590D\u4E0D\u7ECF\u4F60\u786E\u8BA4\u5C31\u4F1A\u663E\u793A\u7ED9\u6240\u6709\u6253\u5F00\u8FD9\u4E2A\u9875\u9762\u7684\u4EBA\u3002\u8BC4\u8BBA\u53EF\u80FD\u5305\u542B\u8BF1\u5BFC\u5185\u5BB9\uFF0CAI \u53EF\u80FD\u88AB\u5E26\u504F\uFF0C\u5199\u51FA\u9519\u8BEF\u6216\u4E0D\u59A5\u7684\u8BDD\u3002\u53D1\u51FA\u7684\u56DE\u590D\u4E0D\u80FD\u64A4\u56DE\uFF0C\u53EA\u80FD\u5728\u300C\u516C\u5F00\u8BA8\u8BBA\u300D\u91CC\u628A\u5B83\u56DE\u590D\u7684\u90A3\u6761\u8BC4\u8BBA\u8FDE\u540C\u56DE\u590D\u4E00\u8D77\u4ECE\u9875\u9762\u4E0A\u9690\u85CF\u3002\u8BC4\u8BBA\u52A9\u624B\u4ECD\u7136\u53EA\u80FD\u770B\u5230\u8FD9\u6761\u8BC4\u8BBA\u6240\u5728\u8BA8\u8BBA\u91CC\u516C\u5F00\u663E\u793A\u7684\u5185\u5BB9\uFF0C\u770B\u4E0D\u5230\u4EC5\u81EA\u5DF1\u53EF\u89C1\u6216\u5DF2\u9690\u85CF\u7684\u8BC4\u8BBA\u3002",
+  reviewOnly: "\u300C\u56DE\u590D\u5148\u7ED9\u6211\u5BA1\u6838\u300D\u65F6\uFF0C\u6240\u6709 AI \u56DE\u590D\u90FD\u5148\u7ED9\u4F60\u5BA1\u6838\uFF0C\u5305\u62EC\u516C\u5F00\u8BA8\u8BBA\u91CC\u7684\u56DE\u590D\u3002"
+};
 var legacyNotice = agentId => `\u65E7\u7684\u8BC4\u8BBA\u52A9\u624B\uFF08Paseo agent ${agentId.slice(0, 8)}\uFF09\u542F\u52A8\u65F6\u4F1A\u7EE7\u627F\u5176\u4ED6\u63D2\u4EF6\u548C Claude Code \u7528\u6237\u8BBE\u7F6E\u7ED9\u7684\u5DE5\u5177\u548C\u6743\u9650\uFF0C\u5DF2\u505C\u7528\uFF0C\u4E0D\u4F1A\u518D\u6536\u5230\u8BC4\u8BBA\uFF0C\u4E5F\u4E0D\u80FD\u518D\u56DE\u590D\u8BBF\u5BA2\u3002\u8981\u7EE7\u7EED\u81EA\u52A8\u5904\u7406\uFF0C\u8BF7\u91CD\u65B0\u5F00\u542F\uFF08\u4F1A\u5148\u505A\u9501\u5B9A\u68C0\u67E5\uFF09\u3002\u65E7\u52A9\u624B\u8FD8\u5728 Paseo \u91CC\uFF0C\u662F\u5426\u5F52\u6863\u7531\u4F60\u51B3\u5B9A\u3002`;
 var ModelIdSchema = z4.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:\[\]/-]{0,99}$/);
 var InboxAssistantOptionsSchema = z4.object({
@@ -10640,7 +10651,9 @@ var InboxAutoEnableInputSchema = InboxScopeSchema.extend({
   replyMode: z4.enum(["publish", "review"]),
   modelId: ModelIdSchema,
   effort: InboxEffortSchema.default("low"),
-  dailyCapUsd: z4.number().positive().max(100).optional()
+  dailyCapUsd: z4.number().positive().max(100).optional(),
+  /** 「公开讨论里的 AI 回复直接发布（我了解风险）」 ticked in the dialog; absent or false keeps public replies as drafts. */
+  publicDirect: z4.boolean().optional()
 }).strict();
 var inboxListRpc = defineRpc4({
   name: "board.inbox.list",
@@ -13873,7 +13886,8 @@ function InboxPanel(props) {
   var openDialog = () => {
     setDialog({
       loading: true,
-      replyMode: "review"
+      replyMode: "review",
+      publicDirect: false
     });
     void callbacks.current.onAssistantOptions(scope).then(options2 => {
       var modelId = options2.models.some(model => model.id === options2.current?.modelId) ? options2.current.modelId : options2.recommendedModelId ?? void 0;
@@ -13893,9 +13907,10 @@ function InboxPanel(props) {
   var confirmEnable = () => {
     if (!dialog?.modelId || dialog.options?.refusal) return;
     var {
-      replyMode,
-      modelId
-    } = dialog;
+        replyMode,
+        modelId
+      } = dialog,
+      publicDirect = replyMode === "publish" && dialog.publicDirect;
     setDialog(previous => previous && {
       ...previous,
       checking: true,
@@ -13909,7 +13924,10 @@ function InboxPanel(props) {
           eventId,
           replyMode,
           modelId,
-          effort: "low"
+          effort: "low",
+          ...(publicDirect ? {
+            publicDirect: true
+          } : {})
         }), "inbox-auto-enable");
       } catch (error) {
         setDialog(previous => previous && {
@@ -14155,6 +14173,32 @@ function InboxPanel(props) {
         auto: autoMode === "review" ? "publish" : "review"
       }),
       testID: "board-inbox-auto-reply-mode"
+    }) : null, autoOn && policy && auto ? /* @__PURE__ */jsx12(View10, {
+      testID: "board-inbox-public-direct",
+      style: {
+        gap: 6
+      },
+      children: autoMode === "publish" ? /* @__PURE__ */jsxs10(Fragment7, {
+        children: [/* @__PURE__ */jsx12(Action, {
+          label: PUBLIC_DIRECT_TEXT.label,
+          active: auto.publicDirect,
+          disabled: busy,
+          onPress: () => autoSet({
+            publicDirect: !auto.publicDirect
+          }),
+          testID: "board-inbox-public-direct-toggle"
+        }), auto.publicDirect ? /* @__PURE__ */jsx12(Notice, {
+          text: PUBLIC_DIRECT_TEXT.warning
+        }) : null, /* @__PURE__ */jsx12(Copy, {
+          small: true,
+          muted: true,
+          children: auto.publicDirect ? PUBLIC_DIRECT_TEXT.on : PUBLIC_DIRECT_TEXT.off
+        })]
+      }) : /* @__PURE__ */jsx12(Copy, {
+        small: true,
+        muted: true,
+        children: PUBLIC_DIRECT_TEXT.reviewOnly
+      })
     }) : null, dialog ? /* @__PURE__ */jsxs10(View10, {
       accessibilityRole: "alert",
       testID: "board-inbox-auto-dialog",
@@ -14194,7 +14238,27 @@ function InboxPanel(props) {
           }),
           testID: "board-inbox-auto-mode-review"
         })]
-      }), dialog.loading ? /* @__PURE__ */jsx12(Copy, {
+      }), dialog.replyMode === "publish" ? /* @__PURE__ */jsxs10(View10, {
+        style: {
+          gap: 6
+        },
+        children: [/* @__PURE__ */jsx12(Action, {
+          label: PUBLIC_DIRECT_TEXT.label,
+          active: dialog.publicDirect,
+          disabled: dialog.checking,
+          onPress: () => setDialog({
+            ...dialog,
+            publicDirect: !dialog.publicDirect
+          }),
+          testID: "board-inbox-auto-public-direct"
+        }), dialog.publicDirect ? /* @__PURE__ */jsx12(Notice, {
+          text: PUBLIC_DIRECT_TEXT.warning
+        }) : /* @__PURE__ */jsx12(Copy, {
+          small: true,
+          muted: true,
+          children: PUBLIC_DIRECT_TEXT.off
+        })]
+      }) : null, dialog.loading ? /* @__PURE__ */jsx12(Copy, {
         small: true,
         muted: true,
         children: "\u6B63\u5728\u8BFB\u53D6\u53EF\u7528\u7684\u6A21\u578B\u2026"

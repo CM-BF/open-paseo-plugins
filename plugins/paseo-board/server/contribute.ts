@@ -51,7 +51,9 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     const board = await store.read(id);
     return Boolean(board?.interactions.some(item => item.kind === "fork" && item.agentId === agentId));
   }, authorizeAssistant: async (scope, agentId) => Boolean(await automation?.isAssistant(scope, agentId)),
-  assistantComments: async (scope, agentId) => automation ? automation.assistantComments(scope, agentId) : new Set<string>() });
+  assistantComments: async (scope, agentId) => automation ? automation.assistantComments(scope, agentId) : new Set<string>(),
+  // 「公开讨论里的 AI 回复直接发布」: the owner's per-Board opt-in, set only through the human auto-handling RPCs.
+  assistantPublicDirect: async scope => automation ? automation.publicDirect(scope) : false });
   service.useInbox(inbox);
   const inboxConnections = new InboxConnections(root, inbox);
   service.useInboxConnections(inboxConnections);

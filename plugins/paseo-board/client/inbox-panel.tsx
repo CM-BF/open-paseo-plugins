@@ -6,7 +6,7 @@ import type {
   InboxHumanReplyInput, InboxListInput, InboxMutationResult, InboxPage, InboxPolicy, InboxPolicyInput, InboxReplyPendingInput, InboxReplyResult,
   InboxScope, InboxStatus, InboxTriageInput,
 } from "../shared/inbox";
-import { legacyNotice } from "../shared/inbox";
+import { PUBLIC_DIRECT_TEXT, legacyNotice } from "../shared/inbox";
 import { COST_NOTE, assistantLine, autoToggleLabel, capLine, costLine, deniedNotice, guardReason, modelButtonLabel, runLines, syncLine, wakeLine, wakeNotices } from "./inbox-status";
 import { showBidiControls as shown } from "../shared/bidi";
 import { Action, Copy, errorMessage, localId, Notice, useColors } from "./ui";
@@ -45,7 +45,8 @@ const CONFIRM_TEXT = [
 const isConflict = (error: unknown) => (error as { code?: string }).code === "revision_conflict" || /Inbox changed/.test(errorMessage(error));
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max)}…` : text;
 type Editor = { text: string; eventId?: string; mode: "reply" | "publish"; key?: string; phase: "editing" | "sending" | "unknown" | "guard"; reason?: string; error?: string };
-type Dialog = { options?: InboxAssistantOptions; error?: string; loading: boolean; replyMode: "publish" | "review"; modelId?: string; checking?: boolean };
+/** `publicDirect`: 「公开讨论里的 AI 回复直接发布（我了解风险）」, unticked whenever the dialog opens. */
+type Dialog = { options?: InboxAssistantOptions; error?: string; loading: boolean; replyMode: "publish" | "review"; publicDirect: boolean; modelId?: string; checking?: boolean };
 
 /** Human-only inbox UI. External text is rendered as text; agent permissions change only through explicit human actions. */
 export function InboxPanel(props: InboxPanelProps) {
@@ -123,7 +124,7 @@ export function InboxPanel(props: InboxPanelProps) {
   const policy = page?.policy;
   const autoMode = policy?.auto ?? "off";
   const openDialog = () => {
-    setDialog({ loading: true, replyMode: "review" });
+    setDialog({ loading: true, replyMode: "review", publicDirect: false });
     void callbacks.current.onAssistantOptions(scope).then(options => {
       // Review mode is preselected the first time; the current model (if still offered) or the cheapest priced one.
       const modelId = options.models.some(model => model.id === options.current?.modelId) ? options.current!.modelId : options.recommendedModelId ?? undefined;
@@ -133,11 +134,11 @@ export function InboxPanel(props: InboxPanelProps) {
   /** The server runs the lockdown preflight before writing anything; its refusal is shown in the dialog. */
   const confirmEnable = () => {
     if (!dialog?.modelId || dialog.options?.refusal) return;
-    const { replyMode, modelId } = dialog;
+    const { replyMode, modelId } = dialog, publicDirect = replyMode === "publish" && dialog.publicDirect;
     setDialog(previous => previous && { ...previous, checking: true, error: undefined });
     void run(async current => {
       try {
-        await fresh((expectedRevision, eventId) => callbacks.current.onAutoEnable({ ...scope, expectedRevision, eventId, replyMode, modelId, effort: "low" }), "inbox-auto-enable");
+        await fresh((expectedRevision, eventId) => callbacks.current.onAutoEnable({ ...scope, expectedRevision, eventId, replyMode, modelId, effort: "low", ...(publicDirect ? { publicDirect: true } : {}) }), "inbox-auto-enable");
       } catch (error) { setDialog(previous => previous && { ...previous, checking: false, error: errorMessage(error) }); return; }
       if (current !== generation.current) return;
       setDialog(null);
@@ -232,12 +233,23 @@ export function InboxPanel(props: InboxPanelProps) {
       </View>
     </View> : null}
     {autoOn && policy ? <Action label={`回复方式：${autoMode === "review" ? "先给我审核" : "直接公开"}`} disabled={busy} onPress={() => setPolicy({ read: true, triage: true, auto: autoMode === "review" ? "publish" : "review" })} testID="board-inbox-auto-reply-mode" /> : null}
+    {autoOn && policy && auto ? <View testID="board-inbox-public-direct" style={{ gap: 6 }}>
+      {autoMode === "publish" ? <>
+        <Action label={PUBLIC_DIRECT_TEXT.label} active={auto.publicDirect} disabled={busy} onPress={() => autoSet({ publicDirect: !auto.publicDirect })} testID="board-inbox-public-direct-toggle" />
+        {auto.publicDirect ? <Notice text={PUBLIC_DIRECT_TEXT.warning} /> : null}
+        <Copy small muted>{auto.publicDirect ? PUBLIC_DIRECT_TEXT.on : PUBLIC_DIRECT_TEXT.off}</Copy>
+      </> : <Copy small muted>{PUBLIC_DIRECT_TEXT.reviewOnly}</Copy>}
+    </View> : null}
     {dialog ? <View accessibilityRole="alert" testID="board-inbox-auto-dialog" style={{ gap: 10, padding: 12, borderWidth: 1, borderColor: c.accent, borderRadius: 8, backgroundColor: c.surface1 }}>
       {CONFIRM_TEXT.map((line, index) => <Copy key={index} small={index > 0}>{line}</Copy>)}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         <Action label="直接公开回复" active={dialog.replyMode === "publish"} disabled={dialog.checking} onPress={() => setDialog({ ...dialog, replyMode: "publish" })} testID="board-inbox-auto-mode-publish" />
         <Action label="回复先给我审核" active={dialog.replyMode === "review"} disabled={dialog.checking} onPress={() => setDialog({ ...dialog, replyMode: "review" })} testID="board-inbox-auto-mode-review" />
       </View>
+      {dialog.replyMode === "publish" ? <View style={{ gap: 6 }}>
+        <Action label={PUBLIC_DIRECT_TEXT.label} active={dialog.publicDirect} disabled={dialog.checking} onPress={() => setDialog({ ...dialog, publicDirect: !dialog.publicDirect })} testID="board-inbox-auto-public-direct" />
+        {dialog.publicDirect ? <Notice text={PUBLIC_DIRECT_TEXT.warning} /> : <Copy small muted>{PUBLIC_DIRECT_TEXT.off}</Copy>}
+      </View> : null}
       {dialog.loading ? <Copy small muted>正在读取可用的模型…</Copy> : null}
       {options?.refusal ? <Notice text={options.refusal} error /> : null}
       {options && !options.refusal ? <>

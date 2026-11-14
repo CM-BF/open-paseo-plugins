@@ -58,7 +58,7 @@ describe("tunnel policy", () => {
       ["skillMarkdown", skillMarkdown("/tmp/paseo-board")],
       ["toolDefinitions", toolDefinitions().map(tool => `${tool.name}: ${tool.description}`).join("\n")],
       ["CLI usage", (RUNTIME_SOURCE.match(/Usage: paseo-board[^']*/g) ?? []).join("\n")],
-      ["wake prompt", wakePrompt({ boardId: "board", expectedCreatedAt: "2026-11-13T00:00:00.000Z", interactionId: "inbox-00000000-1-1", title: "Board", inboxRevision: 1, comments: [{ commentId: "comment-1", revision: 1, visitorTag: "a1b2c3d4e5f6", canSeeReply: true }] })],
+      ["wake prompt", wakePrompt({ boardId: "board", expectedCreatedAt: "2026-11-13T00:00:00.000Z", interactionId: "inbox-00000000-1-1", title: "Board", inboxRevision: 1, comments: [{ commentId: "comment-1", revision: 1, visitorTag: "a1b2c3d4e5f6", canSeeReply: true, visibility: "public" }] })],
       ["assistant system prompt", assistantSystemPrompt({ id: "board", title: "Board" })],
     ];
     expect(texts[3][1]).toContain("inbox reply");

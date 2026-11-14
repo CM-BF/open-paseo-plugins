@@ -132,8 +132,28 @@ export function mirrorVisitorAction(ledger: PublicLedger, sourceId: string, tag:
   return changed;
 }
 
-/** True when the comment is a public visitor reply or hidden on the page: the waker must not treat it as new (§12 A1). */
-export function notNewForWaker(ledger: PublicLedger, comment: InboxComment): boolean {
+/**
+ * True when visitors cannot see this public row on the page: it is hidden or withdrawn, or it is a visitor reply whose
+ * thread root is (a hidden root takes its whole thread off the page). False for private comments and unknown roots.
+ */
+export function publicHiddenOf(ledger: PublicLedger, sourceId: string, externalId: string): boolean {
+  const record = findRecord(ledger, sourceId, externalId);
+  if (!record) return false;
+  if (record.hidden || record.withdrawn) return true;
+  const root = record.parentId === undefined ? undefined : findRecord(ledger, sourceId, record.parentId);
+  return Boolean(root && (root.hidden || root.withdrawn));
+}
+/**
+ * What the waker needs to know about a comment's public side (merge of the sealed runner and public threads): its
+ * visibility (a batch never mixes private and public comments), its thread, and whether it is off the page. Hidden
+ * public comments never wake the runner; visible visitor replies in public threads may (within the run budgets).
+ */
+export function wakeInfo(ledger: PublicLedger, comment: InboxComment): { visibility?: "public"; parentCommentId?: string; publicHidden?: true } {
   const record = findRecord(ledger, comment.sourceId, comment.externalId);
-  return Boolean(record && (record.parentId !== undefined || record.hidden || record.withdrawn));
+  if (!record) return {};
+  return {
+    visibility: "public",
+    ...(record.parentId ? { parentCommentId: commentIdOf(comment.sourceId, record.parentId) } : {}),
+    ...(publicHiddenOf(ledger, comment.sourceId, comment.externalId) ? { publicHidden: true as const } : {}),
+  };
 }

@@ -9,7 +9,7 @@ const source = (patch: Partial<InboxAutoStatus["sync"]["sources"][number]> = {})
 const status = (wake: Partial<InboxAutoStatus["wake"]> = {}, sources = [source()], extra: Partial<InboxAutoStatus> = {}): InboxAutoStatus => ({
   revision: 3, sync: { paused: false, intervalSeconds: 5, sources },
   wake: { state: "idle", pausedReason: null, pausedAt: null, resumesAt: null, error: null, findings: [], pendingComments: 0, runningComments: 0, nextWakeAt: null, wakesLastHour: 0, maxWakesPerHour: 12, hostWakesLastHour: 0, maxHostWakesPerHour: 30, lastWakeAt: null, lastBudgetPause: null, cliFailures: 0, skipped: { otherBoard: 0, unattributed: 0 }, ...wake },
-  assistant: null, legacy: null, runs: [], reviewing: 0, replies: { sending: 0, drafts: 0, failed: 0, items: [] }, ...extra,
+  assistant: null, legacy: null, runs: [], reviewing: 0, publicDirect: false, replies: { sending: 0, drafts: 0, failed: 0, items: [] }, ...extra,
 });
 
 describe("inbox automation texts (DESIGN §4.10, §11.12)", () => {

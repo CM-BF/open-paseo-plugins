@@ -23,12 +23,12 @@ describe("public-threads wiring (public-threads DESIGN §5.4.3, §12 A11)", () =
   });
   afterEach(async () => { await dispose(); await rm(dir, { recursive: true, force: true }); });
 
-  it("registers the public-thread RPCs for the human UI only; agents get no new tool, and the reply tool says public replies are drafts", async () => {
+  it("registers the public-thread RPCs for the human UI only; agents get no new tool, and the reply tool says public replies are drafts unless the owner opted in", async () => {
     for (const name of PUBLIC_RPCS) expect(handlers.has(name), name).toBe(true);
     const tools = toolDefinitions().map(tool => tool.name);
     for (const name of tools) expect(name).not.toMatch(/public|hide|moderat/);
     expect(tools.filter(name => name.startsWith("board_inbox_"))).toEqual(["board_inbox_list", "board_inbox_read", "board_inbox_triage", "board_inbox_reply"]);
-    expect(toolDefinitions().find(tool => tool.name === "board_inbox_reply")!.description).toContain('For a comment with visibility "public", every visitor of that page sees the reply, so it always becomes a draft the user reviews; parentCommentId names the thread a visitor reply belongs to.');
+    expect(toolDefinitions().find(tool => tool.name === "board_inbox_reply")!.description).toContain('For a comment with visibility "public", every visitor of that page sees the reply, so it becomes a draft the user reviews unless the user turned on direct publishing for public discussions; the comment assistant\'s board_inbox_read also returns that thread\'s visible messages, and parentCommentId names the thread a visitor reply belongs to.');
     const board = await handlers.get("board.create")!({ title: "公开评论", html: "<main>x</main>", data: {} }, { paseo }) as { id: string; createdAt: string };
     const scope = { boardId: board.id, expectedCreatedAt: board.createdAt };
     expect(await handlers.get("board.inbox.public-threads")!(scope, { paseo })).toEqual({ revision: 0, sources: [] });

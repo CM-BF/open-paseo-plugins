@@ -362,6 +362,8 @@ export const InboxAutoStatusSchema = z.object({
   runs: z.array(InboxRunRecordSchema).max(10),
   /** Comments with status reviewing (handed to the user). */
   reviewing: z.number().int().nonnegative(),
+  /** 「公开讨论里的 AI 回复直接发布（我了解风险）」: off by default; applies in 直接公开 mode only. */
+  publicDirect: z.boolean(),
   replies: z.object({
     sending: z.number().int().nonnegative(), drafts: z.number().int().nonnegative(), failed: z.number().int().nonnegative(),
     items: z.array(z.object({ commentId: IdSchema, key: ReplyKeySchema, state: z.enum(["draft", "sending", "failed"]),
@@ -372,8 +374,22 @@ export type InboxAutoStatus = z.infer<typeof InboxAutoStatusSchema>;
 export const InboxAutoSetInputSchema = InboxScopeSchema.extend({
   syncPaused: z.boolean().optional(), wakePaused: z.boolean().optional(),
   resumeWake: z.literal(true).optional(), dismissLegacyNotice: z.literal(true).optional(),
+  /** The owner's opt-in for public discussions (human RPC only; agents have no tool for it). */
+  publicDirect: z.boolean().optional(),
 }).strict();
 export type InboxAutoSetInput = z.infer<typeof InboxAutoSetInputSchema>;
+/**
+ * The opt-in for assistant replies in public discussions (merge of the sealed runner and public threads, exact texts).
+ * By default an assistant reply to a public comment is a draft the owner confirms; private comments keep the
+ * 直接公开 / 先给我审核 choice.
+ */
+export const PUBLIC_DIRECT_TEXT = {
+  label: "公开讨论里的 AI 回复直接发布（我了解风险）",
+  off: "公开讨论里的 AI 回复：先给你确认，确认后才在页面上显示。",
+  on: "公开讨论里的 AI 回复：直接发布，不经你确认。",
+  warning: "勾选后，评论助手对公开讨论的回复不经你确认就会显示给所有打开这个页面的人。评论可能包含诱导内容，AI 可能被带偏，写出错误或不妥的话。发出的回复不能撤回，只能在「公开讨论」里把它回复的那条评论连同回复一起从页面上隐藏。评论助手仍然只能看到这条评论所在讨论里公开显示的内容，看不到仅自己可见或已隐藏的评论。",
+  reviewOnly: "「回复先给我审核」时，所有 AI 回复都先给你审核，包括公开讨论里的回复。",
+} as const;
 /** The panel notice for a retired Paseo-agent assistant of an older build (lockdown design §3.9, exact). */
 export const legacyNotice = (agentId: string) => `旧的评论助手（Paseo agent ${agentId.slice(0, 8)}）启动时会继承其他插件和 Claude Code 用户设置给的工具和权限，已停用，不会再收到评论，也不能再回复访客。要继续自动处理，请重新开启（会先做锁定检查）。旧助手还在 Paseo 里，是否归档由你决定。`;
 const ModelIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:\[\]/-]{0,99}$/);
@@ -399,6 +415,8 @@ export const InboxAutoEnableInputSchema = InboxScopeSchema.extend({
   expectedRevision: z.number().int().nonnegative(), eventId: IdSchema,
   replyMode: z.enum(["publish", "review"]), modelId: ModelIdSchema, effort: InboxEffortSchema.default("low"),
   dailyCapUsd: z.number().positive().max(100).optional(),
+  /** 「公开讨论里的 AI 回复直接发布（我了解风险）」 ticked in the dialog; absent or false keeps public replies as drafts. */
+  publicDirect: z.boolean().optional(),
 }).strict();
 export type InboxAutoEnableInput = z.input<typeof InboxAutoEnableInputSchema>;
 

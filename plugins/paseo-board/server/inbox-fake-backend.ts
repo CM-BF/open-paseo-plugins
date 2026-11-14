@@ -5,7 +5,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
-export interface FakeRow { seq: number; externalId: string; text: string; createdAt: string; authorName?: string; pageUrl?: string; anchor?: Record<string, unknown>; visitorTag?: string }
+/** Public-thread rows (public-threads §5.2.7) carry their extension in `format=2&threads=1` exports only. */
+export interface FakePublic { visibility?: "public"; parentId?: string; publicTag?: string; hidden?: boolean; resolved?: boolean; withdrawn?: true }
+export interface FakeRow extends FakePublic { seq: number; externalId: string; text: string; createdAt: string; authorName?: string; pageUrl?: string; anchor?: Record<string, unknown>; visitorTag?: string }
 export interface FakeReply { replyId: string; commentExternalId: string; text: string; authorKind: "owner" | "agent"; createdAt: string; idempotencyKey: string }
 export type FakeFailure = "network" | "500" | "429" | "401" | "403" | "404-old" | "404-export" | "404-export-disabled" | "404-comments-disabled" | "409-key" | "409-limit" | "mismatch";
 export interface FakeBackend {
@@ -69,13 +71,20 @@ export async function startFakeBackend(options: { token?: string; deploymentId?:
       const rows = backend.rows.filter(row => row.seq > Number(cursor)).slice(0, limit);
       const nextCursor = rows.length ? String(rows.at(-1)!.seq) : cursor;
       if (backend.legacy || url.searchParams.get("format") !== "2") {
-        const comments = rows.map(({ seq: _seq, visitorTag: _tag, anchor, ...row }) => {
+        // v1 never carries public visitor replies or the public extension.
+        const comments = rows.filter(row => !row.parentId).map(({ seq: _seq, visitorTag: _tag, anchor, visibility: _v, parentId: _p, publicTag: _t, hidden: _h, resolved: _r, withdrawn: _w, ...row }) => {
           const projected = anchor && (anchor.label !== undefined || anchor.selector !== undefined) ? { ...(anchor.label !== undefined ? { label: anchor.label } : {}), ...(anchor.selector !== undefined ? { selector: anchor.selector } : {}) } : undefined;
           return { ...row, ...(projected ? { anchor: projected } : {}) };
         });
         return json(res, 200, { deploymentId, cursor, nextCursor, comments });
       }
-      return json(res, 200, { deploymentId, format: 2, cursor, nextCursor, comments: rows.map(({ seq: _seq, ...row }) => row) });
+      const threads = url.searchParams.get("threads") === "1";
+      const exported = threads ? rows : rows.filter(row => !row.parentId);
+      return json(res, 200, { deploymentId, format: 2, cursor, nextCursor, comments: exported.map(({ seq: _seq, ...row }) => {
+        if (threads) return row;
+        const { visibility: _v, parentId: _p, publicTag: _t, hidden: _h, resolved: _r, withdrawn: _w, ...rest } = row;
+        return rest;
+      }) });
     }
     const match = /^\/_board\/comments\/([^/]+)\/replies$/.exec(url.pathname);
     if (req.method === "POST" && match) {

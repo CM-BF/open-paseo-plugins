@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { InboxStore, type InboxPublicOutboxItem } from "./inbox-store";
+import { HIDDEN_PUBLIC, InboxStore, type InboxPublicOutboxItem } from "./inbox-store";
 import { InboxConnections, normalizePage } from "./inbox-sync";
 import { PublicStateOutbox, PUBLIC_RETRY_MS } from "./inbox-public";
 import { normalizeExternalComment, type InboxActor, type InboxExternalComment, type InboxPublicRow } from "../shared/inbox";
@@ -168,11 +168,22 @@ describe("public threads in the inbox ledger (public-threads §5.4, §12)", () =
     expect(await store.publicOutbox(scope, automation)).toEqual([{ kind: "state", sourceId: "source-1", externalId: id(1), send: { hidden: false } }]);
   });
 
-  it("the waker sees public visitor replies and hidden comments as not new; public roots may wake", async () => {
+  it("the waker sees each comment's own status, its visibility and thread, and marks what visitors cannot see (merge: explicit publicHidden)", async () => {
     await seedThread();
     await store.setPublicState({ ...scope, eventId: "hide-4", sourceId: "source-1", externalId: id(4), hidden: true }, human);
-    const snapshot = await store.snapshotAfter(scope, 0, 50, automation);
-    expect(snapshot.comments.map(row => [row.id, row.status])).toEqual([[commentId(id(1)), "new"], [commentId(id(2)), "dismissed"], [commentId(id(3)), "new"], [commentId(id(4)), "dismissed"]]);
+    const rows = async () => (await store.snapshotAfter(scope, 0, 50, automation)).comments.map(({ id: comment, status, visibility, parentCommentId, publicHidden }) => ({ comment, status, visibility, parentCommentId, publicHidden }));
+    // Visitor replies in public threads are ordinary new comments now; the hidden root is marked, not relabelled.
+    expect(await rows()).toEqual([
+      { comment: commentId(id(1)), status: "new", visibility: "public", parentCommentId: undefined, publicHidden: undefined },
+      { comment: commentId(id(2)), status: "new", visibility: "public", parentCommentId: commentId(id(1)), publicHidden: undefined },
+      { comment: commentId(id(3)), status: "new", visibility: undefined, parentCommentId: undefined, publicHidden: undefined },
+      { comment: commentId(id(4)), status: "new", visibility: "public", parentCommentId: undefined, publicHidden: true },
+    ]);
+    // Hiding a root takes its whole thread off the page: its visible reply is marked too; showing it again clears both.
+    await store.setPublicState({ ...scope, eventId: "hide-1", sourceId: "source-1", externalId: id(1), hidden: true }, human);
+    expect((await rows()).filter(row => row.publicHidden).map(row => row.comment)).toEqual([commentId(id(1)), commentId(id(2)), commentId(id(4))]);
+    await store.setPublicState({ ...scope, eventId: "show-1", sourceId: "source-1", externalId: id(1), hidden: false }, human);
+    expect((await rows()).filter(row => row.publicHidden).map(row => row.comment)).toEqual([commentId(id(4))]);
   });
 
   it("assistant replies to public comments are drafts; private and hidden text cannot be quoted into them, even the same visitor's", async () => {
@@ -188,6 +199,34 @@ describe("public threads in the inbox ledger (public-threads §5.4, §12)", () =
     // A private comment keeps the old rule and the publish mode: no draft.
     const privateTarget = await find(id(3));
     expect(await store.prepareReply(replyInput(privateTarget, "p1", "谢谢，我们会尽快联系你。"), assistant, ready)).toMatchObject({ kind: "pending", pending: { state: "sending" } });
+  });
+
+  it("the owner's opt-in decides public drafts and fails closed; hidden threads cannot be answered or quoted; the runner's thread reader shows only the page", async () => {
+    let direct: boolean | "throw" = false;
+    store = new InboxStore(root, { resolveBoard: async () => ({ createdAt, ownerAgentId: "owner" }), authorizeAssistant: async (_scope, agentId) => agentId === "assistant", assistantPublicDirect: async () => { if (direct === "throw") throw new Error("not loaded"); return direct; }, now: () => now });
+    await seed([row(1, "第二步看不懂，能解释一下吗？"), row(2, "我也是，第二步写得太简略了"), row(3, "私密：我的手机号是 13800000000 请联系我"), row(4, "另一个公开讨论"), row(5, "这个讨论后来整个被作者隐藏了，不能再引用"), row(6, "隐藏讨论里的一条回复，本身没有被隐藏过"), row(7, "第三个公开讨论")], [pub(1), pub(2, { parentId: id(1) }), pub(4), pub(5), pub(6, { parentId: id(5) }), pub(7)]);
+    await enable("publish");
+    const state = async (n: number, text: string) => { const prepared = await store.prepareReply(replyInput(await find(id(n)), `e-${n}-${text.length}-${now++}`, text), assistant, ready); return prepared.kind === "pending" ? prepared.pending.state : prepared.kind; };
+    expect(await state(1, "第二步是先保存草稿。")).toBe("draft");
+    direct = true;
+    expect(await state(2, "对，第二步是先保存草稿。")).toBe("sending");
+    expect(await state(3, "谢谢，我们会尽快联系你。")).toBe("sending");
+    direct = "throw";
+    expect(await state(4, "这一段我们会改写。"), "an unreadable opt-in means a draft").toBe("draft");
+    direct = true;
+    const review = await list();
+    await store.setPolicy({ ...scope, expectedRevision: review.revision, eventId: "review", policy: { read: true, triage: true, auto: "review" } }, human);
+    expect(await state(7, "我们会补充第三步。"), "先给我审核 drafts everything").toBe("draft");
+    // A hidden root takes its replies off the page: neither can be answered, and the reply's text cannot be quoted.
+    await store.setPublicState({ ...scope, eventId: "hide-5", sourceId: "source-1", externalId: id(5), hidden: true }, human);
+    for (const n of [5, 6]) await expect(store.prepareReply(replyInput(await find(id(n)), `h-${n}`, "我们会看看。"), assistant, ready)).rejects.toMatchObject({ code: "invalid_input", message: HIDDEN_PUBLIC });
+    await expect(store.prepareReply(replyInput(await find(id(7)), "q-6", "有人说“隐藏讨论里的一条回复，本身没有被隐藏过”"), assistant, ready)).rejects.toMatchObject({ code: "invalid_input", message: "回复里有一段和私密或已隐藏评论相同（连续 16 个字以上）。公开讨论里所有访客都能看到回复，请换一种说法。" });
+    // The thread reader: the visible thread for a public comment, null for a private one and for one visitors cannot see.
+    const context = (await store.publicThread({ ...scope, commentId: commentId(id(2)) }, assistant))!;
+    expect([context.root.text, ...context.replies.map(item => item.text)]).toEqual(["第二步看不懂，能解释一下吗？", "我也是，第二步写得太简略了"]);
+    expect(await store.publicThread({ ...scope, commentId: commentId(id(3)) }, assistant)).toBeNull();
+    expect(await store.publicThread({ ...scope, commentId: commentId(id(6)) }, assistant)).toBeNull();
+    await expect(store.publicThread({ ...scope, commentId: commentId(id(1)) }, { kind: "agent", agentId: "stranger" })).rejects.toHaveProperty("code", "forbidden");
   });
 
   it("counts owner and assistant replies across a public thread (20)", async () => {
