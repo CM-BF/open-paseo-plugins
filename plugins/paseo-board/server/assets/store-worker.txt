@@ -38361,6 +38361,8 @@ var COMMENTS_SHELL = String.raw`
     finally{clearTimeout(abort)}
   };
   const retryAfter=headers=>{const raw=headers.get('retry-after')||'';return /^\d{1,9}$/.test(raw)?Number(raw):0};
+  // The backend's per-page daily cap answers with a Retry-After of up to a day.
+  const waitText=seconds=>seconds<=120?' '+seconds+' 秒':seconds<=5400?' '+Math.ceil(seconds/60)+' 分钟':'约 '+Math.ceil(seconds/3600)+' 小时';
   /** Before the first POST or list of a page load: the address must still serve this app's thread runtime. */
   const checkHealth=()=>{
     if(health!==null)return Promise.resolve(health);
@@ -38417,7 +38419,7 @@ var COMMENTS_SHELL = String.raw`
         failures=0;schedule(jitter(15000));return{ok:true};
       }
       const message=r.body&&typeof r.body.error==='string'?r.body.error.slice(0,300):'HTTP '+r.status;
-      if(r.status===429)return{error:'发送太频繁，请 '+(retryAfter(r.headers)||60)+' 秒后再试。',keep:true};
+      if(r.status===429)return{error:'发送太频繁，请'+waitText(retryAfter(r.headers)||60)+'后再试。',keep:true};
       if(r.status===400)return{error:'评论内容不符合要求：'+message,keep:false};
       if(r.status>=500&&r.status!==507)return{error:TEXT.unconfirmed,keep:true,retry:true};
       return{error:'评论没有发送：'+message,keep:false};
