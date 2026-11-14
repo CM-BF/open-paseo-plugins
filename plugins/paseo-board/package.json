@@ -15,6 +15,7 @@
     "test:host": "node scripts/board-host-test.mjs",
     "test:release": "node scripts/release-browser-test.mjs",
     "test:release-host": "node scripts/release-host-test.mjs",
+    "test:page-comments": "node scripts/page-comments-e2e.mjs",
     "release:cli": "node scripts/board-release.mjs"
   },
   "devDependencies": {

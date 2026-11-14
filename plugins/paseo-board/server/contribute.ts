@@ -20,13 +20,17 @@ import { CompositionSources } from "./composition";
 import { compositionSourcesRpc, setCompositionSourcesRpc, inspectCompositionSourceRpc, syncCompositionSourceRpc, readCompositionSourceRpc } from "../shared/composition";
 import { InboxStore } from "./inbox-store";
 import { InboxConnections } from "./inbox-sync";
-import { InboxAutomation } from "./inbox-auto";
+import { InboxAutomation, type InboxAutomationOptions } from "./inbox-auto";
 import { inboxListRpc, inboxReadRpc, inboxPolicyRpc, inboxTriageRpc, inboxReplyRpc, inboxReplyPendingRpc, inboxArchiveRpc, inboxAutoStatusRpc, inboxAutoSetRpc, inboxAssistantOptionsRpc, inboxAutoEnableRpc } from "../shared/inbox";
 import { inboxConnectRpc, inboxConnectionsRpc, inboxSyncRpc, inboxReconcileRpc } from "../shared/inbox-connection";
 import { LiveDataPublisher } from "./live-data";
 import { liveGetRpc, liveSetRpc } from "../shared/live-data";
 
-export interface ContributeOptions { rootDir?: string; runtimeDir?: string; home?: string; linkSkills?: boolean; eventTransport?: { publish(change: BoardChange): void }; onService?: (service: BoardService) => void }
+export interface ContributeOptions {
+  rootDir?: string; runtimeDir?: string; home?: string; linkSkills?: boolean; eventTransport?: { publish(change: BoardChange): void }; onService?: (service: BoardService) => void;
+  /** Local harnesses only: the inbox coordinator's clock and limits (scripts/page-comments-e2e.mjs). */
+  inboxAutomation?: Pick<InboxAutomationOptions, "clock" | "limits">;
+}
 
 export function contributeServer(server: PluginServerContext, options: ContributeOptions = {}) {
   const paths = runtimePaths(options.runtimeDir);
@@ -51,7 +55,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   const copies = new BoardCopies(join(root, "copies"), store, board => store.materializeAuthoredHtml(board.id, board.canvas));
   const releases = new ReleaseRepository(join(root, "releases"), store);
   // One coordinator per plugin server: auto-sync, comment-assistant wakes and the reply outbox (DESIGN §11.8).
-  automation = new InboxAutomation({ rootDir: root, inbox, connections: inboxConnections, service, readBoard: id => store.read(id), releases, log });
+  automation = new InboxAutomation({ rootDir: root, inbox, connections: inboxConnections, service, readBoard: id => store.read(id), releases, log, ...options.inboxAutomation });
   const inboxAuto = automation;
   service.useInboxAssistant((boardId, createdAt, agentId) => inboxAuto.isAssistant({ boardId, expectedCreatedAt: createdAt }, agentId));
   const pages = new GitHubPagesManager(join(root, "pages"), releases);
