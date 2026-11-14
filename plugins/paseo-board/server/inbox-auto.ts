@@ -12,7 +12,7 @@ import { BoardStoreError, canonicalJson, ensureDirectory, parseInput } from "./s
 import type { InboxStore } from "./inbox-store";
 import { AUTOMATION_ACTOR, IDENTITY_MISMATCH, InboxConnections, SyncFailure, type ReplyEvent, type RuntimeSource } from "./inbox-sync";
 import type { Paseo } from "./sdk";
-import { CHECKING_REFUSAL, ENV_SECRET_REFUSAL, NO_CLAUDE_REFUSAL, RESUME_REFUSAL, assistantModelChoices, assistantSystemPrompt, legacyNotice, modelRefusal, preflightRefusal, recommendedModelId } from "./inbox-assistant";
+import { CHECKING_REFUSAL, ENV_SECRET_REFUSAL, NO_CLAUDE_REFUSAL, RESUME_REFUSAL, ROUTE_ARGS_REFUSAL, assistantModelChoices, assistantSystemPrompt, legacyNotice, modelRefusal, preflightRefusal, recommendedModelId } from "./inbox-assistant";
 import { MODEL_RE, routeErrorText, routeFrom, type ModelRoute } from "./kit/complete";
 import type { RunOutcome, RunnerBindings, SealedRunner } from "./inbox-runner";
 
@@ -285,17 +285,29 @@ export class InboxAutomation {
   /**
    * Crash recovery (§3.4): a run still `starting` or `running` in the file belongs to a previous process; its
    * binding died with that process, so it cannot act. It becomes `interrupted` and its comments are rewound;
-   * those it already handled are no longer `new` and are not offered again.
+   * those it already handled are no longer `new` and are not offered again. A `running` one had passed its init
+   * check, so the model may have been called: it is charged its budget, like any run that reported no cost.
    */
   private recover(rt: ScopeRuntime): boolean {
     let changed = false;
+    const now = this.clock.now();
     for (const run of rt.file.runs) {
       if (run.state !== "starting" && run.state !== "running") continue;
-      Object.assign(run, { state: "interrupted", endedAt: iso(this.clock.now()), error: "插件重启时这批评论还在处理，已中断" });
+      const charged = run.state === "running" ? perRunCap(run.model, run.commentIds.length) : null;
+      Object.assign(run, { state: "interrupted", endedAt: iso(now), error: "插件重启时这批评论还在处理，已中断" });
+      if (charged !== null) { Object.assign(run, { costUsd: charged, costEstimated: true }); this.charge(rt, now, charged); }
       this.rewind(rt, run);
       changed = true;
     }
     return changed;
+  }
+  /** Adds a run's cost to the Board's day and hour (the daily cost cap, §3.4). */
+  private charge(rt: ScopeRuntime, now: number, usd: number) {
+    if (!(usd > 0)) return;
+    this.rollCost(rt, now);
+    rt.file.cost.dayUsd += usd;
+    rt.file.cost.hour.push({ at: iso(now), usd });
+    rt.file.cost.hour = rt.file.cost.hour.slice(-200);
   }
   /** Offers a run's comments again (seenSeq back to before them), like a wake that was never sent. */
   private rewind(rt: ScopeRuntime, run: Pick<InboxRunRecord, "firstSeq" | "lastSeq">) {
@@ -614,13 +626,15 @@ export class InboxAutomation {
       state: outcome.state, endedAt: at, cliVersion: outcome.cliVersion ?? record.cliVersion, durationMs: outcome.durationMs,
       deniedAttempts: outcome.deniedAttempts.slice(0, 10), costUsd: outcome.costUsd, actions: outcome.actions,
       error: outcome.error?.slice(0, 300) ?? null, findings: outcome.findings.slice(0, 10),
+      ...(outcome.costEstimated && outcome.costUsd !== null ? { costEstimated: true as const } : {}),
     });
     const runner = rt.file.runner;
     if (runner && (outcome.cliVersion || ["lockdown", "not-ready", "unsupported"].includes(outcome.state))) {
       const ok = !["lockdown", "not-ready", "unsupported"].includes(outcome.state);
       runner.lastCheck = { at, ok, cliVersion: outcome.cliVersion, findings: ok ? [] : outcome.findings.slice(0, 10) };
     }
-    if (outcome.costUsd) { this.rollCost(rt, now); rt.file.cost.dayUsd += outcome.costUsd; rt.file.cost.hour.push({ at, usd: outcome.costUsd }); rt.file.cost.hour = rt.file.cost.hour.slice(-200); }
+    // Every run that reached the model counts, including one killed before the CLI reported its cost (charged its budget).
+    if (outcome.costUsd) this.charge(rt, now, outcome.costUsd);
     // A batch the model never received (or a run stopped before it could finish) is offered again.
     if (!outcome.armed && outcome.state !== "done" || outcome.state === "interrupted" || startFailure) this.rewind(rt, record);
     if (outcome.state === "lockdown") {
@@ -781,7 +795,8 @@ export class InboxAutomation {
     const runner = rt.file.runner;
     if (!runner) return null;
     const day = localDay(now) === rt.file.cost.day ? rt.file.cost.dayUsd : 0;
-    const measured = rt.file.runs.filter(run => run.costUsd !== null && run.commentIds.length && run.state !== "starting" && run.state !== "running");
+    // The average uses reported costs only; a budget charged for a run without one is an upper bound.
+    const measured = rt.file.runs.filter(run => run.costUsd !== null && !run.costEstimated && run.commentIds.length && run.state !== "starting" && run.state !== "running");
     const comments = measured.reduce((sum, run) => sum + run.commentIds.length, 0);
     return {
       kind: "sealed", modelId: runner.model, modelLabel: runner.modelLabel, effort: runner.effort, providerId: runner.providerId, lastCheck: runner.lastCheck,
@@ -828,21 +843,24 @@ export class InboxAutomation {
   }
   /**
    * The Claude-family route the runner launches (§3.1): `claude`, else the first provider that extends it, from
-   * the daemon config read now. A route whose env holds credentials is refused (the kit never copies them).
+   * the daemon config read now. A route whose env holds credentials is refused (the kit never copies them), and so
+   * is a command with anything after the executable: provider arguments such as `--append-system-prompt-file`
+   * add context that the init check cannot see.
    */
   private async pickRoute(host: Paseo, preferred?: string): Promise<Picked> {
     let providers: unknown;
     try { providers = (await host.config.get()).config.providers; } catch { return { ok: false, refusal: NO_CLAUDE_REFUSAL }; }
     const all = providers && typeof providers === "object" && !Array.isArray(providers) ? providers as Record<string, unknown> : {};
     const ids = preferred ? [preferred] : ["claude", ...Object.keys(all).filter(id => id !== "claude" && (all[id] as { extends?: unknown } | null)?.extends === "claude").sort()];
-    let secret = false;
+    let secret = false, args = false;
     for (const id of ids) {
       const route = routeFrom(all, id);
-      if (route.ok) return { ok: true, providerId: id, label: route.label, route: route.route };
-      if (route.error === "route_env_secret") secret = true;
+      if (route.ok && route.route.command.length === 1) return { ok: true, providerId: id, label: route.label, route: route.route };
+      if (route.ok) { args = true; this.log(`comment runner route ${id}: the provider command has extra arguments`); }
+      else if (route.error === "route_env_secret") secret = true;
       else this.log(`comment runner route ${id}: ${routeErrorText(route.error)}`);
     }
-    return { ok: false, refusal: secret ? ENV_SECRET_REFUSAL : NO_CLAUDE_REFUSAL };
+    return { ok: false, refusal: secret ? ENV_SECRET_REFUSAL : args ? ROUTE_ARGS_REFUSAL : NO_CLAUDE_REFUSAL };
   }
   /** `paseo.providers.listModels` crossed with the price table (§3.5); the CLI aliases when the list cannot be read. */
   private async modelChoices(host: Paseo, providerId: string): Promise<InboxAssistantOptions["models"]> {
@@ -911,7 +929,7 @@ export class InboxAutomation {
       generation: (rt.file.runner?.generation ?? 0) + 1, providerId: picked.providerId, model: chosen.id, modelLabel: chosen.label, effort: input.effort,
       dailyCapUsd: input.dailyCapUsd ?? chosen.dailyCapUsd, lastCheck: { at, ok: true, cliVersion: outcome.cliVersion, findings: [] },
     };
-    if (outcome.costUsd) { this.rollCost(rt, now); rt.file.cost.dayUsd += outcome.costUsd; rt.file.cost.hour.push({ at, usd: outcome.costUsd }); }
+    if (outcome.costUsd) this.charge(rt, now, outcome.costUsd);
     // The backlog is never handed to the runner.
     await this.reload(rt);
     rt.file.wake.seenSeq = rt.ledger!.latestSeq;
@@ -923,6 +941,6 @@ export class InboxAutomation {
 }
 /** A run that never launched (no route, or an exception before the process): retried like not-ready. */
 function notStarted(error: string): RunOutcome {
-  return { state: "not-ready", armed: false, cliVersion: null, model: null, findings: [], error: error.slice(0, 300), category: null, modelUnavailable: false, deniedAttempts: [], toolUses: 0, costUsd: null, durationMs: 0, actions: { replied: 0, drafted: 0, triaged: 0, dismissed: 0 } };
+  return { state: "not-ready", armed: false, cliVersion: null, model: null, findings: [], error: error.slice(0, 300), category: null, modelUnavailable: false, deniedAttempts: [], toolUses: 0, costUsd: null, costEstimated: false, durationMs: 0, actions: { replied: 0, drafted: 0, triaged: 0, dismissed: 0 } };
 }
 export type { ScopeRuntime as InboxAutomationScope };

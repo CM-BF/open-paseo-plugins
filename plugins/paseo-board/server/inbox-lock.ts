@@ -16,6 +16,12 @@ export const DENY_BELT: readonly string[] = [
   "Task", "Agent", "Skill", "Workflow", "TodoWrite", "CronCreate", "CronDelete", "CronList", "Monitor", "SendMessage", "EnterWorktree",
   "ExitWorktree", "ScheduleWakeup", "RemoteTrigger", "PushNotification",
 ];
+/**
+ * The Claude Code built-in plugins a sealed run may report (seen in every 2.1.325 init; telemetry only sometimes).
+ * Pinned by name: a built-in plugin can add context to the model that init does not show, so one this list does
+ * not know (a newer CLI, a feature flag) fails the check until the plugin has been reviewed and updated.
+ */
+export const BUILTIN_PLUGINS: readonly string[] = ["cc-plugin-agents-md", "cc-plugin-telemetry", "cc-plugin-privacy", "cc-plugin-plugin-authoring"];
 /** `permissions.denyInsteadOfPrompting` first shipped in 2.1.319. */
 export const MIN_CLI_VERSION = "2.1.319";
 export const RUNNER_ROLE = "paseo-board-inbox-runner";
@@ -32,6 +38,9 @@ export const LOCK_ENV: Readonly<Record<string, string>> = {
   CLAUDE_CODE_DISABLE_CRON: "1",
   ENABLE_CLAUDEAI_MCP_SERVERS: "false",
   DISABLE_AUTOUPDATER: "1",
+  // Cross-session messaging off: without it a run opens a local socket other sessions on this computer can write
+  // to (init `messaging_socket_path`). Verified with 2.1.325; not part of the init check (inbound only, local only).
+  CLAUDE_CODE_HARBOR_KITE: "0",
 };
 
 /** Flag settings (`--settings`): no hooks, connectors, memory or synced skills; only our MCP command; deny, never prompt. */
@@ -146,7 +155,8 @@ export function verifyInit(init: unknown, expected: { cwd: string; model: string
   }
   if (event.plugins !== undefined) {
     const plugins = Array.isArray(event.plugins) ? event.plugins : null;
-    const foreign = plugins ? plugins.filter(plugin => !isObject(plugin) || plugin.path !== "builtin").map(plugin => isObject(plugin) ? String(plugin.name ?? "?") : "?") : ["无法识别"];
+    const known = (plugin: Record<string, unknown>) => plugin.path === "builtin" && typeof plugin.name === "string" && BUILTIN_PLUGINS.includes(plugin.name) && (plugin.source === undefined || plugin.source === `${plugin.name}@builtin`);
+    const foreign = plugins ? plugins.filter(plugin => !isObject(plugin) || !known(plugin)).map(plugin => isObject(plugin) ? String(plugin.name ?? "?") : "?") : ["无法识别"];
     if (foreign.length) violations.push(`插件 ${names(foreign)}`);
   }
   if (event.output_style !== undefined && event.output_style !== "default") violations.push(`输出风格 ${clean(event.output_style)}`);

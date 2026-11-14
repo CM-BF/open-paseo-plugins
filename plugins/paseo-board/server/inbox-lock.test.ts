@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  ALLOWED_TOOLS, DENY_BELT, LOCK_ENV, PREFLIGHT_PROMPT, auditEvent, classifyResult, lockArgs, lockEnv, lockSettings, mcpConfig, modelMatches, verifyInit, versionAtLeast,
+  ALLOWED_TOOLS, BUILTIN_PLUGINS, DENY_BELT, LOCK_ENV, PREFLIGHT_PROMPT, auditEvent, classifyResult, lockArgs, lockEnv, lockSettings, mcpConfig, modelMatches, verifyInit, versionAtLeast,
 } from "./inbox-lock";
 
 const MCP = "/Users/test/.paseo/paseo-board/bin/paseo-board-mcp";
@@ -21,6 +21,16 @@ const s8 = () => ({ ...passing(), cwd: "/private/tmp/inv-a/cfg-test/proj", origi
 /** Runs B and H2: a Paseo-shaped launch (mcp__board__ping, mode default; B also 44 slash commands and 16 skills). */
 const runB = () => ({ type: "system", subtype: "init", cwd: CWD, tools: ["mcp__board__ping"], mcp_servers: [{ name: "board", status: "connected", source: "dynamic" }], permissionMode: "default", slash_commands: Array.from({ length: 44 }, (_, index) => `cmd-${index}`), skills: Array.from({ length: 16 }, (_, index) => `skill-${index}`), model: "claude-sonnet-4-5", claude_code_version: "2.1.325" });
 const runH2 = () => ({ ...runB(), slash_commands: [], skills: [] });
+/**
+ * Red-team round 1, the old design (a Paseo agent on the user's claude.ai login): the claude.ai connectors, the
+ * account-synced skills and the full built-in toolset next to the inbox tools (names and statuses as reported).
+ */
+const oldRound1 = () => ({
+  ...passing(), permissionMode: "default",
+  tools: [...passing().tools, "Bash", "Read", "WebFetch", "Skill", "mcp__claude_ai_Claude_Docs__create", "mcp__claude_ai_Claude_Docs__delete", "mcp__learning__memory"],
+  mcp_servers: [...passing().mcp_servers, { name: "learning", status: "connected" }, { name: "claude.ai Claude Docs", status: "connected" }, { name: "claude.ai Google Calendar", status: "needs-auth" }, { name: "claude.ai Google Drive", status: "needs-auth" }, { name: "claude.ai Gmail", status: "needs-auth" }],
+  skills: ["anthropic-skills:built-in-browser", "anthropic-skills:chrome-browser", "learning-loop"],
+});
 
 describe("sealed runner argv, settings and env (lockdown design §3.1)", () => {
   it("builds the exact, byte-stable argv with an empty --tools, --setting-sources and no visitor text", () => {
@@ -52,6 +62,9 @@ describe("sealed runner argv, settings and env (lockdown design §3.1)", () => {
   it("strips Paseo and binding variables from the child env and adds the belts", () => {
     const env = lockEnv({ HOME: "/h", PATH: "/bin", PASEO_HOME: "/h/.paseo", PASEO_BOARD_BINDING: "owner-token", PASEO_AGENT_ID: "x", LEARNING_BINDING: "y", CLAUDECODE: "1", ELECTRON_RUN_AS_NODE: "1" }, { env: { ANTHROPIC_BASE_URL: "https://proxy" } });
     expect(env).toEqual({ HOME: "/h", PATH: "/bin", ANTHROPIC_BASE_URL: "https://proxy", PASEO_PLUGIN_HELPER_ROLE: "paseo-board-inbox-runner", ...LOCK_ENV });
+    // Belts: claude.ai connectors off, and cross-session messaging off (no local messaging socket; audit, 2.1.325).
+    expect(LOCK_ENV).toMatchObject({ ENABLE_CLAUDEAI_MCP_SERVERS: "false", CLAUDE_CODE_HARBOR_KITE: "0" });
+    expect(lockEnv({ HOME: "/h", CLAUDE_CODE_HARBOR_KITE: "1" }, { env: { CLAUDE_CODE_HARBOR_KITE: "1" } })).toMatchObject({ CLAUDE_CODE_HARBOR_KITE: "0" });
   });
 });
 
@@ -87,6 +100,32 @@ describe("verifyInit (lockdown design §3.3)", () => {
     expect(verifyInit({ ...passing(), cwd: "/Users/x/project" }, expected)).toMatchObject({ kind: "violation", findings: ["工作目录不是这次运行的临时目录"] });
     expect(verifyInit({ ...passing(), original_cwd: "/Users/x" }, expected)).toMatchObject({ kind: "violation" });
     expect(verifyInit(null, expected)).toMatchObject({ kind: "violation", findings: ["没有工具清单", "没有 MCP 服务清单", "权限模式 缺失", "工作目录不是这次运行的临时目录"] });
+  });
+  it("rejects the old design's claude.ai connectors and account-synced skills (audit, red-team round 1)", () => {
+    expect(verifyInit(oldRound1(), expected)).toEqual({
+      ok: false, kind: "violation", cliVersion: "2.1.325",
+      findings: [
+        "工具 Bash、Read、WebFetch、Skill、mcp__claude_ai_Claude_Docs__create、mcp__claude_ai_Claude_Docs__delete、mcp__learning__memory",
+        "MCP 服务 learning、claude.ai Claude Docs、claude.ai Google Calendar、claude.ai Google Drive、claude.ai Gmail",
+        "权限模式 default",
+        "技能 anthropic-skills:built-in-browser、anthropic-skills:chrome-browser、learning-loop",
+      ],
+    });
+    // A connector that only needs auth still counts: it is in the run's server list.
+    expect(verifyInit({ ...passing(), mcp_servers: [...passing().mcp_servers, { name: "claude.ai Gmail", status: "needs-auth" }] }, expected)).toMatchObject({ kind: "violation", findings: ["MCP 服务 claude.ai Gmail"] });
+  });
+  it("pins Claude Code's built-in plugins by name and source; an unknown or relabelled one is a violation (audit)", () => {
+    const builtin = (name: unknown, source: unknown = `${String(name)}@builtin`) => ({ name, path: "builtin", source });
+    expect(BUILTIN_PLUGINS).toEqual(["cc-plugin-agents-md", "cc-plugin-telemetry", "cc-plugin-privacy", "cc-plugin-plugin-authoring"]);
+    // Every 2.1.325 init seen (telemetry only sometimes), and the same without the source field.
+    expect(verifyInit({ ...passing(), plugins: BUILTIN_PLUGINS.map(name => builtin(name)) }, expected).ok).toBe(true);
+    expect(verifyInit({ ...passing(), plugins: [{ name: "cc-plugin-agents-md", path: "builtin" }] }, expected).ok).toBe(true);
+    // A built-in plugin this build has not reviewed (a newer CLI or a feature flag) may add context init cannot show.
+    expect(verifyInit({ ...passing(), plugins: [...passing().plugins, builtin("cc-plugin-memory")] }, expected)).toEqual({ ok: false, kind: "violation", findings: ["插件 cc-plugin-memory"], cliVersion: "2.1.325" });
+    expect(verifyInit({ ...passing(), plugins: [builtin("cc-plugin-agents-md", "cc-plugin-agents-md@inline")] }, expected)).toMatchObject({ kind: "violation", findings: ["插件 cc-plugin-agents-md"] });
+    expect(verifyInit({ ...passing(), plugins: [builtin(7)] }, expected)).toMatchObject({ kind: "violation", findings: ["插件 7"] });
+    expect(verifyInit({ ...passing(), plugins: [{ name: "evilplug", path: "/private/tmp/plugin", source: "evilplug@inline" }] }, expected)).toMatchObject({ kind: "violation", findings: ["插件 evilplug"] });
+    expect(verifyInit({ ...passing(), plugins: "builtin" }, expected)).toMatchObject({ kind: "violation", findings: ["插件 无法识别"] });
   });
   it("refuses an old or unknown CLI as unsupported and a model mismatch as not-ready", () => {
     expect(verifyInit({ ...passing(), claude_code_version: "2.1.318" }, expected)).toEqual({ ok: false, kind: "unsupported", findings: ["Claude Code 2.1.318"], cliVersion: "2.1.318" });

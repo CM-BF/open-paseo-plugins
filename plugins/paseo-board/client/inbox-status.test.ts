@@ -64,7 +64,7 @@ describe("inbox automation texts (DESIGN §4.10, §11.12)", () => {
   it("shows the sealed runner, its cost, the run log and denied tool attempts (lockdown design §3.8)", () => {
     const run = (patch: Partial<InboxRunRecord>): InboxRunRecord => ({ runId: "inbox-x-1-2", at: at(8, 30), endedAt: at(8, 30, 9), state: "done", model: "claude-haiku-5-5", cliVersion: "2.1.325", commentIds: ["c1", "c2"], firstSeq: 1, lastSeq: 2, actions: { replied: 1, drafted: 0, triaged: 1, dismissed: 0 }, deniedAttempts: [], costUsd: 0.0031, durationMs: 8_600, error: null, findings: [], ...patch });
     const assistant = { kind: "sealed" as const, modelId: "claude-haiku-5-5", modelLabel: "Haiku 5.5", effort: "low" as const, providerId: "claude", lastCheck: { at: at(8, 12), ok: true, cliVersion: "2.1.325", findings: [] }, costLastHourUsd: 0.0031, costTodayUsd: 0.0125, dailyCapUsd: 0.5, avgCostPerCommentUsd: 0.00156 };
-    const value = status({}, [source()], { assistant, runs: [run({ state: "running", endedAt: null, at: at(8, 40), commentIds: ["c3"], costUsd: null, durationMs: null }), run({}), run({ state: "lockdown", findings: ["工具 Bash", "MCP 服务 paseo"], at: at(8, 20) }), run({ state: "unsupported", error: "Claude Code 启动失败（退出码 1）", at: at(8, 10) }), run({ deniedAttempts: ["Bash", "WebFetch"], at: at(8, 5) })] });
+    const value = status({}, [source()], { assistant, runs: [run({ state: "running", endedAt: null, at: at(8, 40), commentIds: ["c3"], costUsd: null, durationMs: null }), run({}), run({ state: "lockdown", findings: ["工具 Bash", "MCP 服务 paseo"], at: at(8, 20) }), run({ state: "unsupported", error: "Claude Code 启动失败（退出码 1）", at: at(8, 10) }), run({ deniedAttempts: ["Bash", "WebFetch"], at: at(8, 5) }), run({ state: "failed", error: "工具调用超过 10 次，已停止", costUsd: 0.02, costEstimated: true, at: at(8, 1) }), run({ costUsd: 0.02, costEstimated: true, at: at(8, 0) })] });
     expect(assistantLine(value)).toBe("评论助手：Haiku 5.5 · 每批新会话 · 锁定检查 08:12 通过（Claude Code 2.1.325）");
     expect(assistantLine({ ...value, assistant: { ...assistant, lastCheck: { at: at(8, 20), ok: false, cliVersion: "2.1.325", findings: ["工具 Bash"] } } })).toBe("评论助手：Haiku 5.5 · 每批新会话 · 锁定检查 08:20 没通过");
     expect(costLine(value)).toBe("花费：最近一小时 $0.0031 · 今天 $0.013 / 上限 $0.5（按 API 价格估算） · 平均每条 $0.0016");
@@ -74,6 +74,9 @@ describe("inbox automation texts (DESIGN §4.10, §11.12)", () => {
       "08:20 锁定检查没通过：工具 Bash；MCP 服务 paseo",
       "08:10 没能启动：Claude Code 启动失败（退出码 1）",
       "08:05 处理 2 条（回复 1，草稿 0，分类 1）· $0.0031 · 9 秒",
+      // A run killed before the CLI reported its cost is charged its --max-budget-usd, and the log says so.
+      "08:01 失败：工具调用超过 10 次，已停止 · 费用按单次上限计 $0.02",
+      "08:00 处理 2 条（回复 1，草稿 0，分类 1）· 费用按单次上限计 $0.02 · 9 秒",
     ]);
     expect(deniedNotice(value)).toBe("评论助手在处理这批评论时试图使用不存在的工具（Bash、WebFetch），已被拒绝。这些评论可能含有诱导内容，建议看一下。");
     expect(deniedNotice(status())).toBeNull(); expect(assistantLine(status())).toBeNull(); expect(costLine(status())).toBeNull();

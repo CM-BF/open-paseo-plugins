@@ -10477,6 +10477,8 @@ var InboxRunRecordSchema = z4.object({
   actions: InboxRunActionsSchema,
   deniedAttempts: z4.array(z4.string().max(100)).max(10),
   costUsd: z4.number().nonnegative().nullable(),
+  /** Set when costUsd is the run's `--max-budget-usd`, charged because the run ended without reporting a cost. */
+  costEstimated: z4.literal(true).optional(),
   durationMs: z4.number().int().nonnegative().nullable(),
   error: z4.string().max(300).nullable(),
   findings: z4.array(z4.string().max(200)).max(10)
@@ -12694,6 +12696,7 @@ var RUN_STATE_TEXT = {
   timeout: "\u8D85\u65F6\u505C\u6B62",
   interrupted: "\u4E2D\u65AD"
 };
+var budgetCharged = run => run.costEstimated && run.costUsd !== null ? `\u8D39\u7528\u6309\u5355\u6B21\u4E0A\u9650\u8BA1 $${usd(run.costUsd)}` : null;
 function runLines(status) {
   return status.runs.map(run => {
     var at = clockTime(run.at),
@@ -12706,9 +12709,10 @@ function runLines(status) {
         triaged,
         dismissed
       } = run.actions;
-      return `${at} \u5904\u7406 ${n} \u6761\uFF08\u56DE\u590D ${replied}\uFF0C\u8349\u7A3F ${drafted}\uFF0C\u5206\u7C7B ${triaged + dismissed}\uFF09\xB7 ${run.costUsd === null ? "\u8D39\u7528\u672A\u77E5" : `$${usd(run.costUsd)}`} \xB7 ${Math.max(0, Math.round((run.durationMs ?? 0) / 1e3))} \u79D2`;
+      return `${at} \u5904\u7406 ${n} \u6761\uFF08\u56DE\u590D ${replied}\uFF0C\u8349\u7A3F ${drafted}\uFF0C\u5206\u7C7B ${triaged + dismissed}\uFF09\xB7 ${budgetCharged(run) ?? (run.costUsd === null ? "\u8D39\u7528\u672A\u77E5" : `$${usd(run.costUsd)}`)} \xB7 ${Math.max(0, Math.round((run.durationMs ?? 0) / 1e3))} \u79D2`;
     }
-    return `${at} ${RUN_STATE_TEXT[run.state]}\uFF1A${run.findings.length ? run.findings.join("\uFF1B") : run.error ?? "\u539F\u56E0\u672A\u77E5"}`;
+    var charged = budgetCharged(run);
+    return `${at} ${RUN_STATE_TEXT[run.state]}\uFF1A${run.findings.length ? run.findings.join("\uFF1B") : run.error ?? "\u539F\u56E0\u672A\u77E5"}${charged ? ` \xB7 ${charged}` : ""}`;
   });
 }
 function deniedNotice(status) {

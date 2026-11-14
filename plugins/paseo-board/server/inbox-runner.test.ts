@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { stat } from "node:fs/promises";
 import { PREFLIGHT_PROMPT } from "./inbox-lock";
 import { RunnerBindings, SealedRunner, runnerActorId, type RunInput, type StreamExec, type StreamExecOptions, type StreamExit } from "./inbox-runner";
@@ -30,6 +30,22 @@ const init = (io: IO, patch: Record<string, unknown> = {}) => ({ type: "system",
 const toolUse = (...names: string[]) => ({ type: "assistant", message: { content: names.map((name, index) => ({ type: "tool_use", id: `toolu_${index}`, name, input: {} })) } });
 const result = (patch: Record<string, unknown> = {}) => ({ type: "result", subtype: "success", is_error: false, total_cost_usd: 0.0031, num_turns: 3, result: "done", ...patch });
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
+/** A fake `claude -p` driven by hand, with a clock the test moves (for token lifetimes across a queue or a sleep). */
+function manual() {
+  let now = 1_800_000_000_000;
+  const timers: Array<{ at: number; callback: () => void }> = [];
+  const clock = { now: () => now, setTimer: (callback: () => void, ms: number) => { const timer = { at: now + ms, callback }; timers.push(timer); return timer; }, clearTimer: (handle: unknown) => { const index = timers.indexOf(handle as never); if (index >= 0) timers.splice(index, 1); } };
+  const procs: Array<{ argv: readonly string[]; options: StreamExecOptions; token: string; killed: boolean; line(value: unknown): void; exit(): void }> = [];
+  const exec: StreamExec = (argv, options) => {
+    let finish!: (exit: StreamExit) => void;
+    const exited = new Promise<StreamExit>(resolve => { finish = resolve; });
+    const proc = { argv, options, token: JSON.parse(argv[argv.indexOf("--mcp-config") + 1]).mcpServers.paseo_board.env.PASEO_BOARD_BINDING as string, killed: false, line: (value: unknown) => options.onLine(JSON.stringify(value)), exit: () => finish({ code: 0, signal: null }) };
+    procs.push(proc);
+    return { kill: () => { proc.killed = true; finish({ code: null, signal: "SIGKILL" }); }, exited };
+  };
+  return { clock, procs, exec, advance: (ms: number) => { now += ms; } };
+}
+const initAt = (cwd: string, patch: Record<string, unknown> = {}) => ({ type: "system", subtype: "init", cwd, original_cwd: cwd, tools: TOOLS, mcp_servers: [{ name: "paseo_board", status: "connected" }], model: "claude-haiku-5-5", permissionMode: "dontAsk", slash_commands: [], skills: [], plugins: [], output_style: "default", claude_code_version: "2.1.325", ...patch });
 
 describe("sealed runner (lockdown design §3.1–§3.3)", () => {
   const route = { providerId: "claude", command: ["claude"] as [string], env: {} };
@@ -150,6 +166,82 @@ describe("sealed runner (lockdown design §3.1–§3.3)", () => {
     const aborted = new AbortController();
     const abortable = runner(scripted(async io => { io.emit(init(io)); aborted.abort(); await io.killed; }).exec).run(input({ signal: aborted.signal }));
     expect(await abortable).toMatchObject({ state: "interrupted" });
+  });
+
+  it("charges a run that may have reached the model but reported no cost its --max-budget-usd (audit ADV-1)", async () => {
+    // Killed at the tool-call cap (a hostile loop on an allowed tool): the CLI never writes its result.
+    const capped = await runner(scripted(async io => { io.emit(init(io)); for (let index = 0; index < 11; index++) io.emit(toolUse("mcp__paseo_board__board_inbox_list")); await io.killed; }).exec).run(input({ commentIds: ["c1"] }));
+    expect(capped).toMatchObject({ state: "failed", category: "tool_cap", armed: true, costUsd: 0.02, costEstimated: true });
+    // Timed out, over the output cap, crashed after init, aborted, and a preflight (charged its own budget).
+    expect(await runner(scripted(async io => { io.emit(init(io)); await io.killed; }).exec, new RunnerBindings(), { runTimeoutMs: 50 }).run(input())).toMatchObject({ state: "timeout", costUsd: 0.02, costEstimated: true });
+    expect(await runner(scripted(async io => { io.emit(init(io)); io.emit({ type: "assistant", message: { content: [{ type: "text", text: "x".repeat(5_000) }] } }); await io.killed; }).exec, new RunnerBindings(), { outputBytes: 4_000 }).run(input())).toMatchObject({ state: "failed", category: "too_large", costUsd: 0.02, costEstimated: true });
+    expect(await runner(scripted(async io => { io.emit(init(io)); return { code: 1, signal: null }; }).exec).run(input())).toMatchObject({ state: "failed", category: "cli_failed", costUsd: 0.02, costEstimated: true });
+    const aborted = new AbortController();
+    expect(await runner(scripted(async io => { io.emit(init(io)); aborted.abort(); await io.killed; }).exec).run(input({ signal: aborted.signal }))).toMatchObject({ state: "interrupted", category: "aborted", costUsd: 0.02, costEstimated: true });
+    expect(await runner(scripted(async io => { io.emit(init(io)); await io.killed; }).exec, new RunnerBindings(), { preflightTimeoutMs: 50 }).run(input({ preflight: true, maxBudgetUsd: 0.1 }))).toMatchObject({ state: "failed", category: "timeout", costUsd: 0.1, costEstimated: true });
+    // Model output before init: killed unchecked, but it may have cost something.
+    expect(await runner(scripted(async io => { io.emit(toolUse("Bash")); await io.killed; }).exec).run(input())).toMatchObject({ state: "lockdown", costUsd: 0.02, costEstimated: true });
+    // A reported cost is used as it is (also a result without total_cost_usd is charged the budget).
+    expect(await runner(scripted(async io => { io.emit(init(io)); io.emit(result()); }).exec).run(input())).toMatchObject({ state: "done", costUsd: 0.0031, costEstimated: false });
+    expect(await runner(scripted(async io => { io.emit(init(io)); io.emit(result({ total_cost_usd: undefined })); }).exec).run(input())).toMatchObject({ state: "done", costUsd: 0.02, costEstimated: true });
+    // A run that never reached the model costs nothing: a violation at init, no init at all, a missing CLI.
+    expect(await runner(scripted(async io => { io.emit(init(io, { tools: [...TOOLS, "Bash"] })); await io.killed; }).exec).run(input())).toMatchObject({ state: "lockdown", costUsd: null, costEstimated: false });
+    expect(await runner(scripted(async io => { await io.killed; }).exec).run(input())).toMatchObject({ state: "not-ready", costUsd: null, costEstimated: false });
+    expect(await runner(scripted(async () => ({ code: null, signal: null, missing: true })).exec).run(input())).toMatchObject({ state: "unsupported", costUsd: null });
+  });
+
+  it("refuses a provider command with arguments before launching anything (audit: --append-system-prompt-file)", async () => {
+    const bindings = new RunnerBindings();
+    const { exec, calls } = scripted(async io => { io.emit(init(io)); io.emit(result()); });
+    for (const command of [["claude", "--append-system-prompt-file", "/Users/someone/persona.md"], ["claude", "--append-system-prompt", "persona"], ["/opt/claude", "--plugin-dir", "/tmp/p"]] as Array<[string, ...string[]]>) {
+      const outcome = await runner(exec, bindings).run(input({ route: { ...route, command } }));
+      expect(outcome).toMatchObject({ state: "unsupported", category: "route_args", armed: false, costUsd: null, error: "提供方命令带有额外参数，没有启动" });
+    }
+    expect(calls).toHaveLength(0); expect(bindings.size).toBe(0);
+  });
+
+  it("starts a queued run's token lifetime and duration when it gets a host slot (audit ADV-2)", async () => {
+    const m = manual(), bindings = new RunnerBindings(m.clock.now);
+    const sealed = new SealedRunner({ bindings, mcpCommand: MCP, exec: m.exec, clock: m.clock, env: { HOME: "/h" }, limits: { maxConcurrent: 1 } });
+    const first = sealed.run(input({ runId: "A", commentIds: ["c1"] }));
+    await vi.waitFor(() => expect(m.procs).toHaveLength(1));
+    const second = sealed.run(input({ runId: "B", commentIds: ["c2"] })); // queued behind A
+    m.procs[0].line(initAt(m.procs[0].options.cwd));
+    m.advance(240_000); // A takes 4 of its 5 minutes
+    m.procs[0].line(result()); m.procs[0].exit();
+    expect(await first).toMatchObject({ state: "done", durationMs: 240_000 });
+    await vi.waitFor(() => expect(m.procs).toHaveLength(2));
+    m.procs[1].line(initAt(m.procs[1].options.cwd));
+    m.advance(121_000); // B has run 2 of its own 5 minutes: its token still works
+    expect(bindings.get(m.procs[1].token)?.armed).toBe(true);
+    m.advance(178_000); // just before B's own limit
+    expect(bindings.get(m.procs[1].token)?.armed).toBe(true);
+    m.procs[1].line(result()); m.procs[1].exit();
+    // The time B spent queued is not its duration.
+    expect(await second).toMatchObject({ state: "done", armed: true, durationMs: 299_000 });
+  });
+
+  it("ends a run whose token expired while it was live as interrupted, so the batch is offered again (audit ADV-2)", async () => {
+    // Expired after arming (for example across a sleep): the model's later inbox calls were refused.
+    const m = manual(), bindings = new RunnerBindings(m.clock.now);
+    const sealed = new SealedRunner({ bindings, mcpCommand: MCP, exec: m.exec, clock: m.clock, env: { HOME: "/h" } });
+    const live = sealed.run(input());
+    await vi.waitFor(() => expect(m.procs).toHaveLength(1));
+    m.procs[0].line(initAt(m.procs[0].options.cwd));
+    expect(bindings.get(m.procs[0].token)?.armed).toBe(true);
+    m.advance(300_000 + 60_001);
+    expect(bindings.get(m.procs[0].token)).toBeUndefined();
+    m.procs[0].line(toolUse("mcp__paseo_board__board_inbox_read")); m.procs[0].line(result()); m.procs[0].exit();
+    expect(await live).toMatchObject({ state: "interrupted", category: "token_expired", armed: true, error: "运行令牌在运行中过期，已中断", costUsd: 0.0031 });
+    // Expired before init arrived: it is never armed, the process is killed, the batch was never offered.
+    const late = sealed.run(input({ runId: "late" }));
+    await vi.waitFor(() => expect(m.procs).toHaveLength(2));
+    m.advance(300_000 + 60_001);
+    m.procs[1].line(initAt(m.procs[1].options.cwd));
+    const outcome = await late;
+    expect(m.procs[1].killed).toBe(true);
+    expect(outcome).toMatchObject({ state: "interrupted", category: "token_expired", armed: false, error: "运行令牌在启动检查前过期，已中断", costUsd: 0.02, costEstimated: true });
+    expect(bindings.size).toBe(0);
   });
 
   it("expires a binding at its deadline", () => {

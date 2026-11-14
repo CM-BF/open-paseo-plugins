@@ -14,6 +14,8 @@ import type { InboxAssistantOptions } from "../shared/inbox";
 /* Exact refusal texts of `board.inbox.assistant-options` / `auto-enable` and its preflight (§3.9). */
 export const NO_CLAUDE_REFUSAL = "自动处理需要本机的 Claude Code。Paseo 里没有可用的 Claude 提供方，所以不能开启。";
 export const ENV_SECRET_REFUSAL = "Claude 提供方的环境变量里有凭据。插件不会把凭据复制给评论助手进程，所以不能开启。";
+/** A provider command with anything after the executable (for example `--append-system-prompt-file`). */
+export const ROUTE_ARGS_REFUSAL = "Claude 提供方的启动命令带有额外参数。插件无法确认这些参数不会给评论助手加上提示词或权限，所以不能开启。请在 Paseo 的提供方设置里只保留 claude 命令本身。";
 export const CLI_MISSING_REFUSAL = "找不到 claude 命令，不能开启自动处理。";
 export const UNSUPPORTED_REFUSAL = "这台电脑上的 Claude Code 太旧，不支持评论助手需要的锁定参数（需要 2.1.319 或更新）。更新后再开启。";
 export const violationRefusal = (findings: readonly string[]) => `锁定检查没通过：评论助手启动后还能用到 ${findings.join("；") || "未知的工具"}。为了安全，没有开启自动处理。`;
@@ -26,6 +28,7 @@ export const CHECKING_REFUSAL = "正在做锁定检查，请稍候。";
 
 /** The refusal for a preflight that did not pass (§3.9). Never the API response body. */
 export function preflightRefusal(outcome: RunOutcome, model: string): string {
+  if (outcome.category === "route_args") return ROUTE_ARGS_REFUSAL;
   if (outcome.state === "unsupported") return outcome.category === "cli_missing" ? CLI_MISSING_REFUSAL : UNSUPPORTED_REFUSAL;
   if (outcome.state === "lockdown") return violationRefusal(outcome.findings);
   if (outcome.modelUnavailable || outcome.category === "model") return modelRefusal(model);

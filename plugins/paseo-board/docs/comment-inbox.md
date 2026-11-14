@@ -55,13 +55,13 @@
 
 **一次运行**（`server/inbox-runner.ts`，参数和检查在 `server/inbox-lock.ts`）：
 
-- 每批评论启动一个 `claude -p`：命令取自 daemon 配置里的 Claude 提供方（`claude`，或 `extends: "claude"` 的提供方；路由逻辑是 learning-loop 套件 `server/kit/complete.ts` 的原样副本），不经过 shell，单独的进程组，标准输入只有评论编号，标准错误丢弃。
+- 每批评论启动一个 `claude -p`：命令取自 daemon 配置里的 Claude 提供方（`claude`，或 `extends: "claude"` 的提供方；路由逻辑是 learning-loop 套件 `server/kit/complete.ts` 的原样副本），不经过 shell，单独的进程组，标准输入只有评论编号，标准错误丢弃。提供方命令只能是可执行文件本身：后面带参数的（例如 `--append-system-prompt-file`，实测会把文件内容追加进系统提示而 init 看不出来）一律拒绝，`Claude 提供方的启动命令带有额外参数。插件无法确认这些参数不会给评论助手加上提示词或权限，所以不能开启。请在 Paseo 的提供方设置里只保留 claude 命令本身。`；运行器自己也再拦一次（不启动，算「不支持」）。
 - 固定参数：`--output-format stream-json --verbose --no-session-persistence --model <模型> [--effort low] --max-budget-usd <单次上限> --tools "" --strict-mcp-config --mcp-config <只有 paseo_board> --allowedTools <四个评论工具> --disallowedTools <内置工具清单> --setting-sources "" --settings <锁定设置> --disable-slash-commands --permission-mode dontAsk --system-prompt <评论助手提示>`。锁定设置：`disableAllHooks`、`disableClaudeAiConnectors`、`autoMemoryEnabled:false`、`allowedMcpServers` 按 `paseo-board-mcp` 的完整命令路径锁定、`denyInsteadOfPrompting`、禁止切到 bypass 模式、同一份禁用清单。
-- 环境：插件进程的环境去掉 Paseo 剥离的变量、所有 `PASEO_*`（角色变量除外）和 `*_BINDING`，加上提供方的环境（含凭据的提供方直接拒绝），再加 `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` 等几个保险变量。工作目录是新建的 0700 临时目录，运行完删除。
+- 环境：插件进程的环境去掉 Paseo 剥离的变量、所有 `PASEO_*`（角色变量除外）和 `*_BINDING`，加上提供方的环境（含凭据的提供方直接拒绝），再加 `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` 等几个保险变量，其中 `CLAUDE_CODE_HARBOR_KITE=0` 关掉跨会话消息（否则每次运行会开一个本机其他会话可以写入的消息 socket，init 里的 `messaging_socket_path`；2.1.325 实测有效，不列入启动检查）。工作目录是新建的 0700 临时目录，运行完删除。
 - 唯一的 MCP 服务是插件自己的 `paseo-board-mcp`，带这次运行的令牌和 `PASEO_BOARD_TOOLSET=inbox-assistant`：只列出四个评论工具，别的名字在进程里直接拒绝。
-- 启动检查（`verifyInit`）：第一条 `system:init` 必须在 30 秒内出现；工具恰好是四个 `mcp__paseo_board__board_inbox_*`、MCP 服务只有已连接的 `paseo_board`、权限模式 `dontAsk`、没有技能和斜杠命令、插件只有 Claude Code 内置的、输出风格默认、工作目录就是这次的临时目录、Claude Code ≥ 2.1.319、模型是所选的。多出任何能力算「违规」（立即结束进程组，自动处理暂停，原因 `lockdown`）；服务没连上或模型不对算「未就绪」；版本旧或启动前就退出算「不支持」。init 之前出现模型输出也算违规；第二条 init 再检查一次。
-- 令牌只在内存里（`RunnerBindings`），检查通过后才「启用」，只能做四种收件箱操作、只限这张 Board 和这一批评论，进程结束或超时就作废；插件重启后旧进程什么也做不了。
-- 运行中：每条 `tool_use` 都记下；不在四个评论工具里的名字记为「试图使用不存在的工具」（面板提示可能有诱导内容）；超过 `6 + 4 × 条数` 次调用、5 分钟、4 MiB 输出时结束进程组。结束时记下 `total_cost_usd`；模型的最终文字不保存。整台电脑同时最多 2 个运行。
+- 启动检查（`verifyInit`）：第一条 `system:init` 必须在 30 秒内出现；工具恰好是四个 `mcp__paseo_board__board_inbox_*`、MCP 服务只有已连接的 `paseo_board`、权限模式 `dontAsk`、没有技能和斜杠命令、插件只有已核对过的 Claude Code 内置插件（按名字固定：`cc-plugin-agents-md`、`cc-plugin-telemetry`、`cc-plugin-privacy`、`cc-plugin-plugin-authoring`，来源 `<名字>@builtin`；新版 CLI 多出一个内置插件时先算违规，核对后再加入清单）、输出风格默认、工作目录就是这次的临时目录、Claude Code ≥ 2.1.319、模型是所选的。多出任何能力算「违规」（立即结束进程组，自动处理暂停，原因 `lockdown`）；服务没连上或模型不对算「未就绪」；版本旧或启动前就退出算「不支持」。init 之前出现模型输出也算违规；第二条 init 再检查一次。
+- 标准输入只有评论编号（Board、批次和每条评论的编号、修订号、访客编号）；评论内容只能通过 `board_inbox_read` 读到。令牌只在内存里（`RunnerBindings`），检查通过后才「启用」，只能做四种收件箱操作、只限这张 Board 和这一批评论，进程结束或超时就作废；插件重启后旧进程什么也做不了。令牌的有效期（运行上限加 1 分钟）和运行时长从拿到主机名额时算起，排队的时间不算；令牌在进程还活着时过期（例如电脑睡眠），这次运行记为「中断」，这批评论退回重新处理。
+- 运行中：每条 `tool_use` 都记下；不在四个评论工具里的名字记为「试图使用不存在的工具」（面板提示可能有诱导内容）；超过 `6 + 4 × 条数` 次调用、5 分钟、4 MiB 输出时结束进程组。结束时记下 `total_cost_usd`；可能已经调用过模型（init 检查通过，或者有模型输出）、却没有报告花费的运行（在上限处被结束、超时、被停止、异常退出），按它的 `--max-budget-usd` 计费（`costEstimated`，面板写「费用按单次上限计」）。模型的最终文字不保存。整台电脑同时最多 2 个运行。
 - 运行看到的评论只有访客自己能看到的字段（`id`、修订号、状态、正文、称呼、时间、页面地址、引用原文和位置名、能否回复、公开回复）；内部备注、标签、来源、部署、发布版本和审计都不给。它可以写内部分类备注（保留作者原有的标签和备注，在后面追加）。回复和分类以 `paseo-board-inbox-runner:<哈希前 16 位>` 的身份记录，每张 Board 每小时 30 条回复的上限跨运行累计。
 
 **开启**（`board.inbox.assistant-options` / `auto-enable`）：
@@ -72,7 +72,7 @@
 **批次和预算**（`server/inbox-auto.ts`）：
 
 - 新评论导入后等 3 秒没有新导入再处理，同一批最长等 10 秒。一批是 seq 顺序里连续的、同一位访客（`visitorTag`）的合格评论，最多 8 条；没有访客编号的评论单独成批（只能内部分类）。同一张 Board 同时只有一个运行。
-- 每张 Board 每小时 12 批，整台电脑每小时 30 批，超过时暂停并到时间自动恢复。每张 Board 每天的花费到上限（按 `total_cost_usd` 累计，预检也算）时暂停到当地 0 点。单次运行的 `--max-budget-usd` 是估算上限的两倍（至少 $0.02）。
+- 每张 Board 每小时 12 批，整台电脑每小时 30 批，超过时暂停并到时间自动恢复。每张 Board 每天的花费到上限（按 `total_cost_usd` 累计，预检也算；没报告花费的运行按单次上限计，插件崩溃时还在 `running` 的运行也是）时暂停到当地 0 点。单次运行的 `--max-budget-usd` 是估算上限的两倍（至少 $0.02）。面板里的「平均每条」只用报告过的花费。
 - 运行记录先写入（`starting`），检查通过后为 `running`，结束时记结果、费用、工具调用次数和被拒绝的工具名，保留最近 50 条，面板显示最近 10 条。插件崩溃后，还在 `starting`/`running` 的记录变成 `interrupted`，这批评论退回重新处理（已处理的评论不再是「未处理」，不会重复）。
 - 检查没通过（违规）时这批评论退回，不算交给了助手；未就绪或不支持时退回并在 1、5 分钟后重试，连续 3 次暂停（原因 `cli`）。人可以直接恢复 `cli`、预算和花费的暂停；`lockdown` 和升级后的 `setup` 只能通过对话框重新开启（会再做一次预检）：`请先重新开启自动处理：新版会先做锁定检查。`
 - 关闭自动处理、Board 被替换、插件关闭时结束正在运行的进程组。

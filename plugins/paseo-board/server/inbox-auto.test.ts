@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { InboxStore } from "./inbox-store";
 import { InboxConnections } from "./inbox-sync";
 import { InboxAutomation, wakeInteractionId, wakePrompt, type AutoClock, type AutomationService } from "./inbox-auto";
-import { CLI_MISSING_REFUSAL, ENV_SECRET_REFUSAL, NO_CLAUDE_REFUSAL, RESUME_REFUSAL, UNSUPPORTED_REFUSAL, apiRefusal, assistantSystemPrompt, legacyNotice, modelRefusal, violationRefusal } from "./inbox-assistant";
+import { CLI_MISSING_REFUSAL, ENV_SECRET_REFUSAL, NO_CLAUDE_REFUSAL, RESUME_REFUSAL, ROUTE_ARGS_REFUSAL, UNSUPPORTED_REFUSAL, apiRefusal, assistantSystemPrompt, legacyNotice, modelRefusal, violationRefusal } from "./inbox-assistant";
 import { ALLOWED_TOOLS, PREFLIGHT_PROMPT, lockArgs } from "./inbox-lock";
 import { RunnerBindings, SealedRunner, runnerActorId, type RunnerBinding, type StreamExec, type StreamExecOptions, type StreamExit } from "./inbox-runner";
 import { INBOX_AUTO_LIMITS } from "../shared/inbox";
@@ -485,6 +485,52 @@ describe("inbox automation coordinator (DESIGN §4.8, §11.6–§11.8)", () => {
     expect((await status()).assistant!.costTodayUsd).toBe(0.004);
   }, 30_000);
 
+  it("charges runs killed before reporting a cost their budget, so the daily cost cap stops a hostile loop (audit ADV-1)", async () => {
+    await automation.start();
+    // A hostile comment makes the model loop on an allowed tool: the runner kills the group at 6+4n tool uses, so the
+    // CLI never writes its result (total_cost_usd).
+    claude.model(async io => { for (let index = 0; index < 11; index++) io.tools("mcp__paseo_board__board_inbox_list"); await io.killed; });
+    await enable("publish", "claude-haiku-5-5", { dailyCapUsd: 0.05 });
+    for (let index = 0; index < 6; index++) { visitor(`第 ${index} 条`, RELEASE, `${index}`.repeat(12)); await clock.advance(5_000, automation); await clock.advance(10_000, automation); }
+    // Each killed run counts its --max-budget-usd ($0.02 for one comment on Haiku 5.5): the preflight and three runs reach the cap.
+    expect(claude.runs().map(call => call.argv[call.argv.indexOf("--max-budget-usd") + 1])).toEqual(["0.02", "0.02", "0.02"]);
+    const after = await status();
+    expect(after.runs.slice(0, 3).map(run => [run.state, run.error, run.costUsd, run.costEstimated])).toEqual(Array(3).fill(["failed", "工具调用超过 10 次，已停止", 0.02, true]));
+    expect(after.assistant!.costTodayUsd).toBeCloseTo(0.0605, 10);
+    expect(after.assistant!.costLastHourUsd).toBeCloseTo(0.0605, 10);
+    // The per-comment average uses reported costs only.
+    expect(after.assistant!.avgCostPerCommentUsd).toBeNull();
+    expect(after.wake).toMatchObject({ state: "paused", pausedReason: "cost" });
+    expect(JSON.parse(await readFile(stateFile(), "utf8")).runs.at(-1)).toMatchObject({ state: "failed", costUsd: 0.02, costEstimated: true });
+  }, 30_000);
+
+  it("refuses a Claude provider whose command has extra arguments, at enable and at run time (audit: --append-system-prompt-file)", async () => {
+    await automation.start();
+    const withArgs = { requestId: "r", config: { providers: { claude: { command: ["claude", "--append-system-prompt-file", "/Users/someone/persona.md"] } } } };
+    host.paseo.config.get.mockResolvedValueOnce(withArgs);
+    expect(await automation.assistantOptions(scope)).toMatchObject({ refusal: ROUTE_ARGS_REFUSAL, providerId: null, models: [] });
+    // A provider that extends claude inherits the base command's arguments.
+    host.paseo.config.get.mockResolvedValueOnce({ requestId: "r", config: { providers: { claude: { enabled: false, command: ["claude", "--append-system-prompt", "persona"] }, work: { extends: "claude" } } } });
+    expect(await automation.assistantOptions(scope)).toMatchObject({ refusal: ROUTE_ARGS_REFUSAL });
+    // A clean provider is still used when there is one.
+    host.paseo.config.get.mockResolvedValueOnce({ requestId: "r", config: { providers: { claude: { command: ["claude", "--plugin-dir", "/tmp/p"] }, work: { extends: "claude", command: ["/opt/claude"] } } } });
+    expect(await automation.assistantOptions(scope)).toMatchObject({ refusal: null, providerId: "work" });
+    // Enable refuses before any launch and writes nothing.
+    host.paseo.config.get.mockResolvedValue(withArgs);
+    await expect(enable("review")).rejects.toMatchObject({ code: "invalid_input", message: ROUTE_ARGS_REFUSAL });
+    expect(claude.calls).toHaveLength(0);
+    await expect(readFile(stateFile())).rejects.toHaveProperty("code", "ENOENT");
+    // The provider gains arguments after enable: no run starts; it is retried and pauses after three, with the reason.
+    host.paseo.config.get.mockResolvedValue({ requestId: "r", config: { providers: {} } });
+    claude.model(replyingModel); await enable();
+    host.paseo.config.get.mockResolvedValue(withArgs);
+    visitor(); await clock.advance(5_000, automation); await clock.advance(5_000, automation);
+    expect((await status()).runs[0]).toMatchObject({ state: "not-ready", error: ROUTE_ARGS_REFUSAL, costUsd: null });
+    await clock.advance(60_000, automation); await clock.advance(300_000, automation);
+    expect((await status()).wake).toMatchObject({ state: "paused", pausedReason: "cli", error: ROUTE_ARGS_REFUSAL, cliFailures: 3, pendingComments: 1 });
+    expect(claude.runs()).toHaveLength(0);
+  }, 30_000);
+
   it("recovers a run left starting or running by a crash as interrupted and offers its comments again", async () => {
     await automation.start(); claude.model(replyingModel); await enable();
     claude.model(async io => { await io.killed; });
@@ -500,7 +546,9 @@ describe("inbox automation coordinator (DESIGN §4.8, §11.6–§11.8)", () => {
     claude.model(replyingModel); clock.waitRuns = true;
     automation = make(); await automation.start();
     const recovered = JSON.parse(await readFile(stateFile(), "utf8"));
-    expect(recovered.runs.at(-1)).toMatchObject({ state: "interrupted", error: "插件重启时这批评论还在处理，已中断" });
+    // A run that had passed its init check may have called the model: it is charged its budget (audit ADV-1).
+    expect(recovered.runs.at(-1)).toMatchObject({ state: "interrupted", error: "插件重启时这批评论还在处理，已中断", costUsd: 0.02, costEstimated: true });
+    expect(recovered.cost.dayUsd).toBeCloseTo(0.0205, 10);
     expect(recovered.wake).toMatchObject({ seenSeq: 0, rewinds: 1 });
     await clock.advance(60_000, automation);
     expect((await status()).runs[0]).toMatchObject({ state: "done", runId: wakeInteractionId(scope, 1, 1, 1) });

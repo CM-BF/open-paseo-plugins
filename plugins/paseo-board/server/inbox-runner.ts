@@ -2,7 +2,8 @@
  * Sealed comment runs (lockdown design 2026-11-13 §3.1–§3.3): one headless `claude -p` process per batch,
  * launched with the plugin's own argv, settings, env, empty temp cwd and single MCP server. The run's binding is
  * armed only after the CLI's `system:init` passes `verifyInit`; a failed check kills the process group before
- * the batch is ever offered. Bindings live in memory only, so an orphaned process cannot act after a restart.
+ * any comment can be read (stdin carries only the batch's IDs; the comment text is reachable only through an armed
+ * binding). Bindings live in memory only, so an orphaned process cannot act after a restart.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -100,9 +101,20 @@ export interface RunOutcome {
   findings: string[];
   /** A short, fixed Chinese reason; never CLI output or an API response body. */
   error: string | null;
-  category: FailureCategory | "cli_missing" | "exit_before_init" | "init_timeout" | "timeout" | "too_large" | "tool_cap" | "bad_output" | "cli_failed" | "aborted" | "bad_input" | null;
+  category: FailureCategory | "cli_missing" | "exit_before_init" | "init_timeout" | "timeout" | "too_large" | "tool_cap" | "bad_output" | "cli_failed" | "aborted" | "bad_input" | "route_args" | "token_expired" | null;
   modelUnavailable: boolean;
-  deniedAttempts: string[]; toolUses: number; costUsd: number | null; durationMs: number; actions: InboxRunActions;
+  deniedAttempts: string[]; toolUses: number;
+  /**
+   * The run's cost: the CLI's `total_cost_usd`, or, when a run that may have called the model (its init passed the
+   * check, or the model wrote output) ended without reporting one (killed at a cap, timed out, aborted, crashed), its
+   * `--max-budget-usd`: the CLI stops a run once it reaches that budget, so it bounds what the run can have spent.
+   * Null only for a run that never reached the model.
+   */
+  costUsd: number | null;
+  /** costUsd is the run's budget, not a reported cost. */
+  costEstimated: boolean;
+  /** From the moment the run held a host slot (time spent queued is not counted). */
+  durationMs: number; actions: InboxRunActions;
 }
 export interface RunInput {
   scope: InboxScope; scopeKey: string; runId: string;
@@ -145,11 +157,11 @@ export class SealedRunner {
   /** Runs in flight (tests). */
   get running(): number { return this.live.size; }
   async run(input: RunInput): Promise<RunOutcome> {
-    const started = this.clock.now();
+    const queued = this.clock.now();
     while (this.active >= this.limits.maxConcurrent && !this.closed && !input.signal?.aborted) await new Promise<void>(resolve => this.waiting.push(resolve));
-    if (this.closed || input.signal?.aborted) return outcome("interrupted", started, this.clock.now(), { category: "aborted", error: "运行被停止" });
+    if (this.closed || input.signal?.aborted) return outcome("interrupted", queued, this.clock.now(), { category: "aborted", error: "运行被停止" });
     this.active++;
-    try { return await this.runOnce(input, started); }
+    try { return await this.runOnce(input); }
     finally { this.active--; this.waiting.shift()?.(); }
   }
   /** Kills every live run's process group (plugin close); queued runs end as interrupted. */
@@ -158,13 +170,19 @@ export class SealedRunner {
     for (const stop of [...this.live]) stop();
     for (const resolve of this.waiting.splice(0)) resolve();
   }
-  private async runOnce(input: RunInput, started: number): Promise<RunOutcome> {
+  private async runOnce(input: RunInput): Promise<RunOutcome> {
+    // The run's clock (its token's lifetime and durationMs) starts once it holds a host slot, not when it queued:
+    // a run that waited behind others must not lose its token before its own time limit.
+    const started = this.clock.now();
+    // Only the executable: extra provider arguments (for example --append-system-prompt-file) could add context
+    // the init check cannot see. The coordinator refuses such a route earlier; this is the belt (a start failure).
+    if (input.route.command.length !== 1) return outcome("unsupported", started, this.clock.now(), { category: "route_args", findings: ["提供方命令带有额外参数"], error: "提供方命令带有额外参数，没有启动" });
     let cwd: string;
     try { cwd = await realpath(await mkdtemp(join(this.o.tmpRoot ?? tmpdir(), "paseo-board-run-"))); await chmod(cwd, 0o700); }
     catch { return outcome("failed", started, this.clock.now(), { category: "bad_input", error: "无法创建临时工作目录" }); }
     const preflight = Boolean(input.preflight);
     const timeoutMs = preflight ? this.limits.preflightTimeoutMs : this.limits.runTimeoutMs;
-    const binding = this.o.bindings.create({ scopeKey: input.scopeKey, scope: input.scope, runId: input.runId, commentIds: preflight ? [] : input.commentIds, expiresAt: started + timeoutMs + 60_000 });
+    const binding = this.o.bindings.create({ scopeKey: input.scopeKey, scope: input.scope, runId: input.runId, commentIds: preflight ? [] : input.commentIds, expiresAt: this.clock.now() + timeoutMs + 60_000 });
     try {
       let argv: string[];
       try { argv = [...input.route.command, ...lockArgs({ model: input.model, effort: input.effort, maxBudgetUsd: input.maxBudgetUsd, systemPrompt: input.systemPrompt, mcpCommand: this.o.mcpCommand, bindingToken: binding.token })]; }
@@ -180,10 +198,10 @@ export class SealedRunner {
     const { input, binding, preflight } = run;
     const maxToolCalls = input.maxToolCalls ?? 6 + 4 * Math.max(1, input.commentIds.length);
     const st = {
-      initSeen: false, offered: false, toolUses: 0, denied: [] as string[],
+      initSeen: false, offered: false, modelOutput: false, toolUses: 0, denied: [] as string[],
       verdict: null as Extract<VerifyResult, { ok: false }> | null,
       verified: null as Extract<VerifyResult, { ok: true }> | null,
-      stopReason: null as null | "init_timeout" | "timeout" | "too_large" | "tool_cap" | "aborted" | "lockdown",
+      stopReason: null as null | "init_timeout" | "timeout" | "too_large" | "tool_cap" | "aborted" | "lockdown" | "token_expired",
       result: null as Extract<StreamEvent, { kind: "result" }> | null,
     };
     let proc: StreamProcess | undefined;
@@ -194,14 +212,19 @@ export class SealedRunner {
       if (!verification.ok) { fail(verification); return; }
       const first = !st.verified;
       st.verified = verification;
-      // Arm only now: before this point every inbox call of the run is refused (§3.3 order of events).
-      if (!preflight && !binding.armed) { this.o.bindings.arm(binding.token); st.offered = true; }
+      // Arm only now: before this point every inbox call of the run is refused (§3.3 order of events). A token that
+      // is already gone (it expired, for example across a sleep) cannot be armed: the batch was never offered.
+      if (!preflight && !binding.armed) {
+        if (!this.o.bindings.arm(binding.token)) { stop("token_expired"); return; }
+        st.offered = true;
+      }
       if (first) input.onVerified?.(verification);
     };
     const onLine = (line: string) => {
       let value: unknown;
       try { value = JSON.parse(line); } catch { return; }
       const event = auditEvent(value);
+      if (event.kind !== "init" && event.kind !== "system") st.modelOutput = true;
       if (!st.initSeen) {
         if (event.kind === "init") { st.initSeen = true; check(event.event); }
         // Anything but a system message before init means the model ran unchecked: fail closed.
@@ -228,14 +251,20 @@ export class SealedRunner {
       void proc.exited.catch((): StreamExit => ({ code: null, signal: null })).then(exit => {
         this.clock.clearTimer(initTimer); this.clock.clearTimer(runTimer);
         this.live.delete(stopper); input.signal?.removeEventListener("abort", stopper);
+        // An armed token that is gone before we revoke it expired while the process was live (for example across
+        // a sleep): the model's later inbox calls were refused, so the run did not finish its batch.
+        const expired = st.offered && !st.verdict && !this.o.bindings.get(binding.token);
         this.o.bindings.revoke(binding.token);
+        // A run that may have reached the model but reported no cost is charged its budget (see RunOutcome.costUsd).
+        const reported = st.result?.costUsd ?? null, charged = reported ?? (st.verified || st.modelOutput ? input.maxBudgetUsd : null);
         const at = this.clock.now(), done = (state: RunState, patch: Partial<RunOutcome> = {}) => resolve(outcome(state, run.started, at, {
           armed: st.offered, cliVersion: st.verified?.cliVersion ?? st.verdict?.cliVersion ?? null, model: st.verified?.model ?? null,
-          deniedAttempts: st.denied, toolUses: st.toolUses, costUsd: st.result?.costUsd ?? null, actions: { ...binding.actions }, ...patch,
+          deniedAttempts: st.denied, toolUses: st.toolUses, costUsd: charged, costEstimated: reported === null && charged !== null, actions: { ...binding.actions }, ...patch,
         }));
         const { verdict, result, stopReason } = st;
         if (exit.missing) return done("unsupported", { category: "cli_missing", error: "找不到 claude 命令" });
         if (stopReason === "aborted") return done("interrupted", { category: "aborted", error: "运行被停止" });
+        if (stopReason === "token_expired") return done("interrupted", { category: "token_expired", error: "运行令牌在启动检查前过期，已中断" });
         if (verdict) return done(verdict.kind === "violation" ? "lockdown" : verdict.kind, { findings: verdict.findings, modelUnavailable: Boolean(verdict.modelUnavailable), error: verdict.kind === "violation" ? "锁定检查没通过" : verdict.findings[0] ?? null });
         if (!st.initSeen) {
           if (stopReason === "init_timeout") return done("not-ready", { category: "init_timeout", findings: ["30 秒内没有完成启动"], error: "启动超时" });
@@ -245,6 +274,7 @@ export class SealedRunner {
         if (stopReason === "timeout") return done(preflight ? "failed" : "timeout", { category: "timeout", error: preflight ? CATEGORY_TEXT.timeout : "运行超过 5 分钟，已停止" });
         if (stopReason === "too_large") return done("failed", { category: "too_large", error: "输出超过 4 MiB，已停止" });
         if (stopReason === "tool_cap") return done("failed", { category: "tool_cap", error: `工具调用超过 ${maxToolCalls} 次，已停止` });
+        if (expired) return done("interrupted", { category: "token_expired", error: "运行令牌在运行中过期，已中断" });
         if (result?.isError) { const category = classifyResult(result); return done("failed", { category, error: CATEGORY_TEXT[category] }); }
         if (!result) return done("failed", { category: exit.code === 0 ? "bad_output" : "cli_failed", error: exit.code === 0 ? CATEGORY_TEXT.bad_output : CATEGORY_TEXT.cli_failed });
         done("done");
@@ -253,5 +283,5 @@ export class SealedRunner {
   }
 }
 function outcome(state: RunState, started: number, ended: number, patch: Partial<RunOutcome> = {}): RunOutcome {
-  return { state, armed: false, cliVersion: null, model: null, findings: [], error: null, category: null, modelUnavailable: false, deniedAttempts: [], toolUses: 0, costUsd: null, actions: { replied: 0, drafted: 0, triaged: 0, dismissed: 0 }, ...patch, durationMs: Math.max(0, ended - started) };
+  return { state, armed: false, cliVersion: null, model: null, findings: [], error: null, category: null, modelUnavailable: false, deniedAttempts: [], toolUses: 0, costUsd: null, costEstimated: false, actions: { replied: 0, drafted: 0, triaged: 0, dismissed: 0 }, ...patch, durationMs: Math.max(0, ended - started) };
 }

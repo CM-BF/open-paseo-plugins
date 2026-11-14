@@ -1,3 +1,17 @@
+# 2026-11-14 — 评论助手锁定：第 1 阶段评审修复，未安装
+
+分支 `sw/board-page-comments`，尚未推送、未安装、未重载插件，main 未改；测试 Board 的自动处理保持暂停。修复对抗评审的结论；步骤和退出码、探针、测试输出在 `$PASEO_HOME/verification/paseo-board/page-comments-20261113/sandbox/fixer/`。
+
+- 每天花费上限（重要）：之前在上限处被结束的运行（工具调用上限、超时、输出上限、被停止）没有 `result`，花费按 0 算，对抗测试里 $0.01 的上限从未暂停。现在可能调用过模型（init 检查通过，或者有模型输出）、却没报告 `total_cost_usd` 的运行按它的 `--max-budget-usd` 计入（运行记录 `costEstimated`，面板写「费用按单次上限计 $x」）；插件崩溃时还在 `running` 的运行也按单次上限计入；「平均每条」只用报告过的花费。
+- 提供方命令只能是可执行文件本身：`claude --append-system-prompt(-file) …` 这类参数实测能把内容加进系统提示而 init 看不出来。选项、开启和每次运行前都拒绝（`Claude 提供方的启动命令带有额外参数。…请在 Paseo 的提供方设置里只保留 claude 命令本身。`），运行器自己再拦一次（不启动，算「不支持」）。本机目前没有这样的配置。
+- 排队的运行：令牌有效期和运行时长从拿到主机名额时算起（之前从排队时算，排在 4 分钟的运行后面的批次跑到第 2 分钟令牌就失效，却记为完成、评论不再处理）。令牌在运行中过期记为「中断」并退回这批评论；启动检查时令牌已过期则不启用、结束进程。
+- 启动检查按名字和来源固定 Claude Code 内置插件（`cc-plugin-agents-md`、`cc-plugin-telemetry`、`cc-plugin-privacy`、`cc-plugin-plugin-authoring`）；新版 CLI 多出的内置插件先算违规，核对后再加入。
+- 锁定环境加 `CLAUDE_CODE_HARBOR_KITE=0`：真实 claude 2.1.325 实测（假 API、临时 HOME）不再打开跨会话消息 socket（init 没有 `messaging_socket_path`），启动检查照常通过；这一项不列入启动检查。
+- 旧设计还带着 claude.ai 连接器和账号同步的技能（评审补充）：新设计早已拒绝，补了按旧 init 形状的回归测试。
+- 文档措辞：标准输入只有评论编号，检查通过后收件箱工具才开通、才读得到评论内容（之前写成「核对通过后才把这批评论交给它」）。`docs/page-comments.md`、`docs/comment-inbox.md`、`README.md`。
+
+验证（2026-11-14，本机 claude 2.1.325，未连 daemon）：typecheck；vitest 69 个文件 1013 个测试，`inbox-sync` 单独 30 个；`test:browser` 156、`test:host` 61、`BOARD_HOST_TEST_SCOPE=inbox test:host` 11、`test:release-host` 44、`node --test backend/checks.mjs` 65、`test:page-comments` 20/20、`node scripts/inbox-runner-harness.mjs` 6/6（init 里已没有 `messaging_socket_path`）。`test:release` 第一次在与本次改动无关的触屏位置检查（「On touch the button sits below the selection」）失败一次，原样重跑两次都是 59/59，访客页面和发布脚本自 `e775931` 未改。新增和改写的测试放到 `e775931` 上失败 12 个（花费、提供方参数、排队令牌、内置插件、环境、文案）。生成的资源重建三遍，后两遍字节一致，只有 `client/hermes-bundle.js` 变化。
+
 # 2026-11-14 — 评论助手锁定：第 1 阶段（封闭运行的评论助手），未安装
 
 分支 `sw/board-page-comments`，尚未推送、未安装、未重载插件，main 未改。设计见 `$PASEO_HOME/verification/paseo-board/page-comments-20261113/sandbox/DESIGN.md`；实现记录（步骤和退出码、截图、真实 claude 的测试结果）在同一目录的 `sandbox/implementer/`。测试 Board 的自动处理保持暂停，安装后它显示「需要重新开启」，要人重新开启（会先做锁定检查）。

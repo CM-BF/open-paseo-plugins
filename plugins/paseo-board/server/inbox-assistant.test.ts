@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { CLI_MISSING_REFUSAL, ENV_SECRET_REFUSAL, NO_CLAUDE_REFUSAL, RESUME_REFUSAL, UNSUPPORTED_REFUSAL, apiRefusal, assistantSystemPrompt, modelRefusal, notReadyRefusal, preflightRefusal, violationRefusal } from "./inbox-assistant";
+import { CLI_MISSING_REFUSAL, ENV_SECRET_REFUSAL, NO_CLAUDE_REFUSAL, RESUME_REFUSAL, ROUTE_ARGS_REFUSAL, UNSUPPORTED_REFUSAL, apiRefusal, assistantSystemPrompt, modelRefusal, notReadyRefusal, preflightRefusal, violationRefusal } from "./inbox-assistant";
 import type { RunOutcome } from "./inbox-runner";
 
-const outcome = (patch: Partial<RunOutcome>): RunOutcome => ({ state: "failed", armed: false, cliVersion: null, model: null, findings: [], error: null, category: null, modelUnavailable: false, deniedAttempts: [], toolUses: 0, costUsd: null, durationMs: 0, actions: { replied: 0, drafted: 0, triaged: 0, dismissed: 0 }, ...patch });
+const outcome = (patch: Partial<RunOutcome>): RunOutcome => ({ state: "failed", armed: false, cliVersion: null, model: null, findings: [], error: null, category: null, modelUnavailable: false, deniedAttempts: [], toolUses: 0, costUsd: null, costEstimated: false, durationMs: 0, actions: { replied: 0, drafted: 0, triaged: 0, dismissed: 0 }, ...patch });
 
 describe("comment assistant texts (lockdown design §3.9)", () => {
   it("states the exact refusal texts", () => {
@@ -15,6 +15,7 @@ describe("comment assistant texts (lockdown design §3.9)", () => {
     expect(apiRefusal("登录失败")).toBe("Claude Code 无法登录或调用模型（登录失败）。在终端里运行 claude，确认能正常使用后再开启。");
     expect(modelRefusal("claude-x")).toBe("所选模型不可用：claude-x。请换一个模型。");
     expect(RESUME_REFUSAL).toBe("请先重新开启自动处理：新版会先做锁定检查。");
+    expect(ROUTE_ARGS_REFUSAL).toBe("Claude 提供方的启动命令带有额外参数。插件无法确认这些参数不会给评论助手加上提示词或权限，所以不能开启。请在 Paseo 的提供方设置里只保留 claude 命令本身。");
   });
   it("maps every preflight outcome to its refusal", () => {
     expect(preflightRefusal(outcome({ state: "unsupported", category: "cli_missing" }), "m")).toBe(CLI_MISSING_REFUSAL);
@@ -25,6 +26,8 @@ describe("comment assistant texts (lockdown design §3.9)", () => {
     expect(preflightRefusal(outcome({ category: "model" }), "m")).toBe(modelRefusal("m"));
     expect(preflightRefusal(outcome({ category: "rate" }), "m")).toBe(apiRefusal("额度或频率限制"));
     expect(preflightRefusal(outcome({ category: "timeout" }), "m")).toBe(apiRefusal("超时"));
+    // The runner's belt for a provider command with arguments (the coordinator refuses the route first).
+    expect(preflightRefusal(outcome({ state: "unsupported", category: "route_args" }), "m")).toBe(ROUTE_ARGS_REFUSAL);
   });
   it("scopes the system prompt to one Board, one visitor's batch and the four inbox tools", () => {
     const prompt = assistantSystemPrompt({ id: "board-a", title: "访客评论 \"演示\"\n第二行" });

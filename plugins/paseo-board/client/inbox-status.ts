@@ -87,6 +87,8 @@ export function costLine(status: InboxAutoStatus): string | null {
 const RUN_STATE_TEXT: Record<InboxRunRecord["state"], string> = {
   starting: "正在启动", running: "处理中", done: "完成", failed: "失败", lockdown: "锁定检查没通过", "not-ready": "没能启动", unsupported: "没能启动", timeout: "超时停止", interrupted: "中断",
 };
+/** A run whose CLI reported no cost is charged its per-run budget (`costEstimated`), and says so. */
+const budgetCharged = (run: InboxRunRecord) => run.costEstimated && run.costUsd !== null ? `费用按单次上限计 $${usd(run.costUsd)}` : null;
 /** The run log, newest first (lockdown design §3.8). */
 export function runLines(status: InboxAutoStatus): string[] {
   return status.runs.map(run => {
@@ -94,9 +96,10 @@ export function runLines(status: InboxAutoStatus): string[] {
     if (run.state === "starting" || run.state === "running") return `${at} ${RUN_STATE_TEXT[run.state]} ${n} 条`;
     if (run.state === "done") {
       const { replied, drafted, triaged, dismissed } = run.actions;
-      return `${at} 处理 ${n} 条（回复 ${replied}，草稿 ${drafted}，分类 ${triaged + dismissed}）· ${run.costUsd === null ? "费用未知" : `$${usd(run.costUsd)}`} · ${Math.max(0, Math.round((run.durationMs ?? 0) / 1000))} 秒`;
+      return `${at} 处理 ${n} 条（回复 ${replied}，草稿 ${drafted}，分类 ${triaged + dismissed}）· ${budgetCharged(run) ?? (run.costUsd === null ? "费用未知" : `$${usd(run.costUsd)}`)} · ${Math.max(0, Math.round((run.durationMs ?? 0) / 1000))} 秒`;
     }
-    return `${at} ${RUN_STATE_TEXT[run.state]}：${run.findings.length ? run.findings.join("；") : run.error ?? "原因未知"}`;
+    const charged = budgetCharged(run);
+    return `${at} ${RUN_STATE_TEXT[run.state]}：${run.findings.length ? run.findings.join("；") : run.error ?? "原因未知"}${charged ? ` · ${charged}` : ""}`;
   });
 }
 /** Attempts at tools that do not exist in a run (lockdown design §3.3 auditEvent): a hint of injected comments. */

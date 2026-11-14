@@ -280,6 +280,8 @@ export const InboxRunRecordSchema = z.object({
   commentIds: z.array(z.string().max(200)).max(8), firstSeq: z.number().int(), lastSeq: z.number().int(),
   actions: InboxRunActionsSchema,
   deniedAttempts: z.array(z.string().max(100)).max(10), costUsd: z.number().nonnegative().nullable(),
+  /** Set when costUsd is the run's `--max-budget-usd`, charged because the run ended without reporting a cost. */
+  costEstimated: z.literal(true).optional(),
   durationMs: z.number().int().nonnegative().nullable(), error: z.string().max(300).nullable(), findings: z.array(z.string().max(200)).max(10),
 }).strict();
 export type InboxRunRecord = z.infer<typeof InboxRunRecordSchema>;
