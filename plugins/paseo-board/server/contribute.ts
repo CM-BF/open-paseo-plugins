@@ -25,6 +25,7 @@ import { inboxListRpc, inboxReadRpc, inboxPolicyRpc, inboxTriageRpc, inboxReplyR
 import { inboxConnectRpc, inboxConnectionsRpc, inboxSyncRpc, inboxReconcileRpc } from "../shared/inbox-connection";
 import { LiveDataPublisher } from "./live-data";
 import { liveGetRpc, liveSetRpc } from "../shared/live-data";
+import { publicReleaseHooks, registerPublicThreads } from "./public-threads-rpc";
 
 export interface ContributeOptions {
   rootDir?: string; runtimeDir?: string; home?: string; linkSkills?: boolean; eventTransport?: { publish(change: BoardChange): void }; onService?: (service: BoardService) => void;
@@ -93,7 +94,9 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     void ready.then(() => service.reconcile()).catch((error) => log(String(error)));
   };
   const checkReady = async () => { await ready; if (stopped) throw new Error("Board service stopped"); };
-  registerPublicationRpc(server, { ready: checkReady, requireBoard: id => service.requireBoard(id), releases, pages, live: { releaseChannel: board => live.releaseChannel(board.id, board.createdAt) } });
+  registerPublicationRpc(server, { ready: checkReady, requireBoard: id => service.requireBoard(id), releases, pages, live: { releaseChannel: board => live.releaseChannel(board.id, board.createdAt) }, publicReleases: publicReleaseHooks(inboxConnections) });
+  // Public comment threads (public-threads DESIGN §12 A11): thread view, moderation RPCs and the public-state outbox.
+  removers.push(registerPublicThreads(server, { inbox, connections: inboxConnections, ready: checkReady, capture, log }));
   // Human UI RPCs alone can configure access. CLI/MCP expose only bound, policy-checked reads, triage and
   // the comment assistant's replies; automatic handling is enabled only through auto-enable's confirm step.
   const inboxUser = { kind: "user" as const, id: "paseo-client" };

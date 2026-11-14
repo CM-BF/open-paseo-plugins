@@ -11,6 +11,11 @@ import {
   type InboxReadInput, type InboxReadResult, type InboxReply, type InboxScope, type InboxSourceInput, type InboxTriageInput,
 } from "../shared/inbox";
 import { BoardStoreError, canonicalJson, ensureDirectory, fingerprint, parseInput, serialized } from "./store-format";
+import {
+  PUBLIC_LEDGER_BYTES, PublicLedgerSchema, audit, conflictingParent, decorate, emptyPublicLedger, findRecord, importPublicRow, notNewForWaker, publicStateOf, receipt, setPending, stripPublic,
+  type PublicAction, type PublicLedger, type PublicRecord,
+} from "./inbox-public-ledger";
+import { PUBLIC_TEXT, InboxPublicPageInputSchema, InboxPublicStateInputSchema, InboxPublicVisitorInputSchema, type InboxPublicPageInput, type InboxPublicStateInput, type InboxPublicVisitorInput } from "../shared/inbox-public";
 
 const SourceRecordSchema = InboxSourceSchema.extend({ credentialHash: z.string().regex(/^[a-f0-9]{64}$/) });
 const ReceiptSchema = z.object({
@@ -32,7 +37,9 @@ type SourceRecord = z.infer<typeof SourceRecordSchema>;
 type Receipt = z.infer<typeof ReceiptSchema>;
 type MutationInput = InboxScope & { expectedRevision?: number; eventId: string };
 type MutationDetails = { subject?: string; imported?: number; duplicates?: number; cursor?: string; skipped?: number; sanitized?: number; archived?: number };
-type Access = "read" | "triage" | "reply" | "reply-outcome" | "import" | "archive" | "policy" | "source";
+type Access = "read" | "triage" | "reply" | "reply-outcome" | "import" | "archive" | "policy" | "source" | "public" | "public-outcome";
+/** The public sidecar of one scope, loaded on first use inside the scope's lock (public-threads §12 A4). */
+interface PublicContext { get(): Promise<PublicLedger>; touch(): void; commit(entry: { actor: InboxActor; operation: PublicLedger["audit"][number]["operation"]; subject: string; eventId?: string; digest?: string }, at: string): Promise<number> }
 type Role = "user" | "assistant" | "owner" | "ingress";
 type RevisionCheck = "exact" | "notFuture" | "none";
 export interface InboxStoreOptions {
@@ -53,6 +60,13 @@ export interface InboxStoreOptions {
 /** Snapshot row for the waker: identifiers and routing hints only, never visitor text. */
 export interface InboxWakeRow { id: string; seq: number; revision: number; sourceId: string; deploymentId: string; status: InboxComment["status"]; visitorTag?: string; releaseId?: string }
 export interface InboxPendingRow { commentId: string; sourceId: string; deploymentId: string; externalId: string; pending: InboxPendingReply }
+/** One public state change or page action the backend has not confirmed yet (public-threads §5.4.2). */
+export type InboxPublicOutboxItem =
+  | { kind: "state"; sourceId: string; externalId: string; send: { hidden?: boolean; resolved?: boolean } }
+  | { kind: "action"; sourceId: string; id: string; action: PublicAction };
+/** The only actor that may change what visitors see (the host's human UI); never an agent or the automation (§12 A19). */
+const HUMAN_ID = "paseo-client";
+const isHuman = (actor: InboxActor) => actor.kind === "user" && actor.id === HUMAN_ID;
 export interface InboxAutomationState {
   revision: number; latestSeq: number; total: number; policy: InboxPolicy;
   sources: Array<{ sourceId: string; deploymentId: string; enabled: boolean; cursor: string; skipped: number; sanitized: number }>;
@@ -80,16 +94,23 @@ const externalFields = (comment: InboxComment): Record<string, unknown> => {
 const ONLY_ASSISTANT = "只有这张 Board 的评论助手可以回复访客；你可以用 board_inbox_triage 记录建议。";
 const NOT_WOKEN = "评论助手只能回复唤醒它时列出的评论。";
 const OTHER_VISITOR = "回复里有一段和其他访客的评论相同（连续 16 个字以上）。访客之间互相看不到评论，请换一种说法。";
+const PRIVATE_IN_PUBLIC = "回复里有一段和私密或已隐藏评论相同（连续 16 个字以上）。公开讨论里所有访客都能看到回复，请换一种说法。";
+const THREAD_REPLY_LIMIT = "这个讨论的作者回复已达 20 条上限。";
 const QUOTE_RUN = 16;
-/** True when the reply repeats a 16-character run of a comment written by another visitor (whitespace-insensitive). */
-function quotesOtherVisitor(text: string, comment: InboxComment, comments: readonly InboxComment[]): boolean {
+/**
+ * True when the reply repeats a 16-character run of a comment written by another visitor (whitespace-insensitive).
+ * For a reply to a public comment (`protect` given), any private or hidden comment is protected instead, including
+ * the same visitor's: the reply is seen by every visitor of the page (public-threads §12 A1).
+ */
+function quotesOtherVisitor(text: string, comment: InboxComment, comments: readonly InboxComment[], protect?: (other: InboxComment) => boolean): boolean {
   const squash = (value: string) => value.replace(/\s+/g, " ").trim();
   const reply = squash(text);
   if (reply.length < QUOTE_RUN) return false;
   const runs = new Set<string>();
   for (let index = 0; index + QUOTE_RUN <= reply.length; index++) runs.add(reply.slice(index, index + QUOTE_RUN));
   for (const other of comments) {
-    if (other.id === comment.id || other.visitorTag !== undefined && other.visitorTag === comment.visitorTag) continue;
+    if (other.id === comment.id) continue;
+    if (protect ? !protect(other) : other.visitorTag !== undefined && other.visitorTag === comment.visitorTag) continue;
     const body = squash(other.text);
     for (let index = 0; index + QUOTE_RUN <= body.length; index++) if (runs.has(body.slice(index, index + QUOTE_RUN))) return true;
   }
@@ -101,12 +122,14 @@ const replyTime = (reply: InboxReply) => Date.parse(reply.confirmedAt ?? reply.c
 /** A separate bounded ledger: importing a comment never creates a Board interaction or dispatches an agent. */
 export class InboxStore {
   private readonly directory: string;
+  private readonly publicListeners = new Set<(scope: InboxScope) => void>();
   constructor(rootDir: string, private readonly options: InboxStoreOptions) { this.directory = join(resolve(rootDir), "inbox"); }
   private now() { return this.options.now?.() ?? Date.now(); }
 
   async list(raw: InboxListInput, actor: InboxActor): Promise<InboxPage> {
     const input = parseInput(InboxListInputSchema, raw);
-    return this.transact(input, actor, "read", async (state, role) => {
+    return this.transact(input, actor, "read", async (state, role, _commit, pub) => {
+      const ledger = await pub.get();
       const newest = input.order === "newest";
       let offset = 0;
       if (input.cursor) {
@@ -120,7 +143,7 @@ export class InboxStore {
       const comments: InboxComment[] = [];
       let characters = 0;
       for (let index = offset; index < ordered.length && comments.length < input.limit; index++) {
-        const comment = structuredClone(ordered[index]);
+        const comment = structuredClone(decorate(ordered[index], ledger));
         if (actor.kind === "agent") {
           // Agent pages are bounded; board_inbox_read returns the full text.
           if (comment.text.length > INBOX_LIMITS.agentText) { comment.text = comment.text.slice(0, INBOX_LIMITS.agentText); comment.truncated = true; }
@@ -146,10 +169,10 @@ export class InboxStore {
 
   async read(raw: InboxReadInput, actor: InboxActor): Promise<InboxReadResult> {
     const input = parseInput(InboxReadInputSchema, raw);
-    return this.transact(input, actor, "read", async state => {
+    return this.transact(input, actor, "read", async (state, _role, _commit, pub) => {
       const comment = state.comments.find(item => item.id === input.commentId);
       if (!comment) throw new BoardStoreError("not_found", "Inbox comment does not exist");
-      return structuredClone({ revision: state.revision, comment, contentNotice: INBOX_CONTENT_NOTICE });
+      return structuredClone({ revision: state.revision, comment: decorate(comment, await pub.get()), contentNotice: INBOX_CONTENT_NOTICE });
     });
   }
 
@@ -190,14 +213,27 @@ export class InboxStore {
     const input = parseInput(InboxImportInputSchema, raw);
     const { expectedRevision: _ignored, ...payload } = input;
     return this.mutate(input, actor, "import", "import", payload, {
-      revisionCheck: "none", headroom: true,
+      revisionCheck: "none", headroom: true, preloadPublic: Boolean(input.publicRows?.length),
       beforeReplay: state => {
         if (actor.kind !== "ingress" || actor.sourceId !== input.sourceId || actor.deploymentId !== input.deploymentId) deny("Import requires its exact authenticated source and deployment");
         this.authenticateSource(state, actor as Extract<InboxActor, { kind: "ingress" }>);
       },
-      change: (state, at) => {
+      change: (state, at, pub) => {
         const source = this.source(state, input.sourceId, input.deploymentId);
         if (source.cursor !== input.cursor) conflict("Import cursor changed; reconcile the recorded checkpoint before continuing");
+        // Public threads: the extension goes to the sidecar; a row may not move to another thread.
+        const ledger = pub.value;
+        if (ledger && input.publicRows) {
+          const onPage = new Set(input.comments.map(item => item.externalId));
+          for (const row of input.publicRows) {
+            if (!onPage.has(row.externalId)) throw new BoardStoreError("invalid_input", "A public row must belong to a comment on the same page");
+            if (conflictingParent(ledger, input.sourceId, row)) throw new BoardStoreError("idempotency_conflict", "An external comment ID was reused with a different thread; existing evidence is unchanged");
+          }
+          for (const row of input.publicRows) {
+            const outcome = importPublicRow(ledger, input.sourceId, row, at);
+            if (outcome !== "same") { pub.touch(); audit(ledger, { at, actor: { kind: "ingress", id: input.sourceId }, operation: outcome === "new" ? "import" : "upgrade", subject: row.externalId }); }
+          }
+        }
         let imported = 0, duplicates = 0, nextSeq = state.nextSeq ?? 1;
         for (const external of input.comments) {
           const existing = state.comments.find(item => item.sourceId === input.sourceId && item.externalId === external.externalId);
@@ -226,11 +262,23 @@ export class InboxStore {
   async triage(raw: InboxTriageInput, actor: InboxActor): Promise<InboxMutationResult> {
     const input = parseInput(InboxTriageInputSchema, raw);
     return this.mutate(input, actor, "triage", "triage", input, {
-      revisionCheck: "notFuture",
-      change: (state, at) => {
+      revisionCheck: "notFuture", preloadPublic: isHuman(actor),
+      change: (state, at, pub) => {
         const comment = state.comments.find(item => item.id === input.commentId);
         if (!comment) throw new BoardStoreError("not_found", "Inbox comment does not exist");
         if (comment.revision !== input.expectedCommentRevision) conflict("Comment triage changed; read its latest state before editing");
+        // The human's 不处理 hides a public comment on the page; leaving it shows it again unless it was hidden
+        // separately. An agent's triage never changes what visitors see (public-threads §4.4, §12 A19).
+        const record = pub.value && findRecord(pub.value, comment.sourceId, comment.externalId);
+        if (record && !record.withdrawn) {
+          if (input.status === "dismissed" && comment.status !== "dismissed" && !record.hidden) {
+            Object.assign(record, { hidden: true, hiddenBy: "dismiss" as const, explicit: true as const, updatedAt: at }); setPending(record, "hidden", true);
+            audit(pub.value!, { at, actor: { kind: "user", id: HUMAN_ID }, operation: "triage", subject: `${comment.externalId} hidden` }); pub.touch();
+          } else if (comment.status === "dismissed" && input.status !== "dismissed" && record.hiddenBy === "dismiss") {
+            Object.assign(record, { hidden: false, explicit: true as const, updatedAt: at }); delete record.hiddenBy; setPending(record, "hidden", false);
+            audit(pub.value!, { at, actor: { kind: "user", id: HUMAN_ID }, operation: "triage", subject: `${comment.externalId} shown` }); pub.touch();
+          }
+        }
         Object.assign(comment, { status: input.status, labels: input.labels, note: input.note, revision: comment.revision + 1, updatedAt: at });
         return { subject: comment.id };
       },
@@ -260,11 +308,12 @@ export class InboxStore {
 
   /** One serialized read for the waker: identifiers only, in seq order (DESIGN §11.6). */
   async snapshotAfter(scope: InboxScope, afterSeq: number, limit: number, actor: InboxActor): Promise<{ revision: number; latestSeq: number; total: number; policy: InboxPolicy; comments: InboxWakeRow[] }> {
-    return this.transact(scope, actor, "read", async state => {
-      const comments: InboxWakeRow[] = [];
+    return this.transact(scope, actor, "read", async (state, _role, _commit, pub) => {
+      const comments: InboxWakeRow[] = [], ledger = await pub.get();
       for (const comment of state.comments) {
         if (comment.seq === undefined || comment.seq <= afterSeq) continue;
-        comments.push({ id: comment.id, seq: comment.seq, revision: comment.revision, sourceId: comment.sourceId, deploymentId: comment.deploymentId, status: comment.status, ...(comment.visitorTag ? { visitorTag: comment.visitorTag } : {}), ...(comment.anchor?.releaseId ? { releaseId: comment.anchor.releaseId } : {}) });
+        // Public visitor replies and hidden public comments are never new for the waker (public-threads §12 A1).
+        comments.push({ id: comment.id, seq: comment.seq, revision: comment.revision, sourceId: comment.sourceId, deploymentId: comment.deploymentId, status: notNewForWaker(ledger, comment) ? "dismissed" : comment.status, ...(comment.visitorTag ? { visitorTag: comment.visitorTag } : {}), ...(comment.anchor?.releaseId ? { releaseId: comment.anchor.releaseId } : {}) });
         if (comments.length >= limit) break;
       }
       return { revision: state.revision, latestSeq: (state.nextSeq ?? 1) - 1, total: state.comments.length, policy: structuredClone(state.policy), comments };
@@ -305,7 +354,7 @@ export class InboxStore {
    */
   async prepareReply(input: PrepareReplyInput, actor: InboxActor, context: { readySources: ReadonlyArray<{ sourceId: string; deploymentId: string }> }): Promise<PrepareReplyResult> {
     parseInput(InboxScopeSchema, { boardId: input.boardId, expectedCreatedAt: input.expectedCreatedAt });
-    return this.transact(input, actor, "reply", async (state, role, commit) => {
+    return this.transact(input, actor, "reply", async (state, role, commit, pub) => {
       const identity = actorId(actor);
       const digest = fingerprint("inbox:reply", { payload: { commentId: input.commentId, text: input.text }, actor: { kind: actor.kind, id: identity } });
       const receipt = state.receipts.find(item => item.eventId === input.eventId);
@@ -317,9 +366,25 @@ export class InboxStore {
       if (!comment) throw new BoardStoreError("not_found", "Inbox comment does not exist");
       if (comment.revision !== input.expectedCommentRevision) conflict("Comment changed; read its latest state before replying");
       if (!comment.visitorTag) throw new BoardStoreError("invalid_input", "这位访客看不到回复（评论不是从页面评论功能发出的），只能内部处理。");
+      const ledger = await pub.get(), record = findRecord(ledger, comment.sourceId, comment.externalId);
       if (role === "assistant" && actor.kind === "agent") {
         if (this.options.assistantComments && !(await this.options.assistantComments(input, actor.agentId)).has(comment.id)) deny(NOT_WOKEN);
-        if (quotesOtherVisitor(input.text, comment, state.comments)) throw new BoardStoreError("invalid_input", OTHER_VISITOR);
+        if (record) {
+          // Everyone on the page reads a reply to a public comment: protect every private or hidden comment.
+          const visiblePublic = (other: InboxComment) => { const found = findRecord(ledger, other.sourceId, other.externalId); return !found || found.hidden || Boolean(found.withdrawn); };
+          if (quotesOtherVisitor(input.text, comment, state.comments, visiblePublic)) throw new BoardStoreError("invalid_input", PRIVATE_IN_PUBLIC);
+        } else if (quotesOtherVisitor(input.text, comment, state.comments)) throw new BoardStoreError("invalid_input", OTHER_VISITOR);
+      }
+      if (record) {
+        // At most 20 owner and assistant replies per public thread: the root plus its visitor replies (§12 A22).
+        const root = record.parentId ?? comment.externalId;
+        let count = 0;
+        for (const item of state.comments) {
+          if (item.sourceId !== comment.sourceId) continue;
+          const member = item.externalId === root || findRecord(ledger, item.sourceId, item.externalId)?.parentId === root;
+          if (member) count += (item.replies?.length ?? 0) + (item.pendingReply && item.pendingReply.state !== "failed" ? 1 : 0);
+        }
+        if (count >= INBOX_LIMITS.replies) throw new BoardStoreError("size_limit", THREAD_REPLY_LIMIT);
       }
       if ((comment.replies?.length ?? 0) >= INBOX_LIMITS.replies) throw new BoardStoreError("size_limit", "这条评论的回复已达 20 条上限。");
       if (comment.pendingReply && comment.pendingReply.state !== "failed") conflict("这条评论有一条回复正在发送或待审核。");
@@ -339,7 +404,8 @@ export class InboxStore {
       const pending: InboxPendingReply = {
         key: input.key, eventId: input.eventId, text: input.text, authorKind: role === "user" ? "owner" : "agent",
         actor: { kind: actor.kind === "user" ? "user" : "agent", id: identity },
-        state: role === "assistant" && autoOf(state.policy) === "review" ? "draft" : "sending",
+        // An assistant reply to a public comment waits for the human, whatever the mode (public-threads §12 A1).
+        state: role === "assistant" && (autoOf(state.policy) === "review" || record !== undefined) ? "draft" : "sending",
         resolveOnConfirm: input.resolve, createdAt: at, failedReason: null,
         ...(input.approvedSensitive ? { approvedSensitive: true as const } : {}),
       };
@@ -435,6 +501,152 @@ export class InboxStore {
     });
   }
 
+  // -------------------------------------------------------------------------------------------------------------
+  // Public comment threads (public-threads DESIGN §5.4 as amended by §12). Sidecar-only changes; the human alone
+  // decides what visitors see; outcomes come from the comment's own source.
+
+  /** Called after every committed sidecar change (the outbox listens). */
+  onPublicChange(listener: (scope: InboxScope) => void): () => void { this.publicListeners.add(listener); return () => this.publicListeners.delete(listener); }
+  private emitPublic(scope: InboxScope) { for (const listener of this.publicListeners) { try { listener(scope); } catch { /* advisory */ } } }
+
+  /** Human 在页面上隐藏/显示, 标为已解决/重新打开 and 重试 by source and external ID; also for comments never imported. */
+  async setPublicState(raw: InboxPublicStateInput, actor: InboxActor): Promise<{ revision: number; state: ReturnType<typeof publicStateOf>; replayed: boolean }> {
+    const input = parseInput(InboxPublicStateInputSchema, raw);
+    return this.transact(input, actor, "public", async (state, _role, _commit, pub) => {
+      if (!isHuman(actor)) deny(PUBLIC_TEXT.humanOnly);
+      const ledger = await pub.get();
+      const digest = fingerprint("inbox:public-state", { payload: { sourceId: input.sourceId, externalId: input.externalId, hidden: input.hidden, resolved: input.resolved, retry: input.retry }, actor: { kind: actor.kind, id: actorId(actor) } });
+      const previous = ledger.receipts.find(item => item.eventId === input.eventId);
+      const existing = findRecord(ledger, input.sourceId, input.externalId);
+      if (previous) {
+        if (previous.digest !== digest) throw new BoardStoreError("idempotency_conflict", "Inbox event ID was reused with a different request");
+        if (!existing) throw new BoardStoreError("not_found", "这条公开评论不在收件箱的记录里。");
+        return { revision: ledger.revision, state: publicStateOf(existing), replayed: true };
+      }
+      if (!state.sources.some(source => source.sourceId === input.sourceId)) throw new BoardStoreError("not_found", "这个后端来源已不存在。");
+      const at = new Date(this.now()).toISOString();
+      let record = existing;
+      if (!record) {
+        if (ledger.records.length >= 10_000) throw new BoardStoreError("size_limit", "公开评论记录已达 10000 条上限。");
+        const known = input.known ?? { hidden: false, resolved: false };
+        record = { sourceId: input.sourceId, externalId: input.externalId, ...(known.parentId ? { parentId: known.parentId } : {}), ...(known.publicTag ? { publicTag: known.publicTag } : {}), ...(known.withdrawn ? { withdrawn: true as const } : {}), hidden: known.hidden || Boolean(known.withdrawn), resolved: known.resolved, updatedAt: at };
+        ledger.records.push(record);
+      }
+      if (input.hidden === false && record.withdrawn) throw new BoardStoreError("invalid_input", PUBLIC_TEXT.withdrawn);
+      if (input.resolved !== undefined && record.parentId !== undefined) throw new BoardStoreError("invalid_input", PUBLIC_TEXT.replyResolve);
+      if (input.hidden !== undefined && !(record.withdrawn && input.hidden)) {
+        record.hidden = input.hidden; if (input.hidden) record.hiddenBy = "hide"; else delete record.hiddenBy;
+        setPending(record, "hidden", input.hidden);
+      }
+      if (input.resolved !== undefined) { record.resolved = input.resolved; setPending(record, "resolved", input.resolved); }
+      if (input.retry && !record.pending) record.pending = { hidden: record.hidden, ...(record.parentId === undefined ? { resolved: record.resolved } : {}) };
+      delete record.error; record.explicit = true; record.updatedAt = at;
+      const revision = await pub.commit({ actor, operation: "state", subject: `${input.sourceId} ${input.externalId} hidden=${record.hidden} resolved=${record.resolved}`, eventId: input.eventId, digest }, at);
+      return { revision, state: publicStateOf(record), replayed: false };
+    });
+  }
+
+  /** Human 暂停新的公开评论 (per page) and 隐藏这位访客的全部公开评论, recorded for the outbox and re-pushed after a restore. */
+  async setPublicAction(raw: InboxPublicPageInput | InboxPublicVisitorInput, kind: "pause" | "hide-visitor", actor: InboxActor): Promise<{ revision: number; action: PublicAction }> {
+    const input = kind === "pause" ? parseInput(InboxPublicPageInputSchema, raw) : parseInput(InboxPublicVisitorInputSchema, raw);
+    return this.transact(input, actor, "public", async (state, _role, _commit, pub) => {
+      if (!isHuman(actor)) deny(PUBLIC_TEXT.humanOnly);
+      const ledger = await pub.get();
+      if (!state.sources.some(source => source.sourceId === input.sourceId)) throw new BoardStoreError("not_found", "这个后端来源已不存在。");
+      const tag = "tag" in input ? input.tag : undefined, value = "paused" in input ? input.paused : (input as InboxPublicVisitorInput).hidden;
+      const digest = fingerprint(`inbox:public-${kind}`, { payload: { sourceId: input.sourceId, page: input.page, tag, value }, actor: { kind: actor.kind, id: actorId(actor) } });
+      const id = [kind, input.sourceId, input.page, tag ?? ""].join("\0"), previous = ledger.receipts.find(item => item.eventId === input.eventId);
+      if (previous) {
+        if (previous.digest !== digest) throw new BoardStoreError("idempotency_conflict", "Inbox event ID was reused with a different request");
+        const found = ledger.actions.find(item => item.id === id);
+        if (found) return { revision: ledger.revision, action: structuredClone(found) };
+      }
+      const at = new Date(this.now()).toISOString();
+      const action: PublicAction = { id, sourceId: input.sourceId, kind, page: input.page, ...(tag ? { tag } : {}), value, pending: true, updatedAt: at };
+      ledger.actions = [...ledger.actions.filter(item => item.id !== id), action].slice(-500);
+      const revision = await pub.commit({ actor, operation: kind === "pause" ? "page" : "visitor", subject: `${input.sourceId} ${input.page}${tag ? ` ${tag}` : ""} ${value}`, eventId: input.eventId, digest }, at);
+      return { revision, action: structuredClone(action) };
+    });
+  }
+
+  /** The sidecar, read-only (thread view merge, outbox and its hourly re-push). */
+  async publicLedger(scope: InboxScope, actor: InboxActor): Promise<PublicLedger & { commentIds: Record<string, string> }> {
+    return this.transact(scope, actor, "read", async (state, _role, _commit, pub) => {
+      const ledger = structuredClone(await pub.get()), commentIds: Record<string, string> = {};
+      for (const comment of state.comments) commentIds[`${comment.sourceId}\0${comment.externalId}`] = comment.id;
+      return { ...ledger, commentIds };
+    });
+  }
+  /** Pending state changes and page actions without a definitive error, oldest first. */
+  async publicOutbox(scope: InboxScope, actor: InboxActor): Promise<InboxPublicOutboxItem[]> {
+    const ledger = await this.publicLedger(scope, actor);
+    return [
+      ...ledger.records.filter(record => record.pending && Object.keys(record.pending).length && !record.error).map(record => ({ kind: "state" as const, sourceId: record.sourceId, externalId: record.externalId, send: { ...record.pending } })),
+      ...ledger.actions.filter(action => action.pending && !action.error).map(action => ({ kind: "action" as const, sourceId: action.sourceId, id: action.id, action })),
+    ];
+  }
+  /** The backend confirmed: each sent field leaves `pending` when the wanted value is still the one sent and the backend echoes it. */
+  async confirmPublic(scope: InboxScope, item: InboxPublicOutboxItem, echo: { hidden?: boolean; resolved?: boolean; withdrawn?: boolean; changed?: number }, actor: InboxActor): Promise<void> {
+    await this.publicOutcome(scope, item, actor, (record, action) => {
+      if (record && item.kind === "state") {
+        for (const field of ["hidden", "resolved"] as const) if (item.send[field] !== undefined && record.pending?.[field] === item.send[field] && echo[field] === item.send[field]) delete record.pending[field];
+        if (echo.withdrawn && !record.withdrawn) { record.withdrawn = true; record.hidden = true; delete record.hiddenBy; if (record.pending) delete record.pending.hidden; }
+        if (record.pending && !Object.keys(record.pending).length) delete record.pending;
+        return `${item.externalId} confirmed`;
+      }
+      if (action && item.kind === "action" && action.updatedAt === item.action.updatedAt) { delete action.pending; if (echo.changed !== undefined) action.changed = echo.changed; return `${action.id} confirmed`; }
+      return null;
+    });
+  }
+  /** A definitive refusal: the outbox stops for this item until the human retries. */
+  async failPublic(scope: InboxScope, item: InboxPublicOutboxItem, reason: string, actor: InboxActor): Promise<void> {
+    await this.publicOutcome(scope, item, actor, (record, action) => {
+      if (record && item.kind === "state" && record.pending) { record.error = reason.slice(0, 300); return `${item.externalId} failed`; }
+      if (action && item.kind === "action" && action.pending) { action.error = reason.slice(0, 300); return `${action.id} failed`; }
+      return null;
+    });
+  }
+  private async publicOutcome(scope: InboxScope, item: InboxPublicOutboxItem, actor: InboxActor, apply: (record: PublicRecord | undefined, action: PublicAction | undefined) => string | null) {
+    await this.transact(scope, actor, "public-outcome", async (state, _role, _commit, pub) => {
+      const ingress = this.outcomeActor(state, actor);
+      if (ingress.sourceId !== item.sourceId) deny("Public state outcomes require the comment's own source");
+      const ledger = await pub.get();
+      const record = item.kind === "state" ? findRecord(ledger, item.sourceId, item.externalId) : undefined;
+      const action = item.kind === "action" ? ledger.actions.find(entry => entry.id === item.id) : undefined;
+      const subject = apply(record, action);
+      if (subject === null) return;
+      if (record) record.updatedAt = new Date(this.now()).toISOString();
+      await pub.commit({ actor, operation: "outcome", subject }, new Date(this.now()).toISOString());
+    });
+  }
+
+  private publicPath(scope: InboxScope) { return join(this.directory, `${hash(canonicalJson(scope))}.public.json`); }
+  private async loadPublic(scope: InboxScope): Promise<PublicLedger> {
+    const path = this.publicPath(scope);
+    try {
+      const stat = await lstat(path);
+      if (stat.isSymbolicLink() || !stat.isFile()) throw new BoardStoreError("unsafe_path", "Inbox storage must be a regular file");
+      if (stat.size > PUBLIC_LEDGER_BYTES) throw new BoardStoreError("size_limit", "Public comment records are too large; no data was changed");
+      const ledger = PublicLedgerSchema.parse(JSON.parse(await readFile(path, "utf8")));
+      if (canonicalJson(ledger.scope) !== canonicalJson(scope)) throw new Error("Public sidecar scope mismatch");
+      return ledger;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyPublicLedger(scope);
+      if (error instanceof BoardStoreError) throw error;
+      throw new BoardStoreError("corrupt_storage", "Public comment records could not be read; existing data was not changed");
+    }
+  }
+  private async writePublic(scope: InboxScope, ledger: PublicLedger) {
+    const path = this.publicPath(scope), data = JSON.stringify(PublicLedgerSchema.parse(ledger));
+    if (Buffer.byteLength(data, "utf8") > PUBLIC_LEDGER_BYTES) throw new BoardStoreError("size_limit", "Public comment records reached their storage limit; this operation was not committed");
+    const temporary = `${path}.tmp-${randomUUID()}`;
+    try {
+      const file = await open(temporary, "wx", 0o600);
+      try { await file.writeFile(data); await file.sync(); } finally { await file.close(); }
+      await rename(temporary, path);
+    } finally { await unlink(temporary).catch(error => { if (error.code !== "ENOENT") throw error; }); }
+  }
+
   private outcomeActor(state: State, actor: InboxActor): Extract<InboxActor, { kind: "ingress" }> {
     if (actor.kind !== "ingress") return deny("Reply outcomes require the comment's authenticated source");
     // A reply made under a valid grant may already be public: its outcome is recorded even after the source is disabled.
@@ -469,18 +681,18 @@ export class InboxStore {
     }
     if (actor.kind === "user") {
       if (!actor.id || actor.id.length > 200) deny("User identity is required");
-      if (access === "import" || access === "reply-outcome") deny("A user action cannot substitute for authenticated source delivery");
+      if (access === "import" || access === "reply-outcome" || access === "public-outcome") deny("A user action cannot substitute for authenticated source delivery");
       return "user";
     }
     if (actor.kind === "ingress") {
-      if (access !== "import" && access !== "reply-outcome") deny("Source credentials only permit importing comments and recording reply outcomes");
+      if (access !== "import" && access !== "reply-outcome" && access !== "public-outcome") deny("Source credentials only permit importing comments and recording reply outcomes");
       return "ingress";
     }
     return deny("Unknown inbox actor");
   }
 
   /** Serialized, identity-checked access; `commit` appends the audit entry and receipt, rechecks identity and writes atomically. */
-  private async transact<T>(scope: InboxScope, actor: InboxActor, access: Access, action: (state: State, role: Role, commit: (entry: { eventId: string; operation: InboxAudit["operation"]; digest: string; subject?: string; details?: Omit<MutationDetails, "subject">; revoking?: boolean; headroom?: boolean }, at: string) => Promise<number>) => Promise<T>): Promise<T> {
+  private async transact<T>(scope: InboxScope, actor: InboxActor, access: Access, action: (state: State, role: Role, commit: (entry: { eventId: string; operation: InboxAudit["operation"]; digest: string; subject?: string; details?: Omit<MutationDetails, "subject">; revoking?: boolean; headroom?: boolean }, at: string) => Promise<number>, pub: PublicContext) => Promise<T>): Promise<T> {
     const identity = parseInput(InboxScopeSchema, { boardId: scope.boardId, expectedCreatedAt: scope.expectedCreatedAt });
     const path = this.path(identity);
     await ensureDirectory(this.directory);
@@ -491,6 +703,22 @@ export class InboxStore {
       const latest = await this.options.resolveBoard(identity.boardId);
       if (!latest || latest.createdAt !== identity.expectedCreatedAt) throw new BoardStoreError("identity_conflict", "Board changed while the inbox was being read");
       const role = await this.authorize(state, latest, actor, access, identity);
+      let ledger: PublicLedger | undefined, publicDirty = false;
+      const writePublicNow = async () => { if (ledger && publicDirty) { ledger.revision++; await this.writePublic(identity, ledger); publicDirty = false; return true; } return false; };
+      const pub: PublicContext = {
+        get: async () => ledger ??= await this.loadPublic(identity),
+        touch: () => { publicDirty = true; },
+        // A sidecar-only change: identity is checked again; the main ledger and its revision are untouched.
+        commit: async (entry, at) => {
+          const current = await this.options.resolveBoard(identity.boardId);
+          if (!current || current.createdAt !== identity.expectedCreatedAt) throw new BoardStoreError("identity_conflict", "Board identity changed during the operation");
+          const value = await pub.get();
+          audit(value, { at, actor: { kind: entry.actor.kind, id: actorId(entry.actor) }, operation: entry.operation, subject: entry.subject.slice(0, 2_400) });
+          if (entry.eventId && entry.digest) receipt(value, entry.eventId, entry.digest);
+          publicDirty = true; await writePublicNow(); this.emitPublic(identity);
+          return value.revision;
+        },
+      };
       const commit = async (entry: { eventId: string; operation: InboxAudit["operation"]; digest: string; subject?: string; details?: Omit<MutationDetails, "subject">; revoking?: boolean; headroom?: boolean }, at: string) => {
         // Reserve enough final audit entries to revoke every grant/source even when normal writes fill the ledger.
         const normalLimit = INBOX_LIMITS.events - INBOX_LIMITS.sources - 2;
@@ -504,22 +732,25 @@ export class InboxStore {
         const current = await this.options.resolveBoard(identity.boardId);
         if (!current || current.createdAt !== identity.expectedCreatedAt) throw new BoardStoreError("identity_conflict", "Board identity changed during the operation");
         if (actor.kind === "agent" && current.ownerAgentId !== actor.agentId && !await this.options.authorizeAgent?.(identity.boardId, actor.agentId) && !await this.options.authorizeAssistant?.(identity, actor.agentId)) deny("Agent ownership changed during the operation");
+        // The sidecar first: a crash in between leaves a public state change without its triage record, never the reverse.
+        const publicChanged = await writePublicNow();
         await this.write(path, state, Boolean(entry.revoking), Boolean(entry.headroom));
+        if (publicChanged) this.emitPublic(identity);
         return state.revision;
       };
-      return action(state, role, commit);
+      return action(state, role, commit, pub);
     });
   }
 
   private async mutate(input: MutationInput, actor: InboxActor, access: Access, operation: InboxAudit["operation"], payload: unknown, spec: {
-    revisionCheck: RevisionCheck; headroom?: boolean;
+    revisionCheck: RevisionCheck; headroom?: boolean; preloadPublic?: boolean;
     revoking?(state: State): boolean;
     beforeReplay?(state: State): void;
     prepare?(state: State): Promise<void>;
-    change(state: State, at: string): MutationDetails;
+    change(state: State, at: string, pub: { value?: PublicLedger; touch(): void }): MutationDetails;
     decorate?(state: State): Partial<InboxMutationResult>;
   }): Promise<InboxMutationResult & { archived?: number }> {
-    return this.transact(input, actor, access, async (state, _role, commit) => {
+    return this.transact(input, actor, access, async (state, _role, commit, pub) => {
       spec.beforeReplay?.(state);
       const digest = fingerprint(`inbox:${operation}`, { payload, actor: { kind: actor.kind, id: actorId(actor) } });
       const receipt = state.receipts.find(item => item.eventId === input.eventId);
@@ -534,7 +765,8 @@ export class InboxStore {
       const revoking = spec.revoking?.(state) ?? false;
       await spec.prepare?.(state);
       const at = new Date(this.now()).toISOString();
-      const { subject, ...details } = spec.change(state, at);
+      const value = spec.preloadPublic ? await pub.get() : undefined;
+      const { subject, ...details } = spec.change(state, at, { value, touch: pub.touch });
       const revision = await commit({ eventId: input.eventId, operation, digest, subject, details, revoking, headroom: spec.headroom }, at);
       return { ...details, revision, committedRevision: revision, replayed: false, ...spec.decorate?.(state) };
     });
@@ -565,7 +797,8 @@ export class InboxStore {
     }
   }
   private async write(path: string, state: State, revoking: boolean, headroom: boolean) {
-    const data = JSON.stringify(StateSchema.parse(state));
+    // Public fields are read results only; the stored ledger keeps the 77ca22a shape (public-threads §12 A4).
+    const data = JSON.stringify(StateSchema.parse({ ...state, comments: state.comments.map(stripPublic) }));
     const bytes = Buffer.byteLength(data, "utf8");
     if (headroom && bytes > INBOX_LIMITS.headroomBytes) throw new BoardStoreError("size_limit", "收件箱接近上限，自动同步已停止。请在「评论与权限」里归档已处理的评论。", { detail: "headroom", resource: "bytes", count: bytes });
     const limit = INBOX_LIMITS.storageBytes - (revoking ? 0 : 128_000);

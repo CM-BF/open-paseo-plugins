@@ -9,7 +9,8 @@ import {
 import { InboxConnectInputSchema, InboxConnectionSchema, InboxSyncInputSchema, InboxReconcileInputSchema, type InboxConnectInput, type InboxSyncInput } from "../shared/inbox-connection";
 import { IdSchema } from "../shared/contracts";
 import { BoardStoreError, ensureDirectory, fingerprint, parseInput, serialized } from "./store-format";
-import type { InboxStore, PrepareReplyResult } from "./inbox-store";
+import type { InboxPublicOutboxItem, InboxStore, PrepareReplyResult } from "./inbox-store";
+import type { InboxPublicRow } from "../shared/inbox";
 import { replyGuardMessage, replyGuardReason } from "./reply-guard";
 import { BIDI_CONTROL } from "../shared/bidi";
 
@@ -23,7 +24,22 @@ type PrivateConnection = z.infer<typeof PrivateConnectionSchema>;
 const EnvelopeSchema = z.object({
   deploymentId: IdSchema, cursor: z.string().min(1).max(500), nextCursor: z.string().min(1).max(500),
   comments: z.array(z.unknown()).max(INBOX_LIMITS.importPage), format: z.literal(2).optional(),
+  /** Public threads (`threads=1`, public-threads §5.3): rows may carry their public extension. */
+  threads: z.literal(1).optional(),
 }).strict();
+const PublicMessageSchema = z.object({
+  id: z.string().min(1).max(200), by: z.enum(["visitor", "owner", "agent"]), tag: z.string().regex(/^[a-f0-9]{12}$/).optional(), name: z.string().max(160).optional(),
+  text: z.string().max(8_000), createdAt: z.string().max(40), hidden: z.boolean().optional(), withdrawn: z.literal(true).optional(), replyTo: z.string().max(200).optional(),
+}).strict();
+/** The backend's owner moderation listing (`GET …/public/moderation`). */
+const ModerationSchema = z.object({
+  deploymentId: z.string(), publicThreads: z.boolean(),
+  pages: z.array(z.object({ page: z.string().max(2_000), version: z.number().int().nonnegative(), paused: z.boolean() }).strict()).max(500),
+  releases: z.array(z.string().max(80)).max(1_000), total: z.number().int().nonnegative(), truncated: z.boolean(),
+  threads: z.array(PublicMessageSchema.omit({ by: true }).extend({ page: z.string().max(2_000), resolved: z.boolean(), hidden: z.boolean(), anchor: z.record(z.string(), z.unknown()).optional(), replies: z.array(PublicMessageSchema).max(100), omitted: z.number().int().nonnegative() }).strict()).max(100),
+}).strict();
+export type ModerationListing = z.infer<typeof ModerationSchema>;
+export type PublicPostOutcome = { kind: "ok"; echo: { hidden?: boolean; resolved?: boolean; withdrawn?: boolean; changed?: number } } | { kind: "transient"; error: string; retryAfterMs?: number } | { kind: "fail"; message: string };
 const ReplyResponseSchema = z.object({
   deploymentId: z.string(), replayed: z.boolean().optional(),
   reply: z.object({ replyId: z.string().min(1).max(200), commentExternalId: z.string(), text: z.string(), createdAt: z.string().datetime() }).passthrough(),
@@ -36,7 +52,7 @@ const ConnectionFileSchema = z.array(PrivateConnectionSchema).max(INBOX_LIMITS.s
 
 /** Private, server-only view of one source for the coordinator. Never returned by an RPC or tool. */
 export interface RuntimeSource { sourceId: string; deploymentId: string; label: string; endpoint: string; token: string; credential: string; enabled: boolean; ready: boolean }
-export interface FetchedPage { format: 1 | 2; deploymentId: string; cursor: string; nextCursor: string; rows: unknown[]; characters: number }
+export interface FetchedPage { format: 1 | 2; deploymentId: string; cursor: string; nextCursor: string; rows: unknown[]; characters: number; threads?: boolean }
 export type SyncFailureKind = "network" | "http" | "envelope" | "identity" | "too-large";
 /** A classified export failure; `message` is the panel's `lastError` text (DESIGN §4.8, §11.5). */
 export class SyncFailure extends Error {
@@ -73,8 +89,8 @@ function httpFailure(status: number, retry?: number): SyncFailure {
 }
 
 /** Per-row normalization (DESIGN §11.5): valid rows import, bad rows are quarantined, the cursor still advances. */
-export function normalizePage(rows: readonly unknown[]): { comments: InboxExternalComment[]; quarantined: Array<{ externalId: string; field: string; reason: string }>; sanitized: number } {
-  const comments: InboxExternalComment[] = [], quarantined: Array<{ externalId: string; field: string; reason: string }> = [], seen = new Set<string>();
+export function normalizePage(rows: readonly unknown[]): { comments: InboxExternalComment[]; quarantined: Array<{ externalId: string; field: string; reason: string }>; sanitized: number; publicRows: InboxPublicRow[] } {
+  const comments: InboxExternalComment[] = [], quarantined: Array<{ externalId: string; field: string; reason: string }> = [], seen = new Set<string>(), publicRows: InboxPublicRow[] = [];
   let sanitized = 0;
   rows.forEach((row, index) => {
     const result = normalizeExternalComment(row, index);
@@ -83,8 +99,9 @@ export function normalizePage(rows: readonly unknown[]): { comments: InboxExtern
     seen.add(result.comment.externalId);
     sanitized += result.dropped.length;
     comments.push(result.comment);
+    if (result.public) publicRows.push(result.public);
   });
-  return { comments, quarantined, sanitized };
+  return { comments, quarantined, sanitized, publicRows };
 }
 const PAGE_CHARACTERS = (comments: readonly InboxExternalComment[]) => comments.reduce((sum, item) => sum + JSON.stringify(item).length, 0);
 
@@ -211,7 +228,8 @@ export class InboxConnections {
   /** One authenticated export page (`format=2`; an old runtime answers v1). Classified failures, unchanged cursor. */
   async fetchPage(source: Pick<RuntimeSource, "endpoint" | "token" | "deploymentId">, cursor: string, limit: number): Promise<FetchedPage> {
     const url = new URL(source.endpoint);
-    url.searchParams.set("cursor", cursor); url.searchParams.set("limit", String(limit)); url.searchParams.set("format", "2");
+    // threads=1: public visitor replies and public state (public-threads §5.2.7); older runtimes ignore it.
+    url.searchParams.set("cursor", cursor); url.searchParams.set("limit", String(limit)); url.searchParams.set("format", "2"); url.searchParams.set("threads", "1");
     let response: Response;
     try { response = await this.fetcher(url.toString(), { headers: { Authorization: `Bearer ${source.token}`, Accept: "application/json" }, redirect: "error", signal: AbortSignal.timeout(10_000) as RequestInit["signal"] }); }
     catch (error) { throw new SyncFailure("network", `连接不上后端：${describe(error)}`); }
@@ -228,14 +246,14 @@ export class InboxConnections {
     }
     const page = parsed.data;
     if (page.deploymentId !== source.deploymentId || page.cursor !== cursor) throw new SyncFailure("identity", IDENTITY_MISMATCH);
-    return { format: page.format === 2 ? 2 : 1, deploymentId: page.deploymentId, cursor: page.cursor, nextCursor: page.nextCursor, rows: page.comments, characters: JSON.stringify(page.comments).length };
+    return { format: page.format === 2 ? 2 : 1, deploymentId: page.deploymentId, cursor: page.cursor, nextCursor: page.nextCursor, rows: page.comments, characters: JSON.stringify(page.comments).length, ...(page.threads === 1 ? { threads: true } : {}) };
   }
   static unchanged(page: FetchedPage, cursor: string) { return !page.rows.length && page.nextCursor === cursor; }
   /** Normalize and import one fetched page as the source's ingress actor. Call under the source lock. */
   async importFetched(scope: InboxScope, source: Pick<RuntimeSource, "sourceId" | "deploymentId" | "credential">, cursor: string, page: FetchedPage): Promise<InboxMutationResult> {
-    const { comments, quarantined, sanitized } = normalizePage(page.rows);
+    const { comments, quarantined, sanitized, publicRows } = normalizePage(page.rows);
     if (PAGE_CHARACTERS(comments) > INBOX_LIMITS.importCharacters) throw new BoardStoreError("invalid_input", "Import page is too large");
-    return this.inbox.importPage({ ...scope, eventId: `sync-${randomUUID()}`, sourceId: source.sourceId, deploymentId: source.deploymentId, cursor, nextCursor: page.nextCursor, comments, ...(quarantined.length ? { quarantined } : {}), ...(sanitized ? { sanitized } : {}) }, { kind: "ingress", sourceId: source.sourceId, deploymentId: source.deploymentId, credential: source.credential });
+    return this.inbox.importPage({ ...scope, eventId: `sync-${randomUUID()}`, sourceId: source.sourceId, deploymentId: source.deploymentId, cursor, nextCursor: page.nextCursor, comments, ...(quarantined.length ? { quarantined } : {}), ...(sanitized ? { sanitized } : {}), ...(publicRows.length ? { publicRows } : {}) }, { kind: "ingress", sourceId: source.sourceId, deploymentId: source.deploymentId, credential: source.credential });
   }
 
   /** Manual 立即同步: the same path as auto-sync. Accepts any expectedRevision up to the current one. */
@@ -399,5 +417,71 @@ export class InboxConnections {
     if (response.status === 409 && code === "idempotency_conflict") return { kind: "fail", code: "idempotency_conflict", message: "这个回复编号已用于另一条回复。" };
     if (response.status === 409 && code === "reply_limit") return { kind: "fail", code: "size_limit", message: "这条评论的回复已达 20 条上限。" };
     return { kind: "fail", code: "backend_rejected", message: `后端拒绝了这条回复（HTTP ${response.status}${code ? `：${code}` : ""}）。` };
+  }
+
+  // -----------------------------------------------------------------------------------------------------------
+  // Public comment threads (public-threads §5.4.2, §12 A2, A3): owner calls with the source's token, never from a browser.
+
+  private async ownerCall(source: Pick<RuntimeSource, "endpoint" | "token">, method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<{ status: number; code?: string; body: unknown; retryAfterMs?: number }> {
+    const url = source.endpoint.replace(/\/+$/, "") + path;
+    const response = await this.fetcher(url, { method, headers: { Authorization: `Bearer ${source.token}`, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal: AbortSignal.timeout(10_000) as RequestInit["signal"] });
+    let parsed: unknown = {};
+    try { parsed = JSON.parse(await readLimited(response, INBOX_AUTO_LIMITS.responseBytes)); } catch (error) { if (error instanceof SyncFailure) throw error; parsed = {}; }
+    const code = typeof (parsed as { code?: unknown }).code === "string" && /^[a-z_]{1,40}$/.test((parsed as { code: string }).code) ? (parsed as { code: string }).code : undefined;
+    return { status: response.status, ...(code ? { code } : {}), body: parsed, ...(retryAfter(response) ? { retryAfterMs: retryAfter(response) } : {}) };
+  }
+  /** One outbox item: a state change (POST …/<id>/state), a page pause or a bulk hide. */
+  async postPublic(source: Pick<RuntimeSource, "endpoint" | "token" | "deploymentId">, item: InboxPublicOutboxItem): Promise<PublicPostOutcome> {
+    let result: Awaited<ReturnType<InboxConnections["ownerCall"]>>;
+    try {
+      result = item.kind === "state" ? await this.ownerCall(source, "POST", `/${encodeURIComponent(item.externalId)}/state`, item.send)
+        : item.action.kind === "pause" ? await this.ownerCall(source, "POST", "/public/pause", { page: item.action.page, paused: item.action.value })
+          : await this.ownerCall(source, "POST", "/public/hide-visitor", { page: item.action.page, tag: item.action.tag, hidden: item.action.value });
+    } catch (error) { return { kind: "transient", error: `连接不上后端：${describe(error)}` }; }
+    const { status, code } = result, body = result.body as Record<string, unknown>;
+    if (status === 200) {
+      if (body.deploymentId !== source.deploymentId) return { kind: "fail", message: "后端返回的结果与请求不一致（可能换了部署）。" };
+      if (item.kind === "state") {
+        const state = body.state as Record<string, unknown> | undefined;
+        if (!state || state.externalId !== item.externalId || Object.entries(item.send).some(([key, value]) => state[key] !== value)) return { kind: "fail", message: "后端返回的结果与请求不一致（可能换了部署）。" };
+        return { kind: "ok", echo: { hidden: state.hidden === true, resolved: state.resolved === true, ...(state.withdrawn === true ? { withdrawn: true } : {}) } };
+      }
+      return { kind: "ok", echo: typeof body.changed === "number" ? { changed: body.changed } : {} };
+    }
+    if (status === 429 || status >= 500) return { kind: "transient", error: `后端返回 HTTP ${status}`, ...(result.retryAfterMs ? { retryAfterMs: result.retryAfterMs } : {}) };
+    if (status === 401 || status === 403 && code !== "browser_forbidden") return { kind: "transient", error: "后端拒绝了收件箱令牌，请在「后端来源」里更新。" };
+    if (status === 404 && (code === "export_disabled" || code === "comments_disabled")) return { kind: "transient", error: code === "export_disabled" ? "后端没有设置收件箱令牌（BOARD_INBOX_EXPORT_TOKEN）；设置后重新部署即可继续。" : "后端关闭了评论功能；重新开启并部署后即可继续。" };
+    if (status === 404 && code === "comment_not_found") return { kind: "fail", message: "后端没有这条评论（后端可能已更换或恢复了旧数据）。" };
+    if (status === 404) return { kind: "fail", message: "后端版本过旧，不支持隐藏或标为已解决：在应用目录运行 paseo-board-app update-runtime，然后重新部署。" };
+    if (status === 409 && code === "not_public") return { kind: "fail", message: "后端认为这条评论不是公开评论。" };
+    if (status === 409 && code === "withdrawn") return { kind: "fail", message: "访客已撤回这条评论，不能再在页面上显示。" };
+    return { kind: "fail", message: `后端拒绝了这次更新（HTTP ${status}${code ? `：${code}` : ""}）。` };
+  }
+  /** Registers or unregisters a public release on the backend this Board's inbox is connected to (matched by deployment). */
+  async publicRelease(scope: InboxScope, deploymentId: string, releaseId: string, register: boolean): Promise<void> {
+    const source = (await this.runtimeSources(scope)).find(item => item.ready && item.enabled && item.deploymentId === deploymentId);
+    if (!source) throw new BoardStoreError("forbidden", "公开评论需要先把这个后端连接到本 Board 的评论收件箱（更多 → 评论收件箱 → 后端来源），这样你才能隐藏不当评论或标为已解决。");
+    let result: Awaited<ReturnType<InboxConnections["ownerCall"]>>;
+    try { result = await this.ownerCall(source, register ? "PUT" : "DELETE", `/public-releases/${releaseId}`, register ? {} : undefined); }
+    catch (error) { throw new Error(`没能在评论后端${register ? "登记" : "取消"}公开评论：连接不上后端（${describe(error)}）。`); }
+    const body = result.body as Record<string, unknown>;
+    if (result.status === 200 && body.deploymentId === deploymentId && body.releaseId === releaseId && body.registered === register) return;
+    const reason = result.status === 404 && !result.code ? "后端版本过旧，不支持公开评论：在应用目录运行 paseo-board-app update-runtime，然后重新部署。"
+      : result.status === 401 || result.status === 403 ? "后端拒绝了收件箱令牌，请在「后端来源」里更新。" : `HTTP ${result.status}${result.code ? `：${result.code}` : ""}`;
+    throw new Error(`没能在评论后端${register ? "登记" : "取消"}公开评论：${reason}`);
+  }
+  /** The owner moderation listing of every ready, enabled source (public threads including hidden ones). */
+  async moderation(scope: InboxScope): Promise<Array<{ source: RuntimeSource; listing?: ModerationListing; error?: string; unsupported?: boolean }>> {
+    const sources = (await this.runtimeSources(scope)).filter(source => source.ready && source.enabled);
+    return Promise.all(sources.map(async source => {
+      try {
+        const result = await this.ownerCall(source, "GET", "/public/moderation");
+        if (result.status === 404 && (result.code === "not_found" || !result.code)) return { source, unsupported: true };
+        if (result.status !== 200) return { source, error: result.status === 401 || result.status === 403 ? "后端拒绝了收件箱令牌，请在「后端来源」里更新。" : `后端返回 HTTP ${result.status}${result.code ? `：${result.code}` : ""}` };
+        const listing = ModerationSchema.safeParse(result.body);
+        if (!listing.success || listing.data.deploymentId !== source.deploymentId) return { source, error: "后端返回的公开评论数据无法识别。" };
+        return { source, listing: listing.data };
+      } catch (error) { return { source, error: error instanceof SyncFailure ? error.message : `连接不上后端：${describe(error)}` }; }
+    }));
   }
 }

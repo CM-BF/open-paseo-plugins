@@ -25,7 +25,11 @@ export const PublicApiBaseSchema = z.string().max(2048).refine(value => {
 }, "评论后端地址应为 HTTPS（例如 https://api.example.com 或 https://example.com/board-api），本机测试可用 HTTP loopback；不含查询、片段、凭据或结尾斜杠");
 /** sha256("board-app-key\0" + owner).slice(0, 16): stable for one app across redeploys and address changes. */
 export const AppKeySchema = z.string().regex(/^[a-f0-9]{16}$/);
-export const VisitorCommentsReleaseSchema = z.object({ apiBase: PublicApiBaseSchema, appKey: AppKeySchema }).strict();
+export const VisitorCommentsReleaseSchema = z.object({
+  apiBase: PublicApiBaseSchema, appKey: AppKeySchema,
+  /** Absent = 仅自己可见 (each visitor sees only their own comments; the 77ca22a bytes). "public" = every visitor sees all comments. */
+  visibility: z.literal("public").optional(),
+}).strict();
 export type VisitorCommentsRelease = z.infer<typeof VisitorCommentsReleaseSchema>;
 export const COMMENTS_HEALTH_TIMEOUT_MS = 5_000;
 export const CommentsProbeInputSchema = z.object({ apiBase: PublicApiBaseSchema, pageOrigins: z.array(PublicApiOriginSchema).max(8).default([]) }).strict();
@@ -33,6 +37,8 @@ export const CommentsProbeResultSchema = z.object({
   reachable: z.boolean(), httpStatus: z.number().int().nullable(),
   appId: z.string().max(200).nullable(), appKey: AppKeySchema.nullable(), deploymentId: z.string().max(200).nullable(),
   comments: z.enum(["threads", "basic", "disabled", "unknown"]),
+  /** Public comment threads (health `publicThreads`): 1 available, 0 turned off, absent an older runtime. */
+  publicThreads: z.enum(["available", "off", "unsupported", "unknown"]),
   clientIp: z.enum(["socket", "forwarded", "proxied-unconfigured", "unknown"]),
   originProblems: z.array(z.string().max(300)).max(8), error: z.string().max(500).nullable(),
 }).strict();
@@ -44,15 +50,23 @@ export const commentsProbeText = (result: CommentsProbeResult): string =>
       : result.comments === "basic" ? "后端版本过旧，不支持访客评论线程：在应用目录运行 paseo-board-app update-runtime，然后重新部署。"
         : `连接不上这个后端：${result.error ?? "没有响应"}`;
 export const COMMENTS_APP_CHANGED = "这个地址现在指向另一个评论后端应用，与检查时不同";
+/** Probe lines when 公开 is selected but the backend cannot serve public threads (public-threads §5.5.1). */
+export const COMMENTS_PUBLIC_OFF = "后端关闭了公开评论：把 board-app.json 里的 comments.publicThreads 删掉或设为 true，然后重新部署。";
+export const COMMENTS_PUBLIC_UNSUPPORTED = "后端版本过旧，不支持公开评论：在应用目录运行 paseo-board-app update-runtime，然后重新部署。";
+export const commentsPublicProbeText = (result: CommentsProbeResult): string | null =>
+  result.publicThreads === "available" ? null : result.publicThreads === "off" ? COMMENTS_PUBLIC_OFF : result.publicThreads === "unsupported" ? COMMENTS_PUBLIC_UNSUPPORTED : "后端报告了无法识别的公开评论状态。";
+/** Public mode needs the backend connected to this Board's inbox, so the owner can hide comments (§5.1.1, §12 A10). */
+export const COMMENTS_PUBLIC_NEEDS_INBOX = "公开评论需要先把这个后端连接到本 Board 的评论收件箱（更多 → 评论收件箱 → 后端来源），这样你才能隐藏不当评论或标为已解决。";
 /** Null when a release may use this backend; otherwise the refusal shown to the human. */
-export function commentsProbeRefusal(result: CommentsProbeResult, appKey: string | undefined): string | null {
+export function commentsProbeRefusal(result: CommentsProbeResult, appKey: string | undefined, visibility?: "public"): string | null {
   // A thread runtime always reports its app key; without one the backend cannot keep visitor identity.
   const reason = result.comments !== "threads" ? commentsProbeText(result) : !result.appKey ? commentsProbeText({ ...result, comments: "basic" })
-    : appKey !== undefined && result.appKey !== appKey ? COMMENTS_APP_CHANGED : null;
+    : appKey !== undefined && result.appKey !== appKey ? COMMENTS_APP_CHANGED : visibility === "public" ? commentsPublicProbeText(result) : null;
   return reason === null ? null : `评论后端检查没有通过：${reason.replace(/。$/, "")}。请先点「检查后端」。`;
 }
 export const commentsOriginProblem = (pageOrigin: string) => `把 ${pageOrigin} 加入 board-app.json 的 origins，然后重新部署。`;
 export const commentsReleaseWarning = (apiBase: string) => `此版本允许访客框选文字评论，评论发送到 ${apiBase}。访客浏览器会保存一个匿名编号，用来查看自己的评论和回复。`;
+export const commentsPublicReleaseWarning = (apiBase: string) => `此版本允许访客框选文字评论，并公开显示：任何打开页面的人都能看到所有访客的评论和回复。评论发送到 ${apiBase}，页面打开时会从这里读取公开评论。访客浏览器会保存一个匿名编号，用来标出自己的评论。`;
 /** Hostnames a public page should not carry without the owner's confirmation (loopback, private, link-local, ULA, internal suffixes). */
 export function internalApiHost(apiBase: string): string | null {
   let hostname: string;

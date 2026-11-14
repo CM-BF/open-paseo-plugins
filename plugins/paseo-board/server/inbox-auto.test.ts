@@ -115,7 +115,7 @@ describe("inbox automation coordinator (DESIGN §4.8, §11.6–§11.8)", () => {
     expect((await status()).sync.sources).toEqual([expect.objectContaining({ sourceId: "app", label: "演示后端" })]);
     await clock.advance(0, automation);
     expect((await status()).sync.sources[0]).toMatchObject({ state: "idle", failures: 0, repliesSupported: true });
-    expect(backend.requests.at(-1)!.url).toBe("/_board/comments?cursor=0&limit=50&format=2");
+    expect(backend.requests.at(-1)!.url).toBe("/_board/comments?cursor=0&limit=50&format=2&threads=1");
     for (const [random, expected] of [[0, 4_000], [1, 6_000], [0.5, 5_000]] as const) {
       randomValue = random; await clock.advance(await nextTick(), automation);
       expect(await nextTick()).toBe(expected);

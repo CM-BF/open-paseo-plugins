@@ -64,7 +64,7 @@ export async function createFakeCommentsBackend(options = {}) {
   const prefix = options.prefix ?? '', allowed = new Set(options.allowedOrigins ?? []);
   const state = options.state ?? { comments: [], intents: new Map(), seq: 0 };
   const deploymentId = randomUUID(), instanceId = randomUUID();
-  let health = { status: 'ok', id: options.appId ?? 'fake-comments', appKey: appKeyFor(options.owner ?? 'fake-owner'), deploymentId, instanceId, live: 1, comments: 2, clientIp: 'socket' };
+  let health = { status: 'ok', id: options.appId ?? 'fake-comments', appKey: appKeyFor(options.owner ?? 'fake-owner'), deploymentId, instanceId, live: 1, comments: 2, publicThreads: 1, clientIp: 'socket' };
   const requests = [], failures = [];
   const json = (response, status, body, headers = {}) => { if (response.lose) { response.socket.destroy(); return; } response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers }); response.end(body === undefined ? '' : JSON.stringify(body)); };
   const error = (response, status, code, message, headers) => json(response, status, { error: message, code }, headers);

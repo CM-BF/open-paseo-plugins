@@ -69,7 +69,7 @@ describe("visitor comment contracts", () => {
     for (const value of ["https://api.example.com", "https://172.32.0.1", "https://8.8.8.8", "https://[2001:db8::1]", "https://internal.example.com"]) expect(internalApiHost(value), value).toBeNull();
   });
   it("explains every probe outcome and refuses anything but this app's thread runtime", () => {
-    const base: CommentsProbeResult = { reachable: true, httpStatus: 200, appId: "demo", appKey: "0123456789abcdef", deploymentId: "dep", comments: "threads", clientIp: "socket", originProblems: [], error: null };
+    const base: CommentsProbeResult = { reachable: true, httpStatus: 200, appId: "demo", appKey: "0123456789abcdef", deploymentId: "dep", comments: "threads", publicThreads: "available", clientIp: "socket", originProblems: [], error: null };
     expect(commentsProbeText(base)).toBe("后端可用：应用 demo · 部署 dep");
     expect(commentsProbeText({ ...base, comments: "disabled" })).toBe("后端没有开启评论：把 board-app.json 的 comments.enabled 设为 true，然后重新部署。");
     expect(commentsProbeText({ ...base, comments: "basic" })).toBe("后端版本过旧，不支持访客评论线程：在应用目录运行 paseo-board-app update-runtime，然后重新部署。");
@@ -92,7 +92,7 @@ describe("board.comments.probe", () => {
   it("reads health without an Origin, then checks each page origin's CORS", async () => {
     const backend = await fake({ allowedOrigins: ["https://ok.example.com"], owner: "demo-owner", appId: "demo" });
     const result = await probeComments({ apiBase: backend.apiBase, pageOrigins: ["https://ok.example.com", "https://missing.example.com"] });
-    expect(CommentsProbeResultSchema.parse(result)).toEqual({ reachable: true, httpStatus: 200, appId: "demo", appKey: appKeyFor("demo-owner"), deploymentId: backend.deploymentId, comments: "threads", clientIp: "socket", originProblems: ["把 https://missing.example.com 加入 board-app.json 的 origins，然后重新部署。"], error: null });
+    expect(CommentsProbeResultSchema.parse(result)).toEqual({ reachable: true, httpStatus: 200, appId: "demo", appKey: appKeyFor("demo-owner"), deploymentId: backend.deploymentId, comments: "threads", publicThreads: "available", clientIp: "socket", originProblems: ["把 https://missing.example.com 加入 board-app.json 的 origins，然后重新部署。"], error: null });
     expect(backend.requests.map(request => request.headers.origin)).toEqual([undefined, "https://ok.example.com", "https://missing.example.com"]);
   });
   it("classifies disabled, basic, unknown and unreachable backends and reports proxy mode", async () => {
