@@ -6,7 +6,7 @@ const fixture = browser.hostFixture;
 const originalRpc = fixture.rpc.bind(fixture);
 fixture.publicationCalls = [];
 fixture.rpc = async (name: string, input: unknown) => {
-  if (name !== "board.copy" && !name.startsWith("board.release.") && !name.startsWith("board.pages.") && !name.startsWith("board.live.")) return originalRpc(name, input);
+  if (name !== "board.copy" && !name.startsWith("board.release.") && !name.startsWith("board.pages.") && !name.startsWith("board.live.") && !name.startsWith("board.comments.") && name !== "board.inbox.connections") return originalRpc(name, input);
   // Never retained in the page: a diagnostic dump must not expose the live write token.
   const { token: _token, ...recorded } = input as Record<string, unknown>;
   fixture.publicationCalls.push({ name, input: JSON.parse(JSON.stringify(recorded)) });
