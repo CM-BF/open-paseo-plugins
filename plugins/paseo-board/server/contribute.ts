@@ -58,7 +58,6 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   // One coordinator per plugin server: auto-sync, comment-assistant wakes and the reply outbox (DESIGN §11.8).
   automation = new InboxAutomation({ rootDir: root, inbox, connections: inboxConnections, service, readBoard: id => store.read(id), releases, log, ...options.inboxAutomation });
   const inboxAuto = automation;
-  service.useInboxAssistant((boardId, createdAt, agentId) => inboxAuto.isAssistant({ boardId, expectedCreatedAt: createdAt }, agentId));
   const pages = new GitHubPagesManager(join(root, "pages"), releases);
   const bridge = new BoardBridge(service);
   const removers: Array<() => void> = [];
@@ -101,7 +100,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   server.handle(inboxListRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inbox.list(input, inboxUser); });
   server.handle(inboxReadRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inbox.read(input, inboxUser); });
   server.handle(inboxPolicyRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); const result = await inbox.setPolicy(input, inboxUser); inboxAuto.onPolicy(scopeOf(input)); return result; });
-  server.handle(inboxTriageRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inbox.triage(input, inboxUser); });
+  server.handle(inboxTriageRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); const result = await inbox.triage(input, inboxUser); void inboxAuto.refresh(scopeOf(input)).catch(error => log(`inbox refresh: ${String(error)}`)); return result; });
   server.handle(inboxConnectRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); const result = await inboxConnections.connect(input); void inboxAuto.refresh(scopeOf(input)).catch(error => log(`inbox refresh: ${String(error)}`)); return result; });
   server.handle(inboxConnectionsRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxConnections.list(input); });
   server.handle(inboxSyncRpc, async (input, { paseo }) => {

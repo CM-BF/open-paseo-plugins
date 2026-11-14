@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { contributeServer } from "./contribute";
 import { PROMPT_MARKER } from "./prompts";
+import { PHASE0_REFUSAL } from "./inbox-assistant";
 
 type Handler = (input: unknown, context: { paseo: unknown }) => Promise<unknown>;
 type Hook = (event: { request: Record<string, unknown> }, context: { paseo: unknown }) => Promise<{ config: Record<string, unknown> } | undefined>;
@@ -23,7 +24,7 @@ describe("contribute wiring for page comments", () => {
   });
   afterEach(async () => { await dispose(); await rm(dir, { recursive: true, force: true }); });
 
-  it("keeps the comment assistant's toolPolicy while injecting the Board MCP server and instructions", async () => {
+  it("keeps a caller's toolPolicy and mode while injecting the Board MCP server and instructions", async () => {
     const toolPolicy = { preapproved: ["board_inbox_list", "board_inbox_read", "board_inbox_triage", "board_inbox_reply"].map(tool => ({ kind: "mcp", server: "paseo_board", tool })) };
     const result = await hooks.get("agent.create")!({ request: { cwd: dir, env: {}, config: { provider: "claude/sonnet", modeId: "default", systemPrompt: "You are the comment assistant.", toolPolicy } } }, { paseo });
     expect(result!.config.toolPolicy).toEqual(toolPolicy);
@@ -37,8 +38,8 @@ describe("contribute wiring for page comments", () => {
     const board = await handlers.get("board.create")!({ title: "评论演示", html: "<main>x</main>", data: {} }, { paseo }) as { id: string; createdAt: string };
     const scope = { boardId: board.id, expectedCreatedAt: board.createdAt };
     expect(await handlers.get("board.inbox.auto-status")!(scope, { paseo })).toMatchObject({ revision: 0, sync: { paused: false, intervalSeconds: 5, sources: [] }, wake: { state: "off", pausedReason: null }, assistant: null, replies: { sending: 0 } });
-    expect(await handlers.get("board.inbox.assistant-options")!(scope, { paseo })).toMatchObject({ ownerMissing: true, providerSupported: false });
-    await expect(handlers.get("board.inbox.auto-enable")!({ ...scope, expectedRevision: 0, eventId: "enable", replyMode: "publish", modeId: "default", acceptRisk: false }, { paseo })).rejects.toMatchObject({ message: "这张 Board 还没有负责的 agent，无法确定评论助手使用的模型。" });
+    expect(await handlers.get("board.inbox.assistant-options")!(scope, { paseo })).toMatchObject({ refusal: PHASE0_REFUSAL, models: [] });
+    await expect(handlers.get("board.inbox.auto-enable")!({ ...scope, expectedRevision: 0, eventId: "enable", replyMode: "publish", modelId: "claude-haiku-5-5" }, { paseo })).rejects.toMatchObject({ code: "invalid_input", message: PHASE0_REFUSAL });
     await expect(handlers.get("board.inbox.policy")!({ ...scope, expectedRevision: 0, eventId: "sneak", policy: { read: true, triage: true, auto: "publish" } }, { paseo })).rejects.toMatchObject({ message: "开启自动处理需要通过确认步骤。" });
     expect(await handlers.get("board.inbox.auto-set")!({ ...scope, syncPaused: true }, { paseo })).toMatchObject({ sync: { paused: true } });
   });

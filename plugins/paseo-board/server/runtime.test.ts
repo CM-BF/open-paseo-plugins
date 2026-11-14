@@ -121,7 +121,7 @@ describe("installed CLI and stdio MCP transport", () => {
     } finally { await client.close(); }
   });
 
-  it("exposes board_inbox_reply over MCP and CLI only to the Board's comment assistant", async () => {
+  it("never lets a session-bound Paseo agent reply to visitors over MCP or CLI (lockdown design §4)", async () => {
     const paths = runtimePaths(dir), human = { kind: "user" as const, id: "paseo-client" };
     const backend = await startFakeBackend();
     try {
@@ -131,7 +131,6 @@ describe("installed CLI and stdio MCP transport", () => {
       const replies = new InboxStore(join(dir, "data"), { resolveBoard: id => service.store.read(id), authorizeAssistant: async (_scope, agentId) => agentId === "assistant" });
       const connections = new InboxConnections(join(dir, "data"), replies);
       service.useInbox(replies); service.useInboxConnections(connections);
-      service.useInboxAssistant(async (_boardId, _createdAt, agentId) => agentId === "assistant");
       await connections.connect({ ...scope, expectedRevision: 0, eventId: "connect", expectedConnectionEventId: null, sourceId: "app", deploymentId: backend.deploymentId, label: "App", endpoint: backend.endpoint, token: backend.token, enabled: true });
       backend.add({ text: "第二步看不懂 <img src=x onerror=alert(1)>", visitorTag: "a1b2c3d4e5f6" });
       await connections.sync({ ...scope, sourceId: "app", expectedRevision: 1, eventId: "sync" });
@@ -151,14 +150,13 @@ describe("installed CLI and stdio MCP transport", () => {
       const file = join(dir, "inbox-reply.json");
       await writeFile(file, JSON.stringify({ ...scope, commentId: comment.id, expectedCommentRevision: comment.revision, eventId: "assistant-reply-1", text: "谢谢！第二步指的是先保存。" }));
       await expect(exec(paths.cli, ["inbox", "reply", "--file", file], { env: { ...process.env, PASEO_BOARD_BINDING: "" }, timeout: 5000 })).rejects.toThrow();
-      const result = JSON.parse((await exec(paths.cli, ["inbox", "reply", "--file", file], { env: { ...process.env, PASEO_BOARD_BINDING: "bound-assistant" }, timeout: 10_000 })).stdout);
-      expect(result).toMatchObject({ status: "published", recorded: true, reply: { authorKind: "agent", text: "谢谢！第二步指的是先保存。" } });
-      expect(JSON.stringify(result)).not.toContain(backend.token);
-      expect(backend.requests.filter(request => request.method === "POST")).toHaveLength(1);
+      // The store would admit "assistant", but the service no longer admits any session-bound agent as the assistant.
+      await expect(exec(paths.cli, ["inbox", "reply", "--file", file], { env: { ...process.env, PASEO_BOARD_BINDING: "bound-assistant" }, timeout: 10_000 })).rejects.toThrow(/Inbox tools require the bound Board owner or its fork/);
+      expect(backend.requests.filter(request => request.method === "POST")).toHaveLength(0);
       const assistant = await sdkMcpClient(paths.mcp, "bound-assistant");
       try {
         expect(await assistant.callTool({ name: "board_read", arguments: { boardId: board.id } })).toHaveProperty("isError", true);
-        expect(await assistant.callTool({ name: "board_inbox_list", arguments: scope })).not.toHaveProperty("isError", true);
+        expect(await assistant.callTool({ name: "board_inbox_list", arguments: scope })).toHaveProperty("isError", true);
       } finally { await assistant.close(); }
       const usage = await exec(paths.cli, ["--help"], { timeout: 5000 });
       expect(usage.stdout).toContain("inbox reply");

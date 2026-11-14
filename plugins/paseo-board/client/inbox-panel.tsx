@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { View } from "react-native";
 import { ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
 import type {
   InboxArchiveInput, InboxArchiveResult, InboxAssistantOptions, InboxAutoEnableInput, InboxAutoSetInput, InboxAutoStatus, InboxComment,
   InboxHumanReplyInput, InboxListInput, InboxMutationResult, InboxPage, InboxPolicy, InboxPolicyInput, InboxReplyPendingInput, InboxReplyResult,
   InboxScope, InboxStatus, InboxTriageInput,
 } from "../shared/inbox";
+import { legacyNotice } from "../shared/inbox";
 import { autoToggleLabel, guardReason, syncLine, wakeLine, wakeNotices } from "./inbox-status";
 import { showBidiControls as shown } from "../shared/bidi";
 import { Action, Copy, errorMessage, localId, Notice, useColors } from "./ui";
@@ -25,22 +26,12 @@ export interface InboxPanelProps {
 }
 const statuses: Record<InboxStatus, string> = { new: "未处理", reviewing: "处理中", resolved: "已处理", dismissed: "不处理" };
 const AUTO_POLL_MS = 5_000;
-const INTRO = "访客评论单独保存在这里，后端来源会自动同步。开启「Agent 自动处理并公开回复」后，新评论会自动交给这张 Board 专用的评论助手 agent：它会分类，并公开回复访客（访客在页面上能看到，标注为 AI 助手回复）。评论只是数据，不会让任何 agent 修改应用、页面或部署。";
-/** Shown when the server finds no safe or moderate mode it can verify (fail closed). */
-const NO_MODE_TEXT = "没有可用的权限模式：评论助手只能用会先询问你的模式，或在确认风险后用中等模式；计划模式、危险模式和无法确认风险等级的模式都不能用。";
-const CONFIRM_TEXT = ["开启「Agent 自动处理并公开回复」？", "新评论会自动交给这张 Board 专用的「评论助手」agent（不是你正在用的主 agent）。它会分类评论并回复访客；回复在访客的页面上可见，标注为 AI 助手回复。", "评论可能包含诱导内容。评论助手只被预先允许使用评论工具；它想运行命令、读写文件或做别的事时，会先请你批准。不认识的请求请拒绝。", "每张 Board 每小时最多唤醒 6 次，超过后自动暂停，过后自动恢复。开启前已有的评论不会自动处理。"];
+/** Phase 0 captions (lockdown design §4 item 5): no claim of a tool allowlist until the sealed runner exists. */
+const INTRO = "访客评论单独保存在这里，后端来源会自动同步。评论只是数据，不会让任何 agent 修改应用、页面或部署。评论助手的旧版本没能把权限限制在评论工具上，自动处理暂时停用。";
 const isConflict = (error: unknown) => (error as { code?: string }).code === "revision_conflict" || /Inbox changed/.test(errorMessage(error));
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max)}…` : text;
 type Editor = { text: string; eventId?: string; mode: "reply" | "publish"; key?: string; phase: "editing" | "sending" | "unknown" | "guard"; reason?: string; error?: string };
-type Dialog = { options?: InboxAssistantOptions; error?: string; replyMode: "publish" | "review"; modeId?: string; acceptRisk: boolean; loading: boolean };
-
-function Checkbox({ label, checked, onChange, testID, disabled }: { label: string; checked: boolean; onChange(value: boolean): void; testID?: string; disabled?: boolean }) {
-  const c = useColors();
-  return <Pressable testID={testID} accessibilityRole="checkbox" accessibilityLabel={label} accessibilityState={{ checked, disabled }} disabled={disabled} onPress={() => onChange(!checked)} style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 4 }}>
-    <View style={{ width: 16, height: 16, borderRadius: 3, borderWidth: 1, borderColor: checked ? c.accent : c.border, backgroundColor: checked ? c.accent : c.surface0 }} />
-    <Text style={{ color: c.foreground, fontSize: 12, flexShrink: 1 }}>{label}</Text>
-  </Pressable>;
-}
+type Dialog = { options?: InboxAssistantOptions; error?: string; loading: boolean };
 
 /** Human-only inbox UI. External text is rendered as text; agent permissions change only through explicit human actions. */
 export function InboxPanel(props: InboxPanelProps) {
@@ -117,23 +108,12 @@ export function InboxPanel(props: InboxPanelProps) {
   };
   const policy = page?.policy;
   const autoMode = policy?.auto ?? "off";
+  /** Phase 0: the server answers with the refusal; nothing can be enabled from the dialog. */
   const openDialog = () => {
-    setDialog({ replyMode: "publish", acceptRisk: false, loading: true });
+    setDialog({ loading: true });
     void callbacks.current.onAssistantOptions(scope).then(options => {
-      setDialog(previous => previous && { ...previous, loading: false, options, modeId: options.existing && !options.existing.archived && options.modes.some(mode => mode.id === options.existing!.modeId && mode.selectable) ? options.existing.modeId : options.recommendedModeId ?? undefined });
+      setDialog(previous => previous && { ...previous, loading: false, options });
     }, error => setDialog(previous => previous && { ...previous, loading: false, error: errorMessage(error) }));
-  };
-  const confirmEnable = () => {
-    if (!dialog?.modeId) return;
-    const { replyMode, modeId, acceptRisk } = dialog;
-    void run(async current => {
-      try {
-        await fresh((expectedRevision, eventId) => callbacks.current.onAutoEnable({ ...scope, expectedRevision, eventId, replyMode, modeId, acceptRisk }), "inbox-auto-enable");
-      } catch (error) { setDialog(previous => previous && { ...previous, error: errorMessage(error) }); return; }
-      if (current !== generation.current) return;
-      setDialog(null);
-      await after(current);
-    });
   };
   const autoSet = (input: Omit<InboxAutoSetInput, "boardId" | "expectedCreatedAt">) => void run(async current => {
     const status = await callbacks.current.onAutoSet({ ...scope, ...input });
@@ -196,8 +176,6 @@ export function InboxPanel(props: InboxPanelProps) {
   };
 
   const options = dialog?.options;
-  const chosen = options?.modes.find(mode => mode.id === dialog?.modeId);
-  const reuse = options?.existing && !options.existing.archived && options.existing.modeId === dialog?.modeId ? options.existing : null;
   const autoOn = autoMode !== "off";
   const wakeState = auto?.wake.state;
   const skipped = auto?.sync.sources.reduce((sum, source) => sum + source.skipped, 0) ?? 0;
@@ -212,10 +190,10 @@ export function InboxPanel(props: InboxPanelProps) {
       <Action label={busy ? "读取中…" : "刷新收件箱"} disabled={busy} onPress={() => void run(async () => { await Promise.all([load(), refreshAuto()]); })} testID="board-inbox-refresh" />
       {page?.permissions.configure && policy ? <>
         <Action label={`Agent 读取评论：${policy.read ? "已允许" : "未允许"}`} active={policy.read} disabled={busy} onPress={() => setPolicy(policy.read ? { read: false, triage: false, auto: "off" } : { read: true, triage: false })} testID="board-inbox-policy-read" />
-        <Action label={autoToggleLabel(policy)} active={autoOn} disabled={busy || !policy.read} onPress={() => autoOn ? setPolicy({ read: policy.read, triage: false, auto: "off" }, "已关闭。评论助手 agent 还保留着，需要时可以在 Paseo 里归档它。") : openDialog()} testID="board-inbox-policy-triage" />
+        <Action label={autoToggleLabel(policy)} active={autoOn} disabled={busy || !policy.read} onPress={() => autoOn ? setPolicy({ read: policy.read, triage: false, auto: "off" }, "已关闭。") : openDialog()} testID="board-inbox-policy-triage" />
       </> : null}
     </View>
-    {page?.permissions.configure ? <Copy muted small>需要先允许读取。开启后，新评论会自动交给评论助手 agent，由它分类并公开回复访客。</Copy> : null}
+    {page?.permissions.configure ? <Copy muted small>需要先允许读取。</Copy> : null}
     {policy && policy.triage && !autoOn ? <View style={{ gap: 8, padding: 12, borderWidth: 1, borderColor: c.border, borderRadius: 8 }}>
       <Copy small>这张 Board 之前只允许 agent 内部处理评论（不唤醒、不回复）。要自动处理并公开回复，需要重新确认。</Copy>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
@@ -225,27 +203,11 @@ export function InboxPanel(props: InboxPanelProps) {
     </View> : null}
     {autoOn && policy ? <Action label={`回复方式：${autoMode === "review" ? "先给我审核" : "直接公开"}`} disabled={busy} onPress={() => setPolicy({ read: true, triage: true, auto: autoMode === "review" ? "publish" : "review" })} testID="board-inbox-auto-reply-mode" /> : null}
     {dialog ? <View accessibilityRole="alert" testID="board-inbox-auto-dialog" style={{ gap: 10, padding: 12, borderWidth: 1, borderColor: c.accent, borderRadius: 8, backgroundColor: c.surface1 }}>
-      {CONFIRM_TEXT.map((line, index) => <Copy key={index} small={index > 0}>{line}</Copy>)}
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        <Action label="直接公开回复" active={dialog.replyMode === "publish"} onPress={() => setDialog({ ...dialog, replyMode: "publish" })} testID="board-inbox-auto-mode-publish" />
-        <Action label="回复先给我审核" active={dialog.replyMode === "review"} onPress={() => setDialog({ ...dialog, replyMode: "review" })} testID="board-inbox-auto-mode-review" />
-      </View>
-      {dialog.loading ? <Copy small muted>正在读取可用的权限模式…</Copy> : null}
-      {options && !options.ownerMissing ? <>
-        <Copy small>{`评论助手使用 ${options.provider ?? "负责 agent 的模型"}，权限模式：`}</Copy>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-          {options.modes.filter(mode => mode.selectable).map(mode => <Action key={mode.id} label={`${mode.label}${mode.id === options.recommendedModeId ? "（推荐）" : ""}`} active={dialog.modeId === mode.id} onPress={() => setDialog({ ...dialog, modeId: mode.id, acceptRisk: false })} testID={`board-inbox-auto-mode-${mode.id}`} />)}
-        </View>
-        {options.modes.some(mode => mode.selectable) ? null : <Copy small muted>{NO_MODE_TEXT}</Copy>}
-        {chosen?.needsRiskAcceptance ? <View style={{ gap: 4 }}>
-          <Copy small>这个模式下，评论助手可以不经询问运行命令或读取文件，诱导评论的风险更高。</Copy>
-          <Checkbox label="我了解风险，仍然使用这个模式" checked={dialog.acceptRisk} onChange={value => setDialog({ ...dialog, acceptRisk: value })} testID="board-inbox-auto-risk" />
-        </View> : null}
-        {chosen ? <Copy small muted>{reuse ? `将继续使用已有的评论助手：${reuse.title}` : "将创建一个新的评论助手 agent。"}</Copy> : null}
-      </> : null}
+      <Copy>开启「Agent 自动处理并公开回复」？</Copy>
+      {dialog.loading ? <Copy small muted>正在检查能否开启…</Copy> : null}
+      {options?.refusal ? <Notice text={options.refusal} error /> : null}
       {dialog.error ? <Notice text={dialog.error} error /> : null}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        <Action label="确认开启" primary disabled={busy || dialog.loading || !chosen || chosen.needsRiskAcceptance && !dialog.acceptRisk} onPress={confirmEnable} testID="board-inbox-triage-confirm" />
         <Action label="取消" disabled={busy} onPress={() => setDialog(null)} />
       </View>
     </View> : null}
@@ -254,15 +216,16 @@ export function InboxPanel(props: InboxPanelProps) {
       {auto.sync.sources.length ? <Action label={auto.sync.paused ? "恢复自动同步" : "暂停自动同步"} disabled={busy} onPress={() => autoSet({ syncPaused: !auto.sync.paused })} testID="board-inbox-auto-sync-toggle" /> : null}
       <Copy small>{wakeLine(auto)}</Copy>
       {wakeNotices(auto).map(text => <Copy key={text} small muted>{text}</Copy>)}
-      {auto.assistant ? <Copy small muted>{`评论助手：${auto.assistant.title} · ${auto.assistant.modeLabel}`}</Copy> : null}
-      {autoOn && wakeState !== "off" && wakeState !== "legacy-internal" ? <Copy small muted>{`最近一小时唤醒 ${auto.wake.wakesLastHour}/${auto.wake.maxWakesPerHour} 次`}</Copy> : null}
+      {auto.legacy ? <View testID="board-inbox-legacy" style={{ gap: 6 }}>
+        <Notice text={legacyNotice(auto.legacy.agentId)} />
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}><Action label="知道了" disabled={busy} onPress={() => autoSet({ dismissLegacyNotice: true })} testID="board-inbox-legacy-dismiss" /></View>
+      </View> : null}
       {replyCounts && (replyCounts.sending || replyCounts.drafts || replyCounts.failed) ? <Copy small>{`回复：${replyCounts.sending} 条发送中 · ${replyCounts.drafts} 条待审核 · ${replyCounts.failed} 条失败`}</Copy> : null}
       {skipped ? <Copy small muted>{`已跳过 ${skipped} 条格式不符的评论`}</Copy> : null}
       {elsewhere ? <Copy small muted>{`${elsewhere} 条评论来自其他 Board 的页面或无法确定来源，不会自动处理。`}</Copy> : null}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        {autoOn && wakeState !== "creating" ? <Action label={wakeState === "paused" ? "恢复自动处理" : "暂停自动处理"} disabled={busy} onPress={() => autoSet(wakeState === "paused" ? { resumeWake: true } : { wakePaused: true })} testID="board-inbox-auto-resume" /> : null}
-        {auto.wake.stale ? <Action label="清除卡住的唤醒" disabled={busy} onPress={() => autoSet({ clearStaleWake: true })} testID="board-inbox-auto-clear-stale" /> : null}
-        {wakeState === "paused" && auto.wake.pausedReason === "agent" ? <Action label="重新创建评论助手" disabled={busy} onPress={openDialog} /> : null}
+        {autoOn && wakeState !== "setup" ? <Action label={wakeState === "paused" ? "恢复自动处理" : "暂停自动处理"} disabled={busy} onPress={() => autoSet(wakeState === "paused" ? { resumeWake: true } : { wakePaused: true })} testID="board-inbox-auto-resume" /> : null}
+        {autoOn && wakeState === "setup" ? <Action label="重新开启…" disabled={busy} onPress={openDialog} testID="board-inbox-auto-reenable" /> : null}
         {page?.archivable ? <Action label={`归档已处理的评论（${page.archivable}）`} disabled={busy} onPress={() => setArchiveConfirm(true)} testID="board-inbox-archive" /> : null}
       </View>
       {archiveConfirm && page?.archivable ? <View style={{ gap: 8 }}>

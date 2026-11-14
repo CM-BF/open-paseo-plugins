@@ -300,7 +300,7 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
         {liveChannel && liveIsLoopback(liveChannel.origin) ? <Copy small muted>仅本机可见，仅用于测试。</Copy> : null}
       </View>
       <Copy>后端 API 来源（可选，每行一个）</Copy>
-      <TextInput accessibilityLabel="后端 API 来源" placeholder="https://api.example.internal" multiline autoCapitalize="none" value={apiOriginsText} onChangeText={setApiOriginsText} editable={!busy} style={{ ...field, minHeight: 60, maxHeight: 140 }} />
+      <TextInput accessibilityLabel="后端 API 来源" placeholder="https://api.example.internal" placeholderTextColor={c.foregroundMuted} multiline autoCapitalize="none" value={apiOriginsText} onChangeText={setApiOriginsText} editable={!busy} style={{ ...field, minHeight: 60, maxHeight: 140 }} />
       <Copy small muted>留空则不连接应用后端。填写后，发布页可向这些地址读写数据；这里不填写路径、密码或收件箱令牌。后端需允许发布网站的来源，预览不会调用后端。</Copy>
       {comments.view(busy)}
       <Action label={busy ? "处理中…" : "生成固定版本并预览"} primary disabled={busy || !title.trim()} onPress={() => { void run(async () => {

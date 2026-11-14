@@ -1,3 +1,13 @@
+# 2026-11-14 — 评论助手锁定：第 0 阶段（关闭自动处理，停用旧助手），未安装
+
+分支 `sw/board-page-comments`，尚未推送、未安装、未重载插件，main 未改。设计见 `$PASEO_HOME/verification/paseo-board/page-comments-20261113/sandbox/DESIGN.md`（替代 `../DESIGN.md` §11.3）。起因：实测旧的评论助手（Paseo agent）带着 Claude Code 用户设置、其他插件的 MCP 服务、预先允许的工具和其他插件追加的系统提示运行，访客评论可以诱导它运行命令、联网、读写文件。
+
+- 开启自动处理一律拒绝（`暂时不能开启自动处理：…等插件更新后再开启。`），在创建或写入任何东西之前；对话框显示同一句话。
+- 状态文件升级到版本 2：旧助手记为 `legacyAssistant`，`runner` 为空，自动处理暂停（原因 `setup`），收件箱权限不变；没有评论助手时拒绝「恢复自动处理」。面板显示一次性的停用说明（可点「知道了」），不自动归档旧助手。
+- 撤销旧助手的权限：任何 Paseo agent 都不能以评论助手身份读取、分类或回复；日志里旧版本留下的唤醒一律标为 `评论助手已改为封闭运行，旧唤醒未发送。`，不发送、不订阅。
+- 文案：收件箱说明、确认对话框、`docs/page-comments.md`、`docs/comment-inbox.md`、Board 指令（`server/prompts.ts`）不再声称「只允许四个工具」。发布面板「后端 API 来源」的占位文字改用浅色（`placeholderTextColor`）。
+- 检查：`npm run typecheck`；`npx vitest run --maxWorkers=4 --exclude server/inbox-sync.test.ts`（66 个文件 968 个测试）；`npx vitest run server/inbox-sync.test.ts --maxWorkers=1`（30 个）。新增测试放到 77ca22a 上运行时失败 22 个（拒绝开启、v1 迁移、旧助手不能回复、拒绝恢复、旧唤醒不发送、占位文字颜色）。宿主测试和端到端脚本在第 1 阶段随新的对话框一起更新。
+
 # 2026-11-13 — 发布页访客评论：评论助手权限模式等级修复（集成分支），未安装
 
 分支 `sw/board-page-comments`，修复提交 `d31892d`，尚未推送、未安装、未重载插件，main 未改。问题来自真实应用检查（`$PASEO_HOME/verification/paseo-board/page-comments-20261113/live/checks/04-mode-tier-source.json`、`04-assistant-options.json`、`shots/04-05-auto-dialog-no-recommended.png`）。

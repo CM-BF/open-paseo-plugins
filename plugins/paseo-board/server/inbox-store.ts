@@ -55,6 +55,8 @@ export interface InboxWakeRow { id: string; seq: number; revision: number; sourc
 export interface InboxPendingRow { commentId: string; sourceId: string; deploymentId: string; externalId: string; pending: InboxPendingReply }
 export interface InboxAutomationState {
   revision: number; latestSeq: number; total: number; policy: InboxPolicy;
+  /** Comments with status reviewing: handed to the user (the toolbar dot counts them). */
+  reviewing: number;
   sources: Array<{ sourceId: string; deploymentId: string; enabled: boolean; cursor: string; skipped: number; sanitized: number }>;
   /** importedAt times within the last day, per source, for the import quota. */
   imports: Record<string, string[]>;
@@ -259,7 +261,7 @@ export class InboxStore {
   }
 
   /** One serialized read for the waker: identifiers only, in seq order (DESIGN §11.6). */
-  async snapshotAfter(scope: InboxScope, afterSeq: number, limit: number, actor: InboxActor): Promise<{ revision: number; latestSeq: number; total: number; policy: InboxPolicy; comments: InboxWakeRow[] }> {
+  async snapshotAfter(scope: InboxScope, afterSeq: number, limit: number, actor: InboxActor): Promise<{ revision: number; latestSeq: number; total: number; policy: InboxPolicy; reviewing: number; comments: InboxWakeRow[] }> {
     return this.transact(scope, actor, "read", async state => {
       const comments: InboxWakeRow[] = [];
       for (const comment of state.comments) {
@@ -267,7 +269,7 @@ export class InboxStore {
         comments.push({ id: comment.id, seq: comment.seq, revision: comment.revision, sourceId: comment.sourceId, deploymentId: comment.deploymentId, status: comment.status, ...(comment.visitorTag ? { visitorTag: comment.visitorTag } : {}), ...(comment.anchor?.releaseId ? { releaseId: comment.anchor.releaseId } : {}) });
         if (comments.length >= limit) break;
       }
-      return { revision: state.revision, latestSeq: (state.nextSeq ?? 1) - 1, total: state.comments.length, policy: structuredClone(state.policy), comments };
+      return { revision: state.revision, latestSeq: (state.nextSeq ?? 1) - 1, total: state.comments.length, policy: structuredClone(state.policy), reviewing: state.comments.filter(comment => comment.status === "reviewing").length, comments };
     });
   }
 
@@ -278,6 +280,7 @@ export class InboxStore {
       for (const comment of state.comments) if (Date.parse(comment.importedAt) >= since) (imports[comment.sourceId] ??= []).push(comment.importedAt);
       return {
         revision: state.revision, latestSeq: (state.nextSeq ?? 1) - 1, total: state.comments.length, policy: structuredClone(state.policy),
+        reviewing: state.comments.filter(comment => comment.status === "reviewing").length,
         sources: state.sources.map(source => ({ sourceId: source.sourceId, deploymentId: source.deploymentId, enabled: source.enabled, cursor: source.cursor, skipped: source.skipped ?? 0, sanitized: source.sanitized ?? 0 })),
         imports, pendings: pendingRows(state),
       };
