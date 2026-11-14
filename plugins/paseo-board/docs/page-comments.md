@@ -27,7 +27,7 @@
    "comments": { "enabled": true }
    ```
 
-   在后端的 `.env` 里设置一个 32 位以上的随机 `BOARD_INBOX_EXPORT_TOKEN`，然后按原来审核过的 SSH 部署流程部署。后端在反向代理后面、而代理在另一台机器上时，把代理的地址写进 `comments.trustedProxies`，否则所有访客会共用一个频率限制。
+   在后端的 `.env` 里设置一个 32 位以上的随机 `BOARD_INBOX_EXPORT_TOKEN`，然后按原来审核过的 SSH 部署流程部署。后端在反向代理后面、而代理在另一台机器上时，把代理的地址写进 `comments.trustedProxies`，否则所有访客会共用一个频率限制。代理要自己设置 `X-Real-IP`（覆盖）或 `X-Forwarded-For`（追加）中的至少一个，例如 nginx 的 `proxy_set_header X-Real-IP $remote_addr;`；两个头都在时，访客按两个地址分别计数，伪造其中一个绕不过频率限制。
 
 2. **连接收件箱。** 在 Board 的「更多 → 评论收件箱 → 后端来源」登记后端的导出地址（`https://…/_board/comments`）和令牌。登记后插件会自动同步，不需要再点「同步」。
 

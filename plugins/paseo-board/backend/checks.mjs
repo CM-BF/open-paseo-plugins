@@ -1063,20 +1063,38 @@ test('comment rate limits per IP, visitor, everyone, page and stored bytes answe
     assert.equal((await fetch(`${base}/_board/comments?cursor=0`, { headers: { ...ip, ...ownerHeaders } })).status, 200);
     assert.equal((await mineOf(base, COMMENT.a, '', from('192.0.2.51'))).status, 200);
   });
+  await t.test('unauthenticated export and reply requests count toward the per-address ceiling; the token holder never does', async s => {
+    const { base } = await commentApp(s, { limits: { requestsPerIpMinute: 3 } });
+    const ip = from('192.0.2.60'), unknownId = '00000000-0000-4000-8000-000000000000';
+    for (let index = 0; index < 3; index++) await failure(await fetch(`${base}/_board/comments`, { headers: ip }), 401, 'unauthorized');
+    await failure(await fetch(`${base}/_board/comments`, { headers: ip }), 429, 'rate_limited');
+    await failure(await replyTo(base, unknownId, 'owner-guess-1', { text: 'x' }, { ...ip, authorization: 'Bearer wrong' }), 429, 'rate_limited');
+    await failure(await mineOf(base, COMMENT.a, '', ip), 429, 'rate_limited');
+    const other = from('192.0.2.61');
+    for (let index = 0; index < 3; index++) await failure(await replyTo(base, unknownId, `owner-guess-${index + 2}`, { text: 'x' }, { ...other, authorization: 'Bearer wrong' }), 401, 'unauthorized');
+    await failure(await replyTo(base, unknownId, 'owner-guess-9', { text: 'x' }, { ...other, authorization: 'Bearer wrong' }), 429, 'rate_limited');
+    for (let index = 0; index < 5; index++) assert.equal((await fetch(`${base}/_board/comments?cursor=0`, { headers: { ...ip, ...ownerHeaders } })).status, 200);
+    await failure(await replyTo(base, unknownId, 'owner-real-1', { text: 'x' }, { ...ip, ...ownerHeaders }), 404, 'comment_not_found');
+  });
 });
 
 test('client addresses: forwarded headers count only from trusted proxies, right-most untrusted first, IPv6 by /64', async t => {
   const trusted = commentSettings({ comments: {} }).trusted, request = (peer, headers = {}) => ({ socket: { remoteAddress: peer }, headers });
-  assert.deepEqual(resolveClient(request('127.0.0.1'), trusted), { address: '127.0.0.1', mode: 'socket' });
-  assert.deepEqual(resolveClient(request('127.0.0.1', from('203.0.113.9, 198.51.100.1')), trusted), { address: '198.51.100.1', mode: 'forwarded' });
-  assert.deepEqual(resolveClient(request('::ffff:127.0.0.1', from('203.0.113.9, 198.51.100.1, 127.0.0.1')), trusted), { address: '198.51.100.1', mode: 'forwarded' });
-  assert.deepEqual(resolveClient(request('::1', from('[2001:db8::5]:443, 198.51.100.1:8080')), trusted), { address: '198.51.100.1', mode: 'forwarded' });
-  assert.deepEqual(resolveClient(request('127.0.0.1', from('198.51.100.1, unknown')), trusted), { address: '127.0.0.1', mode: 'forwarded' });
-  assert.deepEqual(resolveClient(request('127.0.0.1', from('127.0.0.1')), trusted), { address: '127.0.0.1', mode: 'forwarded' });
-  assert.deepEqual(resolveClient(request('127.0.0.1', { 'x-real-ip': '198.51.100.2' }), trusted), { address: '198.51.100.2', mode: 'forwarded' });
-  assert.deepEqual(resolveClient(request('192.0.2.10', from('198.51.100.1')), trusted), { address: '192.0.2.10', mode: 'proxied-unconfigured' });
-  assert.deepEqual(resolveClient(request('192.0.2.10', { 'x-real-ip': '198.51.100.1' }), trusted), { address: '192.0.2.10', mode: 'proxied-unconfigured' });
-  assert.deepEqual(resolveClient(request('192.0.2.10', from('198.51.100.1')), commentSettings({ comments: { trustedProxies: ['192.0.2.10'] } }).trusted), { address: '198.51.100.1', mode: 'forwarded' });
+  const resolved = (address, mode, addresses = [address]) => ({ address, addresses, mode });
+  assert.deepEqual(resolveClient(request('127.0.0.1'), trusted), resolved('127.0.0.1', 'socket'));
+  assert.deepEqual(resolveClient(request('127.0.0.1', from('203.0.113.9, 198.51.100.1')), trusted), resolved('198.51.100.1', 'forwarded'));
+  assert.deepEqual(resolveClient(request('::ffff:127.0.0.1', from('203.0.113.9, 198.51.100.1, 127.0.0.1')), trusted), resolved('198.51.100.1', 'forwarded'));
+  assert.deepEqual(resolveClient(request('::1', from('[2001:db8::5]:443, 198.51.100.1:8080')), trusted), resolved('198.51.100.1', 'forwarded'));
+  assert.deepEqual(resolveClient(request('127.0.0.1', from('198.51.100.1, unknown')), trusted), resolved('127.0.0.1', 'forwarded'));
+  assert.deepEqual(resolveClient(request('127.0.0.1', from('127.0.0.1')), trusted), resolved('127.0.0.1', 'forwarded'));
+  assert.deepEqual(resolveClient(request('127.0.0.1', { 'x-real-ip': '198.51.100.2' }), trusted), resolved('198.51.100.2', 'forwarded'));
+  assert.deepEqual(resolveClient(request('127.0.0.1', { 'x-real-ip': 'garbage' }), trusted), resolved('127.0.0.1', 'forwarded'));
+  // A proxy that sets X-Real-IP and passes the client's own X-Forwarded-For through (or the reverse): both count.
+  assert.deepEqual(resolveClient(request('127.0.0.1', { ...from('203.0.113.7'), 'x-real-ip': '192.0.2.10' }), trusted), resolved('203.0.113.7', 'forwarded', ['203.0.113.7', '192.0.2.10']));
+  assert.deepEqual(resolveClient(request('127.0.0.1', { ...from('203.0.113.7, 192.0.2.10'), 'x-real-ip': '192.0.2.10' }), trusted), resolved('192.0.2.10', 'forwarded'));
+  assert.deepEqual(resolveClient(request('192.0.2.10', from('198.51.100.1')), trusted), resolved('192.0.2.10', 'proxied-unconfigured'));
+  assert.deepEqual(resolveClient(request('192.0.2.10', { 'x-real-ip': '198.51.100.1' }), trusted), resolved('192.0.2.10', 'proxied-unconfigured'));
+  assert.deepEqual(resolveClient(request('192.0.2.10', from('198.51.100.1')), commentSettings({ comments: { trustedProxies: ['192.0.2.10'] } }).trusted), resolved('198.51.100.1', 'forwarded'));
   assert.equal(addressKey('2001:db8:1:2:3:4:5:6'), addressKey('2001:DB8:1:2:ffff::1'));
   assert.notEqual(addressKey('2001:db8:1:2::1'), addressKey('2001:db8:1:3::1'));
   for (const mapped of ['::ffff:198.51.100.4', '::ffff:c633:6404', '0:0:0:0:0:ffff:198.51.100.4']) assert.equal(addressKey(mapped), '198.51.100.4');
@@ -1092,6 +1110,24 @@ test('client addresses: forwarded headers count only from trusted proxies, right
   assert.equal((await sendComment(local.base, 'ipv6-key-1', { text: '6' }, from('2001:db8:aa:bb::1'))).status, 201);
   await failure(await sendComment(local.base, 'ipv6-key-2', { text: '6' }, from('2001:db8:aa:bb:ffff::2')), 429, 'rate_limited');
   assert.equal((await sendComment(local.base, 'ipv6-key-3', { text: '6' }, from('2001:db8:aa:bc::1'))).status, 201);
+  // A same-machine proxy that sets only X-Real-IP passes the client's X-Forwarded-For through unchanged:
+  // a fresh spoofed X-Forwarded-For on every request must not dodge the per-address limits.
+  const realOnly = await commentApp(t, { limits: { postPerIpMinute: 2, minePerIpMinute: 2, requestsPerIpMinute: 6 } });
+  const spoofed = n => ({ ...from(`203.0.113.${n}`), 'x-real-ip': '192.0.2.10' });
+  assert.equal((await sendComment(realOnly.base, 'xff-spoof-1', { text: 'a' }, spoofed(1))).status, 201);
+  assert.equal((await sendComment(realOnly.base, 'xff-spoof-2', { text: 'b' }, spoofed(2))).status, 201);
+  await failure(await sendComment(realOnly.base, 'xff-spoof-3', { text: 'c' }, spoofed(3)), 429, 'rate_limited');
+  assert.equal((await mineOf(realOnly.base, COMMENT.a, '', spoofed(4))).status, 200);
+  assert.equal((await mineOf(realOnly.base, COMMENT.b, '', spoofed(5))).status, 200);
+  await failure(await mineOf(realOnly.base, COMMENT.c, '', spoofed(6)), 429, 'rate_limited');
+  for (let n = 7; n < 9; n++) await failure(await mineOf(realOnly.base, COMMENT.c, '', spoofed(n)), 429, 'rate_limited');
+  await failure(await mineOf(realOnly.base, COMMENT.c, '', { ...from('203.0.113.99'), 'x-real-ip': '192.0.2.10' }), 429, 'rate_limited');
+  // The reverse setup (the proxy appends X-Forwarded-For, the client sends its own X-Real-IP) is held the same way.
+  assert.equal((await sendComment(realOnly.base, 'real-spoof-1', { text: 'd' }, { ...from('198.51.100.50'), 'x-real-ip': '203.0.113.201' })).status, 201);
+  assert.equal((await sendComment(realOnly.base, 'real-spoof-2', { text: 'e' }, { ...from('198.51.100.50'), 'x-real-ip': '203.0.113.202' })).status, 201);
+  await failure(await sendComment(realOnly.base, 'real-spoof-3', { text: 'f' }, { ...from('198.51.100.50'), 'x-real-ip': '203.0.113.203' }), 429, 'rate_limited');
+  // Another real visitor behind the same proxy is unaffected.
+  assert.equal((await sendComment(realOnly.base, 'xff-other-1', { text: 'g' }, { ...from('198.51.100.60'), 'x-real-ip': '198.51.100.60' })).status, 201);
 });
 
 test('the comment limiter fails closed when an IP map is full and creates visitor windows only after the IP checks pass', () => {

@@ -132,24 +132,31 @@ function forwardedAddress(entry) {
 /**
  * The visitor's address and how it was found: "socket" (no forwarded header), "forwarded" (from a trusted
  * proxy) or "proxied-unconfigured" (forwarded headers from an untrusted peer, which are ignored).
+ * `addresses` lists every address the request is counted under. A trusted proxy may set only one of
+ * X-Forwarded-For and X-Real-IP and pass the other through from the client unchanged, so when both are
+ * present the visitor counts under both: a header the client chose can add a bucket but never escape one.
  */
 export function resolveClient(request, trusted) {
   const peer = request.socket?.remoteAddress ?? '';
   const header = name => { const value = request.headers[name]; return typeof value === 'string' && value.trim() ? value : null; };
   const forwardedFor = header('x-forwarded-for'), realIp = header('x-real-ip'), proxied = forwardedFor !== null || realIp !== null;
-  if (!trusted.has(exactAddress(peer))) return { address: peer, mode: proxied ? 'proxied-unconfigured' : 'socket' };
-  if (!proxied) return { address: peer, mode: 'socket' };
-  let address = peer;
+  if (!trusted.has(exactAddress(peer))) return { address: peer, addresses: [peer], mode: proxied ? 'proxied-unconfigured' : 'socket' };
+  if (!proxied) return { address: peer, addresses: [peer], mode: 'socket' };
+  const addresses = [];
   if (forwardedFor !== null) {
     // Right to left: the first address no trusted proxy vouches for. A malformed entry stops the walk.
+    let address = peer;
     for (const entry of forwardedFor.split(',').reverse()) {
       const candidate = forwardedAddress(entry);
       if (candidate === null) break;
       address = candidate;
       if (!trusted.has(exactAddress(candidate))) break;
     }
-  } else address = forwardedAddress(realIp) ?? peer;
-  return { address, mode: 'forwarded' };
+    addresses.push(address);
+  }
+  if (realIp !== null) { const real = forwardedAddress(realIp); if (real !== null && !addresses.includes(real)) addresses.push(real); }
+  if (!addresses.length) addresses.push(peer);
+  return { address: addresses[0], addresses, mode: 'forwarded' };
 }
 
 // ---------------------------------------------------------------------------
@@ -197,15 +204,17 @@ export function createCommentLimiter(limits, { now = Date.now, maxKeys = LIMITER
   };
   const hit = (pairs, time) => { for (const [item, key] of pairs) item.hit(key, time, maxKeys); };
   const enforce = pairs => { const time = clock(); check(pairs, time); hit(pairs, time); };
+  // `ips` is one address key or every key the request counts under (resolveClient); each must pass.
+  const each = (item, ips) => (Array.isArray(ips) ? ips : [ips]).map(ip => [item, ip]);
   // IP and global windows come first, so a visitor window exists only after the IP checks pass.
-  const post = (ip, visitor) => [[windows.postIpMinute, ip], [windows.postIpHour, ip], [windows.postGlobalMinute, '*'], [windows.postGlobalHour, '*'],
+  const post = (ips, visitor) => [...each(windows.postIpMinute, ips), ...each(windows.postIpHour, ips), [windows.postGlobalMinute, '*'], [windows.postGlobalHour, '*'],
     ...(visitor ? [[windows.postVisitorMinute, visitor], [windows.postVisitorHour, visitor]] : [])];
   return {
     windows,
-    request: ip => enforce([[windows.requests, ip]]),
-    checkPost: (ip, visitor) => check(post(ip, visitor), clock()),
-    commitPost: (ip, visitor) => hit(post(ip, visitor), clock()),
-    mine: (ip, visitor) => enforce([[windows.mineIp, ip], [windows.mineVisitor, visitor]]),
+    request: ips => enforce(each(windows.requests, ips)),
+    checkPost: (ips, visitor) => check(post(ips, visitor), clock()),
+    commitPost: (ips, visitor) => hit(post(ips, visitor), clock()),
+    mine: (ips, visitor) => enforce([...each(windows.mineIp, ips), [windows.mineVisitor, visitor]]),
   };
 }
 
@@ -288,7 +297,7 @@ export function createComments({ app, db, deploymentId, settings, now = Date.now
   const appKey = digest(`board-app-key\0${app.owner.owner}`).slice(0, 16);
   const limiter = createCommentLimiter(limits, { now, maxKeys });
   const client = request => resolveClient(request, trusted);
-  const ipOf = request => addressKey(client(request).address) ?? 'unknown';
+  const ipOf = request => { const keys = [...new Set(client(request).addresses.map(address => addressKey(address) ?? 'unknown'))]; return keys.length ? keys : ['unknown']; };
   const isPath = pathname => pathname === '/_board/comments' || pathname.startsWith('/_board/comments/');
   const sql = {
     byIntent: db.prepare('SELECT * FROM _board_comments WHERE intent_key = ?'),
@@ -330,6 +339,7 @@ export function createComments({ app, db, deploymentId, settings, now = Date.now
     const supplied = Buffer.from(request.headers.authorization || ''), expected = Buffer.from(`Bearer ${token}`);
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw httpError(401, 'A valid comment-export token is required', 'unauthorized');
   }
+  const isOwner = request => { try { owner(request); return true; } catch { return false; } };
 
   async function create({ request, readJson, json }, ip) {
     const key = intentKey(request), visitor = visitorHash(request, false);
@@ -433,10 +443,15 @@ export function createComments({ app, db, deploymentId, settings, now = Date.now
     if (request.headers.origin) response.setHeader('access-control-expose-headers', 'Retry-After');
     if (!enabled) throw httpError(404, 'Comments are disabled', 'comments_disabled');
     const replies = /^\/_board\/comments\/([^/]+)\/replies$/.exec(pathname);
-    // Owner routes authenticate with the host-held token and skip every visitor limit.
-    if (pathname === '/_board/comments' && method === 'GET') { exportPage(context); return true; }
-    if (replies) { if (method !== 'POST') throw httpError(405, 'Use POST', 'method_not_allowed'); await reply(context, replies[1]); return true; }
     const ip = ipOf(request);
+    // Owner routes skip every visitor limit only with the host-held token; any other request to them
+    // (no token, a wrong one, export disabled) counts toward the per-address ceiling first.
+    if (pathname === '/_board/comments' && method === 'GET' || replies) {
+      if (!isOwner(request)) limiter.request(ip);
+      if (!replies) { exportPage(context); return true; }
+      if (method !== 'POST') throw httpError(405, 'Use POST', 'method_not_allowed');
+      await reply(context, replies[1]); return true;
+    }
     limiter.request(ip);
     if (pathname === '/_board/comments') { if (method !== 'POST') throw httpError(405, 'Use GET or POST', 'method_not_allowed'); await create(context, ip); return true; }
     if (pathname === '/_board/comments/mine') { if (method !== 'GET') throw httpError(405, 'Use GET', 'method_not_allowed'); mine(context, ip); return true; }

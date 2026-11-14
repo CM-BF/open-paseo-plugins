@@ -301,8 +301,10 @@ separate from the export token, and nothing a visitor posts changes the app.
 
 ### Abuse limits and client addresses
 
-Limits apply to comment routes from browsers; the owner's export and reply routes
-are token authenticated and skip them. Windows are fixed minutes and hours kept in
+Limits apply to comment routes from browsers. Export and reply requests that carry
+the valid `BOARD_INBOX_EXPORT_TOKEN` skip them; any other request to those routes
+(no token, a wrong one, or export disabled) counts toward `requestsPerIpMinute`
+before it is refused. Windows are fixed minutes and hours kept in
 memory, so a restart resets them. A refused request gets 429 `rate_limited` with
 `Retry-After`, and spends nothing.
 
@@ -326,10 +328,15 @@ The address is the socket peer. When the peer is listed in
 `comments.trustedProxies` (at most 16 exact IP addresses; default `127.0.0.1`,
 `::1` and `::ffff:127.0.0.1`, which covers a reverse proxy on the same machine),
 the server walks `X-Forwarded-For` from right to left and takes the first address
-that is not a trusted proxy, or uses `X-Real-IP` when there is no
-`X-Forwarded-For`. Forwarded headers from any other peer are ignored. IPv6
-addresses are counted by their /64 prefix. Behind a reverse proxy on another
-machine, list that proxy's address:
+that is not a trusted proxy, and also reads `X-Real-IP`. When both headers are
+present and name different addresses, the request counts under both, so a header
+the proxy passes through from the client unchanged cannot be used to dodge a
+limit. The proxy must therefore set at least one of them itself: overwrite
+`X-Real-IP` with the client address (nginx: `proxy_set_header X-Real-IP
+$remote_addr;`) and/or append to `X-Forwarded-For` (nginx: `proxy_set_header
+X-Forwarded-For $proxy_add_x_forwarded_for;`). Forwarded headers from any other
+peer are ignored. IPv6 addresses are counted by their /64 prefix. Behind a
+reverse proxy on another machine, list that proxy's address:
 
 ```json
 "comments": {
