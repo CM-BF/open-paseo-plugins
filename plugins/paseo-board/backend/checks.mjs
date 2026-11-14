@@ -4,11 +4,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { initializeApp } from './scaffold.mjs';
 import { loadApp, readJson, digest, exists } from './files.mjs';
 import { migrate, openDatabase, backup, restore } from './storage.mjs';
 import { startApp } from './server.mjs';
+import { addressKey, anchorProblem, COMMENT_LIMITS, commentSettings, createCommentLimiter, normalizeCommentInput, resolveClient } from './comments.mjs';
 import { createSshPlan, validatedPlan, shellQuote, runSsh, controllerCommand } from './ssh.mjs';
 import { mountComments } from './visitor.mjs';
 import { createLive } from './live.mjs';
@@ -25,6 +26,8 @@ async function fixture(t, change = {}) {
   return { directory, root, app, cleanup };
 }
 async function startTracked(app) { const instance = await startApp(app); app.testCleanup.push(instance.close); return instance; }
+/** Starts the app again after board-app.json changed on disk, sharing the test's cleanup. */
+async function reloadTracked(app) { const next = await loadApp(app.root); next.testCleanup = app.testCleanup; return startTracked(next); }
 
 test('init yields a standalone editable backend, refuses existing contents and keeps durable data outside source', async t => {
   const { directory, root, app } = await fixture(t);
@@ -159,6 +162,7 @@ test('optional visitor form retries one frozen intent after lost acknowledgement
   t.after(() => { globalThis.fetch = originalFetch; });
   const target = document.querySelector('#comments'), settings = { apiBase: `http://127.0.0.1:${server.port}`, pageUrl: 'https://pages.example/app', anchor: { selector: '#chart' } };
   let widget = mountComments(target, settings);
+  assert.equal(widget.form.querySelector('p').textContent, '评论会发给页面作者，可能由作者的 AI 助手处理。姓名为自报。');
   widget.form.querySelector('textarea').value = 'A visitor requests a chart change'; widget.form.querySelector('input').value = 'A self-reported visitor';
   const settled = async predicate => { const deadline = Date.now() + 2000; while (!predicate()) { if (Date.now() > deadline) throw new Error('Visitor form did not settle'); await new Promise(resolve => setTimeout(resolve, 10)); } };
   widget.form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
@@ -655,7 +659,7 @@ test('the write token reaches no file, response, or log, and a backend restart k
   const disk = await collect(app.dataDir);
   assert.ok(disk.some(text => text.includes('/a')));
   assert.equal([...responses, ...disk, ...log.mock.calls.map(call => call.arguments.join(' '))].some(text => text.includes(LIVE.token)), false);
-  const health = await fetch(`${base}/_board/health`).then(r => r.json()); assert.equal(health.live, 1); assert.equal(Object.keys(health).length, 5);
+  const health = await fetch(`${base}/_board/health`).then(r => r.json()); assert.equal(health.live, 1); assert.equal(Object.keys(health).length, 8);
   const deployment = server.deploymentId; await server.close();
   server = await startTracked(app); base = `http://127.0.0.1:${server.port}`;
   assert.equal(server.deploymentId, deployment);
@@ -726,4 +730,488 @@ test('init documents the live token only as a server-side placeholder and ships 
   assert.ok(await exists(path.join(root, '.board/runtime/live.mjs')));
   const asset = JSON.parse(await fs.readFile(path.join(here, '../server/assets/app-runtime.txt'), 'utf8'));
   for (const name of ['backend/live.mjs', 'backend/server.mjs', 'backend/cli.mjs', 'backend/scaffold.mjs']) assert.equal(asset.files[name], await fs.readFile(path.join(here, '..', name), 'utf8'));
+});
+
+// ---------------------------------------------------------------------------
+// Visitor comment threads (page comments, DESIGN §4.5 and §11.5/§11.10).
+
+const expandFixture = value => typeof value === 'string' ? value.replace(/<<repeat:(.):(\d+)>>/gu, (_, character, count) => character.repeat(Number(count)))
+  : Array.isArray(value) ? value.map(expandFixture) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, expandFixture(item)])) : value;
+const CONTRACT = expandFixture(JSON.parse(await fs.readFile(path.join(here, '../scripts/fixtures/page-comments-contract.json'), 'utf8')));
+const COMMENT = { token: 'x'.repeat(48), page: 'https://cm-bf.github.io', a: 'a'.repeat(64), b: 'b'.repeat(64), c: 'c'.repeat(64) };
+const RELAXED = { requestsPerIpMinute: 3000, postPerIpMinute: 100, postPerIpHour: 600, postPerVisitorMinute: 50, postPerVisitorHour: 300 };
+const OLD_COMMENTS_DDL = `CREATE TABLE IF NOT EXISTS _board_comments (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, external_id TEXT UNIQUE NOT NULL,
+    intent_key TEXT UNIQUE NOT NULL, payload_hash TEXT NOT NULL,
+    text TEXT NOT NULL, author_name TEXT, page_url TEXT, anchor_json TEXT, created_at TEXT NOT NULL
+  ) STRICT`;
+const OLD_INSERT = 'INSERT INTO _board_comments (external_id,intent_key,payload_hash,text,author_name,page_url,anchor_json,created_at) VALUES (?,?,?,?,?,?,?,?)';
+const oldProject = row => ({ externalId: row.external_id, text: row.text, createdAt: row.created_at, ...(row.author_name ? { authorName: row.author_name } : {}), ...(row.page_url ? { pageUrl: row.page_url } : {}), ...(row.anchor_json ? { anchor: JSON.parse(row.anchor_json) } : {}) });
+const ownerHeaders = { authorization: `Bearer ${COMMENT.token}` };
+const uuid = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/;
+
+function setExportToken(t, value = COMMENT.token) {
+  const original = process.env.BOARD_INBOX_EXPORT_TOKEN;
+  t.after(() => { if (original === undefined) delete process.env.BOARD_INBOX_EXPORT_TOKEN; else process.env.BOARD_INBOX_EXPORT_TOKEN = original; });
+  if (value === null) delete process.env.BOARD_INBOX_EXPORT_TOKEN; else process.env.BOARD_INBOX_EXPORT_TOKEN = value;
+}
+async function commentApp(t, comments = {}, change = {}) {
+  setExportToken(t);
+  const made = await fixture(t, { origins: [COMMENT.page], comments: { enabled: true, ...comments }, ...change });
+  const server = await startTracked(made.app);
+  return { ...made, server, base: `http://127.0.0.1:${server.port}` };
+}
+const sendComment = (base, key, body, headers = {}) => fetch(`${base}/_board/comments`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': key, ...headers }, body: JSON.stringify(body) });
+const exported = (base, query = '') => fetch(`${base}/_board/comments${query}`, { headers: ownerHeaders }).then(async response => { assert.equal(response.status, 200); return response.json(); });
+const mineOf = (base, secret, query = '', headers = {}) => fetch(`${base}/_board/comments/mine${query}`, { headers: { ...(secret ? { 'x-board-visitor': secret } : {}), ...headers } });
+const replyTo = (base, id, key, body, headers = ownerHeaders) => fetch(`${base}/_board/comments/${id}/replies`, { method: 'POST', headers: { 'content-type': 'application/json', ...(key ? { 'idempotency-key': key } : {}), ...headers }, body: JSON.stringify(body) });
+const from = address => ({ 'x-forwarded-for': address });
+const tagOf = secret => digest(`tag\0${digest(`board-visitor:v1:${secret}`)}`).slice(0, 12);
+async function failure(response, status, code) { assert.equal(response.status, status); const body = await response.json(); assert.equal(body.code, code, JSON.stringify(body)); assert.equal(typeof body.error, 'string'); return response; }
+async function legacyPageSchema() {
+  // The plugin's export page schema at 4b94741, copied literally: old plugins must keep parsing v1.
+  const { z } = await import('zod');
+  const IdSchema = z.string().min(1).max(160).regex(/^[a-zA-Z0-9_.:-]+$/), TimestampSchema = z.string().datetime();
+  const InboxExternalCommentSchema = z.object({
+    externalId: z.string().min(1).max(200),
+    text: z.string().trim().min(1).max(8_000),
+    authorName: z.string().trim().min(1).max(160).optional(),
+    createdAt: TimestampSchema,
+    pageUrl: z.string().max(2_000).url().refine(value => /^https?:\/\//.test(value), 'Comment page URL must use HTTP or HTTPS').optional(),
+    anchor: z.object({ label: z.string().max(200).optional(), selector: z.string().max(500).optional() }).strict().optional(),
+  }).strict();
+  return z.object({ deploymentId: IdSchema, cursor: z.string().min(1).max(500), nextCursor: z.string().min(1).max(500), comments: z.array(InboxExternalCommentSchema).max(100) }).strict();
+}
+
+test('page-comment contract fixture: accepted posts store and export exactly, rejected posts return their code', async t => {
+  const { base } = await commentApp(t, { limits: RELAXED });
+  const header = visitor => visitor === true ? { 'x-board-visitor': CONTRACT.visitorSecret } : typeof visitor === 'string' ? { 'x-board-visitor': visitor } : {};
+  const accepted = [];
+  for (const [index, item] of CONTRACT.post.accepted.entries()) {
+    const response = await sendComment(base, `fixture-accepted-${index}`, item.body, header(item.visitor));
+    assert.equal(response.status, 201, item.name);
+    const { comment, replayed } = await response.json();
+    assert.equal(replayed, false); assert.match(comment.externalId, uuid); assert.ok(Date.parse(comment.createdAt), item.name);
+    assert.deepEqual(comment, { ...item.stored, externalId: comment.externalId, createdAt: comment.createdAt }, item.name);
+    accepted.push({ item, comment });
+  }
+  for (const [index, item] of CONTRACT.post.rejected.entries()) await failure(await sendComment(base, `fixture-rejected-${index}`, item.body, header(item.visitor)), 400, item.code);
+  const v2 = await exported(base, '?cursor=0&limit=100&format=2'), v1 = await exported(base, '?cursor=0&limit=100');
+  assert.equal(v2.format, 2); assert.equal(v2.comments.length, accepted.length); assert.equal(v1.comments.length, accepted.length);
+  for (const [index, { item, comment }] of accepted.entries()) {
+    assert.deepEqual(v2.comments[index], { ...comment, ...(item.visitor === true ? { visitorTag: tagOf(CONTRACT.visitorSecret) } : {}) }, item.name);
+    const { anchor, ...rest } = comment, legacy = anchor && Object.fromEntries(Object.entries(anchor).filter(([key]) => key === 'label' || key === 'selector'));
+    assert.deepEqual(v1.comments[index], legacy && Object.keys(legacy).length ? { ...rest, anchor: legacy } : rest, item.name);
+  }
+  (await legacyPageSchema()).parse(v1);
+});
+
+test('the comment validator is exported for shared anchor checks and matches the POST rules', () => {
+  assert.equal(anchorProblem({ label: 'L', selector: '#a', quote: 'ab', prefix: '', suffix: 'x', start: 4, end: 6, releaseId: CONTRACT.releaseId }), null);
+  for (const anchor of [null, [], 'x', { quote: 'ab', start: 0, end: 3 }, { start: 0, end: 1 }, { quote: 'a', end: 1 }, { quote: 'a', start: 1, end: 1 }, { quote: 'a', start: 0.5, end: 1.5 }, { quote: 'a', start: 9_999_999, end: 10_000_001 }, { selector: 1 }, { label: 'l'.repeat(201) }, { quote: 'q'.repeat(1001) }, { suffix: 's'.repeat(65) }, { releaseId: 'release-0' }, { __proto__: null, other: 1 }])
+    assert.equal(typeof anchorProblem(anchor), 'string', JSON.stringify(anchor));
+  assert.deepEqual(normalizeCommentInput({ text: ' 好 ', authorName: '　', pageUrl: 'https:example.com' }), { text: '好', pageUrl: 'https://example.com/' });
+  assert.throws(() => normalizeCommentInput({ text: 'x'.repeat(2001) }, { visitor: true }), error => error.status === 400 && error.code === 'invalid_input');
+  assert.equal(normalizeCommentInput({ text: 'x'.repeat(2001) }).text.length, 2001);
+});
+
+test('rows stored before this runtime or by raw SQL export normalized, and v1 keeps the old bytes and schema', async t => {
+  const { base, server } = await commentApp(t);
+  const at = '2026-11-01T00:00:00.000Z', id = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+  const insert = (n, text, author, page, anchor) => server.db.prepare(OLD_INSERT).run(id(n), `raw-intent-${n}`, 'x', text, author, page, anchor, at);
+  insert(1, 'Old shape', 'Visitor', 'https://pages.example/report', '{"selector":"#chart","label":"Chart"}');
+  insert(2, '  hi ', ' 小王　', 'HTTPS://Example.COM/p', '{}');
+  insert(3, 'blank name', '   ', 'ftp://example.com/', 'not json');
+  insert(4, 'bad fields', 'a\u0007', 'https://u:p@example.com/', '{"quote":"","x":1}');
+  insert(5, 'rich only', null, null, `{"quote":"ab","start":0,"end":2,"releaseId":"${CONTRACT.releaseId}"}`);
+  const v1 = await exported(base, '?cursor=0&limit=100'), v2 = await exported(base, '?cursor=0&limit=100&format=2');
+  const old = oldProject(server.db.prepare('SELECT * FROM _board_comments WHERE seq = 1').get());
+  assert.equal(JSON.stringify(v1.comments[0]), JSON.stringify(old), 'an old-shaped row exports byte for byte');
+  assert.deepEqual(v1.comments.slice(1), [
+    { externalId: id(2), text: 'hi', createdAt: at, authorName: '小王', pageUrl: 'https://example.com/p' },
+    { externalId: id(3), text: 'blank name', createdAt: at },
+    { externalId: id(4), text: 'bad fields', createdAt: at },
+    { externalId: id(5), text: 'rich only', createdAt: at },
+  ]);
+  assert.deepEqual(v2.comments.slice(1).map(row => row.anchor), [{}, undefined, undefined, { quote: 'ab', start: 0, end: 2, releaseId: CONTRACT.releaseId }]);
+  assert.equal(v2.comments.some(row => 'visitorTag' in row), false);
+  assert.deepEqual((await legacyPageSchema()).parse(v1), v1);
+});
+
+test('schema migration: a 4b94741 database gains visitor threads once, newer schemas refuse, and the old SQL keeps working', async t => {
+  setExportToken(t);
+  const { app } = await fixture(t, { comments: { enabled: true } });
+  let db = openDatabase(app.database);
+  db.exec(OLD_COMMENTS_DDL);
+  db.prepare(OLD_INSERT).run('00000000-0000-4000-8000-000000000001', 'old-intent-1', 'x', 'Before the upgrade', ' Old Name ', 'https://pages.example/old', '{"selector":"#x"}', '2026-11-01T00:00:00.000Z');
+  db.close();
+  let server = await startTracked(app), base = `http://127.0.0.1:${server.port}`;
+  const meta = () => Object.fromEntries(server.db.prepare('SELECT key, value FROM _board_runtime_meta').all().map(row => [row.key, row.value]));
+  const oldBytes = Buffer.byteLength('Before the upgrade') + Buffer.byteLength(' Old Name ') + Buffer.byteLength('https://pages.example/old') + Buffer.byteLength('{"selector":"#x"}');
+  assert.deepEqual(meta(), { comments_schema: '2', export_ack: '0', comments_bytes: String(oldBytes) });
+  assert.deepEqual(server.db.prepare("SELECT name FROM pragma_table_info('_board_comments') WHERE name IN ('visitor_hash','page_key') ORDER BY name").all().map(row => row.name), ['page_key', 'visitor_hash']);
+  assert.ok(server.db.prepare("SELECT 1 FROM sqlite_master WHERE name='_board_comment_replies'").get());
+  const expected = { externalId: '00000000-0000-4000-8000-000000000001', text: 'Before the upgrade', createdAt: '2026-11-01T00:00:00.000Z', authorName: 'Old Name', pageUrl: 'https://pages.example/old', anchor: { selector: '#x' } };
+  assert.deepEqual((await exported(base, '?cursor=0')).comments, [expected]);
+  assert.deepEqual((await exported(base, '?cursor=0&format=2')).comments, [expected]);
+  assert.deepEqual((await mineOf(base, COMMENT.a).then(r => r.json())).threads, [], 'rows without a visitor never appear in mine');
+  assert.equal((await sendComment(base, 'after-upgrade', { text: 'After', pageUrl: 'https://pages.example/old' }, { 'x-board-visitor': COMMENT.a })).status, 201);
+  assert.equal(meta().comments_bytes, String(oldBytes + Buffer.byteLength('After') + Buffer.byteLength('https://pages.example/old')));
+  server.db.exec('DROP INDEX _board_comments_page');
+  await server.close();
+  server = await startTracked(app);
+  assert.equal(server.db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name='_board_comments_page'").get().n, 0, 'the migration ran once');
+  assert.equal(meta().comments_schema, '2');
+  await server.close();
+  // The previous runtime only issues CREATE TABLE IF NOT EXISTS and inserts named columns.
+  db = openDatabase(app.database);
+  db.exec(OLD_COMMENTS_DDL);
+  db.prepare(OLD_INSERT).run('00000000-0000-4000-8000-000000000003', 'old-intent-3', 'x', 'From a rolled-back runtime', null, null, null, '2026-11-02T00:00:00.000Z');
+  assert.deepEqual(db.prepare('SELECT * FROM _board_comments ORDER BY seq').all().map(oldProject).map(row => row.text), ['Before the upgrade', 'After', 'From a rolled-back runtime']);
+  db.prepare("UPDATE _board_runtime_meta SET value = '3' WHERE key = 'comments_schema'").run();
+  db.close();
+  await assert.rejects(startApp(app), /upgraded by a newer Board runtime; update this app's runtime/);
+  db = openDatabase(app.database); db.prepare("UPDATE _board_runtime_meta SET value = '2' WHERE key = 'comments_schema'").run(); db.close();
+  server = await startTracked(app); base = `http://127.0.0.1:${server.port}`;
+  assert.equal((await exported(base, '?cursor=2')).comments[0].text, 'From a rolled-back runtime');
+  assert.equal(meta().comments_bytes, String(oldBytes + Buffer.byteLength('After') + Buffer.byteLength('https://pages.example/old') + Buffer.byteLength('From a rolled-back runtime')), 'the byte count also follows inserts from the old runtime');
+});
+
+test('visitor threads: mine lists only the caller\'s comments per page, newest first, with public status and replies', async t => {
+  const { base, server } = await commentApp(t, { limits: RELAXED });
+  const page1 = `${COMMENT.page}/pages/boards/s1/`, page2 = `${COMMENT.page}/pages/boards/s2/`;
+  const post = async (key, secret, text, pageUrl) => { const response = await sendComment(base, key, { text, ...(pageUrl ? { pageUrl } : {}) }, secret ? { 'x-board-visitor': secret } : {}); assert.equal(response.status, 201); return (await response.json()).comment; };
+  const a1 = await post('visitor-a-1', COMMENT.a, 'A first', page1), a2 = await post('visitor-a-2', COMMENT.a, 'A second', `${page1}index.html`), a3 = await post('visitor-a-3', COMMENT.a, 'A other page', page2);
+  await post('visitor-b-1', COMMENT.b, 'B first', page1); await post('anonymous-1', null, 'Anonymous', page1);
+  const threads = async (secret, query = '') => { const response = await mineOf(base, secret, query); assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store'); const body = await response.json(); assert.equal(body.deploymentId, server.deploymentId); return body.threads; };
+  assert.deepEqual((await threads(COMMENT.a)).map(thread => thread.text), ['A other page', 'A second', 'A first']);
+  assert.deepEqual((await threads(COMMENT.a, `?page=${encodeURIComponent(page1)}`)).map(thread => thread.text), ['A second', 'A first']);
+  assert.deepEqual((await threads(COMMENT.a, `?page=${encodeURIComponent(`${page1}index.html`)}`)).map(thread => thread.text), ['A second', 'A first']);
+  assert.deepEqual((await threads(COMMENT.b)).map(thread => thread.text), ['B first']);
+  assert.deepEqual(await threads(COMMENT.c), []);
+  assert.deepEqual((await threads(COMMENT.a))[2], { id: a1.externalId, text: 'A first', createdAt: a1.createdAt, pageUrl: page1, status: 'sent', replies: [] });
+  const first = await exported(base, '?cursor=0&limit=100&format=2');
+  assert.deepEqual((await threads(COMMENT.a)).map(thread => thread.status), ['sent', 'sent', 'sent'], 'fetching is not acknowledging');
+  await exported(base, `?cursor=${first.comments[1].externalId === a2.externalId ? 2 : 0}&format=2`);
+  assert.deepEqual((await threads(COMMENT.a)).map(thread => thread.status), ['sent', 'received', 'received'], 'the committed cursor acknowledges');
+  await exported(base, '?cursor=999999');
+  assert.deepEqual((await threads(COMMENT.a)).map(thread => thread.status), ['received', 'received', 'received']);
+  assert.equal(server.db.prepare("SELECT value FROM _board_runtime_meta WHERE key='export_ack'").get().value, '5', 'acknowledgement never passes the newest comment');
+  assert.equal((await replyTo(base, a3.externalId, 'ir-reply-1', { text: '谢谢！', authorKind: 'agent' })).status, 201);
+  const [replied] = await threads(COMMENT.a);
+  assert.equal(replied.status, 'replied'); assert.equal(replied.replies.length, 1);
+  assert.deepEqual(Object.keys(replied.replies[0]), ['id', 'text', 'authorKind', 'createdAt']); assert.equal(replied.replies[0].text, '谢谢！'); assert.equal(replied.replies[0].authorKind, 'agent'); assert.match(replied.replies[0].id, uuid);
+  await failure(await mineOf(base, null), 400, 'visitor_invalid');
+  await failure(await mineOf(base, 'A'.repeat(64)), 400, 'visitor_invalid');
+  await failure(await mineOf(base, COMMENT.a, '?page=ftp%3A%2F%2Fexample.com%2F'), 400, 'invalid_input');
+  await failure(await fetch(`${base}/_board/comments/mine`, { method: 'POST', headers: { 'x-board-visitor': COMMENT.a } }), 405, 'method_not_allowed');
+  await failure(await fetch(`${base}/_board/comments/other`), 404, 'not_found');
+  for (let index = 0; index < 32; index++) await post(`visitor-c-${index}`, COMMENT.c, `C ${index}`, page2);
+  const many = await threads(COMMENT.c);
+  assert.equal(many.length, 30); assert.equal(many[0].text, 'C 31'); assert.equal(many[29].text, 'C 2');
+  const target = many[0].id;
+  for (let index = 0; index < 20; index++) assert.equal((await replyTo(base, target, `ir-many-${index}`, { text: `reply ${index}` })).status, 201);
+  await failure(await replyTo(base, target, 'ir-many-20', { text: 'one too many' }), 409, 'reply_limit');
+  assert.deepEqual((await threads(COMMENT.c))[0].replies.map(reply => reply.text), Array.from({ length: 20 }, (_, index) => `reply ${index}`));
+  const everything = [await mineOf(base, COMMENT.a).then(r => r.text()), JSON.stringify(await exported(base, '?cursor=0&limit=100')), JSON.stringify(await exported(base, '?cursor=0&limit=100&format=2'))].join('\n');
+  for (const secret of [COMMENT.a, COMMENT.b, COMMENT.c]) { assert.equal(everything.includes(secret), false); assert.equal(everything.includes(digest(`board-visitor:v1:${secret}`)), false); }
+});
+
+test('owner replies need the host-held token, refuse browsers, replay exactly and keep their bounds', async t => {
+  const { base, server, app } = await commentApp(t);
+  const comment = (await (await sendComment(base, 'visitor-intent', { text: 'Question' }, { 'x-board-visitor': COMMENT.a })).json()).comment, id = comment.externalId;
+  await failure(await replyTo(base, id, 'ir-browser', { text: 'x' }, { ...ownerHeaders, origin: COMMENT.page }), 403, 'browser_forbidden');
+  assert.equal((await replyTo(base, id, 'ir-browser', { text: 'x' }, { ...ownerHeaders, origin: 'https://evil.example' })).status, 403);
+  await failure(await replyTo(base, id, 'ir-wrong', { text: 'x' }, { authorization: 'Bearer wrong' }), 401, 'unauthorized');
+  await failure(await replyTo(base, id, 'ir-none', { text: 'x' }, {}), 401, 'unauthorized');
+  delete process.env.BOARD_INBOX_EXPORT_TOKEN;
+  await failure(await replyTo(base, id, 'ir-off', { text: 'x' }), 404, 'export_disabled');
+  process.env.BOARD_INBOX_EXPORT_TOKEN = 'short';
+  await failure(await replyTo(base, id, 'ir-off', { text: 'x' }), 404, 'export_disabled');
+  process.env.BOARD_INBOX_EXPORT_TOKEN = COMMENT.token;
+  await failure(await replyTo(base, 'not-a-comment-id', 'ir-bad-id', { text: 'x' }), 404, 'comment_not_found');
+  await failure(await replyTo(base, '00000000-0000-4000-8000-000000000000', 'ir-unknown', { text: 'x' }), 404, 'comment_not_found');
+  await failure(await replyTo(base, id, null, { text: 'x' }), 400, 'invalid_input');
+  for (const body of [{}, { text: '' }, { text: ' \n ' }, { text: 'x'.repeat(2001) }, { text: 'a\rb' }, { text: 'a\u0000' }, { text: 'a\u007f' }, { text: 'x', extra: 1 }, { text: 'x', authorKind: 'bot' }, { text: 5 }, []])
+    await failure(await replyTo(base, id, 'ir-invalid', body), 400, 'invalid_input');
+  const first = await replyTo(base, id, 'ir-first', { text: '  第一行\n\t第二行  ' });
+  assert.equal(first.status, 201);
+  const created = await first.json();
+  assert.deepEqual(Object.keys(created), ['deploymentId', 'replayed', 'reply']); assert.equal(created.deploymentId, server.deploymentId); assert.equal(created.replayed, false);
+  assert.deepEqual({ ...created.reply, replyId: 'id', createdAt: 'at' }, { replyId: 'id', commentExternalId: id, text: '第一行\n\t第二行', authorKind: 'owner', createdAt: 'at', idempotencyKey: 'ir-first' });
+  const replay = await replyTo(base, id, 'ir-first', { text: '第一行\n\t第二行' });
+  assert.equal(replay.status, 200); assert.deepEqual(await replay.json(), { ...created, replayed: true });
+  await failure(await replyTo(base, id, 'ir-first', { text: 'different' }), 409, 'idempotency_conflict');
+  await failure(await replyTo(base, id, 'ir-first', { text: '第一行\n\t第二行', authorKind: 'agent' }), 409, 'idempotency_conflict');
+  const other = (await (await sendComment(base, 'visitor-intent-2', { text: 'Another' })).json()).comment.externalId;
+  await failure(await replyTo(base, other, 'ir-first', { text: '第一行\n\t第二行' }), 409, 'idempotency_conflict');
+  assert.equal(server.db.prepare('SELECT count(*) AS n FROM _board_comment_replies').get().n, 1);
+  await server.close();
+  const disabled = await fs.readFile(path.join(app.root, 'board-app.json'), 'utf8').then(JSON.parse);
+  await fs.writeFile(path.join(app.root, 'board-app.json'), JSON.stringify({ ...disabled, comments: { enabled: false } }));
+  const off = await reloadTracked(app), offBase = `http://127.0.0.1:${off.port}`;
+  await failure(await replyTo(offBase, id, 'ir-disabled', { text: 'x' }), 404, 'comments_disabled');
+  await failure(await mineOf(offBase, COMMENT.a), 404, 'comments_disabled');
+  await failure(await fetch(`${offBase}/_board/comments`, { headers: ownerHeaders }), 404, 'comments_disabled');
+});
+
+test('export pages stay within 90,000 characters, always carry one row, and v2 adds only visitor tags', async t => {
+  const { base, server } = await commentApp(t, { limits: RELAXED });
+  for (let index = 0; index < 14; index++) assert.equal((await sendComment(base, `long-row-${index}`, { text: `${index}`.padEnd(8000, 'x') })).status, 201);
+  for (const query of ['?cursor=0&limit=100', '?cursor=0&limit=100&format=2']) {
+    const page = await exported(base, query), size = page.comments.reduce((total, row) => total + JSON.stringify(row).length, 0);
+    assert.ok(size <= 90_000 && size + 8100 > 90_000, `${query}: ${size}`); assert.equal(page.nextCursor, String(page.comments.length));
+    const rest = await exported(base, `${query.replace('cursor=0', `cursor=${page.nextCursor}`)}`);
+    assert.equal(page.comments.length + rest.comments.length, 14); assert.equal(rest.nextCursor, '14');
+  }
+  server.db.prepare(OLD_INSERT).run('00000000-0000-4000-8000-0000000000ff', 'huge-raw-row', 'x', 'h'.repeat(100_000), null, null, null, '2026-11-01T00:00:00.000Z');
+  const huge = await exported(base, '?cursor=14&limit=100');
+  assert.equal(huge.comments.length, 1); assert.equal(huge.nextCursor, '15');
+  for (const [key, secret] of [['tagged-a-1', COMMENT.a], ['tagged-a-2', COMMENT.a], ['tagged-b-1', COMMENT.b]]) assert.equal((await sendComment(base, key, { text: key }, { 'x-board-visitor': secret })).status, 201);
+  const v2 = await exported(base, '?cursor=15&format=2');
+  assert.deepEqual(Object.keys(v2), ['deploymentId', 'format', 'cursor', 'nextCursor', 'comments']);
+  const tags = v2.comments.map(row => row.visitorTag);
+  assert.match(tags[0], /^[a-f0-9]{12}$/); assert.equal(tags[0], tags[1]); assert.notEqual(tags[0], tags[2]); assert.equal(tags[0], tagOf(COMMENT.a));
+  assert.deepEqual(Object.keys(await exported(base, '?cursor=15&format=1')), ['deploymentId', 'cursor', 'nextCursor', 'comments']);
+  await failure(await fetch(`${base}/_board/comments?cursor=-1`, { headers: ownerHeaders }), 400, 'invalid_input');
+  await failure(await fetch(`${base}/_board/comments?limit=101`, { headers: ownerHeaders }), 400, 'invalid_input');
+  await failure(await fetch(`${base}/_board/comments`, { headers: { authorization: 'Bearer wrong' } }), 401, 'unauthorized');
+});
+
+test('visitor post replays: the same payload and visitor replay, anything else conflicts, and old intents still replay', async t => {
+  const { base, server } = await commentApp(t);
+  const body = { text: 'Hello', anchor: { selector: '#a', quote: 'b' } };
+  const first = await sendComment(base, 'replay-intent', body, { 'x-board-visitor': COMMENT.a });
+  assert.equal(first.status, 201);
+  const original = (await first.json()).comment;
+  const replay = await sendComment(base, 'replay-intent', { anchor: { selector: '#a', quote: 'b' }, text: ' Hello ' }, { 'x-board-visitor': COMMENT.a });
+  assert.equal(replay.status, 200); assert.deepEqual(await replay.json(), { deploymentId: server.deploymentId, comment: original, replayed: true });
+  await failure(await sendComment(base, 'replay-intent', body, { 'x-board-visitor': COMMENT.b }), 409, 'idempotency_conflict');
+  await failure(await sendComment(base, 'replay-intent', body), 409, 'idempotency_conflict');
+  await failure(await sendComment(base, 'replay-intent', { ...body, text: 'Changed' }, { 'x-board-visitor': COMMENT.a }), 409, 'idempotency_conflict');
+  await failure(await sendComment(base, 'no', body), 400, 'invalid_input');
+  await failure(await fetch(`${base}/_board/comments`, { method: 'POST', headers: { 'content-type': 'text/plain', 'idempotency-key': 'plain-intent' }, body: 'x' }), 415, 'unsupported_media_type');
+  await failure(await fetch(`${base}/_board/comments`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'broken-json' }, body: '{' }), 400, 'invalid_input');
+  // An intent stored by the 4b94741 runtime hashed the untrimmed name and the raw URL.
+  const legacy = { text: 'Legacy', authorName: ' Ann ', pageUrl: 'https://pages.example' };
+  server.db.prepare(OLD_INSERT).run('00000000-0000-4000-8000-000000000042', 'legacy-intent', digest(JSON.stringify(legacy)), 'Legacy', ' Ann ', 'https://pages.example', null, '2026-11-01T00:00:00.000Z');
+  const old = await sendComment(base, 'legacy-intent', legacy);
+  assert.equal(old.status, 200); assert.deepEqual((await old.json()).comment, { externalId: '00000000-0000-4000-8000-000000000042', text: 'Legacy', createdAt: '2026-11-01T00:00:00.000Z', authorName: 'Ann', pageUrl: 'https://pages.example/' });
+});
+
+test('comment rate limits per IP, visitor, everyone, page and stored bytes answer 429 or 507 with Retry-After; replays are exempt', async t => {
+  await t.test('per IP and per visitor', async s => {
+    const { base } = await commentApp(s, { limits: { postPerIpMinute: 2, postPerVisitorMinute: 2 } });
+    assert.equal((await sendComment(base, 'ip-one-1', { text: '1' }, from('198.51.100.1'))).status, 201);
+    assert.equal((await sendComment(base, 'ip-one-2', { text: '2' }, from('198.51.100.1'))).status, 201);
+    const limited = await failure(await sendComment(base, 'ip-one-3', { text: '3' }, { ...from('198.51.100.1'), origin: COMMENT.page }), 429, 'rate_limited');
+    assert.ok(+limited.headers.get('retry-after') >= 1 && +limited.headers.get('retry-after') <= 60); assert.equal(limited.headers.get('access-control-expose-headers'), 'Retry-After');
+    assert.equal((await sendComment(base, 'ip-one-1', { text: '1' }, from('198.51.100.1'))).status, 200, 'a replay is not a new post');
+    assert.equal((await sendComment(base, 'visitor-1', { text: 'v' }, { ...from('198.51.100.2'), 'x-board-visitor': COMMENT.a })).status, 201);
+    assert.equal((await sendComment(base, 'visitor-2', { text: 'v' }, { ...from('198.51.100.3'), 'x-board-visitor': COMMENT.a })).status, 201);
+    await failure(await sendComment(base, 'visitor-3', { text: 'v' }, { ...from('198.51.100.4'), 'x-board-visitor': COMMENT.a }), 429, 'rate_limited');
+    assert.equal((await sendComment(base, 'visitor-4', { text: 'v' }, from('198.51.100.4'))).status, 201, 'a refused post spends nothing');
+    assert.equal((await sendComment(base, 'visitor-5', { text: 'v' }, { ...from('198.51.100.4'), 'x-board-visitor': COMMENT.b })).status, 201);
+  });
+  await t.test('per IP per hour', async s => {
+    const { base } = await commentApp(s, { limits: { postPerIpHour: 2 } });
+    for (const key of ['hourly-1', 'hourly-2']) assert.equal((await sendComment(base, key, { text: key })).status, 201);
+    const limited = await failure(await sendComment(base, 'hourly-3', { text: 'x' }), 429, 'rate_limited');
+    assert.ok(+limited.headers.get('retry-after') >= 1 && +limited.headers.get('retry-after') <= 3600);
+  });
+  await t.test('everyone', async s => {
+    const { base } = await commentApp(s, { limits: { postGlobalMinute: 3 } });
+    for (const n of [1, 2, 3]) assert.equal((await sendComment(base, `global-${n}`, { text: 'g' }, from(`203.0.113.${n}`))).status, 201);
+    await failure(await sendComment(base, 'global-4', { text: 'g' }, from('203.0.113.4')), 429, 'rate_limited');
+  });
+  await t.test('per page per day', async s => {
+    const { base } = await commentApp(s, { limits: { postPerPageDay: 2 } });
+    const page = `${COMMENT.page}/pages/boards/s9/`;
+    assert.equal((await sendComment(base, 'per-page-1', { text: 'p', pageUrl: page })).status, 201);
+    assert.equal((await sendComment(base, 'per-page-2', { text: 'p', pageUrl: `${page}index.html?x=1#y` })).status, 201);
+    const limited = await failure(await sendComment(base, 'per-page-3', { text: 'p', pageUrl: page }), 429, 'rate_limited');
+    assert.ok(+limited.headers.get('retry-after') >= 1 && +limited.headers.get('retry-after') <= 86400);
+    assert.equal((await sendComment(base, 'per-page-4', { text: 'p', pageUrl: `${COMMENT.page}/pages/boards/s8/` })).status, 201);
+    assert.equal((await sendComment(base, 'per-page-5', { text: 'no page' })).status, 201);
+  });
+  await t.test('stored bytes', async s => {
+    const { base, server } = await commentApp(s, { limits: { maxStoredBytes: 300 } });
+    assert.equal((await sendComment(base, 'stored-bytes-1', { text: '字'.repeat(60), authorName: 'ab' })).status, 201);
+    assert.equal(server.db.prepare("SELECT value FROM _board_runtime_meta WHERE key='comments_bytes'").get().value, '182');
+    await failure(await sendComment(base, 'stored-bytes-2', { text: 'x'.repeat(119) }), 507, 'storage_full');
+    assert.equal((await sendComment(base, 'stored-bytes-3', { text: 'x'.repeat(118) })).status, 201);
+    await failure(await sendComment(base, 'stored-bytes-4', { text: 'x' }), 507, 'storage_full');
+  });
+  await t.test('mine per visitor and per IP', async s => {
+    const { base } = await commentApp(s, { limits: { minePerVisitorMinute: 2, minePerIpMinute: 3 } });
+    for (let index = 0; index < 2; index++) assert.equal((await mineOf(base, COMMENT.a, '', from('198.51.100.7'))).status, 200);
+    await failure(await mineOf(base, COMMENT.a, '', from('198.51.100.8')), 429, 'rate_limited');
+    assert.equal((await mineOf(base, COMMENT.b, '', from('198.51.100.9'))).status, 200);
+    assert.equal((await mineOf(base, COMMENT.c, '', from('198.51.100.9'))).status, 200);
+    assert.equal((await mineOf(base, COMMENT.c, '', from('198.51.100.9'))).status, 200);
+    await failure(await mineOf(base, 'd'.repeat(64), '', from('198.51.100.9')), 429, 'rate_limited');
+  });
+  await t.test('every comment request per IP, including replays, mine and preflight; owner routes are exempt', async s => {
+    const { base } = await commentApp(s, { limits: { requestsPerIpMinute: 4 } });
+    const ip = from('192.0.2.50');
+    assert.equal((await sendComment(base, 'ceiling-1', { text: 'c' }, ip)).status, 201);
+    assert.equal((await sendComment(base, 'ceiling-1', { text: 'c' }, ip)).status, 200);
+    assert.equal((await mineOf(base, COMMENT.a, '', ip)).status, 200);
+    assert.equal((await fetch(`${base}/_board/comments`, { method: 'OPTIONS', headers: { ...ip, origin: COMMENT.page, 'access-control-request-method': 'POST' } })).status, 204);
+    await failure(await sendComment(base, 'ceiling-1', { text: 'c' }, ip), 429, 'rate_limited');
+    await failure(await fetch(`${base}/_board/comments/mine`, { method: 'OPTIONS', headers: { ...ip, origin: COMMENT.page } }), 429, 'rate_limited');
+    assert.equal((await fetch(`${base}/_board/comments?cursor=0`, { headers: { ...ip, ...ownerHeaders } })).status, 200);
+    assert.equal((await mineOf(base, COMMENT.a, '', from('192.0.2.51'))).status, 200);
+  });
+});
+
+test('client addresses: forwarded headers count only from trusted proxies, right-most untrusted first, IPv6 by /64', async t => {
+  const trusted = commentSettings({ comments: {} }).trusted, request = (peer, headers = {}) => ({ socket: { remoteAddress: peer }, headers });
+  assert.deepEqual(resolveClient(request('127.0.0.1'), trusted), { address: '127.0.0.1', mode: 'socket' });
+  assert.deepEqual(resolveClient(request('127.0.0.1', from('203.0.113.9, 198.51.100.1')), trusted), { address: '198.51.100.1', mode: 'forwarded' });
+  assert.deepEqual(resolveClient(request('::ffff:127.0.0.1', from('203.0.113.9, 198.51.100.1, 127.0.0.1')), trusted), { address: '198.51.100.1', mode: 'forwarded' });
+  assert.deepEqual(resolveClient(request('::1', from('[2001:db8::5]:443, 198.51.100.1:8080')), trusted), { address: '198.51.100.1', mode: 'forwarded' });
+  assert.deepEqual(resolveClient(request('127.0.0.1', from('198.51.100.1, unknown')), trusted), { address: '127.0.0.1', mode: 'forwarded' });
+  assert.deepEqual(resolveClient(request('127.0.0.1', from('127.0.0.1')), trusted), { address: '127.0.0.1', mode: 'forwarded' });
+  assert.deepEqual(resolveClient(request('127.0.0.1', { 'x-real-ip': '198.51.100.2' }), trusted), { address: '198.51.100.2', mode: 'forwarded' });
+  assert.deepEqual(resolveClient(request('192.0.2.10', from('198.51.100.1')), trusted), { address: '192.0.2.10', mode: 'proxied-unconfigured' });
+  assert.deepEqual(resolveClient(request('192.0.2.10', { 'x-real-ip': '198.51.100.1' }), trusted), { address: '192.0.2.10', mode: 'proxied-unconfigured' });
+  assert.deepEqual(resolveClient(request('192.0.2.10', from('198.51.100.1')), commentSettings({ comments: { trustedProxies: ['192.0.2.10'] } }).trusted), { address: '198.51.100.1', mode: 'forwarded' });
+  assert.equal(addressKey('2001:db8:1:2:3:4:5:6'), addressKey('2001:DB8:1:2:ffff::1'));
+  assert.notEqual(addressKey('2001:db8:1:2::1'), addressKey('2001:db8:1:3::1'));
+  for (const mapped of ['::ffff:198.51.100.4', '::ffff:c633:6404', '0:0:0:0:0:ffff:198.51.100.4']) assert.equal(addressKey(mapped), '198.51.100.4');
+  assert.equal(addressKey('not an address'), null);
+  const proxied = await commentApp(t, { trustedProxies: ['192.0.2.200'], limits: { postPerIpMinute: 1 } });
+  const health = async (base, headers = {}) => (await fetch(`${base}/_board/health`, { headers }).then(r => r.json())).clientIp;
+  assert.equal(await health(proxied.base), 'socket');
+  assert.equal(await health(proxied.base, from('198.51.100.1')), 'proxied-unconfigured');
+  assert.equal((await sendComment(proxied.base, 'spoofed-1', { text: 's' }, from('198.51.100.1'))).status, 201);
+  await failure(await sendComment(proxied.base, 'spoofed-2', { text: 's' }, from('198.51.100.2')), 429, 'rate_limited');
+  const local = await commentApp(t, { limits: { postPerIpMinute: 1 } });
+  assert.equal(await health(local.base, { 'x-real-ip': '198.51.100.1' }), 'forwarded');
+  assert.equal((await sendComment(local.base, 'ipv6-key-1', { text: '6' }, from('2001:db8:aa:bb::1'))).status, 201);
+  await failure(await sendComment(local.base, 'ipv6-key-2', { text: '6' }, from('2001:db8:aa:bb:ffff::2')), 429, 'rate_limited');
+  assert.equal((await sendComment(local.base, 'ipv6-key-3', { text: '6' }, from('2001:db8:aa:bc::1'))).status, 201);
+});
+
+test('the comment limiter fails closed when an IP map is full and creates visitor windows only after the IP checks pass', () => {
+  const clock = { now: 1_800_000_000_000 }, limiter = createCommentLimiter({ ...COMMENT_LIMITS, postPerIpMinute: 1 }, { now: () => clock.now, maxKeys: 3 });
+  const refused = (call, retryAfter) => assert.throws(call, error => error.status === 429 && error.code === 'rate_limited' && (retryAfter === undefined || error.retryAfter === retryAfter));
+  for (const ip of ['a', 'b', 'c']) limiter.request(ip);
+  refused(() => limiter.request('d'), 60);
+  limiter.request('a');
+  assert.equal(limiter.windows.requests.entries.size, 3);
+  limiter.checkPost('a', 'visitor-1'); limiter.commitPost('a', 'visitor-1');
+  refused(() => limiter.checkPost('a', 'visitor-2'));
+  assert.deepEqual([...limiter.windows.postVisitorMinute.entries.keys()], ['visitor-1'], 'no window for a refused visitor');
+  for (const ip of ['b', 'c']) { limiter.checkPost(ip, `visitor-${ip}`); limiter.commitPost(ip, `visitor-${ip}`); }
+  refused(() => limiter.checkPost('d', 'visitor-d'), 60);
+  assert.equal(limiter.windows.postVisitorMinute.entries.has('visitor-d'), false);
+  for (const visitor of ['e', 'f', 'g']) limiter.mine('a', visitor);
+  assert.deepEqual([...limiter.windows.mineVisitor.entries.keys()], ['e', 'f', 'g']);
+  limiter.mine('a', 'h');
+  assert.deepEqual([...limiter.windows.mineVisitor.entries.keys()], ['f', 'g', 'h'], 'visitor maps evict their oldest window');
+  clock.now += 60_000;
+  limiter.request('d');
+  assert.deepEqual([...limiter.windows.requests.entries.keys()], ['d'], 'expired windows are swept each minute');
+  const hourly = createCommentLimiter({ ...COMMENT_LIMITS, postPerIpHour: 1 }, { now: () => 1_800_000_000_000 + 30 * 60_000 });
+  hourly.commitPost('a', null);
+  refused(() => hourly.checkPost('a', null), Math.ceil((Math.ceil((1_800_000_000_000 + 30 * 60_000) / 3_600_000) * 3_600_000 - (1_800_000_000_000 + 30 * 60_000)) / 1000));
+});
+
+test('comment settings in board-app.json are validated before start', async t => {
+  const bad = [{ trustedProxies: '127.0.0.1' }, { trustedProxies: ['10.0.0.0/8'] }, { trustedProxies: ['proxy.example'] }, { trustedProxies: [1] }, { trustedProxies: Array.from({ length: 17 }, (_, index) => `192.0.2.${index}`) },
+    { limits: [] }, { limits: { postPerIpMinute: 0 } }, { limits: { postPerIpMinute: 101 } }, { limits: { postPerIpMinute: 1.5 } }, { limits: { postPerIpMinute: '5' } }, { limits: { perIpMinute: 5 } }, { limits: { maxStoredBytes: 2_684_354_561 } }];
+  for (const comments of bad) assert.throws(() => commentSettings({ comments }), /comments\.(trustedProxies|limits)/, JSON.stringify(comments));
+  assert.deepEqual(commentSettings({ comments: { limits: { postPerIpMinute: 100, maxStoredBytes: 2_684_354_560 } } }).limits, { ...COMMENT_LIMITS, postPerIpMinute: 100, maxStoredBytes: 2_684_354_560 });
+  assert.equal(commentSettings({}).enabled, false);
+  const { app, root } = await fixture(t, { comments: { enabled: true, trustedProxies: ['10.0.0.0/8'] } });
+  await assert.rejects(startApp(app), /comments\.trustedProxies/);
+  assert.equal(await exists(path.join(app.dataDir, 'runtime.lock')), false);
+  const config = JSON.parse(await fs.readFile(path.join(root, 'board-app.json'), 'utf8'));
+  await fs.writeFile(path.join(root, 'board-app.json'), JSON.stringify({ ...config, comments: { enabled: true, trustedProxies: ['10.0.0.1', 'fd00::1'], limits: { postPerIpMinute: 20 } } }));
+  await reloadTracked(app);
+});
+
+test('health reports appKey, comment support and the client address mode; appKey survives restart and update-runtime', async t => {
+  const { app, root } = await fixture(t);
+  let server = await startTracked(app), base = `http://127.0.0.1:${server.port}`;
+  const health = await fetch(`${base}/_board/health`).then(r => r.json());
+  assert.deepEqual(Object.keys(health), ['status', 'id', 'appKey', 'deploymentId', 'instanceId', 'live', 'comments', 'clientIp']);
+  assert.equal(health.appKey, digest(`board-app-key\0${app.owner.owner}`).slice(0, 16)); assert.match(health.appKey, /^[a-f0-9]{16}$/);
+  assert.equal(health.comments, 0); assert.equal(health.clientIp, 'socket');
+  await server.close();
+  const update = await new Promise((resolve, reject) => { const child = spawn(process.execPath, [path.join(here, '../scripts/board-app.mjs'), 'update-runtime', '--dir', root], { stdio: ['ignore', 'pipe', 'pipe'] }); let stderr = ''; child.stderr.on('data', chunk => stderr += chunk); child.once('error', reject); child.once('close', code => resolve({ code, stderr })); });
+  assert.equal(update.code, 0, update.stderr);
+  const config = JSON.parse(await fs.readFile(path.join(root, 'board-app.json'), 'utf8'));
+  await fs.writeFile(path.join(root, 'board-app.json'), JSON.stringify({ ...config, comments: { enabled: true } }));
+  server = await reloadTracked(app); base = `http://127.0.0.1:${server.port}`;
+  const again = await fetch(`${base}/_board/health`).then(r => r.json());
+  assert.equal(again.appKey, health.appKey); assert.equal(again.comments, 2); assert.equal(again.deploymentId, health.deploymentId);
+  assert.equal(again.clientIp, 'socket');
+  const other = await fixture(t), otherServer = await startTracked(other.app);
+  assert.notEqual((await fetch(`http://127.0.0.1:${otherServer.port}/_board/health`).then(r => r.json())).appKey, health.appKey);
+});
+
+test('CORS for visitor comments: preflight allows X-Board-Visitor, Retry-After is exposed, and private-network access is never granted', async t => {
+  const { base } = await commentApp(t);
+  const seen = [];
+  const call = async (url, options = {}) => { const response = await fetch(url, options); seen.push(response); return response; };
+  const preflight = await call(`${base}/_board/comments`, { method: 'OPTIONS', headers: { origin: COMMENT.page, 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type, idempotency-key, x-board-visitor', 'access-control-request-private-network': 'true' } });
+  assert.equal(preflight.status, 204); assert.equal(preflight.headers.get('access-control-allow-origin'), COMMENT.page);
+  assert.deepEqual(preflight.headers.get('access-control-allow-headers').split(', '), ['Content-Type', 'Idempotency-Key', 'Authorization', 'X-Board-Visitor']);
+  const minePreflight = await call(`${base}/_board/comments/mine?page=x`, { method: 'OPTIONS', headers: { origin: COMMENT.page, 'access-control-request-method': 'GET', 'access-control-request-headers': 'x-board-visitor', 'access-control-request-private-network': 'true' } });
+  assert.equal(minePreflight.status, 204);
+  const posted = await call(`${base}/_board/comments`, { method: 'POST', headers: { origin: COMMENT.page, 'content-type': 'application/json', 'idempotency-key': 'cors-intent', 'x-board-visitor': COMMENT.a }, body: JSON.stringify({ text: 'From the page' }) });
+  assert.equal(posted.status, 201); assert.equal(posted.headers.get('access-control-allow-origin'), COMMENT.page); assert.equal(posted.headers.get('access-control-expose-headers'), 'Retry-After'); assert.equal(posted.headers.get('vary'), 'Origin');
+  const listed = await call(`${base}/_board/comments/mine`, { headers: { origin: COMMENT.page, 'x-board-visitor': COMMENT.a } });
+  assert.equal(listed.status, 200); assert.equal(listed.headers.get('access-control-expose-headers'), 'Retry-After');
+  assert.equal((await call(`${base}/_board/health`, { headers: { origin: COMMENT.page, 'access-control-request-private-network': 'true' } })).status, 200);
+  const evil = await call(`${base}/_board/comments`, { method: 'POST', headers: { origin: 'https://evil.example', 'content-type': 'application/json', 'idempotency-key': 'cors-evil' }, body: JSON.stringify({ text: 'x' }) });
+  assert.equal(evil.status, 403); assert.equal(evil.headers.get('access-control-allow-origin'), null);
+  for (const response of seen) assert.equal([...response.headers.keys()].some(name => name.includes('private-network')), false);
+});
+
+test('visitor threads and replies survive backup and same-directory restore', async t => {
+  const { app, directory, base, server } = await commentApp(t);
+  const id = (await (await sendComment(base, 'kept-intent', { text: 'Kept' }, { 'x-board-visitor': COMMENT.a })).json()).comment.externalId;
+  assert.equal((await replyTo(base, id, 'ir-kept-reply', { text: 'Kept reply', authorKind: 'agent' })).status, 201);
+  const saved = await backup(app, path.join(directory, 'threads.sqlite'));
+  assert.equal((await replyTo(base, id, 'ir-after-backup', { text: 'After backup' })).status, 201);
+  await server.close();
+  await restore(app, saved.file, saved.sha256);
+  const restored = await startTracked(app), restoredBase = `http://127.0.0.1:${restored.port}`;
+  const [thread] = (await mineOf(restoredBase, COMMENT.a).then(r => r.json())).threads;
+  assert.deepEqual(thread.replies.map(reply => [reply.text, reply.authorKind]), [['Kept reply', 'agent']]);
+  assert.equal(restored.db.prepare("SELECT value FROM _board_runtime_meta WHERE key='comments_schema'").get().value, '2');
+});
+
+test('an app whose runtime predates visitor threads migrates on its first start after update-runtime', async t => {
+  setExportToken(t);
+  const { root, app } = await fixture(t, { comments: { enabled: true } });
+  const runtime = path.join(root, '.board/runtime');
+  await fs.writeFile(path.join(runtime, 'comments.mjs'), '// an older runtime');
+  const db = openDatabase(app.database);
+  db.exec(OLD_COMMENTS_DDL); db.prepare(OLD_INSERT).run('00000000-0000-4000-8000-000000000007', 'pre-update', 'x', 'Kept across the update', null, null, '{"label":"L"}', '2026-11-01T00:00:00.000Z');
+  db.close();
+  const updated = await new Promise((resolve, reject) => { const child = spawn(process.execPath, [path.join(here, '../scripts/board-app.mjs'), 'update-runtime', '--dir', root], { stdio: ['ignore', 'pipe', 'pipe'] }); let stdout = '', stderr = ''; child.stdout.on('data', chunk => stdout += chunk); child.stderr.on('data', chunk => stderr += chunk); child.once('error', reject); child.once('close', code => resolve({ code, stdout, stderr })); });
+  assert.equal(updated.code, 0, updated.stderr); assert.deepEqual(JSON.parse(updated.stdout).files, ['cli.mjs', 'files.mjs', 'storage.mjs', 'comments.mjs', 'live.mjs', 'server.mjs', 'scaffold.mjs', 'ssh.mjs', 'remote.mjs', 'visitor.mjs']);
+  assert.equal(await fs.readFile(path.join(runtime, 'comments.mjs'), 'utf8'), await fs.readFile(path.join(here, 'comments.mjs'), 'utf8'));
+  const copied = await import(pathToFileURL(path.join(runtime, 'server.mjs')).href), copiedFiles = await import(pathToFileURL(path.join(runtime, 'files.mjs')).href);
+  const server = await copied.startApp(await copiedFiles.loadApp(root)); app.testCleanup.push(server.close);
+  const base = `http://127.0.0.1:${server.port}`;
+  assert.equal((await fetch(`${base}/_board/health`).then(r => r.json())).comments, 2);
+  assert.equal(server.db.prepare("SELECT value FROM _board_runtime_meta WHERE key='comments_schema'").get().value, '2');
+  assert.deepEqual((await exported(base, '?cursor=0&format=2')).comments.map(row => [row.text, row.anchor]), [['Kept across the update', { label: 'L' }]]);
+  assert.equal((await sendComment(base, 'post-update', { text: 'New thread' }, { 'x-board-visitor': COMMENT.a })).status, 201);
+});
+
+test('the scaffold documents owner replies, visitor threads and trusted proxies, and ships the comment runtime', async t => {
+  const { root } = await fixture(t);
+  assert.match(await fs.readFile(path.join(root, '.env.example'), 'utf8'), /^# Set a random 32\+ character token for the owner-controlled Board pull and owner replies\.\n# BOARD_INBOX_EXPORT_TOKEN=$/m);
+  const readme = await fs.readFile(path.join(root, 'README.md'), 'utf8');
+  assert.ok(readme.includes("Comments never change this app. Replies are posted only by the Board owner's host with BOARD_INBOX_EXPORT_TOKEN. Visitors can list only their own comments and replies with an anonymous secret stored in their browser. Behind a reverse proxy on another machine, list the proxy's address in comments.trustedProxies."));
+  assert.equal(readme.includes('posts a public reply'), false);
+  const asset = JSON.parse(await fs.readFile(path.join(here, '../server/assets/app-runtime.txt'), 'utf8'));
+  for (const name of ['backend/comments.mjs', 'backend/visitor.mjs']) assert.equal(asset.files[name], await fs.readFile(path.join(here, '..', name), 'utf8'));
 });

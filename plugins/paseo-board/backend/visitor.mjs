@@ -8,7 +8,7 @@ export function mountComments(element, { apiBase = '', pageUrl, anchor, request 
   if (store === undefined) { try { store = browser.sessionStorage; } catch {} }
   if (store && ['getItem', 'setItem', 'removeItem'].some(name => typeof store[name] !== 'function')) throw new TypeError('Comment storage must provide getItem, setItem and removeItem');
   const form = document.createElement('form'); form.className = 'board-comments';
-  const note = document.createElement('p'); note.textContent = '评论进入此 Board 的内部收件箱。姓名为自报；提交不会自动获得公开回复。';
+  const note = document.createElement('p'); note.textContent = '评论会发给页面作者，可能由作者的 AI 助手处理。姓名为自报。';
   const author = document.createElement('input'); author.name = 'authorName'; author.maxLength = 160; author.setAttribute('aria-label', '你的称呼（可选，自报）'); author.placeholder = '你的称呼（可选，自报）';
   const text = document.createElement('textarea'); text.name = 'comment'; text.maxLength = 8000; text.required = true; text.setAttribute('aria-label', '评论'); text.placeholder = '写下评论';
   const send = document.createElement('button'); send.type = 'submit'; send.textContent = '提交评论';

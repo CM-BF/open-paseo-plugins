@@ -5,7 +5,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { acquireLock, exists, noSymlinks, writeJson } from './files.mjs';
 import { migrateUnlocked, openDatabase } from './storage.mjs';
-import { commentsRoute, httpError, initializeComments } from './comments.mjs';
+import { commentSettings, createComments, httpError, initializeComments } from './comments.mjs';
 import { createLive } from './live.mjs';
 
 async function readBody(request) {
@@ -34,9 +34,11 @@ export async function startApp(app) {
   let releaseRuntime, db, server;
   try {
     releaseRuntime = await acquireLock(app, 'runtime');
+    const commentConfig = commentSettings(app.config);
     await migrateUnlocked(app);
     db = openDatabase(app.database);
     const deploymentId = await initializeComments(app, db);
+    const comments = createComments({ app, db, deploymentId, settings: commentConfig });
     const live = await createLive(app, deploymentId);
     const { route } = await import(pathToFileURL(app.entry).href);
     const { createStorage } = await import(pathToFileURL(path.join(app.root, 'storage.mjs')).href);
@@ -52,8 +54,8 @@ export async function startApp(app) {
         const origin = request.headers.origin;
         if (origin && !app.config.origins.includes(origin)) throw httpError(403, 'Origin is not allowed');
         if (origin) { response.setHeader('access-control-allow-origin', origin); response.setHeader('vary', 'Origin'); }
-        if (request.method === 'OPTIONS') { response.writeHead(204, { 'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS', 'access-control-allow-headers': 'Content-Type, Idempotency-Key, Authorization', 'access-control-max-age': '600' }); response.end(); return; }
-        if (url.pathname === '/_board/health' && request.method === 'GET') { json(200, { status: 'ok', id: app.owner.id, deploymentId, instanceId, live: live.enabled ? 1 : 0 }); return; }
+        if (request.method === 'OPTIONS') { comments.preflight(request, url.pathname); response.writeHead(204, { 'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS', 'access-control-allow-headers': 'Content-Type, Idempotency-Key, Authorization, X-Board-Visitor', 'access-control-max-age': '600' }); response.end(); return; }
+        if (url.pathname === '/_board/health' && request.method === 'GET') { json(200, { status: 'ok', id: app.owner.id, appKey: comments.appKey, deploymentId, instanceId, live: live.enabled ? 1 : 0, comments: comments.enabled ? 2 : 0, clientIp: comments.client(request).mode }); return; }
         if (url.pathname === '/_board/shutdown' && request.method === 'POST') {
           const supplied = Buffer.from(request.headers['x-board-control'] || ''), expected = Buffer.from(controlToken);
           if (origin || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress) || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw httpError(403, 'Control denied');
@@ -61,13 +63,19 @@ export async function startApp(app) {
         }
         if (url.pathname === '/public-config.json' && request.method === 'GET') { json(200, app.config.public ?? {}); return; }
         const context = { request, response, url, db, storage, config: app.config, deploymentId, readJson: () => readBody(request), json };
-        if (await commentsRoute(context)) return;
+        if (await comments.route(context)) return;
         if (await live.route(context)) return;
         if (url.pathname.startsWith('/_board/')) throw httpError(404, 'Not found');
         if (await route(context)) return;
         if (request.method === 'GET' && await staticFile(app, url, response)) return;
         throw httpError(404, 'Not found');
-      } catch (error) { if (!response.headersSent) json(error.status || 500, { error: error.status ? error.message : 'Internal server error' }); else response.destroy(); if (!error.status) console.error('Application request failed:', error.message); }
+      } catch (error) {
+        if (!response.headersSent) {
+          if (error.status && error.retryAfter) response.setHeader('retry-after', String(error.retryAfter));
+          json(error.status || 500, error.status ? { error: error.message, ...(typeof error.code === 'string' ? { code: error.code } : {}) } : { error: 'Internal server error' });
+        } else response.destroy();
+        if (!error.status) console.error('Application request failed:', error.message);
+      }
     });
     server.requestTimeout = 30000; server.headersTimeout = 10000;
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(app.config.port, app.config.host, resolve); });
