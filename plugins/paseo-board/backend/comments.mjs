@@ -2,6 +2,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
 import path from 'node:path';
 import { digest, exists, noSymlinks, readJson, writeJson } from './files.mjs';
+import { PUBLIC_LIMITS, createPublicThreads, migrateToV3, publicInputProblem, publicThreadsSetting } from './threads.mjs';
 
 /** An HTTP error. `code` is a stable reason for clients; `retryAfter` (seconds) becomes a Retry-After header. */
 export function httpError(status, message, code, extra = {}) { return Object.assign(new Error(message), { status, ...(code ? { code } : {}), ...extra }); }
@@ -11,6 +12,7 @@ const MINUTE = 60_000, HOUR = 3_600_000, DAY = 86_400_000;
 export const COMMENT_LIMITS = Object.freeze({
   requestsPerIpMinute: 300, postPerIpMinute: 10, postPerIpHour: 60, postPerVisitorMinute: 5, postPerVisitorHour: 30,
   postGlobalMinute: 120, postGlobalHour: 1000, postPerPageDay: 500, minePerVisitorMinute: 12, minePerIpMinute: 600, maxStoredBytes: 268_435_456,
+  ...PUBLIC_LIMITS,
 });
 const DEFAULT_TRUSTED_PROXIES = ['127.0.0.1', '::1', '::ffff:127.0.0.1'];
 const LIMITER_KEYS = 50_000, EXPORT_CHARS = 90_000, MINE_THREADS = 30, MINE_REPLIES = 20, MINE_CHARS = 500_000, REPLIES_PER_COMMENT = 20, REPLIES_TOTAL = 200_000;
@@ -49,7 +51,7 @@ END;
 INSERT INTO _board_runtime_meta(key, value) VALUES ('comments_schema','2') ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 `;
 
-/** Loads the durable deployment identity and brings the comment tables to schema 2 in one transaction. */
+/** Loads the durable deployment identity and brings the comment tables to schema 3 in one transaction. */
 export async function initializeComments(app, db) {
   const file = await noSymlinks(path.join(app.dataDir, 'identity.json'));
   if (!(await exists(file))) await writeJson(file, { deploymentId: randomUUID(), owner: app.owner.owner });
@@ -65,13 +67,15 @@ export async function initializeComments(app, db) {
     }
     const marker = db.prepare("SELECT value FROM _board_runtime_meta WHERE key='comments_schema'").get()?.value ?? '1';
     if (!/^[1-9]\d{0,8}$/.test(marker)) throw new Error(`Invalid comments_schema marker: ${JSON.stringify(marker)}`);
-    if (+marker > 2) throw new Error("This database was upgraded by a newer Board runtime; update this app's runtime before starting.");
+    if (+marker > 3) throw new Error("This database was upgraded by a newer Board runtime; update this app's runtime before starting.");
     if (+marker === 1) {
       const columns = new Set(db.prepare("SELECT name FROM pragma_table_info('_board_comments')").all().map(row => row.name));
       if (!columns.has('visitor_hash')) db.exec('ALTER TABLE _board_comments ADD COLUMN visitor_hash TEXT');
       if (!columns.has('page_key')) db.exec('ALTER TABLE _board_comments ADD COLUMN page_key TEXT');
       db.exec(COMMENTS_V2);
     }
+    // Schema 3 (public threads): every existing row stays a private, visible, open root.
+    if (+marker <= 2) migrateToV3(db);
     db.exec('COMMIT');
   } catch (error) { try { db.exec('ROLLBACK'); } catch {} throw error; }
   return identity.deploymentId;
@@ -90,7 +94,7 @@ export function commentSettings(config) {
     if (!Object.hasOwn(COMMENT_LIMITS, key)) throw new Error(`Unknown comments.limits key: ${key}`);
     if (!Number.isSafeInteger(value) || value < 1 || value > COMMENT_LIMITS[key] * 10) throw new Error(`comments.limits.${key} must be a positive integer of at most ${COMMENT_LIMITS[key] * 10}`);
   }
-  return { enabled: Boolean(comments.enabled), trusted: new Set(proxies.map(exactAddress)), limits: Object.freeze({ ...COMMENT_LIMITS, ...limits }) };
+  return { enabled: Boolean(comments.enabled), publicThreads: publicThreadsSetting(comments), trusted: new Set(proxies.map(exactAddress)), limits: Object.freeze({ ...COMMENT_LIMITS, ...limits }) };
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +193,7 @@ export function createCommentLimiter(limits, { now = Date.now, maxKeys = LIMITER
     postGlobalMinute: new Windows(MINUTE, limits.postGlobalMinute, false), postGlobalHour: new Windows(HOUR, limits.postGlobalHour, false),
     postVisitorMinute: new Windows(MINUTE, limits.postPerVisitorMinute, true), postVisitorHour: new Windows(HOUR, limits.postPerVisitorHour, true),
     mineIp: new Windows(MINUTE, limits.minePerIpMinute, false), mineVisitor: new Windows(MINUTE, limits.minePerVisitorMinute, true),
+    list: new Windows(MINUTE, limits.listPerIpMinute ?? COMMENT_LIMITS.listPerIpMinute, false), publicGlobalHour: new Windows(HOUR, limits.publicPostsGlobalHour ?? COMMENT_LIMITS.publicPostsGlobalHour, false),
   };
   let swept = Math.floor(now() / MINUTE);
   const clock = () => {
@@ -215,6 +220,10 @@ export function createCommentLimiter(limits, { now = Date.now, maxKeys = LIMITER
     checkPost: (ips, visitor) => check(post(ips, visitor), clock()),
     commitPost: (ips, visitor) => hit(post(ips, visitor), clock()),
     mine: (ips, visitor) => enforce([...each(windows.mineIp, ips), [windows.mineVisitor, visitor]]),
+    // The public listing counts only toward its own per-address window, never toward requestsPerIpMinute.
+    list: ips => enforce(each(windows.list, ips)),
+    checkPublic: () => check([[windows.publicGlobalHour, '*']], clock()),
+    commitPublic: () => hit([[windows.publicGlobalHour, '*']], clock()),
   };
 }
 
@@ -258,13 +267,18 @@ export function anchorProblem(anchor) {
 
 /** Validates and normalizes a visitor comment body; throws 400 invalid_input. Visitor posts allow 2000 characters. */
 export function normalizeCommentInput(body, { visitor = false } = {}) {
-  if (!isObject(body) || Object.keys(body).some(key => !['text', 'authorName', 'pageUrl', 'anchor'].includes(key))) throw invalid('Expected text, optional authorName, pageUrl and anchor');
+  if (!isObject(body) || Object.keys(body).some(key => !['text', 'authorName', 'pageUrl', 'anchor', 'visibility', 'parentId'].includes(key))) throw invalid('Expected text, optional authorName, pageUrl, anchor, visibility and parentId');
   const max = visitor ? 2000 : 8000, text = typeof body.text === 'string' ? body.text.trim() : '';
   if (!text || text.length > max) throw invalid(`Comment text must contain 1–${max} characters`);
   const input = { text };
   if (body.authorName !== undefined) { const name = nameRule(body.authorName); if (name.error) throw invalid(name.error); if (name.value) input.authorName = name.value; }
   if (body.pageUrl !== undefined) { const url = urlRule(body.pageUrl); if (url.error) throw invalid(url.error); input.pageUrl = url.value; }
   if (body.anchor !== undefined) { const problem = anchorProblem(body.anchor); if (problem) throw invalid(problem); input.anchor = body.anchor; }
+  // Public comments (schema 3): the keys are kept only when sent, so a private POST hashes exactly as before.
+  const problem = publicInputProblem(body, input, visitor);
+  if (problem) throw invalid(problem);
+  if (body.visibility !== undefined) input.visibility = body.visibility;
+  if (body.parentId !== undefined) input.parentId = body.parentId;
   return input;
 }
 
@@ -293,7 +307,7 @@ function legacyAnchor(anchor) {
 // Routes under /_board/comments.
 
 export function createComments({ app, db, deploymentId, settings, now = Date.now, maxKeys }) {
-  const { enabled, trusted, limits } = settings;
+  const { enabled, trusted, limits } = settings, publicThreads = settings.publicThreads !== false;
   const appKey = digest(`board-app-key\0${app.owner.owner}`).slice(0, 16);
   const limiter = createCommentLimiter(limits, { now, maxKeys });
   const client = request => resolveClient(request, trusted);
@@ -301,13 +315,15 @@ export function createComments({ app, db, deploymentId, settings, now = Date.now
   const isPath = pathname => pathname === '/_board/comments' || pathname.startsWith('/_board/comments/');
   const sql = {
     byIntent: db.prepare('SELECT * FROM _board_comments WHERE intent_key = ?'),
-    byExternalId: db.prepare('SELECT seq FROM _board_comments WHERE external_id = ?'),
+    byExternalId: db.prepare('SELECT seq, visibility, parent_seq, page_key FROM _board_comments WHERE external_id = ?'),
     page: db.prepare('SELECT * FROM _board_comments WHERE seq > ? ORDER BY seq LIMIT ?'),
-    pageToday: db.prepare('SELECT count(*) AS n FROM _board_comments WHERE page_key = ? AND created_at >= ?'),
+    // Hidden rows do not count, so hiding spam frees the page's daily allowance (public-threads §12 A3).
+    pageToday: db.prepare('SELECT count(*) AS n FROM _board_comments WHERE page_key = ? AND created_at >= ? AND hidden = 0'),
     maxSeq: db.prepare('SELECT max(seq) AS seq FROM _board_comments'),
     insert: db.prepare('INSERT INTO _board_comments (external_id,intent_key,payload_hash,text,author_name,page_url,anchor_json,created_at,visitor_hash,page_key) VALUES (?,?,?,?,?,?,?,?,?,?)'),
-    mine: db.prepare('SELECT * FROM _board_comments WHERE visitor_hash = ? ORDER BY seq DESC LIMIT ?'),
-    minePage: db.prepare('SELECT * FROM _board_comments WHERE visitor_hash = ? AND page_key = ? ORDER BY seq DESC LIMIT ?'),
+    // A visitor's own rows: private comments and their public thread roots (not withdrawn); never other visitors' replies.
+    mine: db.prepare("SELECT * FROM _board_comments WHERE visitor_hash = ? AND parent_seq IS NULL AND (visibility IS NULL OR hidden_by IS NOT 'author') ORDER BY seq DESC LIMIT ?"),
+    minePage: db.prepare("SELECT * FROM _board_comments WHERE visitor_hash = ? AND page_key = ? AND parent_seq IS NULL AND (visibility IS NULL OR hidden_by IS NOT 'author') ORDER BY seq DESC LIMIT ?"),
     replies: db.prepare('SELECT reply_id, text, author_kind, created_at FROM _board_comment_replies WHERE comment_seq = ? ORDER BY seq LIMIT ?'),
     replyByIntent: db.prepare('SELECT r.*, c.external_id FROM _board_comment_replies r JOIN _board_comments c ON c.seq = r.comment_seq WHERE r.intent_key = ?'),
     replyCount: db.prepare('SELECT count(*) AS n FROM _board_comment_replies WHERE comment_seq = ?'),
@@ -340,17 +356,21 @@ export function createComments({ app, db, deploymentId, settings, now = Date.now
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw httpError(401, 'A valid comment-export token is required', 'unauthorized');
   }
   const isOwner = request => { try { owner(request); return true; } catch { return false; } };
+  const threads = createPublicThreads({ app, db, deploymentId, appKey, enabled, publicThreads, limits, now, tools: { httpError, invalid, owner, visitorHash, urlRule, pageKeyOf, storedComment, limiter, ipOf, body } });
 
   async function create({ request, readJson, json }, ip) {
     const key = intentKey(request), visitor = visitorHash(request, false);
     const raw = await body(readJson), input = normalizeCommentInput(raw, { visitor: visitor !== null }), hash = digest(JSON.stringify(input));
+    if (input.visibility !== undefined && visitor === null) throw httpError(400, 'Public comments need X-Board-Visitor', 'visitor_invalid');
     const previous = sql.byIntent.get(key);
     if (previous) {
-      const samePayload = previous.payload_hash === hash || previous.payload_hash === digest(JSON.stringify(legacyInput(raw)));
+      const samePayload = previous.payload_hash === hash || input.visibility === undefined && previous.payload_hash === digest(JSON.stringify(legacyInput(raw)));
       if (!samePayload || (previous.visitor_hash ?? null) !== visitor) throw httpError(409, 'Idempotency-Key already belongs to a different comment', 'idempotency_conflict');
-      json(200, { deploymentId, comment: storedComment(previous), replayed: true }); return;
+      // A replay returns the stored row even if it was hidden since, only to the poster who holds its key and secret.
+      json(200, { deploymentId, comment: previous.visibility === 'public' ? threads.postedComment(previous) : storedComment(previous), replayed: true }); return;
     }
     limiter.checkPost(ip, visitor);
+    const admitted = input.visibility !== undefined ? threads.admitPost(input, raw, visitor) : null;
     const time = now(), pageKey = input.pageUrl ? pageKeyOf(input.pageUrl) : null;
     if (pageKey !== null) {
       const day = Math.floor(time / DAY) * DAY;
@@ -361,6 +381,10 @@ export function createComments({ app, db, deploymentId, settings, now = Date.now
     if (metaNumber('comments_bytes') + bytes > limits.maxStoredBytes) throw httpError(507, 'Comment storage is full', 'storage_full');
     limiter.commitPost(ip, visitor);
     const externalId = randomUUID(), createdAt = new Date(time).toISOString();
+    if (admitted) {
+      const tag = threads.insertPost({ externalId, key, hash, input, anchorJson, createdAt, visitor, pageKey, parent: admitted.parent });
+      json(201, { deploymentId, comment: { externalId, ...input, createdAt, tag }, replayed: false }); return;
+    }
     sql.insert.run(externalId, key, hash, input.text, input.authorName ?? null, input.pageUrl ?? null, anchorJson, createdAt, visitor, pageKey);
     json(201, { deploymentId, comment: { externalId, ...input, createdAt }, replayed: false });
   }
@@ -369,20 +393,23 @@ export function createComments({ app, db, deploymentId, settings, now = Date.now
     owner(request);
     const cursor = url.searchParams.get('cursor') ?? '0', limitValue = url.searchParams.get('limit') ?? '50';
     if (!/^(0|[1-9]\d{0,14})$/.test(cursor) || !/^\d{1,3}$/.test(limitValue) || +limitValue < 1 || +limitValue > 100) throw invalid('Invalid cursor or limit');
-    const v2 = url.searchParams.get('format') === '2';
+    const v2 = url.searchParams.get('format') === '2', withThreads = v2 && url.searchParams.get('threads') === '1';
     // The cursor a plugin sends is what it has committed: it acknowledges those comments as received.
     const acknowledged = Math.min(+cursor, sql.maxSeq.get().seq ?? 0);
     sql.acknowledge.run(String(acknowledged), acknowledged);
     const comments = []; let characters = 0, nextCursor = cursor;
     for (const row of sql.page.all(+cursor, +limitValue)) {
+      // Without threads=1 visitor replies are skipped and the cursor still moves past them, so an older plugin
+      // sees public roots as ordinary comments and never a reply without its thread.
+      if (!withThreads && row.parent_seq !== null) { nextCursor = String(row.seq); continue; }
       const comment = storedComment(row);
-      const item = v2 ? { ...comment, ...(row.visitor_hash ? { visitorTag: digest(`tag\0${row.visitor_hash}`).slice(0, 12) } : {}) }
+      const item = v2 ? { ...comment, ...(row.visitor_hash ? { visitorTag: digest(`tag\0${row.visitor_hash}`).slice(0, 12) } : {}), ...(withThreads ? threads.exportExtras(row) : {}) }
         : (({ anchor, ...rest }) => { const legacy = anchor && legacyAnchor(anchor); return legacy ? { ...rest, anchor: legacy } : rest; })(comment);
       const size = JSON.stringify(item).length;
       if (comments.length && characters + size > EXPORT_CHARS) break;
       comments.push(item); characters += size; nextCursor = String(row.seq);
     }
-    json(200, v2 ? { deploymentId, format: 2, cursor, nextCursor, comments } : { deploymentId, cursor, nextCursor, comments });
+    json(200, v2 ? { deploymentId, format: 2, ...(withThreads ? { threads: 1 } : {}), cursor, nextCursor, comments } : { deploymentId, cursor, nextCursor, comments });
   }
 
   function mine({ request, url, json }, ip) {
@@ -400,6 +427,7 @@ export function createComments({ app, db, deploymentId, settings, now = Date.now
         id: comment.externalId, text: comment.text, ...(comment.authorName ? { authorName: comment.authorName } : {}), createdAt: comment.createdAt,
         ...(comment.pageUrl ? { pageUrl: comment.pageUrl } : {}), ...(comment.anchor ? { anchor: comment.anchor } : {}),
         status: replies.length ? 'replied' : row.seq <= acknowledged ? 'received' : 'sent', replies,
+        ...(row.visibility === 'public' ? { visibility: 'public' } : {}),
       };
       const size = JSON.stringify(thread).length;
       if (threads.length && characters + size > MINE_CHARS) break;
@@ -427,10 +455,14 @@ export function createComments({ app, db, deploymentId, settings, now = Date.now
     }
     const comment = sql.byExternalId.get(externalId);
     if (!comment) throw httpError(404, 'Unknown comment', 'comment_not_found');
-    if (sql.replyCount.get(comment.seq).n >= REPLIES_PER_COMMENT) throw httpError(409, `A comment can have at most ${REPLIES_PER_COMMENT} replies`, 'reply_limit');
+    // At most 20 owner and assistant replies per thread: the root plus its visitor replies (a private comment alone).
+    const target = threads.ownerReplyTarget(comment);
+    if (target.count >= REPLIES_PER_COMMENT) throw httpError(409, `A thread can have at most ${REPLIES_PER_COMMENT} owner replies`, 'reply_limit');
     if (sql.replyTotal.get().n >= REPLIES_TOTAL) throw httpError(507, 'Reply storage is full', 'storage_full');
     const row = { reply_id: randomUUID(), external_id: externalId, text, author_kind: authorKind, created_at: new Date(now()).toISOString(), intent_key: key };
-    sql.insertReply.run(row.reply_id, comment.seq, key, hash, text, authorKind, row.created_at);
+    db.exec('BEGIN IMMEDIATE');
+    try { sql.insertReply.run(row.reply_id, comment.seq, key, hash, text, authorKind, row.created_at); target.bump?.(); db.exec('COMMIT'); }
+    catch (error) { try { db.exec('ROLLBACK'); } catch {} throw error; }
     json(201, { deploymentId, replayed: false, reply: project(row) });
   }
 
@@ -440,10 +472,21 @@ export function createComments({ app, db, deploymentId, settings, now = Date.now
   async function route(context) {
     const { request, response, url } = context, { pathname } = url, method = request.method;
     if (!isPath(pathname)) return false;
-    if (request.headers.origin) response.setHeader('access-control-expose-headers', 'Retry-After');
+    if (request.headers.origin) response.setHeader('access-control-expose-headers', 'Retry-After, ETag');
     if (!enabled) throw httpError(404, 'Comments are disabled', 'comments_disabled');
-    const replies = /^\/_board\/comments\/([^/]+)\/replies$/.exec(pathname);
+    // The public listing counts only toward its own per-address window (public-threads §5.2.4).
+    if (pathname === '/_board/comments/public') { if (method !== 'GET') throw httpError(405, 'Use GET', 'method_not_allowed'); threads.listing(context); return true; }
     const ip = ipOf(request);
+    const release = /^\/_board\/comments\/public-releases\/([^/]+)$/.exec(pathname), state = /^\/_board\/comments\/([^/]+)\/state$/.exec(pathname);
+    const ownerRoute = { '/_board/comments/public/moderation': ['GET', threads.moderation], '/_board/comments/public/pause': ['POST', threads.pause], '/_board/comments/public/hide-visitor': ['POST', threads.hideVisitor] }[pathname];
+    if (release || state || ownerRoute) {
+      if (!isOwner(request)) limiter.request(ip);
+      if (release) { await threads.releases(context, release[1], method); return true; }
+      if (state) { if (method !== 'POST') throw httpError(405, 'Use POST', 'method_not_allowed'); await threads.state(context, state[1]); return true; }
+      if (method !== ownerRoute[0]) throw httpError(405, `Use ${ownerRoute[0]}`, 'method_not_allowed');
+      await ownerRoute[1](context); return true;
+    }
+    const replies = /^\/_board\/comments\/([^/]+)\/replies$/.exec(pathname);
     // Owner routes skip every visitor limit only with the host-held token; any other request to them
     // (no token, a wrong one, export disabled) counts toward the per-address ceiling first.
     if (pathname === '/_board/comments' && method === 'GET' || replies) {
@@ -455,8 +498,10 @@ export function createComments({ app, db, deploymentId, settings, now = Date.now
     limiter.request(ip);
     if (pathname === '/_board/comments') { if (method !== 'POST') throw httpError(405, 'Use GET or POST', 'method_not_allowed'); await create(context, ip); return true; }
     if (pathname === '/_board/comments/mine') { if (method !== 'GET') throw httpError(405, 'Use GET', 'method_not_allowed'); mine(context, ip); return true; }
+    const withdraw = /^\/_board\/comments\/([^/]+)\/withdraw$/.exec(pathname);
+    if (withdraw) { if (method !== 'POST') throw httpError(405, 'Use POST', 'method_not_allowed'); await threads.withdraw(context, withdraw[1], ip); return true; }
     throw httpError(404, 'Not found', 'not_found');
   }
 
-  return { appKey, enabled, limiter, client, preflight, route };
+  return { appKey, enabled, publicThreads: enabled && publicThreads, threads, limiter, client, preflight, route };
 }
