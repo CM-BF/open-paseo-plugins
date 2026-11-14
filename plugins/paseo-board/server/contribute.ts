@@ -31,8 +31,8 @@ export interface ContributeOptions {
   rootDir?: string; runtimeDir?: string; home?: string; linkSkills?: boolean; eventTransport?: { publish(change: BoardChange): void }; onService?: (service: BoardService) => void;
   /** Local harnesses only: the inbox coordinator's clock and limits (scripts/page-comments-e2e.mjs). */
   inboxAutomation?: Pick<InboxAutomationOptions, "clock" | "limits">;
-  /** Local harnesses only: the sealed runner's process launcher (a recorded stream instead of `claude`). */
-  inboxRunner?: { exec?: StreamExec; env?: Readonly<Record<string, string | undefined>> };
+  /** Local harnesses only: the sealed runner's process launcher (a recorded stream instead of `claude`), env and temp root. */
+  inboxRunner?: { exec?: StreamExec; env?: Readonly<Record<string, string | undefined>>; tmpRoot?: string };
 }
 
 export function contributeServer(server: PluginServerContext, options: ContributeOptions = {}) {
