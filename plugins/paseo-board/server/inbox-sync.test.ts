@@ -299,8 +299,14 @@ describe("contract export and reply outbox against a fake backend (DESIGN §11.5
     const settled = Promise.allSettled([reply(comment), reply(comment), reply(comment, "reply-other", "另一条")]);
     await new Promise(resolve => setTimeout(resolve, 100)); release();
     const results = await settled;
-    expect(results.slice(0, 2).map(result => result.status === "fulfilled" && result.value.status)).toEqual(["published", "published"]);
-    expect(results[2]).toMatchObject({ status: "rejected", reason: { code: "revision_conflict" } });
+    // Whichever eventId takes the per-comment lease first wins; its callers all see the one published reply.
+    const sameStatus = results.slice(0, 2).map(result => result.status);
+    expect(sameStatus[0]).toBe(sameStatus[1]);
+    const winners = results.filter(result => result.status === "fulfilled");
+    expect(winners.length).toBeGreaterThan(0);
+    for (const result of winners) expect(result).toMatchObject({ value: { status: "published" } });
+    for (const result of results.filter(item => item.status === "rejected")) expect(result).toMatchObject({ reason: { code: "revision_conflict" } });
+    expect(winners.length === 2 ? results[2].status : results[0].status).toBe("rejected");
     expect(posts()).toHaveLength(1);
   });
 
