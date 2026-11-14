@@ -596,5 +596,45 @@ export async function runPublicChecks({ assert, command, frameCommand, evaluate,
   assert.equal((await ui()).toggle.includes('新回复'), false, `still read after a reload: ${(await ui()).toggle}`);
   await viewport(1280, 800);
   check('a reply that arrives in the open card is read there: no 新 chip, and 评论 n shows no new reply after closing or reloading');
+
+  // 29. Review fix: a reply that arrives in the open card while it has the focus (as right after sending) leaves the page
+  // where the reader left it. It jumped to the top: the rebuilt card got the focus back before it was laid out, and the
+  // rail scrolled to bring that unplaced card into view.
+  const cardBox = id => evaluate(`(()=>{const n=document.querySelector('[data-pbc=card][data-thread="${id}"]');if(!n)return null;const r=n.getBoundingClientRect();return{top:Math.round(r.top),bottom:Math.round(r.bottom),fresh:Boolean(n.querySelector('.pbc-chip[data-kind=new]'))}})()`);
+  const pollNow = async () => { await sleep(3100); await evaluate("window.dispatchEvent(new Event('focus'))"); };
+  await open(pagePath);
+  await until(async () => (await ui()).cards.some(card => card.id === t1.externalId), 'the cards for the focus check');
+  await clickOuter(`[data-pbc=card][data-thread="${t1.externalId}"] .pbc-text`);
+  await until(async () => (await ui()).cards.find(card => card.id === t1.externalId)?.active && await evaluate('document.activeElement?.getAttribute(\'data-thread\')') === t1.externalId, 'the open card to have the focus');
+  await wheel(150); await sleep(700);
+  const kept = await frame('scrollY');
+  assert.ok(kept > 50, `the page scrolled: ${kept}`);
+  await seed(backend, pageUrl, releaseId, SECRETS.c, { text: '卡片有焦点时来的回复', parentId: t1.externalId, anchor: {} }, 'focused-card-reply');
+  await pollNow();
+  await until(async () => (await ui()).cards.find(card => card.id === t1.externalId)?.text.includes('卡片有焦点时来的回复'), 'the reply in the focused card', 12000);
+  await sleep(600);
+  assert.equal(await frame('scrollY'), kept, 'the page did not move');
+  assert.equal(await evaluate("document.activeElement?.getAttribute('data-thread')"), t1.externalId, 'the card keeps the focus');
+  check('a reply arriving in the focused open card neither scrolls the page nor moves the focus');
+
+  // 30. Review fix: a reply that arrives while the open card is scrolled out of view leaves it beside its passage. A
+  // re-layout used to pin it into the view, so it sat far from its passage once the reader scrolled back. The reply
+  // counts as new until the card is back on screen.
+  for (let i = 0; i < 8; i++) { await wheel(150); await sleep(80); }
+  await sleep(700);
+  assert.ok((await cardBox(t1.externalId)).bottom < 0, 'the open card scrolled away with its passage');
+  await seed(backend, pageUrl, releaseId, SECRETS.c, { text: '读者滚走以后来的回复', parentId: t1.externalId, anchor: {} }, 'offscreen-card-reply');
+  await pollNow();
+  await until(async () => (await ui()).cards.find(card => card.id === t1.externalId)?.text.includes('读者滚走以后来的回复'), 'the reply in the scrolled-away card', 12000);
+  await sleep(600);
+  const away = await cardBox(t1.externalId);
+  assert.ok(away.bottom < 0 && away.fresh, `the card stays beside its passage, off screen, and marks the reply new: ${JSON.stringify(away)}`);
+  await frame('scrollTo(0,0),true');
+  await until(async () => !(await cardBox(t1.externalId)).fresh, 'the reply to be read once the card is back on screen');
+  await sleep(300);
+  const back = await cardBox(t1.externalId), lead = await passage('#lead', '第二步');
+  // Beside it: the card spans the passage's line (a card taller than the room below its passage moves up to fit).
+  assert.ok(back.top <= lead.top && back.bottom >= lead.bottom && back.top >= 0 && back.bottom <= 800, `the card is beside its passage again: ${JSON.stringify({ card: back, passage: lead })}`);
+  check('a reply arriving while the open card is scrolled away keeps the card beside its passage and counts as new until the card is seen');
   return { ids: { t1, t2, t3: t3b, t4, r1 } };
 }
