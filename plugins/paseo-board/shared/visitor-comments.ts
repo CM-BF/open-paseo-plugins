@@ -288,7 +288,7 @@ export const COMMENTS_SHELL = String.raw`
     '.pbc input,.pbc textarea{display:block;width:100%;padding:8px 10px;border:1px solid #c7c7cc;border-radius:8px;background:#fff;color:#1d1d1f;font-size:16px}'+
     '.pbc textarea{min-height:92px;max-height:40vh;resize:vertical}.pbc-small{font-size:12px;color:#6e6e73}'+
     '.pbc-status{font-size:13px;color:#b42318;white-space:pre-wrap}.pbc-status[data-tone=info]{color:#3a3a3c}.pbc-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}'+
-    '.pbc-btn{padding:6px 14px;border-radius:8px;border:1px solid #c7c7cc;background:#fff;font-weight:500}.pbc-btn:disabled{opacity:.45;cursor:default}'+
+    '.pbc-btn{padding:6px 14px;border-radius:8px;border:1px solid #c7c7cc;background:#fff;font-weight:500}.pbc-btn:disabled,.pbc-btn[aria-disabled=true]{opacity:.45;cursor:default}'+
     '.pbc-primary{background:#2f6feb;border-color:#2f6feb;color:#fff}.pbc-link{padding:2px 0;border:0;background:none;color:#2f6feb;font-size:13px}'+
     '.pbc-badge{left:12px;bottom:12px;padding:7px 14px;border-radius:999px;border:1px solid rgba(0,0,0,.14);background:#fff;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.16)}'+
     '.pbc-dot{display:inline-block;width:8px;height:8px;margin-left:6px;border-radius:4px;background:#f59e0b;vertical-align:middle}'+
@@ -379,8 +379,8 @@ export const COMMENTS_SHELL = String.raw`
       if(!(await checkHealth())){setProblem(TEXT.unavailable);updateComposer();return}
       const r=await request('/_board/comments/mine?page='+encodeURIComponent(pageUrl),{headers:{'X-Board-Visitor':visitor.secret}});
       if(r.status===200){applyMine(r.body);failures=0;setProblem('')}
-      else{failures++;const wait=retryAfter(r.headers);setProblem(r.status===429?TEXT.busy:TEXT.poll);delay=backoff();if((r.status===429||r.status===503)&&wait){delay=Math.min(wait,600)*1000;notBefore=performance.now()+delay}}
-    }catch(error){failures++;setProblem(failureText(error));delay=backoff()}
+      else{failures++;const wait=retryAfter(r.headers);setProblem(r.status===429?TEXT.busy:TEXT.poll);delay=(r.status===429||r.status===503)&&wait?Math.min(wait,600)*1000:backoff();notBefore=performance.now()+delay}
+    }catch(error){failures++;setProblem(failureText(error));delay=backoff();notBefore=performance.now()+delay}
     finally{inFlight=false}
     schedule(delay);
   };
@@ -436,8 +436,9 @@ export const COMMENTS_SHELL = String.raw`
   floatButton.addEventListener('click',event=>{if(trusted(event)&&target)openComposer(target,'select',true)});
   const updateComposer=()=>{
     if(!composer)return;const c=composer,blocked=preview||health===false;
-    c.send.disabled=blocked||c.busy;c.send.textContent=c.busy?TEXT.sending:c.retry?'重试':'发送';
-    c.cancel.disabled=c.busy;c.textarea.readOnly=Boolean(c.item);c.name.readOnly=Boolean(c.item);
+    // Busy buttons stay focusable (aria-disabled), so focus never falls back to the page body mid-send.
+    c.send.disabled=blocked;c.send.setAttribute('aria-disabled',blocked||c.busy?'true':'false');c.send.textContent=c.busy?TEXT.sending:c.retry?'重试':'发送';
+    c.cancel.setAttribute('aria-disabled',c.busy?'true':'false');c.textarea.readOnly=Boolean(c.item);c.name.readOnly=Boolean(c.item);
     const notice=preview?TEXT.preview:health===false?TEXT.unavailable:'';
     c.notice.textContent=notice||(storageNotice?TEXT.storage:'');c.notice.hidden=!c.notice.textContent;
     c.status.hidden=!c.status.textContent;
@@ -495,7 +496,7 @@ export const COMMENTS_SHELL = String.raw`
     });
     layer.appendChild(node);updateComposer();placeComposer();
     if(storageNotice)storageNotice=false;
-    requestAnimationFrame(()=>{placeComposer();if(composer&&composer.node===node)textarea.focus()});
+    textarea.focus({preventScroll:true});requestAnimationFrame(()=>placeComposer());
   };
   // Thread panel: the visitor's own threads on this page, newest first.
   const panel=el('div',{class:'pbc pbc-card pbc-panel','data-pbc':'panel',role:'dialog','aria-label':'我的评论',hidden:true});
@@ -551,6 +552,12 @@ export const COMMENTS_SHELL = String.raw`
   };
   const closePanel=returnFocus=>{if(!panelOpen)return;panelOpen=false;panel.hidden=true;forgetAsk=false;updateBadge();if(returnFocus)badge.focus()};
   panel.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();closePanel(true);return}trap(panel,event)});
+  // Esc also closes the open dialog when focus is elsewhere in the outer page (for example on the page body).
+  document.addEventListener('keydown',event=>{
+    if(event.key!=='Escape'||!event.isTrusted||event.defaultPrevented)return;
+    if(composer&&!composer.node.contains(event.target)){if(!composer.busy){event.preventDefault();closeComposer(true)}}
+    else if(panelOpen&&!panel.contains(event.target)){event.preventDefault();closePanel(true)}
+  });
   badge.addEventListener('click',event=>{if(!trusted(event))return;if(panelOpen)closePanel(true);else openPanel(null)});
   const forget=()=>{
     try{if(local)local.removeItem(visitorKey)}catch{}
