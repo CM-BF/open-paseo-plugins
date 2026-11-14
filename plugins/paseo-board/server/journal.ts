@@ -29,6 +29,7 @@ export interface HistorySnapshot {
   digest: string;
   text?: string;
 }
+export const INBOX_DELIVERIES_KEPT = 50;
 /** States in which a delivery may still create or send; only these keep snapshot text. */
 export const SENDABLE_STATES: ReadonlySet<Delivery["state"]> = new Set(["saved", "creating", "sending"]);
 
@@ -37,8 +38,10 @@ export interface Delivery {
   interactionId: string;
   ownerAgentId: string;
   targetAgentId?: string;
-  kind: "question" | "change" | "fork" | "return" | "reply";
+  kind: "question" | "change" | "fork" | "return" | "reply" | "inbox";
   prompt: string;
+  /** Interaction-less wake of the Board's comment assistant (DESIGN §11.6). The prompt holds IDs only. */
+  inbox?: { expectedCreatedAt: string; commentIds: string[]; firstSeq: number; lastSeq: number };
   images?: Array<{ data: string; mimeType: string }>;
   input?: InteractInput;
   /** Original user request is compared on retry; input contains the frozen resolved kind/anchor. */
@@ -195,6 +198,17 @@ export class ServiceJournal {
   /** Snapshot text is only needed until the first send; delivered, unknown, failed and settled are never resent. */
   private compact(): void {
     for (const delivery of Object.values(this.data.deliveries)) if (delivery.history?.text !== undefined && !SENDABLE_STATES.has(delivery.state)) delete delivery.history.text;
+    // Keep at most INBOX_DELIVERIES_KEPT inbox wakes per Board; only terminal ones are dropped, oldest first.
+    const wakes = new Map<string, string[]>();
+    for (const [key, delivery] of Object.entries(this.data.deliveries)) if (delivery.kind === "inbox") wakes.set(delivery.boardId, [...(wakes.get(delivery.boardId) ?? []), key]);
+    for (const keys of wakes.values()) {
+      let excess = keys.length - INBOX_DELIVERIES_KEPT;
+      for (const key of keys) {
+        if (excess <= 0) break;
+        const delivery = this.data.deliveries[key];
+        if (delivery.outcome || ["failed", "settled", "unknown"].includes(delivery.state) && !delivery.awaitingTurn) { delete this.data.deliveries[key]; excess--; }
+      }
+    }
   }
   private async flush(): Promise<void> {
     const temporary = `${this.file}.${randomUUID()}.tmp`;
