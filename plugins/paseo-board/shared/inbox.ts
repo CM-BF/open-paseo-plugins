@@ -80,8 +80,12 @@ export const InboxPublicRowSchema = z.object({
   hidden: z.literal(true).optional(), resolved: z.literal(true).optional(), withdrawn: z.literal(true).optional(),
 }).strict();
 export type InboxPublicRow = z.infer<typeof InboxPublicRowSchema>;
-/** Names other visitors would read: no owner or assistant wording, no label punctuation, no invisible formatting (§12 A5). */
-export const FORBIDDEN_PUBLIC_NAME = /作者|AI\s*助手|访客|·|\p{Cf}/u;
+/**
+ * Names other visitors would read may not contain the page's labels (作者, AI 助手, 访客), compared after NFKC with spaces
+ * removed and case folded ("作 者", "ＡＩ助手" and "訪客" count too), nor invisible formatting characters. Other punctuation
+ * is fine (迈克尔·杰克逊). The same rule as backend/threads.mjs forbiddenPublicName (§12 A5, review fix).
+ */
+export const forbiddenPublicName = (name: string): boolean => /\p{Cf}/u.test(name) || /作者|ai助手|访客|訪客/.test(name.normalize("NFKC").replace(/[\s\p{Z}\p{Cf}]/gu, "").toLowerCase());
 
 const EXTERNAL_KEYS = ["externalId", "text", "authorName", "createdAt", "pageUrl", "anchor", "visitorTag"] as const;
 const PUBLIC_KEYS = ["visibility", "parentId", "publicTag", "hidden", "resolved", "withdrawn"] as const;
@@ -133,7 +137,7 @@ export function normalizeExternalComment(row: unknown, index: number): InboxNorm
     extension = { externalId, visibility: "public", ...(typeof value.parentId === "string" ? { parentId: value.parentId } : {}) };
     if (value.publicTag !== undefined) { if (typeof value.publicTag === "string" && VISITOR_TAG.test(value.publicTag)) extension.publicTag = value.publicTag; else dropped.push("publicTag"); }
     for (const key of ["hidden", "resolved", "withdrawn"] as const) if (value[key] !== undefined) { if (value[key] === true) extension[key] = true; else dropped.push(key); }
-    if (comment.authorName !== undefined && FORBIDDEN_PUBLIC_NAME.test(comment.authorName)) { delete comment.authorName; dropped.push("authorName"); }
+    if (comment.authorName !== undefined && forbiddenPublicName(comment.authorName)) { delete comment.authorName; dropped.push("authorName"); }
   } else for (const key of PUBLIC_KEYS) if (key !== "parentId" && value[key] !== undefined) dropped.push(key);
   for (const key of Object.keys(value)) if (!(EXTERNAL_KEYS as readonly string[]).includes(key) && !(PUBLIC_KEYS as readonly string[]).includes(key)) dropped.push(key);
   return { ok: true, comment, dropped, ...(extension ? { public: extension } : {}) };

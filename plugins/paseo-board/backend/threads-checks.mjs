@@ -15,7 +15,7 @@ import { loadApp, readJson, digest } from './files.mjs';
 import { openDatabase } from './storage.mjs';
 import { startApp } from './server.mjs';
 import { COMMENT_LIMITS, commentSettings } from './comments.mjs';
-import { isPublicSelector } from './threads.mjs';
+import { forbiddenPublicName, isPublicSelector } from './threads.mjs';
 import { LegacyInboxPageSchema } from '../scripts/fixtures/legacy-inbox-page.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -100,7 +100,7 @@ test('public posting needs a registered release, an allowed page origin, the app
   assert.equal((await register(base, RELEASE_B)).status, 200);
   assert.equal((await post(base, V.a, root('已登记', { anchor: { quote: '第二步', releaseId: RELEASE_B } }))).status, 201);
   const unregistered = await register(base, RELEASE_B, 'DELETE');
-  assert.deepEqual(await unregistered.json(), { deploymentId: (await (await fetch(`${base}/_board/health`)).json()).deploymentId, releaseId: RELEASE_B, registered: false, changed: true });
+  assert.deepEqual(await unregistered.json(), { deploymentId: (await (await fetch(`${base}/_board/health`)).json()).deploymentId, releaseId: RELEASE_B, registered: false, changed: true, pages: 0 });
   await failure(await listing(base, `?page=${encodeURIComponent(PAGE)}&release=${RELEASE_B}`), 404, 'public_disabled');
   // Pausing a page refuses new public posts and is visible in the listing.
   const paused = await ownerPost(base, 'pause', { page: PAGE, paused: true });
@@ -121,6 +121,73 @@ test('public posting needs a registered release, an allowed page origin, the app
   assert.equal((await post(offBase, V.a, { text: '私密照常', pageUrl: PAGE })).status, 201, 'private comments are unaffected');
   assert.throws(() => commentSettings({ comments: { publicThreads: 'yes' } }), /publicThreads must be true or false/);
   void app;
+});
+
+test('a share turned private closes its page to every release: posts and listings through another share\'s release are refused until it is registered again', async t => {
+  const { base } = await publicApp(t);
+  const PAGE_B = OTHER_PAGE, put = (release, body) => fetch(`${base}/_board/comments/public-releases/${release}`, { method: 'PUT', headers: { 'content-type': 'application/json', ...owner }, body: JSON.stringify(body) });
+  const remove = (release, body) => fetch(`${base}/_board/comments/public-releases/${release}`, { method: 'DELETE', headers: { 'content-type': 'application/json', ...owner }, body: JSON.stringify(body) });
+  assert.equal((await put(RELEASE_B, { pages: [PAGE_B] })).status, 200);
+  const onB = await created(await post(base, V.a, root('B 页的公开评论', { pageUrl: PAGE_B, anchor: { quote: '第二步', releaseId: RELEASE_B } })));
+  assert.equal((await listed(base, PAGE_B)).body.threads[0].id, onB.externalId, 'release A can read page B while it is public (not bound to a page)');
+  const before = (await listed(base, PAGE_B)).etag;
+  // The plugin withdraws B with the share's page address: page B closes for release A too.
+  const withdrawn = await remove(RELEASE_B, { pages: [PAGE_B + 'index.html'] });
+  assert.deepEqual({ ...(await withdrawn.json()), deploymentId: undefined }, { deploymentId: undefined, releaseId: RELEASE_B, registered: false, changed: true, pages: 1 });
+  await failure(await listing(base, `?page=${encodeURIComponent(PAGE_B)}&release=${RELEASE}`), 404, 'public_disabled');
+  await failure(await listing(base, `?page=${encodeURIComponent(PAGE_B)}&release=${RELEASE}`, { 'if-none-match': before }), 404, 'public_disabled');
+  await failure(await post(base, V.b, root('关了还想发', { pageUrl: PAGE_B })), 403, 'public_not_allowed');
+  await failure(await post(base, V.b, reply(onB.externalId, '关了还想回复', { pageUrl: PAGE_B })), 403, 'public_not_allowed');
+  // Other pages are unaffected; the closed page keeps its rows for the owner (moderation and export).
+  assert.equal((await post(base, V.b, root('A 页照常'))).status, 201);
+  const moderation = await (await fetch(`${base}/_board/comments/public/moderation`, { headers: owner })).json();
+  assert.ok(moderation.threads.some(item => item.id === onB.externalId));
+  // A later public release for that page reopens it; DELETE without a body still works; bad bodies are refused.
+  const RELEASE_C = `release-${'c'.repeat(64)}`;
+  assert.equal((await put(RELEASE_C, { pages: [PAGE_B] })).status, 200);
+  assert.equal((await listed(base, PAGE_B)).body.threads.length, 1);
+  assert.equal((await register(base, RELEASE_C, 'DELETE')).status, 200);
+  await failure(await put(RELEASE_C, { pages: ['nope'] }), 400, 'invalid_input');
+  await failure(await put(RELEASE_C, { pages: Array.from({ length: 9 }, (_, i) => `${ORIGIN}/p${i}/`) }), 400, 'invalid_input');
+  await failure(await put(RELEASE_C, { other: true }), 400, 'invalid_input');
+});
+
+test('public names: the page labels are refused after NFKC, spacing and case (name_not_allowed); other punctuation is fine', async t => {
+  const { base } = await publicApp(t);
+  for (const name of ['作者', '作 者', 'ＡＩ助手', 'ai 助手', '作 者的ＡＩ助手', '訪客・3f9a12', '访客小王', '小王 · 访客·3f9a1c', 'abc‏def', 'x\u{E0041}']) {
+    assert.equal(forbiddenPublicName(name), true, name);
+    await failure(await post(base, V.a, root('名字测试', { authorName: name })), 400, 'name_not_allowed');
+  }
+  for (const name of ['迈克尔·杰克逊', '列夫·托尔斯泰', 'Author', '博主', '小王']) {
+    assert.equal(forbiddenPublicName(name), false, name);
+    assert.equal((await created(await post(base, V.a, root(`名字 ${name}`, { authorName: name })))).authorName, name);
+  }
+});
+
+test('moderation listing: budgeted in UTF-8 bytes below the plugin cap; visible threads first, so hiding spam makes room', async t => {
+  const { base } = await publicApp(t, { limits: { ...RELAXED, publicPostsPerPageDay: 1000, postPerPageDay: 5000, publicRootsPerVisitorPageDay: 100 } });
+  const big = '评'.repeat(2000), quote = '论'.repeat(1000);
+  const real = await created(await post(base, V.a, root('真正需要处理的讨论')));
+  const spam = [];
+  for (let i = 0; i < 100; i++) spam.push(await created(await post(base, many(i).secret, root(big, { anchor: { quote, releaseId: RELEASE } }), many(i).headers)));
+  const first = spam[0];
+  for (let i = 0; i < 20; i++) assert.equal((await post(base, many(200 + i).secret, reply(first.externalId, big), many(200 + i).headers)).status, 201);
+  // Long page addresses fill the pages list too.
+  for (let i = 0; i < 100; i++) assert.equal((await ownerPost(base, 'pause', { page: `${ORIGIN}/${'长'.repeat(200)}/${i}/`, paused: i % 2 === 0 })).status, 200);
+  const read = async () => { const response = await fetch(`${base}/_board/comments/public/moderation`, { headers: owner }); const text = await response.text(); return { bytes: Buffer.byteLength(text), body: JSON.parse(text) }; };
+  const full = await read();
+  assert.ok(full.bytes <= 900_000, `${full.bytes} bytes`);
+  assert.equal(full.body.total, 101); assert.equal(full.body.truncated, true); assert.ok(full.body.threads.length >= 20, String(full.body.threads.length));
+  assert.ok(full.body.pages.length < 100, 'the pages list has its own budget'); assert.ok(full.body.pages.slice(0, 40).every(page => page.paused), 'paused pages come first');
+  assert.equal(full.body.threads.some(item => item.id === real.externalId), false, 'the oldest visible thread does not fit yet');
+  // Hiding the spam moves it behind what visitors can still see.
+  for (const row of spam) assert.equal((await setState(base, row.externalId, { hidden: true })).status, 200);
+  const after = await read();
+  assert.ok(after.bytes <= 900_000);
+  assert.equal(after.body.threads[0].id, real.externalId); assert.equal(after.body.threads[0].hidden, false);
+  // One thread with many long replies keeps its newest messages within its own budget.
+  const thread = after.body.threads.find(item => item.id === first.externalId) ?? (await read()).body.threads.find(item => item.id === first.externalId);
+  if (thread) assert.equal(thread.replies.length + thread.omitted, 20);
 });
 
 test('replies: parents must be visible public roots on the same page; resolved and full threads refuse; nothing reveals a hidden parent', async t => {
@@ -439,6 +506,16 @@ test('migration: a schema-2 database written by the 77ca22a runtime becomes sche
   await server.close();
   await assert.rejects(old.server.startApp(await old.files.loadApp(appRoot)), /upgraded by a newer Board runtime/);
   void app;
+});
+
+test('a schema-3 database from an earlier build of this runtime gains the page close column at the next start, keeping its data', async t => {
+  const { base, server, restart } = await publicApp(t);
+  const thread = await created(await post(base, V.a, root('早期版本写入的讨论')));
+  server.db.exec('ALTER TABLE _board_comment_pages DROP COLUMN closed');
+  const next = await restart();
+  assert.ok(next.server.db.prepare("SELECT name FROM pragma_table_info('_board_comment_pages')").all().some(row => row.name === 'closed'));
+  assert.equal(next.server.db.prepare("SELECT value FROM _board_runtime_meta WHERE key='comments_schema'").get().value, '3');
+  assert.deepEqual((await listed(next.base)).body.threads.map(item => item.id), [thread.externalId]);
 });
 
 // Opt-in: verify a read-only copy of a real backend database (prepared with `sqlite3 -readonly <db> "VACUUM INTO '<copy>'"`).

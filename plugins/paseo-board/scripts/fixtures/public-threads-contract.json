@@ -65,6 +65,31 @@
     }
    },
    {
+    "name": "public root with a transliterated name (a middle dot is fine)",
+    "body": {
+     "text": "名字里有间隔号",
+     "authorName": "迈克尔·杰克逊",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "selector": "body > main:nth-of-type(1) > p:nth-of-type(2)",
+      "quote": "写得",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "stored": {
+     "text": "名字里有间隔号",
+     "authorName": "迈克尔·杰克逊",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "selector": "body > main:nth-of-type(1) > p:nth-of-type(2)",
+      "quote": "写得",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    }
+   },
+   {
     "name": "public root with an escaped id selector",
     "body": {
      "text": "数字开头的编号",
@@ -285,7 +310,7 @@
       "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
      }
     },
-    "code": "invalid_input"
+    "code": "name_not_allowed"
    },
    {
     "name": "public name imitating a visitor label",
@@ -299,7 +324,7 @@
       "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
      }
     },
-    "code": "invalid_input"
+    "code": "name_not_allowed"
    },
    {
     "name": "public name with a right-to-left mark",
@@ -313,7 +338,49 @@
       "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
      }
     },
-    "code": "invalid_input"
+    "code": "name_not_allowed"
+   },
+   {
+    "name": "public name with spaces inside 作者",
+    "body": {
+     "text": "x",
+     "authorName": "作 者",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "name_not_allowed"
+   },
+   {
+    "name": "public name with full-width AI 助手",
+    "body": {
+     "text": "x",
+     "authorName": "ＡＩ助手",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "name_not_allowed"
+   },
+   {
+    "name": "public name with the traditional 訪客 and another dot",
+    "body": {
+     "text": "x",
+     "authorName": "訪客・3f9a12",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "visibility": "public",
+     "anchor": {
+      "quote": "x",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     }
+    },
+    "code": "name_not_allowed"
    },
    {
     "name": "public root with a selector the runtime never produces",
@@ -374,6 +441,41 @@
       "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
      },
      "visitorTag": "a1b2c3d4e5f6"
+    },
+    "public": {
+     "visibility": "public",
+     "publicTag": "0f1e2d3c4b5a"
+    }
+   },
+   {
+    "name": "a transliterated public name with a middle dot is kept",
+    "row": {
+     "externalId": "00000000-0000-4000-8000-000000000118",
+     "text": "第二步看不懂",
+     "createdAt": "2026-11-14T08:00:00.000Z",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "anchor": {
+      "selector": "#result",
+      "quote": "第二步",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     "visitorTag": "a1b2c3d4e5f6",
+     "visibility": "public",
+     "publicTag": "0f1e2d3c4b5a",
+     "authorName": "列夫·托尔斯泰"
+    },
+    "expected": {
+     "externalId": "00000000-0000-4000-8000-000000000118",
+     "text": "第二步看不懂",
+     "createdAt": "2026-11-14T08:00:00.000Z",
+     "pageUrl": "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/",
+     "anchor": {
+      "selector": "#result",
+      "quote": "第二步",
+      "releaseId": "release-0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     "visitorTag": "a1b2c3d4e5f6",
+     "authorName": "列夫·托尔斯泰"
     },
     "public": {
      "visibility": "public",
@@ -499,6 +601,22 @@
      "externalId": "00000000-0000-4000-8000-000000000107",
      "text": "x",
      "authorName": "作者",
+     "createdAt": "2026-11-14T08:03:00.000Z",
+     "visibility": "public"
+    },
+    "dropped": [
+     "authorName"
+    ],
+    "public": {
+     "visibility": "public"
+    }
+   },
+   {
+    "name": "a full-width AI 助手 name is dropped",
+    "row": {
+     "externalId": "00000000-0000-4000-8000-000000000117",
+     "text": "x",
+     "authorName": "ＡＩ 助手",
      "createdAt": "2026-11-14T08:03:00.000Z",
      "visibility": "public"
     },

@@ -14,27 +14,39 @@ export const PUBLIC_LIMITS = Object.freeze({
   listPerIpMinute: 600, visitorRepliesPerThread: 40, publicPostsPerPageDay: 100, publicPostsGlobalHour: 150, publicRootsPerVisitorPageDay: 10,
 });
 const LIST_THREADS = 100, LIST_MESSAGES = 60, LIST_BYTES = 400_000, OWNER_REPLIES_PER_THREAD = 20, RELEASES = 1_000;
-const MODERATION_THREADS = 100, MODERATION_REPLIES = 100, MODERATION_CHARS = 900_000;
+/** The owner's moderation listing stays below the plugin's 1,000,000-byte read cap, counted in UTF-8 bytes. */
+const MODERATION_THREADS = 100, MODERATION_REPLIES = 100, MODERATION_BYTES = 900_000, MODERATION_PAGE_BYTES = 150_000, MODERATION_THREAD_BYTES = 300_000;
 const CACHE_ENTRIES = 64, CACHE_BYTES = 16 * 1024 * 1024;
 const DAY = 86_400_000;
 const releasePattern = /^release-[a-f0-9]{64}$/, externalIdPattern = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/, tagPattern = /^[a-f0-9]{12}$/;
-/** Names other visitors read next to a comment: no owner or assistant wording, no label punctuation, no invisible formatting. */
-const forbiddenPublicName = /作者|AI\s*助手|访客|·|\p{Cf}/u;
+/**
+ * Names other visitors read next to a comment may not contain the page's own labels (作者, AI 助手, 访客), compared
+ * after NFKC with spaces removed and case folded, so "作 者", "ＡＩ助手" and "訪客" count too; nor invisible formatting
+ * characters. Other punctuation is fine (迈克尔·杰克逊): the page always shows the visitor's tag after the name.
+ * The plugin applies the same rule at import (shared/inbox.ts forbiddenPublicName).
+ */
+export const forbiddenPublicName = name => /\p{Cf}/u.test(name) || /作者|ai助手|访客|訪客/.test(name.normalize('NFKC').replace(/[\s\p{Z}\p{Cf}]/gu, '').toLowerCase());
+export const NAME_NOT_ALLOWED = 'authorName of a public comment may not contain 作者, AI 助手 or 访客, or invisible formatting characters';
 /** The anchor selectors the page runtime itself produces: body, one escaped id, or a structural path of at most 12 steps. */
 const publicSelector = /^(?:body|#(?:[A-Za-z0-9_\-\u0080-￿]|\\[0-9a-fA-F]{1,6} |\\[^0-9a-fA-F\r\n\f])+|body(?: > [A-Za-z][A-Za-z0-9-]*:nth-of-type\([1-9]\d{0,4}\)){1,12})$/;
 
 // ---------------------------------------------------------------------------
 // Schema 3: every existing row stays private, a visible open root; replies stay attached.
 
+/** Idempotent: it also completes a schema-3 database written by an earlier build of this runtime (new columns only). */
 export function migrateToV3(db) {
-  const columns = new Set(db.prepare("SELECT name FROM pragma_table_info('_board_comments')").all().map(row => row.name));
-  for (const [name, type] of [['visibility', 'TEXT'], ['parent_seq', 'INTEGER'], ['hidden', 'INTEGER NOT NULL DEFAULT 0'], ['hidden_by', 'TEXT'], ['resolved', 'INTEGER NOT NULL DEFAULT 0'], ['state_at', 'TEXT'], ['public_tag', 'TEXT']])
-    if (!columns.has(name)) db.exec(`ALTER TABLE _board_comments ADD COLUMN ${name} ${type}`);
+  const addColumns = (table, list) => {
+    const columns = new Set(db.prepare(`SELECT name FROM pragma_table_info('${table}')`).all().map(row => row.name));
+    for (const [name, type] of list) if (!columns.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+  };
+  addColumns('_board_comments', [['visibility', 'TEXT'], ['parent_seq', 'INTEGER'], ['hidden', 'INTEGER NOT NULL DEFAULT 0'], ['hidden_by', 'TEXT'], ['resolved', 'INTEGER NOT NULL DEFAULT 0'], ['state_at', 'TEXT'], ['public_tag', 'TEXT']]);
   db.exec(`
 CREATE INDEX IF NOT EXISTS _board_comments_public ON _board_comments (page_key, visibility, parent_seq, seq);
 CREATE INDEX IF NOT EXISTS _board_comments_parent ON _board_comments (parent_seq, seq);
-CREATE TABLE IF NOT EXISTS _board_comment_pages (page_key TEXT PRIMARY KEY, version INTEGER NOT NULL, paused INTEGER NOT NULL DEFAULT 0) STRICT;
+CREATE TABLE IF NOT EXISTS _board_comment_pages (page_key TEXT PRIMARY KEY, version INTEGER NOT NULL, paused INTEGER NOT NULL DEFAULT 0, closed INTEGER NOT NULL DEFAULT 0) STRICT;
 CREATE TABLE IF NOT EXISTS _board_public_releases (release_id TEXT PRIMARY KEY, created_at TEXT NOT NULL) STRICT;`);
+  // `closed`: the owner withdrew the page's public releases (its share turned private): no release may use it.
+  addColumns('_board_comment_pages', [['closed', 'INTEGER NOT NULL DEFAULT 0']]);
   db.prepare("INSERT INTO _board_runtime_meta(key, value) VALUES ('public_tag_key', ?) ON CONFLICT(key) DO NOTHING").run(randomBytes(32).toString('hex'));
   db.prepare("INSERT INTO _board_runtime_meta(key, value) VALUES ('comments_schema','3') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
 }
@@ -46,14 +58,17 @@ export function publicThreadsSetting(comments) {
   return value;
 }
 
-/** The public part of the POST rules; `input` already holds text, authorName, pageUrl and anchor. Returns an error text or null. */
+/**
+ * The public part of the POST rules; `input` already holds text, authorName, pageUrl and anchor. Returns null, an
+ * error text (400 invalid_input) or `{code, message}` for a refused public name (400 name_not_allowed).
+ */
 export function publicInputProblem(body, input, visitor) {
   if (body.visibility === undefined && body.parentId === undefined) return null;
   if (body.visibility !== 'public') return 'visibility must be "public"';
   if (body.parentId !== undefined && (typeof body.parentId !== 'string' || !externalIdPattern.test(body.parentId))) return 'parentId must be a comment ID';
   if (!visitor) return null; // the caller answers visitor_invalid
   if (!input.pageUrl) return 'Public comments need pageUrl';
-  if (input.authorName !== undefined && forbiddenPublicName.test(input.authorName)) return 'authorName of a public comment may not contain 作者, AI 助手, 访客, · or invisible formatting characters';
+  if (input.authorName !== undefined && forbiddenPublicName(input.authorName)) return { code: 'name_not_allowed', message: NAME_NOT_ALLOWED };
   const anchor = input.anchor;
   if (!anchor || typeof anchor.releaseId !== 'string') return 'Public comments need anchor.releaseId';
   if (body.parentId !== undefined) { if (Object.keys(anchor).some(key => key !== 'releaseId')) return 'A public reply anchor may contain only releaseId'; return null; }
@@ -87,10 +102,11 @@ export function createPublicThreads({ app, db, deploymentId, appKey, enabled, pu
   const sql = {
     byExternal: db.prepare('SELECT * FROM _board_comments WHERE external_id = ?'),
     bySeq: db.prepare('SELECT * FROM _board_comments WHERE seq = ?'),
-    version: db.prepare('SELECT version, paused FROM _board_comment_pages WHERE page_key = ?'),
+    version: db.prepare('SELECT version, paused, closed FROM _board_comment_pages WHERE page_key = ?'),
     bump: db.prepare('INSERT INTO _board_comment_pages(page_key, version, paused) VALUES (?, 1, 0) ON CONFLICT(page_key) DO UPDATE SET version = version + 1'),
     pause: db.prepare('INSERT INTO _board_comment_pages(page_key, version, paused) VALUES (?, 1, ?) ON CONFLICT(page_key) DO UPDATE SET version = version + 1, paused = excluded.paused'),
-    pages: db.prepare('SELECT page_key, version, paused FROM _board_comment_pages ORDER BY page_key LIMIT 500'),
+    // Paused pages first (their 恢复 button must stay reachable), then the most active ones.
+    pages: db.prepare('SELECT page_key, version, paused FROM _board_comment_pages ORDER BY paused DESC, version DESC, page_key LIMIT 500'),
     insert: db.prepare('INSERT INTO _board_comments (external_id,intent_key,payload_hash,text,author_name,page_url,anchor_json,created_at,visitor_hash,page_key,visibility,parent_seq,public_tag) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)'),
     visibleReplies: db.prepare("SELECT count(*) AS n FROM _board_comments WHERE parent_seq = ? AND hidden = 0"),
     rootsToday: db.prepare("SELECT count(*) AS n FROM _board_comments WHERE page_key = ? AND visitor_hash = ? AND visibility = 'public' AND parent_seq IS NULL AND created_at >= ?"),
@@ -101,7 +117,8 @@ export function createPublicThreads({ app, db, deploymentId, appKey, enabled, pu
     ownerReplies: db.prepare('SELECT seq, reply_id, comment_seq, text, author_kind, created_at FROM _board_comment_replies WHERE comment_seq = ? ORDER BY seq'),
     threadOwnerReplies: db.prepare('SELECT count(*) AS n FROM _board_comment_replies WHERE comment_seq = ? OR comment_seq IN (SELECT seq FROM _board_comments WHERE parent_seq = ?)'),
     setState: db.prepare('UPDATE _board_comments SET hidden = ?, hidden_by = ?, resolved = ?, state_at = ? WHERE seq = ?'),
-    moderationRoots: db.prepare("SELECT * FROM _board_comments WHERE visibility = 'public' AND parent_seq IS NULL AND (? IS NULL OR page_key = ?) ORDER BY seq DESC LIMIT ?"),
+    // What visitors can see comes first: hiding spam moves it behind the threads that still need attention.
+    moderationRoots: db.prepare("SELECT * FROM _board_comments WHERE visibility = 'public' AND parent_seq IS NULL AND (? IS NULL OR page_key = ?) ORDER BY hidden ASC, seq DESC LIMIT ?"),
     moderationCount: db.prepare("SELECT count(*) AS n FROM _board_comments WHERE visibility = 'public' AND parent_seq IS NULL AND (? IS NULL OR page_key = ?)"),
     byTag: db.prepare("SELECT seq, hidden, hidden_by, resolved FROM _board_comments WHERE page_key = ? AND visibility = 'public' AND public_tag = ?"),
     release: db.prepare('SELECT release_id FROM _board_public_releases WHERE release_id = ?'),
@@ -109,18 +126,25 @@ export function createPublicThreads({ app, db, deploymentId, appKey, enabled, pu
     releaseCount: db.prepare('SELECT count(*) AS n FROM _board_public_releases'),
     register: db.prepare('INSERT INTO _board_public_releases(release_id, created_at) VALUES (?, ?) ON CONFLICT(release_id) DO NOTHING'),
     unregister: db.prepare('DELETE FROM _board_public_releases WHERE release_id = ?'),
+    // Closing or reopening a page bumps its version, so cached listings and ETags change at once.
+    close: db.prepare('INSERT INTO _board_comment_pages(page_key, version, paused, closed) VALUES (?, 1, 0, ?) ON CONFLICT(page_key) DO UPDATE SET version = version + 1, closed = excluded.closed WHERE closed != excluded.closed'),
   };
   const cache = new Lru();
   const stats = { listingBuilds: 0 };
   const tagOf = (pageKey, visitorHash) => createHmac('sha256', tagKey).update(`${pageKey}\0${visitorHash}`).digest('hex').slice(0, 12);
   const transaction = work => { db.exec('BEGIN IMMEDIATE'); try { const value = work(); db.exec('COMMIT'); return value; } catch (error) { try { db.exec('ROLLBACK'); } catch {} throw error; } };
-  const versionOf = pageKey => sql.version.get(pageKey) ?? { version: 0, paused: 0 };
+  const versionOf = pageKey => sql.version.get(pageKey) ?? { version: 0, paused: 0, closed: 0 };
   const etagOf = version => `"p1.${epoch}.${version}"`;
   const registered = releaseId => typeof releaseId === 'string' && releasePattern.test(releaseId) && Boolean(sql.release.get(releaseId));
+  /**
+   * The owner closes a share's page when it turns private or off (DELETE with `pages`), so no other registered release
+   * can keep posting to or reading it; registering a release for that page again (PUT with `pages`) reopens it.
+   */
+  const closed = page => page.closed === 1;
   const originAllowed = pageUrl => { try { return app.config.origins.includes(new URL(pageUrl).origin); } catch { return false; } };
   const parseAnchor = json => { if (json === null) return undefined; try { return JSON.parse(json); } catch { return undefined; } };
   const publicAnchor = anchor => { if (!anchor || typeof anchor.quote !== 'string') return undefined; const out = {}; for (const key of ['selector', 'quote', 'prefix', 'suffix', 'start', 'end']) if (anchor[key] !== undefined) out[key] = anchor[key]; return out; };
-  const nameOf = row => { const name = typeof row.author_name === 'string' ? row.author_name.trim() : ''; return name && !forbiddenPublicName.test(name) && name.length <= 160 ? name : undefined; };
+  const nameOf = row => { const name = typeof row.author_name === 'string' ? row.author_name.trim() : ''; return name && !forbiddenPublicName(name) && name.length <= 160 ? name : undefined; };
   const isWithdrawn = row => row.hidden_by === 'author';
   const ownerPage = pageKey => { if (pageKey === null) return null; const parsed = urlRule(pageKey); if (parsed.error) throw invalid('page must be an HTTP(S) URL'); return pageKeyOf(parsed.value); };
 
@@ -163,6 +187,7 @@ export function createPublicThreads({ app, db, deploymentId, appKey, enabled, pu
     if (!publicThreads) throw httpError(403, 'Public comments are turned off for this backend', 'public_disabled');
     if (!registered(input.anchor?.releaseId) || !originAllowed(input.pageUrl)) throw httpError(403, 'Public comments are not enabled for this page', 'public_not_allowed');
     const pageKey = pageKeyOf(input.pageUrl), page = versionOf(pageKey);
+    if (closed(page)) throw httpError(403, 'Public comments are not enabled for this page', 'public_not_allowed');
     if (page.paused === 1) throw httpError(403, 'The owner paused new public comments on this page', 'public_paused');
     let parent = null;
     if (body.parentId !== undefined) {
@@ -204,7 +229,8 @@ export function createPublicThreads({ app, db, deploymentId, appKey, enabled, pu
     const parsed = page === null ? { error: true } : urlRule(page);
     if (parsed.error) throw invalid('page must be an HTTP(S) URL of at most 2000 characters without credentials');
     if (!registered(release)) throw httpError(404, 'Public comments are not enabled for this release', 'public_disabled');
-    const pageKey = pageKeyOf(parsed.value), { version, paused } = versionOf(pageKey), etag = etagOf(version);
+    const pageKey = pageKeyOf(parsed.value), pageState = versionOf(pageKey), { version, paused } = pageState, etag = etagOf(version);
+    if (closed(pageState)) throw httpError(404, 'Public comments are not enabled for this page', 'public_disabled');
     const headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', etag, vary: 'Origin, Accept-Encoding' };
     if (request.headers['if-none-match'] === etag) { response.writeHead(304, { etag, 'cache-control': 'no-store', vary: 'Origin, Accept-Encoding' }); response.end(); return; }
     const key = `${pageKey}\0${version}`;
@@ -246,41 +272,67 @@ export function createPublicThreads({ app, db, deploymentId, appKey, enabled, pu
     json(200, { deploymentId, externalId, withdrawn: true });
   }
 
+  /**
+   * PUT registers a release, DELETE withdraws it. The optional body `{pages: [url, …]}` (at most 8) names the share's
+   * page addresses: DELETE closes them to every release, PUT reopens them.
+   */
   async function releases({ request, json, readJson }, releaseId, method) {
     if (request.headers.origin !== undefined) throw httpError(403, 'Owner changes are not accepted from browsers', 'browser_forbidden');
     tools.owner(request);
     if (!releasePattern.test(releaseId)) throw invalid('Expected a release ID');
+    if (method !== 'PUT' && method !== 'DELETE') throw httpError(405, 'Use PUT or DELETE', 'method_not_allowed');
+    // PUT always carries a JSON object; DELETE may come without a body.
+    const hasBody = method === 'PUT' || Number(request.headers['content-length'] ?? 0) > 0 || request.headers['transfer-encoding'] !== undefined;
+    const raw = hasBody ? await tools.body(readJson) : {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(key => key !== 'pages')) throw invalid('Expected {} or {pages: [url, …]}');
+    const pages = raw.pages ?? [];
+    if (!Array.isArray(pages) || pages.length > 8) throw invalid('pages must list at most 8 page addresses');
+    const keys = [...new Set(pages.map(page => { const parsed = typeof page === 'string' ? urlRule(page) : { error: true }; if (parsed.error) throw invalid('pages must be HTTP(S) URLs'); return pageKeyOf(parsed.value); }))];
     if (method === 'PUT') {
-      const raw = await tools.body(readJson);
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).length) throw invalid('Expected an empty JSON object');
       if (!sql.release.get(releaseId) && sql.releaseCount.get().n >= RELEASES) throw httpError(409, `At most ${RELEASES} public releases can be registered`, 'release_limit');
-      const changed = sql.register.run(releaseId, new Date(now()).toISOString()).changes > 0;
-      json(200, { deploymentId, releaseId, registered: true, changed }); return;
+      const changed = transaction(() => { for (const key of keys) sql.close.run(key, 0); return sql.register.run(releaseId, new Date(now()).toISOString()).changes > 0; });
+      json(200, { deploymentId, releaseId, registered: true, changed, pages: keys.length }); return;
     }
-    if (method === 'DELETE') { const changed = sql.unregister.run(releaseId).changes > 0; json(200, { deploymentId, releaseId, registered: false, changed }); return; }
-    throw httpError(405, 'Use PUT or DELETE', 'method_not_allowed');
+    const changed = transaction(() => { for (const key of keys) sql.close.run(key, 1); return sql.unregister.run(releaseId).changes > 0; });
+    json(200, { deploymentId, releaseId, registered: false, changed, pages: keys.length });
   }
 
   function moderation({ request, url, json }) {
     if (request.headers.origin !== undefined) throw httpError(403, 'Owner reads are not accepted from browsers', 'browser_forbidden');
     tools.owner(request);
     const pageKey = ownerPage(url.searchParams.get('page'));
-    const threads = []; let characters = 0;
-    for (const root of sql.moderationRoots.all(pageKey, pageKey, MODERATION_THREADS)) {
-      const messages = messagesOf(root, { includeHidden: true }), kept = messages.slice(-MODERATION_REPLIES), name = nameOf(root);
-      const replies = kept.map(message => {
-        if (message.kind !== 'visitor') return publicMessage(message, root);
-        const row = message.row, rowName = nameOf(row);
-        return { id: row.external_id, by: 'visitor', tag: row.public_tag, ...(rowName ? { name: rowName } : {}), text: row.text, createdAt: row.created_at, hidden: row.hidden === 1, ...(isWithdrawn(row) ? { withdrawn: true } : {}) };
-      });
-      const anchor = publicAnchor(parseAnchor(root.anchor_json));
-      const thread = { id: root.external_id, page: root.page_key, tag: root.public_tag, ...(name ? { name } : {}), text: root.text, createdAt: root.created_at, hidden: root.hidden === 1, ...(isWithdrawn(root) ? { withdrawn: true } : {}), resolved: root.resolved === 1, ...(anchor ? { anchor } : {}), replies, omitted: messages.length - kept.length };
-      const size = JSON.stringify(thread).length;
-      if (threads.length && characters + size > MODERATION_CHARS) break;
-      threads.push(thread); characters += size;
+    // Every part is budgeted in UTF-8 bytes (a CJK character is 3), so the whole body stays below MODERATION_BYTES.
+    const bytes = value => Buffer.byteLength(JSON.stringify(value)) + 1;
+    const pages = []; let pageBytes = 0;
+    for (const page of sql.pages.all()) {
+      const item = { page: page.page_key, version: page.version, paused: page.paused === 1 }, size = bytes(item);
+      if (pageBytes + size > MODERATION_PAGE_BYTES) break;
+      pages.push(item); pageBytes += size;
     }
-    const total = sql.moderationCount.get(pageKey, pageKey).n;
-    json(200, { deploymentId, publicThreads, pages: sql.pages.all().map(page => ({ page: page.page_key, version: page.version, paused: page.paused === 1 })), releases: sql.releases.all().map(row => row.release_id), total, truncated: total > threads.length, threads });
+    const envelope = { deploymentId, publicThreads, pages, releases: sql.releases.all().map(row => row.release_id), total: sql.moderationCount.get(pageKey, pageKey).n, truncated: false, threads: [] };
+    let budget = MODERATION_BYTES - bytes(envelope) - 16;
+    const visitorMessage = (message, root) => {
+      if (message.kind !== 'visitor') return publicMessage(message, root);
+      const row = message.row, rowName = nameOf(row);
+      return { id: row.external_id, by: 'visitor', tag: row.public_tag, ...(rowName ? { name: rowName } : {}), text: row.text, createdAt: row.created_at, hidden: row.hidden === 1, ...(isWithdrawn(row) ? { withdrawn: true } : {}) };
+    };
+    for (const root of sql.moderationRoots.all(pageKey, pageKey, MODERATION_THREADS)) {
+      const messages = messagesOf(root, { includeHidden: true }), name = nameOf(root), anchor = publicAnchor(parseAnchor(root.anchor_json));
+      const thread = { id: root.external_id, page: root.page_key, tag: root.public_tag, ...(name ? { name } : {}), text: root.text, createdAt: root.created_at, hidden: root.hidden === 1, ...(isWithdrawn(root) ? { withdrawn: true } : {}), resolved: root.resolved === 1, ...(anchor ? { anchor } : {}), replies: [], omitted: 0 };
+      // The newest messages that fit the per-thread budget; older ones are counted in `omitted`.
+      let threadBytes = bytes(thread) + 16;
+      const replies = [];
+      for (let i = messages.length - 1; i >= 0 && replies.length < MODERATION_REPLIES; i--) {
+        const item = visitorMessage(messages[i], root), size = bytes(item);
+        if (threadBytes + size > MODERATION_THREAD_BYTES) break;
+        replies.unshift(item); threadBytes += size;
+      }
+      thread.replies = replies; thread.omitted = messages.length - replies.length;
+      if (threadBytes > budget) break;
+      envelope.threads.push(thread); budget -= threadBytes;
+    }
+    envelope.truncated = envelope.total > envelope.threads.length;
+    json(200, envelope);
   }
 
   async function ownerBody(request, readJson, keys) {

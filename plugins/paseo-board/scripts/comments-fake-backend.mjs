@@ -18,6 +18,8 @@ export const appKeyFor = owner => sha256('board-app-key\0' + owner).slice(0, 16)
 
 class InputError extends Error { constructor(code, message) { super(message); this.code = code; } }
 const invalid = message => { throw new InputError('invalid_input', message); };
+/** The backend's public name rule (backend/threads.mjs forbiddenPublicName). */
+export const forbiddenPublicName = name => /\p{Cf}/u.test(name) || /作者|ai助手|访客|訪客/.test(name.normalize('NFKC').replace(/[\s\p{Z}\p{Cf}]/gu, '').toLowerCase());
 const ANCHOR_KEYS = ['label', 'selector', 'quote', 'prefix', 'suffix', 'start', 'end', 'releaseId'];
 const isObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
 export const normalizePageUrl = value => {
@@ -36,7 +38,7 @@ export function normalizeCommentInput(body, { visitor }) {
     if (body.parentId !== undefined && (typeof body.parentId !== 'string' || !/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/.test(body.parentId))) invalid('parentId must be a comment ID');
     if (visitor) {
       if (typeof body.pageUrl !== 'string') invalid('Public comments need pageUrl');
-      if (typeof body.authorName === 'string' && /作者|AI\s*助手|访客|·|\p{Cf}/u.test(body.authorName.trim())) invalid('Public names may not imitate labels');
+      if (typeof body.authorName === 'string' && forbiddenPublicName(body.authorName.trim())) throw new InputError('name_not_allowed', 'Public names may not imitate labels');
       if (!isObject(body.anchor) || typeof body.anchor.releaseId !== 'string') invalid('Public comments need anchor.releaseId');
       if (body.parentId !== undefined ? Object.keys(body.anchor).some(key => key !== 'releaseId') : typeof body.anchor.quote !== 'string') invalid('Invalid public anchor');
     }

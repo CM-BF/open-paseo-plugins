@@ -74,8 +74,9 @@ export async function initializeComments(app, db) {
       if (!columns.has('page_key')) db.exec('ALTER TABLE _board_comments ADD COLUMN page_key TEXT');
       db.exec(COMMENTS_V2);
     }
-    // Schema 3 (public threads): every existing row stays a private, visible, open root.
-    if (+marker <= 2) migrateToV3(db);
+    // Schema 3 (public threads): every existing row stays a private, visible, open root. Idempotent, so it also
+    // completes a schema-3 database from an earlier build of this runtime.
+    migrateToV3(db);
     db.exec('COMMIT');
   } catch (error) { try { db.exec('ROLLBACK'); } catch {} throw error; }
   return identity.deploymentId;
@@ -276,7 +277,7 @@ export function normalizeCommentInput(body, { visitor = false } = {}) {
   if (body.anchor !== undefined) { const problem = anchorProblem(body.anchor); if (problem) throw invalid(problem); input.anchor = body.anchor; }
   // Public comments (schema 3): the keys are kept only when sent, so a private POST hashes exactly as before.
   const problem = publicInputProblem(body, input, visitor);
-  if (problem) throw invalid(problem);
+  if (problem) throw typeof problem === 'string' ? invalid(problem) : httpError(400, problem.message, problem.code);
   if (body.visibility !== undefined) input.visibility = body.visibility;
   if (body.parentId !== undefined) input.parentId = body.parentId;
   return input;
