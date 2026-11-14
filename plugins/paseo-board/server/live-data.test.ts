@@ -711,7 +711,7 @@ describe("live data publisher", () => {
       // Publishing with a `live` field changes nothing on the Board or its schema.
       const before = (await store.read(boardId))!;
       await expect(service.execute("publish", { boardId, expectedRevision: before.revision, eventId: "e", summary: "s", live: { marks: [{ path: "/live" }] } }, actor)).resolves.toBeDefined();
-      expect(toolDefinitions().map(tool => tool.name)).toEqual(["board_inbox_list", "board_inbox_read", "board_inbox_triage", "board_list", "board_sources", "board_read_source", "board_read", "board_create", "board_publish", "board_respond", "board_decision", "board_feed", "board_emit"]);
+      expect(toolDefinitions().map(tool => tool.name)).toEqual(["board_inbox_list", "board_inbox_read", "board_inbox_triage", "board_inbox_reply", "board_list", "board_sources", "board_read_source", "board_read", "board_create", "board_publish", "board_respond", "board_decision", "board_feed", "board_emit"]);
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 

@@ -1441,3 +1441,135 @@ describe("decision evidence extraction", () => {
     expect(extractCandidates("owner", "epoch", item)).toEqual([]);
   });
 });
+
+describe("comment-assistant wakes (DESIGN §11.3, §11.6)", () => {
+  let dir: string; let store: BoardStore; let journal: ServiceJournal; let service: BoardService; let sdk: ReturnType<typeof fakeSdk>;
+  let auto: "off" | "publish" | "review"; let assistantId: string; let pauses: Array<{ reason: string; error: string }>; let changes: string[];
+  const modes = [{ id: "default", label: "Always Ask", colorTier: "safe" }, { id: "bypassPermissions", label: "Bypass", colorTier: "dangerous" }];
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "board-inbox-wake-")); store = new BoardStore(dir); await store.init(); journal = new ServiceJournal(join(dir, "service.json")); await journal.init();
+    sdk = fakeSdk(); service = new BoardService(store, journal, () => undefined); service.capture(sdk.api);
+    sdk.snapshots.set("assistant", { ...sdk.snapshots.get("owner")!, id: "assistant", currentModeId: "default", availableModes: modes } as unknown as Snapshot);
+    auto = "publish"; assistantId = "assistant"; pauses = []; changes = [];
+    service.useInboxWakes({
+      assistant: async () => assistantId ? { agentId: assistantId, modeId: "default", modeLabel: "Always Ask" } : null,
+      auto: async () => auto,
+      pause: async (_scope, reason, error) => { pauses.push({ reason, error }); },
+      changed: delivery => { changes.push(`${delivery.interactionId}:${delivery.state}`); },
+    });
+    await store.create({ id: "board", title: "自由画布", ownerAgentId: "owner", html: "<main>x</main>" });
+  });
+  afterEach(async () => { await service.dispose(); await rm(dir, { recursive: true, force: true }); });
+  const wake = async (first = 1, last = 1, prompt = `[paseo-board board=board intent=inbox-aaaaaaaa-${first}-${last}]\nBoard inbox wake: 1 new visitor comment(s)`) => {
+    const board = (await store.read("board"))!;
+    return service.enqueueInboxWake({ boardId: "board", expectedCreatedAt: board.createdAt, interactionId: `inbox-aaaaaaaa-${first}-${last}`, targetAgentId: "assistant", commentIds: [`comment-${first}`], firstSeq: first, lastSeq: last, prompt });
+  };
+  const key = (first = 1, last = 1) => deliveryKey("board", `inbox-aaaaaaaa-${first}-${last}`);
+
+  it("queues while the assistant is busy, sends with steer after turn_ended, and never messages the owner or creates an interaction", async () => {
+    sdk.snapshots.set("assistant", { ...sdk.snapshots.get("assistant")!, status: "running" } as Snapshot);
+    expect(await wake()).toBe("queued"); await service.drain();
+    expect(journal.get(key())).toMatchObject({ state: "saved", kind: "inbox", ownerAgentId: "assistant", targetAgentId: "assistant", inbox: { commentIds: ["comment-1"], firstSeq: 1, lastSeq: 1 } });
+    expect(sdk.sends).toEqual([]);
+    expect(await wake()).toBe("exists");
+    sdk.snapshots.set("assistant", { ...sdk.snapshots.get("assistant")!, status: "idle" } as Snapshot);
+    await service.onTurnEnded("assistant"); await service.drain();
+    expect(sdk.sends).toHaveLength(1);
+    expect(sdk.sends[0]).toMatchObject({ id: "assistant", options: { activeTurnBehavior: "steer", messageId: "paseo-board:board:inbox-aaaaaaaa-1-1" } });
+    expect(sdk.sends[0].options.images).toBeUndefined();
+    expect(sdk.sends.some(send => send.id === "owner")).toBe(false);
+    expect(journal.get(key())).toMatchObject({ state: "delivered", awaitingTurn: true });
+    expect((await store.read("board"))!.interactions).toEqual([]);
+    expect(changes).toContain("inbox-aaaaaaaa-1-1:delivered");
+    // The assistant's turn completes; the wake becomes terminal and is reported.
+    await service.syncHistory("assistant");
+    await service.onTurnEnded("assistant", "completed", journal.get(key())!.turnId); await service.drain();
+    expect(journal.get(key())).toMatchObject({ outcome: "completed", awaitingTurn: false });
+    expect(changes.at(-1)).toBe("inbox-aaaaaaaa-1-1:delivered");
+    expect((await store.read("board"))!.interactions).toEqual([]);
+  });
+
+  it("keeps FIFO order per assistant and one awaited turn at a time", async () => {
+    await wake(1, 1); await service.drain();
+    await wake(2, 2); await service.drain();
+    expect(sdk.sends.map(send => send.options.messageId)).toEqual(["paseo-board:board:inbox-aaaaaaaa-1-1"]);
+    expect(journal.get(key(2, 2))!.state).toBe("saved");
+    await service.syncHistory("assistant");
+    await service.onTurnEnded("assistant", "completed", journal.get(key())!.turnId); await service.drain();
+    expect(sdk.sends.map(send => send.options.messageId)).toEqual(["paseo-board:board:inbox-aaaaaaaa-1-1", "paseo-board:board:inbox-aaaaaaaa-2-2"]);
+  });
+
+  it("settles without sending when auto is off or the assistant changed", async () => {
+    auto = "off"; await wake(); await service.drain();
+    expect(journal.get(key())).toMatchObject({ state: "settled", error: "自动处理已关闭，未发送。" });
+    auto = "publish"; assistantId = "another-assistant"; await wake(2, 2); await service.drain();
+    expect(journal.get(key(2, 2))).toMatchObject({ state: "settled", error: "评论助手已更换，旧唤醒未发送。" });
+    expect(sdk.sends).toEqual([]);
+  });
+
+  it("pauses with mode when the assistant's permission mode changed and with agent when it is archived", async () => {
+    sdk.snapshots.set("assistant", { ...sdk.snapshots.get("assistant")!, currentModeId: "bypassPermissions" } as Snapshot);
+    await wake(); await service.drain();
+    expect(journal.get(key())).toMatchObject({ state: "settled" });
+    expect(pauses).toEqual([{ reason: "mode", error: "评论助手的权限模式被改成了「Bypass」，为安全起见已暂停自动处理。改回「Always Ask」后点「恢复自动处理」。" }]);
+    sdk.snapshots.set("assistant", { ...sdk.snapshots.get("assistant")!, currentModeId: "default", archivedAt: "2026-11-13T00:00:00.000Z" } as Snapshot);
+    await wake(2, 2); await service.drain();
+    expect(journal.get(key(2, 2))).toMatchObject({ state: "failed", error: "评论助手不存在或已归档。" });
+    expect(pauses.at(-1)).toEqual({ reason: "agent", error: "评论助手不存在或已归档。" });
+    expect(sdk.sends).toEqual([]);
+  });
+
+  it("stays queued while the assistant waits for a permission", async () => {
+    sdk.snapshots.set("assistant", { ...sdk.snapshots.get("assistant")!, pendingPermissions: [{ id: "p1" }] } as unknown as Snapshot);
+    await wake(); await service.drain();
+    expect(journal.get(key())!.state).toBe("saved"); expect(sdk.sends).toEqual([]);
+    expect(changes).toContain("inbox-aaaaaaaa-1-1:saved");
+  });
+
+  it("marks a restart during sending as unknown and never resends it", async () => {
+    sdk.snapshots.set("assistant", { ...sdk.snapshots.get("assistant")!, status: "running" } as Snapshot);
+    await wake(); await service.drain();
+    // The process dies right after the durable "sending" write, before send() is acknowledged.
+    await journal.patch(key(), { state: "sending", awaitingTurn: true });
+    await service.dispose();
+    sdk.snapshots.set("assistant", { ...sdk.snapshots.get("assistant")!, status: "idle" } as Snapshot);
+    journal = new ServiceJournal(join(dir, "service.json")); await journal.init();
+    expect(journal.get(key())).toMatchObject({ state: "unknown" });
+    service = new BoardService(store, journal, () => undefined); service.capture(sdk.api);
+    service.useInboxWakes({ assistant: async () => ({ agentId: "assistant", modeId: "default", modeLabel: "Always Ask" }), auto: async () => "publish", pause: async () => undefined, changed: () => undefined });
+    await service.reconcile(); await service.drain();
+    expect(sdk.sends).toEqual([]);
+  });
+
+  it("settles a delivered wake after ten idle minutes, reduces it to a neutral Side-history line and prunes old wakes", async () => {
+    await wake(); await service.drain();
+    expect(journal.get(key())).toMatchObject({ state: "delivered", awaitingTurn: true });
+    const start = Date.now();
+    await service.checkStaleInboxWakes(start);
+    await service.checkStaleInboxWakes(start + 599_000);
+    expect(journal.get(key())!.state).toBe("delivered");
+    await service.checkStaleInboxWakes(start + 600_000);
+    expect(journal.get(key())).toMatchObject({ state: "settled", awaitingTurn: false, error: "评论助手没有确认这轮处理结束；已解除等待。" });
+    const expander = (service as unknown as { boardPromptExpander(): { reduce(text: string): unknown } }).boardPromptExpander();
+    expect(expander.reduce(journal.get(key())!.prompt)).toEqual([{ text: "[Board inbox wake] 1 visitor comments delivered for automatic handling (external, untrusted; text omitted)", message: false }]);
+    for (let index = 2; index <= 60; index++) { await journal.put({ ...journal.get(key())!, interactionId: `inbox-aaaaaaaa-${index}-${index}`, state: "settled" }); }
+    expect(journal.all().filter(item => item.kind === "inbox")).toHaveLength(50);
+    expect(journal.get(key())).toBeUndefined();
+  });
+
+  it("admits the assistant to inbox tools only; owners cannot reply", async () => {
+    const board = (await store.read("board"))!;
+    const calls: unknown[] = [];
+    service.useInboxAssistant(async (_board, _createdAt, agentId) => agentId === "assistant");
+    service.useInbox({ list: async () => ({ ok: "list" }), read: async () => ({ ok: "read" }), triage: async () => ({ ok: "triage" }) } as never);
+    service.useInboxConnections({ reply: async (input, actor) => { calls.push({ input, actor }); return { status: "published" } as never; } });
+    const actor = { agentId: "assistant", cwd: dir };
+    expect(await service.execute("inbox_list", { boardId: "board", expectedCreatedAt: board.createdAt }, actor)).toEqual({ ok: "list" });
+    expect(await service.execute("inbox_reply", { boardId: "board", expectedCreatedAt: board.createdAt, commentId: "c", expectedCommentRevision: 1, eventId: "e", text: "hi" }, actor)).toEqual({ status: "published" });
+    expect(calls).toEqual([{ input: expect.objectContaining({ commentId: "c" }), actor: { kind: "agent", agentId: "assistant" } }]);
+    for (const operation of ["read", "publish", "emit", "decision", "sources", "read_source"] as const) await expect(service.execute(operation, { boardId: "board" }, actor)).rejects.toThrow();
+    expect(await service.execute("list", {}, actor)).toEqual({ boards: [] });
+    await expect(service.execute("inbox_reply", { boardId: "board" }, { agentId: "stranger", cwd: dir })).rejects.toHaveProperty("code", "forbidden");
+    await expect(service.execute("inbox_list", { boardId: "board", expectedCreatedAt: board.createdAt })).rejects.toHaveProperty("code", "forbidden");
+  });
+});

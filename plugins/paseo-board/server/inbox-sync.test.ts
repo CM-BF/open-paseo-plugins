@@ -3,7 +3,10 @@ import { mkdtemp, readFile, readdir, rm, stat, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
-import { InboxConnections } from "./inbox-sync";
+import { InboxConnections, SyncFailure, replyKey } from "./inbox-sync";
+import { startFakeBackend, type FakeBackend } from "./inbox-fake-backend";
+import { BoardStoreError } from "./store-format";
+import type { InboxActor } from "../shared/inbox";
 import { InboxStore } from "./inbox-store";
 import { InboxEndpointSchema } from "../shared/inbox-connection";
 
@@ -37,7 +40,7 @@ describe("human-configured inbox pull", () => {
     const configured = await connections.connect(input());
     expect(configured.state).toBe("ready"); expect(JSON.stringify(configured)).not.toContain(secret);
     expect(await sync()).toMatchObject({ revision: 2, imported: 1, cursor: "1" });
-    expect(requests).toEqual([{ url: "/_board/comments?cursor=0&limit=100", token: `Bearer ${secret}` }]);
+    expect(requests).toEqual([{ url: "/_board/comments?cursor=0&limit=50&format=2", token: `Bearer ${secret}` }]);
     expect((await state()).comments[0]).toMatchObject({ text: comment.text, contentTrust: "external-untrusted" });
     await expect(inbox.list(scope, agent)).rejects.toHaveProperty("code", "forbidden");
     const recovered = new InboxConnections(root, inbox);
@@ -52,7 +55,7 @@ describe("human-configured inbox pull", () => {
   it("requires exact transport/identity and leaves cursor unchanged on failures", async () => {
     for (const invalid of ["http://company.test/export", "https://u:p@example.test/export", "https://example.test/export?token=x", "https://example.test/export#f"]) expect(InboxEndpointSchema.safeParse(invalid).success).toBe(false);
     await connections.connect(input());
-    for (const body of ["not JSON", { deploymentId: "other", cursor: "0", nextCursor: "1", comments: [comment] }, { deploymentId: "deployment-1", cursor: "other", nextCursor: "1", comments: [comment] }, { deploymentId: "deployment-1", cursor: "0", nextCursor: "1", comments: [{ ...comment, command: "execute" }] }, "x".repeat(500_001)]) {
+    for (const body of ["not JSON", { deploymentId: "other", cursor: "0", nextCursor: "1", comments: [comment] }, { deploymentId: "deployment-1", cursor: "other", nextCursor: "1", comments: [comment] }, { deploymentId: "deployment-1", cursor: "0", nextCursor: "1", comments: [comment], replies: [] }, "x".repeat(1_000_001)]) {
       response.body = body; await expect(sync()).rejects.toThrow(); expect((await state()).revision).toBe(1);
     }
     response = { status: 401, body: {} }; await expect(sync()).rejects.toThrow("HTTP 401");
@@ -64,11 +67,13 @@ describe("human-configured inbox pull", () => {
 
   it("serializes sync and refuses stale revisions and disabled sources", async () => {
     await connections.connect(input());
+    // Both run one after the other under the source lock; the second reads the advanced cursor.
     const results = await Promise.allSettled([sync(), sync(1, "another-sync")]);
-    expect(results.map(result => result.status)).toEqual(["fulfilled", "rejected"]);
-    expect(requests).toHaveLength(1); expect((await state()).total).toBe(1);
+    expect(results.map(result => result.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(requests.map(request => request.url)).toEqual(["/_board/comments?cursor=0&limit=50&format=2", "/_board/comments?cursor=1&limit=50&format=2"]);
+    expect((await state()).total).toBe(1);
     await connections.connect({ ...input(), expectedRevision: 2, expectedConnectionEventId: "source-connect", eventId: "disable", enabled: false, token: undefined });
-    await expect(sync(3)).rejects.toThrow("enabled"); expect(requests).toHaveLength(1);
+    await expect(sync(3)).rejects.toThrow("enabled"); expect(requests).toHaveLength(2);
     await expect(connections.connect({ ...input(), expectedRevision: 3, expectedConnectionEventId: "disable", eventId: "replacement", deploymentId: "another-deployment" })).rejects.toThrow("new source ID");
   });
 
@@ -118,7 +123,7 @@ describe("human-configured inbox pull", () => {
     await expect(connections.connect({ ...input(), expectedRevision: 2, expectedConnectionEventId: "source-connect", eventId: "stale-disable", enabled: false, token: undefined })).rejects.toHaveProperty("code", "revision_conflict");
     expect(await connections.list(scope)).toEqual([expect.objectContaining({ endpoint: endpoint + "/new", label: "Updated", enabled: true, eventId: "new-settings" })]);
     await sync(2);
-    expect(requests[0]).toEqual({ url: "/_board/comments/new?cursor=0&limit=100", token: "Bearer new-private-token-0123456789abcdef01234567" });
+    expect(requests[0]).toEqual({ url: "/_board/comments/new?cursor=0&limit=50&format=2", token: "Bearer new-private-token-0123456789abcdef01234567" });
   });
 
   it("preserves all 32 maximum UTF-8 endpoints through pending replacement, disable and reload", async () => {
@@ -160,5 +165,187 @@ describe("human-configured inbox pull", () => {
     expect(await readFile(file, "utf8")).toBe(before);
     expect(await connections.list(scope)).toEqual([expect.objectContaining({ state: "ready", enabled: true })]);
     expect(await readdir(join(root, "inbox-connections"))).toHaveLength(1);
+  });
+});
+
+describe("contract export and reply outbox against a fake backend (DESIGN §11.5, §11.7)", () => {
+  let root: string, inbox: InboxStore, connections: InboxConnections, backend: FakeBackend, events: Array<{ status: string; recorded: boolean; lastError?: string }>;
+  const assistant = { kind: "agent" as const, agentId: "assistant" };
+  let auto: "off" | "publish" | "review" = "publish";
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "board-inbox-reply-")); backend = await startFakeBackend(); events = [];
+    inbox = new InboxStore(root, { resolveBoard: async () => ({ createdAt: scope.expectedCreatedAt, ownerAgentId: "owner" }), authorizeAssistant: async (_scope, id) => id === "assistant" });
+    connections = new InboxConnections(root, inbox);
+    connections.onReply((_scope, event) => events.push(event));
+    await connections.connect({ ...scope, expectedRevision: 0, eventId: "connect", expectedConnectionEventId: null, sourceId: "app", deploymentId: backend.deploymentId, label: "App", endpoint: backend.endpoint, token: backend.token, enabled: true });
+    auto = "publish";
+  });
+  afterEach(async () => { vi.restoreAllMocks(); await backend.close(); await rm(root, { recursive: true, force: true }); });
+  const current = async () => inbox.list({ ...scope, limit: 100 }, human);
+  const syncNow = async () => connections.sync({ ...scope, sourceId: "app", expectedRevision: 0, eventId: "manual" });
+  async function enable(mode: "publish" | "review" = auto as "publish" | "review") {
+    const state = await current();
+    await inbox.setPolicy({ ...scope, expectedRevision: state.revision, eventId: `enable-${state.revision}`, policy: { read: true, triage: true, auto: mode } }, human, { allowAutoEnable: true });
+  }
+  async function visitorComment(text = "第二步看不懂") {
+    backend.add({ text, visitorTag: "a1b2c3d4e5f6", pageUrl: "https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/", anchor: { label: "结果", selector: "#result", quote: "第二步", prefix: "首先，", suffix: "的意思", start: 3, end: 6, releaseId: `release-${"0".repeat(64)}` } });
+    await syncNow();
+    return (await current()).comments.at(-1)!;
+  }
+  const reply = (comment: { id: string; revision: number }, eventId = "reply-1", text = "谢谢！第二步指的是先保存。", actor: InboxActor = assistant) => connections.reply({ ...scope, commentId: comment.id, expectedCommentRevision: comment.revision, eventId, text }, actor);
+  const posts = () => backend.requests.filter(request => request.method === "POST");
+
+  it("imports v2 rows with rich anchors and visitorTag, and a legacy v1 page with projected anchors", async () => {
+    const comment = await visitorComment();
+    expect(comment).toMatchObject({ visitorTag: "a1b2c3d4e5f6", anchor: { quote: "第二步", start: 3, end: 6 }, seq: 1, contentTrust: "external-untrusted" });
+    backend.legacy = true;
+    backend.add({ text: "旧版后端", anchor: { label: "结果", selector: "#result", quote: "第二步" }, visitorTag: "a1b2c3d4e5f6" });
+    expect(await syncNow()).toMatchObject({ imported: 1, cursor: "2" });
+    const legacy = (await current()).comments[1];
+    expect(legacy.anchor).toEqual({ label: "结果", selector: "#result" }); expect(legacy.visitorTag).toBeUndefined();
+    expect(await syncNow()).toMatchObject({ unchanged: true, imported: 0 });
+  });
+
+  it("quarantines malformed rows, still advances the cursor, and blocks only on a malformed envelope", async () => {
+    backend.rawExport.push({ deploymentId: backend.deploymentId, format: 2, cursor: "0", nextCursor: "4", comments: [
+      { externalId: "00000000-0000-4000-8000-000000000021", text: "   ", createdAt: "2026-11-13T08:00:00.000Z" },
+      "oops",
+      { externalId: "00000000-0000-4000-8000-000000000022", text: "ok", createdAt: "2026-11-13T08:00:00.000Z", authorName: "　", pageUrl: "HTTPS://Example.COM/p", mood: "x" },
+      { externalId: "00000000-0000-4000-8000-000000000022", text: "dup", createdAt: "2026-11-13T08:00:00.000Z" },
+    ] });
+    expect(await syncNow()).toMatchObject({ imported: 1, skipped: 3, sanitized: 1, cursor: "4" });
+    expect((await current()).comments[0]).toMatchObject({ text: "ok", pageUrl: "https://example.com/p" });
+    expect((await current()).comments[0].authorName).toBeUndefined();
+    expect((await current()).sources[0]).toMatchObject({ skipped: 3, sanitized: 1 });
+    backend.rawExport.push({ deploymentId: backend.deploymentId, cursor: "4", nextCursor: "5", comments: "nope" });
+    const error = await syncNow().catch(failure => failure);
+    expect(error).toBeInstanceOf(SyncFailure);
+    expect(error.message).toBe("后端返回的数据格式无法识别（comments）。请确认后端由 paseo-board-app 生成，并已运行 update-runtime。");
+    expect((await current()).sources[0].cursor).toBe("4");
+  });
+
+  it("retries a too-large legacy page once with limit=5", async () => {
+    backend.legacy = true;
+    for (let index = 0; index < 50; index++) backend.add({ text: `${index}${"x".repeat(7_000)}` });
+    expect(await syncNow()).toMatchObject({ imported: 5, cursor: "5" });
+    expect(backend.requests.map(request => new URL(request.url, "http://x").searchParams.get("limit"))).toEqual(["50", "5"]);
+  });
+
+  it("accepts an older expectedRevision for manual sync but refuses a future one", async () => {
+    await visitorComment();
+    backend.add({ text: "第二条" });
+    await expect(connections.sync({ ...scope, sourceId: "app", expectedRevision: 99, eventId: "future" })).rejects.toHaveProperty("code", "invalid_input");
+    expect(await connections.sync({ ...scope, sourceId: "app", expectedRevision: 1, eventId: "old" })).toMatchObject({ imported: 1 });
+  });
+
+  it("posts the reply with the derived key and host token, then records it; the token never appears in results", async () => {
+    await enable(); const comment = await visitorComment();
+    const result = await reply(comment);
+    expect(result).toMatchObject({ status: "published", recorded: true, replayed: false, message: "已回复，访客页面会在十几秒内显示。", reply: { authorKind: "agent", text: "谢谢！第二步指的是先保存。" } });
+    expect(JSON.stringify(result)).not.toContain(backend.token);
+    const [post] = posts();
+    const externalId = backend.rows[0].externalId;
+    expect(post).toMatchObject({ url: `/_board/comments/${externalId}/replies`, authorization: `Bearer ${backend.token}`, key: replyKey(scope, comment.id, "reply-1"), body: { text: "谢谢！第二步指的是先保存。", authorKind: "agent" } });
+    expect(post.origin).toBeUndefined();
+    expect(post.key).toMatch(/^ir-[a-f0-9]{48}$/);
+    const stored = (await current()).comments[0];
+    expect(stored).toMatchObject({ status: "resolved", replies: [{ replyId: backend.replies.get(post.key!)!.reply.replyId, key: post.key }] });
+    expect(await reply(comment)).toMatchObject({ status: "published", replayed: true });
+    expect(posts()).toHaveLength(1);
+    // A human reply is posted as the owner and needs no automatic handling.
+    const state = await current();
+    await inbox.setPolicy({ ...scope, expectedRevision: state.revision, eventId: "all-off", policy: { read: false, triage: false } }, human);
+    expect(await reply(stored, "human-1", "作者亲自回复。\r\n第二行", human)).toMatchObject({ status: "published", reply: { authorKind: "owner", text: "作者亲自回复。\n第二行" } });
+    expect(posts().at(-1)!.body).toEqual({ text: "作者亲自回复。\n第二行", authorKind: "owner" });
+    await expect(reply(stored, "assistant-off", "x")).rejects.toHaveProperty("code", "forbidden");
+  });
+
+  it("keeps a transient failure as sending and the retry with the same key confirms it", async () => {
+    await enable(); const comment = await visitorComment();
+    backend.failReply = ["network"];
+    expect(await reply(comment)).toMatchObject({ status: "sending", recorded: true, message: "回复已排队，系统会用同一编号自动重试。不要用新的 eventId 重试。", pending: { state: "sending" } });
+    for (const failure of ["500", "429", "403", "401"] as const) {
+      backend.failReply.push(failure);
+      expect(await connections.retryPending(scope, comment.id, replyKey(scope, comment.id, "reply-1"))).toMatchObject({ status: "sending" });
+    }
+    expect(events.at(-1)).toMatchObject({ status: "sending", lastError: "后端拒绝了收件箱令牌，请在「后端来源」里更新。" });
+    const keys = new Set(posts().map(post => post.key));
+    expect(await connections.retryPending(scope, comment.id, replyKey(scope, comment.id, "reply-1"))).toMatchObject({ status: "published", recorded: true });
+    expect(keys.size).toBe(1); expect(new Set(posts().map(post => post.key)).size).toBe(1);
+    expect(backend.replies.size).toBe(1);
+  });
+
+  it.each([
+    ["404-old", "backend_outdated", "后端版本过旧，不支持回复：在应用目录运行 paseo-board-app update-runtime，然后重新部署。"],
+    ["409-key", "idempotency_conflict", "这个回复编号已用于另一条回复。"],
+    ["409-limit", "size_limit", "这条评论的回复已达 20 条上限。"],
+  ] as const)("maps a definitive %s to a failed pending", async (failure, code, message) => {
+    await enable(); const comment = await visitorComment();
+    backend.failReply.push(failure);
+    await expect(reply(comment)).rejects.toMatchObject({ code, message });
+    expect((await current()).comments[0].pendingReply).toMatchObject({ state: "failed", failedReason: message });
+    expect(await reply(comment)).toMatchObject({ status: "failed", replayed: true, message: `回复没能送达：${message}` });
+  });
+
+  it("maps an unknown comment to not_found", async () => {
+    await enable(); const comment = await visitorComment();
+    backend.rows.length = 0;
+    await expect(reply(comment)).rejects.toMatchObject({ code: "not_found", message: "后端没有这条评论（后端可能已更换或恢复了旧数据）。" });
+  });
+
+  it("lets exactly one of two concurrent callers reach the backend", async () => {
+    await enable(); const comment = await visitorComment();
+    let release!: () => void; backend.holdReplies = new Promise(resolve => { release = resolve; });
+    const settled = Promise.allSettled([reply(comment), reply(comment), reply(comment, "reply-other", "另一条")]);
+    await new Promise(resolve => setTimeout(resolve, 100)); release();
+    const results = await settled;
+    // Whichever eventId takes the per-comment lease first wins; its callers all see the one published reply.
+    const sameStatus = results.slice(0, 2).map(result => result.status);
+    expect(sameStatus[0]).toBe(sameStatus[1]);
+    const winners = results.filter(result => result.status === "fulfilled");
+    expect(winners.length).toBeGreaterThan(0);
+    for (const result of winners) expect(result).toMatchObject({ value: { status: "published" } });
+    for (const result of results.filter(item => item.status === "rejected")) expect(result).toMatchObject({ reason: { code: "revision_conflict" } });
+    expect(winners.length === 2 ? results[2].status : results[0].status).toBe("rejected");
+    expect(posts()).toHaveLength(1);
+  });
+
+  it("returns published with recorded:false when the confirm write fails, and the outbox confirms it later", async () => {
+    await enable(); const comment = await visitorComment();
+    vi.spyOn(inbox, "confirmReply").mockRejectedValueOnce(new BoardStoreError("size_limit", "Inbox storage limit reached"));
+    expect(await reply(comment)).toMatchObject({ status: "published", recorded: false, message: "已发送给访客；本地记录稍后自动补上。不要用新的 eventId 重试。" });
+    expect((await current()).comments[0].pendingReply).toMatchObject({ state: "sending" });
+    expect(await connections.retryPending(scope, comment.id, replyKey(scope, comment.id, "reply-1"))).toMatchObject({ status: "published", recorded: true });
+    expect(backend.replies.size).toBe(1); expect(posts().map(post => post.key)).toEqual([replyKey(scope, comment.id, "reply-1"), replyKey(scope, comment.id, "reply-1")]);
+    expect((await current()).comments[0].replies).toHaveLength(1);
+  });
+
+  it("refuses replies that look like secrets; only the human may override", async () => {
+    await enable(); const comment = await visitorComment();
+    for (const text of [`token ${backend.token}`, `后端在 ${backend.endpoint}`, "-----BEGIN PRIVATE KEY-----", "看 /Users/me/.ssh", `hex ${"ab".repeat(20)}`]) {
+      await expect(reply(comment, `guard-${text.length}`, text)).rejects.toMatchObject({ code: "invalid_input", message: expect.stringMatching(/^回复看起来包含私密信息（.+），未发送。$/) });
+    }
+    expect(posts()).toHaveLength(0);
+    await expect(connections.reply({ ...scope, commentId: comment.id, expectedCommentRevision: comment.revision, eventId: "agent-override", text: "-----BEGIN", allowSensitive: true }, assistant)).rejects.toHaveProperty("code", "invalid_input");
+    expect(await connections.reply({ ...scope, commentId: comment.id, expectedCommentRevision: comment.revision, eventId: "human-override", text: "-----BEGIN 示例", allowSensitive: true }, human)).toMatchObject({ status: "published", reply: { authorKind: "owner" } });
+    expect(await reply({ ...comment, revision: 3 }, "ordinary", "谢谢反馈，页面 https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/ 已更新。")).toMatchObject({ status: "published" });
+  });
+
+  it("stores review-mode drafts, publishes them unchanged as agent text and edited as owner text", async () => {
+    await enable("review"); const comment = await visitorComment();
+    const draft = await reply(comment);
+    expect(draft).toMatchObject({ status: "draft", message: "回复已保存为草稿，等用户审核后发布。" });
+    expect(posts()).toHaveLength(0);
+    const published = await connections.replyPending({ ...scope, eventId: "publish", commentId: comment.id, key: draft.pending!.key, action: "publish", text: "作者修改后的回复" });
+    expect(published).toMatchObject({ status: "published", reply: { authorKind: "owner", text: "作者修改后的回复" } });
+    expect(posts()[0].body).toEqual({ text: "作者修改后的回复", authorKind: "owner" });
+  });
+
+  it("expires a pending after 24 hours of failed delivery", async () => {
+    await enable(); const comment = await visitorComment();
+    backend.failReply.push("500");
+    expect(await reply(comment)).toMatchObject({ status: "sending" });
+    await connections.expirePending(scope, comment.id, replyKey(scope, comment.id, "reply-1"), "后端返回 HTTP 500");
+    expect((await current()).comments[0].pendingReply).toMatchObject({ state: "failed", failedReason: "24 小时内没能确认送达：后端返回 HTTP 500" });
   });
 });

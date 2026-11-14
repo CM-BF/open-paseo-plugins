@@ -1,28 +1,34 @@
 import { useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 import { ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
-import { inboxListRpc, inboxPolicyRpc, inboxTriageRpc, type InboxScope } from "../shared/inbox";
+import { inboxArchiveRpc, inboxAssistantOptionsRpc, inboxAutoEnableRpc, inboxAutoSetRpc, inboxAutoStatusRpc, inboxListRpc, inboxPolicyRpc, inboxReplyPendingRpc, inboxReplyRpc, inboxTriageRpc, type InboxAutoStatus, type InboxScope } from "../shared/inbox";
 import { inboxConnectRpc, inboxConnectionsRpc, inboxSyncRpc, inboxReconcileRpc, type InboxConnectInput, type InboxConnection } from "../shared/inbox-connection";
 import { useBoardRpc } from "./transport";
 import { InboxPanel } from "./inbox-panel";
+import { sourceStateText } from "./inbox-status";
 import { Action, Copy, Notice, errorMessage, localId, useColors } from "./ui";
 
 /** Mounted only in a trusted Board modal, never in authored canvas HTML. */
 export function BoardInbox({ scope, hostId }: { scope: InboxScope; hostId: string }) {
   const [tab, setTab] = useState<"comments" | "sources">("comments");
   const list = useBoardRpc(inboxListRpc, hostId), policy = useBoardRpc(inboxPolicyRpc, hostId), triage = useBoardRpc(inboxTriageRpc, hostId);
+  const reply = useBoardRpc(inboxReplyRpc, hostId), replyPending = useBoardRpc(inboxReplyPendingRpc, hostId), archive = useBoardRpc(inboxArchiveRpc, hostId);
+  const autoStatus = useBoardRpc(inboxAutoStatusRpc, hostId), autoSet = useBoardRpc(inboxAutoSetRpc, hostId);
+  const assistantOptions = useBoardRpc(inboxAssistantOptionsRpc, hostId), autoEnable = useBoardRpc(inboxAutoEnableRpc, hostId);
   return <View style={{ minHeight: 300, maxHeight: 760 }}>
     <View style={{ flexDirection: "row", flexWrap: "wrap", padding: 12, gap: 8 }}>
       <Action label="评论与权限" active={tab === "comments"} onPress={() => setTab("comments")} />
       <Action label="后端来源" active={tab === "sources"} onPress={() => setTab("sources")} />
     </View>
-    {tab === "comments" ? <InboxPanel key={JSON.stringify(scope)} scope={scope} onList={list} onPolicy={policy} onTriage={triage} /> : <InboxSources scope={scope} hostId={hostId} />}
+    {tab === "comments" ? <InboxPanel key={JSON.stringify(scope)} scope={scope} onList={list} onPolicy={policy} onTriage={triage} onReply={reply} onReplyPending={replyPending} onArchive={archive} onAutoStatus={autoStatus} onAutoSet={autoSet} onAssistantOptions={assistantOptions} onAutoEnable={autoEnable} /> : <InboxSources scope={scope} hostId={hostId} />}
   </View>;
 }
 
 function InboxSources({ scope, hostId }: { scope: InboxScope; hostId: string }) {
   const c = useColors(), list = useBoardRpc(inboxListRpc, hostId), connections = useBoardRpc(inboxConnectionsRpc, hostId);
   const connect = useBoardRpc(inboxConnectRpc, hostId), sync = useBoardRpc(inboxSyncRpc, hostId), reconcile = useBoardRpc(inboxReconcileRpc, hostId);
+  const autoStatus = useBoardRpc(inboxAutoStatusRpc, hostId);
+  const [auto, setAuto] = useState<InboxAutoStatus>();
   const [sources, setSources] = useState<InboxConnection[]>([]), [error, setError] = useState<string>(), [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false), [editing, setEditing] = useState<InboxConnection>();
   const [sourceId, setSourceId] = useState(""), [deploymentId, setDeploymentId] = useState(""), [label, setLabel] = useState(""), [endpoint, setEndpoint] = useState(""), [token, setToken] = useState("");
@@ -34,7 +40,12 @@ function InboxSources({ scope, hostId }: { scope: InboxScope; hostId: string }) 
     try { await action(); } catch (failure) { if (alive.current) setError(errorMessage(failure)); }
     finally { if (alive.current) { flight.current = false; setBusy(false); } }
   };
-  useEffect(() => { alive.current = true; void run(refresh); return () => { alive.current = false; }; }, []);
+  useEffect(() => {
+    alive.current = true; void run(refresh);
+    const poll = () => { void autoStatus(scope).then(value => { if (alive.current) setAuto(value); }, () => undefined); };
+    poll(); const timer = setInterval(poll, 5_000);
+    return () => { alive.current = false; clearInterval(timer); };
+  }, []);
   const reset = () => { pending.current = undefined; setEditing(undefined); setSourceId(""); setDeploymentId(""); setLabel(""); setEndpoint(""); setToken(""); };
   const edit = (source: InboxConnection) => { pending.current = undefined; setEditing(source); setSourceId(source.sourceId); setDeploymentId(source.deploymentId); setLabel(source.label); setEndpoint(source.endpoint); setToken(""); };
   const save = (enabled = true) => void run(async () => {
@@ -43,7 +54,7 @@ function InboxSources({ scope, hostId }: { scope: InboxScope; hostId: string }) 
     pending.current = input;
     await connect(input);
     if (!alive.current) return;
-    reset(); setNotice("来源配置已保存。点击同步读取评论；这不会通知或唤醒 agent。"); await refresh();
+    reset(); setNotice("来源已保存，会自动同步。只有开启「Agent 自动处理并公开回复」后，新评论才会交给评论助手。"); await refresh();
   });
   const update = (source: InboxConnection, action: "sync" | "disable" | "reconcile") => void run(async () => {
     if (action === "reconcile") { await reconcile({ ...scope, sourceId: source.sourceId, eventId: source.eventId }); }
@@ -52,7 +63,7 @@ function InboxSources({ scope, hostId }: { scope: InboxScope; hostId: string }) 
       if (!alive.current) return;
       if (action === "sync") {
         const result = await sync({ ...scope, sourceId: source.sourceId, expectedRevision: state.revision, eventId: localId("inbox-sync") });
-        if (alive.current) setNotice(`已导入 ${result.imported ?? 0} 条，重复 ${result.duplicates ?? 0} 条。可继续同步下一页。`);
+        if (alive.current) setNotice(`已导入 ${result.imported ?? 0} 条，重复 ${result.duplicates ?? 0} 条。`);
       } else {
         const { sourceId, deploymentId, label, endpoint } = source;
         await connect({ ...scope, sourceId, deploymentId, label, endpoint, enabled: !source.enabled, expectedConnectionEventId: source.eventId, expectedRevision: state.revision, eventId: localId("inbox-connect") });
@@ -62,16 +73,20 @@ function InboxSources({ scope, hostId }: { scope: InboxScope; hostId: string }) 
   });
   return <ScrollView testID="board-inbox-sources" contentContainerStyle={{ padding: 16, gap: 12 }}>
     <Copy>连接应用的评论导出接口</Copy>
-    <Copy small muted>从当前 Paseo host 通过 HTTPS 读取。SSH 用于部署和维护；此处不填写 SSH 密钥。导出令牌只存于该 host，不会提供给 agent 或放入网页。</Copy>
+    <Copy small muted>从当前 Paseo host 通过 HTTPS 读取。SSH 用于部署和维护；此处不填写 SSH 密钥。导出令牌只存于该 host，不会提供给 agent 或放入网页。来源保存后每隔几秒自动同步；令牌只存在这台电脑上，不会给 agent 或网页。</Copy>
     {error ? <Notice error text={error} /> : null}{notice ? <Notice text={notice} /> : null}
     <Action label="刷新来源状态" disabled={busy} onPress={() => void run(refresh)} />
     {sources.map(source => <View key={source.sourceId} style={{ padding: 12, gap: 6, borderWidth: 1, borderRadius: 8, borderColor: c.border }}>
       <Copy>{source.label} · {source.state === "pending" ? "配置待核对" : source.enabled ? "已启用" : "已停用"}</Copy>
       <Copy small muted>{source.endpoint}</Copy>
       <Copy small muted>来源 {source.sourceId} · 部署 {source.deploymentId}</Copy>
+      {(() => { const status = auto?.sync.sources.find(item => item.sourceId === source.sourceId); return status ? <>
+        <Copy small>{`自动同步：${auto!.sync.paused && status.state !== "off" ? "已暂停" : sourceStateText(status, Date.now(), auto!.sync.intervalSeconds)}`}</Copy>
+        {status.skipped ? <Copy small muted>{`已跳过 ${status.skipped} 条格式不符的评论`}</Copy> : null}
+      </> : null; })()}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {source.state === "pending" ? <Action label="核对上次配置" disabled={busy} onPress={() => update(source, "reconcile")} /> : <>
-          <Action label="同步一页评论" disabled={busy || !source.enabled} onPress={() => update(source, "sync")} />
+          <Action label="立即同步" disabled={busy || !source.enabled} onPress={() => update(source, "sync")} />
           <Action label={source.enabled ? "停用来源" : "启用来源"} disabled={busy} onPress={() => update(source, "disable")} />
           <Action label="编辑连接" disabled={busy} onPress={() => edit(source)} />
         </>}
@@ -87,6 +102,6 @@ function InboxSources({ scope, hostId }: { scope: InboxScope; hostId: string }) 
       <Action label={pending.current ? "重试原配置" : "保存来源"} disabled={busy || !sourceId.trim() || !deploymentId.trim() || !endpoint.trim() || !label.trim()} onPress={() => save(editing?.enabled ?? true)} />
       <Action label="清空表单" disabled={busy} onPress={reset} />
     </View>
-    <Copy small muted>本地开发可使用 localhost / 127.0.0.1 的 HTTP 接口。同步按来源保存游标，不覆盖应用数据，也不公开回复。</Copy>
+    <Copy small muted>本地开发可使用 localhost / 127.0.0.1 的 HTTP 接口。同步按来源保存游标，不覆盖应用数据。</Copy>
   </ScrollView>;
 }

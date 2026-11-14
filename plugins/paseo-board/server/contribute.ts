@@ -20,7 +20,8 @@ import { CompositionSources } from "./composition";
 import { compositionSourcesRpc, setCompositionSourcesRpc, inspectCompositionSourceRpc, syncCompositionSourceRpc, readCompositionSourceRpc } from "../shared/composition";
 import { InboxStore } from "./inbox-store";
 import { InboxConnections } from "./inbox-sync";
-import { inboxListRpc, inboxReadRpc, inboxPolicyRpc, inboxTriageRpc } from "../shared/inbox";
+import { InboxAutomation } from "./inbox-auto";
+import { inboxListRpc, inboxReadRpc, inboxPolicyRpc, inboxTriageRpc, inboxReplyRpc, inboxReplyPendingRpc, inboxArchiveRpc, inboxAutoStatusRpc, inboxAutoSetRpc, inboxAssistantOptionsRpc, inboxAutoEnableRpc } from "../shared/inbox";
 import { inboxConnectRpc, inboxConnectionsRpc, inboxSyncRpc, inboxReconcileRpc } from "../shared/inbox-connection";
 import { LiveDataPublisher } from "./live-data";
 import { liveGetRpc, liveSetRpc } from "../shared/live-data";
@@ -37,16 +38,22 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   const service = new BoardService(store, journal, log);
   const composition = new CompositionSources(join(root, "composition"), store, () => service.localHostId());
   service.useComposition(composition);
+  let automation: InboxAutomation | undefined;
   const inbox = new InboxStore(root, { resolveBoard: id => store.read(id), authorizeAgent: async (id, agentId) => {
     const board = await store.read(id);
     return Boolean(board?.interactions.some(item => item.kind === "fork" && item.agentId === agentId));
-  } });
+  }, authorizeAssistant: async (scope, agentId) => Boolean(await automation?.isAssistant(scope, agentId)) });
   service.useInbox(inbox);
   const inboxConnections = new InboxConnections(root, inbox);
+  service.useInboxConnections(inboxConnections);
   const live = new LiveDataPublisher(root, store, { log });
   service.useLive(live);
   const copies = new BoardCopies(join(root, "copies"), store, board => store.materializeAuthoredHtml(board.id, board.canvas));
   const releases = new ReleaseRepository(join(root, "releases"), store);
+  // One coordinator per plugin server: auto-sync, comment-assistant wakes and the reply outbox (DESIGN §11.8).
+  automation = new InboxAutomation({ rootDir: root, inbox, connections: inboxConnections, service, readBoard: id => store.read(id), releases, log });
+  const inboxAuto = automation;
+  service.useInboxAssistant((boardId, createdAt, agentId) => inboxAuto.isAssistant({ boardId, expectedCreatedAt: createdAt }, agentId));
   const pages = new GitHubPagesManager(join(root, "pages"), releases);
   const bridge = new BoardBridge(service);
   const removers: Array<() => void> = [];
@@ -57,6 +64,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   const publisher = typeof events.registerEvent === "function" ? events.registerEvent(boardChangedEvent) : undefined;
   const transport = options.eventTransport ?? (publisher ? { publish: (change: BoardChange) => publisher.emit(change) } : undefined);
   if (transport) removers.push(store.subscribe(change => transport.publish(change)));
+  removers.push(store.subscribe(change => inboxAuto.onBoardChange(change.summary)));
   const ready = (async () => {
     await Promise.all([store.init(), journal.init()]);
     if (stopped) return;
@@ -68,6 +76,8 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     if (!stopped) pages.start();
     // Publishing is independent of the rest of the plugin; a failure here is reported, not fatal.
     if (!stopped) await live.start().catch(() => log("live data publisher failed to start"));
+    // Before the first reconcile, so queued wakes find their comment assistant.
+    if (!stopped) await inboxAuto.start().catch(error => log(`inbox automation failed to start: ${String(error)}`));
   })();
   void ready.catch((error) => log(`startup failed: ${String(error)}`));
   let captured = false;
@@ -79,16 +89,30 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   };
   const checkReady = async () => { await ready; if (stopped) throw new Error("Board service stopped"); };
   registerPublicationRpc(server, { ready: checkReady, requireBoard: id => service.requireBoard(id), releases, pages, live: { releaseChannel: board => live.releaseChannel(board.id, board.createdAt) } });
-  // Human UI RPCs alone can configure access. CLI/MCP expose only bound, policy-checked reads and triage.
+  // Human UI RPCs alone can configure access. CLI/MCP expose only bound, policy-checked reads, triage and
+  // the comment assistant's replies; automatic handling is enabled only through auto-enable's confirm step.
   const inboxUser = { kind: "user" as const, id: "paseo-client" };
+  const scopeOf = (input: { boardId: string; expectedCreatedAt: string }) => ({ boardId: input.boardId, expectedCreatedAt: input.expectedCreatedAt });
   server.handle(inboxListRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inbox.list(input, inboxUser); });
   server.handle(inboxReadRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inbox.read(input, inboxUser); });
-  server.handle(inboxPolicyRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inbox.setPolicy(input, inboxUser); });
+  server.handle(inboxPolicyRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); const result = await inbox.setPolicy(input, inboxUser); inboxAuto.onPolicy(scopeOf(input)); return result; });
   server.handle(inboxTriageRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inbox.triage(input, inboxUser); });
-  server.handle(inboxConnectRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxConnections.connect(input); });
+  server.handle(inboxConnectRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); const result = await inboxConnections.connect(input); void inboxAuto.refresh(scopeOf(input)).catch(error => log(`inbox refresh: ${String(error)}`)); return result; });
   server.handle(inboxConnectionsRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxConnections.list(input); });
-  server.handle(inboxSyncRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxConnections.sync(input); });
-  server.handle(inboxReconcileRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxConnections.reconcile(input); });
+  server.handle(inboxSyncRpc, async (input, { paseo }) => {
+    capture(paseo); await checkReady();
+    const result = await inboxConnections.sync(input);
+    void inboxAuto.refresh(scopeOf(input)).then(() => { if (result.imported) inboxAuto.onImported(scopeOf(input)); }).catch(error => log(`inbox refresh: ${String(error)}`));
+    return result;
+  });
+  server.handle(inboxReconcileRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); const result = await inboxConnections.reconcile(input); void inboxAuto.refresh(scopeOf(input)).catch(error => log(`inbox refresh: ${String(error)}`)); return result; });
+  server.handle(inboxReplyRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxConnections.reply(input, inboxUser); });
+  server.handle(inboxReplyPendingRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxConnections.replyPending(input); });
+  server.handle(inboxArchiveRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); const result = await inbox.archive(input, inboxUser); void inboxAuto.refresh(scopeOf(input)).catch(error => log(`inbox refresh: ${String(error)}`)); return result; });
+  server.handle(inboxAutoStatusRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxAuto.status(input); });
+  server.handle(inboxAutoSetRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxAuto.set(input); });
+  server.handle(inboxAssistantOptionsRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxAuto.assistantOptions(input); });
+  server.handle(inboxAutoEnableRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return inboxAuto.enable(input); });
   server.handle(liveGetRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return live.get(input); });
   server.handle(liveSetRpc, async (input, { paseo }) => { capture(paseo); await checkReady(); return live.set(input); });
 
@@ -153,7 +177,7 @@ export function contributeServer(server: PluginServerContext, options: Contribut
     stopped = true;
     for (const remove of removers) remove();
     // Mark components stopped before awaiting startup; startup may be paused at any await.
-    await Promise.all([bridge.close(), service.dispose(), pages.close(), live.close()]);
+    await Promise.all([bridge.close(), service.dispose(), pages.close(), live.close(), inboxAuto.close()]);
     await ready.catch(() => undefined);
     await bridge.close();
     await store.close();
