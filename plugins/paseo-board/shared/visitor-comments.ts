@@ -433,7 +433,7 @@ export const COMMENTS_SHELL = String.raw`
   window.addEventListener('resize',relayout);
   const showFloat=t=>{if(composer)return;target=t;floatButton.hidden=false;placeFloat()};
   const hideFloat=()=>{floatButton.hidden=true;target=null};
-  floatButton.addEventListener('click',event=>{if(trusted(event)&&target)openComposer(target,'select',true)});
+  floatButton.addEventListener('click',event=>{if(trusted(event)&&target)openComposer(target,'select')});
   const updateComposer=()=>{
     if(!composer)return;const c=composer,blocked=preview||health===false;
     // Busy buttons stay focusable (aria-disabled), so focus never falls back to the page body mid-send.
@@ -470,8 +470,9 @@ export const COMMENTS_SHELL = String.raw`
     if(!result.keep){pending=pending.filter(p=>p!==item);c.item=null;saveCache();updateBadge()}
     c.retry=Boolean(result.retry&&c.item);c.status.textContent=result.error;updateComposer();
   };
-  const openComposer=(t,trigger,fromParent)=>{
+  const openComposer=(t,trigger)=>{
     if(composer)closeComposer(true,false);
+    if(panelOpen)closePanel(false);
     hideFloat();const anchor=cleanAnchor(t.anchor);if(!anchor||anchor.quote===undefined)return;
     const key=draftKey(anchor);
     const quote=anchor.quote.replace(/\s+/g,' ').trim(),shown=quote.length>120?quote.slice(0,120)+'…':quote;
@@ -505,13 +506,13 @@ export const COMMENTS_SHELL = String.raw`
   const when=value=>{const time=Date.parse(value);return Number.isNaN(time)?'':new Date(time).toLocaleString()};
   const clip=(text,max)=>{const t=text.replace(/\s+/g,' ').trim();return t.length>max?t.slice(0,max)+'…':t};
   const reveal=id=>{closePanel(false);post({type:'comment-reveal',id})};
-  const recomment=t=>{closePanel(false);openComposer({anchor:t.anchor,rect:{x:innerWidth/2-150,y:innerHeight/3,width:1,height:1}},'panel',true)};
+  const recomment=t=>{closePanel(false);openComposer({anchor:t.anchor,rect:{x:innerWidth/2-150,y:innerHeight/3,width:1,height:1}},'panel')};
   const retryPending=async(item,line,button)=>{
-    if(button.disabled)return;button.disabled=true;line.textContent=TEXT.sending;
+    if(button.getAttribute('aria-disabled')==='true')return;button.setAttribute('aria-disabled','true');line.textContent=TEXT.sending;
     const result=await deliver(item);
     if(result.ok){showToast(TEXT.sent);renderPanel();return}
     if(!result.keep){pending=pending.filter(p=>p!==item);if(item.draft)saveDraft(item.draft,item.payload.text);saveCache();updateBadge()}
-    line.textContent=result.error;button.disabled=false;if(!result.keep)renderPanel();
+    line.textContent=result.error;button.setAttribute('aria-disabled','false');if(!result.keep)renderPanel();
   };
   const renderPanel=()=>{
     panel.textContent='';
@@ -579,7 +580,7 @@ export const COMMENTS_SHELL = String.raw`
     const anchor=cleanAnchor(m.anchor),r=rect(m.rect);if(!anchor||anchor.quote===undefined||!anchor.selector||!r)return;
     const t={anchor,rect:r,bounds:rect(m.bounds)||r,touch:m.touch===true};
     if(m.trigger==='select'){if(!composer)showFloat(t);return}
-    if(active())openComposer(t,m.trigger,false);else if(!composer)showFloat(t);
+    if(active())openComposer(t,m.trigger);else if(!composer)showFloat(t);
   });
   updateBadge();
   if(threads.length||pending.length)postThreads();

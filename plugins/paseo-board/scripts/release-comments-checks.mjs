@@ -265,6 +265,14 @@ export async function runCommentsChecks({ assert, command, frameCommand, evaluat
   assert.ok((await evaluate(`sessionStorage.getItem(${JSON.stringify(`paseo-board-comments:v2:${comments.appKey}:${pageUrl}`)})`)).includes('第二步看不懂'));
   check('comments page: localStorage keeps only the anonymous visitor key and the hint flag, with no comment, reply, quote or URL; the thread cache is in sessionStorage');
 
+  // The composer and the thread panel are never open together.
+  await clickOuter('[data-pbc=badge]'); await until(async () => (await ui()).panel, 'the panel');
+  await select('#result', '第二步'); await sleep(450); await mouse(quoteBox.x, quoteBox.y, 'right');
+  await until(async () => (await ui()).composer, 'the composer over the panel');
+  assert.equal((await ui()).panel, null, 'Opening the composer closes the panel');
+  await escape(); await until(async () => !(await ui()).composer, 'Esc');
+  await clearSelection();
+
   // 9. A forged frame message cannot open the composer or panel without user activation.
   await waitInactive();
   await frame(`(()=>{const id=/"sessionId":"([a-f0-9]+)"/.exec(document.querySelector('script').textContent)[1],rid=/"releaseId":"(release-[a-f0-9]+)"/.exec(document.querySelector('script').textContent)[1];
