@@ -12,6 +12,8 @@ import { ALLOWED_TOOLS, PREFLIGHT_PROMPT } from "./inbox-lock";
 import { RunnerBindings, SealedRunner, type RunnerBinding, type StreamExec } from "./inbox-runner";
 import { startFakeBackend, type FakeBackend, type FakeRow } from "./inbox-fake-backend";
 import type { InboxScope } from "../shared/inbox";
+import { ReleaseRepository } from "./static-release";
+import { PageContexts } from "./inbox-page-context";
 
 /*
  * The sealed comment runner and public comment threads together (merge of sw/board-page-comments and sw/bpc-public):
@@ -50,14 +52,14 @@ class ManualClock implements AutoClock {
 
 type WakeComment = { commentId: string; revision: number; visitorTag: string | null; canSeeReply: boolean; visibility: "public" | "private" };
 type Wake = { boardId: string; expectedCreatedAt: string; inboxRevision: number; comments: WakeComment[] };
-type View = { id: string; revision: number; text: string; visibility: "public" | "private"; parentCommentId?: string; offPage?: true; notice?: string; authorName?: string; anchor?: unknown; replies?: unknown[]; thread?: { root: { commentId: string; text: string }; replies: Array<{ kind: string; text: string; commentId?: string }> } | null };
+type View = { page?: Record<string, unknown>; id: string; revision: number; text: string; visibility: "public" | "private"; parentCommentId?: string; offPage?: true; notice?: string; authorName?: string; anchor?: unknown; replies?: unknown[]; thread?: { root: { commentId: string; text: string }; replies: Array<{ kind: string; text: string; commentId?: string }> } | null };
 type Run = { stdin: string; wake: Wake; binding: RunnerBinding; reads: View[]; outcomes: Array<{ commentId: string; status?: string; error?: { code: string; message: string } }> };
 type Model = (run: Run, call: (operation: "inbox_list" | "inbox_read" | "inbox_triage" | "inbox_reply", input: Record<string, unknown>) => Promise<unknown>) => Promise<void>;
 
 describe("the sealed runner in public comment threads", () => {
   let root: string, clock: ManualClock, backend: FakeBackend, store: BoardStore, journal: ServiceJournal, service: BoardService;
   let inbox: InboxStore, connections: InboxConnections, bindings: RunnerBindings, automation: InboxAutomation, scope: InboxScope;
-  let runs: Run[], model: Model;
+  let runs: Run[], model: Model, ownReleases: Set<string>;
   const human = { kind: "user" as const, id: "paseo-client" };
 
   /** The model of a run: reads every comment of its batch through the runner path and replies to each. */
@@ -98,7 +100,7 @@ describe("the sealed runner in public comment threads", () => {
   };
 
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), "board-runner-public-")); clock = new ManualClock(); backend = await startFakeBackend(); runs = []; model = replying();
+    root = await mkdtemp(join(tmpdir(), "board-runner-public-")); clock = new ManualClock(); backend = await startFakeBackend(); runs = []; model = replying(); ownReleases = new Set([RELEASE]);
     store = new BoardStore(root); await store.init(); journal = new ServiceJournal(join(root, "service.json")); await journal.init();
     service = new BoardService(store, journal, () => undefined);
     const board = await store.create({ id: "board", title: "公开讨论", ownerAgentId: "owner", html: "<main>x</main>" });
@@ -116,7 +118,7 @@ describe("the sealed runner in public comment threads", () => {
     automation = new InboxAutomation({
       rootDir: root, inbox, connections, readBoard: id => store.read(id), runner, bindings, clock, random: () => 0.5, limits: { syncIntervalMs: 1_000, jitter: 0 },
       service: { hasHost: () => true, host: () => host as never },
-      releases: { meta: async id => id === RELEASE ? { source: { boardId: scope.boardId, boardCreatedAt: scope.expectedCreatedAt } } : undefined },
+      releases: { meta: async id => ownReleases.has(id) ? { source: { boardId: scope.boardId, boardCreatedAt: scope.expectedCreatedAt } } : undefined },
     });
     await connections.connect({ ...scope, expectedRevision: 0, eventId: "connect", expectedConnectionEventId: null, sourceId: "app", deploymentId: backend.deploymentId, label: "演示后端", endpoint: backend.endpoint, token: backend.token, enabled: true });
     await automation.start();
@@ -135,6 +137,26 @@ describe("the sealed runner in public comment threads", () => {
   const settle = async () => { await clock.advance(1_000, automation); await clock.advance(15_000, automation); };
   const byText = async (text: string) => (await inbox.list({ ...scope, limit: 100 }, human)).comments.find(comment => comment.text === text)!;
   const runTexts = async () => Promise.all(runs.map(async run => Promise.all(run.wake.comments.map(async item => (await inbox.read({ ...scope, commentId: item.commentId }, human)).comment.text))));
+
+  it("reads the author's page text around the thread's passage, for a public root and a visitor reply in its thread (polish P3)", async () => {
+    const board = (await store.read(scope.boardId))!;
+    const repository = new ReleaseRepository(join(root, "releases"));
+    const html = "<main><h1>评论测试页</h1><h2>评论存在哪里</h2><p>网页本身不保存评论。评论存在作者自己部署的评论后端里，作者的电脑关机以后访客仍然可以发评论。</p></main>";
+    const release = await repository.create({ board: { ...board, canvas: { ...board.canvas, html, patches: [] } }, boardId: board.id, expectedCanvasBase: { revision: board.canvas.revision, documentVersion: board.canvas.documentVersion }, publicData: {}, comments: { apiBase: "https://api.example.internal", appKey: "0123456789abcdef", visibility: "public" } });
+    const releaseId = release.manifest.releaseId;
+    ownReleases.add(releaseId); service.usePageContexts(new PageContexts(repository));
+    await enable("review");
+    const root1 = post(A, "网页本身不保存评论，那评论存在哪里？", { anchor: { quote: "网页本身不保存评论", suffix: "。评论存在", releaseId } });
+    post(B, "我也想知道：作者的电脑没开，新评论会不会丢？", { parentId: root1.externalId, anchor: { releaseId } });
+    await settle();
+    expect(runs.map(run => run.reads.map(view => view.text))).toEqual([["网页本身不保存评论，那评论存在哪里？"], ["我也想知道：作者的电脑没开，新评论会不会丢？"]]);
+    // Both reads carry the author's text around the passage the thread is about (the reply via its root's anchor).
+    for (const run of runs) expect(run.reads[0].page).toEqual({
+      contentTrust: "author-published", notice: expect.stringContaining("author's own local release"), title: "公开讨论", section: "评论存在哪里",
+      passageFound: true, before: "评论测试页\n评论存在哪里\n", passage: "网页本身不保存评论", after: "。评论存在作者自己部署的评论后端里，作者的电脑关机以后访客仍然可以发评论。",
+    });
+    expect(runs.map(run => run.outcomes.map(outcome => outcome.status))).toEqual([["draft"], ["draft"]]);
+  }, 30_000);
 
   it("never mixes private and public comments in one run, wakes for visible visitor replies, and never for hidden ones", async () => {
     await enable("publish");

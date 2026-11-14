@@ -21,6 +21,7 @@ import { PUBLIC_CHECK_FAILED, type InboxConnections } from "./inbox-sync";
 import { INBOX_CONTENT_NOTICE, InboxReadInputSchema, InboxListInputSchema, InboxTriageInputSchema, type InboxComment, type InboxScope } from "../shared/inbox";
 import { isRunnerActor, type RunnerBinding, type RunnerBindings } from "./inbox-runner";
 import type { PublicThreadContext, PublicThreadMessage } from "../shared/inbox-thread";
+import type { PageContexts, RunnerPageContext } from "./inbox-page-context";
 import { showBidiControls } from "../shared/bidi";
 import type { LiveDataPublisher } from "./live-data";
 import { captureOwnerHistory, chatHistoryAttachment, clip, parseBoardMarker, stripInheritedHistory, type BoardPromptExpander, type CuratedEntry } from "./side-history";
@@ -46,8 +47,12 @@ export const inboxWakeOutstanding = (delivery: Delivery) => ["saved", "creating"
  * the backend before each read (InboxConnections.publicOnPage), so a withdrawal after import counts too. A public
  * comment visitors cannot see (`offPage`, for example hidden by the owner during the run) is shown without its text,
  * name, anchor or replies, with `thread: null` and the HIDDEN_PUBLIC notice.
+ *
+ * `board_inbox_read` (not the list) adds `page` when the comment came from one of this Board's own releases: the page
+ * title and the published text around the commented passage, from the local release artifact (server/inbox-page-context.ts).
+ * It is the author's content, labelled `contentTrust: "author-published"`; visitor input only locates the passage.
  */
-export function runnerView(comment: InboxComment, thread: PublicThreadContext | null = null, offPage = false) {
+export function runnerView(comment: InboxComment, thread: PublicThreadContext | null = null, offPage = false, page: RunnerPageContext | null = null) {
   const mark = showBidiControls;
   if (comment.visibility === "public" && offPage) {
     return {
@@ -67,6 +72,7 @@ export function runnerView(comment: InboxComment, thread: PublicThreadContext | 
     ...(anchor ? { anchor } : {}), canSeeReply: Boolean(comment.visitorTag),
     replies: (comment.replies ?? []).map(reply => ({ authorKind: reply.authorKind, text: mark(reply.text), createdAt: reply.createdAt })),
     ...(isPublic ? { thread: thread ? { root: message(thread.root), replies: thread.replies.map(message) } : null } : {}),
+    ...(page ? { page } : {}),
   };
 }
 const RUNNER_NOT_ARMED = "评论助手还没有通过启动检查。";
@@ -169,6 +175,9 @@ export class BoardService {
   /** Sealed comment runs' in-memory tokens (lockdown design §3.2). */
   useRunnerBindings(bindings: RunnerBindings): void { this.runnerBindings = bindings; }
   runnerBinding(token: string): RunnerBinding | undefined { return this.runnerBindings?.get(token); }
+  private pageContexts?: Pick<PageContexts, "forComment">;
+  /** Author-trusted page text for the sealed runner's reads, from this Board's own local releases (polish P3). */
+  usePageContexts(contexts: Pick<PageContexts, "forComment">): void { this.pageContexts = contexts; }
   private live?: Pick<LiveDataPublisher, "publicView">;
   /** Read-only: agents learn which paths are public, and nothing that controls them. */
   useLive(live: Pick<LiveDataPublisher, "publicView">): void { this.live = live; }
@@ -318,7 +327,7 @@ export class BoardService {
     if (!live.commentIds.has(commentId)) throw new BoardStoreError("forbidden", "评论助手只能处理这一批里的评论。");
     if (operation === "inbox_read") {
       const read = await this.inbox.read(InboxReadInputSchema.parse({ ...input, ...scope }), identity);
-      return { revision: read.revision, comment: await this.runnerComment(read.comment, scope, identity, await this.runnerOnPage(scope, [read.comment])), contentNotice: INBOX_CONTENT_NOTICE };
+      return { revision: read.revision, comment: await this.runnerComment(read.comment, scope, identity, await this.runnerOnPage(scope, [read.comment]), true), contentNotice: INBOX_CONTENT_NOTICE };
     }
     if (operation === "inbox_reply") {
       if (!this.inboxConnections) throw new BoardStoreError("unavailable", "Board inbox replies are unavailable");
@@ -353,11 +362,21 @@ export class BoardService {
     if (!this.inboxConnections) throw new BoardStoreError("unavailable", PUBLIC_CHECK_FAILED);
     return this.inboxConnections.publicOnPage(scope, targets);
   }
-  /** A comment of the runner's batch as the runner sees it: a public one with its visible thread, or without its text when visitors cannot see it. */
-  private async runnerComment(comment: InboxComment, scope: InboxScope, identity: { kind: "agent"; agentId: string }, onPage: ReadonlySet<string> | null) {
-    if (comment.visibility !== "public" || !this.inbox) return runnerView(comment);
+  /**
+   * A comment of the runner's batch as the runner sees it: a public one with its visible thread, or without its text
+   * when visitors cannot see it. `withPage` (board_inbox_read) adds the author's page text around the passage; a reply
+   * in a public thread is located by its thread root's anchor.
+   */
+  private async runnerComment(comment: InboxComment, scope: InboxScope, identity: { kind: "agent"; agentId: string }, onPage: ReadonlySet<string> | null, withPage = false) {
+    if (comment.visibility !== "public" || !this.inbox) return runnerView(comment, null, false, withPage ? await this.runnerPage(scope, [comment.anchor]) : null);
     const view = await this.inbox.publicView({ ...scope, commentId: comment.id }, identity, onPage ?? new Set());
-    return runnerView(comment, view.thread, view.offPage);
+    const page = withPage && !view.offPage ? await this.runnerPage(scope, [comment.anchor, view.rootAnchor]) : null;
+    return runnerView(comment, view.thread, view.offPage, page);
+  }
+  /** Page context never blocks a read: an unreadable release simply gives none. */
+  private async runnerPage(scope: InboxScope, anchors: ReadonlyArray<InboxComment["anchor"]>): Promise<RunnerPageContext | null> {
+    if (!this.pageContexts) return null;
+    try { return await this.pageContexts.forComment(scope, anchors); } catch { return null; }
   }
   private async withHtmlFile(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (input.htmlFile === undefined) return input;

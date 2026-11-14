@@ -22,6 +22,7 @@ import { InboxStore } from "./inbox-store";
 import { InboxConnections } from "./inbox-sync";
 import { InboxAutomation, type InboxAutomationOptions } from "./inbox-auto";
 import { RunnerBindings, SealedRunner, type StreamExec } from "./inbox-runner";
+import { PageContexts } from "./inbox-page-context";
 import { INBOX_AUTO_LIMITS, inboxListRpc, inboxReadRpc, inboxPolicyRpc, inboxTriageRpc, inboxReplyRpc, inboxReplyPendingRpc, inboxArchiveRpc, inboxAutoStatusRpc, inboxAutoSetRpc, inboxAssistantOptionsRpc, inboxAutoEnableRpc } from "../shared/inbox";
 import { inboxConnectRpc, inboxConnectionsRpc, inboxSyncRpc, inboxReconcileRpc } from "../shared/inbox-connection";
 import { LiveDataPublisher } from "./live-data";
@@ -61,6 +62,8 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   service.useLive(live);
   const copies = new BoardCopies(join(root, "copies"), store, board => store.materializeAuthoredHtml(board.id, board.canvas));
   const releases = new ReleaseRepository(join(root, "releases"), store);
+  // The sealed runner reads the page a comment was written on from this Board's own local releases (polish P3).
+  service.usePageContexts(new PageContexts(releases));
   // The sealed comment runner (lockdown design §3): in-memory run tokens shared by the bridge, the service and
   // the coordinator; one `claude -p` process per batch through the Board's stable MCP launcher.
   const runnerBindings = new RunnerBindings();

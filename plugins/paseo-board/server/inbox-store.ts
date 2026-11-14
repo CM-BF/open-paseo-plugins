@@ -6,7 +6,7 @@ import {
   INBOX_AUTO_LIMITS, INBOX_CONTENT_NOTICE, INBOX_LIMITS, InboxArchiveInputSchema, InboxAuditSchema, InboxCommentSchema, InboxImportInputSchema,
   InboxListInputSchema, InboxPolicyInputSchema, InboxPolicySchema, InboxQuarantineSchema, InboxReadInputSchema,
   InboxSourceInputSchema, InboxSourceSchema, InboxTriageInputSchema, InboxScopeSchema, normalizeExternalComment,
-  type InboxActor, type InboxArchiveInput, type InboxArchiveResult, type InboxAudit, type InboxAutoMode, type InboxComment, type InboxExternalComment,
+  type InboxActor, type InboxAnchor, type InboxArchiveInput, type InboxArchiveResult, type InboxAudit, type InboxAutoMode, type InboxComment, type InboxExternalComment,
   type InboxImportInput, type InboxListInput, type InboxMutationResult, type InboxPage, type InboxPendingReply, type InboxPolicy, type InboxPolicyInput,
   type InboxReadInput, type InboxReadResult, type InboxReply, type InboxScope, type InboxSourceInput, type InboxTriageInput,
 } from "../shared/inbox";
@@ -220,7 +220,7 @@ export class InboxStore {
    * just before) not shown on the page right now. Its text is then withheld from the runner, and `thread` is null.
    * Thread members are filtered the same way, so a row withdrawn on the backend after import never reaches the runner.
    */
-  async publicView(raw: InboxReadInput, actor: InboxActor, onPage?: ReadonlySet<string>): Promise<{ offPage: boolean; thread: PublicThreadContext | null }> {
+  async publicView(raw: InboxReadInput, actor: InboxActor, onPage?: ReadonlySet<string>): Promise<{ offPage: boolean; thread: PublicThreadContext | null; rootAnchor?: InboxAnchor }> {
     const input = parseInput(InboxReadInputSchema, raw);
     return this.transact(input, actor, "read", async (state, _role, _commit, pub) => {
       const ledger = await pub.get();
@@ -232,7 +232,10 @@ export class InboxStore {
       if (!shown(comment)) return { offPage: true, thread: null };
       const rootExternal = record.parentId ?? comment.externalId;
       const members = state.comments.filter(item => item.sourceId === comment.sourceId && (item.externalId === rootExternal || findRecord(ledger, item.sourceId, item.externalId)?.parentId === rootExternal) && shown(item));
-      return { offPage: false, thread: structuredClone(publicThreadContext(members.map(item => decorate(item, ledger)), comment.id)) };
+      const thread = structuredClone(publicThreadContext(members.map(item => decorate(item, ledger)), comment.id));
+      // The root's anchor locates the passage a reply is about (page context, polish P3); it is never shown to the runner.
+      const rootAnchor = thread ? members.find(item => item.externalId === rootExternal)?.anchor : undefined;
+      return { offPage: false, thread, ...(rootAnchor ? { rootAnchor: structuredClone(rootAnchor) } : {}) };
     });
   }
 

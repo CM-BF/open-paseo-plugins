@@ -446,10 +446,15 @@ try {
     const root = (await inboxComments()).find(item => item.externalId === thread.id);
     assert.equal(view.visibility, 'public'); assert.equal(view.parentCommentId, root.id);
     assert.equal(view.thread.root.text, '第二步具体要保存到哪里？');
+    // Polish P3: through the real MCP launcher the read also carries the author's page text around the thread's passage,
+    // from the plugin's own release (the reply's anchor names only the release; the root's quote locates the passage).
+    assert.deepEqual([view.page?.contentTrust, view.page?.title, view.page?.passageFound, view.page?.passage], ['author-published', release.title, true, '第二步的意思'], JSON.stringify(view.page));
+    assert.ok(view.page.before.endsWith('首先，') && view.page.after.startsWith('是先保存草稿，然后再提交审核。'), JSON.stringify(view.page));
     const messages = view.thread.replies.map(item => `${item.kind}:${item.text}`);
     for (const expected of ['visitor:我也想知道，是本地还是云端？', 'owner:保存在你的个人空间里，之后可以再提交。', 'visitor:第二步保存以后，别人能看到我的草稿吗？']) assert.ok(messages.includes(expected), `${expected} in ${JSON.stringify(messages)}`);
     for (const result of publicRun.results) assert.equal(result.includes('13900000000'), false, 'the public run never sees the private comment');
     assert.equal(privateRun.reads[0].visibility, 'private'); assert.equal('thread' in privateRun.reads[0], false);
+    assert.equal('page' in privateRun.reads[0], false, 'a comment without a release of this Board gets no page text');
     assert.equal(publicRun.outcomes[0].startsWith('refused: ') && publicRun.outcomes[0].includes(QUOTE_REFUSAL), true, publicRun.outcomes[0]);
     assert.deepEqual([privateRun.outcomes, publicRun.outcomes.slice(1)], [['published'], ['draft']]);
     // The draft is not on the page until the author publishes it.
