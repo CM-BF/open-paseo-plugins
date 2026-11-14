@@ -419,7 +419,9 @@ on any address of an allowed origin; the owner closes a share's page instead: bo
 routes take an optional body `{pages: [url, …]}` (at most 8). `DELETE` with `pages`
 closes those page keys to every release (posts 403 `public_not_allowed`, listing 404
 `public_disabled`, the page version moves so cached listings end), and `PUT` with
-`pages` reopens them. The Board sends the share's link with both, so a share turned
+`pages` reopens them. The Board sends the share's link with both (and, when it
+withdraws a release, also that release's version link `<link>v/<hex>/`, where releases
+built before the stable-page change kept their own threads), so a share turned
 private cannot keep receiving or serving public comments through another share's
 release. `DELETE` without a body is still accepted. Posts to never-published addresses
 of an allowed origin remain possible through the API; they appear on no real page,
