@@ -7,7 +7,10 @@
 // with the launcher the plugin installs (schema 3), the Board's public release served from another loopback origin,
 // the real plugin server in this process (release creation and registration, inbox source, import, public-state
 // outbox), and three private Chromium contexts (visitors A and B on desktops, C on a phone) driven over the DevTools
-// pipe with trusted input. Nothing touches ~/.paseo, a daemon or any address beyond loopback; nothing is installed.
+// pipe with trusted input. The sealed comment runner handles public threads too: a stand-in for `claude -p` is
+// launched by the plugin's own SealedRunner with the lock argv and acts only through the MCP server in its
+// --mcp-config (the plugin's real launcher → bridge socket → the runner path), as in scripts/page-comments-e2e.mjs.
+// Nothing touches ~/.paseo, a daemon or any address beyond loopback; nothing is installed.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -19,6 +22,8 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { build } from 'esbuild';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createFakePaseo } from './fixtures/fake-paseo-sdk.mjs';
 import { LegacyInboxPageSchema } from './fixtures/legacy-inbox-page.mjs';
 
@@ -48,8 +53,8 @@ for (const method of ['log', 'warn', 'error']) { const original = console[method
 let token, backendOutput = '';
 
 try {
-  const { contributeServer, ReleaseRepository } = await step('bundle the plugin server from source', async () => {
-    const core = await build({ stdin: { contents: "export {contributeServer} from './server/contribute';export {ReleaseRepository} from './server/static-release';", resolveDir: root, loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', write: false, loader: { '.txt': 'text' }, logLevel: 'silent' });
+  const { contributeServer, ReleaseRepository, PREFLIGHT_PROMPT } = await step('bundle the plugin server from source', async () => {
+    const core = await build({ stdin: { contents: "export {contributeServer} from './server/contribute';export {ReleaseRepository} from './server/static-release';export {PREFLIGHT_PROMPT} from './server/inbox-lock';", resolveDir: root, loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', write: false, loader: { '.txt': 'text' }, logLevel: 'silent' });
     const file = join(temporary, 'plugin-server.cjs'); await writeFile(file, core.outputFiles[0].text);
     return createRequire(import.meta.url)(file);
   });
@@ -67,16 +72,66 @@ try {
   cleanup.push(() => new Promise(resolve => { pageServer.closeAllConnections?.(); pageServer.close(resolve); }));
   const pageOrigin = `http://localhost:${pageServer.address().port}`, publicUrl = `${pageOrigin}/public/`, privateUrl = `${pageOrigin}/private/`;
 
+  // The stand-in for `claude -p` (see the file header): a locked init, then each comment of its batch through the
+  // board_inbox_* tools. A public comment first gets a hostile turn that repeats a private comment (the inbox refuses
+  // it); every comment then gets a plain reply.
+  const PRIVATE_SECRET = '私密：我的手机号是 13900000000，只想让作者知道';
+  const runner = { calls: [], runs: [], errors: [] };
+  function fakeClaude(argv, options) {
+    const call = { argv: [...argv], stdin: options.stdin, preflight: options.stdin === PREFLIGHT_PROMPT, killed: false };
+    runner.calls.push(call);
+    let killResolve, bytes = 0;
+    const killed = new Promise(resolve => { killResolve = resolve; });
+    const emit = value => { if (call.killed) return; const line = JSON.stringify(value); bytes += line.length + 1; options.onBytes(bytes); options.onLine(line); };
+    const flag = name => argv[argv.indexOf(name) + 1];
+    const config = JSON.parse(flag('--mcp-config')).mcpServers;
+    const work = (async () => {
+      emit({ type: 'system', subtype: 'init', cwd: options.cwd, original_cwd: options.cwd, tools: flag('--allowedTools').split(','), mcp_servers: Object.keys(config).map(name => ({ name, status: 'connected' })), model: flag('--model'), permissionMode: flag('--permission-mode'), slash_commands: [], skills: [], plugins: [], output_style: 'default', claude_code_version: '2.1.325' });
+      if (call.preflight) { emit({ type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.0004, num_turns: 1, result: '好的' }); return { code: 0, signal: null }; }
+      const wake = JSON.parse(options.stdin.split('<board-inbox-wake-json>\n')[1].split('\n</board-inbox-wake-json>')[0]);
+      const run = { stdin: options.stdin, wake, reads: [], results: [], outcomes: [], replies: [] };
+      runner.runs.push(run);
+      const [[server, spec]] = Object.entries(config);
+      const client = new Client({ name: 'fake-claude', version: '1.0.0' });
+      const transport = new StdioClientTransport({ command: spec.command, args: spec.args ?? [], env: { ...options.env, ...spec.env }, stderr: 'pipe' });
+      transport.stderr?.on('data', chunk => logs.push(String(chunk)));
+      await client.connect(transport, { timeout: 5000 });
+      try {
+        const tool = async (name, args) => {
+          emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: `toolu_${runner.runs.length}_${run.results.length}`, name: `mcp__${server}__${name}`, input: args }] } });
+          const result = await client.callTool({ name, arguments: args });
+          run.results.push(JSON.stringify(result));
+          if (result.isError) throw new Error(result.content?.[0]?.text);
+          return JSON.parse(result.content[0].text);
+        };
+        const base = { boardId: wake.boardId, expectedCreatedAt: wake.expectedCreatedAt };
+        for (const item of wake.comments) {
+          const read = (await tool('board_inbox_read', { ...base, commentId: item.commentId })).comment;
+          run.reads.push(read);
+          const reply = text => tool('board_inbox_reply', { ...base, commentId: item.commentId, expectedCommentRevision: read.revision, eventId: `reply-${item.commentId}-${text.length}`, text }).then(result => result.status, error => `refused: ${error.message}`);
+          if (item.visibility === 'public') run.outcomes.push(await reply(`有访客私下说：“${PRIVATE_SECRET}”`));
+          const text = item.visibility === 'public' ? `AI 助手（第 ${runner.runs.length} 批）：第二步是指先保存草稿，之后还能修改。` : '谢谢，我们会单独联系你。';
+          run.replies.push(text); run.outcomes.push(await reply(text));
+        }
+      } finally { await client.close().catch(() => undefined); }
+      emit({ type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.003, num_turns: 3, result: '已处理' });
+      return { code: 0, signal: null };
+    })().catch(error => { runner.errors.push(String(error?.stack ?? error)); return { code: 1, signal: null }; });
+    return { kill: () => { call.killed = true; killResolve(); }, exited: Promise.race([work, killed.then(() => ({ code: null, signal: 'SIGKILL' }))]) };
+  }
+
   const handlers = new Map(), befores = new Map(), listeners = new Map();
   const server = { handle: (contract, handler) => { handlers.set(contract.name, { contract, handler }); }, before: (name, hook) => { befores.set(name, hook); return () => befores.delete(name); }, on: (name, hook) => { listeners.set(name, hook); return () => listeners.delete(name); } };
   const sdk = createFakePaseo({ before: async (name, request) => (await befores.get(name)?.({ request }, { paseo: sdk.api })) ?? request, emit: async (name, event) => { await listeners.get(name)?.(event, { paseo: sdk.api }); } });
   sdk.addAgent('owner', { title: 'Board owner', provider: 'claude', model: 'sonnet', currentModeId: 'default', availableModes: [] });
+  // The Claude provider's model list as the daemon reports it (paseo.providers.listModels('claude')).
+  sdk.providerModels.set('claude', [{ provider: 'claude', id: 'claude-sonnet-5-5', label: 'Sonnet 5.5' }, { provider: 'claude', id: 'claude-haiku-5-5', label: 'Haiku 5.5' }]);
   const rpc = async (name, input) => {
     const entry = handlers.get(name); assert.ok(entry, `RPC ${name} is registered`);
     const parsed = await entry.contract.input.parseAsync(input);
     return entry.contract.output.parseAsync(await entry.handler(parsed, { paseo: sdk.api }));
   };
-  const dispose = contributeServer(server, { rootDir: paths.data, runtimeDir: paths.runtime, home: paths.home, linkSkills: false, inboxAutomation: { limits: { syncIntervalMs: 300 } } });
+  const dispose = contributeServer(server, { rootDir: paths.data, runtimeDir: paths.runtime, home: paths.home, linkSkills: false, inboxAutomation: { limits: { syncIntervalMs: 300, wakeDebounceMs: 400, wakeMaxDelayMs: 1_500 } }, inboxRunner: { exec: fakeClaude, env: { HOME: paths.home, PATH: process.env.PATH ?? '' } } });
   cleanup.push(() => dispose());
 
   const boardHtml = (lead) => `<style>body{margin:0;font:17px/1.7 Georgia,"Songti SC",serif;color:#1d1d1f;background:#fff}main{padding:28px 40px;max-width:820px}h1{font-size:30px}.spacer{height:900px}</style>
@@ -361,6 +416,93 @@ try {
     }
     const chips = await A.evaluate("[...document.querySelectorAll('[data-pbc=card][data-active] .pbc-chip')].map(n=>n.dataset.kind)");
     assert.ok(chips.includes('owner') && chips.includes('agent'));
+  });
+
+  // The sealed comment runner in public threads (merge of the sealed runner and public threads).
+  const visitorPost = (visitor, key, body) => fetch(`${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': key, 'x-board-visitor': visitor.repeat(64), origin: pageOrigin }, body: JSON.stringify(body) }).then(async response => { const text = await response.text(); assert.equal(response.status, 201, text); return JSON.parse(text).comment; });
+  const autoStatus = () => rpc('board.inbox.auto-status', scope);
+  const settled = async (count, label) => until(async () => runner.runs.length >= count && runner.calls.every(call => call.preflight || runner.runs.some(run => run.stdin === call.stdin)) && (await autoStatus()).wake.state === 'idle' && (await autoStatus()).runs.every(run => !['starting', 'running'].includes(run.state)), label, 20_000, 100);
+  const QUOTE_REFUSAL = '回复里有一段和私密或已隐藏评论相同（连续 16 个字以上）。公开讨论里所有访客都能看到回复，请换一种说法。';
+
+  await step('the owner turns on automatic handling: the sealed runner\'s preflight passes through the plugin\'s real MCP launcher, and replies in public discussions stay drafts by default', async () => {
+    const options = await rpc('board.inbox.assistant-options', scope);
+    assert.equal(options.refusal, null); assert.equal(options.recommendedModelId, 'claude-haiku-5-5');
+    const page = await rpc('board.inbox.list', { ...scope, limit: 1 });
+    const status = await rpc('board.inbox.auto-enable', { ...scope, expectedRevision: page.revision, eventId: 'enable-public-e2e', replyMode: 'publish', modelId: 'claude-haiku-5-5' });
+    assert.equal(status.assistant.kind, 'sealed'); assert.equal(status.publicDirect, false); assert.equal(status.wake.state, 'idle');
+    assert.equal(runner.calls.filter(call => call.preflight).length, 1); assert.equal(runner.runs.length, 0, 'the backlog is never handed to the runner');
+  });
+
+  const runnerReply = await step('one visitor\'s private comment and public reply go to separate runs; the public run reads only the thread\'s visible messages, cannot repeat the private comment, and its reply is a draft until the author publishes it for every visitor', async () => {
+    const before = runner.runs.length;
+    await visitorPost('9', 'pc-runner-private-0001', { text: PRIVATE_SECRET, pageUrl: privateUrl, anchor: { selector: '#details', quote: '人员费用' } });
+    const posted = await visitorPost('9', 'pr-runner-public-0001', { text: '第二步保存以后，别人能看到我的草稿吗？', pageUrl: publicUrl, visibility: 'public', parentId: thread.id, anchor: { releaseId: release.releaseId } });
+    await settled(before + 2, 'two runs');
+    const [privateRun, publicRun] = runner.runs.slice(before);
+    assert.deepEqual([privateRun.wake.comments.map(item => item.visibility), publicRun.wake.comments.map(item => item.visibility)], [['private'], ['public']]);
+    assert.ok(publicRun.stdin.includes('A comment with visibility "public" is part of a public discussion'));
+    for (const text of [PRIVATE_SECRET, '第二步保存以后']) assert.equal(publicRun.stdin.includes(text) || privateRun.stdin.includes(text), false, 'stdin holds IDs only');
+    const [view] = publicRun.reads;
+    const root = (await inboxComments()).find(item => item.externalId === thread.id);
+    assert.equal(view.visibility, 'public'); assert.equal(view.parentCommentId, root.id);
+    assert.equal(view.thread.root.text, '第二步具体要保存到哪里？');
+    const messages = view.thread.replies.map(item => `${item.kind}:${item.text}`);
+    for (const expected of ['visitor:我也想知道，是本地还是云端？', 'owner:保存在你的个人空间里，之后可以再提交。', 'visitor:第二步保存以后，别人能看到我的草稿吗？']) assert.ok(messages.includes(expected), `${expected} in ${JSON.stringify(messages)}`);
+    for (const result of publicRun.results) assert.equal(result.includes('13900000000'), false, 'the public run never sees the private comment');
+    assert.equal(privateRun.reads[0].visibility, 'private'); assert.equal('thread' in privateRun.reads[0], false);
+    assert.equal(publicRun.outcomes[0].startsWith('refused: ') && publicRun.outcomes[0].includes(QUOTE_REFUSAL), true, publicRun.outcomes[0]);
+    assert.deepEqual([privateRun.outcomes, publicRun.outcomes.slice(1)], [['published'], ['draft']]);
+    // The draft is not on the page until the author publishes it.
+    assert.equal(JSON.stringify((await listingOf()).body).includes(publicRun.replies[0]), false);
+    const comment = (await inboxComments()).find(item => item.externalId === posted.externalId);
+    assert.equal(comment.pendingReply.state, 'draft');
+    const published = await rpc('board.inbox.reply-pending', { ...scope, eventId: 'publish-runner-draft', commentId: comment.id, key: comment.pendingReply.key, action: 'publish' });
+    assert.equal(published.status, 'published');
+    for (const visitor of [A, B]) await visitor.waitFor(async () => (await visitor.card(thread.id))?.text.includes(publicRun.replies[0]), 'the published AI reply');
+    assert.ok((await A.card(thread.id)).text.includes(`作者的 AI 助手回复 访客·${posted.tag.slice(0, 6)}`));
+    const status = await autoStatus();
+    assert.deepEqual(status.runs.slice(0, 2).map(run => [run.state, run.actions.replied, run.actions.drafted]), [['done', 0, 1], ['done', 1, 0]]);
+    assert.deepEqual(runner.errors, []);
+    return posted;
+  });
+
+  await step('a public reply the author hides before it is imported never wakes the runner', async () => {
+    await rpc('board.inbox.auto-set', { ...scope, syncPaused: true });
+    await sleep(600);
+    const before = runner.runs.length;
+    const hidden = await visitorPost('8', 'pr-runner-hidden-0001', { text: '这条回复会被作者先隐藏起来', pageUrl: publicUrl, visibility: 'public', parentId: thread.id, anchor: { releaseId: release.releaseId } });
+    const result = await rpc('board.inbox.public-state', { ...scope, eventId: 'hide-before-import', sourceId: 'public-app', externalId: hidden.externalId, hidden: true, known: { hidden: false, resolved: false, parentId: thread.id, publicTag: hidden.tag } });
+    assert.equal(result.status, 'applied');
+    await rpc('board.inbox.auto-set', { ...scope, syncPaused: false });
+    await until(async () => (await inboxComments()).some(item => item.externalId === hidden.externalId), 'the import');
+    await sleep(2_500);
+    assert.equal(runner.runs.length, before, 'no run for a hidden comment');
+    const imported = (await inboxComments()).find(item => item.externalId === hidden.externalId);
+    assert.equal(imported.status, 'new'); assert.equal(imported.publicState.hidden, true);
+    const status = await autoStatus();
+    assert.equal(status.wake.state, 'idle'); assert.equal(status.wake.pendingComments, 0);
+  });
+
+  await step('with 「公开讨论里的 AI 回复直接发布（我了解风险）」 on, the runner\'s public reply reaches every visitor without the author\'s confirmation; turning automatic handling off stops further runs', async () => {
+    const on = await rpc('board.inbox.auto-set', { ...scope, publicDirect: true });
+    assert.equal(on.publicDirect, true);
+    const before = runner.runs.length;
+    await visitorPost('9', 'pr-runner-direct-0001', { text: '那第三步呢？', pageUrl: publicUrl, visibility: 'public', parentId: thread.id, anchor: { releaseId: release.releaseId } });
+    await settled(before + 1, 'the run');
+    const run = runner.runs.at(-1);
+    assert.ok(run.outcomes[0].includes(QUOTE_REFUSAL), run.outcomes[0]);
+    assert.ok(['published', 'sending'].includes(run.outcomes[1]), run.outcomes[1]);
+    for (const visitor of [A, B]) await visitor.waitFor(async () => (await visitor.card(thread.id))?.text.includes(run.replies[0]), 'the direct AI reply');
+    assert.equal(JSON.stringify((await listingOf()).body).includes('13900000000'), false);
+    const page = await rpc('board.inbox.list', { ...scope, limit: 1 });
+    await rpc('board.inbox.policy', { ...scope, expectedRevision: page.revision, eventId: 'auto-off-public-e2e', policy: { read: true, triage: false, auto: 'off' } });
+    await until(async () => (await autoStatus()).wake.state === 'off', 'automatic handling off');
+    const count = runner.runs.length;
+    await visitorPost('9', 'pr-runner-after-off-0001', { text: '关掉以后还会回复吗？', pageUrl: publicUrl, visibility: 'public', parentId: thread.id, anchor: { releaseId: release.releaseId } });
+    await until(async () => (await inboxComments()).some(item => item.text === '关掉以后还会回复吗？'), 'the import');
+    await sleep(2_000);
+    assert.equal(runner.runs.length, count, 'no run after automatic handling was turned off');
+    assert.deepEqual(runner.errors, []);
   });
 
   await step('the owner hides B\'s reply: gone for A, B and C within one poll (with the assistant reply attached to it), not in the raw listing; showing it brings it back', async () => {

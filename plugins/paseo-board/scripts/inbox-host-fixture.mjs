@@ -32,14 +32,14 @@ export function installInboxHostFixture(assistantOptions) {
     sync: { paused: false, intervalSeconds: 5, sources: [{ sourceId: 'seed-source', label: '访客反馈' }, ...state.connections.map(({ sourceId, label, enabled, state: ready }) => ({ sourceId, label, off: !enabled || ready !== 'ready' }))].map(({ sourceId, label, off }) => ({ sourceId, label, state: off ? 'off' : 'idle', lastAttemptAt: now, lastSuccessAt: now, nextAttemptAt: null, lastImportAt: null, failures: 0, lastError: null, repliesSupported: true, skipped: 0, sanitized: 0 })) },
     wake: { state: (state.policy.auto ?? 'off') === 'off' ? (state.policy.triage ? 'legacy-internal' : 'off') : 'idle', pausedReason: null, pausedAt: null, resumesAt: null, error: null, findings: [], pendingComments: 0, runningComments: 0, nextWakeAt: null, wakesLastHour: 0, maxWakesPerHour: 12, hostWakesLastHour: 0, maxHostWakesPerHour: 30, lastWakeAt: null, lastBudgetPause: null, cliFailures: 0, skipped: { otherBoard: 0, unattributed: 0 } },
     assistant: state.runner,
-    legacy: null, runs: [], reviewing: 0,
+    legacy: null, runs: [], reviewing: 0, publicDirect: state.publicDirect,
     replies: { sending: 0, drafts: 1, failed: 0, items: [] },
   });
   const state = {
     scope, revision: 1, policy: { read: false, triage: false }, comments: [comment, draft, anonymous], calls: [],
     connections: [], nextConnectFailure: null, nextSyncFailure: false, holdPolicy: false,
     nextReplyFailure: null, autoOverride: null, replyEvents: new Map(),
-    runner: null, holdEnable: false, nextEnableRefusal: null,
+    runner: null, holdEnable: false, nextEnableRefusal: null, publicDirect: false,
   };
   let releaseEnable;
   let releasePolicy;
@@ -89,6 +89,7 @@ export function installInboxHostFixture(assistantOptions) {
       if (input.resumeWake || input.wakePaused === false) state.autoOverride = { ...override, wake: { ...(override.wake ?? {}), state: 'idle', pausedReason: null, error: null } };
       if (input.dismissLegacyNotice) state.autoOverride = { ...override, legacy: null };
       if (input.syncPaused !== undefined) state.autoOverride = { ...(state.autoOverride ?? {}), sync: { paused: input.syncPaused } };
+      if (input.publicDirect !== undefined) state.publicDirect = input.publicDirect;
       return status();
     }
     if (name === 'board.inbox.assistant-options') {
@@ -101,7 +102,7 @@ export function installInboxHostFixture(assistantOptions) {
       if (state.nextEnableRefusal) { const refusal = state.nextEnableRefusal; state.nextEnableRefusal = null; throw new Error(refusal); }
       const model = assistantOptions.models.find(item => item.id === input.modelId);
       if (!model) throw new Error(`所选模型不可用：${input.modelId}。请换一个模型。`);
-      state.policy = { read: true, triage: true, auto: input.replyMode }; finish(); state.autoOverride = null;
+      state.policy = { read: true, triage: true, auto: input.replyMode }; finish(); state.autoOverride = null; state.publicDirect = input.publicDirect === true;
       state.runner = { kind: 'sealed', modelId: model.id, modelLabel: model.label, effort: input.effort, providerId: assistantOptions.providerId, lastCheck: { at: new Date(2026, 10, 14, 9, 12).toISOString(), ok: true, cliVersion: '2.1.325', findings: [] }, costLastHourUsd: 0, costTodayUsd: 0.0005, dailyCapUsd: model.dailyCapUsd, avgCostPerCommentUsd: null };
       return status();
     }

@@ -12,7 +12,7 @@ const DAEMON_MODELS = [
 /** The server's and the panel's own code (server/inbox-assistant.ts, client/inbox-status.ts), checked against the RPC contract. */
 async function serverCode() {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-  const bundle = await build({ stdin: { contents: "export { assistantModelChoices, recommendedModelId, NO_CLAUDE_REFUSAL, violationRefusal } from './server/inbox-assistant.ts'; export { InboxAssistantOptionsSchema } from './shared/inbox.ts'; export { modelButtonLabel, capLine } from './client/inbox-status.ts';", resolveDir: root, loader: 'ts' }, bundle: true, platform: 'node', format: 'esm', target: 'node22', write: false, logLevel: 'silent' });
+  const bundle = await build({ stdin: { contents: "export { assistantModelChoices, recommendedModelId, NO_CLAUDE_REFUSAL, violationRefusal } from './server/inbox-assistant.ts'; export { InboxAssistantOptionsSchema, PUBLIC_DIRECT_TEXT } from './shared/inbox.ts'; export { modelButtonLabel, capLine } from './client/inbox-status.ts';", resolveDir: root, loader: 'ts' }, bundle: true, platform: 'node', format: 'esm', target: 'node22', write: false, logLevel: 'silent' });
   return import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
 }
 function assistantOptions(code, patch = {}) {
@@ -197,27 +197,59 @@ export async function runInboxHostChecks({ assert, command, evaluate, until, fra
     assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-auto-mode-review]').getAttribute('aria-selected')"), 'true');
     assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-triage-confirm]').disabled"), false);
     await snap('inbox-auto-dialog-recommended');
+    // 「公开讨论里的 AI 回复直接发布（我了解风险）」: only with 直接公开回复, unticked, with the plain warning once ticked.
+    const direct = code.PUBLIC_DIRECT_TEXT, dialogText = () => evaluate("document.querySelector('[data-testid=board-inbox-auto-dialog]').textContent");
+    assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=board-inbox-auto-public-direct]'))"), false);
+    await hostClick('[data-testid="board-inbox-auto-mode-publish"]');
+    await until("document.querySelector('[data-testid=board-inbox-auto-public-direct]')");
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-auto-public-direct]').getAttribute('aria-label')"), direct.label);
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-auto-public-direct]').getAttribute('aria-selected')"), 'false');
+    assert.ok((await dialogText()).includes(direct.off)); assert.ok(!(await dialogText()).includes(direct.warning));
+    await hostClick('[data-testid="board-inbox-auto-public-direct"]');
+    await until(`document.querySelector('[data-testid=board-inbox-auto-dialog]').textContent.includes(${JSON.stringify(direct.warning)})`);
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-auto-public-direct]').getAttribute('aria-selected')"), 'true');
+    await snap('inbox-auto-dialog-public-direct');
     // The server's preflight refuses: the check is shown while it runs, then its exact text; nothing is enabled.
     const violation = code.violationRefusal(['工具 Bash', 'MCP 服务 learning']);
     await evaluate(`inboxFixture.state.holdEnable=true;inboxFixture.state.nextEnableRefusal=${JSON.stringify(violation)};true`);
     await press('确认开启');
+    // The ticked box goes with 直接公开回复 (this attempt is refused below, so nothing is stored).
+    await until("inboxFixture.state.calls.some(call=>call.name==='board.inbox.auto-enable')");
+    assert.deepEqual(await evaluate("(({replyMode,publicDirect})=>({replyMode,publicDirect}))(inboxFixture.state.calls.filter(call=>call.name==='board.inbox.auto-enable').at(-1).input)"), { replyMode: 'publish', publicDirect: true });
     await until("document.querySelector('[data-testid=board-inbox-triage-confirm]')?.getAttribute('aria-label')==='正在做锁定检查…'");
     assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-triage-confirm]').disabled"), true);
     await evaluate('inboxFixture.releaseEnable();true');
     await until(`document.querySelector('[data-testid=board-inbox-auto-dialog]')?.textContent.includes(${JSON.stringify(violation)})`);
     assert.equal(await evaluate("inboxFixture.state.policy.auto ?? 'off'"), 'off');
+    assert.equal(await evaluate('inboxFixture.state.publicDirect'), false);
     await snap('inbox-auto-dialog-lockdown-refused');
+    // Back to 回复先给我审核: the box disappears and is not sent, even though it was ticked.
+    await hostClick('[data-testid="board-inbox-auto-mode-review"]');
+    await until("!document.querySelector('[data-testid=board-inbox-auto-public-direct]')");
     await hostClick('[data-testid="board-inbox-auto-model-claude-sonnet-5-5"]');
     await until("document.querySelector('[data-testid=board-inbox-auto-dialog]').textContent.includes('每天最多 $5，到上限后暂停到第二天。')");
     await press('确认开启');
     await waitButton('Agent 自动处理并公开回复：已开启（回复需你审核）');
     const enable = await evaluate("inboxFixture.state.calls.filter(call=>call.name==='board.inbox.auto-enable').at(-1).input");
     assert.equal(enable.modelId, 'claude-sonnet-5-5'); assert.equal(enable.replyMode, 'review'); assert.equal(enable.effort, 'low');
-    assert.ok(!('modeId' in enable) && !('acceptRisk' in enable), JSON.stringify(enable));
+    assert.ok(!('modeId' in enable) && !('acceptRisk' in enable) && !('publicDirect' in enable), JSON.stringify(enable));
     await until(`document.querySelector('[data-testid=board-inbox-auto]').textContent.includes('评论助手：Sonnet 5.5 · 每批新会话 · 锁定检查 ${String(new Date(2026, 10, 14, 9, 12).getHours()).padStart(2, '0')}:12 通过（Claude Code 2.1.325）')`);
     assert.ok(await evaluate("document.querySelector('[data-testid=board-inbox-auto]').textContent.includes('花费：最近一小时 $0 · 今天 $0.0005 / 上限 $5（按 API 价格估算）')"));
+    const directBlock = '[data-testid="board-inbox-public-direct"]';
+    await until(`document.querySelector(${JSON.stringify(directBlock)})?.textContent.includes(${JSON.stringify(direct.reviewOnly)})`);
+    assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=board-inbox-public-direct-toggle]'))"), false);
     await press('回复方式：先给我审核'); await waitButton('回复方式：直接公开');
     assert.deepEqual(await evaluate('inboxFixture.state.policy'), { read: true, triage: true, auto: 'publish' });
+    // In 直接公开 mode the automation block offers the opt-in, off by default; turning it on shows the warning.
+    await until(`document.querySelector(${JSON.stringify(directBlock)})?.textContent.includes(${JSON.stringify(direct.off)})`);
+    assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-public-direct-toggle]').getAttribute('aria-selected')"), 'false');
+    await hostClick('[data-testid="board-inbox-public-direct-toggle"]');
+    await until(`document.querySelector(${JSON.stringify(directBlock)})?.textContent.includes(${JSON.stringify(direct.warning)}) && document.querySelector(${JSON.stringify(directBlock)}).textContent.includes(${JSON.stringify(direct.on)})`);
+    assert.equal(await evaluate("inboxFixture.state.calls.filter(call=>call.name==='board.inbox.auto-set').at(-1).input.publicDirect"), true);
+    await snap('inbox-auto-public-direct-on');
+    await hostClick('[data-testid="board-inbox-public-direct-toggle"]');
+    await until(`document.querySelector(${JSON.stringify(directBlock)})?.textContent.includes(${JSON.stringify(direct.off)})`);
+    assert.equal(await evaluate("inboxFixture.state.calls.filter(call=>call.name==='board.inbox.auto-set').at(-1).input.publicDirect"), false);
     await press('Agent 自动处理并公开回复：已开启（直接回复）');
     await until(`document.querySelector(${JSON.stringify(panel)}).textContent.includes('已关闭。')`);
     assert.ok(!(await evaluate(`document.querySelector(${JSON.stringify(panel)}).textContent`)).includes('归档它'));
@@ -227,6 +259,7 @@ export async function runInboxHostChecks({ assert, command, evaluate, until, fra
     assert.equal(await evaluate("document.querySelector('[data-testid=board-inbox-policy-triage]').disabled"), true);
     check('Policy toggles serialize; automatic handling turns on only through the confirm dialog after the server\'s lockdown preflight, and turning read off revokes everything');
     check('The dialog offers the provider\'s priced models cheapest first with estimates and the daily cap, preselects Haiku 5.5 and review mode, shows the check in progress and the exact refusal, and never offers a permission mode');
+    check('「公开讨论里的 AI 回复直接发布（我了解风险）」 appears only with 直接公开, unticked, with its plain warning, is sent only when ticked in that mode, and toggles from the automation block');
 
     stage = 'automation-lines-and-buttons';
     const auto = '[data-testid="board-inbox-auto"]';
