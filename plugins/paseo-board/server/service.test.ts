@@ -10,6 +10,10 @@ import { createHash } from "node:crypto";
 import { TextAttachmentSchema } from "@getpaseo/protocol/messages";
 import { extractCandidates } from "./extraction";
 import { InheritedHistorySchema, type InteractInput } from "../shared/contracts";
+import { InboxStore } from "./inbox-store";
+import { InboxConnections } from "./inbox-sync";
+import { startFakeBackend, type FakeBackend } from "./inbox-fake-backend";
+import { RunnerBindings, type RunnerBinding } from "./inbox-runner";
 
 const commentGroup = (intentId = "group"): InteractInput => ({
   boardId: "board", intentId, kind: "change", destination: "main", text: "Review these changes together",
@@ -1488,5 +1492,75 @@ describe("legacy comment-assistant wakes and inbox admission (lockdown design §
     expect(calls).toEqual([]);
     expect(await service.execute("inbox_list", { boardId: "board", expectedCreatedAt: board.createdAt }, { agentId: "owner", cwd: dir })).toEqual({ ok: "list" });
     await expect(service.execute("inbox_list", { boardId: "board", expectedCreatedAt: board.createdAt })).rejects.toHaveProperty("code", "forbidden");
+  });
+});
+
+describe("sealed comment runner calls (lockdown design §3.2)", () => {
+  let dir: string; let store: BoardStore; let journal: ServiceJournal; let service: BoardService; let backend: FakeBackend;
+  let inbox: InboxStore; let connections: InboxConnections; let bindings: RunnerBindings;
+  let scope: { boardId: string; expectedCreatedAt: string };
+  const human = { kind: "user" as const, id: "paseo-client" };
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "board-runner-calls-")); store = new BoardStore(dir); await store.init(); journal = new ServiceJournal(join(dir, "service.json")); await journal.init();
+    service = new BoardService(store, journal, () => undefined);
+    bindings = new RunnerBindings();
+    backend = await startFakeBackend();
+    inbox = new InboxStore(dir, { resolveBoard: id => store.read(id), authorizeAssistant: async (s, agentId) => Boolean(bindings.armedFor(s, agentId)), assistantComments: async (s, agentId) => bindings.armedFor(s, agentId)?.commentIds ?? new Set() });
+    connections = new InboxConnections(dir, inbox);
+    service.useInbox(inbox); service.useInboxConnections(connections); service.useRunnerBindings(bindings);
+    const board = await store.create({ id: "board", title: "自由画布", ownerAgentId: "owner", html: "<main>x</main>" });
+    scope = { boardId: board.id, expectedCreatedAt: board.createdAt };
+    await connections.connect({ ...scope, expectedRevision: 0, eventId: "connect", expectedConnectionEventId: null, sourceId: "app", deploymentId: backend.deploymentId, label: "App", endpoint: backend.endpoint, token: backend.token, enabled: true });
+    backend.add({ text: "第二步看不懂", authorName: "小王", visitorTag: "aaaaaaaaaaaa", pageUrl: "https://example.com/p/", anchor: { quote: "第二步", label: "步骤", selector: "#s2", prefix: "a", suffix: "b", start: 1, end: 4, releaseId: `release-${"a".repeat(64)}` } });
+    backend.add({ text: "另一位访客：我的电话是 138-0013-8000", visitorTag: "bbbbbbbbbbbb" });
+    await connections.sync({ ...scope, sourceId: "app", expectedRevision: 1, eventId: "sync" });
+    const page = await inbox.list(scope, human);
+    await inbox.setPolicy({ ...scope, expectedRevision: page.revision, eventId: "auto", policy: { read: true, triage: true, auto: "publish" } }, human, { allowAutoEnable: true });
+    // The owner's private triage on the visitor's comment.
+    const mine = (await inbox.list(scope, human)).comments.find(comment => comment.visitorTag === "aaaaaaaaaaaa")!;
+    await inbox.triage({ ...scope, expectedRevision: 0, eventId: "owner-note", commentId: mine.id, expectedCommentRevision: mine.revision, status: "new", labels: ["vip"], note: "作者私下的备注" }, human);
+  });
+  afterEach(async () => { await service.dispose(); await backend.close(); await rm(dir, { recursive: true, force: true }); });
+  const comments = async () => { const page = await inbox.list(scope, human); return { mine: page.comments.find(comment => comment.visitorTag === "aaaaaaaaaaaa")!, other: page.comments.find(comment => comment.visitorTag === "bbbbbbbbbbbb")! }; };
+  const run = async (commentIds: string[]): Promise<RunnerBinding> => bindings.create({ scopeKey: "k".repeat(64), scope, runId: "inbox-x-1-1", commentIds, expiresAt: Date.now() + 60_000 });
+
+  it("refuses everything before arming, then allows only the four inbox operations on its Board and batch", async () => {
+    const { mine, other } = await comments();
+    const binding = await run([mine.id]);
+    await expect(service.executeRunner("inbox_read", { ...scope, commentId: mine.id }, binding)).rejects.toMatchObject({ code: "forbidden", message: "评论助手还没有通过启动检查。" });
+    bindings.arm(binding.token);
+    for (const operation of ["read", "list", "publish", "emit", "decision", "respond", "sources", "read_source", "create", "feed"] as const) await expect(service.executeRunner(operation, { boardId: scope.boardId }, binding)).rejects.toMatchObject({ code: "forbidden", message: "评论助手只能使用评论工具。" });
+    await expect(service.executeRunner("inbox_read", { boardId: scope.boardId, expectedCreatedAt: "2026-01-01T00:00:00.000Z", commentId: mine.id }, binding)).rejects.toMatchObject({ code: "forbidden", message: "评论助手只能处理这一批评论所在的 Board。" });
+    await expect(service.executeRunner("inbox_read", { ...scope, commentId: other.id }, binding)).rejects.toMatchObject({ code: "forbidden", message: "评论助手只能处理这一批里的评论。" });
+    await expect(service.executeRunner("inbox_reply", { ...scope, commentId: other.id, expectedCommentRevision: other.revision, eventId: "cross", text: "请看链接" }, binding)).rejects.toHaveProperty("code", "forbidden");
+    // The list is the batch only; the view has only what the visitor can see.
+    const list = await service.executeRunner("inbox_list", scope, binding) as { comments: Array<Record<string, unknown>>; total: number };
+    expect(list.total).toBe(1);
+    expect(list.comments).toEqual([{ id: mine.id, revision: mine.revision, status: "new", contentTrust: "external-untrusted", text: "第二步看不懂", authorName: "小王", createdAt: mine.createdAt, pageUrl: "https://example.com/p/", anchor: { quote: "第二步", label: "步骤" }, canSeeReply: true, replies: [] }]);
+    const read = await service.executeRunner("inbox_read", { ...scope, commentId: mine.id }, binding) as { comment: Record<string, unknown> };
+    for (const field of ["note", "labels", "sourceId", "deploymentId", "importedAt", "visitorTag", "pendingReply", "seq", "externalId"]) expect(read.comment).not.toHaveProperty(field);
+    expect(JSON.stringify(list) + JSON.stringify(read)).not.toContain("作者私下的备注");
+    expect(JSON.stringify(list)).not.toContain("138-0013-8000");
+    // Triage keeps the owner's labels and note; the runner adds its own.
+    await service.executeRunner("inbox_triage", { ...scope, expectedRevision: 0, eventId: "runner-triage", commentId: mine.id, expectedCommentRevision: read.comment.revision, status: "reviewing", labels: ["question"], note: "访客问第二步。" }, binding);
+    const triaged = (await comments()).mine;
+    expect(triaged).toMatchObject({ status: "reviewing", labels: ["vip", "question"], note: "作者私下的备注\n访客问第二步。" });
+    const reply = await service.executeRunner("inbox_reply", { ...scope, commentId: mine.id, expectedCommentRevision: triaged.revision, eventId: "runner-reply", text: "谢谢！第二步指的是先保存。" }, binding) as { status: string };
+    expect(reply.status).toBe("published");
+    expect((await comments()).mine.replies![0]).toMatchObject({ authorKind: "agent", actor: { kind: "agent", id: `paseo-board-inbox-runner:${"k".repeat(16)}` } });
+    expect(binding.actions).toEqual({ replied: 1, drafted: 0, triaged: 1, dismissed: 0 });
+    // Revoked (the process exited): nothing more.
+    bindings.revoke(binding.token);
+    await expect(service.executeRunner("inbox_list", scope, binding)).rejects.toMatchObject({ message: "评论助手还没有通过启动检查。" });
+  });
+
+  it("never lets a session-bound agent act as the runner, including the retired Paseo-agent assistant", async () => {
+    const { mine } = await comments();
+    const binding = await run([mine.id]); bindings.arm(binding.token);
+    // Even an agent binding that claims the runner's identity is refused through the agent path.
+    await expect(service.execute("inbox_reply", { ...scope, commentId: mine.id, expectedCommentRevision: mine.revision, eventId: "spoof", text: "hi" }, { agentId: binding.actorId, cwd: dir })).rejects.toHaveProperty("code", "forbidden");
+    await expect(service.execute("inbox_reply", { ...scope, commentId: mine.id, expectedCommentRevision: mine.revision, eventId: "legacy", text: "hi" }, { agentId: "7622667a-0000-4000-8000-000000000001", cwd: dir })).rejects.toHaveProperty("code", "forbidden");
+    await expect(service.execute("inbox_reply", { ...scope, commentId: mine.id, expectedCommentRevision: mine.revision, eventId: "owner", text: "hi" }, { agentId: "owner", cwd: dir })).rejects.toHaveProperty("code", "forbidden");
+    expect(backend.requests.filter(request => request.method === "POST")).toHaveLength(0);
   });
 });

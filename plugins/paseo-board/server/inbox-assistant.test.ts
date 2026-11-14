@@ -1,16 +1,36 @@
 import { describe, expect, it } from "vitest";
-import { PHASE0_REFUSAL, RESUME_REFUSAL, assistantSystemPrompt } from "./inbox-assistant";
+import { CLI_MISSING_REFUSAL, ENV_SECRET_REFUSAL, NO_CLAUDE_REFUSAL, RESUME_REFUSAL, UNSUPPORTED_REFUSAL, apiRefusal, assistantSystemPrompt, modelRefusal, notReadyRefusal, preflightRefusal, violationRefusal } from "./inbox-assistant";
+import type { RunOutcome } from "./inbox-runner";
 
-describe("comment assistant texts (lockdown design §3.9, §4)", () => {
-  it("states the exact Phase 0 refusal and resume texts", () => {
-    expect(PHASE0_REFUSAL).toBe("暂时不能开启自动处理：当前版本的评论助手会继承这台电脑上其他插件和 Claude Code 用户设置给的工具和权限，无法保证它只用评论工具。等插件更新后再开启。");
-    expect(RESUME_REFUSAL).toBe("请先重新开启自动处理：等插件更新后再开启。");
+const outcome = (patch: Partial<RunOutcome>): RunOutcome => ({ state: "failed", armed: false, cliVersion: null, model: null, findings: [], error: null, category: null, modelUnavailable: false, deniedAttempts: [], toolUses: 0, costUsd: null, durationMs: 0, actions: { replied: 0, drafted: 0, triaged: 0, dismissed: 0 }, ...patch });
+
+describe("comment assistant texts (lockdown design §3.9)", () => {
+  it("states the exact refusal texts", () => {
+    expect(NO_CLAUDE_REFUSAL).toBe("自动处理需要本机的 Claude Code。Paseo 里没有可用的 Claude 提供方，所以不能开启。");
+    expect(ENV_SECRET_REFUSAL).toBe("Claude 提供方的环境变量里有凭据。插件不会把凭据复制给评论助手进程，所以不能开启。");
+    expect(CLI_MISSING_REFUSAL).toBe("找不到 claude 命令，不能开启自动处理。");
+    expect(UNSUPPORTED_REFUSAL).toBe("这台电脑上的 Claude Code 太旧，不支持评论助手需要的锁定参数（需要 2.1.319 或更新）。更新后再开启。");
+    expect(violationRefusal(["工具 A、B", "MCP 服务 C"])).toBe("锁定检查没通过：评论助手启动后还能用到 工具 A、B；MCP 服务 C。为了安全，没有开启自动处理。");
+    expect(notReadyRefusal("评论工具服务状态 pending")).toBe("锁定检查没通过：评论工具没有加载成功（评论工具服务状态 pending）。稍后再试。");
+    expect(apiRefusal("登录失败")).toBe("Claude Code 无法登录或调用模型（登录失败）。在终端里运行 claude，确认能正常使用后再开启。");
+    expect(modelRefusal("claude-x")).toBe("所选模型不可用：claude-x。请换一个模型。");
+    expect(RESUME_REFUSAL).toBe("请先重新开启自动处理：新版会先做锁定检查。");
+  });
+  it("maps every preflight outcome to its refusal", () => {
+    expect(preflightRefusal(outcome({ state: "unsupported", category: "cli_missing" }), "m")).toBe(CLI_MISSING_REFUSAL);
+    expect(preflightRefusal(outcome({ state: "unsupported", category: "exit_before_init" }), "m")).toBe(UNSUPPORTED_REFUSAL);
+    expect(preflightRefusal(outcome({ state: "lockdown", findings: ["工具 Bash"] }), "m")).toBe(violationRefusal(["工具 Bash"]));
+    expect(preflightRefusal(outcome({ state: "not-ready", modelUnavailable: true, findings: ["所选模型不可用：m"] }), "m")).toBe(modelRefusal("m"));
+    expect(preflightRefusal(outcome({ state: "not-ready", findings: ["30 秒内没有完成启动"] }), "m")).toBe(notReadyRefusal("30 秒内没有完成启动"));
+    expect(preflightRefusal(outcome({ category: "model" }), "m")).toBe(modelRefusal("m"));
+    expect(preflightRefusal(outcome({ category: "rate" }), "m")).toBe(apiRefusal("额度或频率限制"));
+    expect(preflightRefusal(outcome({ category: "timeout" }), "m")).toBe(apiRefusal("超时"));
   });
   it("scopes the system prompt to one Board, one visitor's batch and the four inbox tools", () => {
     const prompt = assistantSystemPrompt({ id: "board-a", title: "访客评论 \"演示\"\n第二行" });
     expect(prompt).toContain('the Paseo Board "访客评论 演示第二行" (boardId board-a)');
     expect(prompt).toContain("up to 8 new comments from one visitor");
     expect(prompt).toContain("You have only the four board_inbox_* tools and can reach only the comments listed in this run");
-    expect(prompt).not.toMatch(/agent|Paseo agent/i);
+    expect(prompt).not.toMatch(/agent/i);
   });
 });

@@ -225,7 +225,7 @@ export class SealedRunner {
       const runTimer = this.clock.setTimer(() => stop("timeout"), run.timeoutMs);
       proc = (this.o.exec ?? spawnStreamExec)(argv, { ...spawnOptions, onLine, onBytes: total => { if (total > this.limits.outputBytes) stop("too_large"); } });
       if (st.stopReason) proc.kill();
-      void proc.exited.then(exit => {
+      void proc.exited.catch((): StreamExit => ({ code: null, signal: null })).then(exit => {
         this.clock.clearTimer(initTimer); this.clock.clearTimer(runTimer);
         this.live.delete(stopper); input.signal?.removeEventListener("abort", stopper);
         this.o.bindings.revoke(binding.token);

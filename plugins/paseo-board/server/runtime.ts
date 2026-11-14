@@ -9,6 +9,7 @@ import { InboxListInputSchema, InboxReadInputSchema, InboxReplyInputSchema, Inbo
 import { PRODUCER_SOURCE } from "./producer-source";
 import { LATEST_PRODUCER_SOURCE } from "./producer-latest-source";
 import { RUNTIME_SOURCE } from "./runtime-source";
+import { INBOX_TOOL_NAMES } from "./inbox-lock";
 import { skillMarkdown } from "./prompts";
 import appRuntimeAsset from "./assets/app-runtime.txt";
 
@@ -37,6 +38,11 @@ export function toolDefinitions() {
     ["emit", "Save an external fact or conditional shared-data update without waking agents. Traditional data REQUIRES its original canvasBase; prefer dataPatch JSON Pointer operations with expected old values for concurrent producers. Never reread just to bump a version on an old payload. Pure events/observations need no canvasBase. Keep eventId stable for an identical retry; focusSelectors may locate changed data.", EmitInputSchema],
   ] as const;
   return entries.map(([name, description, schema]) => ({ name: `board_${name}`, description, inputSchema: { type: "object", ...z.toJSONSchema(schema, { io: "input" }) } }));
+}
+
+/** The comment runner's subset (lockdown design §3.2): the four inbox tools, listed when PASEO_BOARD_TOOLSET=inbox-assistant. */
+export function inboxToolDefinitions() {
+  return toolDefinitions().filter(tool => (INBOX_TOOL_NAMES as readonly string[]).includes(tool.name));
 }
 
 function launcher(paths: RuntimePaths, mode: "cli" | "mcp" | "app"): string {

@@ -7,7 +7,7 @@ import type { BoardService } from "./service";
 const RequestSchema = z.object({ protocol: z.literal(1), operation: z.enum(["inbox_list", "inbox_read", "inbox_triage", "inbox_reply", "sources", "read_source", "list", "read", "create", "publish", "decision", "emit", "respond", "feed"]), input: z.record(z.string(), z.unknown()), binding: z.string().optional(), client: z.enum(["cli", "mcp"]) });
 const LIMIT = 8_000_000;
 
-/** Owner-only Unix socket. MCP calls additionally bind to the launching agent. */
+/** Owner-only Unix socket. MCP calls additionally bind to the launching agent or to a sealed comment run. */
 export class BoardBridge {
   private service: BoardService;
   private server?: Server;
@@ -62,6 +62,9 @@ export class BoardBridge {
   async dispatch(line: string): Promise<unknown> {
     try {
       const request = RequestSchema.parse(JSON.parse(line));
+      // A sealed comment run's token is looked up first; it never falls back to an agent binding (lockdown design §3.2).
+      const runner = request.binding ? this.service.runnerBinding(request.binding) : undefined;
+      if (runner) return { ok: true, result: await this.service.executeRunner(request.operation, request.input, runner) };
       const actor = request.binding ? this.service.journal.binding(request.binding) : undefined;
       if ((request.client === "mcp" && !request.binding) || (request.binding && !actor)) throw new Error("Missing or invalid Board agent binding; reload the agent session");
       const result = await this.service.execute(request.operation, request.input, actor);

@@ -18,7 +18,8 @@ import { ReadSourceInputSchema, SourcesInputSchema } from "../shared/composition
 import type { CompositionSources } from "./composition";
 import type { InboxStore } from "./inbox-store";
 import type { InboxConnections } from "./inbox-sync";
-import { InboxListInputSchema, InboxReadInputSchema, InboxTriageInputSchema, type InboxScope } from "../shared/inbox";
+import { INBOX_CONTENT_NOTICE, InboxReadInputSchema, InboxListInputSchema, InboxTriageInputSchema, type InboxComment, type InboxScope } from "../shared/inbox";
+import { isRunnerActor, type RunnerBinding, type RunnerBindings } from "./inbox-runner";
 import type { LiveDataPublisher } from "./live-data";
 import { captureOwnerHistory, chatHistoryAttachment, clip, parseBoardMarker, stripInheritedHistory, type BoardPromptExpander, type CuratedEntry } from "./side-history";
 
@@ -30,6 +31,20 @@ const marker = (boardId: string, intentId: string) => `[paseo-board board=${boar
 export const INBOX_OPERATIONS = new Set<Operation>(["inbox_list", "inbox_read", "inbox_triage", "inbox_reply"]);
 /** A wake of an older build's Paseo-agent comment assistant that may still be pending or awaited. */
 export const inboxWakeOutstanding = (delivery: Delivery) => ["saved", "creating", "sending"].includes(delivery.state) || ["delivered", "unknown"].includes(delivery.state) && Boolean(delivery.awaitingTurn) && !delivery.outcome;
+/**
+ * What a sealed comment run may see of a comment (lockdown design §3.2, R8): only fields the visitor can see.
+ * Owner notes, labels, sources, deployments, releases, pending-reply internals and the audit stay out.
+ */
+export function runnerView(comment: InboxComment) {
+  const anchor = comment.anchor && (comment.anchor.quote !== undefined || comment.anchor.label !== undefined) ? { ...(comment.anchor.quote !== undefined ? { quote: comment.anchor.quote } : {}), ...(comment.anchor.label !== undefined ? { label: comment.anchor.label } : {}) } : undefined;
+  return {
+    id: comment.id, revision: comment.revision, status: comment.status, contentTrust: comment.contentTrust, text: comment.text,
+    ...(comment.authorName ? { authorName: comment.authorName } : {}), createdAt: comment.createdAt, ...(comment.pageUrl ? { pageUrl: comment.pageUrl } : {}),
+    ...(anchor ? { anchor } : {}), canSeeReply: Boolean(comment.visitorTag),
+    replies: (comment.replies ?? []).map(reply => ({ authorKind: reply.authorKind, text: reply.text, createdAt: reply.createdAt })),
+  };
+}
+const RUNNER_NOT_ARMED = "评论助手还没有通过启动检查。";
 /** Settles every legacy inbox wake without sending it (lockdown design §3.4 service.ts). */
 export const LEGACY_WAKE_SETTLED = "评论助手已改为封闭运行，旧唤醒未发送。";
 /** Frozen into the first message of a Side created with the owner's history (never for blank Sides). */
@@ -119,6 +134,10 @@ export class BoardService {
   useInbox(inbox: InboxStore): void { this.inbox = inbox; }
   private inboxConnections?: Pick<InboxConnections, "reply">;
   useInboxConnections(connections: Pick<InboxConnections, "reply">): void { this.inboxConnections = connections; }
+  private runnerBindings?: RunnerBindings;
+  /** Sealed comment runs' in-memory tokens (lockdown design §3.2). */
+  useRunnerBindings(bindings: RunnerBindings): void { this.runnerBindings = bindings; }
+  runnerBinding(token: string): RunnerBinding | undefined { return this.runnerBindings?.get(token); }
   private live?: Pick<LiveDataPublisher, "publicView">;
   /** Read-only: agents learn which paths are public, and nothing that controls them. */
   useLive(live: Pick<LiveDataPublisher, "publicView">): void { this.live = live; }
@@ -188,7 +207,7 @@ export class BoardService {
     const board = await this.requireBoard(z.string().parse(input.boardId));
     if (INBOX_OPERATIONS.has(operation)) {
       // A Paseo agent is never the comment assistant (lockdown design §2): only the bound owner or a fork.
-      if (!actor || !this.canWrite(board, actor)) throw new BoardStoreError("forbidden", "Inbox tools require the bound Board owner or its fork");
+      if (!actor || isRunnerActor(actor.agentId) || !this.canWrite(board, actor)) throw new BoardStoreError("forbidden", "Inbox tools require the bound Board owner or its fork");
       if (!this.inbox) throw new BoardStoreError("unavailable", "Board inbox is unavailable");
       const identity = { kind: "agent" as const, agentId: actor.agentId };
       if (operation === "inbox_list") return this.inbox.list(InboxListInputSchema.parse(input), identity);
@@ -236,6 +255,51 @@ export class BoardService {
       }
       case "emit": return this.store.emit(EmitInputSchema.parse(input), actor?.agentId);
     }
+  }
+  /**
+   * A sealed comment run's calls (lockdown design §3.2): the four inbox operations only, after its init check
+   * armed the token, on its own Board and batch, with the visitor-visible view of each comment.
+   */
+  async executeRunner(operation: Operation, raw: unknown, binding: RunnerBinding): Promise<unknown> {
+    if (this.stopped) throw new Error("Board service is stopping");
+    if (!INBOX_OPERATIONS.has(operation)) throw new BoardStoreError("forbidden", "评论助手只能使用评论工具。");
+    const live = this.runnerBindings?.get(binding.token);
+    if (!live || live !== binding || !live.armed) throw new BoardStoreError("forbidden", RUNNER_NOT_ARMED);
+    const input = z.record(z.string(), z.unknown()).parse(raw);
+    if (input.boardId !== live.scope.boardId || input.expectedCreatedAt !== live.scope.expectedCreatedAt) throw new BoardStoreError("forbidden", "评论助手只能处理这一批评论所在的 Board。");
+    if (!this.inbox) throw new BoardStoreError("unavailable", "Board inbox is unavailable");
+    const scope = { boardId: live.scope.boardId, expectedCreatedAt: live.scope.expectedCreatedAt };
+    const identity = { kind: "agent" as const, agentId: live.actorId };
+    if (operation === "inbox_list") {
+      // Only this batch: one visitor's comments, never another visitor's (R8).
+      const comments: Array<ReturnType<typeof runnerView>> = [];
+      let revision = 0;
+      for (const commentId of live.commentIds) {
+        try { const read = await this.inbox.read({ ...scope, commentId }, identity); revision = Math.max(revision, read.revision); comments.push(runnerView(read.comment)); }
+        catch (error) { if (!(error instanceof BoardStoreError && error.code === "not_found")) throw error; }
+      }
+      return { revision, comments, total: comments.length, nextCursor: null, contentNotice: INBOX_CONTENT_NOTICE };
+    }
+    const commentId = typeof input.commentId === "string" ? input.commentId : "";
+    if (!live.commentIds.has(commentId)) throw new BoardStoreError("forbidden", "评论助手只能处理这一批里的评论。");
+    if (operation === "inbox_read") {
+      const read = await this.inbox.read(InboxReadInputSchema.parse({ ...input, ...scope }), identity);
+      return { revision: read.revision, comment: runnerView(read.comment), contentNotice: INBOX_CONTENT_NOTICE };
+    }
+    if (operation === "inbox_reply") {
+      if (!this.inboxConnections) throw new BoardStoreError("unavailable", "Board inbox replies are unavailable");
+      const result = await this.inboxConnections.reply({ ...input, ...scope }, identity);
+      if (!result.replayed) { if (result.status === "draft") live.actions.drafted++; else if (result.status === "published" || result.status === "sending") live.actions.replied++; }
+      return result;
+    }
+    // Triage keeps the owner's labels and note, which the runner cannot read: it adds its own.
+    const triage = InboxTriageInputSchema.parse({ ...input, ...scope });
+    const current = (await this.inbox.read({ ...scope, commentId }, identity)).comment;
+    const labels = [...new Set([...current.labels, ...triage.labels])].slice(0, 12);
+    const note = current.note && triage.note && current.note !== triage.note ? `${current.note}\n${triage.note}`.slice(0, 4_000) : triage.note || current.note;
+    const result = await this.inbox.triage({ ...triage, labels, note }, identity);
+    if (!result.replayed) { if (triage.status === "dismissed") live.actions.dismissed++; else live.actions.triaged++; }
+    return result;
   }
   private async withHtmlFile(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (input.htmlFile === undefined) return input;

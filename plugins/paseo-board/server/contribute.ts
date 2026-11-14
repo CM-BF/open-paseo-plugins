@@ -21,7 +21,8 @@ import { compositionSourcesRpc, setCompositionSourcesRpc, inspectCompositionSour
 import { InboxStore } from "./inbox-store";
 import { InboxConnections } from "./inbox-sync";
 import { InboxAutomation, type InboxAutomationOptions } from "./inbox-auto";
-import { inboxListRpc, inboxReadRpc, inboxPolicyRpc, inboxTriageRpc, inboxReplyRpc, inboxReplyPendingRpc, inboxArchiveRpc, inboxAutoStatusRpc, inboxAutoSetRpc, inboxAssistantOptionsRpc, inboxAutoEnableRpc } from "../shared/inbox";
+import { RunnerBindings, SealedRunner, type StreamExec } from "./inbox-runner";
+import { INBOX_AUTO_LIMITS, inboxListRpc, inboxReadRpc, inboxPolicyRpc, inboxTriageRpc, inboxReplyRpc, inboxReplyPendingRpc, inboxArchiveRpc, inboxAutoStatusRpc, inboxAutoSetRpc, inboxAssistantOptionsRpc, inboxAutoEnableRpc } from "../shared/inbox";
 import { inboxConnectRpc, inboxConnectionsRpc, inboxSyncRpc, inboxReconcileRpc } from "../shared/inbox-connection";
 import { LiveDataPublisher } from "./live-data";
 import { liveGetRpc, liveSetRpc } from "../shared/live-data";
@@ -30,6 +31,8 @@ export interface ContributeOptions {
   rootDir?: string; runtimeDir?: string; home?: string; linkSkills?: boolean; eventTransport?: { publish(change: BoardChange): void }; onService?: (service: BoardService) => void;
   /** Local harnesses only: the inbox coordinator's clock and limits (scripts/page-comments-e2e.mjs). */
   inboxAutomation?: Pick<InboxAutomationOptions, "clock" | "limits">;
+  /** Local harnesses only: the sealed runner's process launcher (a recorded stream instead of `claude`). */
+  inboxRunner?: { exec?: StreamExec; env?: Readonly<Record<string, string | undefined>> };
 }
 
 export function contributeServer(server: PluginServerContext, options: ContributeOptions = {}) {
@@ -55,8 +58,14 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   service.useLive(live);
   const copies = new BoardCopies(join(root, "copies"), store, board => store.materializeAuthoredHtml(board.id, board.canvas));
   const releases = new ReleaseRepository(join(root, "releases"), store);
-  // One coordinator per plugin server: auto-sync, comment-assistant wakes and the reply outbox (DESIGN §11.8).
-  automation = new InboxAutomation({ rootDir: root, inbox, connections: inboxConnections, service, readBoard: id => store.read(id), releases, log, ...options.inboxAutomation });
+  // The sealed comment runner (lockdown design §3): in-memory run tokens shared by the bridge, the service and
+  // the coordinator; one `claude -p` process per batch through the Board's stable MCP launcher.
+  const runnerBindings = new RunnerBindings();
+  service.useRunnerBindings(runnerBindings);
+  const limits = { ...INBOX_AUTO_LIMITS, ...options.inboxAutomation?.limits };
+  const runner = new SealedRunner({ bindings: runnerBindings, mcpCommand: paths.mcp, ...options.inboxRunner, log, limits: { initTimeoutMs: limits.runInitTimeoutMs, runTimeoutMs: limits.runTimeoutMs, preflightTimeoutMs: limits.preflightTimeoutMs, outputBytes: limits.runOutputBytes, maxConcurrent: limits.maxConcurrentRuns } });
+  // One coordinator per plugin server: auto-sync, sealed comment runs and the reply outbox (DESIGN §11.8).
+  automation = new InboxAutomation({ rootDir: root, inbox, connections: inboxConnections, service, readBoard: id => store.read(id), releases, log, runner, bindings: runnerBindings, ...options.inboxAutomation });
   const inboxAuto = automation;
   const pages = new GitHubPagesManager(join(root, "pages"), releases);
   const bridge = new BoardBridge(service);

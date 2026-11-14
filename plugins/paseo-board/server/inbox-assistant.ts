@@ -3,13 +3,34 @@
  *
  * It is not a Paseo agent. An older build created one with `agents.create`; that agent ran with the user's Claude
  * Code settings, other plugins' MCP servers and system-prompt blocks, so it is retired on load and never woken
- * or admitted again (§5). Automatic handling stays refused until the sealed runner exists (§4, Phase 0).
+ * or admitted again (§5). Each batch now runs as a sealed `claude -p` process (server/inbox-runner.ts).
  */
 
-/** Phase 0 refusal (§3.9): enabling is refused before anything is created or written. */
-export const PHASE0_REFUSAL = "暂时不能开启自动处理：当前版本的评论助手会继承这台电脑上其他插件和 Claude Code 用户设置给的工具和权限，无法保证它只用评论工具。等插件更新后再开启。";
-/** Resume without a sealed runner (§3.4 set(), Phase 0 wording of §4 item 4). */
-export const RESUME_REFUSAL = "请先重新开启自动处理：等插件更新后再开启。";
+import type { RunOutcome } from "./inbox-runner";
+import { CATEGORY_TEXT } from "./inbox-lock";
+
+/* Exact refusal texts of `board.inbox.assistant-options` / `auto-enable` and its preflight (§3.9). */
+export const NO_CLAUDE_REFUSAL = "自动处理需要本机的 Claude Code。Paseo 里没有可用的 Claude 提供方，所以不能开启。";
+export const ENV_SECRET_REFUSAL = "Claude 提供方的环境变量里有凭据。插件不会把凭据复制给评论助手进程，所以不能开启。";
+export const CLI_MISSING_REFUSAL = "找不到 claude 命令，不能开启自动处理。";
+export const UNSUPPORTED_REFUSAL = "这台电脑上的 Claude Code 太旧，不支持评论助手需要的锁定参数（需要 2.1.319 或更新）。更新后再开启。";
+export const violationRefusal = (findings: readonly string[]) => `锁定检查没通过：评论助手启动后还能用到 ${findings.join("；") || "未知的工具"}。为了安全，没有开启自动处理。`;
+export const notReadyRefusal = (detail: string) => `锁定检查没通过：评论工具没有加载成功（${detail}）。稍后再试。`;
+export const apiRefusal = (category: string) => `Claude Code 无法登录或调用模型（${category}）。在终端里运行 claude，确认能正常使用后再开启。`;
+export const modelRefusal = (model: string) => `所选模型不可用：${model}。请换一个模型。`;
+/** Resume while there is no verified sealed runner, or after a lockdown pause (§3.4 set()). */
+export const RESUME_REFUSAL = "请先重新开启自动处理：新版会先做锁定检查。";
+export const CHECKING_REFUSAL = "正在做锁定检查，请稍候。";
+
+/** The refusal for a preflight that did not pass (§3.9). Never the API response body. */
+export function preflightRefusal(outcome: RunOutcome, model: string): string {
+  if (outcome.state === "unsupported") return outcome.category === "cli_missing" ? CLI_MISSING_REFUSAL : UNSUPPORTED_REFUSAL;
+  if (outcome.state === "lockdown") return violationRefusal(outcome.findings);
+  if (outcome.modelUnavailable || outcome.category === "model") return modelRefusal(model);
+  if (outcome.state === "not-ready") return notReadyRefusal(outcome.findings.join("；") || outcome.error || "原因未知");
+  const category = outcome.category && outcome.category in CATEGORY_TEXT ? CATEGORY_TEXT[outcome.category as keyof typeof CATEGORY_TEXT] : outcome.error ?? "原因未知";
+  return apiRefusal(category);
+}
 
 export { legacyNotice } from "../shared/inbox";
 

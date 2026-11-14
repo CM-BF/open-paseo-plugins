@@ -3,15 +3,18 @@ import { lstat, open, readFile, readdir, rename, unlink } from "node:fs/promises
 import { join } from "node:path";
 import { z } from "zod";
 import {
-  INBOX_AUTO_LIMITS, InboxAutoSetInputSchema, InboxEffortSchema, InboxRunRecordSchema, InboxRunnerCheckSchema, InboxScopeSchema,
-  type InboxAssistantOptions, type InboxAutoMode, type InboxAutoSetInput, type InboxAutoSourceStatus, type InboxAutoStatus, type InboxPendingReply, type InboxPolicy, type InboxScope,
+  INBOX_AUTO_LIMITS, InboxAutoEnableInputSchema, InboxAutoSetInputSchema, InboxEffortSchema, InboxRunRecordSchema, InboxRunnerCheckSchema, InboxScopeSchema,
+  type InboxAssistantOptions, type InboxAutoMode, type InboxAutoSetInput, type InboxAutoSourceStatus, type InboxAutoStatus, type InboxPendingReply, type InboxPolicy, type InboxRunRecord, type InboxScope,
 } from "../shared/inbox";
+import { ALIAS_PRICES, MODEL_PRICES, PREFLIGHT_BUDGET_USD, PRICE_TABLE_DATE, UNPRICED_DAILY_CAP_USD, perComment, perRunCap, priceOf } from "../shared/assistant-models";
 import type { Board } from "../shared/contracts";
 import { BoardStoreError, canonicalJson, ensureDirectory, parseInput } from "./store-format";
 import type { InboxStore } from "./inbox-store";
 import { AUTOMATION_ACTOR, IDENTITY_MISMATCH, InboxConnections, SyncFailure, type ReplyEvent, type RuntimeSource } from "./inbox-sync";
 import type { Paseo } from "./sdk";
-import { PHASE0_REFUSAL, RESUME_REFUSAL, legacyNotice } from "./inbox-assistant";
+import { CHECKING_REFUSAL, ENV_SECRET_REFUSAL, NO_CLAUDE_REFUSAL, RESUME_REFUSAL, assistantSystemPrompt, legacyNotice, modelRefusal, preflightRefusal } from "./inbox-assistant";
+import { MODEL_RE, routeErrorText, routeFrom, type ModelRoute } from "./kit/complete";
+import type { RunOutcome, RunnerBindings, SealedRunner } from "./inbox-runner";
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -102,8 +105,11 @@ export interface InboxAutomationOptions {
   rootDir: string; inbox: InboxStore; connections: InboxConnections; service: AutomationService;
   readBoard(boardId: string): Promise<Board | null>;
   releases: { meta(id: string): Promise<{ source: { boardId: string; boardCreatedAt?: string } } | undefined>; read?(id: string): Promise<{ provenance: { boardId: string; boardCreatedAt?: string } }> };
+  /** The sealed comment runner and its in-memory tokens (lockdown design §3); without them nothing is ever run. */
+  runner?: Pick<SealedRunner, "run" | "close">; bindings?: Pick<RunnerBindings, "armedFor">;
   log?(message: string): void; clock?: AutoClock; random?: () => number; limits?: Partial<Limits>;
 }
+type Picked = { ok: true; providerId: string; label: string; route: ModelRoute } | { ok: false; refusal: string };
 interface SourceRuntime {
   source: RuntimeSource; cursor: string; ledgerEnabled: boolean;
   state: InboxAutoSourceStatus["state"]; failures: number; conflicts: number; smallPage: boolean;
@@ -118,6 +124,10 @@ interface ScopeRuntime {
   sources: Map<string, SourceRuntime>; pendings: Map<string, PendingRuntime>;
   debounce: { timer: unknown; first: number; due: number } | null; resumeTimer?: unknown;
   waking: Promise<void>; saving: Promise<void>;
+  /** An enable preflight is in flight (status `checking`). */
+  checking: boolean;
+  /** The scope's live run (at most one), or null. */
+  run: { record: InboxRunRecord; abort: AbortController } | null;
 }
 /** The run message (exact, DESIGN §11.6): comment IDs only, never visitor text. */
 export function wakePrompt(input: { boardId: string; expectedCreatedAt: string; interactionId: string; title: string; inboxRevision: number; comments: Array<{ commentId: string; revision: number; visitorTag: string | null; canSeeReply: boolean }> }): string {
@@ -146,6 +156,8 @@ export class InboxAutomation {
   private readonly directory: string;
   private readonly releaseMemo = new Map<string, { boardId: string; boardCreatedAt?: string } | null>();
   private readonly work = new Set<Promise<unknown>>();
+  /** Live sealed runs, tracked apart from ticks so a caller can wait for everything but a run in progress. */
+  private readonly runWork = new Set<Promise<unknown>>();
   private host: { history: string[] } = { history: [] };
   private hostLoaded?: Promise<void>;
   private active = 0;
@@ -167,8 +179,11 @@ export class InboxAutomation {
     return promise;
   }
   private background(name: string, run: () => Promise<unknown>) { void this.track(run().catch(error => this.log(`${name}: ${error instanceof Error ? error.message : String(error)}`))); }
-  /** Resolves once no tick, run or retry is in flight (tests and shutdown). */
-  async idle(): Promise<void> { while (this.work.size) await Promise.allSettled([...this.work]); }
+  /** Resolves once no tick, retry (and, unless `runs` is false, no run) is in flight (tests and shutdown). */
+  async idle(options: { runs?: boolean } = {}): Promise<void> {
+    const pending = () => [...this.work, ...(options.runs === false ? [] : this.runWork)];
+    while (pending().length) await Promise.allSettled(pending());
+  }
   private timer(callback: () => void, ms: number) { return this.clock.setTimer(() => { if (!this.stopped) callback(); }, ms); }
 
   async start(): Promise<void> {
@@ -190,17 +205,19 @@ export class InboxAutomation {
     this.unsubscribe?.();
     if (this.maintenance) this.clock.clearTimer(this.maintenance);
     for (const rt of this.scopes.values()) this.stopScope(rt);
+    // Kill every live run's process group; their bindings die with them (§3.4 close()).
+    await this.o.runner?.close();
     await this.idle();
   }
   private scheduleMaintenance() {
     if (this.stopped) return;
     this.maintenance = this.timer(() => { this.background("maintenance", () => this.maintain()); this.scheduleMaintenance(); }, 60_000);
   }
-  /** Every minute: comments a missed debounce left behind. */
+  /** Every minute: comments a missed debounce (or a host that connected late) left behind. */
   async maintain(): Promise<void> {
     if (this.stopped) return;
     for (const rt of this.scopes.values()) {
-      if (!rt.active || rt.stale) continue;
+      if (!rt.active || rt.stale || rt.run) continue;
       if (!rt.debounce && rt.ledger && rt.ledger.latestSeq > rt.file.wake.seenSeq) this.queueWake(rt);
     }
   }
@@ -255,7 +272,7 @@ export class InboxAutomation {
       const read = await this.readFile(this.filePath(key));
       const now = this.clock.now();
       const file: AutoFile = read?.file ?? { version: 2, scope: identity, syncPaused: false, wakePaused: false, runner: null, legacyAssistant: null, wake: { seenSeq: 0, history: [], paused: null, lastRunAt: null, lastBudgetPause: null, rewinds: 0, skipped: { otherBoard: 0, unattributed: 0 }, cliFailures: 0 }, runs: [], cost: { day: localDay(now), dayUsd: 0, hour: [] } };
-      const rt: ScopeRuntime = { key, scope: identity, file, stale: false, active: false, ledger: null, sources: new Map(), pendings: new Map(), debounce: null, waking: Promise.resolve(), saving: Promise.resolve() };
+      const rt: ScopeRuntime = { key, scope: identity, file, stale: false, active: false, ledger: null, sources: new Map(), pendings: new Map(), debounce: null, waking: Promise.resolve(), saving: Promise.resolve(), checking: false, run: null };
       if (!read) (rt as ScopeRuntime & { fresh?: boolean }).fresh = true;
       this.scopes.set(key, rt);
       const recovered = this.recover(rt);
@@ -265,8 +282,27 @@ export class InboxAutomation {
     this.loading.set(key, load);
     return load;
   }
-  /** Hook for crash recovery of runs left in starting/running by a previous process (Phase 1). */
-  private recover(_rt: ScopeRuntime): boolean { return false; }
+  /**
+   * Crash recovery (§3.4): a run still `starting` or `running` in the file belongs to a previous process; its
+   * binding died with that process, so it cannot act. It becomes `interrupted` and its comments are rewound;
+   * those it already handled are no longer `new` and are not offered again.
+   */
+  private recover(rt: ScopeRuntime): boolean {
+    let changed = false;
+    for (const run of rt.file.runs) {
+      if (run.state !== "starting" && run.state !== "running") continue;
+      Object.assign(run, { state: "interrupted", endedAt: iso(this.clock.now()), error: "插件重启时这批评论还在处理，已中断" });
+      this.rewind(rt, run);
+      changed = true;
+    }
+    return changed;
+  }
+  /** Offers a run's comments again (seenSeq back to before them), like a wake that was never sent. */
+  private rewind(rt: ScopeRuntime, run: Pick<InboxRunRecord, "firstSeq" | "lastSeq">) {
+    if (rt.file.wake.seenSeq < run.firstSeq) return;
+    rt.file.wake.seenSeq = Math.max(0, run.firstSeq - 1);
+    rt.file.wake.rewinds++;
+  }
   /** Loads the ledger cache, sources and pending replies once; ticks after that read only memory. */
   private async activate(scope: InboxScope): Promise<ScopeRuntime> {
     const rt = await this.ensure(scope);
@@ -280,6 +316,7 @@ export class InboxAutomation {
     try { state = await this.o.inbox.automationState(rt.scope, AUTOMATION_ACTOR); }
     catch (error) { if (error instanceof BoardStoreError && error.code === "identity_conflict") this.markStale(rt); throw error; }
     rt.ledger = { revision: state.revision, latestSeq: state.latestSeq, total: state.total, policy: state.policy, reviewing: state.reviewing };
+    if ((state.policy.auto ?? "off") === "off") rt.run?.abort.abort();
     const fresh = (rt as ScopeRuntime & { fresh?: boolean }).fresh;
     // A new scope starts with its backlog seen. Nothing is written until something changes, so merely
     // opening a Board's status leaves no file; a restart before then starts from the backlog again.
@@ -304,7 +341,7 @@ export class InboxAutomation {
     for (const src of rt.sources.values()) this.arm(rt, src);
     this.armResume(rt);
   }
-  private markStale(rt: ScopeRuntime) { rt.stale = true; this.stopScope(rt); }
+  private markStale(rt: ScopeRuntime) { rt.stale = true; rt.run?.abort.abort(); this.stopScope(rt); }
   private stopScope(rt: ScopeRuntime) {
     for (const src of rt.sources.values()) { this.clearSource(src); src.state = "off"; }
     for (const pending of rt.pendings.values()) if (pending.timer) this.clock.clearTimer(pending.timer);
@@ -322,7 +359,7 @@ export class InboxAutomation {
     if (rt.stale) return;
     await this.reload(rt);
   }
-  onPolicy(scope: InboxScope) { this.background("policy", async () => { await this.refresh(scope); const rt = await this.ensure(scope); if ((rt.ledger?.policy.auto ?? "off") === "off" && rt.debounce) { this.clock.clearTimer(rt.debounce.timer); rt.debounce = null; } }); }
+  onPolicy(scope: InboxScope) { this.background("policy", async () => { await this.refresh(scope); const rt = await this.ensure(scope); if ((rt.ledger?.policy.auto ?? "off") === "off") { rt.run?.abort.abort(); if (rt.debounce) { this.clock.clearTimer(rt.debounce.timer); rt.debounce = null; } } }); }
   /** A Board summary with a different createdAt retires that Board's previous scope. */
   onBoardChange(summary: { id: string; createdAt: string }) {
     for (const rt of this.scopes.values()) if (rt.scope.boardId === summary.id && rt.scope.expectedCreatedAt !== summary.createdAt && !rt.stale) this.markStale(rt);
@@ -447,12 +484,175 @@ export class InboxAutomation {
     rt.waking = run;
     void this.track(run.catch(error => this.log(`wake ${rt.scope.boardId}: ${error instanceof Error ? error.message : String(error)}`)));
   }
+  private async releaseOwner(releaseId: string): Promise<{ boardId: string; boardCreatedAt?: string } | null> {
+    if (this.releaseMemo.has(releaseId)) { const value = this.releaseMemo.get(releaseId)!; this.releaseMemo.delete(releaseId); this.releaseMemo.set(releaseId, value); return value; }
+    let value: { boardId: string; boardCreatedAt?: string } | null = null;
+    const meta = await this.o.releases.meta(releaseId).catch(() => undefined);
+    if (meta) value = { boardId: meta.source.boardId, ...(meta.source.boardCreatedAt ? { boardCreatedAt: meta.source.boardCreatedAt } : {}) };
+    else if (this.o.releases.read) {
+      const release = await this.o.releases.read(releaseId).catch(() => undefined);
+      if (release) value = { boardId: release.provenance.boardId, ...(release.provenance.boardCreatedAt ? { boardCreatedAt: release.provenance.boardCreatedAt } : {}) };
+    }
+    this.releaseMemo.set(releaseId, value);
+    if (this.releaseMemo.size > 1_000) this.releaseMemo.delete(this.releaseMemo.keys().next().value!);
+    return value;
+  }
+  private attributable(deploymentId: string) {
+    let scopes = 0;
+    for (const rt of this.scopes.values()) if (!rt.stale && [...rt.sources.values()].some(src => this.runnable(src) && src.source.deploymentId === deploymentId)) scopes++;
+    return scopes === 1;
+  }
   /**
-   * Phase 0 (lockdown design §4): nothing is ever handed to a comment assistant. A Board without a sealed
-   * runner (every Board after the v1 migration) waits for the human to re-enable automatic handling.
+   * DESIGN §11.6 considerWake with the sealed runner (lockdown design §3.2, §3.4): eligibility in seq order,
+   * a batch of at most 8 consecutive eligible comments from one visitor (untagged comments form their own
+   * batch), budgets and the daily cost cap, then one sealed run.
    */
   async considerWake(rt: ScopeRuntime): Promise<void> {
-    if (this.stopped || rt.stale || !rt.file.runner) return;
+    if (this.stopped || rt.stale) return;
+    if (!rt.active) await this.reload(rt);
+    const runner = rt.file.runner;
+    if ((rt.ledger!.policy.auto ?? "off") === "off" || !runner || !this.o.runner || rt.file.wakePaused || rt.file.wake.paused || rt.checking || rt.run) return;
+    const host = this.o.service.host();
+    if (!host) return; // waiting-host: maintenance tries again every minute
+    type Row = Awaited<ReturnType<InboxStore["snapshotAfter"]>>["comments"][number] & { verdict: "eligible" | "otherBoard" | "unattributed" | "handled" };
+    const rows: Row[] = [];
+    const batch: Row[] = [];
+    let revision = rt.ledger!.revision, lastScanned = rt.file.wake.seenSeq, closed = false, visitor: string | null = null;
+    for (let round = 0; round < 10 && !closed; round++) {
+      const snapshot = await this.o.inbox.snapshotAfter(rt.scope, lastScanned, 50, AUTOMATION_ACTOR);
+      revision = snapshot.revision;
+      rt.ledger = { revision: snapshot.revision, latestSeq: snapshot.latestSeq, total: snapshot.total, policy: snapshot.policy, reviewing: snapshot.reviewing };
+      if ((snapshot.policy.auto ?? "off") === "off") return;
+      if (!snapshot.comments.length) break;
+      for (const comment of snapshot.comments) {
+        let verdict: Row["verdict"] = "eligible";
+        if (comment.status !== "new") verdict = "handled";
+        else if (comment.releaseId) {
+          const owner = await this.releaseOwner(comment.releaseId);
+          if (!owner || owner.boardId !== rt.scope.boardId || owner.boardCreatedAt !== undefined && owner.boardCreatedAt !== rt.scope.expectedCreatedAt) verdict = "otherBoard";
+        } else if (!this.attributable(comment.deploymentId)) verdict = "unattributed";
+        if (verdict === "eligible") {
+          const key = comment.visitorTag ?? null;
+          // One visitor per run (R8): the batch ends at the first eligible comment of anyone else.
+          if (batch.length && (key !== visitor || batch.length >= this.limits.wakeMaxComments)) { closed = true; break; }
+          visitor = key; batch.push({ ...comment, verdict });
+        }
+        rows.push({ ...comment, verdict });
+        lastScanned = comment.seq;
+      }
+      if (snapshot.comments.length < 50) break;
+    }
+    const through = batch.length ? batch.at(-1)!.seq : lastScanned;
+    const skipped = rows.filter(row => row.seq <= through);
+    const otherBoard = skipped.filter(row => row.verdict === "otherBoard").length, unattributed = skipped.filter(row => row.verdict === "unattributed").length;
+    if (!batch.length) {
+      if (lastScanned !== rt.file.wake.seenSeq || otherBoard || unattributed) {
+        rt.file.wake.seenSeq = lastScanned; rt.file.wake.skipped.otherBoard += otherBoard; rt.file.wake.skipped.unattributed += unattributed;
+        await this.save(rt);
+      }
+      return;
+    }
+    // Budgets: 12 runs per Board and 30 per host in any rolling hour; pause and resume automatically.
+    const now = this.clock.now();
+    await this.loadHost();
+    rt.file.wake.history = rt.file.wake.history.filter(at => Date.parse(at) > now - HOUR);
+    this.host.history = this.host.history.filter(at => Date.parse(at) > now - HOUR);
+    if (rt.file.wake.history.length >= this.limits.wakeMaxPerHour) { await this.budgetPause(rt, "budget", Date.parse(rt.file.wake.history[0]) + HOUR); return; }
+    if (this.host.history.length >= this.limits.hostWakeMaxPerHour) { await this.budgetPause(rt, "host-budget", Date.parse(this.host.history[0]) + HOUR); return; }
+    this.rollCost(rt, now);
+    if (rt.file.cost.dayUsd >= runner.dailyCapUsd) { await this.costPause(rt, now); return; }
+    const board = await this.o.readBoard(rt.scope.boardId);
+    if (!board || board.createdAt !== rt.scope.expectedCreatedAt) { this.markStale(rt); return; }
+    const firstSeq = batch[0].seq, lastSeq = batch.at(-1)!.seq;
+    const runId = wakeInteractionId(rt.scope, firstSeq, lastSeq, rt.file.wake.rewinds);
+    const at = iso(now);
+    const record: InboxRunRecord = {
+      runId, at, endedAt: null, state: "starting", model: runner.model, cliVersion: null,
+      commentIds: batch.map(row => row.id), firstSeq, lastSeq, actions: { replied: 0, drafted: 0, triaged: 0, dismissed: 0 },
+      deniedAttempts: [], costUsd: null, durationMs: null, error: null, findings: [],
+    };
+    // Written ahead (`starting`): a crash from here on is recovered as interrupted and rewound.
+    rt.file.runs.push(record);
+    while (rt.file.runs.length > 50) { const index = rt.file.runs.findIndex(run => run.state !== "starting" && run.state !== "running"); rt.file.runs.splice(index < 0 ? 0 : index, 1); }
+    rt.file.wake.history.push(at); this.host.history.push(at);
+    rt.file.wake.seenSeq = lastSeq; rt.file.wake.lastRunAt = at;
+    rt.file.wake.skipped.otherBoard += otherBoard; rt.file.wake.skipped.unattributed += unattributed;
+    const abort = new AbortController();
+    rt.run = { record, abort };
+    await this.save(rt); await this.saveHost();
+    const picked = await this.pickRoute(host, runner.providerId);
+    if (!picked.ok) { await this.finishRun(rt, record, notStarted(picked.refusal)); return; }
+    const prompt = wakePrompt({ boardId: rt.scope.boardId, expectedCreatedAt: rt.scope.expectedCreatedAt, interactionId: runId, title: board.title, inboxRevision: revision, comments: batch.map(row => ({ commentId: row.id, revision: row.revision, visitorTag: row.visitorTag ?? null, canSeeReply: Boolean(row.visitorTag) })) });
+    const price = priceOf(runner.model);
+    const work = (async () => {
+      const outcome = await this.o.runner!.run({
+        scope: rt.scope, scopeKey: rt.key, runId, route: picked.route, model: runner.model, effort: price && !price.effort ? null : runner.effort,
+        maxBudgetUsd: perRunCap(runner.model, batch.length), systemPrompt: assistantSystemPrompt(board), prompt, commentIds: record.commentIds, signal: abort.signal,
+        onVerified: check => { record.state = "running"; record.cliVersion = check.cliVersion; void this.save(rt).catch(() => undefined); },
+      }).catch((error): RunOutcome => notStarted(error instanceof Error ? error.message.slice(0, 200) : "运行失败"));
+      await this.finishRun(rt, record, outcome);
+    })().catch(error => this.log(`run ${runId}: ${error instanceof Error ? error.message : String(error)}`));
+    this.runWork.add(work);
+    void work.finally(() => this.runWork.delete(work));
+  }
+  /**
+   * Records a run's end (§3.3, §3.4): the outcome, its cost and the lockdown check; rewinds a batch the model
+   * never received; pauses at once for a lockdown violation and after three runs in a row that could not start.
+   */
+  private async finishRun(rt: ScopeRuntime, record: InboxRunRecord, outcome: RunOutcome): Promise<void> {
+    if (rt.run?.record === record) rt.run = null;
+    const now = this.clock.now(), at = iso(now);
+    const startFailure = outcome.state === "not-ready" || outcome.state === "unsupported" || outcome.state === "failed" && outcome.toolUses === 0 && ["auth", "model", "rate", "network", "api"].includes(outcome.category ?? "");
+    Object.assign(record, {
+      state: outcome.state, endedAt: at, cliVersion: outcome.cliVersion ?? record.cliVersion, durationMs: outcome.durationMs,
+      deniedAttempts: outcome.deniedAttempts.slice(0, 10), costUsd: outcome.costUsd, actions: outcome.actions,
+      error: outcome.error?.slice(0, 300) ?? null, findings: outcome.findings.slice(0, 10),
+    });
+    const runner = rt.file.runner;
+    if (runner && (outcome.cliVersion || ["lockdown", "not-ready", "unsupported"].includes(outcome.state))) {
+      const ok = !["lockdown", "not-ready", "unsupported"].includes(outcome.state);
+      runner.lastCheck = { at, ok, cliVersion: outcome.cliVersion, findings: ok ? [] : outcome.findings.slice(0, 10) };
+    }
+    if (outcome.costUsd) { this.rollCost(rt, now); rt.file.cost.dayUsd += outcome.costUsd; rt.file.cost.hour.push({ at, usd: outcome.costUsd }); rt.file.cost.hour = rt.file.cost.hour.slice(-200); }
+    // A batch the model never received (or a run stopped before it could finish) is offered again.
+    if (!outcome.armed && outcome.state !== "done" || outcome.state === "interrupted" || startFailure) this.rewind(rt, record);
+    if (outcome.state === "lockdown") {
+      rt.file.wake.paused = { reason: "lockdown", at, error: outcome.findings.join("；").slice(0, 500) || "锁定检查没通过", resumesAt: null, findings: outcome.findings.slice(0, 10) };
+      if (rt.debounce) { this.clock.clearTimer(rt.debounce.timer); rt.debounce = null; }
+    } else if (startFailure) {
+      rt.file.wake.cliFailures++;
+      if (rt.file.wake.cliFailures >= this.limits.cliFailuresBeforePause) rt.file.wake.paused = { reason: "cli", at, error: (outcome.error ?? outcome.findings[0] ?? "原因未知").slice(0, 500), resumesAt: null };
+    } else if (outcome.state !== "interrupted") rt.file.wake.cliFailures = 0;
+    if (!rt.file.wake.paused && runner && rt.file.cost.dayUsd >= runner.dailyCapUsd) { await this.costPause(rt, now); return; }
+    await this.save(rt).catch(error => this.log(`save run ${record.runId}: ${String(error)}`));
+    if (this.stopped || rt.stale || rt.file.wake.paused) return;
+    if (startFailure) { this.retryLater(rt); return; }
+    void this.refresh(rt.scope).catch(() => undefined);
+    this.queueWake(rt);
+  }
+  /** Not-ready and unsupported runs are retried after 1, 5 and 15 minutes; each retry is a run against the budget. */
+  private retryLater(rt: ScopeRuntime) {
+    const delays = this.limits.wakeRetryMs, delay = delays[Math.min(Math.max(rt.file.wake.cliFailures - 1, 0), delays.length - 1)];
+    if (rt.debounce) this.clock.clearTimer(rt.debounce.timer);
+    const now = this.clock.now();
+    rt.debounce = { first: now, due: now + delay, timer: this.timer(() => { rt.debounce = null; this.queueWake(rt); }, delay) };
+  }
+  private rollCost(rt: ScopeRuntime, now: number) {
+    const day = localDay(now);
+    if (rt.file.cost.day !== day) rt.file.cost = { day, dayUsd: 0, hour: rt.file.cost.hour };
+    rt.file.cost.hour = rt.file.cost.hour.filter(item => Date.parse(item.at) > now - HOUR);
+  }
+  /** The daily cost cap (§3.4): paused until local midnight, then resumed automatically. */
+  private async costPause(rt: ScopeRuntime, now: number) {
+    const midnight = new Date(now); midnight.setHours(24, 0, 0, 0);
+    rt.file.wake.paused = { reason: "cost", at: iso(now), error: null, resumesAt: iso(midnight.getTime()) };
+    await this.save(rt);
+    this.armResume(rt);
+  }
+  private async budgetPause(rt: ScopeRuntime, reason: "budget" | "host-budget", resumesAt: number) {
+    rt.file.wake.paused = { reason, at: iso(this.clock.now()), error: null, resumesAt: iso(resumesAt) };
+    await this.save(rt);
+    this.armResume(rt);
   }
   private armResume(rt: ScopeRuntime) {
     if (rt.resumeTimer) { this.clock.clearTimer(rt.resumeTimer); rt.resumeTimer = undefined; }
@@ -467,9 +667,13 @@ export class InboxAutomation {
       this.queueWake(rt);
     }), Math.max(0, Date.parse(paused.resumesAt) - this.clock.now()));
   }
-  /** The legacy Paseo-agent assistant is never admitted (lockdown design §4 item 3). */
-  async isAssistant(_scope: InboxScope, _agentId: string): Promise<boolean> { return false; }
-  async assistantComments(_scope: InboxScope, _agentId: string): Promise<ReadonlySet<string>> { return new Set(); }
+  /**
+   * The inbox store's assistant check (§3.2): true only for the Board's runner identity while one of its runs is
+   * armed. A Paseo agent (including the retired one) is never the assistant.
+   */
+  async isAssistant(scope: InboxScope, agentId: string): Promise<boolean> { return Boolean(this.o.bindings?.armedFor(scope, agentId)); }
+  /** The comments of the scope's armed run: the only ones it may reply to. */
+  async assistantComments(scope: InboxScope, agentId: string): Promise<ReadonlySet<string>> { return this.o.bindings?.armedFor(scope, agentId)?.commentIds ?? new Set(); }
 
   /* ---------- reply outbox ---------- */
   private upsertPending(rt: ScopeRuntime, commentId: string, pending: InboxPendingReply, lastError: string | null, attempted: boolean) {
@@ -526,7 +730,9 @@ export class InboxAutomation {
     let state: InboxAutoStatus["wake"]["state"];
     if (auto === "off") state = policy.triage ? "legacy-internal" : "off";
     else if (!rt.file.runner) state = "setup";
+    else if (rt.checking) state = "checking";
     else if (rt.file.wakePaused || paused) state = "paused";
+    else if (rt.run) state = rt.run.record.state === "starting" ? "checking" : "running";
     else if (rt.debounce) state = "batching";
     else if (!this.o.service.hasHost() && rt.ledger && rt.ledger.latestSeq > rt.file.wake.seenSeq) state = "waiting-host";
     else state = "idle";
@@ -546,14 +752,14 @@ export class InboxAutomation {
       wake: {
         state, pausedReason: state === "setup" ? "setup" : rt.file.wakePaused ? "human" : paused?.reason ?? null,
         pausedAt: paused?.at ?? null, resumesAt: paused?.resumesAt ?? null, error: paused?.error ?? null, findings: paused?.findings ?? [],
-        pendingComments: auto === "off" || !rt.ledger ? 0 : Math.max(0, rt.ledger.latestSeq - rt.file.wake.seenSeq), runningComments: 0,
+        pendingComments: auto === "off" || !rt.ledger ? 0 : Math.max(0, rt.ledger.latestSeq - rt.file.wake.seenSeq), runningComments: rt.run?.record.commentIds.length ?? 0,
         nextWakeAt: rt.debounce ? iso(rt.debounce.due) : null,
         wakesLastHour: history.length, maxWakesPerHour: this.limits.wakeMaxPerHour,
         hostWakesLastHour: this.host.history.filter(at => Date.parse(at) > now - HOUR).length, maxHostWakesPerHour: this.limits.hostWakeMaxPerHour,
         lastWakeAt: rt.file.wake.lastRunAt, lastBudgetPause: rt.file.wake.lastBudgetPause, cliFailures: rt.file.wake.cliFailures,
         skipped: { ...rt.file.wake.skipped },
       },
-      assistant: null,
+      assistant: this.sealedStatus(rt, now),
       legacy: legacy && !legacy.dismissedAt ? { agentId: legacy.agentId, retiredAt: legacy.retiredAt } : null,
       runs: [...rt.file.runs].reverse().slice(0, 10),
       reviewing: rt.ledger?.reviewing ?? 0,
@@ -563,11 +769,25 @@ export class InboxAutomation {
       },
     };
   }
+  private sealedStatus(rt: ScopeRuntime, now: number): InboxAutoStatus["assistant"] {
+    const runner = rt.file.runner;
+    if (!runner) return null;
+    const day = localDay(now) === rt.file.cost.day ? rt.file.cost.dayUsd : 0;
+    const measured = rt.file.runs.filter(run => run.costUsd !== null && run.commentIds.length && run.state !== "starting" && run.state !== "running");
+    const comments = measured.reduce((sum, run) => sum + run.commentIds.length, 0);
+    return {
+      kind: "sealed", modelId: runner.model, modelLabel: runner.modelLabel, effort: runner.effort, providerId: runner.providerId, lastCheck: runner.lastCheck,
+      costLastHourUsd: rt.file.cost.hour.filter(item => Date.parse(item.at) > now - HOUR).reduce((sum, item) => sum + item.usd, 0),
+      costTodayUsd: day, dailyCapUsd: runner.dailyCapUsd,
+      avgCostPerCommentUsd: comments ? measured.reduce((sum, run) => sum + run.costUsd!, 0) / comments : null,
+    };
+  }
   async set(raw: InboxAutoSetInput): Promise<InboxAutoStatus> {
     const input = parseInput(InboxAutoSetInputSchema, raw);
     const rt = await this.activate(input);
-    // Resuming never brings an unverified assistant back: without a sealed runner the human re-enables through the dialog.
-    if ((input.wakePaused === false || input.resumeWake) && !rt.file.runner) throw new BoardStoreError("invalid_input", RESUME_REFUSAL);
+    // Resuming never brings an unverified runner back: without a sealed runner, or after a lockdown pause, the
+    // human re-enables through the dialog, which runs a fresh preflight (§3.4 set()).
+    if ((input.wakePaused === false || input.resumeWake) && (!rt.file.runner || rt.file.wake.paused?.reason === "lockdown" || rt.file.wake.paused?.reason === "setup")) throw new BoardStoreError("invalid_input", RESUME_REFUSAL);
     if (input.syncPaused !== undefined && input.syncPaused !== rt.file.syncPaused) {
       rt.file.syncPaused = input.syncPaused;
       await this.save(rt);
@@ -586,7 +806,7 @@ export class InboxAutomation {
       const reason = rt.file.wake.paused?.reason;
       rt.file.wakePaused = false;
       if (input.resumeWake) {
-        // A human resume also forgives this Board's run budget; the host budget still applies.
+        // A human resume also forgives this Board's run budget; the host budget and the daily cost cap still apply.
         if (reason === "budget") rt.file.wake.history = [];
         if (reason === "cli") rt.file.wake.cliFailures = 0;
         rt.file.wake.paused = null;
@@ -598,18 +818,109 @@ export class InboxAutomation {
     await rt.waking.catch(() => undefined);
     return this.statusOf(rt);
   }
-  /** Phase 0 (lockdown design §4): the dialog shows why automatic handling cannot be enabled. */
-  async assistantOptions(scope: InboxScope): Promise<InboxAssistantOptions> {
-    const rt = await this.activate(scope);
+  /**
+   * The Claude-family route the runner launches (§3.1): `claude`, else the first provider that extends it, from
+   * the daemon config read now. A route whose env holds credentials is refused (the kit never copies them).
+   */
+  private async pickRoute(host: Paseo, preferred?: string): Promise<Picked> {
+    let providers: unknown;
+    try { providers = (await host.config.get()).config.providers; } catch { return { ok: false, refusal: NO_CLAUDE_REFUSAL }; }
+    const all = providers && typeof providers === "object" && !Array.isArray(providers) ? providers as Record<string, unknown> : {};
+    const ids = preferred ? [preferred] : ["claude", ...Object.keys(all).filter(id => id !== "claude" && (all[id] as { extends?: unknown } | null)?.extends === "claude").sort()];
+    let secret = false;
+    for (const id of ids) {
+      const route = routeFrom(all, id);
+      if (route.ok) return { ok: true, providerId: id, label: route.label, route: route.route };
+      if (route.error === "route_env_secret") secret = true;
+      else this.log(`comment runner route ${id}: ${routeErrorText(route.error)}`);
+    }
+    return { ok: false, refusal: secret ? ENV_SECRET_REFUSAL : NO_CLAUDE_REFUSAL };
+  }
+  /** `paseo.providers.listModels` crossed with the price table (§3.5); the CLI aliases when the list cannot be read. */
+  private async modelChoices(host: Paseo, providerId: string): Promise<InboxAssistantOptions["models"]> {
+    let listed: Array<{ id: string; label: string }> | null = null;
+    try {
+      const result = await new Promise<Awaited<ReturnType<Paseo["providers"]["listModels"]>> | null>(resolve => {
+        const timer = this.clock.setTimer(() => resolve(null), 5_000);
+        Promise.resolve().then(() => host.providers.listModels(providerId)).then(resolve, () => resolve(null)).finally(() => this.clock.clearTimer(timer));
+      });
+      if (result && !result.error && Array.isArray(result.models)) listed = result.models.slice(0, 200).flatMap(model => typeof model?.id === "string" && MODEL_RE.test(model.id) && model.isSelectable !== false ? [{ id: model.id, label: (typeof model.label === "string" && model.label ? model.label : model.id).slice(0, 100) }] : []);
+    } catch { listed = null; }
+    const choice = (price: (typeof MODEL_PRICES)[number], label = price.label) => ({ id: price.id, label, priced: true, perComment: perComment(price), dailyCapUsd: price.dailyCapUsd, effort: price.effort });
+    const cheapestFirst = <T extends { inputPerMTok: number; outputPerMTok: number }>(items: T[]) => [...items].sort((a, b) => a.inputPerMTok - b.inputPerMTok || a.outputPerMTok - b.outputPerMTok);
+    if (!listed?.length) return cheapestFirst([...ALIAS_PRICES]).map(price => choice(price));
+    const priced = cheapestFirst(MODEL_PRICES.filter(price => listed!.some(model => model.id === price.id)));
+    if (priced.length) return priced.map(price => choice(price, listed!.find(model => model.id === price.id)?.label ?? price.label));
+    // A provider whose models are not in the price table: shown as 无法估算 and never preselected.
+    return listed.slice(0, 12).map(model => ({ id: model.id, label: model.label, priced: false, perComment: null, dailyCapUsd: UNPRICED_DAILY_CAP_USD, effort: true }));
+  }
+  private async options(rt: ScopeRuntime, scope: InboxScope): Promise<{ options: InboxAssistantOptions; picked: Picked; board: Board }> {
     const board = await this.o.readBoard(scope.boardId);
     if (!board || board.createdAt !== scope.expectedCreatedAt) throw new BoardStoreError("identity_conflict", "Board was removed or replaced; its previous inbox cannot be reused");
-    const legacy = rt.file.legacyAssistant;
-    return { refusal: PHASE0_REFUSAL, providerId: null, providerLabel: null, models: [], recommendedModelId: null, priceTableDate: "", firstTime: !rt.file.runner, current: null, legacy: legacy ? { agentId: legacy.agentId } : null };
+    const host = this.o.service.host();
+    if (!host) throw new BoardStoreError("unavailable", "Paseo 还没有连接到插件，稍后再试。");
+    const runner = rt.file.runner, legacy = rt.file.legacyAssistant;
+    const base = { priceTableDate: PRICE_TABLE_DATE, firstTime: !runner, current: runner ? { modelId: runner.model, effort: runner.effort, dailyCapUsd: runner.dailyCapUsd } : null, legacy: legacy ? { agentId: legacy.agentId } : null };
+    const picked = await this.pickRoute(host);
+    if (!picked.ok) return { picked, board, options: { ...base, refusal: picked.refusal, providerId: null, providerLabel: null, models: [], recommendedModelId: null } };
+    const models = await this.modelChoices(host, picked.providerId);
+    return { picked, board, options: { ...base, refusal: null, providerId: picked.providerId, providerLabel: picked.label.slice(0, 200), models, recommendedModelId: models[0]?.priced ? models[0].id : null } };
   }
-  /** `board.inbox.auto-enable`: refused before anything is created or written (lockdown design §4 item 1). */
+  /** The dialog's choices: route, priced models and estimates, or the refusal (§3.5, §3.9). */
+  async assistantOptions(scope: InboxScope): Promise<InboxAssistantOptions> {
+    const rt = await this.activate(scope);
+    return (await this.options(rt, scope)).options;
+  }
+  /**
+   * `board.inbox.auto-enable` (§3.3 preflight): the same sealed launch as a run, with the preflight stdin and an
+   * unarmed binding, must pass its init check and one short turn before anything is written. Then the runner
+   * record and the policy are written; the backlog is never handed to the runner.
+   */
   async enable(raw: unknown): Promise<InboxAutoStatus> {
-    void raw;
-    throw new BoardStoreError("invalid_input", PHASE0_REFUSAL);
+    const input = parseInput(InboxAutoEnableInputSchema, raw);
+    const scope = { boardId: input.boardId, expectedCreatedAt: input.expectedCreatedAt };
+    const rt = await this.activate(scope);
+    if (rt.checking) throw new BoardStoreError("invalid_input", CHECKING_REFUSAL);
+    if (!this.o.runner) throw new BoardStoreError("unavailable", "评论助手不可用，稍后再试。");
+    rt.checking = true;
+    let outcome: RunOutcome, chosen: InboxAssistantOptions["models"][number], picked: Extract<Picked, { ok: true }>;
+    try {
+      const { options, picked: route, board } = await this.options(rt, scope);
+      if (options.refusal || !route.ok) throw new BoardStoreError("invalid_input", options.refusal ?? NO_CLAUDE_REFUSAL);
+      const model = options.models.find(item => item.id === input.modelId);
+      if (!model) throw new BoardStoreError("invalid_input", modelRefusal(input.modelId));
+      chosen = model; picked = route;
+      outcome = await this.o.runner.run({
+        scope, scopeKey: rt.key, runId: `preflight-${sha256(`${rt.key}:${this.clock.now()}`).slice(0, 16)}`, route: route.route, model: model.id, effort: model.effort ? input.effort : null,
+        maxBudgetUsd: PREFLIGHT_BUDGET_USD, systemPrompt: assistantSystemPrompt(board), prompt: "", commentIds: [], preflight: true,
+      });
+    } finally { rt.checking = false; }
+    // Nothing is written when the check fails (§3.3).
+    if (outcome.state !== "done") throw new BoardStoreError("invalid_input", preflightRefusal(outcome, chosen.id));
+    // The only path that may move auto from off to publish/review.
+    const policy = (revision: number) => this.o.inbox.setPolicy({ ...scope, expectedRevision: revision, eventId: input.eventId, policy: { read: true, triage: true, auto: input.replyMode } }, { kind: "user", id: "paseo-client" }, { allowAutoEnable: true });
+    try { await policy(input.expectedRevision); }
+    catch (error) {
+      if (!(error instanceof BoardStoreError && error.code === "revision_conflict")) throw error;
+      await policy((await this.o.inbox.list({ ...scope, limit: 1 }, AUTOMATION_ACTOR)).revision);
+    }
+    const now = this.clock.now(), at = iso(now);
+    rt.file.runner = {
+      generation: (rt.file.runner?.generation ?? 0) + 1, providerId: picked.providerId, model: chosen.id, modelLabel: chosen.label, effort: input.effort,
+      dailyCapUsd: input.dailyCapUsd ?? chosen.dailyCapUsd, lastCheck: { at, ok: true, cliVersion: outcome.cliVersion, findings: [] },
+    };
+    if (outcome.costUsd) { this.rollCost(rt, now); rt.file.cost.dayUsd += outcome.costUsd; rt.file.cost.hour.push({ at, usd: outcome.costUsd }); }
+    // The backlog is never handed to the runner.
+    await this.reload(rt);
+    rt.file.wake.seenSeq = rt.ledger!.latestSeq;
+    rt.file.wake.paused = null; rt.file.wakePaused = false; rt.file.wake.cliFailures = 0;
+    this.armResume(rt);
+    await this.save(rt);
+    return this.statusOf(rt);
   }
+}
+/** A run that never launched (no route, or an exception before the process): retried like not-ready. */
+function notStarted(error: string): RunOutcome {
+  return { state: "not-ready", armed: false, cliVersion: null, model: null, findings: [], error: error.slice(0, 300), category: null, modelUnavailable: false, deniedAttempts: [], toolUses: 0, costUsd: null, durationMs: 0, actions: { replied: 0, drafted: 0, triaged: 0, dismissed: 0 } };
 }
 export type { ScopeRuntime as InboxAutomationScope };
