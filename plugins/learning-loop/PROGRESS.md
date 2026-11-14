@@ -197,4 +197,7 @@ Added packaged `UPSTREAM.json` for explicitly recorded reference commits and fea
 - 运行代码与已安装验收的 `b868d4a` 保持一致；此前 132 项常规测试、两条真实 Haiku 和桌面验收结果仍如上。精确 compact viewport 仍未验证，不因发布而补记通过。
 - 原始截图、工具/测试日志、旧 runtime JSON 与未脱敏报告已保存在私有 `~/.paseo/verification/learning-loop/20261113-publication/`，并记录 SHA-256。公开树只留脱敏文字结果；历史截图也从当前树移除，但不重写此前公开 Git 历史。本文早期的截图文件名均指该私有证据归档。
 - 发布期间不安装、reload 或重启主 daemon；现有稳定安装保持不变。
-- 发布检查与远端提交确认将在完成后记录。
+- 发布检查：Node 24.22.1 / npm 10.9.2，对 Git archive 导出的插件完成 clean `npm ci`；typecheck 与 132 项常规测试通过，2 项需真实模型的 opt-in 测试本轮未重复运行（11-06 已独立通过）。
+- 原 `verify-plugin.sh --no-reload` 的退出码为 1：首次为临时 Unix socket 路径过长；缩短独占 TMPDIR 后全部产品测试通过，但旧静态 checker 误报当前宿主的两个模块 wrapper 声明及压缩后的 eager-value helper。原失败日志完整保留，没有修改产品代码掩盖环境问题。
+- 私有 checker 副本仅豁免精确宿主 wrapper 并兼容原安全 helper 的空白压缩；scratch 生成的兼容 bundle 静态检查和 Hermes VM 均通过。真实发布的 TSX 源码在 Hermes VM 中同样通过，但已有 const/let 静态告警仍保留。当前 main 与本次发布的真实客户端编译结果字节完全一致（SHA-256 `55e916fd1c04a6b11c95b412810237580f5bf3baf166a0ed0fd9f4a54cbc2f6c`），未新增客户端运行差异；没有把 VM 检查等同于完整手机 UI 验收。
+- 独立隐私检查通过：公开插件文件无本机用户名、真实 host/fixture 标识、用户原话或 raw 证据；35 项私有原件与开发基线逐字节一致。发布实际 push 与远端 SHA 回执保存于私有归档。
