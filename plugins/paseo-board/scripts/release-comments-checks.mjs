@@ -167,6 +167,22 @@ export async function runCommentsChecks({ assert, command, frameCommand, evaluat
   await sleep(200); assert.equal((await ui()).composer, false, 'An authored contextmenu handler owns its region');
   check('comments page: right-click keeps the native menu with nothing selected, on links, textareas, contenteditable, opted-out regions, outside the selection, for a word macOS selects on right-click, with Shift, and inside an authored contextmenu handler');
 
+  // macOS: Control+click is a secondary click (contextmenu with button 0) and opens the composer like a right-click.
+  if (process.platform === 'darwin') {
+    // Past the 1 s window of the authored region's right-click above, so only this click can open the composer.
+    await sleep(1100);
+    await select('#result', '第二步'); await sleep(450);
+    // As a real keyboard does: Control goes down first, so Chrome reports a left button with ctrlKey.
+    await command('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Control', code: 'ControlLeft', windowsVirtualKeyCode: 17, modifiers: 2 });
+    await mouse(quoteBox.x, quoteBox.y, 'left', 2);
+    await command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Control', code: 'ControlLeft', windowsVirtualKeyCode: 17 });
+    await until(async () => (await ui()).composer, 'the composer from Control+click');
+    assert.equal((await ui()).focus, '评论'); assert.ok((await ui()).composerText.includes('“第二步”'));
+    await escape(); await until(async () => !(await ui()).composer, 'Esc after Control+click');
+    await clearSelection();
+    check('comments page: on macOS, Control+click inside the selection opens the composer like a right-click');
+  }
+
   // 4. Right-click inside an earlier selection opens the composer directly; Esc keeps the draft, 取消 asks.
   await select('#result', '第二步'); await sleep(450);
   assert.equal((await right(quoteBox.x, quoteBox.y)).prevented, true);
@@ -189,6 +205,15 @@ export async function runCommentsChecks({ assert, command, frameCommand, evaluat
   await clickOuter('[data-pbc=discard] button:last-child');
   state = await ui(); assert.equal(state.composer, true); assert.equal(state.textarea, '草稿内容');
   check('comments page: right-click inside an earlier selection opens the composer directly with focus in the text; Esc keeps the draft and returns focus to the canvas; 取消 asks before discarding');
+
+  // Esc pressed after clicking back into the page still closes the composer and keeps the draft.
+  await focusFrameAt();
+  assert.equal(await evaluate('document.activeElement.tagName'), 'IFRAME'); assert.equal((await ui()).composer, true);
+  await escape();
+  await until(async () => !(await ui()).composer, 'Esc with focus in the page to close the composer');
+  await select('#result', '第二步'); await sleep(450); await right(quoteBox.x, quoteBox.y);
+  await until(async () => (await ui()).textarea === '草稿内容', 'the kept draft after Esc in the page');
+  check('comments page: Esc with focus back in the page closes the composer and keeps its draft');
 
   // 5. Sending: the payload is frozen before the request; a lost response is retried with the same key and payload.
   await evaluate("(()=>{const t=document.querySelector('[data-pbc=composer] textarea');t.select();return true})()");
@@ -232,6 +257,13 @@ export async function runCommentsChecks({ assert, command, frameCommand, evaluat
   assert.equal((await frame('document.documentElement.innerHTML')).includes(secret), false);
   check('comments page: the marker sits at the end of the quote, and neither the visitor secret nor comment text reaches the canvas frame');
 
+  // A fixed or sticky page header over the passage hides its marker instead of drawing on the header.
+  await frame("(()=>{const bar=document.createElement('div');bar.id='fixed-bar';bar.textContent='页面标题区域';bar.style.cssText='position:fixed;top:0;left:0;right:0;height:220px;background:#eee;z-index:5';document.body.appendChild(bar);return true})()");
+  await until(async () => (await markers()).length === 1 && (await visibleMarkers()).length === 0, 'the marker to hide under the fixed header');
+  await frame("document.getElementById('fixed-bar').remove(),true");
+  await until(async () => (await visibleMarkers()).length === 1, 'the marker to return when the header is gone');
+  check('comments page: a marker whose passage is covered by a fixed header is hidden and returns when uncovered');
+
   // 7. Replies arrive on focus; reply text is rendered literally.
   const [stored] = backend.comments();
   backend.addReply(stored.externalId, '<img src=x onerror="window.pwned=1">谢谢！第二步指的是按周汇总。', 'agent');
@@ -254,6 +286,11 @@ export async function runCommentsChecks({ assert, command, frameCommand, evaluat
   await escape(); await until(async () => !(await ui()).panel, 'Esc to close the panel');
   assert.equal(await evaluate("document.activeElement.getAttribute('data-pbc')"), 'badge');
   check('comments page: a focus event polls the visitor\'s own threads; the badge shows 1 条新回复, the panel labels 作者的 AI 助手回复 and renders reply text literally (no script runs)');
+  await clickOuter('[data-pbc=badge]'); await until(async () => (await ui()).panel, 'the panel again');
+  await focusFrameAt();
+  await escape(); await until(async () => !(await ui()).panel, 'Esc with focus in the page to close the panel');
+  assert.equal(await evaluate('document.activeElement.tagName'), 'IFRAME', 'Focus stays in the page');
+  check('comments page: Esc with focus back in the page closes the thread panel');
 
   // 8. Storage holds only the anonymous key and the hint flag; thread text lives in sessionStorage.
   const localKeys = JSON.parse(await evaluate('JSON.stringify(Object.keys(localStorage).filter(k=>/comment|visitor/.test(k)))'));
@@ -324,6 +361,23 @@ export async function runCommentsChecks({ assert, command, frameCommand, evaluat
   await until(async () => (await ui()).badge === '我的评论 3', 'three threads');
   check('comments page: a mouse-drag selection extended with Shift+ArrowRight opens the composer from the ContextMenu key with focus in the text, sends with ⌘/Ctrl+Enter and returns focus to the canvas');
 
+  // A drag released over the shell's badge (outside the canvas frame) still shows the 评论 button.
+  await clearSelection(); await until(async () => !(await ui()).float, 'no button before the drag');
+  // Empty space under the passage, so the page behind the badge holds no text or form control.
+  await frame(`document.querySelector('#plain').insertAdjacentHTML('afterend','<div id="drag-pad" style="height:900px"></div>'),window.scrollTo(0,0),true`);
+  const outside = await rect('#plain', 'Plain words'), badgeBox = await outerBox('[data-pbc=badge]');
+  await command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: outside.left + 1, y: outside.y });
+  await command('Input.dispatchMouseEvent', { type: 'mousePressed', x: outside.left + 1, y: outside.y, button: 'left', clickCount: 1 });
+  await command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: outside.right - 1, y: outside.y, button: 'left', buttons: 1 });
+  await command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: badgeBox.x, y: badgeBox.y, button: 'left', buttons: 1 });
+  await command('Input.dispatchMouseEvent', { type: 'mouseReleased', x: badgeBox.x, y: badgeBox.y, button: 'left', clickCount: 1 });
+  assert.ok((await frame('getSelection().toString()')).length >= 5);
+  await until(async () => (await ui()).float, 'the 评论 button after a drag released outside the page', 3000);
+  assert.equal((await ui()).panel, null, 'Releasing over the badge does not click it');
+  await clearSelection(); await until(async () => !(await ui()).float, 'the button to hide again');
+  await frame("document.getElementById('drag-pad').remove(),true");
+  check('comments page: a drag selection released over the shell\'s badge still shows the floating 评论 button');
+
   // 12. 在页面中定位 scrolls the passage into view; 再评论这段 reuses the anchor; a dropped request is retried from the panel.
   await clickOuter('[data-pbc=badge]'); await until(async () => (await ui()).panel, 'the panel');
   const plainThread = backend.comments().find(row => row.anchor.selector === '#plain').externalId;
@@ -351,6 +405,38 @@ export async function runCommentsChecks({ assert, command, frameCommand, evaluat
   await escape();
   check('comments page: 在页面中定位 brings the passage into view; 再评论这段 reuses the anchor; a blocked request is kept, explained, and retried from the panel with the same key');
 
+  // 12b. Long replies make the list scroll. Polls keep the reader's scroll position and focused control (an
+  // unchanged poll does not even rebuild the list); a marker opens the panel scrolled to its thread; bidi
+  // controls in reply text show as visible markers.
+  const longReply = '这是一条很长的作者回复，用来让「我的评论」列表需要滚动才能看完。'.repeat(12) + ' \u202Eevil\u202C';
+  for (const row of backend.comments()) backend.addReply(row.externalId, longReply, 'owner');
+  await clickOuter('[data-pbc=badge]');
+  await until(async () => (await ui()).panel?.includes('[U+202E]evil[U+202C]'), 'the long replies in the open panel', 25000);
+  assert.equal(await evaluate("/[\\u202A-\\u202E\\u2066-\\u2069]/.test(document.querySelector('[data-pbc=panel]').textContent)"), false);
+  const listState = () => evaluate("(()=>{const l=document.querySelector('[data-pbc=panel] .pbc-list'),a=document.activeElement;return{top:l.scrollTop,focus:a&&a.getAttribute('data-pbc-key'),probe:l.dataset.probe||null}})()");
+  const scrollable = () => evaluate("(()=>{const l=document.querySelector('[data-pbc=panel] .pbc-list');return l.scrollHeight-l.clientHeight})()");
+  await evaluate("(()=>{const l=document.querySelector('[data-pbc=panel] .pbc-list');l.dataset.probe='kept';const again=[...l.querySelectorAll('[data-pbc-key^=\"again:\"]')];again[again.length-1].focus();l.scrollTop=Math.round((l.scrollHeight-l.clientHeight)/2);return true})()");
+  const reading = await listState();
+  assert.ok(await scrollable() > 200 && reading.top > 100 && reading.focus?.startsWith('again:') && reading.probe === 'kept', JSON.stringify(reading));
+  let polls = mineRequests().length;
+  await until(async () => mineRequests().length > polls, 'a background poll with nothing new', 25000); await sleep(400);
+  assert.deepEqual(await listState(), reading, 'An unchanged poll leaves the list, its scroll and focus alone');
+  backend.addReply(stored.externalId, '又一条新的回复。', 'agent');
+  polls = mineRequests().length;
+  await until(async () => mineRequests().length > polls && (await ui()).panel?.includes('又一条新的回复。'), 'a background poll with a new reply', 25000);
+  assert.deepEqual(await listState(), { ...reading, probe: null }, 'A changed poll rebuilds the list but keeps its scroll and focus');
+  await escape(); await until(async () => !(await ui()).panel, 'Esc');
+  // Marker 2 (the nested scroller) belongs to an older thread, far down the newest-first list.
+  await frame("window.scrollTo(0,0),document.querySelector('#scroller').scrollTop=0,true");
+  const nestedThread = backend.comments().find(row => row.anchor?.selector === '#nested').externalId;
+  const secondMarker = await until(async () => (await visibleMarkers()).find(item => item.n === '2'), 'marker 2');
+  await mouse(secondMarker.x + 10, secondMarker.y + 10);
+  await until(async () => (await ui()).panel, 'the panel from marker 2');
+  const placed = await evaluate(`(()=>{const l=document.querySelector('[data-pbc=panel] .pbc-list').getBoundingClientRect(),t=document.querySelector('[data-thread="${nestedThread}"]');const r=t.getBoundingClientRect();return{focused:t.hasAttribute('data-focus'),top:r.top,listTop:l.top,listBottom:l.bottom}})()`);
+  assert.ok(placed.focused && placed.top >= placed.listTop - 1 && placed.top < placed.listBottom - 20, JSON.stringify(placed));
+  await escape(); await until(async () => !(await ui()).panel, 'Esc');
+  check('comments page: polls keep the panel\'s scroll position and focus, a marker opens the panel at its thread, and bidi controls in replies show as markers');
+
   // 13. Polling cadence: at least 10 s apart, nothing while hidden, Retry-After honoured with the busy text.
   await reload();
   await until(async () => mineRequests().length > 0 && Date.now() - mineRequests().at(-1).at < 3000, 'the poll after reload');
@@ -373,18 +459,29 @@ export async function runCommentsChecks({ assert, command, frameCommand, evaluat
   assert.equal(mineRequests().length, count + 1, 'Retry-After holds back even a focus poll');
   check('comments page: polls are at least 10 s apart, stop while hidden, resume on return, and a 429 shows the busy text and honours Retry-After');
 
+  // A successful send while that notice is showing clears it: the service answered.
+  await focusFrameAt(); await select('#plain', 'Plain words'); await until(async () => (await ui()).float, 'the button while busy');
+  await clickOuter('[data-pbc=float]'); await until(async () => (await ui()).focus === '评论', 'the composer while busy');
+  await command('Input.insertText', { text: '服务恢复后的评论' }); await clickOuter('[data-pbc=send]');
+  await until(async () => (await ui()).toast === '已发送', 'the send while the busy notice is set');
+  await clickOuter('[data-pbc=badge]'); await until(async () => (await ui()).panel?.includes('服务恢复后的评论'), 'the panel after the send');
+  assert.equal((await ui()).panel.includes('评论服务繁忙'), false, 'No stale connection notice above the thread just sent');
+  await escape(); await until(async () => !(await ui()).panel, 'Esc');
+  check('comments page: a successful send clears an earlier busy or network notice in the panel');
+
   // 14. Changed page text makes a thread an orphan: listed in the panel, not on the page.
   files.set(pagePath, comments.changed.files['index.html']);
   try {
     await reload();
-    await until(async () => (await ui()).badge?.startsWith('我的评论 4'), 'the threads on the changed page');
+    await until(async () => (await ui()).badge?.startsWith('我的评论 5'), 'the threads on the changed page');
     await until(async () => (await markers()).filter(item => item.hidden).length >= 2, 'the orphaned markers to hide');
     await clickOuter('[data-pbc=badge]');
     await until(async () => (await ui()).panel?.includes('原文已修改，页面上找不到这段文字'), 'the orphan note');
     assert.equal(await evaluate(`document.querySelector('[data-thread="${stored.externalId}"]').textContent.includes('在页面中定位')`), false);
+    assert.equal(await evaluate(`document.querySelector('[data-thread="${stored.externalId}"]').textContent.includes('再评论这段')`), false, 'An orphan offers no comment on text that is gone');
     await escape();
   } finally { files.set(pagePath, release.files['index.html']); }
-  check('comments page: when the page text changed, the thread stays in the panel as 原文已修改 and has no marker');
+  check('comments page: when the page text changed, the thread stays in the panel as 原文已修改 with no marker and no 再评论这段');
 
   // 15. Identity follows the app key: another address of the same app keeps threads; a different app disables sending.
   files.set(pagePath, comments.viaMoved.files['index.html']);
@@ -395,7 +492,7 @@ export async function runCommentsChecks({ assert, command, frameCommand, evaluat
     assert.ok(mineRequests(moved)[0].path.startsWith('/api/'), 'The path prefix is used');
     assert.equal(mineRequests(moved)[0].headers['x-board-visitor'], secret);
     await until(async () => (await visibleMarkers()).length >= 2, 'the markers at the moved address');
-    assert.ok((await ui()).badge.startsWith('我的评论 4'));
+    assert.ok((await ui()).badge.startsWith('我的评论 5'));
   } finally { files.set(pagePath, release.files['index.html']); }
   files.set('/comments-other/', comments.otherApp.files['index.html']);
   other.requests.length = 0;

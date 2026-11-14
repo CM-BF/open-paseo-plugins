@@ -38135,30 +38135,43 @@ var COMMENTS_RUNTIME = String.raw`
   const clear=()=>{clearTimeout(idle);if(posted){posted=false;send({type:'comment-target-clear'})}};
   const settle=delay=>{clearTimeout(idle);idle=setTimeout(()=>{if(mouseDown)return;const range=validRange();if(!range){clear();return}if(quiet&&quiet===signature(getSelection()))return;quiet='';post('select',range)},delay)};
   document.addEventListener('selectionchange',()=>{if(!validRange()){quiet='';clear();return}if(posted){posted=false;send({type:'comment-target-clear'})}settle(400)});
+  // macOS treats Control+click as a secondary click: it fires contextmenu with button 0.
+  const mac=/Mac/i.test(navigator.platform||''),secondary=event=>event.button===2||mac&&event.button===0&&event.ctrlKey;
   const onPointerDown=event=>{
     if(event.pointerType)touch=event.pointerType==='touch'||event.pointerType==='pen';
-    if(event.button===0&&!touch)mouseDown=true;
-    if(event.button!==2||event.pointerType&&event.pointerType!=='mouse')return;
-    const range=validRange();snapshot={at:performance.now(),inside:Boolean(range)&&within(range,event.clientX,event.clientY)};
+    if(event.button===0&&!touch&&!(mac&&event.ctrlKey))mouseDown=true;
+    if(!secondary(event)||event.pointerType&&event.pointerType!=='mouse')return;
+    const range=validRange();snapshot={at:performance.now(),inside:Boolean(range)&&within(range,event.clientX,event.clientY),range:range?range.cloneRange():null};
   };
   if(window.PointerEvent)window.addEventListener('pointerdown',onPointerDown,true);else window.addEventListener('mousedown',onPointerDown,true);
+  // A drag released outside this frame (over the page shell's UI or past the window edge) never sends pointerup
+  // here: the shell forwards its own, and any later move without a pressed button, cancel or key also ends it.
+  const release=()=>{if(!mouseDown)return;mouseDown=false;if(validRange())settle(120)};
   window.addEventListener('blur',()=>{mouseDown=false});
-  window.addEventListener(window.PointerEvent?'pointerup':'mouseup',event=>{if(event.button===0&&mouseDown){mouseDown=false;if(validRange())settle(120)}},true);
+  window.addEventListener(window.PointerEvent?'pointerup':'mouseup',event=>{if(event.button===0)release()},true);
+  window.addEventListener(window.PointerEvent?'pointermove':'mousemove',event=>{if(mouseDown&&event.buttons===0)release()},true);
+  if(window.PointerEvent)window.addEventListener('pointercancel',release,true);
   window.addEventListener('contextmenu',event=>{
-    const fresh=snapshot&&performance.now()-snapshot.at<=1000;
+    // Each snapshot serves only the contextmenu that follows its own pointerdown, even when that menu is not ours.
+    const snap=snapshot;snapshot=null;
+    const fresh=Boolean(snap)&&performance.now()-snap.at<=1000;
     // The keyboard menu key was already turned into a comment target; keep the browser menu closed.
     if(!fresh&&performance.now()-keyAt<1000&&event.isTrusted&&!event.defaultPrevented){event.preventDefault();return}
     if(event.defaultPrevented||!event.isTrusted||event.shiftKey)return;
     if(event.pointerType==='touch'||event.pointerType==='pen'||event.sourceCapabilities&&event.sourceCapabilities.firesTouchEvents)return;
-    const snap=snapshot;snapshot=null;
-    if(!snap||!fresh||!snap.inside)return;
+    if(!fresh||!snap.inside)return;
     const target=elementOf(event.target);if(target&&target.closest(NATIVE))return;
-    const range=validRange();if(!range)return;
+    let range=validRange();
+    // A Control+click may collapse the selection before contextmenu; the earlier selection is the target.
+    if(!range&&snap.range&&!snap.range.collapsed){const selection=getSelection();selection.removeAllRanges();selection.addRange(snap.range);range=validRange()}
+    if(!range)return;
     event.preventDefault();clearTimeout(idle);post('menu',range,{x:event.clientX,y:event.clientY});
   });
   window.addEventListener('keydown',event=>{
     if(!event.isTrusted)return;
-    if(event.key==='Escape'){if(posted){clear();quiet=signature(getSelection())}return}
+    if(mouseDown&&!['Shift','Control','Alt','Meta'].includes(event.key))release();
+    // Esc in the page also closes the shell's composer (keeping the draft) or thread panel.
+    if(event.key==='Escape'){if(posted){clear();quiet=signature(getSelection())}send({type:'comment-escape'});return}
     if(event.defaultPrevented||!(event.key==='ContextMenu'||event.key==='F10'&&event.shiftKey))return;
     const range=validRange();if(!range)return;
     event.preventDefault();keyAt=performance.now();clearTimeout(idle);post('key',range);
@@ -38215,6 +38228,11 @@ var COMMENTS_RUNTIME = String.raw`
       const range=mark.range,rects=range?rectsOf(range):[],last=rects[rects.length-1];
       let visible=Boolean(last)&&last.bottom>0&&last.top<height&&last.right>0&&last.left<width;
       if(visible)for(const el of mark.clip){const r=el.getBoundingClientRect();if(last.bottom<r.top||last.top>r.bottom||last.right<r.left||last.left>r.right){visible=false;break}}
+      // Hidden while a fixed or sticky element (a page header) covers the end of the passage.
+      if(visible){
+        const hit=document.elementFromPoint(Math.min(Math.max(last.left,last.right-2,0),width-1),Math.min(Math.max(last.top+last.height/2,0),height-1));
+        if(!hit||hit!==host&&!range.intersectsNode(hit))visible=false;
+      }
       mark.button.hidden=!visible;
       if(visible){const x=Math.min(Math.max(0,last.right+1),width-22),y=Math.min(Math.max(0,last.top-9),height-22);mark.button.style.transform='translate('+Math.round(x)+'px,'+Math.round(y)+'px)'}
     }
@@ -38248,6 +38266,7 @@ var COMMENTS_RUNTIME = String.raw`
     const m=event.data;if(event.source!==parent||!m||m.channel!==CHANNEL||m.releaseId!==initial.releaseId||m.sessionId!==initial.sessionId)return;
     if(m.type==='comment-threads'&&Array.isArray(m.threads))render(m.threads.slice(0,30).filter(valid));
     else if(m.type==='comment-reveal'&&typeof m.id==='string')reveal(m.id);
+    else if(m.type==='comment-pointer-up')release();
   });
   const ready=()=>{watcher.observe(root,{childList:true,subtree:true,characterData:true});send({type:'comment-runtime-ready',off:off()})};
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',ready,{once:true});else ready();
@@ -38380,14 +38399,14 @@ var COMMENTS_SHELL = String.raw`
   };
   const jitter=ms=>ms*(0.8+Math.random()*0.4);
   const backoff=()=>[30,60,120,300][Math.min(failures,4)-1]*1000;
-  const setProblem=text=>{if(pollProblem!==text){pollProblem=text;if(panelOpen)renderPanel()}};
+  const setProblem=text=>{if(pollProblem!==text){pollProblem=text;refreshPanel()}};
   const sameThread=(item,t)=>t.text===item.payload.text&&Boolean(t.anchor)&&t.anchor.quote===item.payload.anchor.quote;
   const applyMine=body=>{
     if(!body||!Array.isArray(body.threads))throw new Error('Invalid response');
     threads=body.threads.slice(0,30).map(cleanThread).filter(Boolean);loaded=true;
     const before=pending.length;pending=pending.filter(item=>!threads.some(t=>sameThread(item,t)));
     bump(visitor.pages,pageHash,threads.length||undefined,100);for(const t of threads)if(visitor.seen[t.id]!==undefined)bump(visitor.seen,t.id,Math.min(visitor.seen[t.id],t.replies.length),200);
-    saveVisitor();saveCache();updateBadge();postThreads();if(panelOpen)renderPanel();
+    saveVisitor();saveCache();updateBadge();postThreads();refreshPanel();
     if(before!==pending.length&&composer&&composer.item&&!pending.includes(composer.item))closeComposer(false);
   };
   const poll=async()=>{
@@ -38415,8 +38434,10 @@ var COMMENTS_SHELL = String.raw`
       if((r.status===201||r.status===200)&&c&&typeof c.externalId==='string'&&c.text===item.payload.text){
         pending=pending.filter(p=>p!==item);
         if(!threads.some(t=>t.id===c.externalId)){const thread=cleanThread({id:c.externalId,text:c.text,authorName:c.authorName,createdAt:c.createdAt,anchor:c.anchor||item.payload.anchor,status:'sent',replies:[]});if(thread)threads=[thread,...threads].slice(0,30)}
-        bump(visitor.pages,pageHash,threads.length,100);saveVisitor();saveCache();updateBadge();postThreads();if(panelOpen)renderPanel();
-        failures=0;schedule(jitter(15000));return{ok:true};
+        // The service answered: an earlier connection problem no longer applies.
+        failures=0;notBefore=0;pollProblem='';
+        bump(visitor.pages,pageHash,threads.length,100);saveVisitor();saveCache();updateBadge();postThreads();refreshPanel();
+        schedule(jitter(15000));return{ok:true};
       }
       const message=r.body&&typeof r.body.error==='string'?r.body.error.slice(0,300):'HTTP '+r.status;
       if(r.status===429)return{error:'发送太频繁，请'+waitText(retryAfter(r.headers)||60)+'后再试。',keep:true};
@@ -38521,53 +38542,64 @@ var COMMENTS_SHELL = String.raw`
   // Thread panel: the visitor's own threads on this page, newest first.
   const panel=el('div',{class:'pbc pbc-card pbc-panel','data-pbc':'panel',role:'dialog','aria-label':'我的评论',hidden:true});
   layer.appendChild(panel);
-  let focusThread=null,forgetAsk=false;
+  let focusThread=null,forgetAsk=false,panelKey='';
+  // Visible markers for bidi embedding, override and isolate controls, so text never displays reordered.
+  const shown=text=>text.replace(/[\u202A-\u202E\u2066-\u2069]/g,c=>'[U+'+c.charCodeAt(0).toString(16).toUpperCase()+']');
   const when=value=>{const time=Date.parse(value);return Number.isNaN(time)?'':new Date(time).toLocaleString()};
-  const clip=(text,max)=>{const t=text.replace(/\s+/g,' ').trim();return t.length>max?t.slice(0,max)+'…':t};
+  const clip=(text,max)=>{const t=shown(text).replace(/\s+/g,' ').trim();return t.length>max?t.slice(0,max)+'…':t};
   const reveal=id=>{closePanel(false);post({type:'comment-reveal',id})};
   const recomment=t=>{closePanel(false);openComposer({anchor:t.anchor,rect:{x:innerWidth/2-150,y:innerHeight/3,width:1,height:1}},'panel')};
   const retryPending=async(item,line,button)=>{
     if(button.getAttribute('aria-disabled')==='true')return;button.setAttribute('aria-disabled','true');line.textContent=TEXT.sending;
     const result=await deliver(item);
-    if(result.ok){showToast(TEXT.sent);renderPanel();return}
+    if(result.ok){showToast(TEXT.sent);renderPanel(false);return}
     if(!result.keep){pending=pending.filter(p=>p!==item);if(item.draft)saveDraft(item.draft,item.payload.text);saveCache();updateBadge()}
-    line.textContent=result.error;button.setAttribute('aria-disabled','false');if(!result.keep)renderPanel();
+    line.textContent=result.error;button.setAttribute('aria-disabled','false');if(!result.keep)renderPanel(false);
   };
-  const renderPanel=()=>{
-    panel.textContent='';
-    const close=el('button',{type:'button',class:'pbc-link','data-pbc':'close',text:'关闭',on:{click:event=>{if(trusted(event))closePanel(true)}}});
+  /** What the panel shows; a poll that changes none of it leaves the panel, its scroll and focus untouched. */
+  const panelState=()=>JSON.stringify([threads.map(t=>[t.id,t.text,t.status,t.createdAt,t.anchor&&t.anchor.quote,t.replies.map(r=>[r.id,r.text,r.authorKind,r.createdAt]),unreadOf(t)]),pending.map(p=>p.key),pollProblem,Array.from(orphans).sort(),forgetAsk,focusThread]);
+  const refreshPanel=()=>{if(panelOpen&&panelState()!==panelKey)renderPanel(false)};
+  const renderPanel=initial=>{
+    const before=panel.querySelector('.pbc-list'),scroll=before?before.scrollTop:0,focused=document.activeElement&&panel.contains(document.activeElement)?document.activeElement.getAttribute('data-pbc-key'):null;
+    panelKey=panelState();panel.textContent='';
+    const close=el('button',{type:'button',class:'pbc-link','data-pbc':'close','data-pbc-key':'close',text:'关闭',on:{click:event=>{if(trusted(event))closePanel(true)}}});
     panel.append(el('div',{class:'pbc-head'},[el('span',{text:'我的评论'}),close]));
     const list=el('div',{class:'pbc-list'});panel.append(list);
     if(pollProblem)list.append(el('div',{class:'pbc-status','data-pbc':'problem',text:pollProblem}));
     for(const item of pending){
-      const line=el('div',{class:'pbc-small',text:'没有确认送达'}),retry=el('button',{type:'button',class:'pbc-btn',text:'重试'}),drop=el('button',{type:'button',class:'pbc-btn',text:'放弃'});
+      const line=el('div',{class:'pbc-small',text:'没有确认送达'}),retry=el('button',{type:'button',class:'pbc-btn','data-pbc-key':'retry:'+item.key,text:'重试'}),drop=el('button',{type:'button',class:'pbc-btn','data-pbc-key':'drop:'+item.key,text:'放弃'});
       retry.addEventListener('click',event=>{if(trusted(event))void retryPending(item,line,retry)});
-      drop.addEventListener('click',event=>{if(!trusted(event))return;pending=pending.filter(p=>p!==item);if(item.draft)saveDraft(item.draft,item.payload.text);saveCache();updateBadge();renderPanel()});
-      list.append(el('div',{class:'pbc-thread','data-pbc':'pending'},[el('div',{class:'pbc-quote',text:'“'+clip(item.payload.anchor.quote,120)+'”'}),el('div',{class:'pbc-text',text:item.payload.text}),line,el('div',{class:'pbc-row'},[retry,drop])]));
+      drop.addEventListener('click',event=>{if(!trusted(event))return;pending=pending.filter(p=>p!==item);if(item.draft)saveDraft(item.draft,item.payload.text);saveCache();updateBadge();renderPanel(false)});
+      list.append(el('div',{class:'pbc-thread','data-pbc':'pending'},[el('div',{class:'pbc-quote',text:'“'+clip(item.payload.anchor.quote,120)+'”'}),el('div',{class:'pbc-text',text:shown(item.payload.text)}),line,el('div',{class:'pbc-row'},[retry,drop])]));
     }
     const newest=threads.slice().sort((a,b)=>a.createdAt<b.createdAt?1:a.createdAt>b.createdAt?-1:0);
     if(!newest.length&&!pending.length)list.append(el('div',{class:'pbc-small','data-pbc':'empty',text:TEXT.empty}));
     for(const t of newest){
       const unread=unreadOf(t),orphan=Boolean(t.anchor)&&orphans.has(t.id);
       const meta=el('div',{class:'pbc-small'},[document.createTextNode(['#'+numberOf(t),when(t.createdAt),STATUS[t.status]].filter(Boolean).join(' · ')),unread?el('span',{class:'pbc-tag',text:unread+' 条新回复'}):null]);
+      // An orphaned passage no longer exists on the page: neither locating it nor commenting on it again makes sense.
       const node=el('div',{class:'pbc-thread','data-pbc':'thread','data-thread':t.id,...(focusThread===t.id?{'data-focus':''}:{})},[
-        t.anchor?el('div',{class:'pbc-quote',text:'“'+clip(t.anchor.quote,120)+'”'}):null,el('div',{class:'pbc-text',text:t.text}),meta,
+        t.anchor?el('div',{class:'pbc-quote',text:'“'+clip(t.anchor.quote,120)+'”'}):null,el('div',{class:'pbc-text',text:shown(t.text)}),meta,
         orphan?el('div',{class:'pbc-small','data-pbc':'orphan',text:TEXT.orphan}):null,
-        ...t.replies.map(r=>el('div',{class:'pbc-reply','data-pbc':'reply'},[el('div',{class:'pbc-small',text:(r.authorKind==='agent'?'作者的 AI 助手回复':'作者回复')+(when(r.createdAt)?' · '+when(r.createdAt):'')}),el('div',{class:'pbc-text',text:r.text})])),
-        t.anchor?el('div',{class:'pbc-row'},[orphan?null:el('button',{type:'button',class:'pbc-link',text:'在页面中定位',on:{click:event=>{if(trusted(event))reveal(t.id)}}}),el('button',{type:'button',class:'pbc-link',text:'再评论这段',on:{click:event=>{if(trusted(event))recomment(t)}}})]):null,
+        ...t.replies.map(r=>el('div',{class:'pbc-reply','data-pbc':'reply'},[el('div',{class:'pbc-small',text:(r.authorKind==='agent'?'作者的 AI 助手回复':'作者回复')+(when(r.createdAt)?' · '+when(r.createdAt):'')}),el('div',{class:'pbc-text',text:shown(r.text)})])),
+        t.anchor&&!orphan?el('div',{class:'pbc-row'},[el('button',{type:'button',class:'pbc-link','data-pbc-key':'reveal:'+t.id,text:'在页面中定位',on:{click:event=>{if(trusted(event))reveal(t.id)}}}),el('button',{type:'button',class:'pbc-link','data-pbc-key':'again:'+t.id,text:'再评论这段',on:{click:event=>{if(trusted(event))recomment(t)}}})]):null,
       ]);
       list.append(node);
     }
     const foot=el('div',{class:'pbc-foot'});
-    if(forgetAsk)foot.append(el('div',{class:'pbc-small',text:TEXT.forget}),el('div',{class:'pbc-row'},[el('button',{type:'button',class:'pbc-btn','data-pbc':'forget-confirm',text:'确定清除',on:{click:event=>{if(trusted(event))forget()}}}),el('button',{type:'button',class:'pbc-btn',text:'取消',on:{click:event=>{if(!trusted(event))return;forgetAsk=false;renderPanel()}}})]));
-    else foot.append(el('button',{type:'button',class:'pbc-link','data-pbc':'forget',text:'清除本机的评论身份',on:{click:event=>{if(!trusted(event))return;forgetAsk=true;renderPanel();const b=panel.querySelector('[data-pbc=forget-confirm]');if(b)b.focus()}}}));
+    if(forgetAsk)foot.append(el('div',{class:'pbc-small',text:TEXT.forget}),el('div',{class:'pbc-row'},[el('button',{type:'button',class:'pbc-btn','data-pbc':'forget-confirm','data-pbc-key':'forget-confirm',text:'确定清除',on:{click:event=>{if(trusted(event))forget()}}}),el('button',{type:'button',class:'pbc-btn','data-pbc-key':'forget-cancel',text:'取消',on:{click:event=>{if(!trusted(event))return;forgetAsk=false;renderPanel(false)}}})]));
+    else foot.append(el('button',{type:'button',class:'pbc-link','data-pbc':'forget','data-pbc-key':'forget',text:'清除本机的评论身份',on:{click:event=>{if(!trusted(event))return;forgetAsk=true;renderPanel(false);const b=panel.querySelector('[data-pbc=forget-confirm]');if(b)b.focus()}}}));
     panel.append(foot);
-    if(focusThread){const node=list.querySelector('[data-thread="'+CSS.escape(focusThread)+'"]');if(node)node.scrollIntoView({block:'nearest'})}
+    // The first render scrolls to the thread a marker opened; later renders keep the reader's place and focus.
+    if(initial){if(focusThread){const node=list.querySelector('[data-thread="'+CSS.escape(focusThread)+'"]');if(node)node.scrollIntoView({block:'nearest'})}}
+    else list.scrollTop=scroll;
+    if(focused){const again=panel.querySelector('[data-pbc-key="'+CSS.escape(focused)+'"]')||close;again.focus({preventScroll:true})}
   };
   const markSeen=()=>{for(const t of threads)bump(visitor.seen,t.id,t.replies.length,200);saveVisitor();postThreads()};
   const openPanel=id=>{
     if(composer)closeComposer(true,false);
-    panelOpen=true;focusThread=id||null;forgetAsk=false;renderPanel();panel.hidden=false;markSeen();updateBadge();
+    // Visible before the first render, so scrolling to the marker's thread has a layout to work with.
+    panelOpen=true;focusThread=id||null;forgetAsk=false;panel.hidden=false;renderPanel(true);markSeen();updateBadge();
     const first=panel.querySelector('[data-pbc=close]');if(first)first.focus();pollSoon();
   };
   const closePanel=returnFocus=>{if(!panelOpen)return;panelOpen=false;panel.hidden=true;forgetAsk=false;updateBadge();if(returnFocus)badge.focus()};
@@ -38579,6 +38611,8 @@ var COMMENTS_SHELL = String.raw`
     else if(panelOpen&&!panel.contains(event.target)){event.preventDefault();closePanel(true)}
   });
   badge.addEventListener('click',event=>{if(!trusted(event))return;if(panelOpen)closePanel(true);else openPanel(null)});
+  // A drag that started in the page and ends over this shell's UI: the frame never sees that pointerup.
+  document.addEventListener(window.PointerEvent?'pointerup':'mouseup',event=>{if(event.isTrusted&&event.button===0)post({type:'comment-pointer-up'})},true);
   const forget=()=>{
     try{if(local)local.removeItem(visitorKey)}catch{}
     try{if(session)for(const key of Object.keys(session))if(key.startsWith(cachePrefix))session.removeItem(key)}catch{}
@@ -38592,7 +38626,9 @@ var COMMENTS_SHELL = String.raw`
     const m=event.data;if(event.source!==frame.contentWindow||!m||m.channel!==CHANNEL||m.releaseId!==config.releaseId||m.sessionId!==sessionId)return;
     if(m.type==='comment-runtime-ready'){frameReady=true;frameOff=m.off===true;postThreads();if(!frameOff&&!preview&&!knownCount()&&!pending.length&&!(local&&local.getItem(hintKey)))hint.hidden=false;updateBadge();return}
     if(m.type==='comment-target-clear'){if(!composer)hideFloat();return}
-    if(m.type==='comment-orphans'&&Array.isArray(m.ids)&&m.ids.length<=30&&m.ids.every(id=>typeof id==='string')){orphans=new Set(m.ids);if(panelOpen)renderPanel();return}
+    if(m.type==='comment-orphans'&&Array.isArray(m.ids)&&m.ids.length<=30&&m.ids.every(id=>typeof id==='string')){orphans=new Set(m.ids);refreshPanel();return}
+    // Esc pressed inside the page: the same as Esc in the shell (the composer keeps its draft); focus stays in the page.
+    if(m.type==='comment-escape'){if(composer){if(!composer.busy)closeComposer(true,false)}else if(panelOpen)closePanel(false);return}
     if(m.type==='comment-open'&&typeof m.id==='string'&&threads.some(t=>t.id===m.id)){if(active())openPanel(m.id);return}
     if(m.type!=='comment-target'||!['menu','key','select'].includes(m.trigger))return;
     let size=0;try{size=JSON.stringify(m).length}catch{return}if(size>8000)return;
