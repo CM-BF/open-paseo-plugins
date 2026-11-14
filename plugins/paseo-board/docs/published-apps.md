@@ -203,8 +203,22 @@ is connected, and it registers the release on that backend (see
   the tag shown for the visitor on this page comes from the backend in the reply to
   their first post and is kept per page. localStorage keeps only the secret, the
   public name, tags and read counts; never comment text.
-- Everything visitors wrote renders as text; bidi controls, directional marks and
-  zero-width characters are shown as `[U+XXXX]` markers.
+- Everything visitors wrote renders as text. Bidi controls, directional marks,
+  zero-width and other invisible format characters, blank fillers, Unicode tag
+  characters (which can spell text a language model reads but a person does not see)
+  and runs of two or more variation selectors are shown as `[U+XXXX]` markers, in
+  the page and in the inbox; a single variation selector after an emoji or ideograph
+  is ordinary text and stays (`shared/bidi.ts` `INVISIBLE_SOURCE`).
+- **Rail behaviour.** When there are more cards than fit beside their passages, the
+  first cards stay at their passages and the rest run on below; the wheel over the
+  rail scrolls the page (`comment-scroll-by`), then the rail itself past the page's
+  top or end, so every card is reachable. The rail body never scrolls on its own:
+  keyboard focus moves the page and the rail together. The open card's height is
+  capped to the rail so its reply box stays reachable. A click in the page outside
+  every highlight (`comment-page-click`) or on empty rail space closes the open card;
+  on phones it closes the sheet, and a tapped passage is scrolled above the sheet.
+  The frame reports page input (`comment-activity`, at most every 20 s) so readers
+  keep the 10 s cadence.
 
 ## Visitor comments and the native inbox
 

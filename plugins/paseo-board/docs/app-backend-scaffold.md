@@ -148,8 +148,9 @@ Errors are JSON `{"error": "message", "code": "code"}`:
 | `method_not_allowed` | 405 | wrong method on a comment route |
 | `idempotency_conflict` | 409 | the `Idempotency-Key` already belongs to another payload or visitor |
 | `reply_limit` | 409 | the thread (a comment and its visitor replies) already has 20 owner replies |
-| `public_disabled` | 403 on POST, 404 on the listing | `comments.publicThreads` is false, or the listing names a release that is not registered |
-| `public_not_allowed` | 403 | a public post names an unregistered release, or its page origin is not in `origins` |
+| `public_disabled` | 403 on POST, 404 on the listing | `comments.publicThreads` is false, or the listing names a release that is not registered or a page the owner closed |
+| `public_not_allowed` | 403 | a public post names an unregistered release, its page origin is not in `origins`, or the owner closed that page |
+| `name_not_allowed` | 400 | a public comment's name contains 作者, AI 助手 or 访客 (after NFKC, spacing and case), or an invisible format character |
 | `public_paused` | 403 | the owner paused new public comments on this page |
 | `thread_resolved` | 409 | a visitor reply to a thread the owner resolved |
 | `thread_full` | 409 | the thread already has `visitorRepliesPerThread` visible visitor replies |
@@ -410,9 +411,19 @@ switching a page to public never exposes earlier private comments.
 **Who may post and read.** The host registers each public release with
 `PUT /_board/comments/public-releases/<releaseId>` (owner token; the Board does this
 when it creates the release, and `DELETE`s the releases of a share that turns
-private). A public post must name a registered release in `anchor.releaseId`, and its
-`pageUrl` origin must be one of `origins`; otherwise 403 `public_not_allowed`. The
-listing needs `release=<registered id>` and answers 404 `public_disabled` otherwise.
+private or off). A public post must name a registered release in `anchor.releaseId`,
+and its `pageUrl` origin must be one of `origins`; otherwise 403 `public_not_allowed`.
+The listing needs `release=<registered id>` and answers 404 `public_disabled`
+otherwise. Releases are not bound to one page, so any registered release can be used
+on any address of an allowed origin; the owner closes a share's page instead: both
+routes take an optional body `{pages: [url, …]}` (at most 8). `DELETE` with `pages`
+closes those page keys to every release (posts 403 `public_not_allowed`, listing 404
+`public_disabled`, the page version moves so cached listings end), and `PUT` with
+`pages` reopens them. The Board sends the share's link with both, so a share turned
+private cannot keep receiving or serving public comments through another share's
+release. `DELETE` without a body is still accepted. Posts to never-published addresses
+of an allowed origin remain possible through the API; they appear on no real page,
+count toward every limit and can be hidden or paused like any other.
 `comments.publicThreads: false` in `board-app.json` turns all of it off (default
 allowed, because nothing is public until a registered release asks for it).
 
@@ -420,8 +431,11 @@ allowed, because nothing is public until a registered release asks for it).
 `parentId: "<root externalId>"`; both require `X-Board-Visitor`. A root needs
 `pageUrl` and an anchor with `quote` and `releaseId`; its selector must be `body`, one
 CSS-escaped id or a `body > tag:nth-of-type(n)` path of at most 12 steps. A reply's
-anchor holds only `releaseId`. Public names may not contain 作者, AI 助手, 访客, ·
-or invisible format characters. A reply to a missing, hidden, withdrawn, private or
+anchor holds only `releaseId`. Public names may not contain 作者, AI 助手 or 访客,
+compared after NFKC with spaces removed and case folded (so "作 者", "ＡＩ助手" and
+"訪客" count), nor invisible format characters (400 `name_not_allowed`); other
+punctuation such as 迈克尔·杰克逊 is fine, because pages always show the visitor's
+tag after the name. A reply to a missing, hidden, withdrawn, private or
 other-page parent gets 404 `comment_not_found` (nothing reveals that such a comment
 exists); a resolved thread gets 409 `thread_resolved`. Replies count toward every
 post limit. The 201 body adds `comment.tag`: the visitor's tag on this page,
@@ -451,7 +465,11 @@ replies on one page (403 `public_paused`) and shows the pause to visitors;
 `POST /_board/comments/public/hide-visitor` `{page, tag, hidden?}` hides (or shows
 again) every public comment of one page tag. `GET /_board/comments/public/moderation`
 lists public threads with hidden ones, the pages and their pauses and the registered
-releases, for the inbox's 公开讨论 view.
+releases, for the inbox's 公开讨论 view. It is budgeted in UTF-8 bytes so the body stays
+below 900,000 bytes (the plugin reads at most 1,000,000): the pages list (paused
+pages first) takes at most 150,000, each thread at most 300,000 with its newest
+messages (older ones counted in `omitted`), and threads visitors can see come before
+hidden ones, newest first, at most 100.
 
 **Withdrawal.** `POST /_board/comments/<externalId>/withdraw` with the poster's
 `X-Board-Visitor` hides that public comment for good (the owner cannot show it again);
@@ -469,7 +487,9 @@ caller's private comments and own public thread roots (marked
 `visibility`, `parent_seq`, `hidden`, `hidden_by`, `resolved`, `state_at` and
 `public_tag` to `_board_comments`, the page-version and release tables, and the tag
 key. Every existing comment becomes a private, visible, open root; replies, counters
-and identity are unchanged. A runtime before schema 3 refuses to start on an upgraded
+and identity are unchanged. The step is idempotent and runs at every start, so a
+schema-3 database from an earlier build of this runtime gains later columns (the page
+`closed` flag) without another marker. A runtime before schema 3 refuses to start on an upgraded
 database; the way back is the backup taken before the upgrade (`ssh deploy` takes one
 automatically; for a local app run `board-app.mjs backup` first).
 
