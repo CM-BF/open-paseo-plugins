@@ -1,3 +1,18 @@
+# 2026-11-14 — 公开评论打磨：真实验收发现的 5 个小问题，未安装
+
+分支 `sw/board-page-comments`，提交 `87b249e`、`68f63dd`、`339bd9f`、`d03ee01`（在 `9c16b4f` 之上）。尚未推送、未安装、未重载插件；没有创建或修改任何 Board 或 agent，没有改动自动处理的状态。步骤和退出码、日志在 `$PASEO_HOME/verification/paseo-board/page-comments-20261113/polish/`（`steps.log`、`logs/`）；新检查在旧代码上的失败在 `red-green/`，P3、P5 的取证在 `checks/`。
+
+- **P1 打开着的卡片里到达的回复算已读。** 之前只有点开卡片那一下才记「已读」，卡片开着时到达的回复（包括自己刚发的回复）关掉卡片后仍显示「新」和「评论 n · 1 条新回复」。现在页面可见、评论栏里这张卡片正开着时，回复一出现就记为已读；页面在后台时到达的，切回页面时记。
+- **P2 发送后不再重复弹出「评论」。** 发送成功后，外层页面通知画布取消选中（这段文字已经有了底色）；点「取消」或 Esc 收起评论框时选中保留，但滚动、点按都不会再为同一段选中弹出「评论」按钮，重新选择文字后才出现。之前画布在滚动时会把旧选中重新报给外层，按钮又出现，点了就是重复评论。
+- **P3 评论助手能读到页面。** `board_inbox_read` 给封闭运行的评论助手多了 `page`：发布标题、最近的小标题、被评论的那段文字和前后各最多 600 字（找不到时给页面开头最多 1,200 字），标为 `contentTrust: "author-published"`。文字只取自本机这张 Board 自己的、开启了访客评论的发布版本文件（`server/inbox-page-context.ts` 从 `index.html` 里读出作者 HTML，只取可见文字，表格一行写成一行）；访客的引用、前后缀只用来定位，`releaseId` 只用来选版本，别的 Board 或本机没有的版本不给。公开讨论里的回复按讨论开头的引用定位。没有新工具，锁定、运行令牌和引用规则都没变。提示词改为据此回答、能回答就写回复（审核模式下是草稿），页面和讨论都答不了或需要作者决定时才标为处理中。用真实测试页的发布版本（只读）离线算出的三条问题的页面内容在 `checks/P3-live-release-contexts.json`：第一条「评论存在哪里」的答案就在给出的文字里。
+- **P4 版本链接和固定链接是同一个讨论。** 公开评论按分享页的固定地址归档：发布版本自己的版本链接 `<固定地址>/v/<本版本编号>/` 和显式的 `index.html` 都用固定地址读取、发送和缓存；别的路径不变。仅自己可见的页面（第 4 版查看器）没有改。
+- **P5 「Failed to read the 'serviceWorker' property」不是页面代码。** 每次打开两条错误来自验收用的浏览器自己的初始化脚本（Playwright 的 `serviceWorkers: "block"` 在每个框架里运行 `navigator.serviceWorker`），画布框架是没有 `allow-same-origin` 的沙箱，读取就抛错。本机实测（`checks/P5-serviceworker-probe.jsonl`）：同样的发布页在 `allow` 下 0 条，`block` 下 2 条；一个没有任何脚本的沙箱 iframe 页面在 `block` 下也有 1 条。发布页的代码没有任何地方读 `serviceWorker`，所以没有可改的源头；新增的 `server/static-viewer.test.ts` 检查保证每种查看器和辅助脚本都不读它（这项在旧代码上本来就通过）。以后验收不要用 `serviceWorkers: "block"`，或把这两条从页面错误里排除。
+- **测试。** `scripts/public-threads-checks.mjs`（`test:release`）新增 25–28 四项：版本链接和 `index.html` 显示固定地址的讨论、另一个版本编号不受影响；从版本链接发出的评论归到固定地址、发送后选中取消且滚动不再出现「评论」；取消后选中保留但滚动不再出现、换一段选中又出现；开着的卡片里到达的回复没有「新」、关掉和刷新后都不计新回复。逐项还原修复后各自在对应的检查上失败（`red-green/no-P1.log`、`no-P2.log`、`no-P2-cancel.log`、`no-P4.log`，整份旧外壳 `head-old-shell.log`）。P3：`server/inbox-page-context.test.ts`（抽取、定位、上限、只认自己的版本）、`server/service.test.ts` 和 `server/inbox-runner-public.test.ts`（经 `executeRunner` 读取时带 `page`、列表不带）、`server/inbox-assistant.test.ts`（提示词），`scripts/public-threads-e2e.mjs` 经真实 MCP 启动器检查同一项；放到 `9c16b4f` 的服务端上（加一个空的 `usePageContexts`）读取结果没有 `page`、提示词检查失败（`red-green/P3-old-server-with-noop-hook.log`）。
+
+验证（2026-11-14，提交 `d03ee01`，本机 claude 2.1.325，未连 daemon；`polish/steps.log` 里每步退出码都是 0）：client/worker/app 重建两次，逐字节一致且与提交的文件相同（这次只有 `server/assets/store-worker.txt` 变化）；typecheck；vitest 76 个文件 1,068 项，`inbox-sync` 单独 30 项；`test:browser` 156；`test:host` 61；`BOARD_HOST_TEST_SCOPE=inbox test:host` 17；`test:release` 88（第一次就通过，已知的触屏位置不稳定检查这次没有出现，所以没有重跑）；`test:release-host` 47；`node --test backend/checks.mjs` 83 通过、1 项按设计跳过；`test:page-comments` 20/20 + 26/26；`node scripts/inbox-runner-harness.mjs` 6/6；没有 `.test-tmp`，工作区干净。第一次完整运行在 `339bd9f` 上开始后被我停掉（加了表格按行显示的小改动 `d03ee01`），记录在 `polish/aborted-run/`。
+
+没有做：安装到真实 daemon、在真实分享页和真实 claude 上复测（需要你安装后再看一次）、真机浏览器检查。仅自己可见的页面（第 4 版）在滚动时也会把旧选中重新报给外层（同 P2），因为它的字节被固定（已发布的私密页面的版本编号依赖它），这次没有改。
+
 # 2026-11-14 — 合并评审修复：评论助手按后端当前的页面状态处理公开评论，未安装
 
 分支 `sw/board-page-comments`，修复提交 `30645d6`（在 `f204628` 之上）。尚未推送、未安装、未重载插件；没有创建或修改任何 Board 或 agent，没有恢复任何自动处理。步骤和退出码、日志、截图在 `$PASEO_HOME/verification/paseo-board/page-comments-20261113/merge/`（`steps.log` 里 `fix2` 开头的各行，截图在 `fix2-shots/`）。
