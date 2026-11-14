@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
-  COMMENTS_PUBLIC_NEEDS_INBOX, CommentsProbeResultSchema, ShareUpdateSchema, VisitorCommentsReleaseSchema, commentsProbeRefusal, commentsPublicReleaseWarning,
+  COMMENTS_PUBLIC_NEEDS_INBOX, CommentsProbeResultSchema, ShareUpdateSchema, VisitorCommentsReleaseSchema, commentsProbeRefusal, commentsPublicReleaseWarning, commentsUnregisterWarning,
   type CommentsProbeResult, type ReleaseManifest, type ShareStatus, type ShareUpdateResult,
 } from "../shared/release-contracts";
 import type { InboxConnection } from "../shared/inbox-connection";
@@ -19,7 +19,7 @@ import { COMMENTS_SHELL } from "../shared/visitor-comments";
 // @ts-expect-error JavaScript test helper shared with the browser checks.
 import { createFakeCommentsBackend, appKeyFor } from "../scripts/comments-fake-backend.mjs";
 
-type Fake = { apiBase: string; origin: string; deploymentId: string; setHealth(patch: Record<string, unknown>): void; requests: Array<{ method: string; path: string }>; close(): Promise<void> };
+type Fake = { apiBase: string; origin: string; deploymentId: string; setHealth(patch: Record<string, unknown>): void; requests: Array<{ method: string; path: string }>; failNext(method: string, suffix: string, kind: unknown): void; close(): Promise<void> };
 const fakes: Fake[] = [], directories: string[] = [];
 afterEach(async () => { await Promise.all(fakes.splice(0).map(item => item.close())); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 const fake = async (options: Record<string, unknown> = {}): Promise<Fake> => { const value = await createFakeCommentsBackend(options) as Fake; fakes.push(value); return value; };
@@ -102,7 +102,7 @@ describe("public releases need the backend's inbox source and are registered on 
     const f = await publication([source(backend.deploymentId)]);
     const manifest = await f.create({ comments });
     expect(manifest.viewerVersion).toBe(5); expect(manifest.comments).toEqual(comments);
-    expect(f.register).toHaveBeenCalledWith(expect.objectContaining({ id: "work" }), backend.deploymentId, manifest.releaseId, true);
+    expect(f.register).toHaveBeenCalledWith(expect.objectContaining({ id: "work" }), backend.deploymentId, manifest.releaseId, true, []);
     backend.setHealth({ publicThreads: 0 });
     await expect(f.create({ comments, title: "off" })).rejects.toThrow("后端关闭了公开评论");
     backend.setHealth({ publicThreads: undefined });
@@ -126,7 +126,7 @@ describe("public releases need the backend's inbox source and are registered on 
     const update = (comments?: unknown) => f.invoke("board.release.share-update", { boardId: "work", seriesId, expectedSource: { documentVersion: 1, patchCount: 0 }, ...(comments === undefined ? {} : { comments }) }) as Promise<ShareUpdateResult>;
     const toPublic = await update(publicBlock); if (!("manifest" in toPublic)) throw new Error("Expected a rebuild");
     expect(toPublic.manifest.viewerVersion).toBe(5);
-    expect(f.register).toHaveBeenLastCalledWith(expect.anything(), backend.deploymentId, toPublic.manifest.releaseId, true);
+    expect(f.register).toHaveBeenLastCalledWith(expect.anything(), backend.deploymentId, toPublic.manifest.releaseId, true, []);
     jobs.push(job(toPublic.manifest.releaseId, toPublic.manifest.artifactHash, "j2", "2026-11-13T01:00:00.000Z"));
     const status = (await f.invoke("board.release.share-status", { boardId: "work" })) as ShareStatus;
     expect(status.shares[0].settings?.comments).toEqual(publicBlock); expect(status.shares[0]).not.toHaveProperty("publicReleases");
@@ -136,7 +136,37 @@ describe("public releases need the backend's inbox source and are registered on 
     sources.push(source(backend.deploymentId));
     const toPrivate = await update(privateBlock); if (!("manifest" in toPrivate)) throw new Error("Expected a rebuild");
     expect(toPrivate.manifest.viewerVersion).toBe(4);
-    expect(f.register).toHaveBeenLastCalledWith(expect.anything(), backend.deploymentId, toPublic.manifest.releaseId, false);
+    expect(f.register).toHaveBeenLastCalledWith(expect.anything(), backend.deploymentId, toPublic.manifest.releaseId, false, []);
+  });
+});
+
+describe("turning a public share off or private never depends on its backend (review fix)", () => {
+  it("unregistering is best effort and closes the share's page; the result says what is left; the next update tries again", async () => {
+    const backend = await fake({ owner: "owner-a" }), appKey = appKeyFor("owner-a");
+    const privateBlock = { apiBase: backend.apiBase, appKey }, publicBlock = { ...privateBlock, visibility: "public" as const };
+    const f = await publication([source(backend.deploymentId)]);
+    const original = await f.create({ title: "Shared", comments: publicBlock }), key = "s" + "c".repeat(20), link = `https://fixture.github.io/site/${key}/`;
+    const jobs = [{ eventId: "j1", releaseId: original.releaseId, artifactHash: original.artifactHash, account: "fixture", repository: "fixture/site", jobId: "j1", branch: "b", status: "live", mergedSha: "c".repeat(40), shareKey: key, shareUrl: link, createdAt: "2026-11-13T00:00:00.000Z" }];
+    vi.mocked(f.pages.list).mockImplementation(async () => jobs as never);
+    const seriesId = ((await f.invoke("board.release.share-status", { boardId: "work" })) as ShareStatus).shares[0].seriesId;
+    const update = (comments?: unknown) => f.invoke("board.release.share-update", { boardId: "work", seriesId, expectedSource: { documentVersion: 1, patchCount: 0 }, ...(comments === undefined ? {} : { comments }) }) as Promise<ShareUpdateResult>;
+    // The backend cannot be reached: 关闭 still builds, and says that old pages may still read and post.
+    backend.failNext("GET", "/_board/health", "drop");
+    const off = await update(false); if (!("manifest" in off)) throw new Error(`Expected a rebuild: ${JSON.stringify(off)}`);
+    expect(off.manifest.viewerVersion).toBe(2); expect(off.manifest.comments).toBeUndefined();
+    expect(off.commentsWarning).toBe(commentsUnregisterWarning(`连接不上 ${backend.apiBase}`));
+    expect(off.commentsWarning).toContain("再更新一次这个分享页就会自动补上取消");
+    // The inbox source is gone: 仅自己可见 still builds, with the reason.
+    f.register.mockRejectedValueOnce(new Error(COMMENTS_PUBLIC_NEEDS_INBOX));
+    const toPrivate = await update(privateBlock); if (!("manifest" in toPrivate)) throw new Error("Expected a rebuild");
+    expect(toPrivate.manifest.viewerVersion).toBe(4); expect(toPrivate.commentsWarning).toContain("公开评论需要先把这个后端连接到本 Board 的评论收件箱");
+    // Once it works, the release is withdrawn with the share's page, which closes that page on the backend.
+    const done = await update(privateBlock);
+    expect(done.commentsWarning).toBeUndefined();
+    expect(f.register).toHaveBeenLastCalledWith(expect.objectContaining({ id: "work" }), backend.deploymentId, original.releaseId, false, [link]);
+    // Back to 公开 through an update: the new release reopens the page.
+    const reopened = await update(publicBlock);
+    expect(f.register).toHaveBeenLastCalledWith(expect.anything(), backend.deploymentId, "manifest" in reopened ? reopened.manifest.releaseId : original.releaseId, true, [link]);
   });
 });
 

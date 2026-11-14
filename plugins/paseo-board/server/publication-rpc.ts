@@ -3,7 +3,7 @@ import type { Board } from "../shared/contracts";
 import {
   createReleaseRpc, listReleasesRpc, previewReleaseRpc, downloadReleaseRpc,
   githubAccountsRpc, githubRepositoriesRpc, preparePagesRpc, publishPagesRpc, mergePagesRpc,
-  refreshPagesRpc, listPagesJobsRpc, shareStatusRpc, shareUpdateRpc, commentsProbeRpc, COMMENTS_PUBLIC_NEEDS_INBOX, LOOPBACK_LIVE_REFUSAL, loopbackLiveRefused, type PagesJob, type PagesPrepareInput, type VisitorCommentsRelease,
+  refreshPagesRpc, listPagesJobsRpc, shareStatusRpc, shareUpdateRpc, commentsProbeRpc, COMMENTS_PUBLIC_NEEDS_INBOX, LOOPBACK_LIVE_REFUSAL, commentsUnregisterWarning, loopbackLiveRefused, type PagesJob, type PagesPrepareInput, type VisitorCommentsRelease,
   type GitHubAccount, type GitHubRepository, type LiveDrift, type LiveRelease, type ReleaseMeta, type ReleaseSettings, type Share, type ShareStatus, type ShareUpdateResult,
 } from "../shared/release-contracts";
 import type { LiveReleaseChannel } from "./live-data";
@@ -29,7 +29,8 @@ export interface PagesGateway {
  */
 export interface PublicReleaseHooks {
   sources(board: Board): Promise<InboxConnection[]>;
-  register(board: Board, deploymentId: string, releaseId: string, on: boolean): Promise<void>;
+  /** `pages`: the share's page addresses; unregistering closes them to every release, registering reopens them. */
+  register(board: Board, deploymentId: string, releaseId: string, on: boolean, pages?: string[]): Promise<void>;
 }
 /** The Board's live channel as release building sees it; absent when the plugin has no publisher. */
 export interface LiveReleaseSource { releaseChannel(board: Board): Promise<LiveReleaseChannel | null> }
@@ -179,7 +180,7 @@ export function registerPublicationRpc(server: PluginServerContext, options: {
     if (!probe.deploymentId || !sources.some(source => source.state === "ready" && source.enabled && source.deploymentId === probe.deploymentId)) throw new Error(COMMENTS_PUBLIC_NEEDS_INBOX);
     return probe.deploymentId;
   };
-  const registerPublic = async (board: Board, deploymentId: string | null, releaseId: string) => { if (deploymentId) await options.publicReleases!.register(board, deploymentId, releaseId, true); };
+  const registerPublic = async (board: Board, deploymentId: string | null, releaseId: string, pages: string[] = []) => { if (deploymentId) await options.publicReleases!.register(board, deploymentId, releaseId, true, pages); };
   /** Resolved on the server: a client can only ask for the Board's own channel, never name one. */
   const currentLive = async (board: Board) => releaseBlock(await options.live?.releaseChannel(board) ?? null);
   const release = async (id: string) => {
@@ -235,14 +236,22 @@ export function registerPublicationRpc(server: PluginServerContext, options: {
     // Public settings (new or inherited) need the backend and its inbox source now (public-threads §5.1.4).
     const comments = input.comments === undefined ? storedComments : input.comments || undefined;
     const deploymentId = input.comments ? await checkComments(board, input.comments) : comments?.visibility === "public" ? await checkComments(board, comments) : null;
-    // Turning a public share private (or off) withdraws its earlier releases from the backend's public list.
+    // Turning a public share private (or off) withdraws its earlier releases from the backend and closes the share's page
+    // there. Best effort: an unreachable backend or a removed inbox source never blocks turning public comments off; the
+    // result says what is left, and the next update of this share tries again.
+    const sharePages = share.link ? [share.link] : [];
+    let commentsWarning: string | undefined;
     if (comments?.visibility !== "public" && share.publicReleases.length) {
-      if (!options.publicReleases) throw new Error(COMMENTS_PUBLIC_NEEDS_INBOX);
+      const problems = new Set<string>();
       for (const { releaseId, apiBase } of share.publicReleases) {
-        const probe = await probeComments({ apiBase }, options.commentsFetcher);
-        if (!probe.deploymentId) throw new Error(`没能在评论后端取消公开评论：连接不上 ${apiBase}。请确认后端可以连接，再更新。`);
-        await options.publicReleases.register(board, probe.deploymentId, releaseId, false);
+        try {
+          if (!options.publicReleases) throw new Error(COMMENTS_PUBLIC_NEEDS_INBOX);
+          const probe = await probeComments({ apiBase }, options.commentsFetcher);
+          if (!probe.deploymentId) throw new Error(`连接不上 ${apiBase}`);
+          await options.publicReleases.register(board, probe.deploymentId, releaseId, false, sharePages);
+        } catch (error) { problems.add((error instanceof Error ? error.message : String(error)).replace(/[。.]+$/, "").slice(0, 200)); }
       }
+      if (problems.size) commentsWarning = commentsUnregisterWarning([...problems].join("；"));
     }
     const stored = { ...inherited, ...(comments ? { comments } : {}) };
     const channel = options.live ? await options.live.releaseChannel(board) : null;
@@ -252,13 +261,15 @@ export function registerPublicationRpc(server: PluginServerContext, options: {
     const drift = options.live ? liveDrift(settings.live, channel) : undefined;
     // Current revision: data-only writes since the review must not block the update.
     const release = await releases.create({ ...settings, title: title || undefined, board, boardId: board.id, expectedCanvasBase: current.canvasBase });
-    await registerPublic(board, deploymentId, release.manifest.releaseId);
+    // A public update reopens the share's page if it was closed when the share turned private before.
+    await registerPublic(board, deploymentId, release.manifest.releaseId, sharePages);
+    const notes = { ...(drift ? { liveDrift: drift } : {}), ...(commentsWarning ? { commentsWarning } : {}) };
     // Up to date only when that release is on the link; a never-merged attempt is retried with the same request.
-    if (share.onLink && release.manifest.releaseId === share.releaseId) return { upToDate: true, ...(drift ? { liveDrift: drift } : {}) };
+    if (share.onLink && release.manifest.releaseId === share.releaseId) return { upToDate: true, ...notes };
     return { manifest: release.manifest, request: {
       releaseId: release.manifest.releaseId, artifactHash: release.manifest.artifactHash, githubHost: share.githubHost,
       account: share.account, repository: share.repository, shareKey: share.shareKey ?? share.key,
-    }, ...(drift ? { liveDrift: drift } : {}) };
+    }, ...notes };
   });
   server.handle(commentsProbeRpc, async input => { await options.ready(); return probeComments(input, options.commentsFetcher); });
   server.handle(listPagesJobsRpc, async input => {

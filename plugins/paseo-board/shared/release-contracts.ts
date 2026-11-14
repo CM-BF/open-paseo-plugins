@@ -66,6 +66,11 @@ export function commentsProbeRefusal(result: CommentsProbeResult, appKey: string
 }
 export const commentsOriginProblem = (pageOrigin: string) => `把 ${pageOrigin} 加入 board-app.json 的 origins，然后重新部署。`;
 export const commentsReleaseWarning = (apiBase: string) => `此版本允许访客框选文字评论，评论发送到 ${apiBase}。访客浏览器会保存一个匿名编号，用来查看自己的评论和回复。`;
+/**
+ * A share turned private or off whose earlier public releases could not be withdrawn from the backend (unreachable,
+ * or its inbox source is gone). The update still goes ahead: the page itself stops showing public comments.
+ */
+export const commentsUnregisterWarning = (reason: string) => `没能在评论后端取消旧版本的公开评论：${reason}。新版本页面不再显示公开评论；但在后端取消之前，仍开着旧版本页面的访客还能读到和发表公开评论（作者仍可在收件箱里隐藏）。后端可以连接、收件箱来源正常后，再更新一次这个分享页就会自动补上取消。`.slice(0, 500);
 export const commentsPublicReleaseWarning = (apiBase: string) => `此版本允许访客框选文字评论，并公开显示：任何打开页面的人都能看到所有访客的评论和回复。评论发送到 ${apiBase}，页面打开时会从这里读取公开评论。访客浏览器会保存一个匿名编号，用来标出自己的评论。`;
 /** Hostnames a public page should not carry without the owner's confirmation (loopback, private, link-local, ULA, internal suffixes). */
 export function internalApiHost(apiBase: string): string | null {
@@ -215,8 +220,8 @@ export const ShareUpdateSchema = z.object({
   comments: z.union([VisitorCommentsReleaseSchema, z.literal(false)]).optional(),
 });
 export const ShareUpdateResultSchema = z.union([
-  z.object({ upToDate: z.literal(true), liveDrift: LiveDriftSchema.optional() }),
-  z.object({ manifest: ReleaseManifestSchema, request: PagesPrepareSchema.omit({ eventId: true, createRepository: true }), liveDrift: LiveDriftSchema.optional() }),
+  z.object({ upToDate: z.literal(true), liveDrift: LiveDriftSchema.optional(), commentsWarning: z.string().max(500).optional() }),
+  z.object({ manifest: ReleaseManifestSchema, request: PagesPrepareSchema.omit({ eventId: true, createRepository: true }), liveDrift: LiveDriftSchema.optional(), commentsWarning: z.string().max(500).optional() }),
 ]);
 export type LiveRelease = z.infer<typeof LiveReleaseSchema>;
 export type LiveState = z.infer<typeof LiveStateSchema>;

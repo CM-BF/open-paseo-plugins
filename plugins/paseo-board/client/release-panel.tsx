@@ -37,7 +37,7 @@ const publicationRequest = (value: PagesPrepareInput): PagesPrepareInput => ({
 // Refusals a retry cannot change; series-busy may pass once the other update merges.
 const finalRefusal = (value: PagesJob) => refusedJob(value) && value.refusal?.code !== "series-busy";
 /** One share link being updated from this panel: built by share-update, or regenerated once from recovered settings. */
-type ShareTarget = { share: LiveShare; shareKey: string; releaseId?: string; upToDate?: boolean; recovered?: ReleaseManifest; liveAdopted?: boolean; drift?: ShareLiveDrift; comments?: VisitorCommentsRelease | false };
+type ShareTarget = { share: LiveShare; shareKey: string; releaseId?: string; upToDate?: boolean; recovered?: ReleaseManifest; liveAdopted?: boolean; drift?: ShareLiveDrift; comments?: VisitorCommentsRelease | false; commentsWarning?: string };
 const VISITOR_NOTICE = "访客本地保存的状态会从新版本重新开始；部分访客可能几分钟后才看到新版（缓存）。";
 const automaticallyPublishing = (value: PagesJob) => value.autoPublish === true &&
   !["live", "failed"].includes(value.status) && Boolean(value.autoPublishUntil && Date.parse(value.autoPublishUntil) > Date.now());
@@ -197,8 +197,8 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
     targetRef.current = next; setTarget(next);
     const result = await shareUpdate({ boardId: board.id, seriesId: share.seriesId, expectedSource: { documentVersion: board.canvas.documentVersion, patchCount: board.canvas.patches.length }, ...(adoptLive ? { liveMode: "current" as const } : {}), ...(visitorComments !== undefined ? { comments: visitorComments } : {}) });
     if (!mounted.current || targetRef.current !== next) return;
-    if ("upToDate" in result) { const done = { ...next, upToDate: true, drift: result.liveDrift }; targetRef.current = done; setTarget(done); return; }
-    const built = { ...next, releaseId: result.manifest.releaseId, shareKey: result.request.shareKey ?? next.shareKey, drift: result.liveDrift };
+    if ("upToDate" in result) { const done = { ...next, upToDate: true, drift: result.liveDrift, commentsWarning: result.commentsWarning }; targetRef.current = done; setTarget(done); return; }
+    const built = { ...next, releaseId: result.manifest.releaseId, shareKey: result.request.shareKey ?? next.shareKey, drift: result.liveDrift, commentsWarning: result.commentsWarning };
     targetRef.current = built; setTarget(built);
     setReleases(values => [result.manifest, ...values.filter(item => item.releaseId !== result.manifest.releaseId)]);
     await showRelease(result.manifest);
@@ -260,6 +260,7 @@ export function ReleasePanel({ board, hostId, onOpenBoard, intent = "publish", s
           <Copy small muted>这个分享页的实时配置与当前不同：{[...drift.addedPaths.map(path => `+${path}`), ...drift.removedPaths.map(path => `-${path}`), ...(drift.originChanged ? ["后端来源已变更"] : [])].join("  ")}</Copy>
           {desktop && liveReady && share.settingsAvailable && share.live !== "updating" ? <Action testID="board-share-live-adopt" label="采用当前实时配置并更新" disabled={busy} onPress={() => { void startUpdate(share, true); }} /> : null}
         </View> : null}
+        {active && target?.commentsWarning ? <View testID="board-share-comments-warning"><Notice text={target.commentsWarning} /></View> : null}
         {active && target?.upToDate ? <Notice text="分享页已是当前内容，无需更新。" /> : null}
         {active && target?.recovered ? <Copy small muted>已沿用上次分享页的设置：名称「{target.recovered.title}」 · {target.recovered.network === "cdn" ? "允许 CDN 库" : "仅内置资源"} · {target.recovered.apiOrigins?.length ? `后端来源：${target.recovered.apiOrigins.join("、")}` : "不连接后端"}。主题和公开数据没有保存，请在下方重新选择，再点「生成固定版本并预览」。</Copy> : null}
       </View>;

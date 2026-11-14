@@ -39,7 +39,7 @@ const ModerationSchema = z.object({
   threads: z.array(PublicMessageSchema.omit({ by: true }).extend({ page: z.string().max(2_000), resolved: z.boolean(), hidden: z.boolean(), anchor: z.record(z.string(), z.unknown()).optional(), replies: z.array(PublicMessageSchema).max(100), omitted: z.number().int().nonnegative() }).strict()).max(100),
 }).strict();
 export type ModerationListing = z.infer<typeof ModerationSchema>;
-export type PublicPostOutcome = { kind: "ok"; echo: { hidden?: boolean; resolved?: boolean; withdrawn?: boolean; changed?: number } } | { kind: "transient"; error: string; retryAfterMs?: number } | { kind: "fail"; message: string };
+export type PublicPostOutcome = { kind: "ok"; echo: { hidden?: boolean; resolved?: boolean; withdrawn?: boolean; changed?: number } } | { kind: "transient"; error: string; retryAfterMs?: number } | { kind: "fail"; message: string; code?: string };
 const ReplyResponseSchema = z.object({
   deploymentId: z.string(), replayed: z.boolean().optional(),
   reply: z.object({ replyId: z.string().min(1).max(200), commentExternalId: z.string(), text: z.string(), createdAt: z.string().datetime() }).passthrough(),
@@ -67,12 +67,15 @@ const describe = (error: unknown) => {
   const cause = value?.cause?.code ?? value?.cause?.message;
   return `${value?.message ?? String(error)}${cause ? ` (${cause})` : ""}`.slice(0, 200);
 };
-async function readLimited(response: Response, limit: number): Promise<string> {
-  if (Number(response.headers.get("content-length")) > limit) { await response.body?.cancel(); throw new SyncFailure("too-large", "后端返回的一页数据超过上限，自动同步已停止。"); }
+const PAGE_TOO_LARGE = "后端返回的一页数据超过上限，自动同步已停止。";
+/** The owner moderation listing, too large to read (a backend older than the byte budget). */
+export const MODERATION_TOO_LARGE = "后端返回的公开评论列表超过上限，暂时无法显示。请在应用目录运行 paseo-board-app update-runtime，然后重新部署。";
+async function readLimited(response: Response, limit: number, tooLarge = PAGE_TOO_LARGE): Promise<string> {
+  if (Number(response.headers.get("content-length")) > limit) { await response.body?.cancel(); throw new SyncFailure("too-large", tooLarge); }
   if (!response.body) return "";
   const reader = response.body.getReader(), chunks: Uint8Array[] = []; let size = 0;
   try {
-    for (;;) { const chunk = await reader.read(); if (chunk.done) break; size += chunk.value.byteLength; if (size > limit) throw new SyncFailure("too-large", "后端返回的一页数据超过上限，自动同步已停止。"); chunks.push(chunk.value); }
+    for (;;) { const chunk = await reader.read(); if (chunk.done) break; size += chunk.value.byteLength; if (size > limit) throw new SyncFailure("too-large", tooLarge); chunks.push(chunk.value); }
   } catch (error) { await reader.cancel().catch(() => undefined); throw error; }
   return Buffer.concat(chunks).toString("utf8");
 }
@@ -426,7 +429,7 @@ export class InboxConnections {
     const url = source.endpoint.replace(/\/+$/, "") + path;
     const response = await this.fetcher(url, { method, headers: { Authorization: `Bearer ${source.token}`, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal: AbortSignal.timeout(10_000) as RequestInit["signal"] });
     let parsed: unknown = {};
-    try { parsed = JSON.parse(await readLimited(response, INBOX_AUTO_LIMITS.responseBytes)); } catch (error) { if (error instanceof SyncFailure) throw error; parsed = {}; }
+    try { parsed = JSON.parse(await readLimited(response, INBOX_AUTO_LIMITS.responseBytes, "后端返回的数据超过上限。")); } catch (error) { if (error instanceof SyncFailure) throw error; parsed = {}; }
     const code = typeof (parsed as { code?: unknown }).code === "string" && /^[a-z_]{1,40}$/.test((parsed as { code: string }).code) ? (parsed as { code: string }).code : undefined;
     return { status: response.status, ...(code ? { code } : {}), body: parsed, ...(retryAfter(response) ? { retryAfterMs: retryAfter(response) } : {}) };
   }
@@ -454,15 +457,19 @@ export class InboxConnections {
     if (status === 404 && code === "comment_not_found") return { kind: "fail", message: "后端没有这条评论（后端可能已更换或恢复了旧数据）。" };
     if (status === 404) return { kind: "fail", message: "后端版本过旧，不支持隐藏或标为已解决：在应用目录运行 paseo-board-app update-runtime，然后重新部署。" };
     if (status === 409 && code === "not_public") return { kind: "fail", message: "后端认为这条评论不是公开评论。" };
-    if (status === 409 && code === "withdrawn") return { kind: "fail", message: "访客已撤回这条评论，不能再在页面上显示。" };
+    if (status === 409 && code === "withdrawn") return { kind: "fail", code, message: "访客已撤回这条评论，不能再在页面上显示。" };
     return { kind: "fail", message: `后端拒绝了这次更新（HTTP ${status}${code ? `：${code}` : ""}）。` };
   }
-  /** Registers or unregisters a public release on the backend this Board's inbox is connected to (matched by deployment). */
-  async publicRelease(scope: InboxScope, deploymentId: string, releaseId: string, register: boolean): Promise<void> {
+  /**
+   * Registers or unregisters a public release on the backend this Board's inbox is connected to (matched by deployment).
+   * `pages` names the share's page addresses: unregistering closes them to every release, registering reopens them.
+   */
+  async publicRelease(scope: InboxScope, deploymentId: string, releaseId: string, register: boolean, pages: string[] = []): Promise<void> {
     const source = (await this.runtimeSources(scope)).find(item => item.ready && item.enabled && item.deploymentId === deploymentId);
     if (!source) throw new BoardStoreError("forbidden", "公开评论需要先把这个后端连接到本 Board 的评论收件箱（更多 → 评论收件箱 → 后端来源），这样你才能隐藏不当评论或标为已解决。");
     let result: Awaited<ReturnType<InboxConnections["ownerCall"]>>;
-    try { result = await this.ownerCall(source, register ? "PUT" : "DELETE", `/public-releases/${releaseId}`, register ? {} : undefined); }
+    const request = pages.length ? { pages: pages.slice(0, 8) } : register ? {} : undefined;
+    try { result = await this.ownerCall(source, register ? "PUT" : "DELETE", `/public-releases/${releaseId}`, request); }
     catch (error) { throw new Error(`没能在评论后端${register ? "登记" : "取消"}公开评论：连接不上后端（${describe(error)}）。`); }
     const body = result.body as Record<string, unknown>;
     if (result.status === 200 && body.deploymentId === deploymentId && body.releaseId === releaseId && body.registered === register) return;
@@ -481,7 +488,7 @@ export class InboxConnections {
         const listing = ModerationSchema.safeParse(result.body);
         if (!listing.success || listing.data.deploymentId !== source.deploymentId) return { source, error: "后端返回的公开评论数据无法识别。" };
         return { source, listing: listing.data };
-      } catch (error) { return { source, error: error instanceof SyncFailure ? error.message : `连接不上后端：${describe(error)}` }; }
+      } catch (error) { return { source, error: error instanceof SyncFailure ? (error.kind === "too-large" ? MODERATION_TOO_LARGE : error.message) : `连接不上后端：${describe(error)}` }; }
     }));
   }
 }

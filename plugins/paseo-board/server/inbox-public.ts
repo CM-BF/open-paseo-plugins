@@ -1,5 +1,5 @@
 import type { InboxScope } from "../shared/inbox";
-import type { InboxPublicOutboxItem, InboxStore } from "./inbox-store";
+import { chronological, type InboxPublicOutboxItem, type InboxStore } from "./inbox-store";
 import { AUTOMATION_ACTOR, type InboxConnections } from "./inbox-sync";
 
 /**
@@ -73,6 +73,8 @@ export class PublicStateOutbox {
         const outcome = await connections.postPublic(source, item);
         const ingress = { kind: "ingress" as const, sourceId: source.sourceId, deploymentId: source.deploymentId, credential: source.credential };
         if (outcome.kind === "ok") await inbox.confirmPublic(scope, item, outcome.echo, ingress);
+        // The visitor withdrew it meanwhile: record that (it stays hidden) instead of a failure to retry.
+        else if (outcome.kind === "fail" && outcome.code === "withdrawn" && item.kind === "state") await inbox.confirmPublic(scope, item, { withdrawn: true }, ingress);
         else if (outcome.kind === "fail") await inbox.failPublic(scope, item, outcome.message, ingress);
         else { transient = true; waitMs = Math.max(waitMs, outcome.retryAfterMs ?? 0); this.options.log(`public outbox: ${outcome.error}`); }
       }).catch(error => { transient = true; this.options.log(`public outbox: ${String(error)}`); });
@@ -84,22 +86,33 @@ export class PublicStateOutbox {
       entry.timer = this.clock.setTimeout(() => { entry.timer = undefined; void this.flush(scope).catch(error => this.options.log(`public outbox: ${String(error)}`)); }, delay);
     } else entry.failures = 0;
   }
-  /** After a backend restore the page may show what the human hid: send every value a human set again (§12 A14). */
+  /**
+   * After a backend restore the page may show what the human hid: send every value a human set again (§12 A14), in the
+   * order the human set them. Bulk hides mirror into the visitor's records (inbox-public-ledger.ts), so a record re-sent
+   * after its bulk hide carries hidden: true and nothing hidden is shown, not even between two requests. Bulk shows
+   * (隐藏这位访客… undone) are not re-sent: after a restore their known comments are shown again one by one, and
+   * the rest stays hidden, which errs on the side of hiding.
+   */
   private async repushScope(scope: InboxScope): Promise<void> {
     if (this.closed) return;
     try {
       const ledger = await this.options.inbox.publicLedger(scope, AUTOMATION_ACTOR);
       const sources = new Map((await this.options.connections.runtimeSources(scope)).map(source => [source.sourceId, source]));
-      const items: InboxPublicOutboxItem[] = [
-        ...ledger.records.filter(record => record.explicit && !record.pending && !record.error && !(record.withdrawn && !record.hidden)).slice(-500)
-          .map(record => ({ kind: "state" as const, sourceId: record.sourceId, externalId: record.externalId, send: { hidden: record.hidden, ...(record.parentId === undefined ? { resolved: record.resolved } : {}) } })),
-        ...ledger.actions.filter(action => !action.pending && !action.error).map(action => ({ kind: "action" as const, sourceId: action.sourceId, id: action.id, action })),
-      ];
+      const records = ledger.records.filter(record => record.explicit && !record.pending && !record.error && !(record.withdrawn && !record.hidden))
+        .sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0)).slice(-500);
+      const items = chronological([
+        ...records.map(record => ({ at: record.updatedAt, rank: 1, item: { kind: "state" as const, sourceId: record.sourceId, externalId: record.externalId, send: { hidden: record.hidden, ...(record.parentId === undefined ? { resolved: record.resolved } : {}) } } })),
+        ...ledger.actions.filter(action => !action.pending && !action.error && !(action.kind === "hide-visitor" && !action.value)).map(action => ({ at: action.updatedAt, rank: 0, item: { kind: "action" as const, sourceId: action.sourceId, id: action.id, action } })),
+      ]);
       for (const item of items) {
         const source = sources.get(item.sourceId);
         if (this.closed || !source?.ready || !source.enabled) continue;
-        // Re-pushed values were confirmed before; nothing is recorded unless the backend refuses for good.
-        await this.options.connections.withSourceLock(scope, source.sourceId, () => this.options.connections.postPublic(source, item)).catch(() => undefined);
+        // Re-pushed values were confirmed before; nothing is recorded unless the visitor withdrew the comment since.
+        await this.options.connections.withSourceLock(scope, source.sourceId, async () => {
+          const outcome = await this.options.connections.postPublic(source, item);
+          if (outcome.kind === "fail" && outcome.code === "withdrawn" && item.kind === "state")
+            await this.options.inbox.confirmPublic(scope, item, { withdrawn: true }, { kind: "ingress", sourceId: source.sourceId, deploymentId: source.deploymentId, credential: source.credential });
+        }).catch(() => undefined);
       }
     } catch (error) { this.options.log(`public re-push: ${String(error)}`); }
   }

@@ -12,7 +12,7 @@ import {
 } from "../shared/inbox";
 import { BoardStoreError, canonicalJson, ensureDirectory, fingerprint, parseInput, serialized } from "./store-format";
 import {
-  PUBLIC_LEDGER_BYTES, PublicLedgerSchema, audit, conflictingParent, decorate, emptyPublicLedger, findRecord, importPublicRow, notNewForWaker, publicStateOf, receipt, setPending, stripPublic,
+  PUBLIC_LEDGER_BYTES, PublicLedgerSchema, audit, conflictingParent, decorate, emptyPublicLedger, findRecord, importPublicRow, makeRoom, mirrorVisitorAction, notNewForWaker, publicStateOf, receipt, recordKey, setPending, stripPublic,
   type PublicAction, type PublicLedger, type PublicRecord,
 } from "./inbox-public-ledger";
 import { PUBLIC_TEXT, InboxPublicPageInputSchema, InboxPublicStateInputSchema, InboxPublicVisitorInputSchema, type InboxPublicPageInput, type InboxPublicStateInput, type InboxPublicVisitorInput } from "../shared/inbox-public";
@@ -120,6 +120,11 @@ function quotesOtherVisitor(text: string, comment: InboxComment, comments: reado
 const replyTime = (reply: InboxReply) => Date.parse(reply.confirmedAt ?? reply.createdAt);
 
 /** A separate bounded ledger: importing a comment never creates a Board interaction or dispatches an agent. */
+/** Outbox items oldest first; at the same moment a page action goes before the record it changed. */
+export function chronological(entries: Array<{ at: string; rank: number; item: InboxPublicOutboxItem }>): InboxPublicOutboxItem[] {
+  return entries.map((entry, index) => ({ ...entry, index })).sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.rank - b.rank || a.index - b.index)).map(entry => entry.item);
+}
+
 export class InboxStore {
   private readonly directory: string;
   private readonly publicListeners = new Set<(scope: InboxScope) => void>();
@@ -229,6 +234,9 @@ export class InboxStore {
             if (!onPage.has(row.externalId)) throw new BoardStoreError("invalid_input", "A public row must belong to a comment on the same page");
             if (conflictingParent(ledger, input.sourceId, row)) throw new BoardStoreError("idempotency_conflict", "An external comment ID was reused with a different thread; existing evidence is unchanged");
           }
+          // A full sidecar drops settled records of comments that already left the inbox, so imports never stop.
+          const fresh = input.publicRows.filter(row => !findRecord(ledger, input.sourceId, row.externalId)).length;
+          if (fresh) this.ensurePublicRoom(state, ledger, input.publicRows.map(row => recordKey(input.sourceId, row.externalId)), fresh, at, { kind: "ingress", id: input.sourceId }, () => pub.touch());
           for (const row of input.publicRows) {
             const outcome = importPublicRow(ledger, input.sourceId, row, at);
             if (outcome !== "same") { pub.touch(); audit(ledger, { at, actor: { kind: "ingress", id: input.sourceId }, operation: outcome === "new" ? "import" : "upgrade", subject: row.externalId }); }
@@ -527,7 +535,7 @@ export class InboxStore {
       const at = new Date(this.now()).toISOString();
       let record = existing;
       if (!record) {
-        if (ledger.records.length >= 10_000) throw new BoardStoreError("size_limit", "公开评论记录已达 10000 条上限。");
+        this.ensurePublicRoom(state, ledger, [recordKey(input.sourceId, input.externalId)], 1, at, { kind: "user", id: HUMAN_ID }, () => undefined);
         const known = input.known ?? { hidden: false, resolved: false };
         record = { sourceId: input.sourceId, externalId: input.externalId, ...(known.parentId ? { parentId: known.parentId } : {}), ...(known.publicTag ? { publicTag: known.publicTag } : {}), ...(known.withdrawn ? { withdrawn: true as const } : {}), hidden: known.hidden || Boolean(known.withdrawn), resolved: known.resolved, updatedAt: at };
         ledger.records.push(record);
@@ -564,6 +572,8 @@ export class InboxStore {
       const at = new Date(this.now()).toISOString();
       const action: PublicAction = { id, sourceId: input.sourceId, kind, page: input.page, ...(tag ? { tag } : {}), value, pending: true, updatedAt: at };
       ledger.actions = [...ledger.actions.filter(item => item.id !== id), action].slice(-500);
+      // The visitor's known comments follow the bulk change, so the inbox and the hourly re-push agree with it.
+      if (kind === "hide-visitor" && tag) mirrorVisitorAction(ledger, input.sourceId, tag, value, at);
       const revision = await pub.commit({ actor, operation: kind === "pause" ? "page" : "visitor", subject: `${input.sourceId} ${input.page}${tag ? ` ${tag}` : ""} ${value}`, eventId: input.eventId, digest }, at);
       return { revision, action: structuredClone(action) };
     });
@@ -577,13 +587,23 @@ export class InboxStore {
       return { ...ledger, commentIds };
     });
   }
-  /** Pending state changes and page actions without a definitive error, oldest first. */
+  /**
+   * Pending state changes and page actions without a definitive error, in the order the human made them (an action
+   * before a record changed at the same moment), so a later 在页面上显示 is not undone by an earlier bulk hide.
+   */
   async publicOutbox(scope: InboxScope, actor: InboxActor): Promise<InboxPublicOutboxItem[]> {
     const ledger = await this.publicLedger(scope, actor);
-    return [
-      ...ledger.records.filter(record => record.pending && Object.keys(record.pending).length && !record.error).map(record => ({ kind: "state" as const, sourceId: record.sourceId, externalId: record.externalId, send: { ...record.pending } })),
-      ...ledger.actions.filter(action => action.pending && !action.error).map(action => ({ kind: "action" as const, sourceId: action.sourceId, id: action.id, action })),
-    ];
+    return chronological([
+      ...ledger.records.filter(record => record.pending && Object.keys(record.pending).length && !record.error).map(record => ({ at: record.updatedAt, rank: 1, item: { kind: "state" as const, sourceId: record.sourceId, externalId: record.externalId, send: { ...record.pending } } })),
+      ...ledger.actions.filter(action => action.pending && !action.error).map(action => ({ at: action.updatedAt, rank: 0, item: { kind: "action" as const, sourceId: action.sourceId, id: action.id, action } })),
+    ]);
+  }
+  /** Prunes the sidecar when it is full; `keep` lists record keys this mutation is about to use. */
+  private ensurePublicRoom(state: State, ledger: PublicLedger, keep: string[], needed: number, at: string, actor: { kind: "user" | "ingress"; id: string }, touch: () => void) {
+    const inLedger = new Set([...state.comments.map(comment => recordKey(comment.sourceId, comment.externalId)), ...keep]);
+    const { removed, room } = makeRoom(ledger, inLedger, needed);
+    if (removed) { audit(ledger, { at, actor, operation: "prune", subject: `${removed} settled records of comments no longer in the inbox` }); touch(); }
+    if (!room) throw new BoardStoreError("size_limit", "公开评论记录已满：有太多公开评论的页面状态还在等后端确认。请先在「公开讨论」里处理同步失败的状态，再继续同步。");
   }
   /** The backend confirmed: each sent field leaves `pending` when the wanted value is still the one sent and the backend echoes it. */
   async confirmPublic(scope: InboxScope, item: InboxPublicOutboxItem, echo: { hidden?: boolean; resolved?: boolean; withdrawn?: boolean; changed?: number }, actor: InboxActor): Promise<void> {

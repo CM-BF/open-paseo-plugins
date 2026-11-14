@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -253,13 +253,40 @@ describe("public threads in the inbox ledger (public-threads §5.4, §12)", () =
     await advance(50);
     expect(posts.at(-1)).toMatchObject({ kind: "action", action: { kind: "pause", page: PAGE, value: true } });
     expect((await store.publicLedger(scope, automation)).actions[0]).not.toHaveProperty("pending");
-    // Hourly: values the human set are sent again, nothing new is recorded.
+    // Hourly: values the human set are sent again in the order they were set, nothing new is recorded. This store's
+    // clock stands still, so both share one instant: a page action goes first at the same moment.
     const count = posts.length;
     await advance(3_600_000);
-    expect(posts.slice(count).map(item => item.kind === "state" ? item.externalId : item.action.kind)).toEqual([id(1), "pause"]);
+    expect(posts.slice(count).map(item => item.kind === "state" ? item.externalId : item.action.kind)).toEqual(["pause", id(1)]);
     outbox.close();
     await advance(10_000_000);
     expect(timers.size).toBe(0);
+  });
+
+  it("a full public sidecar drops settled records of comments that left the inbox, so imports never stop", async () => {
+    await seed([row(1, "根")], [pub(1)]);
+    // A decision not confirmed yet, for a comment that was never imported: it must survive pruning.
+    await store.setPublicState({ ...scope, eventId: "hide-flood", sourceId: "source-1", externalId: id(50_001), hidden: true, known: { hidden: false, resolved: false } }, human);
+    const file = join(root, "inbox", (await ledgerFiles()).find(name => name.endsWith(".public.json"))!);
+    const sidecar = JSON.parse(await readFile(file, "utf8"));
+    for (let n = 0; sidecar.records.length < 10_000; n++) sidecar.records.push({ sourceId: "source-1", externalId: id(100_000 + n), hidden: false, resolved: false, updatedAt: new Date(Date.parse(createdAt) + n).toISOString(), ...(n % 2 ? { explicit: true } : {}) });
+    await writeFile(file, JSON.stringify(sidecar));
+    // A page with a public and a private comment imports, and the cursor moves on.
+    await seed([row(2, "公开评论"), row(3, "私密评论")], [pub(2)]);
+    expect((await find(id(3))).text).toBe("私密评论"); expect((await list()).sources[0].cursor).toBe("3");
+    const ledger = await store.publicLedger(scope, human);
+    expect(ledger.records).toHaveLength(9_000);
+    for (const externalId of [id(1), id(2), id(50_001)]) expect(ledger.records.some(record => record.externalId === externalId), externalId).toBe(true);
+    // Backend snapshots go before the human's own decisions, oldest first.
+    expect(ledger.records.filter(record => record.explicit && record.externalId.endsWith("1") === false).length).toBeGreaterThan(0);
+    expect(ledger.records.filter(record => !record.explicit && Number(record.externalId.slice(-6)) >= 100_000).length).toBe(4_999 - 1_001);
+    expect(ledger.audit.at(-2)).toMatchObject({ operation: "prune", actor: { kind: "ingress" } });
+    // The human's 在页面上隐藏 on a full sidecar prunes as well.
+    const again = JSON.parse(await readFile(file, "utf8"));
+    for (let n = 0; again.records.length < 10_000; n++) again.records.push({ sourceId: "source-1", externalId: id(200_000 + n), hidden: false, resolved: false, updatedAt: createdAt });
+    await writeFile(file, JSON.stringify(again));
+    await store.setPublicState({ ...scope, eventId: "hide-new", sourceId: "source-1", externalId: id(50_002), hidden: true, known: { hidden: false, resolved: false } }, human);
+    expect((await store.publicLedger(scope, human)).records.length).toBeLessThanOrEqual(9_000);
   });
 
   it("the thread view schema accepts the merged moderation listing", () => {
@@ -284,7 +311,7 @@ describe("public-threads HTTP calls (inbox-sync)", () => {
     expect(await make(404, { code: "comment_not_found" }).postPublic(source, item)).toEqual({ kind: "fail", message: "后端没有这条评论（后端可能已更换或恢复了旧数据）。" });
     expect(await make(404, { code: "not_found" }).postPublic(source, item)).toEqual({ kind: "fail", message: "后端版本过旧，不支持隐藏或标为已解决：在应用目录运行 paseo-board-app update-runtime，然后重新部署。" });
     expect(await make(409, { code: "not_public" }).postPublic(source, item)).toEqual({ kind: "fail", message: "后端认为这条评论不是公开评论。" });
-    expect(await make(409, { code: "withdrawn" }).postPublic(source, item)).toEqual({ kind: "fail", message: "访客已撤回这条评论，不能再在页面上显示。" });
+    expect(await make(409, { code: "withdrawn" }).postPublic(source, item)).toEqual({ kind: "fail", code: "withdrawn", message: "访客已撤回这条评论，不能再在页面上显示。" });
     expect(await make(400, { code: "invalid_input" }).postPublic(source, item)).toEqual({ kind: "fail", message: "后端拒绝了这次更新（HTTP 400：invalid_input）。" });
     const network = new InboxConnections("/nonexistent", {} as InboxStore, (async () => { throw new TypeError("fetch failed"); }) as typeof fetch);
     expect((await network.postPublic(source, item)).kind).toBe("transient");

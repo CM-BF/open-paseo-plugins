@@ -1,6 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { Board } from "../shared/contracts";
-import type { InboxActor, InboxScope } from "../shared/inbox";
+import type { InboxActor, InboxPublicState, InboxScope } from "../shared/inbox";
 import {
   PUBLIC_TEXT, inboxPublicPageRpc, inboxPublicStateRpc, inboxPublicThreadsRpc, inboxPublicVisitorRpc,
   type InboxPublicMessage, type InboxPublicResult, type InboxPublicSourceView, type InboxPublicThread, type InboxPublicThreads,
@@ -64,7 +64,11 @@ export function registerPublicThreads(server: Pick<PluginServerContext, "handle"
 const statusOf = (error: string | undefined, pending: boolean): Pick<InboxPublicResult, "status" | "message"> =>
   error ? { status: "failed", message: PUBLIC_TEXT.failed(error) } : pending ? { status: "syncing", message: PUBLIC_TEXT.syncing } : { status: "applied", message: PUBLIC_TEXT.applied };
 
-/** The thread view: the backend's moderation listing per source, with the inbox's wanted state and ledger IDs merged in. */
+/**
+ * The thread view: the backend's moderation listing per source with ledger IDs merged in. What the page shows comes
+ * from the backend (bulk hides, withdrawals and restores included); only a decision the backend has not confirmed yet
+ * (`pending`, without a refusal) is shown as wanted, with 正在同步.
+ */
 export async function publicThreads(inbox: InboxStore, connections: InboxConnections, scope: InboxScope): Promise<InboxPublicThreads> {
   const ledger = await inbox.publicLedger(scope, HUMAN);
   const results = await connections.moderation(scope);
@@ -75,16 +79,28 @@ export async function publicThreads(inbox: InboxStore, connections: InboxConnect
       if (item.by !== undefined && item.by !== "visitor") return {};
       const commentId = ledger.commentIds[`${source.sourceId}\0${item.id}`];
       const record = ledger.records.find(entry => entry.sourceId === source.sourceId && entry.externalId === item.id);
-      const state = record ? publicStateOf(record) : { hidden: item.hidden === true, resolved: item.resolved === true, ...(item.withdrawn ? { withdrawn: true as const } : {}) };
-      return { ...(commentId ? { commentId } : {}), state };
+      return { ...(commentId ? { commentId } : {}), state: shownState(item, record) };
     };
-    const threads: InboxPublicThread[] = listing.threads.map(thread => ({
-      ...thread, by: "visitor" as const, ...(thread.anchor ? { anchor: cleanAnchor(thread.anchor) } : {}), ...message(thread),
-      replies: thread.replies.map(item => ({ ...item, ...message(item) })),
-    }));
+    const threads: InboxPublicThread[] = listing.threads.map(thread => {
+      const merged = message(thread);
+      return {
+        ...thread, by: "visitor" as const, ...(thread.anchor ? { anchor: cleanAnchor(thread.anchor) } : {}), ...merged, resolved: merged.state?.resolved ?? thread.resolved,
+        replies: thread.replies.map(item => ({ ...item, ...message(item) })),
+      };
+    });
     return { ...base, state: "ok" as const, error: null, publicThreads: listing.publicThreads, pages: pagesOf(ledger, source.sourceId, listing.pages), threads, total: listing.total, truncated: listing.truncated };
   });
   return { revision: ledger.revision, sources };
+}
+/** The backend's state, overlaid with the inbox's unconfirmed decision; a refused decision shows the backend's value and the error. */
+export function shownState(item: { hidden?: boolean; withdrawn?: true; resolved?: boolean }, record: PublicLedger["records"][number] | undefined): InboxPublicState {
+  const withdrawn = item.withdrawn === true || record?.withdrawn === true;
+  if (!record) return { hidden: item.hidden === true || withdrawn, resolved: item.resolved === true, ...(withdrawn ? { withdrawn: true as const } : {}) };
+  const wanted = publicStateOf(record), overlay = record.error ? undefined : wanted.pending;
+  const hidden = withdrawn || (overlay?.hidden ?? item.hidden === true), resolved = overlay?.resolved ?? item.resolved === true;
+  // 不处理 or 在页面上隐藏, as long as that is what made it hidden.
+  const hiddenBy = hidden && !withdrawn && record.hidden && record.hiddenBy ? record.hiddenBy : undefined;
+  return { hidden, resolved, ...(hiddenBy ? { hiddenBy } : {}), ...(withdrawn ? { withdrawn: true as const } : {}), ...(wanted.pending ? { pending: wanted.pending } : {}), ...(wanted.error ? { error: wanted.error } : {}) };
 }
 function cleanAnchor(anchor: Record<string, unknown>) {
   const out: Record<string, string | number> = {};
@@ -108,6 +124,6 @@ export function publicReleaseHooks(connections: InboxConnections) {
   const scope = (board: Board) => ({ boardId: board.id, expectedCreatedAt: board.createdAt });
   return {
     sources: (board: Board) => connections.list(scope(board)),
-    register: (board: Board, deploymentId: string, releaseId: string, on: boolean) => connections.publicRelease(scope(board), deploymentId, releaseId, on),
+    register: (board: Board, deploymentId: string, releaseId: string, on: boolean, pages?: string[]) => connections.publicRelease(scope(board), deploymentId, releaseId, on, pages),
   };
 }

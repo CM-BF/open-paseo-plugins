@@ -33,11 +33,13 @@ export const PublicActionSchema = z.object({
 export type PublicAction = z.infer<typeof PublicActionSchema>;
 const AuditSchema = z.object({
   at: Timestamp, actor: z.object({ kind: z.enum(["user", "agent", "ingress"]), id: z.string().min(1).max(200) }).strict(),
-  operation: z.enum(["import", "upgrade", "state", "triage", "outcome", "page", "visitor"]), subject: z.string().max(2_400),
+  operation: z.enum(["import", "upgrade", "state", "triage", "outcome", "page", "visitor", "prune"]), subject: z.string().max(2_400),
 }).strict();
+/** Records kept in the sidecar; pruning brings a full sidecar down to PUBLIC_RECORDS_AFTER_PRUNE. */
+export const PUBLIC_RECORDS = 10_000, PUBLIC_RECORDS_AFTER_PRUNE = 9_000;
 export const PublicLedgerSchema = z.object({
   version: z.literal(1), scope: InboxScopeSchema, revision: z.number().int().nonnegative(),
-  records: z.array(PublicRecordSchema).max(10_000), actions: z.array(PublicActionSchema).max(500),
+  records: z.array(PublicRecordSchema).max(PUBLIC_RECORDS), actions: z.array(PublicActionSchema).max(500),
   audit: z.array(AuditSchema).max(500), receipts: z.array(z.object({ eventId: IdSchema, digest: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).max(500),
 }).strict();
 export type PublicLedger = z.infer<typeof PublicLedgerSchema>;
@@ -92,6 +94,43 @@ export const conflictingParent = (ledger: PublicLedger, sourceId: string, row: I
   const existing = findRecord(ledger, sourceId, row.externalId);
   return Boolean(existing?.parentId !== undefined && row.parentId !== undefined && existing.parentId !== row.parentId || existing?.parentId !== undefined && row.parentId === undefined);
 };
+
+/**
+ * Makes room for `needed` new records, so a long-lived backend never fills the sidecar and stops every import (review
+ * fix). Records still needed stay: comments in the main ledger (labels, the waker and the quote rule read them) and
+ * decisions not yet confirmed or refused. Settled records of comments that left the inbox go first, oldest first:
+ * backend snapshots before the human's own decisions (those only feed the hourly re-push). Prunes down to
+ * PUBLIC_RECORDS_AFTER_PRUNE at once, so this runs rarely. Returns how many were removed and whether there is room now.
+ */
+export function makeRoom(ledger: PublicLedger, inLedger: ReadonlySet<string>, needed: number): { removed: number; room: boolean } {
+  if (ledger.records.length + needed <= PUBLIC_RECORDS) return { removed: 0, room: true };
+  const excess = ledger.records.length + needed - PUBLIC_RECORDS_AFTER_PRUNE;
+  const candidates = ledger.records
+    .map((record, index) => ({ record, index }))
+    .filter(({ record }) => !inLedger.has(recordKey(record.sourceId, record.externalId)) && !record.pending && !record.error)
+    .sort((a, b) => Number(Boolean(a.record.explicit)) - Number(Boolean(b.record.explicit)) || (a.record.updatedAt < b.record.updatedAt ? -1 : a.record.updatedAt > b.record.updatedAt ? 1 : a.index - b.index))
+    .slice(0, Math.max(0, excess));
+  const leaving = new Set(candidates.map(item => item.record));
+  ledger.records = ledger.records.filter(record => !leaving.has(record));
+  return { removed: leaving.size, room: ledger.records.length + needed <= PUBLIC_RECORDS };
+}
+
+/**
+ * 隐藏/显示这位访客的全部公开评论 also sets every known record of that visitor on that page (tags are per page), so the
+ * inbox and the hourly re-push agree with what the bulk change did: a re-push never shows them again, and leaving 不处理
+ * does not either. Withdrawn comments stay hidden. Returns the number of records changed.
+ */
+export function mirrorVisitorAction(ledger: PublicLedger, sourceId: string, tag: string, hidden: boolean, at: string): number {
+  let changed = 0;
+  for (const record of ledger.records) {
+    if (record.sourceId !== sourceId || record.publicTag !== tag || record.withdrawn) continue;
+    record.hidden = hidden;
+    if (hidden) record.hiddenBy = "hide"; else delete record.hiddenBy;
+    if (record.pending?.hidden !== undefined) record.pending.hidden = hidden;
+    record.explicit = true; record.updatedAt = at; changed++;
+  }
+  return changed;
+}
 
 /** True when the comment is a public visitor reply or hidden on the page: the waker must not treat it as new (§12 A1). */
 export function notNewForWaker(ledger: PublicLedger, comment: InboxComment): boolean {
