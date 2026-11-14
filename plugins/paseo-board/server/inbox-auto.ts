@@ -579,8 +579,15 @@ export class InboxAutomation {
     rt.file.wake.skipped.otherBoard += otherBoard; rt.file.wake.skipped.unattributed += unattributed;
     const abort = new AbortController();
     rt.run = { record, abort };
-    await this.save(rt); await this.saveHost();
-    const picked = await this.pickRoute(host, runner.providerId);
+    let picked: Picked;
+    try {
+      await this.save(rt); await this.saveHost();
+      picked = await this.pickRoute(host, runner.providerId);
+    } catch (error) {
+      // Never leave the scope blocked by a run that did not start: it ends as not-ready and is retried.
+      await this.finishRun(rt, record, notStarted(error instanceof Error ? error.message.slice(0, 200) : "运行没能开始"));
+      return;
+    }
     if (!picked.ok) { await this.finishRun(rt, record, notStarted(picked.refusal)); return; }
     const prompt = wakePrompt({ boardId: rt.scope.boardId, expectedCreatedAt: rt.scope.expectedCreatedAt, interactionId: runId, title: board.title, inboxRevision: revision, comments: batch.map(row => ({ commentId: row.id, revision: row.revision, visitorTag: row.visitorTag ?? null, canSeeReply: Boolean(row.visitorTag) })) });
     const price = priceOf(runner.model);
@@ -750,7 +757,8 @@ export class InboxAutomation {
         })),
       },
       wake: {
-        state, pausedReason: state === "setup" ? "setup" : rt.file.wakePaused ? "human" : paused?.reason ?? null,
+        // A lockdown or setup pause stays visible under a human pause: only the dialog can lift it.
+        state, pausedReason: state === "setup" ? "setup" : paused?.reason === "lockdown" ? "lockdown" : rt.file.wakePaused ? "human" : paused?.reason ?? null,
         pausedAt: paused?.at ?? null, resumesAt: paused?.resumesAt ?? null, error: paused?.error ?? null, findings: paused?.findings ?? [],
         pendingComments: auto === "off" || !rt.ledger ? 0 : Math.max(0, rt.ledger.latestSeq - rt.file.wake.seenSeq), runningComments: rt.run?.record.commentIds.length ?? 0,
         nextWakeAt: rt.debounce ? iso(rt.debounce.due) : null,
