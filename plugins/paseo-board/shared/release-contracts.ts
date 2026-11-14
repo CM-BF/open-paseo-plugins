@@ -46,7 +46,9 @@ export const commentsProbeText = (result: CommentsProbeResult): string =>
 export const COMMENTS_APP_CHANGED = "这个地址现在指向另一个评论后端应用，与检查时不同";
 /** Null when a release may use this backend; otherwise the refusal shown to the human. */
 export function commentsProbeRefusal(result: CommentsProbeResult, appKey: string | undefined): string | null {
-  const reason = result.comments !== "threads" ? commentsProbeText(result) : !result.appKey || (appKey !== undefined && result.appKey !== appKey) ? COMMENTS_APP_CHANGED : null;
+  // A thread runtime always reports its app key; without one the backend cannot keep visitor identity.
+  const reason = result.comments !== "threads" ? commentsProbeText(result) : !result.appKey ? commentsProbeText({ ...result, comments: "basic" })
+    : appKey !== undefined && result.appKey !== appKey ? COMMENTS_APP_CHANGED : null;
   return reason === null ? null : `评论后端检查没有通过：${reason.replace(/。$/, "")}。请先点「检查后端」。`;
 }
 export const commentsOriginProblem = (pageOrigin: string) => `把 ${pageOrigin} 加入 board-app.json 的 origins，然后重新部署。`;
