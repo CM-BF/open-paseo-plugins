@@ -12,7 +12,10 @@ export async function createCommentsHostBackend() {
     for (const [base, fake] of routes) if (url.startsWith(base + '/')) return fetch(fake.origin + url.slice(base.length), init);
     return fetch(url, init);
   };
-  return { main, other, fetcher, connections: [], setDown: value => { down = value; }, close: () => Promise.all([main.close(), other.close()]) };
+  const connections = [], registered = [];
+  // Public comment threads: the Board's inbox sources and release registrations, recorded (public-threads §12 A2).
+  const publicReleases = { sources: async () => structuredClone(connections), register: async (_board, deploymentId, releaseId, on) => { registered.push({ deploymentId, releaseId, on }); } };
+  return { main, other, fetcher, connections, registered, publicReleases, appKey: appKeyFor('host-owner'), setDown: value => { down = value; }, close: () => Promise.all([main.close(), other.close()]) };
 }
 
 export async function runCommentsHostChecks({ assert, command, evaluate, until, click, replace, button, check, pageOrigin, comments, calls, repository, loadPage }) {
