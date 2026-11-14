@@ -537,6 +537,8 @@ export class InboxAutomation {
   /* ---------- reply outbox ---------- */
   private upsertPending(rt: ScopeRuntime, commentId: string, pending: InboxPendingReply, lastError: string | null, attempted: boolean) {
     const current = rt.pendings.get(pending.key);
+    // A refresh that observes the same state keeps the scheduled retry instead of postponing it.
+    if (current && !attempted && lastError === null && current.state === pending.state && current.createdAt === Date.parse(pending.createdAt)) return;
     const entry: PendingRuntime = current ?? { commentId, key: pending.key, state: pending.state, createdAt: Date.parse(pending.createdAt), attempts: 0, nextAttemptAt: null, lastError: null };
     Object.assign(entry, { state: pending.state, createdAt: Date.parse(pending.createdAt), lastError: lastError ?? (pending.state === "failed" ? pending.failedReason : entry.lastError) });
     if (attempted) entry.attempts++;
