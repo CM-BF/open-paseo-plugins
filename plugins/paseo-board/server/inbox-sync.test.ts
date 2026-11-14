@@ -276,6 +276,18 @@ describe("contract export and reply outbox against a fake backend (DESIGN §11.5
   });
 
   it.each([
+    ["404-export-disabled", "后端没有设置收件箱令牌（BOARD_INBOX_EXPORT_TOKEN），回复暂停发送；设置后重新部署即可继续。"],
+    ["404-comments-disabled", "后端关闭了评论功能（board-app.json 的 comments.enabled），回复暂停发送；重新开启并部署后即可继续。"],
+  ] as const)("keeps a reply sending while the backend is configured without %s", async (failure, lastError) => {
+    await enable(); const comment = await visitorComment();
+    backend.failReply.push(failure);
+    expect(await reply(comment)).toMatchObject({ status: "sending", recorded: true, pending: { state: "sending" } });
+    expect(events.at(-1)).toMatchObject({ status: "sending", lastError });
+    expect((await current()).comments[0].pendingReply).toMatchObject({ state: "sending", failedReason: null });
+    expect(await connections.retryPending(scope, comment.id, replyKey(scope, comment.id, "reply-1"))).toMatchObject({ status: "published", recorded: true });
+  });
+
+  it.each([
     ["404-old", "backend_outdated", "后端版本过旧，不支持回复：在应用目录运行 paseo-board-app update-runtime，然后重新部署。"],
     ["409-key", "idempotency_conflict", "这个回复编号已用于另一条回复。"],
     ["409-limit", "size_limit", "这条评论的回复已达 20 条上限。"],

@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 export interface FakeRow { seq: number; externalId: string; text: string; createdAt: string; authorName?: string; pageUrl?: string; anchor?: Record<string, unknown>; visitorTag?: string }
 export interface FakeReply { replyId: string; commentExternalId: string; text: string; authorKind: "owner" | "agent"; createdAt: string; idempotencyKey: string }
-export type FakeFailure = "network" | "500" | "429" | "401" | "403" | "404-old" | "404-export" | "409-key" | "409-limit" | "mismatch";
+export type FakeFailure = "network" | "500" | "429" | "401" | "403" | "404-old" | "404-export" | "404-export-disabled" | "404-comments-disabled" | "409-key" | "409-limit" | "mismatch";
 export interface FakeBackend {
   url: string; endpoint: string; token: string; deploymentId: string;
   rows: FakeRow[]; replies: Map<string, { hash: string; reply: FakeReply }>;
@@ -45,6 +45,8 @@ export async function startFakeBackend(options: { token?: string; deploymentId?:
     else if (failure === "403") json(res, 403, { error: "forbidden", code: "browser_forbidden" });
     else if (failure === "404-old") json(res, 404, { error: "Not found" });
     else if (failure === "404-export") json(res, 404, { error: "Comment export is disabled", code: "comments_disabled" });
+    else if (failure === "404-export-disabled") json(res, 404, { error: "Comment export is disabled", code: "export_disabled" });
+    else if (failure === "404-comments-disabled") json(res, 404, { error: "Comments are disabled", code: "comments_disabled" });
     else if (failure === "409-key") json(res, 409, { error: "conflict", code: "idempotency_conflict" });
     else if (failure === "409-limit") json(res, 409, { error: "limit", code: "reply_limit" });
     else return false;

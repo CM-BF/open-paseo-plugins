@@ -391,6 +391,9 @@ export class InboxConnections {
     if (response.status === 429 || response.status >= 500) return { kind: "transient", error: `后端返回 HTTP ${response.status}` };
     if (response.status === 401 || response.status === 403) return { kind: "transient", error: "后端拒绝了收件箱令牌，请在「后端来源」里更新。" };
     if (response.status === 404 && code === "comment_not_found") return { kind: "fail", code: "not_found", message: "后端没有这条评论（后端可能已更换或恢复了旧数据）。" };
+    // Backend configuration the human can fix and redeploy: keep the pending reply and retry with the same key.
+    if (response.status === 404 && code === "export_disabled") return { kind: "transient", error: "后端没有设置收件箱令牌（BOARD_INBOX_EXPORT_TOKEN），回复暂停发送；设置后重新部署即可继续。" };
+    if (response.status === 404 && code === "comments_disabled") return { kind: "transient", error: "后端关闭了评论功能（board-app.json 的 comments.enabled），回复暂停发送；重新开启并部署后即可继续。" };
     if (response.status === 404) return { kind: "fail", code: "backend_outdated", message: "后端版本过旧，不支持回复：在应用目录运行 paseo-board-app update-runtime，然后重新部署。" };
     if (response.status === 409 && code === "idempotency_conflict") return { kind: "fail", code: "idempotency_conflict", message: "这个回复编号已用于另一条回复。" };
     if (response.status === 409 && code === "reply_limit") return { kind: "fail", code: "size_limit", message: "这条评论的回复已达 20 条上限。" };
