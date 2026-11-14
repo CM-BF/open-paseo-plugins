@@ -1,3 +1,13 @@
+# 2026-11-13 — 发布页访客评论：评论助手权限模式等级修复（集成分支），未安装
+
+分支 `sw/board-page-comments`，修复提交 `d31892d`，尚未推送、未安装、未重载插件，main 未改。问题来自真实应用检查（`$PASEO_HOME/verification/paseo-board/page-comments-20261113/live/checks/04-mode-tier-source.json`、`04-assistant-options.json`、`shots/04-05-auto-dialog-no-recommended.png`）。
+
+- 问题：已安装的 daemon 0.16.0-beta.2 给负责人会话快照里的权限模式不带 `colorTier`，插件只读这一处，于是所有模式都是「未知」：「Agent 自动处理并公开回复」对话框没有推荐模式，连 Always Ask 都要勾选「我了解风险」，Plan Mode 也能选。同一个 daemon 的提供方模式列表其实带等级。以前的测试数据总带 `colorTier`，所以没发现。
+- 修复：等级依次取自会话快照的 `colorTier`、公开 SDK 的 `paseo.providers.listModes`（按提供方缓存一分钟，失败缓存十秒，5 秒超时），最后是与已安装 daemon 提供方清单一致的内置表（Claude、Codex、OpenCode）。无法确认等级的模式和计划、危险模式一样不能选（以前未知模式勾选风险后可选）；第一个安全模式标「（推荐）」并预选，没有安全模式时不推荐。`board.inbox.auto-enable` 用同一份结果检查。一个可选模式都没有时，对话框说明原因。说明见[评论收件箱](docs/comment-inbox.md)。
+- 测试改用真实的快照形状（模式不带 `colorTier`）：单元、协调器、端到端各一组，宿主测试的对话框选项由服务端代码现场算出，检查 Always Ask 带「（推荐）」、预选、没有风险勾选，Plan Mode 和 Bypass 不出现，以及一个可选模式都没有时的提示。新测试在旧代码上失败（单元 8 项、宿主收件箱范围在确认步骤失败）。
+- 遗留：用旧规则（未知模式 + 勾选风险）建好的评论助手会继续被唤醒，下次开启时才按新规则检查。
+- 全套检查：client/worker/app 两次重建逐字节一致（只有 `client/hermes-bundle.js` 变化）；TypeScript；单元 987 项 + inbox-sync 30 项；宿主 61 项、收件箱范围 11 项；发布页 59 项；发布宿主 44 项；后端 65 项；端到端 20 步，均退出码 0。画布浏览器第一次在液态玻璃图表的悬停提示检查超时（与本修复无关的代码），同一提交重跑 156 项全部通过。
+
 # 2026-11-13 — 发布页访客评论：评审问题修复（集成分支），未安装
 
 分支 `sw/board-page-comments`，在 `6e01782` 之上修复评审发现的问题，尚未推送、未安装、未重载插件，main 未改。逐条记录见 `$PASEO_HOME/verification/paseo-board/page-comments-20261113/DESIGN.md` §13。
