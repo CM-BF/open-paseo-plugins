@@ -19,6 +19,8 @@ export interface FakeBackend {
   /** Optional raw override for the next export body (malformed envelopes, rows the fake would never store). */
   rawExport: unknown[];
   holdReplies?: Promise<void>;
+  /** Milliseconds added to the backend clock (negative: the owner's server runs behind the host). */
+  skewMs: number;
   add(row: Partial<FakeRow> & { text: string }): FakeRow;
   close(): Promise<void>;
 }
@@ -28,10 +30,10 @@ const digest = (value: string) => createHash("sha256").update(value).digest("hex
 export async function startFakeBackend(options: { token?: string; deploymentId?: string; now?: () => string } = {}): Promise<FakeBackend> {
   const token = options.token ?? "fake-export-token-0123456789abcdef0123456789";
   const deploymentId = options.deploymentId ?? "00000000-0000-4000-8000-00000000d001";
-  const now = options.now ?? (() => new Date().toISOString());
+  const now = options.now ?? (() => new Date(Date.now() + backend.skewMs).toISOString());
   let seq = 0;
   const backend: FakeBackend = {
-    url: "", endpoint: "", token, deploymentId, rows: [], replies: new Map(), requests: [], failExport: [], failReply: [], legacy: false, rawExport: [],
+    url: "", endpoint: "", token, deploymentId, rows: [], replies: new Map(), requests: [], failExport: [], failReply: [], legacy: false, rawExport: [], skewMs: 0,
     add(row) { const stored: FakeRow = { seq: ++seq, externalId: row.externalId ?? randomUUID(), createdAt: row.createdAt ?? now(), ...row } as FakeRow; backend.rows.push(stored); return stored; },
     async close() { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); },
   };

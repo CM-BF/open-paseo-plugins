@@ -33,6 +33,8 @@ export interface InboxWakeHooks {
   assistant(scope: InboxScope): Promise<{ agentId: string; modeId: string; modeLabel: string } | null>;
   auto(scope: InboxScope): Promise<InboxAutoMode>;
   pause(scope: InboxScope, reason: "agent" | "mode", error: string, delivery: Delivery): Promise<void>;
+  /** A wake failed before it reached the assistant: its comments must be offered again (DESIGN §11.6). */
+  unsent?(scope: InboxScope, delivery: Delivery): Promise<void>;
   changed(delivery: Delivery): void;
 }
 export const inboxWakeOutstanding = (delivery: Delivery) => ["saved", "creating", "sending"].includes(delivery.state) || delivery.state === "delivered" && Boolean(delivery.awaitingTurn) && !delivery.outcome;
@@ -663,8 +665,11 @@ export class BoardService {
       hooks.changed(delivered);
       this.scheduleHistory(target);
     } catch (error) {
+      // A failure before the "sending" write never reached the assistant: the coordinator rewinds and retries it.
+      const unsent = this.journal.get(key)?.state === "saved";
       const failed = await this.journal.patch(key, { state: "failed", awaitingTurn: false, needsRecovery: false, error: describe(error) }).catch(() => undefined);
-      if (failed) hooks.changed(failed);
+      if (failed && unsent && hooks.unsent) await hooks.unsent(scope, failed).catch(failure => this.log(`board inbox wake: ${describe(failure)}`));
+      else if (failed) hooks.changed(failed);
     } finally { this.agentClaims.delete(target); }
   }
   private async settleHandled(key: string, boardId: string, interaction: Interaction | undefined, beforeNativeSend = false): Promise<boolean> {

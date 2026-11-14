@@ -7,6 +7,7 @@ import type {
   InboxScope, InboxStatus, InboxTriageInput,
 } from "../shared/inbox";
 import { autoToggleLabel, guardReason, syncLine, wakeLine, wakeNotices } from "./inbox-status";
+import { showBidiControls as shown } from "../shared/bidi";
 import { Action, Copy, errorMessage, localId, Notice, useColors } from "./ui";
 
 export interface InboxPanelProps {
@@ -272,22 +273,22 @@ export function InboxPanel(props: InboxPanelProps) {
       const editor = editors[comment.id];
       const pending = comment.pendingReply;
       return <View key={comment.id} testID={`board-inbox-comment-${comment.id}`} style={{ borderWidth: 1, borderColor: c.border, borderRadius: 8, padding: 12, gap: 8, backgroundColor: c.surface0 }}>
-        <Copy small>{statuses[comment.status]} · {comment.authorName ?? "访客"} · {new Date(comment.createdAt).toLocaleString()}{comment.visitorTag ? ` · 访客 ${comment.visitorTag}` : ""}</Copy>
-        <Copy>{comment.text}</Copy>
-        {comment.anchor?.quote ? <Copy muted small>引用：「{clip(comment.anchor.quote, 200)}」</Copy> : null}
-        {comment.anchor?.label || comment.anchor?.selector ? <Copy muted small>位置：{comment.anchor.label ?? comment.anchor.selector}</Copy> : null}
+        <Copy small>{statuses[comment.status]} · {comment.authorName ? shown(comment.authorName) : "访客"} · {new Date(comment.createdAt).toLocaleString()}{comment.visitorTag ? ` · 访客 ${comment.visitorTag}` : ""}</Copy>
+        <Copy>{shown(comment.text)}</Copy>
+        {comment.anchor?.quote ? <Copy muted small>引用：「{shown(clip(comment.anchor.quote, 200))}」</Copy> : null}
+        {comment.anchor?.label || comment.anchor?.selector ? <Copy muted small>位置：{shown(comment.anchor.label ?? comment.anchor.selector ?? "")}</Copy> : null}
         {comment.pageUrl ? <Copy muted small>{comment.pageUrl}</Copy> : null}
         <Copy muted small>来源：{page?.sources.find(source => source.sourceId === comment.sourceId)?.label ?? comment.sourceId} · 外部输入</Copy>
-        {comment.labels.length ? <Copy small>标签：{comment.labels.join("、")}</Copy> : null}
-        {comment.note ? <Copy small>内部备注：{comment.note}</Copy> : null}
+        {comment.labels.length ? <Copy small>标签：{shown(comment.labels.join("、"))}</Copy> : null}
+        {comment.note ? <Copy small>内部备注：{shown(comment.note)}</Copy> : null}
         {(comment.replies ?? []).map(reply => <View key={reply.id} style={{ gap: 4, paddingLeft: 10, borderLeftWidth: 2, borderColor: c.accent }}>
           <Copy muted small>{`${reply.authorKind === "agent" ? "AI 助手回复" : "作者回复"} · ${new Date(reply.createdAt).toLocaleString()}`}</Copy>
-          <Copy>{reply.text}</Copy>
+          <Copy>{shown(reply.text)}</Copy>
         </View>)}
         {pending?.state === "sending" ? <Copy small muted>回复发送中…</Copy> : null}
         {pending?.state === "draft" ? <View style={{ gap: 6, paddingLeft: 10, borderLeftWidth: 2, borderColor: c.border }}>
           <Copy small muted>AI 草稿（待你审核）</Copy>
-          <Copy>{pending.text}</Copy>
+          <Copy>{shown(pending.text)}</Copy>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             <Action label="发布" disabled={busy} onPress={() => pendingAction(comment, "publish")} />
             <Action label="修改后发布" disabled={busy} onPress={() => edit(comment.id, { text: pending.text, mode: "publish", key: pending.key, phase: "editing", eventId: undefined })} />

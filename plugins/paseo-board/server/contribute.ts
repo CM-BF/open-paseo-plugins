@@ -46,7 +46,8 @@ export function contributeServer(server: PluginServerContext, options: Contribut
   const inbox = new InboxStore(root, { resolveBoard: id => store.read(id), authorizeAgent: async (id, agentId) => {
     const board = await store.read(id);
     return Boolean(board?.interactions.some(item => item.kind === "fork" && item.agentId === agentId));
-  }, authorizeAssistant: async (scope, agentId) => Boolean(await automation?.isAssistant(scope, agentId)) });
+  }, authorizeAssistant: async (scope, agentId) => Boolean(await automation?.isAssistant(scope, agentId)),
+  assistantComments: async (scope, agentId) => automation ? automation.assistantComments(scope, agentId) : new Set<string>() });
   service.useInbox(inbox);
   const inboxConnections = new InboxConnections(root, inbox);
   service.useInboxConnections(inboxConnections);

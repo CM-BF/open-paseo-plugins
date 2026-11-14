@@ -18,6 +18,18 @@ const LONG_HEX = /(?<![A-Za-z0-9])[A-Fa-f0-9]{32,}(?![A-Za-z0-9])/;
 const ENCODED_RUN = /[A-Za-z0-9+/_-]{32,}={0,2}/g;
 const LOCAL_PATH = /(?:^|[\s"'(（「])(?:\/Users\/|\/home\/|\/root\/|~\/\.|[A-Za-z]:\\Users\\)/;
 
+/**
+ * The endpoint's host name as a whole host, never inside a word or a longer host name. Single-label names
+ * (`api`, `board`, `localhost`) are ordinary words, so only dotted names and IP literals are matched; the full
+ * endpoint URL still matches for every host.
+ */
+function hostMentioned(lower: string, host: string): boolean {
+  if (!host || !host.includes(".") && !host.includes(":")) return false;
+  const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const before = host.includes(":") ? "(?<![A-Za-z0-9.:-])" : "(?<![A-Za-z0-9.-])";
+  return new RegExp(`${before}${escaped}(?![A-Za-z0-9-]|\\.[A-Za-z0-9])`, "i").test(lower);
+}
+
 /** Returns the Chinese reason (`令牌`, `后端地址`, …) of the first matching rule, or null. */
 export function replyGuardReason(text: string, context: ReplyGuardContext): string | null {
   const env = context.env ?? process.env;
@@ -28,9 +40,11 @@ export function replyGuardReason(text: string, context: ReplyGuardContext): stri
   if (text.includes("PASEO_BOARD_BINDING") || secrets.some(secret => text.includes(secret))) return "令牌";
   const lower = text.toLowerCase();
   for (const endpoint of context.endpoints) {
-    const candidates = [endpoint.replace(/\/+$/, "")];
-    try { candidates.push(new URL(endpoint).hostname.replace(/^\[|\]$/g, "")); } catch { /* registered endpoints are valid URLs */ }
-    if (candidates.some(candidate => candidate && lower.includes(candidate.toLowerCase()))) return "后端地址";
+    const url = endpoint.replace(/\/+$/, "").toLowerCase();
+    if (url && lower.includes(url)) return "后端地址";
+    let host = "";
+    try { host = new URL(endpoint).hostname.replace(/^\[|\]$/g, "").toLowerCase(); } catch { /* registered endpoints are valid URLs */ }
+    if (hostMentioned(lower, host)) return "后端地址";
   }
   if (text.includes("-----BEGIN")) return "密钥";
   if (JWT.test(text)) return "令牌";

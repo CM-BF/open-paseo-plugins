@@ -10231,8 +10231,10 @@ var InboxReplySchema = z4.object({
   authorKind: z4.enum(["owner", "agent"]),
   actor: ReplyActorSchema,
   eventId: IdSchema,
-  createdAt: TimestampSchema
+  createdAt: TimestampSchema,
   // createdAt from the backend
+  /** Host clock when the backend confirmed it; the assistant's hourly reply budget counts from this, never the backend clock. */
+  confirmedAt: TimestampSchema.optional()
 }).strict();
 var InboxCommentSchema = InboxExternalCommentSchema.extend({
   id: IdSchema,
@@ -13321,6 +13323,13 @@ import { ScrollView as ScrollView5, TextInput as TextInput7 } from "@getpaseo/pl
 import { useEffect as useEffect14, useRef as useRef13, useState as useState14 } from "react";
 import { Pressable as Pressable8, Text as Text9, View as View10 } from "react-native";
 import { ScrollView as ScrollView4, TextInput as TextInput6 } from "@getpaseo/plugin/client/ui";
+
+// shared/bidi.ts
+function showBidiControls(text) {
+  return text.replace(/[‪-‮⁦-⁩]/g, char => `[U+${char.charCodeAt(0).toString(16).toUpperCase()}]`);
+}
+
+// client/inbox-panel.tsx
 import { Fragment as Fragment7, jsx as jsx12, jsxs as jsxs10 } from "react/jsx-runtime";
 var statuses = {
   new: "\u672A\u5904\u7406",
@@ -14011,17 +14020,17 @@ function InboxPanel(props) {
         },
         children: [/* @__PURE__ */jsxs10(Copy, {
           small: true,
-          children: [statuses[comment.status], " \xB7 ", comment.authorName ?? "\u8BBF\u5BA2", " \xB7 ", new Date(comment.createdAt).toLocaleString(), comment.visitorTag ? ` \xB7 \u8BBF\u5BA2 ${comment.visitorTag}` : ""]
+          children: [statuses[comment.status], " \xB7 ", comment.authorName ? showBidiControls(comment.authorName) : "\u8BBF\u5BA2", " \xB7 ", new Date(comment.createdAt).toLocaleString(), comment.visitorTag ? ` \xB7 \u8BBF\u5BA2 ${comment.visitorTag}` : ""]
         }), /* @__PURE__ */jsx12(Copy, {
-          children: comment.text
+          children: showBidiControls(comment.text)
         }), comment.anchor?.quote ? /* @__PURE__ */jsxs10(Copy, {
           muted: true,
           small: true,
-          children: ["\u5F15\u7528\uFF1A\u300C", clip(comment.anchor.quote, 200), "\u300D"]
+          children: ["\u5F15\u7528\uFF1A\u300C", showBidiControls(clip(comment.anchor.quote, 200)), "\u300D"]
         }) : null, comment.anchor?.label || comment.anchor?.selector ? /* @__PURE__ */jsxs10(Copy, {
           muted: true,
           small: true,
-          children: ["\u4F4D\u7F6E\uFF1A", comment.anchor.label ?? comment.anchor.selector]
+          children: ["\u4F4D\u7F6E\uFF1A", showBidiControls(comment.anchor.label ?? comment.anchor.selector ?? "")]
         }) : null, comment.pageUrl ? /* @__PURE__ */jsx12(Copy, {
           muted: true,
           small: true,
@@ -14032,10 +14041,10 @@ function InboxPanel(props) {
           children: ["\u6765\u6E90\uFF1A", page?.sources.find(source => source.sourceId === comment.sourceId)?.label ?? comment.sourceId, " \xB7 \u5916\u90E8\u8F93\u5165"]
         }), comment.labels.length ? /* @__PURE__ */jsxs10(Copy, {
           small: true,
-          children: ["\u6807\u7B7E\uFF1A", comment.labels.join("\u3001")]
+          children: ["\u6807\u7B7E\uFF1A", showBidiControls(comment.labels.join("\u3001"))]
         }) : null, comment.note ? /* @__PURE__ */jsxs10(Copy, {
           small: true,
-          children: ["\u5185\u90E8\u5907\u6CE8\uFF1A", comment.note]
+          children: ["\u5185\u90E8\u5907\u6CE8\uFF1A", showBidiControls(comment.note)]
         }) : null, (comment.replies ?? []).map(reply => /* @__PURE__ */jsxs10(View10, {
           style: {
             gap: 4,
@@ -14048,7 +14057,7 @@ function InboxPanel(props) {
             small: true,
             children: `${reply.authorKind === "agent" ? "AI \u52A9\u624B\u56DE\u590D" : "\u4F5C\u8005\u56DE\u590D"} \xB7 ${new Date(reply.createdAt).toLocaleString()}`
           }), /* @__PURE__ */jsx12(Copy, {
-            children: reply.text
+            children: showBidiControls(reply.text)
           })]
         }, reply.id)), pending?.state === "sending" ? /* @__PURE__ */jsx12(Copy, {
           small: true,
@@ -14066,7 +14075,7 @@ function InboxPanel(props) {
             muted: true,
             children: "AI \u8349\u7A3F\uFF08\u5F85\u4F60\u5BA1\u6838\uFF09"
           }), /* @__PURE__ */jsx12(Copy, {
-            children: pending.text
+            children: showBidiControls(pending.text)
           }), /* @__PURE__ */jsxs10(View10, {
             style: {
               flexDirection: "row",

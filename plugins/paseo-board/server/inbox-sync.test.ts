@@ -343,6 +343,41 @@ describe("contract export and reply outbox against a fake backend (DESIGN §11.5
     expect(await reply({ ...comment, revision: 3 }, "ordinary", "谢谢反馈，页面 https://cm-bf.github.io/pages/boards/s0123456789abcdef0123/ 已更新。")).toMatchObject({ status: "published" });
   });
 
+  it("counts the assistant's hourly reply budget by the host clock even when the backend clock runs behind", async () => {
+    await enable();
+    backend.skewMs = -2 * 3_600_000;
+    for (let index = 0; index < 31; index++) backend.add({ text: `评论 ${index}`, visitorTag: "a1b2c3d4e5f6" });
+    await syncNow();
+    const comments = (await current()).comments;
+    for (const [index, comment] of comments.slice(0, 30).entries()) expect(await reply(comment, `budget-${index}`, "谢谢反馈。"), String(index)).toMatchObject({ status: "published", recorded: true });
+    const stored = (await current()).comments[0].replies![0];
+    expect(Date.parse(stored.createdAt)).toBeLessThan(Date.now() - 3_600_000);
+    expect(Math.abs(Date.parse(stored.confirmedAt!) - Date.now())).toBeLessThan(60_000);
+    await expect(reply(comments[30], "budget-30", "谢谢反馈。")).rejects.toMatchObject({ code: "rate_limited", message: "回复过于频繁：每张 Board 每小时最多 30 条 AI 助手回复。" });
+    expect(posts()).toHaveLength(30);
+  });
+
+  it("lets the assistant reply only to comments from its own wakes, and never repeat another visitor's comment", async () => {
+    await enable();
+    backend.add({ text: "我的电话是 138-0013-8000，住在幸福路 12 号，请不要公开。", visitorTag: "aaaaaaaaaaaa" });
+    backend.add({ text: "第二步看不懂", visitorTag: "bbbbbbbbbbbb" });
+    backend.add({ text: "第三步也看不懂", visitorTag: "bbbbbbbbbbbb" });
+    await syncNow();
+    const [private_, mine, later] = (await current()).comments;
+    const woken = new Set([mine.id]);
+    const scoped = new InboxStore(root, { resolveBoard: async () => ({ createdAt: scope.expectedCreatedAt, ownerAgentId: "owner" }), authorizeAssistant: async (_scope, id) => id === "assistant", assistantComments: async () => woken });
+    const scopedConnections = new InboxConnections(root, scoped);
+    const scopedReply = (comment: { id: string; revision: number }, eventId: string, text: string, actor: InboxActor = assistant) => scopedConnections.reply({ ...scope, commentId: comment.id, expectedCommentRevision: comment.revision, eventId, text }, actor);
+    await expect(scopedReply(later, "not-woken", "谢谢。")).rejects.toMatchObject({ code: "forbidden", message: "评论助手只能回复唤醒它时列出的评论。" });
+    await expect(scopedReply(private_, "other-thread", "请看 https://example.com/offer")).rejects.toMatchObject({ code: "forbidden" });
+    await expect(scopedReply(mine, "leak", "另一位访客说：我的电话是 138-0013-8000，住在幸福路 12 号。")).rejects.toMatchObject({ code: "invalid_input", message: "回复里有一段和其他访客的评论相同（连续 16 个字以上）。访客之间互相看不到评论，请换一种说法。" });
+    await expect(scopedReply(mine, "leak-spaced", "另一位访客说：我的电话是   138-0013-8000，\n住在幸福路 12 号。")).rejects.toMatchObject({ code: "invalid_input" });
+    expect(posts()).toHaveLength(0);
+    expect(await scopedReply(mine, "own-thread", "第三步也看不懂的话，可以先看第一节。第二步看不懂没关系。")).toMatchObject({ status: "published" });
+    // The human may reply anywhere and is not checked for quotes.
+    expect(await scopedReply(later, "human", "作者回复：我的电话是 138-0013-8000，住在幸福路", human)).toMatchObject({ status: "published", reply: { authorKind: "owner" } });
+  });
+
   it("stores review-mode drafts, publishes them unchanged as agent text and edited as owner text", async () => {
     await enable("review"); const comment = await visitorComment();
     const draft = await reply(comment);

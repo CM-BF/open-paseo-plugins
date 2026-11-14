@@ -11,6 +11,7 @@ import { IdSchema } from "../shared/contracts";
 import { BoardStoreError, ensureDirectory, fingerprint, parseInput, serialized } from "./store-format";
 import type { InboxStore, PrepareReplyResult } from "./inbox-store";
 import { replyGuardMessage, replyGuardReason } from "./reply-guard";
+import { BIDI_CONTROL } from "../shared/bidi";
 
 const human: InboxActor = { kind: "user", id: "paseo-client" };
 /** The coordinator's own read-only calls (DESIGN §11.8 "Internal actors"). */
@@ -91,7 +92,7 @@ const PAGE_CHARACTERS = (comments: readonly InboxExternalComment[]) => comments.
 export function normalizeReplyText(raw: string): string {
   const text = raw.replace(/\r\n?/g, "\n").trim();
   // eslint-disable-next-line no-control-regex
-  if (!text || text.length > INBOX_LIMITS.replyText || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text)) throw new BoardStoreError("invalid_input", "回复需要 1–2000 字的纯文本。");
+  if (!text || text.length > INBOX_LIMITS.replyText || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text) || BIDI_CONTROL.test(text)) throw new BoardStoreError("invalid_input", "回复需要 1–2000 字的纯文本。");
   return text;
 }
 export const replyKey = (scope: InboxScope, commentId: string, eventId: string) => `ir-${hash(`${scope.boardId}\0${scope.expectedCreatedAt}\0${commentId}\0${eventId}`).slice(0, 48)}`;

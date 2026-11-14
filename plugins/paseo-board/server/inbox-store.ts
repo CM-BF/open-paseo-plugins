@@ -42,6 +42,12 @@ export interface InboxStoreOptions {
   authorizeAgent?(boardId: string, agentId: string): Promise<boolean>;
   /** The Board's comment assistant (DESIGN §11.3). Defaults to deny. */
   authorizeAssistant?(scope: InboxScope, agentId: string): Promise<boolean>;
+  /**
+   * Comment IDs listed in the wakes this assistant received for the scope. The assistant may reply only to
+   * those, so an injected comment cannot make it post into other visitors' threads. The plugin always wires
+   * it; without it (store unit tests) replies are not restricted by wake.
+   */
+  assistantComments?(scope: InboxScope, agentId: string): Promise<ReadonlySet<string>>;
   now?: () => number;
 }
 /** Snapshot row for the waker: identifiers and routing hints only, never visitor text. */
@@ -72,6 +78,25 @@ const externalFields = (comment: InboxComment): Record<string, unknown> => {
   return { externalId, text, authorName, createdAt, pageUrl, anchor, visitorTag };
 };
 const ONLY_ASSISTANT = "只有这张 Board 的评论助手可以回复访客；你可以用 board_inbox_triage 记录建议。";
+const NOT_WOKEN = "评论助手只能回复唤醒它时列出的评论。";
+const OTHER_VISITOR = "回复里有一段和其他访客的评论相同（连续 16 个字以上）。访客之间互相看不到评论，请换一种说法。";
+const QUOTE_RUN = 16;
+/** True when the reply repeats a 16-character run of a comment written by another visitor (whitespace-insensitive). */
+function quotesOtherVisitor(text: string, comment: InboxComment, comments: readonly InboxComment[]): boolean {
+  const squash = (value: string) => value.replace(/\s+/g, " ").trim();
+  const reply = squash(text);
+  if (reply.length < QUOTE_RUN) return false;
+  const runs = new Set<string>();
+  for (let index = 0; index + QUOTE_RUN <= reply.length; index++) runs.add(reply.slice(index, index + QUOTE_RUN));
+  for (const other of comments) {
+    if (other.id === comment.id || other.visitorTag !== undefined && other.visitorTag === comment.visitorTag) continue;
+    const body = squash(other.text);
+    for (let index = 0; index + QUOTE_RUN <= body.length; index++) if (runs.has(body.slice(index, index + QUOTE_RUN))) return true;
+  }
+  return false;
+}
+/** The assistant budget counts confirmed replies by the host's confirmation time (older ledgers: the backend time). */
+const replyTime = (reply: InboxReply) => Date.parse(reply.confirmedAt ?? reply.createdAt);
 
 /** A separate bounded ledger: importing a comment never creates a Board interaction or dispatches an agent. */
 export class InboxStore {
@@ -292,6 +317,10 @@ export class InboxStore {
       if (!comment) throw new BoardStoreError("not_found", "Inbox comment does not exist");
       if (comment.revision !== input.expectedCommentRevision) conflict("Comment changed; read its latest state before replying");
       if (!comment.visitorTag) throw new BoardStoreError("invalid_input", "这位访客看不到回复（评论不是从页面评论功能发出的），只能内部处理。");
+      if (role === "assistant" && actor.kind === "agent") {
+        if (this.options.assistantComments && !(await this.options.assistantComments(input, actor.agentId)).has(comment.id)) deny(NOT_WOKEN);
+        if (quotesOtherVisitor(input.text, comment, state.comments)) throw new BoardStoreError("invalid_input", OTHER_VISITOR);
+      }
       if ((comment.replies?.length ?? 0) >= INBOX_LIMITS.replies) throw new BoardStoreError("size_limit", "这条评论的回复已达 20 条上限。");
       if (comment.pendingReply && comment.pendingReply.state !== "failed") conflict("这条评论有一条回复正在发送或待审核。");
       const source = state.sources.find(item => item.sourceId === comment.sourceId);
@@ -301,7 +330,7 @@ export class InboxStore {
         const since = now - 3_600_000;
         let recent = 0;
         for (const item of state.comments) {
-          for (const reply of item.replies ?? []) if (reply.actor.kind === "agent" && Date.parse(reply.createdAt) >= since) recent++;
+          for (const reply of item.replies ?? []) if (reply.actor.kind === "agent" && replyTime(reply) >= since) recent++;
           if (item.pendingReply && item.pendingReply.state !== "failed" && item.pendingReply.actor.kind === "agent" && Date.parse(item.pendingReply.createdAt) >= since) recent++;
         }
         if (recent >= INBOX_AUTO_LIMITS.agentRepliesPerHour) throw new BoardStoreError("rate_limited", "回复过于频繁：每张 Board 每小时最多 30 条 AI 助手回复。");
@@ -374,7 +403,7 @@ export class InboxStore {
       if (!pending || pending.key !== key) throw new BoardStoreError("not_found", "这条回复已经不在待处理列表里。");
       if ((comment.replies?.length ?? 0) >= INBOX_LIMITS.replies) throw new BoardStoreError("size_limit", "这条评论的回复已达 20 条上限。");
       const at = new Date(this.now()).toISOString();
-      const reply: InboxReply = { id: replyIdOf(comment.sourceId, backend.replyId), replyId: backend.replyId, key, text: pending.text, authorKind: pending.authorKind, actor: pending.actor, eventId: pending.eventId, createdAt: backend.createdAt };
+      const reply: InboxReply = { id: replyIdOf(comment.sourceId, backend.replyId), replyId: backend.replyId, key, text: pending.text, authorKind: pending.authorKind, actor: pending.actor, eventId: pending.eventId, createdAt: backend.createdAt, confirmedAt: at };
       comment.replies = [...(comment.replies ?? []), reply];
       delete comment.pendingReply;
       if (pending.resolveOnConfirm) comment.status = "resolved";

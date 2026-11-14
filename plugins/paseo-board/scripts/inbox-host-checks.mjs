@@ -94,6 +94,9 @@ export async function runInboxHostChecks({ assert, command, evaluate, until, fra
     assert.ok(await evaluate("document.querySelector('[data-testid=board-inbox-comment-comment-4]').textContent.includes('这位访客看不到回复（不是从页面评论功能发出的）。')"));
     assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=board-inbox-reply-comment-4]'))"), false);
     assert.equal(await evaluate("[...document.querySelectorAll('[data-testid^=board-inbox-comment-]')].map(node=>node.dataset.testid).join(',')"), 'board-inbox-comment-comment-4,board-inbox-comment-comment-3,board-inbox-comment-comment-1');
+    // Bidi override controls in visitor text are shown as visible markers, never applied.
+    assert.ok(await evaluate("document.querySelector('[data-testid=board-inbox-comment-comment-3]').textContent.includes('页面上的图表看不清 [U+202E]evil[U+202C]')"));
+    assert.equal(await evaluate("/[\\u202A-\\u202E\\u2066-\\u2069]/.test(document.querySelector('[data-testid=board-inbox-comment-comment-3]').textContent)"), false);
     await hostClick(`${comment} ${button('内部处理')}`);
     await type('内部标签', 'needs-review, 产品建议');
     await type('内部备注', '内部核对，尚未授权公开回复');
@@ -103,7 +106,7 @@ export async function runInboxHostChecks({ assert, command, evaluate, until, fra
     assert.equal(triage.expectedCommentRevision, 1); assert.equal(triage.status, 'reviewing');
     assert.deepEqual(triage.labels, ['needs-review', '产品建议']);
     assert.deepEqual(await evaluate('inboxFixture.state.policy'), { read: false, triage: false });
-    check('External HTML-looking comments and replies stay inert, newest first; human triage saves internal labels and notes while agent permissions remain off');
+    check('External HTML-looking comments and replies stay inert, newest first, bidi controls show as markers; human triage saves internal labels and notes while agent permissions remain off');
 
     stage = 'human-reply-unknown-retry-and-guard';
     await hostClick('[data-testid="board-inbox-reply-comment-1"]');

@@ -16,7 +16,7 @@ export function installInboxHostFixture() {
     replies: [{ id: 'reply-1', replyId: 'r-1', key: `ir-${'1'.repeat(48)}`, text: replyAttack, authorKind: 'agent', actor: { kind: 'agent', id: 'assistant' }, eventId: 'e-1', createdAt: now }],
   };
   const draft = {
-    externalId: 'external-3', id: 'comment-3', sourceId: 'seed-source', deploymentId: 'seed-deployment', text: '页面上的图表看不清', createdAt: now, importedAt: now, updatedAt: now,
+    externalId: 'external-3', id: 'comment-3', sourceId: 'seed-source', deploymentId: 'seed-deployment', text: '页面上的图表看不清 \u202Eevil\u202C', createdAt: now, importedAt: now, updatedAt: now,
     visitorTag: 'f6e5d4c3b2a1', contentTrust: 'external-untrusted', revision: 2, status: 'new', labels: [], note: '', seq: 2,
     pendingReply: { key: `ir-${'3'.repeat(48)}`, eventId: 'draft-event', text: '图表会放大，谢谢提醒。', authorKind: 'agent', actor: { kind: 'agent', id: 'assistant' }, state: 'draft', resolveOnConfirm: true, createdAt: now, failedReason: null },
   };

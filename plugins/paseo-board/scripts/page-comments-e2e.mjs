@@ -570,12 +570,15 @@ try {
     assert.equal(status.sync.sources[0].skipped, 0); assert.equal(status.sync.sources[0].sanitized, 0);
   });
 
-  await step('budget: two more wakes, then a visible budget pause; it resumes automatically and one wake lists every waiting comment', async () => {
+  await step('budget: the backlog stays out of the assistant\'s reach, two more wakes, then a visible budget pause; it resumes automatically and one wake lists every waiting comment', async () => {
     const page = await inbox();
     const enabled = await rpc('board.inbox.auto-enable', { ...scope, expectedRevision: page.revision, eventId: 'enable-again', replyMode: 'publish', modeId: 'default', acceptRisk: false });
     assert.equal(enabled.assistant.agentId, assistantId, 'The same assistant is reused'); assert.equal(sdk.created.length, 1);
     await sleep(limits.wakeMaxDelayMs + 500);
     assert.equal(assistant.wakes.length, 2, 'The backlog from while auto was off is not woken');
+    // Nor can the assistant reach it on its own: replies are limited to comments listed in its wakes.
+    const backlog = (await inbox()).comments.find(item => item.text === '自动处理关闭时的评论');
+    await assert.rejects(tool(sdk.records.get(assistantId), 'board_inbox_reply', { ...scope, commentId: backlog.id, expectedCommentRevision: backlog.revision, eventId: 'reply-not-woken', text: '谢谢。' }), /评论助手只能回复唤醒它时列出的评论。/);
     const posted = [];
     for (const [index, quote] of ['第二步', '保存', '提交'].entries()) {
       posted.push(await postAs(String(index + 1).repeat(64).slice(0, 64).replace(/[^a-f0-9]/g, 'e'), `pc-e2e-budget-000${index}`, { text: `预算测试评论 ${index + 1}`, pageUrl, anchor: anchorFor(quote) }));

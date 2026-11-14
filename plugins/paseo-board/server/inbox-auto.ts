@@ -76,6 +76,8 @@ interface ScopeRuntime {
   sources: Map<string, SourceRuntime>; pendings: Map<string, PendingRuntime>;
   debounce: { timer: unknown; first: number; due: number } | null; resumeTimer?: unknown;
   waking: Promise<void>; saving: Promise<void>; creating: boolean;
+  /** Consecutive wakes that failed before they were sent; reset when a wake is delivered. */
+  unsentFailures: number;
 }
 /** The wake message (exact, DESIGN §11.6): comment IDs only, never visitor text. */
 export function wakePrompt(input: { boardId: string; expectedCreatedAt: string; interactionId: string; title: string; inboxRevision: number; comments: Array<{ commentId: string; revision: number; visitorTag: string | null; canSeeReply: boolean }> }): string {
@@ -209,7 +211,7 @@ export class InboxAutomation {
       let file = await this.readFile(this.filePath(key));
       const fresh = !file;
       file ??= { version: 1, scope: identity, syncPaused: false, wakePaused: false, assistant: null, wake: { seenSeq: 0, history: [], paused: null, lastDelivery: null, lastBudgetPause: null, rewinds: 0, skipped: { otherBoard: 0, unattributed: 0 }, staleSettledAt: null } };
-      const rt: ScopeRuntime = { key, scope: identity, file, stale: false, active: false, ledger: null, sources: new Map(), pendings: new Map(), debounce: null, waking: Promise.resolve(), saving: Promise.resolve(), creating: false };
+      const rt: ScopeRuntime = { key, scope: identity, file, stale: false, active: false, ledger: null, sources: new Map(), pendings: new Map(), debounce: null, waking: Promise.resolve(), saving: Promise.resolve(), creating: false, unsentFailures: 0 };
       if (fresh) (rt as ScopeRuntime & { fresh?: boolean }).fresh = true;
       this.scopes.set(key, rt);
       return rt;
@@ -508,6 +510,24 @@ export class InboxAutomation {
     if (rt.debounce) { this.clock.clearTimer(rt.debounce.timer); rt.debounce = null; }
     await this.save(rt);
   }
+  /**
+   * A wake that failed before it was sent (for example the timeline subscription or a refresh threw): its
+   * comments were never offered to the assistant, so they are rewound like a paused wake's and woken again
+   * after a growing delay. Each retry is a new wake, so the per-Board and host budgets bound a persistent failure.
+   */
+  private async retryUnsent(rt: ScopeRuntime, delivery: Delivery) {
+    if (delivery.inbox && rt.file.wake.seenSeq === delivery.inbox.lastSeq) {
+      rt.file.wake.seenSeq = delivery.inbox.firstSeq - 1;
+      rt.file.wake.rewinds++;
+      await this.save(rt);
+    }
+    rt.unsentFailures++;
+    const delays = this.limits.wakeRetryMs, delay = delays[Math.min(rt.unsentFailures - 1, delays.length - 1)];
+    if (this.stopped || rt.stale) return;
+    if (rt.debounce) this.clock.clearTimer(rt.debounce.timer);
+    const now = this.clock.now();
+    rt.debounce = { first: now, due: now + delay, timer: this.timer(() => { rt.debounce = null; this.queueWake(rt); }, delay) };
+  }
   private wakeHooks(): InboxWakeHooks {
     return {
       assistant: async scope => {
@@ -520,14 +540,20 @@ export class InboxAutomation {
         return rt?.ledger?.policy.auto ?? "off";
       },
       pause: async (scope, reason, error, delivery) => { await this.pause(await this.ensure(scope), reason, error, delivery); },
+      unsent: async (scope, delivery) => { await this.retryUnsent(await this.ensure(scope), delivery); },
       changed: delivery => {
         if (!delivery.inbox) return;
         const rt = this.scopes.get(this.keyOf({ boardId: delivery.boardId, expectedCreatedAt: delivery.inbox.expectedCreatedAt }));
         if (!rt || inboxWakeOutstanding(delivery)) return;
+        if (delivery.state === "delivered") rt.unsentFailures = 0;
         if (delivery.state === "settled" && delivery.error === STALE_TEXT) { rt.file.wake.staleSettledAt = iso(this.clock.now()); void this.save(rt).catch(() => undefined); }
         this.queueWake(rt);
       },
     };
+  }
+  /** Comment IDs of every retained wake this agent received for the scope (DESIGN §11.6 journal, 50 wakes per Board). */
+  async assistantComments(scope: InboxScope, agentId: string): Promise<ReadonlySet<string>> {
+    return new Set(this.o.service.inboxDeliveries(scope).filter(delivery => delivery.targetAgentId === agentId).flatMap(delivery => delivery.inbox?.commentIds ?? []));
   }
   async isAssistant(scope: InboxScope, agentId: string): Promise<boolean> {
     const rt = await this.ensure(scope).catch(() => undefined);
