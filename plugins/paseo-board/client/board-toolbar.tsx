@@ -21,7 +21,8 @@ export interface BoardToolbarProps {
   share?: { attention: boolean; detail?: string; available: boolean }; onUpdateShare?(): void;
   /** Live public data for this Board: a dot on 更多 when the owner has to act. */
   live?: { attention: boolean; detail?: string }; onLiveData?(): void;
-  onInbox?(): void;
+  /** Comment inbox: a dot on 更多 when automatic handling paused or sync needs the owner. */
+  inbox?: { attention: boolean; detail?: string }; onInbox?(): void;
   onSources?(): void; sourceCount?: number;
 }
 const modes = [["off", "交互", "MousePointer2"], ["component", "选组件", "Component"], ["text", "选文字", "TextSelect"], ["region", "框选", "Scan"], ["point", "指定位置", "MapPin"]] as const;
@@ -63,7 +64,7 @@ export function BoardToolbar(props: BoardToolbarProps) {
     {!compact && props.canSelect ? <UpdateNavigation navigation={props.updateNavigation} compact /> : null}
     {drafts && !narrow ? <ToolbarButton testID="board-drafts-open" label={`草稿 ${props.draftCount ?? 0}`} icon={props.draftIssue ? "FileWarning" : "FilePenLine"} text={compact ? undefined : `草稿 ${props.draftCount ?? 0}`} onPress={() => run(() => props.onOpenDrafts?.())} /> : null}
     <ToolbarButton testID="board-shortcuts-open" label="快捷键" icon="Keyboard" active={menu === "shortcuts"} onPress={() => open("shortcuts")} />
-    <ToolbarButton testID="board-more-open" label="更多" icon="Ellipsis" active={menu === "more"} badge={props.share?.attention || props.live?.attention ? "board-share-badge" : undefined} onPress={() => open("more")} />
+    <ToolbarButton testID="board-more-open" label="更多" icon="Ellipsis" active={menu === "more"} badge={props.share?.attention || props.live?.attention || props.inbox?.attention ? "board-share-badge" : undefined} onPress={() => open("more")} />
     <ToolbarButton label="发消息" icon="MessageCircle" text={compact ? undefined : "发消息"} primary onPress={() => run(props.onCompose)} />
     <ToolbarPopover open={menu !== null} title={title} onClose={() => setMenu(null)} containerId="board-toolbar" testID="board-toolbar-popup" width={Math.min(340, width - 16)} right={8}>
       {menu === "tools" ? <>{modes.map(([mode, label, icon]) => <MenuAction key={mode} label={label} icon={icon} selected={props.selectionMode === mode} detail={modeDescriptions[mode]} onPress={() => run(() => props.onSelectionModeChange(mode))} />)}<Copy small muted>Esc 返回交互。也可按住 ⌘ / Ctrl + Shift，直接点击组件。</Copy></> : null}
@@ -93,7 +94,7 @@ export function BoardToolbar(props: BoardToolbarProps) {
         <MenuAction label={`决策 ${props.board.decisions.filter(item => !["dismissed", "superseded"].includes(item.status)).length}`} icon="ListChecks" onPress={() => run(() => props.onOpenDrawer("decisions"))} />
         <MenuAction label="讨论" icon="MessagesSquare" onPress={() => run(() => props.onOpenDrawer("threads"))} />
         <MenuAction label="变化" icon="History" onPress={() => run(() => props.onOpenDrawer("history"))} />
-        {props.onInbox ? <MenuAction testID="board-inbox-open" label="评论收件箱" icon="Inbox" detail="查看访客评论，控制 agent 读取与内部处理权限" onPress={() => run(() => props.onInbox?.())} /> : null}
+        {props.onInbox ? <MenuAction testID="board-inbox-open" label="评论收件箱" icon="Inbox" detail={props.inbox?.detail ?? "查看访客评论和回复，设置 agent 自动处理"} onPress={() => run(() => props.onInbox?.())} /> : null}
         {props.onSources ? <MenuAction testID="board-composition-open" label={`组合来源${props.sourceCount ? ` ${props.sourceCount}` : ""}`} icon="PanelsTopLeft" detail="让 agent 引用、读取并组合其他 Board" onPress={() => run(() => props.onSources?.())} /> : null}
         {props.onPublish ? <MenuAction label="导出与发布" icon="Upload" detail={props.share?.detail} onPress={() => run(() => props.onPublish?.())} /> : null}
         {props.onUpdateShare && props.share?.available ? <MenuAction testID="board-share-update" label="更新分享页" icon="RefreshCw" detail={props.share.attention ? "预览新版本，确认后更新原来的分享链接" : "查看分享链接和状态"} onPress={() => run(() => props.onUpdateShare?.())} /> : null}

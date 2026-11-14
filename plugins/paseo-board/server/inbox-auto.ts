@@ -231,7 +231,9 @@ export class InboxAutomation {
     catch (error) { if (error instanceof BoardStoreError && error.code === "identity_conflict") this.markStale(rt); throw error; }
     rt.ledger = { revision: state.revision, latestSeq: state.latestSeq, total: state.total, policy: state.policy };
     const fresh = (rt as ScopeRuntime & { fresh?: boolean }).fresh;
-    if (fresh) { rt.file.wake.seenSeq = state.latestSeq; delete (rt as ScopeRuntime & { fresh?: boolean }).fresh; await this.save(rt); }
+    // A new scope starts with its backlog seen. Nothing is written until something changes, so merely
+    // opening a Board's status leaves no file; a restart before then starts from the backlog again.
+    if (fresh) { rt.file.wake.seenSeq = state.latestSeq; delete (rt as ScopeRuntime & { fresh?: boolean }).fresh; }
     const records = await this.o.connections.runtimeSources(rt.scope);
     const seen = new Set<string>();
     for (const record of records) {

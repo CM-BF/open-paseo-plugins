@@ -18,6 +18,8 @@ import { ReleasePanel } from "./release-panel";
 import { shareSummary } from "./share-status";
 import { useShareStatus } from "./use-share-status";
 import { useLiveStatus } from "./use-live-status";
+import { useInboxAutoStatus } from "./use-inbox-status";
+import { inboxSummary } from "./inbox-status";
 import { liveSummary } from "./live-status";
 import { LiveDataPanel } from "./live-data";
 import { BoardInbox } from "./inbox";
@@ -101,6 +103,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
   useEffect(() => { if (releaseWasOpen.current && !releaseOpen) shareStatus.refresh(); releaseWasOpen.current = releaseOpen; }, [releaseOpen, shareStatus.refresh]);
   const [inboxOpen, setInboxOpen] = useState(false);
   const liveStatus = useLiveStatus(board, !embedded);
+  const inboxStatus = useInboxAutoStatus(board, !embedded);
   const [liveOpen, setLiveOpen] = useState(false);
   const liveWasOpen = useRef(false);
   useEffect(() => { if (liveWasOpen.current && !liveOpen) liveStatus.refresh(); liveWasOpen.current = liveOpen; }, [liveOpen, liveStatus.refresh]);
@@ -598,6 +601,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
       onUpdateShare={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current && !pending.current) { setDrawer(null); setReleaseIntent("update"); setReleaseOpen(true); } }}
       live={liveSummary(liveStatus.data)}
       onLiveData={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current && !pending.current) { setDrawer(null); setLiveOpen(true); } }}
+      inbox={inboxSummary(inboxStatus.data)}
       onInbox={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current && !pending.current) { setDrawer(null); setInboxOpen(true); } }}
       onOpenDrafts={() => { if (composeRef.current) cancelCompose(); if (!composeRef.current) setDrawer("drafts"); }}
       sourceCount={sources.data?.sources.length} onSources={sources.enabled ? () => setSourcesOpen(true) : undefined} /> : null}
@@ -664,7 +668,7 @@ function BoardContent({ boardId, host, theme, layout, onBack, navigation, onOpen
         <ColorContext.Provider value={c}>{sourcesOpen ? <CompositionSourcesPanel parent={sourceRef} controller={sources} /> : null}</ColorContext.Provider>
       </BoardServicesBoundary></Modal.Content></Modal>
     </> : null}
-    <Modal title="评论收件箱" open={inboxOpen} onOpenChange={setInboxOpen}><Modal.Content><BoardServicesBoundary services={services}>
+    <Modal title="评论收件箱" open={inboxOpen} onOpenChange={open => { setInboxOpen(open); if (!open) inboxStatus.refresh(); }}><Modal.Content><BoardServicesBoundary services={services}>
       <ColorContext.Provider value={c}>{inboxOpen ? <BoardInbox key={JSON.stringify([host.id, board.id, board.createdAt])} hostId={host.id} scope={{ boardId: board.id, expectedCreatedAt: board.createdAt }} /> : null}</ColorContext.Provider>
     </BoardServicesBoundary></Modal.Content></Modal>
     <Modal title="实时公开数据" open={liveOpen} onOpenChange={setLiveOpen}><Modal.Content><BoardServicesBoundary services={services}>
